@@ -8,11 +8,19 @@ calls, stubbed by the `board_risks` fixture.
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
 from approvals_harness import (
     HELD,
+    SCRIPTS,
+    TRACKER,
+    VERIFIED,
     added,  # noqa: F401
     approvals,
     approved,
@@ -221,3 +229,93 @@ def test_a_run_refused_graphql_reads_no_board(
     monkeypatch.setattr(approvals, "_rest_only", True)
     assert approvals.flag(pull(), [approved(1)], None) == []
     assert (added, board_risks["set"]) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "stderr", ["HTTP 403: Resource not accessible by integration\n", "HTTP 502: Bad Gateway\n"]
+)
+def test_a_refused_label_write_still_holds_the_merge_and_the_landing_for_a_board_high(
+    gating: tuple[dict[str, Any], list[tuple[int, str]]],
+    board_risks: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stderr: str,
+) -> None:
+    """The board's `High` is a known high risk for this run, whether or not GitHub keeps the label."""
+
+    def refused(number: int, name: str, add: bool) -> None:
+        raise subprocess.CalledProcessError(1, "gh", stderr=stderr)
+
+    monkeypatch.setattr(approvals, "label", refused)
+    board_risks["values"][7] = "High"
+    state, _ = gating
+    state["pull"] = judged_pr(judging("low — a flag on two test commands"))
+    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
+    out = capsys.readouterr().out.splitlines()
+    assert f"PR #7: could not add `risk:high` ({stderr.strip()}): add it by hand" in out
+    assert HELD + "`risk:high` is on PR #7" in out
+    landing = judged_pr(judging("low — a flag on two test commands"))
+    assert approvals.landable(landing, TRACKER, VERIFIED, set()) == (approvals.WAITING, False)
+
+
+FAKE_GH = """#!{python}
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["GH_CALLS"], "a") as calls:
+    calls.write(json.dumps(args) + "\\n")
+query = next(a[len("query="):] for a in args if a.startswith("query="))
+values = dict(a.split("=", 1) for a in args if "=" in a and not a.startswith("query="))
+if "issueOrPullRequest" in query:
+    data = {{"repository": {{
+        "issueOrPullRequest": {{"id": "PR_7", "projectItems": {{"nodes": [
+            {{"project": {{"id": "P"}}, "fieldValueByName": {{"name": "Medium"}}}}]}}}},
+        "projectsV2": {{"nodes": [{{"id": "P", "field": {{"id": "R", "options": [
+            {{"id": "r1", "name": "Low"}}, {{"id": "r2", "name": "Medium"}}, {{"id": "r3", "name": "High"}}]}}}}]}}}}}}
+elif "addProjectV2ItemById" in query:
+    data = {{"addProjectV2ItemById": {{"item": {{"id": "I"}}}}}}
+else:
+    data = {{"updateProjectV2ItemFieldValue": {{"projectV2Item": {{"id": values["item"]}}}}}}
+print(json.dumps({{"data": data}}))
+"""
+
+
+def test_a_fresh_run_loads_board_py_and_reads_and_sets_the_field_through_gh(tmp_path: Path) -> None:
+    """approvals.py imported as a run imports it, in a process of its own, loads board.py beside it on first use;
+    only gh, the GitHub boundary, is stubbed."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(FAKE_GH.format(python=sys.executable))
+    gh.chmod(0o755)
+    calls = tmp_path / "calls"
+    code = (
+        f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); import approvals\n"
+        "pull = {'number': 7, 'labels': {'nodes': [{'name': 'risk:high'}]}}\n"
+        "shown = approvals.board_risk(7)\n"
+        "print(shown[1])\n"
+        "print(approvals.boarded(pull, None, shown))\n"
+    )
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GH_CALLS": str(calls),
+    }
+    run = subprocess.run(
+        [sys.executable, "-B", "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert (run.returncode, run.stdout, run.stderr) == (0, "Medium\n[]\n", "")
+    queries = [
+        next(a for a in json.loads(line) if a.startswith("query="))
+        for line in calls.read_text().splitlines()
+    ]
+    assert [
+        "issueOrPullRequest" in queries[0],
+        "addProjectV2ItemById" in queries[1],
+        len(queries),
+    ] == [True, True, 3]
+    assert "option=r3" in calls.read_text().splitlines()[2]

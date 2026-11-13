@@ -58,7 +58,7 @@ gh api graphql -f p="$PID" -f query='mutation($p:ID!){createProjectV2Field(input
 ```bash
 gh api graphql -f p="$PID" -f query='mutation($p:ID!){createProjectV2Field(input:{projectId:$p,dataType:SINGLE_SELECT,name:"Risk",singleSelectOptions:[
  {name:"Low",color:GREEN,description:""},{name:"Medium",color:YELLOW,description:""},
- {name:"High",color:RED,description:"Waits for the owner's go"}]}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}'
+ {name:"High",color:RED,description:"Waits for the owner"}]}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}'
 ```
 
 Views come from REST, which sets a view's layout, filter, visible fields, grouping (`group_by`, swimlanes), board columns (`vertical_group_by`) and sort (`sort_by`) when it creates it. GraphQL's `createProjectV2View` and `updateProjectV2View` set only the first three, and nothing regroups an existing view, so create every view this way, in the order the tabs should show, then delete the default `View 1`. REST takes the fields' numeric REST ids. The built-in "Assignees", "Parent issue" and "Sub-issues progress" fields show only where a view lists them.

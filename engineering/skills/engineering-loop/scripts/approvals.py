@@ -1197,8 +1197,10 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
 
 def raise_risk(pull: dict[str, Any], why: str, loop: str | None, mark: bool = False) -> list[str]:
     """flag()'s raise: add `risk:high` for `why`, take off the other `risk:*` labels and comment the reason; `mark`
-    puts the label on the PR as read here too."""
-    where = f"PR #{pull['number']}"
+    puts the label on the PR as read here too, first, so a refused write still holds this run's merge."""
+    where, before = f"PR #{pull['number']}", names(pull)
+    if mark:
+        pull["labels"] = {"nodes": [{"name": n} for n in sorted(before | {RISK_LABEL})]}
     try:
         label(pull["number"], RISK_LABEL, add=True)
     except subprocess.CalledProcessError as exc:
@@ -1206,15 +1208,13 @@ def raise_risk(pull: dict[str, Any], why: str, loop: str | None, mark: bool = Fa
             f"{where}: could not add `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): add it by hand"
         ]
     found = []
-    for other in sorted(n for n in names(pull) if n.startswith("risk:")):
+    for other in sorted(n for n in before if n.startswith("risk:")):
         try:
             label(pull["number"], other, add=False)
         except subprocess.CalledProcessError as exc:
             found.append(
                 f"{where}: could not remove `{other}` beside `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): remove it by hand"
             )
-    if mark:
-        pull["labels"] = {"nodes": [{"name": n} for n in sorted(names(pull) | {RISK_LABEL})]}
     if (verdict := judged(pull, loop)) and verdict in why:
         body = f"{FLAGGED}, since {why}. A later pass that says `Risk: low` takes it off.\n"
         failed = f"{where}: could not comment why the gate added `{RISK_LABEL}`, so it stays until a person removes it"
