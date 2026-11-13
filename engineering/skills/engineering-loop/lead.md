@@ -92,7 +92,7 @@ design, wireframes included for a UI, and delegate the rest.
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
    both are yours (worker.md, Gates and push). Its model: SKILL.md, Models.
-   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker):
+   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker; every step's placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
@@ -115,7 +115,8 @@ design, wireframes included for a UI, and delegate the rest.
    `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
    prints the ones to rerun. Where loop.md places the verifier in the worker's VM, the pass runs there
    instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
-   brief already in that checkout. Otherwise start the verifier on that pushed
+   brief already in that checkout. Where else it runs is SKILL.md, Where heavy steps run.
+   A verifier on a host starts on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
    yours while it reviews and no commit of yours moves the head under review. Copy into its
@@ -230,7 +231,7 @@ design, wireframes included for a UI, and delegate the rest.
        (Rules for every role, Revert first);
      - a merge GitHub refused: as the bullet below says.
      Exit 3 is what `--wait` doesn't clear: the owner's go, or 2 hours of another land's lock
-     or of pending required checks. With gatekeeper.md's `land` section it squashes, signs and pushes
+     (one whose PR already merged is broken at once) or of pending required checks. With gatekeeper.md's `land` section it squashes, signs and pushes
      each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what

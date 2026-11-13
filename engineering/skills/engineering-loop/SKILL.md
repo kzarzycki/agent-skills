@@ -435,8 +435,9 @@ that moved costs one gate, not a merge, a gate and a verdict per PR, and no PR l
 it was never gated on:
 - It takes a lock any host sees, the branch `loop-landing/<base>` on `origin`, so two lands never
   run at once; it only moves forward, so a host that may only create and fast-forward branches
-  (a cloud session) takes and releases it too. A lock older than 2 hours was left by a land
-  that died and is broken.
+  (a cloud session) takes and releases it too. The lock names the last PR its land
+  merges, so a lock whose PR is merged and in the base was left by a land that died after its
+  merges and is broken at once; one older than 2 hours (a land that died before them) is broken too.
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
   wait, with the owner's go where the change is high risk and the base's required checks
   green. `land <pr>` marks that PR ready first, never on a missing proof, since ready starts CI.
@@ -521,6 +522,16 @@ Agents are started, messaged, watched and closed with the `orchestrating-agents`
 (`../orchestrating-agents/SKILL.md`), which picks the backend and holds its rules, reports
 and questions as files among them. Inside a worker or
 verifier, review angles run as native subagents, never as full harness sessions.
+
+## Where heavy steps run
+
+One rule, for every project and every machine. Heavy steps (implementation, the gate, the verifier) go, in this order:
+
+1. To the cloud worker or cloud verifier the project's `docs/agents/loop.md` names (`Cloud worker:`, `Cloud verifier:`).
+2. Else to a host that offers the harness the step needs.
+3. A step that must touch a machine itself (a production service, a device, an Apple build) stays on that machine.
+
+When a launch fails, for any reason (refused, no capacity, unreachable), take the next option on this list. Never fall back to running the step locally on the host that refused: what a machine accepts is its own configuration, so a refusal is the answer and not an obstacle. If no option is left, stop and report the refusal's text. Role files and briefs point here instead of restating it.
 
 ## Cloud worker
 
@@ -775,7 +786,8 @@ or the owner's private network.
   tier, else its closest higher tier (its highest when none is higher), never an older
   generation's model, which the family has already superseded. A lead that can't read the
   family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them. A launch that fails on
-  capacity is retried later on the same model (the backend's Model section). When one
+  capacity takes the next placement option (Where heavy steps run); with none left it is retried
+  later on the same model (the backend's Model section). When one
   family is out of quota, continue on the other in a fresh session briefed from the run's
   notes, the spec and the PR, never a fork of the old session, since every turn of a fork
   re-reads the whole transcript it copied; revive a stuck or interrupted agent rather than

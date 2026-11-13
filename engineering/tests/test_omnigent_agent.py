@@ -299,7 +299,8 @@ def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
     assert sid == "s0" and text.endswith("do X")
     assert (
         "owner authorized" in text
-        and "setsid; exec @ARGV" in text
+        and LONG_RUN_POINTER in text
+        and "setsid" not in text
         and str(tmp_path / "r.md") in text
         and "roles/worker.md" in text
     )
@@ -2623,10 +2624,25 @@ def test_a_top_level_lookup_reads_the_projects_top_level_sessions(
     assert paths[-1] == "/v1/sessions?kind=default&project=&limit=100"
 
 
+# The one line a brief keeps of the long-run rule, which lives in a role file (#902).
+LONG_RUN_POINTER = (
+    "A long run follows engineering-loop's verifier.md, A long or locked run is detached"
+)
+LONG_RUN_RULE_START = "A long run starts detached"  # the paragraph briefs carried before #902
+VERIFIER_MD = Path(omnigent_agent.__file__).parents[2] / "engineering-loop" / "verifier.md"
+
+
+def long_run_rule() -> str:
+    """verifier.md's bullet `A long or locked run is detached`, joined onto one line."""
+    text = " ".join(VERIFIER_MD.read_text().split())
+    start = text.index("**A long or locked run is detached.**")
+    return text[start : text.index(" - **", start)]
+
+
 # The default preamble as it was before --top-level existed: a worker's or verifier's brief.
 DEFAULT_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
-{role}A long run starts detached (in its own session, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' <cmd>`, since macOS has no `setsid`; log, pid and exit code in files; a gate your role file says to run bare is the exception, since an allow rule matches only a plain command) and is waited on up to a total budget you state, in as few calls as you can, each blocking close to the tool's limit (the longest yield the harness allows on a running command, or a sleep loop that checks the log for its exit line), never short polls, since each call re-reads the whole context: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
+{role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
@@ -2763,7 +2779,11 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     )
     assert "owner's own words" in text and "ask them here" in text
     assert "needs-owner" not in text
-    assert "setsid; exec @ARGV" in text and f"final report to {tmp_path / 'r.md'}" in text
+    assert (
+        LONG_RUN_POINTER in text
+        and "setsid" not in text
+        and f"final report to {tmp_path / 'r.md'}" in text
+    )
     assert "authorized" not in text and "Never address" not in text and ".question" not in text
     assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Work on t: read ")
 
@@ -2922,7 +2942,7 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert ("api", "repos/o/r/issues/comments/42") in calls and og.posts == 1  # no nudge
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
     assert "PR #7" in brief and "gh api repos/{owner}/{repo}/issues/7/comments" in brief
-    assert "setsid; exec @ARGV" in brief  # long runs start detached
+    assert LONG_RUN_POINTER in brief and "setsid" not in brief  # the role file's long-run rule
     for nudge in (omnigent_agent.NUDGE, omnigent_agent.PR_NUDGE):
         assert "detached" in nudge and "foreground" not in nudge
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
@@ -3280,9 +3300,10 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
     assert brief.startswith("Work on t. Your brief:") and "issues/7/comments" in brief
     assert "owner's own words" not in brief  # not the lead preamble
-    # the two VM facts: what the clone holds, and the foreground limit
+    # what the clone holds; the foreground limit is the role file's long-run rule, not the brief's
     assert "checked out in the workspace this session started from" in brief
-    assert "git fetch origin pull/7/head" in brief and "stops at 10 minutes" in brief
+    assert "git fetch origin pull/7/head" in brief and "10 minutes" not in brief
+    assert LONG_RUN_POINTER in brief
     # its report is the PR comment, written here although the session runs there
     assert omnigent_agent.main(["wait", "s0", "r.md", "--pr", "7"]) == 0
     assert (tmp_path / "r.md").read_text() == "Branch: claude/x at abc\n"
@@ -5413,7 +5434,7 @@ def test_the_same_failure_again_after_a_recovery_is_news_and_a_restart_posts_nei
 ) -> None:
     registry = following(tmp_path)
     og = Lead(told("brief", 60), ending("STILL WORKING: building", 50))
-    og.snap = {"status": "failed", "last_task_error": {"message": "runner lost"}}
+    og.snap = {"status": "failed", "last_task_error": {"message": "the gate found a failing test"}}
 
     def recover_then_fail(poll: int) -> None:
         og.snap["status"] = "running" if poll == 1 else "failed"
@@ -5422,15 +5443,15 @@ def test_the_same_failure_again_after_a_recovery_is_news_and_a_restart_posts_nei
         og, registry, monkeypatch, 3, recover_then_fail, notify="cos", console=True, fyi="post"
     )
     failures = [p.split("\n")[0] for p in fyis(og)]
-    assert failures == ["Supervisor: a t-a: failed: runner lost"] * 2
+    assert failures == ["Supervisor: a t-a: failed: the gate found a failing test"] * 2
     og.inbox.clear()
     supervised(
         og, registry, monkeypatch, 2, notify="cos", console=True, fyi="post"
     )  # a restart, still failed
     assert fyis(og) == []
     assert [i for i in state_of(registry)["settled"]["a"] if i.startswith("failed:")] == [
-        "failed:a:1:runner lost",
-        "failed:a:2:runner lost",
+        "failed:a:1:the gate found a failing test",
+        "failed:a:2:the gate found a failing test",
     ]
 
 
@@ -7685,7 +7706,7 @@ def test_a_failed_lead_is_revived_once_then_goes_to_the_chief_of_staff(
 ) -> None:
     registry = following(tmp_path)
     og = Lead(told("brief", 60), ending("STILL WORKING: building", 50))
-    og.snap = {"status": "failed", "last_task_error": {"message": "runner lost"}}
+    og.snap = {"status": "failed", "last_task_error": {"message": "the gate found a failing test"}}
     states = {1: "running", 2: "failed"}
     supervised(
         og,
@@ -7698,8 +7719,110 @@ def test_a_failed_lead_is_revived_once_then_goes_to_the_chief_of_staff(
     )
     assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_REVIVE]
     [post] = posted(og)
-    assert "[act] a t-a: failed: runner lost (failed again after its revive)" in post
+    assert (
+        "[act] a t-a: failed: the gate found a failing test (failed again after its revive)" in post
+    )
     assert state_of(registry)["leads"]["a"]["revives"] == 1
+
+
+# A failure whose text is a transient provider error is revived again with backoff (#904).
+
+
+def failing_lead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str, polls: int
+) -> tuple[Lead, Path, list[float], list[float]]:
+    """A followed lead that fails with ``error`` each time it runs, on a clock one minute a poll:
+    a revive sets it running for one poll, then it fails again. Returns the times each failure
+    was first seen and each revive was sent."""
+    clock = [time.time()]
+    monkeypatch.setattr(omnigent_agent.time, "time", lambda: clock[0])
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("STILL WORKING: building", 50))
+    og.snap = {"status": "failed", "last_task_error": {"message": error}}
+    failed, revived = [clock[0]], []
+
+    def between(poll: int) -> None:
+        sent = [
+            i for i in og.histories["a"] if omnigent_agent.text_of(i) == omnigent_agent.LEAD_REVIVE
+        ]
+        clock[0] += 60
+        if len(sent) > len(revived):  # revived this poll: it runs one poll, then fails again
+            revived.append(float(sent[-1]["created_at"]))
+            og.snap["status"] = "running"
+            og.histories["a"].append(ending(f"working {poll}", 0))
+        elif og.snap["status"] == "running":
+            og.snap["status"] = "failed"
+            failed.append(clock[0])
+
+    supervised(og, registry, monkeypatch, polls, between, notify="cos", console=True)
+    return og, registry, failed, revived
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "API error (authentication_failed)",
+        "403 Attention Required! | Cloudflare",
+        "claude --cloud create: HTTP 503 Service Unavailable",
+        "HTTP 500 Internal Server Error",
+        "API error: Overloaded",
+        "runner lost",  # a turn whose host went away: a reboot, a restart or a lost runner
+        "host rebooted",
+        "cloud session x made no progress for 1800s; it is left as it is",
+    ],
+)
+def test_a_transient_provider_failure_is_revived_with_backoff_and_reported_only_at_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str
+) -> None:
+    og, registry, failed, revived = failing_lead(tmp_path, monkeypatch, error, 150)
+    gaps = [round((r - f) / 60) for f, r in zip(failed, revived)]
+    assert gaps == [2, 5, 10, 20, 20, 20, 20]  # then every 20, while it fits in about 2 hours
+    assert len(failed) == len(revived) + 1  # its last failure is reported, not revived
+    assert failed[-1] - failed[0] + 20 * 60 > 2 * 3600 >= revived[-1] - failed[0]
+    [post] = posted(og)  # nothing reached the parent before the cap
+    assert f"[act] a t-a: failed: {error} (" in post
+    assert "transient" in post
+    assert state_of(registry)["leads"]["a"]["retrying"]["count"] == 7
+
+
+def test_a_failure_that_is_no_transient_provider_error_is_still_reported_after_one_revive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og, registry, failed, revived = failing_lead(
+        tmp_path, monkeypatch, "the gate found a failing test", 10
+    )
+    assert len(revived) == 1 and len(failed) == 2
+    [post] = posted(og)
+    assert (
+        "[act] a t-a: failed: the gate found a failing test (failed again after its revive)" in post
+    )
+    assert "retrying" not in state_of(registry)["leads"]["a"]
+
+
+def test_a_transient_chain_sends_no_revive_to_a_lead_running_again_and_restarts_after_a_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [time.time()]
+    monkeypatch.setattr(omnigent_agent.time, "time", lambda: clock[0])
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("STILL WORKING: building", 50))
+    og.snap = {"status": "failed", "last_task_error": {"message": "HTTP 502 Bad Gateway"}}
+    # poll 1 fails; someone else revives it before its backoff passes; poll 4 its turn ends;
+    # poll 5 it fails again, a new chain
+    steps = {1: "running", 3: "idle", 4: "failed"}
+
+    def between(poll: int) -> None:
+        clock[0] += 60
+        if poll in steps:
+            og.snap["status"] = steps[poll]
+        if poll == 3:
+            og.histories["a"].append(ending("STILL WORKING: on CI", 0))
+
+    supervised(og, registry, monkeypatch, 6, between, notify="cos", console=True)
+    assert [t for s, t in og.inbox if s == "a"] == []  # running at its due time: not revived
+    retrying = state_of(registry)["leads"]["a"]["retrying"]
+    assert (retrying["count"], retrying["at"] - retrying["since"]) == (1, 120)
+    assert retrying["since"] == clock[0] - 60  # from its second failure, not its first
 
 
 @pytest.mark.parametrize("runner", ["offline", "revive fails", "online"])
@@ -9135,6 +9258,51 @@ def test_a_host_session_s_preamble_is_unchanged(tmp_path: Path) -> None:
         assert f"Write your final report to {report}" in text and ".git/" not in text
 
 
+@pytest.mark.parametrize(
+    ("cloud", "top_level", "pr"),
+    [
+        (False, False, None),  # a worker's or verifier's
+        (False, True, None),  # a lead's
+        (True, False, None),  # cloud, no --pr
+        (True, True, None),  # a cloud lead
+        (True, False, 7),  # cloud, --pr
+        (True, True, 7),  # a top-level cloud worker, --pr
+    ],
+)
+def test_every_brief_points_to_the_role_file_s_long_run_rule_and_carries_no_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cloud: bool, top_level: bool, pr: int | None
+) -> None:
+    """The long-run rule lives once, in a role file; a brief keeps one line naming it (#902)."""
+    monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+    og = CloudFake() if cloud else FakeOmnigent()
+    report = tmp_path / "r.md"
+    agent = "claude-cloud" if cloud else "claude"
+    sid, _ = omnigent_agent.start(
+        og, agent, "t", "do X", report, "roles/worker.md", 0, top_level=top_level, pr=pr
+    )
+    brief_file = omnigent_agent.brief_of(report)
+    brief = (
+        brief_file.read_text()
+        if brief_file.is_file()
+        else omnigent_agent.text_of(og.sessions[sid][1])
+    )
+    assert brief.count(LONG_RUN_POINTER) == 1
+    assert LONG_RUN_RULE_START not in brief and "setsid" not in brief
+    assert "10 minutes" not in brief and "never short polls" not in brief
+    if top_level and not pr:
+        assert "Only the owner's own words approve" in brief
+    # the rule the pointer names is there, with both variant conditions
+    rule = long_run_rule()
+    assert "since macOS has no `setsid` command" in rule
+    assert "Where a foreground command stops at 10 minutes" in rule
+    assert "the run is waited on within the same turn" in rule
+    assert "stops at 10 minutes" in rule
+    assert (
+        "Never end a turn saying you wait, since a background command's completion never wakes you"
+        in rule
+    )
+
+
 def test_wait_writes_a_cloud_session_s_last_message_to_the_report_path(tmp_path: Path) -> None:
     """Its report file stays in the VM, which no file API reaches: the message is the report."""
     og = CloudFake(reply=CLOUD_REPORT)
@@ -9514,16 +9682,15 @@ def test_the_lead_preamble_asks_for_the_ending_line_with_the_report_path() -> No
     assert omnigent_agent.wait_of(wait) == "verifier"
 
 
-def test_the_preambles_detach_runs_here_and_records_its_exit_code(tmp_path: Path) -> None:
-    """The launcher the preambles name starts the command in its own session and returns at once."""
-    for preamble in (
-        omnigent_agent.PREAMBLE,
-        omnigent_agent.PR_PREAMBLE,
-        omnigent_agent.LEAD_PREAMBLE,
-    ):
-        assert f"`{omnigent_agent.DETACH} <cmd>`" in preamble
-        assert "never short polls, since each call re-reads the whole context" in preamble
-        assert "up to a total budget you state" in preamble
+def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Path) -> None:
+    """The launcher the long-run rule names starts the command in its own session and returns at once."""
+    rule = long_run_rule()
+    assert f"`{omnigent_agent.DETACH} sh -c" in rule
+    assert "never short polls" in rule and "up to a total budget you state" in rule
+    flat = " ".join(rule.split())  # the relocated clauses, each the only copy now
+    assert "starts detached (in its own session)" in flat
+    assert "Where that script is not at hand, each call blocks close to the tool's limit" in flat
+    assert "a gate your role file says to run bare" in flat
     pid, log = tmp_path / "pid", tmp_path / "log"
     script = f'echo $$ > {pid}; sleep 1; (exit 3); echo "exit $?" > {log}'
     began = time.monotonic()
@@ -10496,3 +10663,19 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
     assert omnigent_agent.main(here) == 1
     err = capsys.readouterr().err
     assert "is in use on host h by live session" in err and "M lead" in err
+
+
+# --- a wait on a PR or issue reference is a named wait (#919) ---
+
+
+def test_a_pr_or_issue_reference_after_waiting_on_is_a_named_wait() -> None:
+    """`#N`, `owner/repo#N`, or either as a markdown link's text: the wait is that reference."""
+    wait_of = omnigent_agent.wait_of
+    assert wait_of("STILL WORKING: waiting on #916 and #908") == "#916"
+    assert wait_of("STILL WORKING: waiting on [#916](https://github.com/o/r/pull/916)") == "#916"
+    assert wait_of("STILL WORKING: waiting on [owner/repo#12](url)") == "owner/repo#12"
+    assert wait_of("STILL WORKING: this waits for owner/repo#12") == "owner/repo#12"
+    assert (
+        wait_of("STILL WORKING: waiting on the/repo#12") == "the/repo#12"
+    )  # an owner named like a pronoun
+    assert wait_of("STILL WORKING: on it") == "unknown"

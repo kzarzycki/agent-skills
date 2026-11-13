@@ -17,7 +17,7 @@ child is prompted for a read (denied in auto mode), which nobody answers, so the
 such a path. Titles look like `s120-parser-worker`,
 `pr182-verifier-p1`: the issue or PR, then the role. The brief (a file, or the text itself, as
 every brief and message argument here takes) holds only the task specifics; the script writes it, under a fixed preamble (owner-authorized imperative, the
-role file, long runs started detached and polled, write the report to the path; a lead replies with its ending line carrying the path, any other child with only
+role file, a pointer to its long-run rule, write the report to the path; a lead replies with its ending line carrying the path, any other child with only
 the path), to `<report>.brief` and sends the child one line naming the title and that file.
 Omnigent labels a child in the UI by a summary of that line, not by its title, so a title
 that names the issue or PR is what makes the label say what the child works on. Build the brief with a quoted heredoc
@@ -184,9 +184,9 @@ none, gets the nudge and then fails. `--pr` arms no supervisor registry, since t
 would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
 with `wait <session> <report> --pr <n>`. A `--role` path names the role file by its path in
 the repo, since the VM has the checkout but not this host's paths. The preamble also tells the
-worker two facts about the VM: its checkout is the branch checked out in the workspace the
-session started from, not necessarily the PR's, and a foreground command stops at 10 minutes,
-so a long one runs detached and is polled within the same turn. It forbids an interactive
+worker that its checkout is the branch checked out in the workspace the session started from,
+not necessarily the PR's; that a foreground command there stops at 10 minutes, so a long one
+runs detached and is polled within the same turn, is the role file's long-run rule. It forbids an interactive
 question tool and a published page, since each waits on a prompt nobody in the cloud answers,
 and ends each commit message with the co-author line and no session link, since the commit
 reaches a public repository. A host without the cloud
@@ -653,7 +653,7 @@ routed, since the owner reads them there, and the `no event in <n>s` log line le
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
 | a quiet end again with no progress since the nudge | rule | act |
 | `deadline` | rule | a named wait: act, or with no live runner (nothing can end its wait) the revive, which acts only when it fails; unknown: the nudge, then act at the deadline after it; parked: none |
-| failed | rule | the first time a revive, after it act |
+| failed | rule | the first time a revive, after it act; a transient provider error (`authentication_failed`, a Cloudflare `Attention Required` page, any 5xx such as a cloud create's 503, `overloaded`: one table, `TRANSIENT_ERRORS`) instead a revive after a backoff of 2, 5, 10, 20 minutes, then every 20, and act once the next revive would fall more than 2 hours after the chain's first failure |
 | `DONE` | rule | act, and each lead registered `after=` it is told `Supervisor: <lead>, the lead you wait on, ended: <its first line>` |
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
 | `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
@@ -676,7 +676,8 @@ The supervisor's own actions, the nudge (`Supervisor: your turn ended with no en
 wait. Carry on to your next step, and end your turn with DONE, STILL WORKING naming what you wait
 on, or USER NEEDED.`), the revive and telling a waiting lead, go through `relay`, which
 revives a reaped runner and sends no second copy. Each is an intent in the state, written with its
-budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives`, one per lead)
+budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives`, one per lead;
+`retrying`, a transient failure's chain)
 before the first send (every waiting lead's tell at once) and marked done after each; one to a lead waiting on a prompt is not sent, since
 it would wait unread behind the prompt, and a failed send goes to the chief of staff as act. On
 a restart an intent still open is looked up in the lead's history: its text there, no older than
@@ -716,7 +717,8 @@ A lead that waits on another is started with `start --top-level --after <session
   rename, so a reader never sees half of one, with `written_at`: under `leads` an entry per
   registry session (title, host, report, brief files, whether it is followed, `waits_on`,
   state, wait, error, ending, first line of its last message, `progress_at`, `nudges`,
-  `revives`, `nudged_at`, `occurrences`, the last event, the labels last written); under
+  `revives`, `retrying` (a transient failure's chain: revives sent, its first failure's time, when
+  the next revive is due and the event it answers; dropped once a turn ends idle), `nudged_at`, `occurrences`, the last event, the labels last written); under
   `settled` the ids of the events routed, the newest 20 per session; `intents` (each open, done,
   failed or escalated; the newest 50 closed ones), `attention`, `pending_posts`, `rate`
   (`next_post_at`, `model_calls`: the times of this hour's calls), `notify_label` and `heads`

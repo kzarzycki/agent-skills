@@ -773,7 +773,7 @@ class FakeCloud:
                     "exitCode": 0,
                     "stdout": (self.question if cmd.endswith(".question") else self.report)
                     if cmd.startswith("cat ")
-                    else "/home/agent/pr1\n",
+                    else "/work/pr1\n",
                     "stderr": "",
                 }
             elif method == "thread/items/list":
@@ -919,7 +919,7 @@ def test_thread_exec_runs_a_command_in_the_vm_and_returns_its_exit_code(
     fake = FakeCloud("")
     monkeypatch.setattr(cv, "WS_URL", fake.url)
     assert cv.main(["thread-exec", "--thread", "t1", "--env", "e1", "--", "echo", "hi"]) == 0
-    assert "/home/agent/pr1" in capsys.readouterr().out and "turn/addUserMessage" not in fake.seen
+    assert "/work/pr1" in capsys.readouterr().out and "turn/addUserMessage" not in fake.seen
 
 
 def test_a_report_that_cannot_be_cleared_stops_the_pass_before_the_turn(
