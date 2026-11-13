@@ -7293,6 +7293,31 @@ def test_a_quiet_waiter_on_a_gone_session_raises_its_deadline(
         registry.with_suffix(".state.json").unlink()
 
 
+def test_a_word_wait_never_resolves_to_the_chief_of_staff_or_an_unknown_wait_to_a_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wait = "STILL WORKING: waiting on the chief of staff for a host. Report: m.md"
+    registry, og = manager(tmp_path, wait, **{COS: {"title": "chief of staff"}})
+    og.kin_of["m"] = [WORKER, COS]  # it subscribes to the chief of staff, who shows life
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == ["Supervisor: m t-m: no progress 60m (chief)"]
+    # an unknown wait stays on its nudge path, though a live child's title holds "unknown"
+    (tmp_path / "u").mkdir()
+    registry, og = manager(tmp_path / "u", "on it", **{WORKER: {"title": "unknown probe"}})
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert [e["kind"] for e in events_of(registry)].count("deadline") == 1
+
+
+def test_a_lead_word_without_a_leads_registry_names_a_child_titled_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wait = "STILL WORKING: waiting on the queue lead. Report: m.md"
+    registry, og = manager(tmp_path, wait, **{WORKER: {"title": "queue-lead"}})
+    registry.write_text(f"m={tmp_path / 'm.md'}\tfollow\n")  # no leads= registry
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [] and deadlines(registry) == []
+
+
 @pytest.mark.parametrize(
     ("wait", "snaps", "why"),
     [
