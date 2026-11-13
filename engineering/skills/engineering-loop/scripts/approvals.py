@@ -7,6 +7,7 @@
 
     uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
     uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
+    uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr> [--only]] [--wait]  # land every landable PR as one gated batch; exit 0, 1 or 3
@@ -16,7 +17,7 @@
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
-    uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
+    uv run scripts/approvals.py local-ci <pr> [--run]      # with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
     uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
@@ -85,7 +86,8 @@ the label may be the delegated approver's: `delegate <pr>` adds it, then a recor
 `By: delegate`), and refuses a PR into the default branch, where a label is no go. A PR from a branch
 into the default branch is high risk while any PR merged into that branch carries `risk:high`, so a feature
 branch's merge waits for the owner.
-Every proof held: exit 0. Before the PR exists, `check build` judges the issue `--issue <n>` names, else the one
+Every proof held: exit 0. Before the PR exists, `check build` judges the issue `--issue <n>` names (or a positional
+number no PR has), else the one
 the branch's name starts a segment with (`loop/329-fix`), the same way, and claims nothing; with neither it exits 1,
 since a build needs an approved spec. `check merge` with no PR yet: exit 0.
 With `opt_out: true` in loop.md, a person may keep their PRs out of the loop: `check merge` on a PR that
@@ -3694,6 +3696,10 @@ def reverted(number: int) -> str | None:
     return None
 
 
+# what GitHub says of a PR number no PR has: GraphQL's refusal, REST's 404
+NO_PULL = ("Could not resolve to a PullRequest", "Not Found")
+
+
 def check(point: str, pr: int | None, head: str | None = None, issue: int | None = None) -> int:
     tracker, loop = project()
     if issue is not None:
@@ -3709,7 +3715,14 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
             return unbuilt(issue, tracker, loop)
         print("no PR for this branch yet: nothing to gate")
         return 0
-    pull = pull_request(pr)
+    try:
+        pull = pull_request(pr)
+    except subprocess.CalledProcessError as exc:
+        if point == "build" and any(text in (exc.stderr or "") for text in NO_PULL):
+            return unbuilt(
+                pr, tracker, loop
+            )  # a number no PR has is the issue's, as `--issue` reads it
+        raise
     if point == "queue" and head is not None:
         return queueable(pull, head, tracker, loop)
     if point == "merge" and (why := outside(pull, loop)):
@@ -5142,11 +5155,13 @@ def env_line(env: dict[str, str | None]) -> str:
     return f"Env: {' '.join(named) or 'default'}\n"
 
 
-def reusable(head: str, passed: list[str] | tuple[str, ...] = ()) -> dict[str, Any] | None:
+def reusable(
+    head: str, passed: list[str] | tuple[str, ...] = (), why: list[str] | None = None
+) -> dict[str, Any] | None:
     """A green pass on `head`'s tree under today's gate command (with `passed`, gate), or None: this clone's record,
     made on any commit with that tree, else one another clone pushed to origin for that tree (published). The record's `head` is the
     commit the pass ran on. A record without `env` (0.23.1 wrote none) never matches, since nothing says what tier it
-    ran."""
+    ran. With `why`, the reason origin's record branch, found, was rejected is appended to it (record_ref)."""
     if (held := tree_of(head)) is None:
         return None
     command, _, env = gate(passed)
@@ -5162,17 +5177,21 @@ def reusable(head: str, passed: list[str] | tuple[str, ...] = ()) -> dict[str, A
         == (held, command, 0, env)
     ):
         return record
-    return published(head, held, command, env)
+    return published(head, held, command, env, why)
 
 
 def published(
-    head: str, held: str, command: str, env: dict[str, str] | None = None
+    head: str,
+    held: str,
+    command: str,
+    env: dict[str, str] | None = None,
+    why: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """A pass of `command` (setting `env`, default the gate's) on `head`'s tree `held` that a clone pushed to origin
     as its record branch (publish, record_ref), as a record, or None. It is the one route another clone's pass is read
     by: a `gate` status is only shown, never read, since anyone who can write one may type it. A reader that finds the
     record writes the `gate` status on `head`, so the PR shows the pass, where the token allows."""
-    record = record_ref(held, command, env if env is not None else gate()[2])
+    record = record_ref(held, command, env if env is not None else gate()[2], why)
     if record is not None:
         shown(head, record)
     return record
@@ -5192,12 +5211,16 @@ def record_message(record: dict[str, Any]) -> str:
     )
 
 
-def record_ref(held: str, command: str, env: dict[str, str]) -> dict[str, Any] | None:
+def record_ref(
+    held: str, command: str, env: dict[str, str], why: list[str] | None = None
+) -> dict[str, Any] | None:
     """A pass of `command` under `env` on tree `held` pushed to origin as its record branch (push_record), as a
     record, or None. Only origin is read, the repo `land` pushes its lock to, so a branch on a PR's fork never counts:
     one in the base repo is its write access. The branch's commit must hold `held` as its tree, its parent the commit
     its description names, and the env line `env`, so a record whose content is not what its name says counts for
-    nothing. origin unreachable: None, so the check runs."""
+    nothing. origin unreachable: None, so `local-ci <pr>` refuses unless it is given `--run`. With `why`, a line
+    naming the branch found and why it was rejected (or that origin could not be read) is appended to it, so the
+    refusal says what to push."""
     name = record_name(held, command)
     ref = RECORD_BRANCH.format(name)
     try:
@@ -5206,7 +5229,10 @@ def record_ref(held: str, command: str, env: dict[str, str]) -> dict[str, Any] |
             return None
         git("fetch", "-q", "--no-tags", "origin", f"+{ref}:refs/loop/records/{name}")
         body = git("cat-file", "commit", listed[listed.index(ref) - 1])
-    except (subprocess.CalledProcessError, OSError):
+    except (subprocess.CalledProcessError, OSError) as exc:
+        if why is not None:
+            cause = " ".join((getattr(exc, "stderr", None) or str(exc)).split())
+            why.append(f"origin's record branch {ref} could not be read: {cause}")
         return None
     header, _, message = body.partition("\n\n")
     fields = [line.split(" ", 1) for line in header.splitlines()]
@@ -5214,14 +5240,23 @@ def record_ref(held: str, command: str, env: dict[str, str]) -> dict[str, Any] |
     parents = [value for key, value in fields if key == "parent"]
     committed = [value for key, value in fields if key == "committer"]
     lines = message.splitlines()
-    if (
-        trees != [held]
-        or len(parents) != 1
-        or not lines
-        or lines[0] != described(held, parents[0], command)
-        or f"Env: {json.dumps(env, sort_keys=True)}" not in lines[1:]
-        or not committed
-    ):
+    env_wanted = f"Env: {json.dumps(env, sort_keys=True)}"
+    if trees != [held]:
+        rejected = f"its commit holds the tree {' '.join(trees) or 'none'}, not {held}"
+    elif len(parents) != 1:
+        rejected = f"its commit has {len(parents)} parents, not the one commit the pass ran on"
+    elif not lines or lines[0] != described(held, parents[0], command):
+        found = repr(lines[0]) if lines else "nothing"
+        rejected = f"its description reads {found}, not {described(held, parents[0], command)!r}"
+    elif env_wanted not in lines[1:]:
+        rejected = f"its message lacks the line {env_wanted!r}, the env the gate runs under now"
+    elif not committed:
+        rejected = "its commit names no committer, so its time is unknown"
+    else:
+        rejected = ""
+    if rejected:
+        if why is not None:
+            why.append(f"origin holds the record branch {ref}, but it is not this pass: {rejected}")
         return None
     when = int(committed[0].rsplit(" ", 2)[1])
     return {
@@ -5493,8 +5528,44 @@ def reused(record: dict[str, Any]) -> str:
     return f"Reused by tree from the pass recorded on {record['head']} at {record['time']}{pushed}, not run again."
 
 
-def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
-    """With a PR: post a pass on its head, from a recorded pass on its tree or from a run now. Without one: on a
+def no_pass(head: str, why: list[str] | tuple[str, ...] = ()) -> str:
+    """Why `local-ci <pr>` found no usable pass for `head`: the head, its tree, the record branch looked for, what
+    was wrong with this clone's record (a missing field, another command or env), and `why`, the reasons reusable()
+    gave for rejecting origin's record branch, one line each."""
+    held = tree_of(head)
+    if held is None:
+        return f"no pass for {head}: its tree is unknown here (fetch the head)"
+    command, _, env = gate()
+    ref = RECORD_BRANCH.format(record_name(held, command))
+    lines = [
+        f"no pass for the head {head}, tree {held}: looked for the record branch {ref} on origin"
+    ]
+    try:
+        record = json.loads(recorded(held, command).read_text())
+    except OSError:
+        lines.append("this clone holds no record for that tree and gate command")
+    except ValueError:
+        lines.append("this clone's record is not JSON")
+    else:
+        if not isinstance(record, dict):
+            lines.append("this clone's record is not an object")
+        else:
+            for key in ("head", "time"):
+                if not isinstance(record.get(key), str):
+                    lines.append(f"this clone's record lacks its `{key}` field")
+            for key, want in (("tree", held), ("command", command), ("exit", 0), ("env", env)):
+                if record.get(key) != want:
+                    lines.append(f"this clone's record has {key} {record.get(key)!r}, not {want!r}")
+    lines.extend(why)
+    lines.append(
+        "push the record (`local-ci --record` on the head) or run the gate here with `local-ci <pr> --run`"
+    )
+    return "\n".join(lines)
+
+
+def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = False) -> int:
+    """With a PR: post a pass on its head, from a recorded pass on its tree; with `run`, from a run now when there is
+    none, and without it refuse then (no_pass). Without a PR: on a
     clean checkout, reuse or run and record a pass on HEAD, for `local-ci <pr>` to reuse; on one with changes, run the
     check and record nothing. Either publishes a pass this clone holds (publish). With `proof`, loop.md's
     `head_proof` (`--head-proof`, no PR), the gate takes its `env` names from this process (gate), and the pass is
@@ -5521,11 +5592,14 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
             publish(head, record)
         return 0
     head = pull_request(pr)["headRefOid"]
-    if record := reusable(head):
+    why: list[str] = []
+    if record := reusable(head, why=why):
         source = f"{reused(record)}\n"
-    else:
+    elif run:
         record = run_local_ci(pr, head)
         source = ""
+    else:
+        raise Refused(no_pass(head, why))
     if not record.get("published"):
         publish(head, record)
     comment(
@@ -5672,6 +5746,7 @@ def main(argv: list[str]) -> int:
     recording = commands.add_parser("local-ci")
     recording.add_argument("pr", type=int, nargs="?")
     recording.add_argument("--record", action="store_true")
+    recording.add_argument("--run", action="store_true")
     recording.add_argument("--status", metavar="HEAD")
     recording.add_argument("--head-proof", action="store_true")
     merging = commands.add_parser("land")
@@ -5727,6 +5802,8 @@ def main(argv: list[str]) -> int:
                 if args.pr is not None or args.record:
                     raise Refused("local-ci --status takes a head alone")
                 return local_ci_status(args.status)
+            if args.run and args.pr is None:
+                raise Refused("local-ci --run goes with a PR: --record already runs the gate")
             if (args.pr is None) != args.record:
                 raise Refused(
                     "local-ci takes a PR number, or --record to record a run on HEAD before one exists"
@@ -5736,7 +5813,7 @@ def main(argv: list[str]) -> int:
                 raise Refused("loop.md sets no `head_proof`: --head-proof has no status to publish")
             if args.head_proof and not args.record:
                 raise Refused("--head-proof goes with --record: the head proof is the checkout's")
-            return local_ci(args.pr, proof) if leads_its_session() else detach(argv)
+            return local_ci(args.pr, proof, args.run) if leads_its_session() else detach(argv)
         if args.command == "land":
             if args.only and args.pr is None:
                 parser.error("land --only needs a PR: there is nothing to restrict to")

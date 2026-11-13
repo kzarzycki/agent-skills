@@ -244,7 +244,7 @@ check on a head you push for review is `uv run <this skill's folder>/scripts/app
 instead, and is the gate while iterating too: it runs the merge check, gatekeeper.md's `gate`
 (default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and pushes it
 to the base repo as the branch `loop-gate/<tree>-<key>`, named by its tree and command, so `local-ci <pr>` at landing
-posts that pass rather than running the check again: in this clone for any commit with the same tree and gate
+posts that pass rather than running the check again (with no usable pass it refuses, naming the head, tree, record branch and what was wrong with a record found; `--run` runs the check on this host): in this clone for any commit with the same tree and gate
 command (a rebase or reworded commit keeps its tree), in any other, host or cloud session, from that branch, at every
 risk, through the same code. The branch is the one route a pass travels: the `gate` commit status the run and each
 reader write on the head, where the token allows, only shows the pass on the PR, and no decision reads it, since
@@ -491,7 +491,7 @@ or several; `check merge`, `check queue` and `land` print one line per merge nam
 first parent and the predicate. Anything else (a PR commit after H, new, edited or rebased,
 a conflict, an evil merge, an overlapping file, a touched except path, a git error) carries
 nothing, and the check prints which condition failed: the head needs its own verifier pass. The gate never carries: H'
-runs its own, as CI does, and under `ci: false` that is `local-ci <pr>` on H', since a
+runs its own, as CI does, and under `ci: false` that is `local-ci <pr> --run` on H', since a
 `local-ci` record stands in for CI on one exact tree. This skips a review on purpose, so a
 project opts in by writing the section.
 
