@@ -5015,6 +5015,22 @@ def test_the_console_labels_its_own_session_as_the_chief_of_staff(
     assert "cos1: role label not written" in capsys.readouterr().err
 
 
+def test_the_console_labels_a_project_manager_by_its_registry_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "me1")
+    for name, labels in (
+        ("agent-skills-leads.registry", {"omni.role": "pm", "omni.repos": "agent-skills"}),
+        ("leads.registry", {"omni.role": "cos"}),
+    ):
+        registry = tmp_path / name
+        registry.write_text(f"a={tmp_path / 'a.md'}\t{tmp_path / 'a.md.brief'}\tfollow\n")
+        og = Lead(told("brief", 60))
+        og.snap = {"host_id": "h"}
+        supervised(og, registry, monkeypatch, 1, console=True)
+        assert og.labels[0] == ("me1", labels), name
+
+
 def test_a_status_line_stays_under_200_characters() -> None:
     lead = {"state": "idle", "wait": "verifier", "last_line": "x" * 300}
     line = omnigent_agent.status_line(lead)
