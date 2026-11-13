@@ -152,6 +152,7 @@ carry_over_main:
 | `loop` | `cap` | a whole number (The cap) | the default |
 | | `ci` | deprecated, goes in the next release (Approvals and proof); `false` for a project without CI, whose merge proof is then `uv run <this skill's folder>/scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
 | | `gate` | the merge check `local-ci` runs: a command, with any variables it sets in front (Adopting the loop) | `mise run check:all` |
+| | `gate_steps` | the merge check as steps, in place of `gate`: a list of `name`, `command` (parsed as `gate` is) and `where` (`any`, or `host`: never run in a cloud session), each step's pass recorded and reused by itself (Adopting the loop) | the one `gate` command |
 | | `local_ci_env` | the environment variables the check reads, cleared for its run unless `gate` sets them (Adopting the loop) | none |
 | | `machine_exit` | the gate's exit that means the machine isn't ready (a locked screen, low disk), such as 78: `land` runs that gate once more on the same tree, and a second one stops the run landing, evicting and posting nothing, and `local-ci` refuses it as a machine fault (`approvals.py`'s docstring) | every non-zero exit is red |
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
@@ -250,7 +251,13 @@ risk, through the same code. The branch is the one route a pass travels: the `ga
 reader write on the head, where the token allows, only shows the pass on the PR, and no decision reads it, since
 anyone who can write a status may type one. `land` deletes a record branch once its tree has landed, or once it is a
 day old and its tree is no open PR's head. `gate` is one command with no shell operator, so a
-chain of checks is one task. A run on a
+chain of checks is one task, or the steps of `gate_steps`, each a command and where it runs (`any`, or `host` for one
+a cloud VM can't run, such as an Apple build). Each step's pass is its own record and branch, named by the tree and
+the step's command, so `local-ci`, `local-ci --record` and `land` run only the steps with no pass on the tree and print
+where each reused one passed: a host runs only the `host` steps of a tree whose other steps a cloud session pushed,
+and a cloud session runs the `any` steps and leaves the `host` ones, which `land` there refuses. Each step that runs
+holds the host gate slot (Rules, One heavy gate per host slot) for its own run only, and every record, a step's or the
+one gate's, carries the seconds it ran and the seconds it waited for the slot. A run on a
 checkout with changes records nothing. A project whose check reads environment variables (a
 tier, a scope) names them in gatekeeper.md's `local_ci_env`, and they are cleared for the run, so a
 host's own setting never changes what a pass proves; the tier the merge needs goes in
@@ -676,7 +683,10 @@ or the owner's private network.
   itself however the run exits), or, in a project without it, a lock on the same file,
   `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock`, around its heavy check. A parallel runner takes the
   `GATE_JOBS` it exports (the cores free at start), never `-n auto` or a fixed count.
-  `test:changed` while iterating and the lint parts stay outside the slot.
+  `test:changed` while iterating and the lint parts stay outside the slot. `approvals.py`'s
+  `local-ci` and `land` take that file's lock around each gate step they run and set
+  `LOOP_GATE_SLOT_HELD` to its path, as `mutate.py` does, so a wrapper under them that finds
+  the variable naming its lock takes none, since it would wait on its own parent.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts

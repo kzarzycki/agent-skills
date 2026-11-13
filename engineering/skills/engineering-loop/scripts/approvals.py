@@ -205,9 +205,19 @@ its command included (`GATE_UI_TESTS=0 mise run check:all`), one command run wit
 such as `&&` is refused. It runs with every name loop.md's `local_ci_env` lists
 removed from the environment unless the command sets it, so a host's ambient tier never changes what ran and the
 command alone says what a pass proves. A pass also leaves a record keyed by tree and command under the git common dir
-(`approvals/local-ci/<tree>-<key>.json`: head, tree, command, exit, env, time, host, `head` being the commit it ran
-on, `env` the variables the command sets, `<key>` a digest of the command), which every worktree sees and nothing
-commits; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
+(`approvals/local-ci/<tree>-<key>.json`: head, tree, command, exit, env, time, host, seconds, slot_wait_seconds, `head`
+being the commit it ran on, `env` the variables the command sets, `<key>` a digest of the command, `seconds` how long it
+ran and `slot_wait_seconds` how long it waited for the host gate slot), which every worktree sees and nothing
+commits. With loop.md's `gate_steps` under `loop` (a list of `name`, `command`, parsed as `gate` is, and `where`: `any`,
+or `host`, never run in a cloud session), in place of `gate`, the gate is those steps in order, and each step is a gate
+of its own: its pass is recorded, published and reused by its tree and command alone, its record naming it as `step`,
+so `local-ci`, `local-ci --record` and `land` run only the steps with no pass on the tree, stop at the first that fails
+(a failed step records nothing, so it is never reused), and print one line per step naming the record branch or
+commit each reused one passed on. A cloud session runs no `host` step: `local-ci --record` there runs the rest, says
+which step it left and exits 0, with no head proof and no pass on the whole gate, which `local-ci <pr>` and `land` need
+and refuse there. Each step that runs, or the one gate, holds the host gate slot (an exclusive flock on
+`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock`) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
+path so a wrapper in it takes no lock of its own, and none when this process already runs under it; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
 nothing and exits with the check's code, so it is the gate while iterating too and its clean green run, the last one,
 records itself.
 Unless it already leads its own session, `local-ci` starts itself again in a new one, stdin from /dev/null, and follows
@@ -224,7 +234,7 @@ Every pass this clone holds, run or reused, is published one way from every sess
 as the branch `loop-gate/<tree>-<command's key>` (a branch, since a cloud session's proxy pushes nothing else), on a
 commit holding the tree, the commit the pass ran on as its parent, and as its message the line `Tree <tree> on
 <commit's first 12>: <command>` (the command's digest, `sha256 <key>`, when it doesn't fit GitHub's 140 characters)
-and an `Env:` line; `local-ci` says which branch. origin refusing the push (a commit not pushed yet) or unreachable is
+and an `Env:` line, then `Seconds: <n>` and `Slot wait seconds: <n>` (a record pushed before them still counts); `local-ci` says which branch. origin refusing the push (a commit not pushed yet) or unreachable is
 said and changes nothing else: the record stays local, and a later `local-ci` publishes it. The pass is then shown as
 a commit status on the head, success, context `gate`, description that line, where the token allows; a refused status
 is said and is no error, since no decision reads it: anyone who can write a status may type one. A pass is reusable
@@ -614,8 +624,19 @@ class Choice(tuple):
     """A setting that is one of these names, such as `loop.delegate`."""
 
 
+class Rows(Table):
+    """A setting that is a list of sections, each holding these keys, such as `loop.gate_steps`; `unique` names the
+    keys no two rows may share."""
+
+    def __init__(self, *args: Any, unique: tuple[str, ...] = (), **kinds: Any) -> None:
+        super().__init__(*args, **kinds)
+        self.unique = unique
+
+
 # where `land` may run (loop.md's `land.where`): a host, a cloud session (CLOUD), or either
 PLACES = ("host", "cloud", "both")
+# where a gate step may run (loop.md's `gate_steps`): any machine, or only a host, never a cloud session (CLOUD)
+STEP_PLACES = ("any", "host")
 # loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
 # A list holds strings; `bot.<login>` is a section per bot.
 STAGES = ("intent", "spec", "plan", "build", "review", "land")
@@ -628,6 +649,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "opt_out": bool,
         "local_ci_env": list,
         "gate": str,
+        "gate_steps": Rows(
+            name=str, command=str, where=Choice(STEP_PLACES), unique=("name", "command")
+        ),
         "batch_queue": bool,
         "owner": str,
         "machine_exit": int,
@@ -729,7 +753,20 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
         kind = schema.get(key) if isinstance(schema, dict) else schema
         if kind is None:
             raise Refused(f"{file} has an unknown setting {where}")
-        if isinstance(kind, dict):  # a section within the section, such as `loop.head_proof`
+        if isinstance(kind, Rows):  # a list of sections, such as `loop.gate_steps`
+            if not (
+                isinstance(value, list) and value and all(isinstance(row, dict) for row in value)
+            ):
+                raise Refused(
+                    f"{file}'s {where} must be a list of sections each holding `{'`, `'.join(kind)}`"
+                )
+            for row in value:
+                typed(row, kind, f"{name}.{key}", file)
+            for unique in kind.unique:
+                seen = [row[unique] for row in value]
+                if twice := sorted({v for v in seen if seen.count(v) > 1}):
+                    raise Refused(f"{file}'s {where} names the {unique} {twice[0]!r} twice")
+        elif isinstance(kind, dict):  # a section within the section, such as `loop.head_proof`
             if not isinstance(value, dict):
                 raise Refused(f"{file}'s {where} must be a section holding `{'`, `'.join(kind)}`")
             typed(value, kind, f"{name}.{key}", file)
@@ -4403,29 +4440,45 @@ def pre_landed(
 
 
 def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
-    """The tree checked out in `work` and how it passed the gate (`run` or `reused`), empty when red. A pass is reused
-    when the gate command passed on the tree before (reusable), on the batch's commit or a PR's head with that tree;
-    never on GitHub's required checks alone, since the pass is published as the gate command's. Else the gate runs
-    there and its pass is recorded by tree. Its log stays beside the worktree."""
+    """The tree checked out in `work` and how it passed the gate (`run` or `reused`), empty when red. Each gate step
+    (gate_plan) that passed on the tree before, on any commit with it (a PR's head or the batch's), is reused (run_steps,
+    step_pass), which says where; never on GitHub's required checks alone, since the pass is published as the gate
+    command's. The others run there, under the host gate slot, each pass recorded by tree, so a tree equal to a head's
+    whose every step passed runs nothing. A `host` step with no pass in a cloud session is refused, naming it, since
+    the batch can't pass here and no PR is at fault. `pulls` is unused: a pass is found by tree. Its log stays beside
+    the worktree."""
     commit, tree = run_in(work, "rev-parse", "HEAD"), run_in(work, "rev-parse", "HEAD^{tree}")
     command = gate()[0]
-    found = reusable(commit) or next(
-        (
-            record
-            for pull in pulls
-            if tree_of(pull["headRefOid"]) == tree and (record := reusable(pull["headRefOid"]))
-        ),
-        None,
-    )
-    if found:
-        pushed = f" from {found['ref']}" if found.get("ref") else ""
-        print(f"Tree {tree}: `{command}` passed on it before, reused{pushed}")
-        return tree, "reused"
     log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
     for again in (False, True):
         with log.open("w") as out:
-            code = ran_gate(work, out)
-        if code != fault:
+            done = run_steps(
+                commit,
+                tree,
+                lambda: (
+                    head_moved(
+                        commit,
+                        tree,
+                        run_in(work, "rev-parse", "HEAD"),
+                        run_in(work, "rev-parse", "HEAD^{tree}"),
+                    )
+                    or run_in(work, "status", "--porcelain", "--untracked-files=all")
+                ),
+                work,
+                out,
+            )
+        code = done["code"]
+        if done["left"]:
+            raise Refused(
+                f"Tree {tree}: {', '.join(f'`{name}`' for name in done['left'])} has no pass on it and runs only on"
+                " a host (`where: host`): land on a host, or pass it there on a head with this tree"
+            )
+        if not done["ran"]:
+            found = done["records"]
+            pushed = f" from {found[0]['ref']}" if len(found) == 1 and found[0].get("ref") else ""
+            print(f"Tree {tree}: `{command}` passed on it before, reused{pushed}")
+            return tree, "reused"
+        if done["step"] is None or code != fault:
             break
         if again:
             raise MachineFault(
@@ -4438,27 +4491,33 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
             f"Tree {tree}: `{command}` exited {code}, loop.md's `machine_exit`: once more on the same tree"
         )
         reset(work, commit)
-    if not code and (changed := run_in(work, "status", "--porcelain", "--untracked-files=all")):
+    if not code and done["changed"]:
         with log.open("a") as out:
             out.write(
-                f"\nthe gate changed the tree, so it did not run on the batch as merged:\n{changed}\n"
+                f"\nthe gate changed the tree, so it did not run on the batch as merged:\n{done['changed']}\n"
             )
         code = 1
     print(f"Tree {tree}: `{command}` exited {code} (log {public(str(log))})")
     if code:
         return tree, ""
-    record = {
-        "head": commit,
-        "tree": tree,
-        "command": command,
-        "exit": 0,
-        "env": gate()[2],
-        "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "host": socket.gethostname(),
-    }
-    (where := recorded(tree, command)).parent.mkdir(parents=True, exist_ok=True)
-    where.write_text(json.dumps(record, indent=2) + "\n")
     return tree, "run"
+
+
+def landed_pass(tip: str, tree: str) -> dict[str, Any]:
+    """The pass `land` publishes on the base's new tip `tip`, whose tree `tree` was gated: each step's record on the
+    tree (gate_plan), run on the tip, with the seconds its pass took where this clone or origin holds them, so the
+    record branch pushed again for the tree keeps them."""
+    plan, steps = gate_plan(), []
+    for step in plan:
+        found = step_pass(tip, tree, step, show=False) or {}
+        steps.append(
+            {"head": tip, "tree": tree, "command": step["command"], "env": step["sets"]}
+            | {key: found[key] for key in TIMED if isinstance(found.get(key), int)}
+            | step_field(step)
+        )
+    if plan[0]["legacy"]:
+        return steps[0]
+    return {"head": tip, "tree": tree, "command": gate()[0], "env": gate()[2], "steps": steps}
 
 
 def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
@@ -4641,7 +4700,7 @@ def merges(
     tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
     actual, (_, tree, gated, _) = git("rev-parse", f"{tip}^{{tree}}").strip(), done[-1]
     if actual == gated:
-        publish(tip, {"head": tip, "tree": actual, "command": command})
+        publish(tip, landed_pass(tip, actual))
     else:
         numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
         print(
@@ -4653,7 +4712,7 @@ def merges(
         reset(work, tip)
         try:
             if gate_batch(work, [])[1]:
-                publish(tip, {"head": tip, "tree": actual, "command": command})
+                publish(tip, landed_pass(tip, actual))
         except MachineFault as exc:  # the PRs landed: each still gets its comment
             print(exc)
     # after every publication above, which pushes the landed tree's record again when it is the heads' tree
@@ -4923,8 +4982,70 @@ def gate(passed: list[str] | tuple[str, ...] = ()) -> tuple[str, list[str], dict
     in front of them (`GATE_UI_TESTS=0 mise run check:all`). The command alone is the gate: it runs with every name
     `local_ci_env` lists cleared but those it sets, so no host's ambient env changes what it ran. With `passed`, a
     head proof's names (head_proof), each one this process's environment sets is set to that value, over the
-    command's own assignment of it, and the command returned names it, so its record and status say so."""
-    return command_line(settings(project()[1]).get("gate") or shlex.join(LOCAL_CI), "gate", passed)
+    command's own assignment of it, and the command returned names it, so its record and status say so. With
+    `gate_steps` (gate_plan), the gate as people read it: `<name>: <command>` for each step, joined by `; `, no words
+    (each step runs its own), and the variables every step sets."""
+    loop = settings(project()[1])
+    if not loop.get("gate_steps"):
+        return command_line(loop.get("gate") or shlex.join(LOCAL_CI), "gate", passed)
+    plan = gate_plan(passed)
+    return (
+        "; ".join(f"{step['name']}: {step['command']}" for step in plan),
+        [],
+        {name: value for step in plan for name, value in step["sets"].items()},
+    )
+
+
+# the name the one step of a gate without `gate_steps` is shown by; it is that gate by its `legacy` flag, never by this
+# name, which a project's `gate_steps` may give a step too
+WHOLE = "gate"
+
+
+def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
+    """The gate's steps, in order, each `name`, `command` (as gate() reads one, with `passed`), `words`, `sets` and
+    `where` (`any`, or `host`: never run in a cloud session): loop.md's `gate_steps`, else the one `gate` command as
+    the step WHOLE, `any`, flagged `legacy`, which records, publishes and prints as the one gate always did (a plan
+    from `gate_steps` is stepped whatever its names or length: its steps are not `legacy`). Each step's pass is recorded and reused by itself, keyed by its tree and command (recorded),
+    so a step that passed on a tree anywhere is not run again; a project without `gate_steps` keeps one record. A
+    policy setting both is refused, since two sources of the gate would drift."""
+    loop = settings(project()[1])
+    written = loop.get("gate_steps")
+    if not written:
+        command, words, sets = gate(passed)
+        return [
+            {
+                "name": WHOLE,
+                "command": command,
+                "words": words,
+                "sets": sets,
+                "where": "any",
+                "legacy": True,
+            }
+        ]
+    if loop.get("gate"):
+        raise Refused(
+            f"{source(project()[1])} sets both `gate` and `gate_steps`: keep `gate_steps`, the gate's steps, and"
+            " drop `gate`"
+        )
+    plan = []
+    for step in written:
+        command, words, sets = command_line(step["command"], f"gate_steps.{step['name']}", passed)
+        plan.append(
+            {
+                "name": step["name"],
+                "command": command,
+                "words": words,
+                "sets": sets,
+                "where": step["where"],
+                "legacy": False,
+            }
+        )
+    return plan
+
+
+def here(step: dict[str, Any]) -> bool:
+    """Whether `step` may run here: a `host` step never runs in a cloud session (in_cloud)."""
+    return step["where"] != "host" or not in_cloud()
 
 
 def command_line(
@@ -4964,21 +5085,75 @@ def command_line(
 def ran_gate(
     cwd: Path | None = None, out: Any = None, passed: list[str] | tuple[str, ...] = ()
 ) -> int:
-    """Run the gate (gate, with `passed`) in its environment (gate_env), in `cwd` with its output to `out` when given,
-    and return its exit; a command that isn't there is refused, naming the gate, since loop.md is hand-written."""
-    command, words, _ = gate(passed)
+    """Run each step of the gate that may run here (gate_plan, here), in order, to the first that fails, and return
+    that step's exit, else 0; nothing is recorded (a checkout with changes)."""
+    for step in gate_plan(passed):
+        if here(step) and (code := ran_step(step, cwd, out)[0]):
+            return code
+    return 0
+
+
+def ran_step(
+    step: dict[str, Any], cwd: Path | None = None, out: Any = None
+) -> tuple[int, int, int]:
+    """Run one gate step (gate_plan) in its environment (gate_env) under the host gate slot (heavy_slot), in `cwd`
+    with its output to `out` when given: its exit, the seconds it ran and the seconds it waited for the slot. A
+    command that isn't there is refused, naming the gate, since loop.md is hand-written."""
     where = {"cwd": cwd, "stdout": out, "stderr": subprocess.STDOUT} if cwd else {}
+    with heavy_slot(step["name"], out) as (slot, waited):
+        began = time.monotonic()
+        try:
+            code = subprocess.run(
+                step["words"], check=False, env=gate_env(step) | {SLOT_HELD: slot}, **where
+            ).returncode
+        except OSError as exc:
+            what = "gate" if step["legacy"] else f"gate step `{step['name']}`"
+            raise Refused(f"loop.md's {what} {step['command']!r} can't run: {exc}") from None
+        return code, round(time.monotonic() - began), waited
+
+
+def gate_env(step: dict[str, Any]) -> dict[str, str]:
+    """The environment a gate step runs in: this process's, without the names `local_ci_env` lists unless the step's
+    command sets them, or a head proof's `passed` takes them from this process's (gate)."""
+    cleared = set(local_ci_env())
+    return {name: value for name, value in os.environ.items() if name not in cleared} | step["sets"]
+
+
+# the variable naming the host gate slot a run holds, so a gate wrapper under it takes no lock of its own (SKILL.md, One
+# heavy gate per host slot; mutate.py sets it the same way)
+SLOT_HELD = "LOOP_GATE_SLOT_HELD"
+
+
+def slot_path() -> str:
+    """The host gate slot's lock file, the one SKILL.md, mutate.py and the project's gate wrapper name."""
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.environ.get("HOME", "~"), ".cache")
+    return os.path.join(cache, "engineering-loop", "gate.1.lock")
+
+
+@contextlib.contextmanager
+def heavy_slot(name: str, out: Any = None) -> Any:
+    """Hold the host gate slot, an exclusive flock on slot_path(), for one gate step: (its path, the whole seconds
+    waited for it). A run already under a holder of that path (SLOT_HELD) takes none and waits 0, since it would wait
+    on its own parent. A wait is said once, as `local-ci: <step>: waiting for the host gate slot`."""
+    path, began = slot_path(), time.monotonic()
+    if os.environ.get(SLOT_HELD) == path:
+        yield path, 0
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
     try:
-        return subprocess.run(words, check=False, env=gate_env(passed), **where).returncode
-    except OSError as exc:
-        raise Refused(f"loop.md's `gate` {command!r} can't run: {exc}") from None
-
-
-def gate_env(passed: list[str] | tuple[str, ...] = ()) -> dict[str, str]:
-    """The environment the gate runs in: this process's, without the names `local_ci_env` lists unless the gate's
-    command sets them, or `passed` takes them from this process's (gate)."""
-    cleared, sets = set(local_ci_env()), gate(passed)[2]
-    return {name: value for name, value in os.environ.items() if name not in cleared} | sets
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(
+                f"local-ci: {name}: waiting for the host gate slot",
+                file=out or sys.stderr,
+                flush=True,
+            )
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield path, round(time.monotonic() - began)
+    finally:
+        os.close(fd)
 
 
 def local_ci_dir() -> Path:
@@ -5108,8 +5283,9 @@ def run_local_ci(
     pr: int | None, head: str | None, passed: list[str] | tuple[str, ...] = ()
 ) -> dict[str, Any]:
     """Run the gate (with `passed`, gate) on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by
-    tree and command; refuse a check off the head, on a changed tree, failing, or changing the tree, recording
-    nothing."""
+    tree and command, one record per step (run_steps), each step with a pass on the tree reused; refuse a check off
+    the head, on a changed tree, failing, or changing the tree, recording nothing for the step that did. The pass
+    (whole): with a `host` step left in a cloud session, its `left` names it, and it is no pass on the whole gate."""
     before = checkout_state()
     if head and before[0] != head:
         raise Refused(
@@ -5117,33 +5293,135 @@ def run_local_ci(
         )
     if before[1]:
         raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
-    command, _, env = gate(passed)
     deepened(pr)
-    code = ran_gate(passed=passed)
-    if code == settings(project()[1]).get("machine_exit"):
-        raise Refused(
-            f"{command} hit a machine fault (exit {code}, loop.md's `machine_exit`): nothing recorded; fix the machine,"
-            " then run it again"
+    tree = git("rev-parse", "HEAD^{tree}").strip()
+
+    def changes() -> str:
+        now = checkout_state()
+        return head_moved(before[0], tree, now[0], git("rev-parse", "HEAD^{tree}").strip()) or (
+            "" if now == before else now[1]
         )
-    if code:
-        raise Refused(f"{command} exited {code}: nothing recorded")
-    if checkout_state() != before:
+
+    done = run_steps(before[0], tree, changes, passed=passed)
+    code, step = done["code"], done["step"]
+    if step is not None:
+        command = step["command"]
+        nothing = "nothing recorded" if step["legacy"] else f"nothing recorded for `{step['name']}`"
+        if code == settings(project()[1]).get("machine_exit"):
+            raise Refused(
+                f"{command} hit a machine fault (exit {code}, loop.md's `machine_exit`): {nothing}; fix the machine,"
+                " then run it again"
+            )
+        if code:
+            raise Refused(f"{command} exited {code}: {nothing}")
         raise Refused(
-            f"{command} changed the checkout, so it did not run on the head as pushed:\n{checkout_state()[1]}"
+            f"{command} changed the checkout, so it did not run on the head as pushed:\n{done['changed']}"
         )
-    record = {
-        "head": before[0],
-        "tree": git("rev-parse", "HEAD^{tree}").strip(),
-        "command": command,
-        "exit": code,
-        "env": env,
-        "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "host": socket.gethostname(),
+    return whole(done["records"], passed) | ({"left": done["left"]} if done["left"] else {})
+
+
+def run_steps(
+    commit: str,
+    tree: str,
+    changes: Callable[[], str],
+    cwd: Path | None = None,
+    out: Any = None,
+    passed: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Run each gate step (gate_plan, with `passed`) that has no pass on `tree` (step_pass) and may run here (here),
+    in order, each under the host gate slot (ran_step), and record each that passes as run on `commit`, with the
+    seconds it ran and the seconds it waited for the slot (stored). A step with a pass is reused and a `host` step in a
+    cloud session left, each said on one line naming where the reused pass was recorded, so the log says which steps
+    ran. It stops at the first step that fails or changes the checkout (`changes`: what changed, empty when nothing
+    did), recording nothing for it. Returns `code` (that step's exit, else 0), `step` (that step, else None),
+    `changed`, `records` (each passed step's record, in order), `ran` and `left` (step names)."""
+    done: dict[str, Any] = {
+        "code": 0,
+        "step": None,
+        "changed": "",
+        "records": [],
+        "ran": [],
+        "left": [],
     }
-    where = recorded(record["tree"], command)
+    for step in gate_plan(passed):
+        # a gate without `gate_steps` says nothing more than it did: its one step is the gate
+        say = print if not step["legacy"] else (lambda *_a, **_k: None)
+        if (found := step_pass(commit, tree, step)) is not None:
+            say(f"{step['name']}: passed on tree {tree} before, reused from {origin_of(found)}")
+            done["records"].append(found)
+            continue
+        if not here(step):
+            say(
+                f"{step['name']}: no pass on tree {tree}, and it runs only on a host (`where: host`)"
+            )
+            done["left"].append(step["name"])
+            continue
+        code, seconds, waited = ran_step(step, cwd, out)
+        done["ran"].append(step["name"])
+        if code or (changed := changes()):
+            return done | {"code": code, "step": step, "changed": "" if code else changed}
+        record = {
+            "head": commit,
+            "tree": tree,
+            "command": step["command"],
+            "exit": 0,
+            "env": step["sets"],
+            "time": now(),
+            "host": socket.gethostname(),
+            "seconds": seconds,
+            "slot_wait_seconds": waited,
+        } | step_field(step)
+        stored(record)
+        say(
+            f"{step['name']}: passed in {seconds} s, after {waited} s waiting for the host gate slot"
+        )
+        done["records"].append(record)
+    return done
+
+
+def head_moved(commit: str, tree: str, now: str, now_tree: str) -> str:
+    """What a gate step did to where the run stands, empty when nothing: HEAD at another commit, or another tree, clean
+    or not, means the step's pass would be recorded for `tree` though the steps after it run on another (run_steps)."""
+    if (now, now_tree) == (commit, tree):
+        return ""
+    return f"HEAD moved during the gate: it is {now} (tree {now_tree}), not {commit} (tree {tree})"
+
+
+def stored(record: dict[str, Any]) -> None:
+    """Write a pass this clone ran to its record file (recorded)."""
+    where = recorded(record["tree"], record["command"])
     where.parent.mkdir(parents=True, exist_ok=True)
     where.write_text(json.dumps(record, indent=2) + "\n")
-    return record
+
+
+def origin_of(record: dict[str, Any]) -> str:
+    """Where a reused pass was recorded: its record branch on origin, else this clone's record of the run on a
+    commit."""
+    return record.get("ref") or f"this clone's record of its run on {record['head']}"
+
+
+def whole(found: list[dict[str, Any]], passed: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
+    """The gate's pass made of its steps' passes `found`, in plan order (gate_plan): without `gate_steps`, the one
+    record itself; else one built from them, as a pass is read (head, tree, command and env as gate() names them,
+    exit, time, seconds and slot_wait_seconds), the newest step's commit and time, the seconds summed, and `steps`,
+    each step's record. Nothing writes it: each step's record is the stored and published pass."""
+    plan = gate_plan(passed)
+    if plan[0]["legacy"]:
+        return found[0] if found else {}
+    command, _, env = gate(passed)
+    newest = max(found, key=lambda record: record["time"]) if found else {}
+    return {
+        "head": newest.get("head"),
+        "tree": newest.get("tree"),
+        "command": command,
+        "exit": 0,
+        "env": env,
+        "time": newest.get("time"),
+        "seconds": sum(record.get("seconds", 0) for record in found),
+        "slot_wait_seconds": sum(record.get("slot_wait_seconds", 0) for record in found),
+        "steps": found,
+        "published": all(record.get("published") for record in found),
+    }
 
 
 DETACHED = "APPROVALS_LOCAL_CI_HEAD"
@@ -5267,26 +5545,33 @@ def finished(head: str, code: int, command: str | None = None) -> None:
 
 def local_ci_status(head: str) -> int:
     """Say whether the detached local-ci run on `head` is running (exit 3), passed (0) or failed (1), with its log;
-    passed only when a pass on `head`'s tree under this environment is recorded."""
+    passed only when a pass on `head`'s tree under this environment is recorded: with `gate_steps`, of each step the
+    run had to pass (ran_command_file), here or, for a step it reused, on origin (record_ref)."""
     head = git("rev-parse", "--verify", f"{head}^{{commit}}").strip()
     log, pid, exit_file = run_files(head)
     try:
         code = int(exit_file.read_text())
     except (OSError, ValueError):
         code = None
-    plain = gate()[0]
+    plain = [step["command"] for step in gate_plan() if here(step)]
     try:
-        command = (
-            ran_command_file(head).read_text().strip() or plain
-        )  # what the run ran, else the plain gate
+        # what the run ran, one command per line, else the plain gate
+        commands = ran_command_file(head).read_text().strip().splitlines() or plain
     except OSError:
-        command = plain
-    if code == 0 and not recorded(str(tree_of(head)), command).exists():
+        commands = plain
+    command, held = "; ".join(commands), str(tree_of(head))
+    single = len(commands) == 1
+    if code == 0 and not all(
+        recorded(held, one).exists()
+        or not single
+        and record_ref(held, one, command_line(one, "gate")[2]) is not None
+        for one in commands
+    ):
         # a run on a checkout with changes, or on another PR's head, exits 0 with no pass on this one
         print(f"exited 0 without recording a pass on {head} under the gate's command: log {log}")
         return 1
     if code is not None:
-        under = f" under `{command}`" if command != plain else ""
+        under = f" under `{command}`" if commands != plain else ""
         print(f"{'passed' if code == 0 else f'failed (exit {code})'} on {head}{under}: log {log}")
         return 0 if code == 0 else 1
     started = going(pid.read_text() if pid.exists() else "", exit_file)
@@ -5320,13 +5605,33 @@ def env_line(env: dict[str, str | None]) -> str:
 def reusable(
     head: str, passed: list[str] | tuple[str, ...] = (), why: list[str] | None = None
 ) -> dict[str, Any] | None:
-    """A green pass on `head`'s tree under today's gate command (with `passed`, gate), or None: this clone's record,
-    made on any commit with that tree, else one another clone pushed to origin for that tree (published). The record's `head` is the
-    commit the pass ran on. A record without `env` (0.23.1 wrote none) never matches, since nothing says what tier it
-    ran. With `why`, the reason origin's record branch, found, was rejected is appended to it (record_ref)."""
+    """A green pass on `head`'s tree under today's gate (with `passed`, gate), or None: a pass of each of its steps
+    (gate_plan, step_pass), put together (whole). The record's `head` is the commit the pass ran on. With `why`, the
+    reason origin's record branch, found, was rejected is appended to it (record_ref), and with `gate_steps` each step
+    with no pass is named."""
     if (held := tree_of(head)) is None:
         return None
-    command, _, env = gate(passed)
+    found = []
+    for step in gate_plan(passed):
+        if (record := step_pass(head, held, step, why)) is None:
+            if why is not None and not step["legacy"]:
+                why.append(
+                    f"the gate step `{step['name']}` ({step['command']}) has no pass on tree {held}"
+                )
+            return None
+        found.append(record)
+    return whole(found, passed)
+
+
+def step_pass(
+    head: str, held: str, step: dict[str, Any], why: list[str] | None = None, show: bool = True
+) -> dict[str, Any] | None:
+    """A green pass of gate step `step` (gate_plan) on tree `held` (`head`'s), or None: this clone's record, made on
+    any commit with that tree, else one another clone pushed to origin for that tree (published). A record without
+    `env` (0.23.1 wrote none) never matches, since nothing says what tier it ran; nor does a failed one, which is never
+    recorded. With `why`, the reason origin's record branch, found, was rejected is appended to it (record_ref).
+    Without `show`, origin's record is read without writing the `gate` status on `head` (published)."""
+    command, env = step["command"], step["sets"]
     try:
         record = json.loads(recorded(held, command).read_text())
     except (OSError, ValueError):
@@ -5338,8 +5643,16 @@ def reusable(
         and (record.get("tree"), record.get("command"), record.get("exit"), record.get("env"))
         == (held, command, 0, env)
     ):
-        return record
-    return published(head, held, command, env, why)
+        return record | step_field(step)
+    found = (
+        published(head, held, command, env, why) if show else record_ref(held, command, env, why)
+    )
+    return found | step_field(step) if found is not None else None
+
+
+def step_field(step: dict[str, Any]) -> dict[str, str]:
+    """A gate step's record's `step` field, its name; none for the one step of a gate without `gate_steps`."""
+    return {} if step["legacy"] else {"step": step["name"]}
 
 
 def published(
@@ -5364,12 +5677,20 @@ def record_name(tree: str, command: str) -> str:
     return f"{tree}-{gate_key(command)}"
 
 
+# a pushed record's lines for the seconds its run took and waited for the host gate slot (record_message)
+TIMED = {"seconds": "Seconds: ", "slot_wait_seconds": "Slot wait seconds: "}
+
+
 def record_message(record: dict[str, Any]) -> str:
-    """A pushed record's commit message: the status description (described), then the env the gate ran under."""
+    """A pushed record's commit message: the status description (described), then the env the gate ran under, and
+    the seconds it ran and waited for the slot where the record holds them (TIMED)."""
     env = record.get("env", gate()[2])
+    timed = "".join(
+        f"{line}{record[key]}\n" for key, line in TIMED.items() if isinstance(record.get(key), int)
+    )
     return (
         f"{described(record['tree'], record['head'], record['command'])}\n\n"
-        f"Env: {json.dumps(env, sort_keys=True)}\n"
+        f"Env: {json.dumps(env, sort_keys=True)}\n{timed}"
     )
 
 
@@ -5421,6 +5742,13 @@ def record_ref(
             why.append(f"origin holds the record branch {ref}, but it is not this pass: {rejected}")
         return None
     when = int(committed[0].rsplit(" ", 2)[1])
+    # a record pushed before #940 names no seconds: still a pass, with its seconds unknown
+    timed = {
+        key: int(line[len(prefix) :])
+        for key, prefix in TIMED.items()
+        for line in lines[1:]
+        if line.startswith(prefix) and line[len(prefix) :].isdigit()
+    }
     return {
         "head": parents[0],
         "tree": held,
@@ -5428,6 +5756,7 @@ def record_ref(
         "exit": 0,
         "env": env,
         "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when)),
+        **timed,
         "published": True,
         "ref": ref,
     }
@@ -5578,10 +5907,12 @@ def nor_head_proof(loop: str | None) -> str:
 
 def elsewhere(head: str) -> str:
     """What a refusal adds when `head`'s tree passed under another gate command: `; its tree passed under <command>`
-    for each, from this clone's records and the tree's record branches in origin, then today's; empty when none did."""
+    for each, from this clone's records and the tree's record branches in origin, then today's; empty when none did.
+    Today's steps (gate_plan) are no other command, so a step's own pass is never named as one."""
     if (held := tree_of(head)) is None:
         return ""
     command, others = gate()[0], set()
+    today = {step["command"] for step in gate_plan()} | {command}
     with contextlib.suppress(OSError):
         for path in recorded(held, command).parent.glob(f"{held}-*.json"):
             with contextlib.suppress(OSError, ValueError):
@@ -5593,7 +5924,7 @@ def elsewhere(head: str) -> str:
                 ):
                     others.add(record["command"])
     others |= pushed_commands(held)
-    others -= {command, f"sha256 {gate_key(command)}"}
+    others -= today | {f"sha256 {gate_key(one)}" for one in today}
     if not others:
         return ""
     return (
@@ -5656,13 +5987,17 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
             return
         print(f"published on {head} as the commit status `{context}`")
         return
-    try:
-        ref = push_record(record | {"time": record.get("time") or now()})
-    except (subprocess.CalledProcessError, OSError) as exc:
-        why = (getattr(exc, "stderr", None) or str(exc)).strip()
-        print(f"not pushed to origin, so only this clone reuses it: {why}")
-    else:
-        print(f"published in origin as the record branch {ref}")
+    # with `gate_steps`, each step's record is pushed by itself, one already in origin left as it is
+    for one in record.get("steps", [record]):
+        if "steps" in record and one.get("published"):
+            continue
+        try:
+            ref = push_record(one | {"time": one.get("time") or now()})
+        except (subprocess.CalledProcessError, OSError) as exc:
+            why = (getattr(exc, "stderr", None) or str(exc)).strip()
+            print(f"not pushed to origin, so only this clone reuses it: {why}")
+        else:
+            print(f"published in origin as the record branch {ref}")
     if why := shown(head, record):
         print(f"the `gate` status, which only shows the pass on the PR, was not written: {why}")
 
@@ -5686,6 +6021,14 @@ def post_status(head: str, context: str, description: str, state: str = "success
 
 
 def reused(record: dict[str, Any]) -> str:
+    """How a reused pass is said: the commit it ran on, when, and its record branch; with `gate_steps`, each step's."""
+    if "steps" in record:
+        each = "; ".join(
+            f"`{one['step']}` from the pass recorded on {one['head']} at {one['time']}"
+            + (f" and pushed as {one['ref']}" if one.get("ref") else "")
+            for one in record["steps"]
+        )
+        return f"Reused by tree, step by step: {each}; none run again."
     pushed = f" and pushed as {record['ref']}" if record.get("ref") else ""
     return f"Reused by tree from the pass recorded on {record['head']} at {record['time']}{pushed}, not run again."
 
@@ -5693,31 +6036,41 @@ def reused(record: dict[str, Any]) -> str:
 def no_pass(head: str, why: list[str] | tuple[str, ...] = ()) -> str:
     """Why `local-ci <pr>` found no usable pass for `head`: the head, its tree, the record branch looked for, what
     was wrong with this clone's record (a missing field, another command or env), and `why`, the reasons reusable()
-    gave for rejecting origin's record branch, one line each."""
+    gave for rejecting origin's record branch, one line each. With `gate_steps`, each line names its step, and a step
+    whose record here is sound gets none."""
     held = tree_of(head)
     if held is None:
         return f"no pass for {head}: its tree is unknown here (fetch the head)"
-    command, _, env = gate()
-    ref = RECORD_BRANCH.format(record_name(held, command))
-    lines = [
-        f"no pass for the head {head}, tree {held}: looked for the record branch {ref} on origin"
-    ]
-    try:
-        record = json.loads(recorded(held, command).read_text())
-    except OSError:
-        lines.append("this clone holds no record for that tree and gate command")
-    except ValueError:
-        lines.append("this clone's record is not JSON")
-    else:
-        if not isinstance(record, dict):
-            lines.append("this clone's record is not an object")
+    lines = []
+    for step in gate_plan():
+        command, env = step["command"], step["sets"]
+        said = "" if step["legacy"] else f"step `{step['name']}`: "
+        ref = RECORD_BRANCH.format(record_name(held, command))
+        found = []
+        try:
+            record = json.loads(recorded(held, command).read_text())
+        except OSError:
+            found.append("this clone holds no record for that tree and gate command")
+        except ValueError:
+            found.append("this clone's record is not JSON")
         else:
-            for key in ("head", "time"):
-                if not isinstance(record.get(key), str):
-                    lines.append(f"this clone's record lacks its `{key}` field")
-            for key, want in (("tree", held), ("command", command), ("exit", 0), ("env", env)):
-                if record.get(key) != want:
-                    lines.append(f"this clone's record has {key} {record.get(key)!r}, not {want!r}")
+            if not isinstance(record, dict):
+                found.append("this clone's record is not an object")
+            else:
+                for key in ("head", "time"):
+                    if not isinstance(record.get(key), str):
+                        found.append(f"this clone's record lacks its `{key}` field")
+                for key, want in (("tree", held), ("command", command), ("exit", 0), ("env", env)):
+                    if record.get(key) != want:
+                        found.append(
+                            f"this clone's record has {key} {record.get(key)!r}, not {want!r}"
+                        )
+        if said and not found:
+            continue
+        lines.append(
+            f"{said}no pass for the head {head}, tree {held}: looked for the record branch {ref} on origin"
+        )
+        lines.extend(f"{said}{line}" for line in found)
     lines.extend(why)
     lines.append(
         "push the record (`local-ci --record` on the head) or run the gate here with `local-ci <pr> --run`"
@@ -5731,10 +6084,13 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
     clean checkout, reuse or run and record a pass on HEAD, for `local-ci <pr>` to reuse; on one with changes, run the
     check and record nothing. Either publishes a pass this clone holds (publish). With `proof`, loop.md's
     `head_proof` (`--head-proof`, no PR), the gate takes its `env` names from this process (gate), and the pass is
-    published as the head proof instead."""
+    published as the head proof instead. With `gate_steps`, a step with a pass on the tree is reused and only the
+    others run; in a cloud session a `host` step is left for a host, said, and the steps that passed are published,
+    but no head proof, nor a pass for a PR, since the gate as a whole has none."""
     if pr is None:
         passed = proof["env"] if proof else ()
-        RAN["command"] = gate(passed)[0]
+        # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
+        RAN["command"] = "\n".join(step["command"] for step in gate_plan(passed) if here(step))
         head, changes = checkout_state()
         if changes:
             deepened(None)
@@ -5747,7 +6103,20 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
             print(f"{CHECKED} on {head}: {reused(record)}")
         else:
             record = run_local_ci(None, None, passed)
-            print(f"{CHECKED} on {head}: recorded in {recorded(record['tree'], record['command'])}")
+            where = (
+                local_ci_dir() if "steps" in record else recorded(record["tree"], record["command"])
+            )
+            print(f"{CHECKED} on {head}: recorded in {where}")
+        if left := record.get("left"):
+            print(
+                f"{head} has no pass on the whole gate yet: {', '.join(f'`{name}`' for name in left)} runs only on a"
+                " host (`where: host`), where `local-ci` runs it alone"
+            )
+            # each step by itself, so the `gate` status shows a step's pass, never the whole gate's
+            for one in record["steps"]:
+                if not one.get("published"):
+                    publish(head, one)
+            return 0
         if proof:
             publish(head, record, proof)
         elif not record.get("published"):
@@ -5760,6 +6129,11 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
     elif run:
         record = run_local_ci(pr, head)
         source = ""
+        if left := record.get("left"):
+            raise Refused(
+                f"no pass on the whole gate for {head}: {', '.join(f'`{name}`' for name in left)} runs only on a host"
+                " (`where: host`); the steps that passed here are recorded"
+            )
     else:
         raise Refused(no_pass(head, why))
     if not record.get("published"):

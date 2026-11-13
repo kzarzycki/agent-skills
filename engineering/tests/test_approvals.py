@@ -3978,7 +3978,9 @@ def test_a_machine_fault_twice_on_the_tip_after_the_merges_still_says_landed(
         lands["open"](number, {f"{number}.txt": f"{number}\n"})
     refusing(monkeypatch, lambda args: args[2] == "8")
     codes = iter([0, 78, 78])
-    monkeypatch.setattr(approvals, "ran_gate", lambda cwd=None, out=None: next(codes))
+    monkeypatch.setattr(
+        approvals, "ran_step", lambda _step, cwd=None, out=None: (next(codes), 0, 0)
+    )
     code, lines = lands["land"]()
     assert (code, lands["merged"]()) == (1, ["7"])
     assert any("a machine fault, not the change's" in line for line in lines)
@@ -9283,7 +9285,7 @@ def test_check_merge_and_land_reuse_a_record_branch_with_no_status_at_every_risk
     lines = merge(pr, [approved(1, "area:web")], no_ci)
     assert lines == [] or not [line for line in lines if "local check" in line]
     git_in(tmp_path / "b", "checkout", "-q", head)
-    monkeypatch.setattr(approvals, "ran_gate", lambda *_a, **_k: pytest.fail("land ran the gate"))
+    monkeypatch.setattr(approvals, "ran_step", lambda *_a, **_k: pytest.fail("land ran the gate"))
     assert approvals.gate_batch(tmp_path / "b", [pr]) == (approvals.tree_of(head), "reused")
     assert f"passed on it before, reused from {branch_of(head)}" in capsys.readouterr().out
     assert hub.get(head) is None
