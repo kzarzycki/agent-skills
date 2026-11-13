@@ -130,14 +130,37 @@ def test_no_line_unless_every_commit_since_the_verdict_is_a_merge_of_the_base(
     assert approvals.unforced(merged_pull(repo, at, on)) is None
 
 
-def test_no_line_without_a_verdict_or_a_head_this_clone_has(
-    repo: dict[str, str], monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_no_line_without_a_verdict(repo: dict[str, str]) -> None:
     pr = merged_pull(repo)
     pr["reviews"] = {"nodes": []}
     assert approvals.unforced(pr) is None
-    # advice costs no fetch: a head or base tip this clone lacks ends the read before the walk
-    monkeypatch.setattr(approvals, "fetched", lambda sha: pytest.fail(f"fetched {sha}"))
+
+
+def test_a_clone_behind_origin_fetches_the_head_and_base_tip_it_lacks(
+    repo: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lead's clone that holds the verdict's head but not the merge or main's new tip reads the line once a fetch
+    brings them; a head no fetch can bring gives no line, and no error."""
+    origin, behind = tmp_path / "origin.git", tmp_path / "behind"
+    git(tmp_path, "clone", "-q", "--bare", str(tmp_path), str(origin))
+    git(origin, "branch", "old", repo["head"])
+    git(
+        tmp_path,
+        "clone",
+        "-q",
+        "--no-local",
+        "--single-branch",
+        "-b",
+        "old",
+        str(origin),
+        str(behind),
+    )
+    git(behind, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    monkeypatch.chdir(behind)
+    for sha in (repo["merge"], repo["base"]):
+        missing = subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], check=False)
+        assert missing.returncode, f"{sha} is already here"
+    assert approvals.unforced(merged_pull(repo)) == LINE
     for key in ("headRefOid", "baseRefOid"):
         pr = merged_pull(repo)
         pr[key] = "c" * 40

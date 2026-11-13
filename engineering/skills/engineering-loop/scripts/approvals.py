@@ -2375,17 +2375,13 @@ def unforced(pull: dict[str, Any]) -> str | None:
     """The line check merge and brief print when every commit since the newest verdict's commit is a merge of the
     base (base_merges) and land posted no CONFLICTS comment naming a head that walk passes, so nothing forced the
     merge: land merges each head onto the base itself and gates that, and the merge only costs a gate and a verifier
-    pass. None otherwise, and when this clone lacks the head or the base's tip, since the line is advice and blocks
-    nothing, so it costs no fetch."""
+    pass. None otherwise, a head or base tip that one fetch (fetched, in base_merges) cannot bring included, since the
+    line is advice and blocks nothing."""
     verdicts = passes(pull)
     if isinstance(verdicts, str) or not verdicts or not (verified := verdicts[-1][0]):
         return None
     if verified == pull["headRefOid"].lower():
         return None
-    for sha in (pull["headRefOid"], pull["baseRefOid"]):
-        have = ["git", "cat-file", "-e", f"{sha}^{{commit}}"]
-        if subprocess.run(have, capture_output=True, check=False).returncode:
-            return None
     walked = base_merges(pull, verified)
     if isinstance(walked, str):
         return None
