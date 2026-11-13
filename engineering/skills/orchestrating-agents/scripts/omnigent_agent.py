@@ -5340,11 +5340,58 @@ def pack_behind(script: Path | str) -> str | None:
     )
 
 
+# one `key: value` line of the settings block, as a YAML mapping writes it: a plain or quoted key, then maybe a plain,
+# quoted or one-line flow-mapping value, then maybe a comment; a value that starts a flow collection, an anchor, an
+# alias or a block scalar is none of those
+STALE_PAIR = re.compile(
+    r"""^(?P<k>"[^"]*"|'[^']*'|[^\s"'#{\[&*!|>][^:#]*?)[ \t]*:"""
+    r"""(?:[ \t]+(?P<v>"[^"]*"|'[^']*'|\{[^}]*\}|[^#\s{\[&*!|>][^#]*?))?[ \t]*(?:#.*)?$"""
+)
+# the `loop` key, whatever follows its colon
+STALE_LOOP = re.compile(r"""^(?:loop|"loop"|'loop')[ \t]*:""")
+
+
+def unquoted(token: str) -> str:
+    """``token`` without the quotes of a quoted YAML scalar."""
+    return token[1:-1] if len(token) > 1 and token[0] == token[-1] and token[0] in "'\"" else token
+
+
+def stale_setting(block: str) -> tuple[bool, bool]:
+    """(whether ``block`` sets ``pack_staleness: refuse`` under its top-level ``loop`` mapping, whether the block was
+    read whole): a small reader of the block's few forms, with no YAML dependency, that agrees with approvals.py's
+    PyYAML on the forms it reads (plain or quoted key and value, a block or a one-line flow mapping under ``loop``)
+    and says it could not read the rest, when the block names the key at all, so it never fails silently."""
+    refuses, seen, unreadable, inside, child = False, False, False, False, None
+    for line in block.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent, text = len(line) - len(line.lstrip()), line.strip()
+        pair = STALE_PAIR.match(text)
+        pairs = [pair]
+        if indent == 0:
+            inside, child = STALE_LOOP.match(text) is not None, None
+            if inside and not (pair and pair["v"] is None):  # a value on the `loop` line
+                flow = pair and (pair["v"] or "").startswith("{") and pair["v"]
+                unreadable = unreadable or not flow
+                pairs = [STALE_PAIR.match(i.strip()) for i in flow[1:-1].split(",")] if flow else []
+        elif inside:
+            child = indent if child is None else child
+            pairs = [pair] if indent == child else []
+        else:
+            pairs = [pair]
+        for found in pairs:
+            if found and unquoted(found["k"]) == "pack_staleness":
+                seen = True
+                if inside:
+                    refuses = refuses or unquoted(found["v"] or "") == "refuse"
+    return refuses and not unreadable, "pack_staleness" not in block or (seen and not unreadable)
+
+
 def refuses_stale() -> bool:
     """Whether the project's settings block sets ``pack_staleness: refuse`` under its ``loop`` mapping: the first fenced
     ``yaml`` block under ``## Policy`` of ``docs/agents/gatekeeper.md``, else under ``## Settings`` of ``loop.md``, the
-    file approvals.py reads. A small reader of that one block, with no YAML dependency, so an example elsewhere in the
-    Markdown, or in another section or mapping, is never read as the setting."""
+    file approvals.py reads (stale_setting reads it). An example elsewhere in the Markdown, or in another section or
+    mapping, is never read as the setting; a mention it cannot read is treated as ``warn``, with a line on stderr."""
     root = checkout_root(os.getcwd())
     if not root:
         return False
@@ -5361,20 +5408,13 @@ def refuses_stale() -> bool:
         )
         if not fenced:
             continue  # no block here: approvals.py reads the next file's
-        inside, child = False, None
-        for line in fenced.group(1).splitlines():
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            indent = len(line) - len(line.lstrip())
-            if indent == 0:
-                inside, child = re.match(r"loop:[ \t]*(#.*)?$", line) is not None, None
-            elif inside:
-                child = indent if child is None else child
-                if indent == child and re.match(
-                    r"pack_staleness:[ \t]*refuse[ \t]*(#.*)?$", line.lstrip()
-                ):
-                    return True
-        return False  # the block approvals.py reads, whether or not it sets the key
+        refuses, read = stale_setting(fenced.group(1))
+        if not read:
+            print(
+                f"{name} names `pack_staleness` in a form this script cannot read: treated as warn",
+                file=sys.stderr,
+            )
+        return refuses  # the block approvals.py reads, whether or not it sets the key
     return False
 
 

@@ -170,3 +170,69 @@ def test_a_loop_md_without_a_settings_block_falls_to_none(
     (tmp_path / "docs" / "agents" / "loop.md").write_text("## Facts\n" + EXAMPLE)
     monkeypatch.chdir(tmp_path)
     assert agent.refuses_stale() is False
+
+
+def test_outside_a_checkout_it_refuses_nothing_and_does_not_raise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A loop.md that sets refuse in a directory no git checkout holds is no policy: the root guard decides."""
+    policy(tmp_path, "loop.md", "Settings", "loop:\n  pack_staleness: refuse\n")
+    monkeypatch.chdir(tmp_path)
+    assert agent.refuses_stale() is False
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "loop:\n  pack_staleness: refuse\n",
+        'loop:\n  pack_staleness: "refuse"\n',
+        "loop:\n  pack_staleness: 'refuse'\n",
+        'loop:\n  "pack_staleness": refuse\n',
+        "loop:\n  'pack_staleness': 'refuse'   # why\n",
+        '"loop":\n  pack_staleness: refuse\n',
+        "loop: {pack_staleness: refuse}\n",
+        "loop: {cap: 3, pack_staleness: 'refuse'}\n",
+        'loop: {cap: 3, "pack_staleness": "refuse"}  # why\n',
+    ],
+)
+def test_every_form_that_sets_refuse_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, block: str
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    policy(tmp_path, "loop.md", "Settings", block)
+    monkeypatch.chdir(tmp_path)
+    assert agent.refuses_stale() is True
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "loop: {\n  pack_staleness: refuse}\n",
+        "loop: &a\n  pack_staleness: refuse\n",
+        "base: &b\n  pack_staleness: refuse\nloop: *b\n",
+    ],
+)
+def test_a_form_it_cannot_read_is_warn_and_says_so(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    block: str,
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    policy(tmp_path, "loop.md", "Settings", block)
+    monkeypatch.chdir(tmp_path)
+    assert agent.refuses_stale() is False
+    assert (
+        "pack_staleness` in a form this script cannot read: treated as warn"
+        in capsys.readouterr().err
+    )
+
+
+def test_a_block_that_never_names_the_key_says_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    policy(tmp_path, "loop.md", "Settings", "loop:\n  cap: 3\n")
+    monkeypatch.chdir(tmp_path)
+    assert agent.refuses_stale() is False
+    assert capsys.readouterr().err == ""
