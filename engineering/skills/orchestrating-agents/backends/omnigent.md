@@ -235,12 +235,23 @@ than being cut off, and call it again while the budget lasts.
 share over about a second and its available memory, and exits 0 when it has room for another
 session, 1 when not. It reads idle CPU, not the load average, which on macOS also counts threads
 waiting on I/O and memory and reads several times too high; load per core decides only when idle
-cannot be measured. `start` and `run` wait while it has none, except for a session `--host` puts
-on another host, whose load lands there, printing a line, and fail after
+cannot be measured. `start` and `run` wait while the host the new session's load lands on has
+none: the host `--host` names, else this one, for a `claude-cloud` start too, since its bridge
+session runs on that host. They print `<host> over capacity, waiting: …` and fail after
 `OMNIGENT_CAPACITY_WAIT_SECONDS` (default 600), since sessions on an overloaded host time out and
-fail; a queue that would rather wait sets it longer. The limits are knobs set for the hardware:
-`OMNIGENT_MIN_CPU_IDLE` (percent, default 10), `OMNIGENT_MAX_LOAD_PER_CORE` (default 4, the
-fallback) and `OMNIGENT_MIN_AVAILABLE_MB` (default 1536). A
+fail; a queue that would rather wait sets it longer. Another host's `/proc/meminfo`
+(`MemAvailable`) and `/proc/loadavg` are read through a live session on it (not archived, not
+failed), newest first, up to 3; a host that can't be read (no live session, failed reads, or no
+`/proc`, as on a Mac) starts unchecked with the line `<host>: load and memory not readable
+(<why>); starting unchecked`. `capacity --host NAME|ID` judges another host the same way.
+The limits are knobs set for the hardware: `OMNIGENT_MIN_CPU_IDLE` (percent, default 10),
+`OMNIGENT_MAX_LOAD_PER_CORE` (default 4, the fallback) and `OMNIGENT_MIN_AVAILABLE_MB` (default
+1536), and per host the `HOST_LIMITS` table in the script, keyed by Omnigent host name, whose row
+gives `min_mb` and `max_load` (the 1-minute load average, absolute, not per core; a missing
+field takes the default): `cc-experiments` 2500 MB and load 40, `oz` load 10. A row's
+`max_load` decides another host's load in place of load per core, and on this host refuses on
+top of the idle-CPU judgement. `OMNIGENT_MIN_AVAILABLE_MB_<HOST>` and `OMNIGENT_MAX_LOAD_<HOST>`
+(the name upper-cased, `-` as `_`) override one row. A
 message `start`, `send` or `relay` posts is not failed when its POST times out on a slow
 server: the history decides whether it landed, within `--confirm-seconds`. The supervisor's
 own posts, which read no history, still count a timeout as a failure and try again.

@@ -69,7 +69,9 @@ class FakeOmnigent:
         self.subscriptions: list[tuple[str, str]] = []
         self.roots: dict[str, str] = {}  # a session's root_conversation_id, when not its own
         self.resolved: list[tuple[str, str, str, dict | None]] = []
-        self.host_id = "h"  # this host
+        self.host_id = "h"  # this host, named "host"
+        self.host_names: dict[str, str] = {}  # other hosts' names, by id
+        self.procs: dict[str, dict[str, str]] = {}  # each host's /proc files, by host id
         self.harnesses: dict[str, str] = {}  # a registered agent's harness, by its name
         self.listed = [
             "opus",
@@ -109,6 +111,18 @@ class FakeOmnigent:
 
     def harness(self, agent: str) -> str:
         return self.harnesses.get(agent, "")
+
+    def hosts(self) -> dict[str, str]:
+        return {self.host_id: "host", **self.host_names}
+
+    def read_file(self, sid: str, path: str) -> str:  # a host's /proc, by host, else none
+        proc = self.procs.get(self.hosts_of.get(sid) or self.host_of(sid), {})
+        if path not in proc:
+            raise omnigent_agent.Gone(f"{path}: not found")
+        return proc[path]
+
+    def host_of(self, sid: str) -> str:
+        return next((str(o.get("host_id")) for o in self.others if o.get("id") == sid), "")
 
     def models(self, agent: str, host_id: str | None = None) -> list[str]:
         if "models" in self.fail:
@@ -264,7 +278,9 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
     monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
     monkeypatch.delenv("OMNIGENT_SUPERVISE_REGISTRY", raising=False)  # else run arms a real one
-    monkeypatch.setattr(omnigent_agent, "capacity", lambda: (True, ""))  # else a busy host waits
+    monkeypatch.setattr(
+        omnigent_agent, "capacity", lambda **_: (True, "")
+    )  # else a busy host waits
 
 
 def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
@@ -1075,6 +1091,7 @@ def test_stalled_server_timeout_reaches_cleanup(
     class Local(omnigent_agent.Omnigent):
         def __init__(self, base: str) -> None:
             self.base, self._token, self.archived = base, "synthetic", []
+            self.host_id = "h"
 
         def create(self, *args: object) -> str:
             return "s0"
@@ -1211,6 +1228,7 @@ def test_stalled_error_body_reaches_cleanup(
     class Local(omnigent_agent.Omnigent):
         def __init__(self, base: str) -> None:
             self.base, self._token, self.archived = base, "synthetic", []
+            self.host_id = "h"
 
         def create(self, *args: object) -> str:
             return "s0"
@@ -3265,23 +3283,232 @@ def test_send_pr_delivers_to_a_session_whose_workspace_is_on_another_host(
     assert (tmp_path / "tmp" / "r.md").read_text() == "the fix report"
 
 
-def test_a_start_on_another_host_does_not_wait_on_this_host_s_load(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_start_waits_on_the_host_its_load_lands_on_a_cloud_bridge_s_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(omnigent_agent, "capacity", lambda: (False, "cpu 2% idle"))
+    monkeypatch.setattr(omnigent_agent, "capacity", lambda **_: (False, "cpu 2% idle"))
     monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0)
     og = FakeOmnigent()
-    sid, _ = omnigent_agent.start(
+    og.host_names = {"far": "far"}
+    sid, _ = omnigent_agent.start(  # this host's load is not far's, which nothing here can read
         og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, top_level=True, host_id="far"
     )
     assert sid in og.sessions
+    assert "far: load and memory not readable (" in capsys.readouterr().err
     with pytest.raises(omnigent_agent.Fail, match="host over capacity"):
         omnigent_agent.start(
             og, "claude", "u", "do Y", tmp_path / "u.md", None, 0, top_level=True, host_id="h"
         )
-    og.harnesses = {"claude-cloud": "acp:claude-cloud"}  # bridged here, run in a cloud VM
-    sid, _ = omnigent_agent.start(og, "claude-cloud", "c", "do Z", tmp_path / "c.md", None, 0)
-    assert sid in og.sessions
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}  # its bridge runs here, in a VM beyond
+    with pytest.raises(omnigent_agent.Fail, match="host over capacity for 0s: cpu 2% idle"):
+        omnigent_agent.start(og, "claude-cloud", "c", "do Z", tmp_path / "c.md", None, 0)
+
+
+def far_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str, **proc: str
+) -> FakeOmnigent:
+    """A FakeOmnigent run from host ``h``, whose own load is too high, beside host ``far`` called
+    ``name`` with a live session ``x1`` whose ``/proc`` files are ``proc`` (``meminfo``,
+    ``loadavg``, ``stat``)."""
+    monkeypatch.setattr(omnigent_agent, "capacity", lambda **_: (False, "cpu 1% idle"))
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0)
+    og = FakeOmnigent()
+    og.host = lambda n: {name: "far"}[n]  # type: ignore[method-assign]
+    og.host_names = {"far": name}
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    og.others = [{"id": "x1", "host_id": "far", "status": "idle", "updated_at": 1}]
+    og.procs = {"far": {f"/proc/{k}": v for k, v in proc.items()}}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    return og
+
+
+def far_start(agent: str, host: str) -> list[str]:
+    return ["start", agent, "t", "b.md", "/there/repo/r.md", "--top-level", "--host", host]
+
+
+def mem(mb: int) -> str:
+    return f"MemTotal: 64000000 kB\nMemAvailable: {mb * 1024} kB\n"
+
+
+def test_a_cloud_start_waits_on_its_bridge_host_s_memory_by_its_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "cc-experiments", meminfo=mem(2000), loadavg="3.00 2 1")
+    argv = [*far_start("claude-cloud", "cc-experiments"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 1
+    err = capsys.readouterr().err
+    assert (
+        "cc-experiments over capacity for 0s: load 3.0 (max 40), 2000 MB available (min 2500)"
+        in err
+    )
+    assert og.sessions == {}
+    og.procs["far"]["/proc/meminfo"] = mem(2500)
+    assert omnigent_agent.main(argv) == 0  # the minimum itself is room
+    og.archived = ["s0"]
+    og.procs["far"]["/proc/meminfo"] = mem(3000)
+    assert omnigent_agent.main(argv) == 0  # this host's own load is not the bridge host's
+    assert og.hosts_of == {"s0": "far", "s1": "far"}
+
+
+def test_a_host_s_row_overridden_by_its_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "cc-experiments", meminfo=mem(2000), loadavg="3.00 2 1")
+    monkeypatch.setenv("OMNIGENT_MIN_AVAILABLE_MB_CC_EXPERIMENTS", "1500")
+    argv = [*far_start("claude-cloud", "cc-experiments"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 0 and og.sessions
+    monkeypatch.setenv("OMNIGENT_MAX_LOAD_CC_EXPERIMENTS", "2.5")
+    assert omnigent_agent.main(argv) == 1  # load 3 over its overridden max
+
+
+def test_a_start_on_a_linux_host_waits_on_its_row_s_absolute_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "oz", meminfo=mem(9000), loadavg="10.50 9 8 3/400 7")
+    argv = [*far_start("claude", "oz"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 1
+    assert "oz over capacity for 0s: load 10.5 (max 10), 9000 MB available (min 1536)" in (
+        capsys.readouterr().err
+    )
+    og.procs["far"]["/proc/loadavg"] = "10.00 9 8 3/400 7"
+    assert omnigent_agent.main(argv) == 1  # a load of 10 or more refuses
+    og.procs["far"]["/proc/loadavg"] = "9.50 9 8 3/400 7"
+    assert omnigent_agent.main(argv) == 0 and og.sessions
+
+
+def test_a_host_without_a_row_is_judged_per_core_and_waited_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stat = "cpu  1 2 3 4\ncpu0 1 2 3 4\ncpu1 1 2 3 4\nintr 5\n"
+    og = far_host(monkeypatch, tmp_path, "box", meminfo=mem(1000), loadavg="10.0 1 1", stat=stat)
+    argv = [*far_start("claude", "box"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 1
+    assert "box over capacity for 0s: load 5.0 per core (max 4), 1000 MB available (min 1536)" in (
+        capsys.readouterr().err
+    )
+    og.procs["far"]["/proc/meminfo"] = mem(2000)
+    assert omnigent_agent.main(argv) == 1  # 5 per core over 2 cores
+    og.procs["far"]["/proc/loadavg"] = "8.0 1 1"
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 60)
+    reads = iter(["9.0 1 1", "8.0 1 1"])  # over, then exactly the most per core
+    real = og.read_file
+    og.read_file = lambda sid, path: (  # type: ignore[method-assign]
+        next(reads) if path == "/proc/loadavg" else real(sid, path)
+    )
+    assert omnigent_agent.main(argv) == 0
+    assert "box over capacity, waiting: load 4.5 per core (max 4)" in capsys.readouterr().err
+
+
+def test_a_host_without_proc_starts_unchecked_saying_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "mac")  # a Mac: no /proc
+    argv = [*far_start("claude", "mac"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 0 and og.sessions
+    err = capsys.readouterr().err
+    assert "mac: load and memory not readable (no /proc/meminfo); starting unchecked" in err
+    og.others, og.archived = [], ["s0"]  # no live session there now
+    assert omnigent_agent.main([*argv[:2], "u", *argv[3:]]) == 0
+    assert "mac: load and memory not readable (no live session there)" in capsys.readouterr().err
+
+
+def test_another_host_is_read_through_its_newest_live_sessions_up_to_three(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    og = FakeOmnigent()
+    og.others = [
+        {"id": "old", "host_id": "far", "status": "idle", "updated_at": 1},
+        {"id": "gone", "host_id": "far", "status": "idle", "updated_at": 9, "archived": True},
+        {"id": "dead", "host_id": "far", "status": "failed", "updated_at": 9},
+        {"id": "here", "host_id": "h", "status": "idle", "updated_at": 9},
+        {"id": "a", "host_id": "far", "status": "idle", "updated_at": 5},
+        {"id": "b", "host_id": "far", "status": "running", "created_at": 4},
+        {"id": "c", "host_id": "far", "status": "idle", "updated_at": 3},
+    ]
+    files = {"/proc/meminfo": mem(4000), "/proc/loadavg": "1.0 1 1", "/proc/stat": "cpu0 1\n"}
+    tried: list[str] = []
+    broken = {"a", "b", "c"}
+
+    def read_file(sid: str, path: str) -> str:
+        tried.append(sid)
+        if sid in broken:
+            raise omnigent_agent.Fail(f"GET {path}: HTTP 502")
+        return files[path]
+
+    og.read_file = read_file  # type: ignore[method-assign]
+    assert omnigent_agent.far_capacity(og, "far", 1536, None) == (
+        None,
+        "read failed: GET /proc/meminfo: HTTP 502",
+    )
+    assert tried == ["a", "b", "c"]  # newest first, three at most, none archived, failed or here
+    broken, tried[:] = {"a"}, []
+    assert omnigent_agent.far_capacity(og, "far", 1536, None) == (
+        True,
+        "load 1.0 per core (max 4), 4000 MB available (min 1536)",
+    )
+    assert tried == ["a", "b", "b", "b"]
+    files["/proc/meminfo"] = "MemTotal: 1 kB\n"
+    assert omnigent_agent.far_capacity(og, "far", 1536, 5) == (
+        True,
+        "load 1.0 (max 5), memory not measured (min 1536)",
+    )
+    files["/proc/loadavg"] = ""
+    assert omnigent_agent.far_capacity(og, "far", 1536, 5) == (None, "/proc/loadavg unreadable")
+
+
+def test_capacity_host_judges_another_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "oz", meminfo=mem(9000), loadavg="10.50 9 8")
+    assert omnigent_agent.main(["capacity", "--host", "oz"]) == 1
+    assert capsys.readouterr().out == "oz: load 10.5 (max 10), 9000 MB available (min 1536)\n"
+    og.procs["far"]["/proc/loadavg"] = "2.0 1 1"
+    assert omnigent_agent.main(["capacity", "--host", "oz"]) == 0
+    og.procs = {}
+    assert omnigent_agent.main(["capacity", "--host", "oz"]) == 0
+    assert "oz: load and memory not readable (no /proc/meminfo)" in capsys.readouterr().out
+
+
+def test_this_host_s_row_adds_its_absolute_load_and_memory_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.undo()  # the real capacity check, on a faked host
+    monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0)
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(mem(2400))
+    monkeypatch.setattr(omnigent_agent, "MEMINFO", meminfo)
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (41.3, 0.0, 0.0))
+    monkeypatch.setattr(omnigent_agent, "cpu_idle", lambda: 40.0)
+    og = FakeOmnigent()
+    og.host_names = {"h": "cc-experiments"}
+    with pytest.raises(omnigent_agent.Fail) as refused:
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert str(refused.value) == (
+        "cc-experiments over capacity for 0s:"
+        " cpu 40% idle (min 10), load 41.3 (max 40), 2400 MB available (min 2500)"
+    )
+    meminfo.write_text(mem(2600))
+    with pytest.raises(omnigent_agent.Fail, match="load 41.3 \\(max 40\\), 2600 MB"):
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (40.0, 0.0, 0.0))
+    with pytest.raises(omnigent_agent.Fail, match="load 40.0 \\(max 40\\)"):  # 40 or more refuses
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (39.0, 0.0, 0.0))
+    monkeypatch.setattr(omnigent_agent, "cpu_idle", lambda: 3.0)
+    with pytest.raises(omnigent_agent.Fail, match="cpu 3% idle"):  # idle CPU still decides
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    monkeypatch.setattr(omnigent_agent, "cpu_idle", lambda: None)  # the row's load alone
+    assert omnigent_agent.capacity(min_mb=2500, max_load=40) == (
+        True,
+        "load 39.0 (max 40), 2600 MB available (min 2500)",
+    )
+    og.host_names = {}
+    og.hosts = lambda: (_ for _ in ()).throw(omnigent_agent.Fail("GET /v1/hosts: HTTP 502"))  # type: ignore[method-assign]
+    assert omnigent_agent.host_name(og, "h") == "h"
 
 
 def test_run_with_a_report_older_than_the_launch_waits_for_a_new_one(
@@ -3382,7 +3609,7 @@ def test_a_run_process_killed_mid_wait_leaves_its_failed_line_within_one_poll(
         f"import sys; sys.path.insert(0, {str(Path(__file__).parent)!r})\n"
         "import test_omnigent_agent as t\n"
         "t.omnigent_agent.Omnigent = lambda: t.FakeOmnigent(status='running')\n"
-        "t.omnigent_agent.capacity = lambda: (True, '')\n"  # its real 5 s poll stays
+        "t.omnigent_agent.capacity = lambda **_: (True, '')\n"  # its real 5 s poll stays
         "sys.exit(t.omnigent_agent.main(['run', 'claude', 't', 'b.md', 'r.md',"
         " '--confirm-seconds', '0']))\n"
     )

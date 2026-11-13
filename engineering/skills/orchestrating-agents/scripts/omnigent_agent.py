@@ -160,7 +160,8 @@ works in a worktree of its own), and runs on another host only when the project'
 file (a proof log, the previous report) beside its report there before its brief, and
 ``wait --verdict`` copies its report to ``tmp/loop/`` here and prints that path,
 saying it left the far worktree's tracked changes unchecked, since the file API runs no git.
-A session on another host waits on no capacity here. ``AGENT`` is a registered
+``start`` waits for room on the host the new session's load lands on: ``--host``'s, else this one,
+for a cloud start too, whose bridge runs there; another host is read through a live session on it. ``AGENT`` is a registered
 agent's name or id; a name several agents hold starts the newest when their records and configs match
 apart from identity and bookkeeping (copies of one spec), else fails, listing their ids. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
 brief with an empty backtick span (a name an unquoted heredoc ran). Every brief or message argument is a
@@ -431,6 +432,15 @@ CAPACITY_WAIT_SECONDS = float(os.environ.get("OMNIGENT_CAPACITY_WAIT_SECONDS") o
 STUCK_SECONDS = float(os.environ.get("OMNIGENT_STUCK_SECONDS") or 1800)
 MEMINFO = Path("/proc/meminfo")
 PROC_STAT = Path("/proc/stat")
+# Each host's limits where its hardware or its job sets its own line, keyed by Omnigent host name:
+# ``min_mb`` available memory and ``max_load`` the 1-minute load average, absolute, not per core.
+# A missing field takes the default above; OMNIGENT_MIN_AVAILABLE_MB_<HOST> and
+# OMNIGENT_MAX_LOAD_<HOST> (the name upper-cased, ``-`` as ``_``) override one row.
+HOST_LIMITS: dict[str, dict[str, float]] = {
+    "cc-experiments": {"min_mb": 2500, "max_load": 40},  # it serves Omnigent and the managers
+    "oz": {"max_load": 10},  # its 8 threads
+}
+FAR_READS = 3  # live sessions on another host tried for its load and memory, newest first
 
 # The detach the preambles prescribe: Perl's setsid, since macOS has no setsid command.
 DETACH = "perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV'"
@@ -1112,20 +1122,7 @@ class Omnigent:
             norm = os.path.realpath if here else os.path.normpath
             return norm(str(path)) == norm(workspace)
 
-        path, found, after = "/v1/sessions?kind=any&limit=1000", [], ""
-        while True:
-            page = self.call("GET", path + (f"&after={after}" if after else ""))
-            found += [
-                s
-                for s in page.get("data", [])
-                if str(s.get("host_id") or "") == host_id
-                and not s.get("archived")
-                and s.get("status") != "failed"
-                and same(s.get("workspace"))
-            ]
-            if not (page.get("has_more") and page.get("last_id")):
-                return found
-            after = str(page["last_id"])
+        return [s for s in live_sessions(self, host_id) if same(s.get("workspace"))]
 
     def children(self, sid: str) -> list[str]:
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
@@ -1806,24 +1803,126 @@ def cpu_idle() -> float | None:
         return None
 
 
-def capacity() -> tuple[bool, str]:
+def capacity(min_mb: float | None = None, max_load: float | None = None) -> tuple[bool, str]:
     """Whether this host has room for another session, and a line saying what it carries. CPU is
     judged by idle share, not the load average, which on macOS also counts threads waiting on I/O
-    and memory and so overstates CPU use several times over; load decides only when idle cannot
-    be measured."""
-    # ponytail: this host only, the one start's config names.
+    and memory and so overstates CPU use several times over; load per core decides only when idle
+    cannot be measured. A host row's ``max_load`` (absolute) also refuses, and ``min_mb`` replaces
+    the default memory line (``host_limits``)."""
+    min_mb = MIN_AVAILABLE_MB if min_mb is None else min_mb
     idle, mb = cpu_idle(), available_mb()
-    if idle is None:
+    parts, room = [], True
+    if idle is not None:
+        parts.append(f"cpu {idle:.0f}% idle (min {MIN_CPU_IDLE:g})")
+        room = idle >= MIN_CPU_IDLE
+    if max_load is not None:
+        load = os.getloadavg()[0]
+        parts.append(f"load {load:.1f} (max {max_load:g})")
+        room = room and load < max_load
+    elif idle is None:
         load = os.getloadavg()[0] / (os.cpu_count() or 1)
-        cpu, room = (
-            f"load {load:.1f} per core (max {MAX_LOAD_PER_CORE:g})",
-            load <= MAX_LOAD_PER_CORE,
-        )
-    else:
-        cpu, room = f"cpu {idle:.0f}% idle (min {MIN_CPU_IDLE:g})", idle >= MIN_CPU_IDLE
+        parts.append(f"load {load:.1f} per core (max {MAX_LOAD_PER_CORE:g})")
+        room = load <= MAX_LOAD_PER_CORE
     memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
-    line = f"{cpu}, {memory} (min {MIN_AVAILABLE_MB:g})"
-    return room and (mb is None or mb >= MIN_AVAILABLE_MB), line
+    line = f"{', '.join(parts)}, {memory} (min {min_mb:g})"
+    return room and (mb is None or mb >= min_mb), line
+
+
+def host_limits(name: str) -> tuple[float, float | None]:
+    """Host ``name``'s ``min_mb`` and ``max_load`` (None: judged per core, or by idle CPU here):
+    its ``HOST_LIMITS`` row over the defaults, under its OMNIGENT_MIN_AVAILABLE_MB_<HOST> and
+    OMNIGENT_MAX_LOAD_<HOST> overrides."""
+    row, key = HOST_LIMITS.get(name, {}), re.sub(r"\W", "_", name.upper())
+    min_mb = os.environ.get(f"OMNIGENT_MIN_AVAILABLE_MB_{key}") or row.get("min_mb")
+    max_load = os.environ.get(f"OMNIGENT_MAX_LOAD_{key}") or row.get("max_load")
+    return (
+        MIN_AVAILABLE_MB if min_mb is None else float(min_mb),
+        None if max_load is None else float(max_load),
+    )
+
+
+def live_sessions(og: Omnigent, host_id: str) -> list[dict]:
+    """The live sessions (not archived, not failed) on host ``host_id``, sub-agents included."""
+    path, found, after = "/v1/sessions?kind=any&limit=1000", [], ""
+    while True:
+        page = og.call("GET", path + (f"&after={after}" if after else ""))
+        found += [
+            s
+            for s in page.get("data", [])
+            if str(s.get("host_id") or "") == host_id
+            and not s.get("archived")
+            and s.get("status") != "failed"
+        ]
+        if not (page.get("has_more") and page.get("last_id")):
+            return found
+        after = str(page["last_id"])
+
+
+def far_capacity(
+    og: Omnigent, host_id: str, min_mb: float, max_load: float | None
+) -> tuple[bool | None, str]:
+    """``capacity`` for another host, read through a live session there: its ``/proc/meminfo``
+    (``MemAvailable``) and ``/proc/loadavg`` (the 1-minute load), judged by ``max_load`` when its
+    row names one, else per core over its ``/proc/stat``'s ``cpuN`` lines. None and why when it
+    can't be read: no live session, every read failing, or no ``/proc`` (a Mac)."""
+    # ponytail: a host's load and memory read through one of its sessions, since the server reads
+    # no host-level file (GET /v1/hosts/<id>/filesystem/<file> answers 404 "path is not a
+    # directory") and GET /v1/hosts carries no load or memory. Upgrade: either one, which would
+    # also give a Mac's load.
+    sessions = sorted(
+        live_sessions(og, host_id),
+        key=lambda s: float(s.get("updated_at") or s.get("created_at") or 0),
+        reverse=True,
+    )
+    why = "no live session there"
+    for s in sessions[:FAR_READS]:
+        sid = str(s["id"])
+        try:
+            meminfo = og.read_file(sid, "/proc/meminfo")
+            loadavg = og.read_file(sid, "/proc/loadavg")
+            stat = "" if max_load is not None else og.read_file(sid, "/proc/stat")
+        except Gone as e:
+            return None, f"no {str(e).split(':', 1)[0]}"
+        except Fail as e:
+            why = f"read failed: {e}"
+            continue
+        found = re.search(r"^MemAvailable:\s+(\d+) kB", meminfo, re.MULTILINE)
+        try:
+            load = float(loadavg.split()[0])
+        except (IndexError, ValueError):
+            return None, "/proc/loadavg unreadable"
+        if max_load is not None:
+            cpu, room = f"load {load:.1f} (max {max_load:g})", load < max_load
+        else:
+            cores = len(re.findall(r"^cpu\d+\s", stat, re.MULTILINE)) or 1
+            per = load / cores
+            cpu = f"load {per:.1f} per core (max {MAX_LOAD_PER_CORE:g})"
+            room = per <= MAX_LOAD_PER_CORE
+        mb = int(found.group(1)) / 1024 if found else None
+        memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
+        return room and (mb is None or mb >= min_mb), f"{cpu}, {memory} (min {min_mb:g})"
+    return None, why
+
+
+def host_name(og: Omnigent, host_id: str) -> str:
+    """Host ``host_id``'s name, which ``HOST_LIMITS`` is keyed by; its id when unknown."""
+    try:
+        return og.hosts().get(host_id, host_id)
+    except Fail:
+        return host_id
+
+
+def host_capacity(og: Omnigent, host_id: str, name: str) -> tuple[bool | None, str]:
+    """``capacity`` for host ``host_id`` under its limits: measured here on this host, read
+    through a session on another (``far_capacity``, None when unreadable)."""
+    min_mb, max_load = host_limits(name)
+    if host_id == og.host_id:
+        return capacity(min_mb=min_mb, max_load=max_load)
+    return far_capacity(og, host_id, min_mb, max_load)
+
+
+def unchecked(name: str, why: str) -> str:
+    return f"{name}: load and memory not readable ({why}); starting unchecked"
 
 
 def taken(e: Fail) -> bool:
@@ -2088,13 +2187,16 @@ def start(
                     " so its signature would name an effort it doesn't run"
                 )
     effort = picked
-    # its load lands there, not here: on another host, or in a cloud VM bridged from this one
-    elsewhere = harness == CLOUD_HARNESS or (bool(host_id) and host_id != og.host_id)
-    deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
-    while not elsewhere and not (room := capacity())[0]:
+    # its load lands on the host --host names, else this one: a cloud start's bridge runs there too
+    target = host_id or og.host_id
+    name, deadline = host_name(og, target), time.monotonic() + CAPACITY_WAIT_SECONDS
+    while not (room := host_capacity(og, target, name))[0]:
+        if room[0] is None:
+            print(unchecked(name, room[1]), file=sys.stderr)
+            break
         if time.monotonic() >= deadline:
-            raise Fail(f"host over capacity for {CAPACITY_WAIT_SECONDS:.0f}s: {room[1]}")
-        print(f"host over capacity, waiting: {room[1]}", file=sys.stderr)
+            raise Fail(f"{name} over capacity for {CAPACITY_WAIT_SECONDS:.0f}s: {room[1]}")
+        print(f"{name} over capacity, waiting: {room[1]}", file=sys.stderr)
         time.sleep(POLL_SECONDS * 6)
     if span := EMPTY_SPAN.search(brief):
         line = brief[: span.start()].count("\n") + 1
@@ -4848,7 +4950,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", action="append", default=[], metavar="NAME", help="only this host")
     p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
-    sub.add_parser("capacity", description="exit 0 when this host has room for another session")
+    p = sub.add_parser(
+        "capacity", description="exit 0 when this host, or --host, has room for another session"
+    )
+    p.add_argument(
+        "--host", metavar="NAME|ID", help="judge that host, read through a session there"
+    )
     sub.add_parser(
         "signature", description="print <harness>/<model>/<effort> of the session this runs in"
     )
@@ -5047,11 +5154,17 @@ def main(argv: list[str] | None = None) -> int:
             if args.notify:
                 notify(outcome)
             return code
-        if args.cmd == "capacity":
+        if args.cmd == "capacity" and not args.host:
             ok, line = capacity()
             print(line)
             return 0 if ok else 1
         og = Omnigent(args.server) if args.server else Omnigent()
+        if args.cmd == "capacity":
+            target = og.host(args.host)
+            name = host_name(og, target)
+            ok, line = host_capacity(og, target, name)
+            print(unchecked(name, line) if ok is None else f"{name}: {line}")
+            return 1 if ok is False else 0
         if args.cmd in ("relay", "send", "report"):
             sid = args.session = og.session_id(args.session)
         if args.cmd == "status":
