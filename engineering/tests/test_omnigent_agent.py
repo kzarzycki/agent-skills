@@ -3715,6 +3715,19 @@ def test_a_brief_with_an_empty_backtick_span_is_refused_before_a_session_exists(
     omnigent_agent.start(og, "claude", "t", "```sh\nls\n```", tmp_path / "r.md", None, 0)
 
 
+def test_a_double_backtick_literal_passes_but_a_real_empty_span_still_fails(
+    tmp_path: Path,
+) -> None:
+    og = FakeOmnigent()
+    literal = "```diff\n # the name upper-cased, ``-`` as ``_``) override\n```\nuse ``-`` here"
+    omnigent_agent.start(og, "claude", "t", literal, tmp_path / "r.md", None, 0)
+    # an empty pair after a literal on the same line is still a lost name, at its own line
+    with pytest.raises(omnigent_agent.Fail, match="line 3 has an empty `` span"):
+        omnigent_agent.start(og, "claude", "t", "a\nb\nuse ``-`` and the `` file", tmp_path / "r.md", None, 0)
+    with pytest.raises(omnigent_agent.Fail, match="line 1 has an empty `` span"):
+        omnigent_agent.start(og, "claude", "t", "the `` file and a `` helper", tmp_path / "r.md", None, 0)
+
+
 def test_a_failed_session_reports_its_last_task_error_and_runner_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
