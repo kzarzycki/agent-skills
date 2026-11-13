@@ -9,7 +9,7 @@
     uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
-    uv run scripts/approvals.py land [<pr>] [--wait]       # land every landable PR as one gated batch; exit 0, 1 or 3
+    uv run scripts/approvals.py land [<pr> [--only]] [--wait]  # land every landable PR as one gated batch; exit 0, 1 or 3
     uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
     uv run scripts/approvals.py approve merge <pr> --head <sha> --by <owner|delegate> [--withdraw]  # a go on that head
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
@@ -94,22 +94,31 @@ left no loop trail (no verifier review, no `Approved: spec` record or `approved:
 workflow posts success and its author merges it their usual way; `land` never takes it into a batch, and named,
 prints the same line and exits 1, so the loop never merges it. Risk rules and `risk:high` hold no such PR. `check build` is
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
-`land [<pr>]` is the one way an agent merges. It lands every landable PR into one base, the named PR's or else the
+`land [<pr> [--only]]` is the one way an agent merges. It lands every landable PR into one base, the named PR's or else the
 repository's default branch, as one batch:
-1. It takes the landing lock: it pushes a commit with no parent (the base's tree, titled `landing lock`, with its pid
-and a random value, so two lands in the same second never make the same commit and both push it) to
-`refs/loop/landing` on `origin`, which refuses a second such push while the ref is there, as no fast-forward, so two
-hosts never land at once; a ref outside `refs/heads/` starts no workflow. The lock's commit date is its age. Held by
-another: exit 3, naming its age. One older than 2 hours is stale, left by a land that died: it is deleted and taken. The
-lock is released at the end whatever happened, a SIGTERM or SIGHUP included (exit 128 plus the signal), but only while
-it is still ours, so a stale one broken and taken by another land stays theirs; SIGKILL leaves it to be broken as stale.
+1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
+pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
+tip says the state: each lock commit holds the empty tree, its title says `landing lock: held` or `landing lock: free`
+with `[skip ci]` (so a project whose workflows run on every branch push starts none), its body the pid and a
+random value (no hostname, since the branch is public and never rewritten) (so two lands in the same second never make the same commit), and its commit date is its age. A land
+pushes a `held` child of a `free` tip (or the first lock commit, with no parent, where the branch is missing), leased on
+that tip with `--force-with-lease`, so of two lands from one tip one wins. A `held` tip is another land's: exit 3,
+naming its holder and age. One older than 2 hours is stale, left by a land that died: it is broken and taken in the same
+push, a `held` child of it. The lock is released at the end whatever happened, a SIGTERM or SIGHUP included (exit 128
+plus the signal), by pushing a `free` child of ours leased on it, so a stale one broken and taken by another land stays
+theirs; SIGKILL leaves it to be broken as stale. No push deletes a ref or rewrites one, so the branch's history only
+grows. While the previous version's lock `refs/loop/landing` is on `origin` (read, never written), `land` waits on it
+(exit 3), so a host still on that version and this one never land at once; one older than 2 hours is stale, passed
+over and left in place. The base is fetched once the lock is taken, so the batch starts from the base as it is then.
 2. The candidates, oldest PR first, are every open PR into the base from this repository, not a draft, that holds every
 proof of `check merge` but its CI wait, is not outside the loop (`opt_out`, below), has the owner's go where it is high
 risk, and has the checks the base requires on GitHub (`required_checks`, but `loop:approvals`, which is check merge's
 own output) green on its head. Under `ci: false` the head needs no `local-ci` pass of its own: the gate on the batch is
 the proof. With loop.md's `head_proof`, the head also carries its head proof (below), else it is no candidate and `land`
 names the command that records it. `land <pr>` on a draft marks it ready first, never on a missing proof, since ready starts CI; while the
-checks that starts are required, it waits (exit 3). A named PR that is no candidate says why: a missing proof exits 1,
+checks that starts are required, it waits (exit 3). `land <pr> --only` (with or without `--wait`) makes the named PR the only candidate: every other PR is left untouched (not
+marked ready, commented on, evicted or merged), and the rest is as without the flag; `--only` without a PR exits 2.
+A named PR that is no candidate says why: a missing proof exits 1,
 a wait for the owner or a pending required check 3, a red required check 1.
 3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
 `pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
@@ -119,8 +128,8 @@ not red, so it is neither evicted nor turned back to draft. Then it merges each 
 (`git merge --no-ff`). A PR that conflicts is skipped, with a comment, once per head, saying it conflicts with the base
 plus the PRs merged before it, so it needs the base merged in.
 4. It gates the result's tree. A pass is reused when the gate command passed on that tree before (reusable, below):
-this clone's record, or a `gate` status on a candidate's head with that same tree, so one PR already up to date with
-the base runs no gate. GitHub's required checks never stand in for it, since the pass is then published as the gate
+this clone's record, or a record branch in origin for a candidate's head with that same tree, so one PR already up to
+date with the base runs no gate. GitHub's required checks never stand in for it, since the pass is then published as the gate
 command's. Otherwise it runs the gate there as `local-ci` does (below), its log under the git common dir, and records
 the pass by tree; a gate that leaves the worktree changed is red, since it no longer ran on the batch as merged.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
@@ -130,12 +139,15 @@ body GitHub builds from the commits (one: its message after the subject, its co-
 several: each message as a `* ` item, then `---------` and their co-authors), under the PR-description default the
 PR's body, and under the blank default none. A merge GitHub refuses, or leaves unmerged
 (a base requiring a merge queue only queues it, to merge later on a tree no gate saw), stops there: that PR and those
-after it wait for the next land. Then it fetches and compares the base's tree with the gated tree. Equal: the pass is published as the `gate` status on the new tip.
+after it wait for the next land. Then it fetches and compares the base's tree with the gated tree. Equal: the pass is
+published (below) on the new tip. It then deletes the record branches no head needs: those of the trees it landed, and
+those over a day old whose tree is no open PR's head (a head replaced or never landed; the day spares a record pushed
+before its PR opened). A refused delete is said and never fails the landing.
 Different, because a refusal left only part of the batch on the base or someone merged by hand meanwhile: it says
 which, gates the tip, and publishes only a pass. Each PR landed gets one comment, `Landed`, then `Base:` the new tip,
 `Tree:` the tree it landed (the base with it and the PRs before it merged), `Gate:` the command, `run` or `reused`,
 and the tree it passed on, and `Batch:` the PRs landed together.
-6. Red: it lands one PR at a time instead, each merged onto the last green commit and gated alone. A PR red alone is
+6. Red: it lands one PR at a time instead, each merged onto the last green commit and gated alone (a one-PR batch's red run counts as its first run alone). A PR red alone is
 gated once more (green then is a flake, and it lands), then evicted: back to draft, so later batches leave it out until
 `land <pr>` marks it ready again, and a comment holding its log's last 30 lines. When the first PR alone is red twice,
 the bare base is gated: red, the run stops (exit 1) and evicts nobody, since every PR would fail on that base.
@@ -157,9 +169,27 @@ meanwhile; a base push refused puts the PR's branch back on its head. It is no c
 repository (its branch isn't ours to push), targets a base other than the section's, has auto-merge or the merge queue
 on (GitHub would sign that squash), or when `origin` isn't the PR's repo, the checkout signs nothing or the signers file
 is missing. Without the section nothing changes.
+`where: host | cloud | both` (default `host`) says where `land` runs: it refuses elsewhere, exit 1, before reading any
+PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`; its checkout signs with the session's own
+key, shared across that service's users, so there `land` refuses without the section (GitHub's merge is GraphQL, which
+the session's proxy refuses, and signs with GitHub's key), when it names no `signing_key_env`, and when that variable
+is unset, empty, no unencrypted SSH private key, or a key whose public half is no line of the allowed signers file, each
+refusal naming which and never the key. Else it writes the key to a mode-0600 file in a fresh temporary directory,
+removed however the land ends, and every git command of the land runs with it (`-c gpg.format=ssh -c
+user.signingkey=<file> -c gpg.ssh.program=ssh-keygen`, over the session's key and signing program), so each squash is
+signed and verified with it. The batch's pass is published as below: GitHub refusing the status
+there, it goes to origin as a ref. There REST alone answers, and it says neither whether a PR is in a merge queue nor
+whether classic branch protection requires one, so a PR is a candidate there only with `merge_queue: false` in the
+section, the project's word that its base requires none (`required_checks` still refuses a ruleset that does); a draft is refused, and an evicted PR stays
+ready, each said, since GitHub changes a draft only over GraphQL. Off a cloud session only `where` is new.
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
 printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
+In a shallow clone (a cloud session's), before the gate it fetches the base (the PR's, else the default branch) into
+`refs/remotes/origin/<base>` and deepens (`git fetch --deepen 50`, up to three times, then `--unshallow`) until `git
+merge-base origin/<base> HEAD` answers, so a gate step that diffs against the merge base gets a ref; each step's outcome
+is one `local-ci:` line on stderr. A full clone runs nothing new, and no tracked file changes, so the recorded tree is
+the same.
 The check is the gate: loop.md's `gate` under `loop` (default `mise run check:all`), variables it sets in front of
 its command included (`GATE_UI_TESTS=0 mise run check:all`), one command run with no shell, so an operator
 such as `&&` is refused. It runs with every name loop.md's `local_ci_env` lists
@@ -180,25 +210,23 @@ follows that run instead of starting another (after it, one with other arguments
 naming the exit), with the log's path. The run's stderr goes to the same log, so a caller prints the check's stderr and
 a refusal (`exited N: nothing recorded`) on its stdout. Stopping the caller, Ctrl-C included, leaves the run going:
 `kill -- -<pid>`, with the pid `<head>.pid` holds, stops its process group.
-Every pass this clone holds, run or reused, is published as a commit status on the head it covers:
-success, context `gate`, description `Tree <tree> on <commit's first 12>: <command>` (the command's digest, `sha256 <key>`, when
-it doesn't fit GitHub's 140 characters), since `gh`'s token can write a status where a check run needs a GitHub App.
-GitHub refusing it (a commit not pushed yet) or unreachable is said and changes nothing else: the record stays local,
-and a later `local-ci` publishes it. Where GitHub refuses the status but origin takes a push, as a cloud session's
-proxy does, the pass is pushed to origin as a ref instead, `refs/loop/gate/<tree>-<command's key>` or, where origin
-refuses a ref outside branches, the branch `loop-gate/<tree>-<key>`, which `land` deletes once the PR lands; its commit
-holds the tree, the commit the pass ran on as its parent, and the status's description and `Env:` line as its message,
-and `local-ci` says which ref. A pass is reusable for a commit when this clone's record for its tree holds exit
-0 under today's command, or when a `gate` status on that commit itself names its tree and today's command, posted by
-the account running this or a writer, since anyone who can only open a PR must never publish a pass, or else when
-origin holds that tree's ref under today's command whose commit says that tree, command and env: a ref in the base repo
-is its write access, as a status's writer is, so a ref on a PR's fork never counts, and it counts at every risk. A host
-that reuses a ref writes the `gate` status it holds on the head, so the PR shows the pass. So any host
-reuses it, and adding a name to `local_ci_env` keeps every pass. `local-ci <pr>` reads the PR's head through REST
+Every pass this clone holds, run or reused, is published one way from every session, host or cloud: pushed to origin
+as the branch `loop-gate/<tree>-<command's key>` (a branch, since a cloud session's proxy pushes nothing else), on a
+commit holding the tree, the commit the pass ran on as its parent, and as its message the line `Tree <tree> on
+<commit's first 12>: <command>` (the command's digest, `sha256 <key>`, when it doesn't fit GitHub's 140 characters)
+and an `Env:` line; `local-ci` says which branch. origin refusing the push (a commit not pushed yet) or unreachable is
+said and changes nothing else: the record stays local, and a later `local-ci` publishes it. The pass is then shown as
+a commit status on the head, success, context `gate`, description that line, where the token allows; a refused status
+is said and is no error, since no decision reads it: anyone who can write a status may type one. A pass is reusable
+for a commit when this clone's record for its tree holds exit 0 under today's command, or else when origin holds that
+tree's record branch under today's command whose commit says that tree, command and env: a branch in the base repo is
+its write access, so one on a PR's fork never counts, and it counts at every risk. A clone that reuses a record writes
+the `gate` status it holds on the head, so the PR shows the pass. So any clone reuses a pass from any other, and
+adding a name to `local_ci_env` keeps every pass. `local-ci <pr>` reads the PR's head through REST
 where GraphQL answers 403, so it runs in a cloud session too. `local-ci <pr>`, `local-ci --record`, `land`, `check
 queue`, `batch` and `check merge` read it the same way; the posted comment then says it was reused by tree from the
 pass recorded on that commit, and when, instead of running the check again. A refusal for a missing pass names each
-other command the tree passed under, from this clone's records and the head's statuses, and today's. The host stays
+other command the tree passed under, from this clone's records and the tree's record branches, and today's. The host stays
 in the record: nothing `approvals.py` posts names it, and posted text writes the home directory `~` (public), since a
 public board would show both. The posted comment names the gate's command and the variables it sets (`Env: A=1`, or
 `Env: default`).
@@ -208,7 +236,7 @@ does, but takes each `env` name the caller's environment sets from it instead of
 assignment of that name, so the command it records names the value (`GATE_UI_TESTS=smoke mise run check:all`). It
 publishes the pass as the commit status `<context>` instead of `gate`, described `Tree <tree> on <commit's first 12>:
 <name>=<value> ...` for the `env` names it ran with (`default` for none), so the verifier reads the tier off the head.
-`land` reads it as it reads `gate`: a green status of that context on the head commit itself, naming the head's tree,
+`land` reads it, the one status a decision reads for a pass: a green status of that context on the head commit itself, naming the head's tree,
 by the account running this or a writer. A status on an older head never counts, since a status belongs to one commit.
 Which tier a change needs is the project's rule; `land` checks only that a head proof exists.
 Deprecated: a project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
@@ -471,9 +499,12 @@ REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTI
 CHECKED = "Local check passed"
 # a gate pass published as a commit status: its context, and its description (described): tree, commit, command
 PUBLISHED = "gate"
-# where publish() pushes a pass as a ref in origin when GitHub refuses the status, each tried in turn: a session whose
-# proxy refuses a ref outside refs/heads/ may still push a branch, which land deletes once the PR lands (drop_records)
-RECORD_REFS = ("refs/loop/gate/{}", "refs/heads/loop-gate/{}")
+# where publish() pushes a pass in origin, the one route another clone reads it by: a branch, since a cloud session's
+# proxy refuses a push outside refs/heads/; land deletes it once no head needs it (drop_records)
+RECORD_BRANCH = "refs/heads/loop-gate/{}"
+# how old a record branch whose tree is no open PR's head must be before land deletes it: a record may be pushed
+# before its PR is opened
+RECORD_AGE = 24 * 60 * 60
 # a pushed record's author and committer: no person's name or address reaches the repo through it
 RECORDER = {"GIT_AUTHOR_NAME": "loop", "GIT_AUTHOR_EMAIL": "loop@invalid"} | {
     "GIT_COMMITTER_NAME": "loop",
@@ -500,8 +531,14 @@ ATTACHMENT = "https://github.com/user-attachments/"
 POLL, CEILING = 30, 2 * 60 * 60
 # the signals that stop a land and release its lock (stopped)
 STOPS = (signal.SIGTERM, signal.SIGHUP)
-# the landing lock: a ref outside refs/heads/, so pushing it starts no workflow
-LOCK = "refs/loop/landing"
+# the landing lock of a base: a branch that only moves forward, since a host may be allowed only to create and
+# fast-forward a branch (a cloud session's proxy refuses a push outside refs/heads/ and every delete); its tip's title
+# says whether it is held, and [skip ci] in it starts no workflow
+LOCK = "refs/heads/loop-landing/{}"
+HELD, FREE = "landing lock: held", "landing lock: free"
+# the lock before #814, a ref outside refs/heads/: a land waits while it is on origin, never writing it, so a host still
+# on that version and this one never land at once
+LEGACY = "refs/loop/landing"
 # how ci() ends its refusal of a head with more checks than the one page it reads, which no CI run clears
 PAGED = "CI checks: the gate reads one page"
 
@@ -551,13 +588,19 @@ def label_names(tracker: str) -> dict[str, set[str]]:
 
 
 class Table(dict):
-    """A settings section whose every key is required, such as `land`."""
+    """A settings section whose every key is required but those `optional` names, such as `land`."""
+
+    def __init__(self, *args: Any, optional: tuple[str, ...] = (), **kinds: Any) -> None:
+        super().__init__(*args, **kinds)
+        self.optional = frozenset(optional)
 
 
 class Choice(tuple):
     """A setting that is one of these names, such as `loop.delegate`."""
 
 
+# where `land` may run (loop.md's `land.where`): a host, a cloud session (CLOUD), or either
+PLACES = ("host", "cloud", "both")
 # loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
 # A list holds strings; `bot.<login>` is a section per bot.
 STAGES = ("intent", "spec", "plan", "build", "review", "land")
@@ -583,7 +626,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
-    "land": Table(signed_squash_to=str, allowed_signers=str),
+    "land": Table(
+        signed_squash_to=str,
+        allowed_signers=str,
+        where=Choice(PLACES),
+        signing_key_env=str,
+        merge_queue=bool,
+        optional=("where", "signing_key_env", "merge_queue"),
+    ),
     "carry_over_main": Table({"except": list}),
 }
 # docs/agents/issue-tracker.md's settings: in each section every key is a name, its value a description or a new name
@@ -702,7 +752,9 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
             raise Refused(
                 f"{file}'s {where} is empty"
             )  # a name's description may be empty, a path may not
-    if isinstance(schema, Table) and (missing := [key for key in schema if key not in section]):
+    if isinstance(schema, Table) and (
+        missing := [key for key in schema if key not in section and key not in schema.optional]
+    ):
         raise Refused(f"{file}'s `{name}` lacks `{'`, `'.join(missing)}`")
     return section
 
@@ -1833,6 +1885,101 @@ def opted_out(loop: str | None) -> bool:
     return settings(loop).get("opt_out", False)
 
 
+# the variable Claude Code sets to `true` in a cloud session's VM, where the checkout's signing key is the session's own
+CLOUD = "CLAUDE_CODE_REMOTE"
+# the config every git command takes during a cloud land (placed): sign and verify a squash with the landing key, through
+# ssh-keygen itself rather than the VM's signing program, which signs with the session's key
+SIGNING: list[str] = []
+
+
+def in_cloud() -> bool:
+    return os.environ.get(CLOUD) == "true"
+
+
+def listed(public: str, signers: Path) -> bool:
+    """Whether the public key `public` (`<type> <base64> [comment]`) is a line of the allowed signers file."""
+    key = public.split()[:2]
+    lines = signers.read_text().splitlines()
+    return len(key) == 2 and any(
+        fields[i : i + 2] == key
+        for line in lines
+        if not line.lstrip().startswith("#")
+        for fields in [line.split()]
+        for i in range(len(fields) - 1)
+    )
+
+
+@contextlib.contextmanager
+def placed(loop: str | None) -> Any:
+    """Refuse a land where loop.md's `land.where` (default `host`) excludes the place it runs, before any PR is read.
+    In a cloud session (CLOUD) also refuse one without the `land` section, since GitHub's own merge is GraphQL there
+    and signs with GitHub's key, and one whose `signing_key_env` variable is unset, empty or holds a key the allowed
+    signers lack; else hold that key in a mode-0600 file in a fresh temporary directory, removed whatever happens, and
+    sign each squash with it (SIGNING). The key and the variable's value are never printed."""
+    global SIGNING
+    land, cloud = settings(loop).get("land"), in_cloud()
+    place = "a cloud session" if cloud else "a host"
+    if cloud and land is None:
+        raise Refused(
+            "land in a cloud session needs loop.md's `land` section: without it GitHub merges, over GraphQL, which"
+            " the session's proxy refuses, and signs with GitHub's key"
+        )
+    where = (land or {}).get("where", "host")
+    if where not in ("both", "cloud" if cloud else "host"):
+        raise Refused(f"loop.md's `land.where` is `{where}`, so land does not run in {place}")
+    if not cloud:
+        yield
+        return
+    name = land.get("signing_key_env")
+    if not name:
+        raise Refused(
+            "land in a cloud session signs with the key in the variable loop.md's `land.signing_key_env` names,"
+            " and it names none"
+        )
+    key = os.environ.get(name)
+    if key is None:
+        raise Refused(f"the variable {name} (loop.md's `land.signing_key_env`) is not set")
+    if not key.strip():
+        raise Refused(f"the variable {name} (loop.md's `land.signing_key_env`) is empty")
+    signers = Path(land["allowed_signers"]).expanduser()
+    if not signers.is_file():
+        raise Refused(f"no allowed signers file at {signers}")
+    folder = Path(tempfile.mkdtemp(prefix="land-key-"))
+    try:
+        file = folder / "key"
+        with os.fdopen(os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as out:
+            out.write(key if key.endswith("\n") else key + "\n")
+        public = subprocess.run(
+            ["ssh-keygen", "-y", "-P", "", "-f", str(file)],
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+        # ssh-keygen's error is not repeated: it is about the key, which stays unprinted
+        if public.returncode:
+            raise Refused(
+                f"the variable {name} (loop.md's `land.signing_key_env`) holds no SSH private key without a"
+                " passphrase"
+            )
+        if not listed(public.stdout, signers):
+            raise Refused(
+                f"the key in the variable {name} (loop.md's `land.signing_key_env`) is not in {signers}: add its"
+                " public key there"
+            )
+        SIGNING = [
+            *("-c", "gpg.format=ssh"),
+            *("-c", f"user.signingkey={file}"),
+            *("-c", "gpg.ssh.program=ssh-keygen"),
+        ]
+        try:
+            yield
+        finally:
+            SIGNING = []
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def signed(loop: str | None) -> tuple[str, Path] | None:
     """loop.md's `land` section as (branch, signers), None without one."""
     land = settings(loop).get("land")
@@ -1848,19 +1995,34 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
         return f"{where} targets {pull['baseRefName']}, but the policy lands signed squashes only to {branch}"
     if pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]:
         return f"{where}: auto-merge or the merge queue would merge it with GitHub's signature: turn it off"
-    if pull["isInMergeQueue"] is None:
-        return f"{where}: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's signature: land it where GraphQL answers"
+    # REST can't say whether a PR is queued, nor whether classic branch protection requires a queue (required_checks()
+    # refuses only a ruleset's): a cloud session, where only REST answers, takes the project's word in loop.md
+    if pull["isInMergeQueue"] is None and not (
+        in_cloud() and settings(project()[1]).get("land", {}).get("merge_queue") is False
+    ):
+        return (
+            f"{where}: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's"
+            " signature: land it where GraphQL answers, or, where the base requires no merge queue, say so with"
+            " `merge_queue: false` in loop.md's `land` section"
+        )
     # the URL as configured, before any `insteadOf` rewrite
     origin = subprocess.run(
         ["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True, check=False
     )
     if github_repo(origin.stdout.strip()) != pull["baseRepository"]["nameWithOwner"].lower():
         return f"this checkout's `origin` is not {pull['baseRepository']['nameWithOwner']}, where {where} lives"
+    # with SIGNING, as the land signs: a cloud land's own key over the VM's
     config = subprocess.run(
-        ["git", "config", "--get", "user.signingkey"], capture_output=True, text=True, check=False
+        ["git", *SIGNING, "config", "--get", "user.signingkey"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     gpg = subprocess.run(
-        ["git", "config", "--get", "gpg.format"], capture_output=True, text=True, check=False
+        ["git", *SIGNING, "config", "--get", "gpg.format"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if not config.stdout.strip() or gpg.stdout.strip() != "ssh":
         return "this checkout signs no commits with an SSH key: set `gpg.format ssh` and `user.signingkey`"
@@ -3020,7 +3182,8 @@ def rest_threads(number: int) -> dict[str, Any]:
 def rest_pull(pr: int) -> dict[str, Any]:
     """PR #pr as PULL reads it, from REST, call by call. `closingIssuesReferences` is empty, since REST has no such
     link: the PR's issues are its body's `Closes`, `Part of` and `Implements` lines (closing_issues). Whether it is in
-    a merge queue can't be read: `isInMergeQueue` is None, which unsignable() refuses."""
+    a merge queue can't be read: `isInMergeQueue` is None, which unsignable() refuses unless a cloud session's loop.md
+    says `merge_queue: false`."""
     found = rest(f"repos/{{owner}}/{{repo}}/pulls/{pr}")
     base, head = found["base"], found["head"]
     reviews = [
@@ -3564,17 +3727,17 @@ def branch_issue() -> int | None:
     return int(found[1]) if found else None
 
 
-def land(pr: int | None, wait: bool = False) -> int:
+def land(pr: int | None, wait: bool = False, only: bool = False) -> int:
     """landing() once, or with `wait` again every POLL seconds while it waits on something time clears, printing each
     new state once: until it ends, or exit 3 at CEILING."""
     if not wait:
-        return landing(pr)[0]
+        return landing(pr, only)[0]
     deadline, said = time.monotonic() + CEILING, ""
     while True:
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
-                code, again = landing(pr)
+                code, again = landing(pr, only)
         finally:
             # a background command's log: each state once, not every 30 seconds; a held lock's age is no new state
             if (state := re.sub(r"\d+ minutes? ago", "", out.getvalue())) != said:
@@ -3588,10 +3751,18 @@ def land(pr: int | None, wait: bool = False) -> int:
         time.sleep(POLL)
 
 
-def landing(pr: int | None) -> tuple[int, bool]:
+def landing(pr: int | None, only: bool = False) -> tuple[int, bool]:
     """Land every landable PR into the base (PR `pr`'s, else the default branch) as one gated batch, under the landing
-    lock; the exit, and whether a wait would end it (lock, CI on a head), so land --wait runs it again."""
+    lock, where loop.md lets land run (placed) (`only`: the named PR alone); the exit, and whether a wait would end it
+    (lock, CI on a head), so land --wait runs it again."""
     tracker, loop = project()
+    with placed(loop):
+        return landing_here(pr, tracker, loop, only)
+
+
+def landing_here(
+    pr: int | None, tracker: str | None, loop: str | None, only: bool = False
+) -> tuple[int, bool]:
     named = None if pr is None else pull_request(pr)
     if named is not None:
         if named["state"] == "MERGED":
@@ -3602,46 +3773,37 @@ def landing(pr: int | None) -> tuple[int, bool]:
     base = (
         named["baseRefName"]
         if named
-        else gh(
-            "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"
-        ).strip()
+        else fast(
+            lambda: gh(
+                "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"
+            ).strip(),
+            lambda: rest("repos/{owner}/{repo}")["default_branch"],
+        )
     )
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
     stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
-    ours, taken = None, None  # taken stays None while the lock's push may have reached origin
+    # every lock commit pushed, each before its push; taken stays None while the last one's push may have reached origin
+    held: list[str] = []
+    taken = None
     try:
         for sig in stoppable:  # a land under nohup still outlives a hangup
             signal.signal(sig, stopped)
-        ours = lock_commit(base)
-        taken = locked(ours)
+        taken = locked(base, held)
         if not taken:
             return WAITING, True
-        return batched(named, base, tracker, loop)
+        # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
+        git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        return batched(named, base, tracker, loop, only)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
         # children (ssh, gh as the credential helper) unblock the signals, and a stop of the land's group would end them
         mask = signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
-        if ours and taken is not False:
-            # only while it is still ours: a lock broken as stale and taken by another land stays theirs
-            released = subprocess.run(
-                [
-                    "git",
-                    "push",
-                    "-q",
-                    "--no-verify",
-                    f"--force-with-lease={LOCK}:{ours}",
-                    "origin",
-                    f":{LOCK}",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                start_new_session=True,
-            )
+        if held and taken is not False:
+            released = unlock(base, held[-1])
             if released.returncode and taken:
                 print(
-                    f"the landing lock {LOCK} was not released: {' '.join(released.stderr.split())}"
+                    f"the landing lock {lock_name(base)} was not released: {' '.join(released.stderr.split())}"
                 )
         for sig, handler in previous.items():
             if handler is not None:  # None: a handler set outside Python, which can't be put back
@@ -3665,67 +3827,114 @@ def stopped(signum: int, _frame: Any) -> None:
     sys.exit(128 + signum)
 
 
-def lock_commit(base: str) -> str:
-    """The landing lock's commit: parentless, the base's tree, with the pid and a random value, since two lands in the
-    same second, under one identity, would otherwise build one commit, and the second push of it would succeed as a
-    no-op."""
-    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+def lock_name(base: str) -> str:
+    """The landing lock's branch for `base`, as messages name it."""
+    return LOCK.format(base).removeprefix("refs/heads/")
+
+
+def lock_commit(title: str, parent: str | None) -> str:
+    """A landing lock commit: the empty tree, `title` (HELD or FREE) with [skip ci], `parent` the tip it moves on from,
+    and the pid and a random value in its body (no hostname: the branch is public and never rewritten), since two lands in the same second, under one identity, would
+    otherwise build one commit, and the second push of it would succeed as a no-op. Its commit date is its age."""
+    empty = git("hash-object", "-t", "tree", "-w", os.devnull).strip()
     return git(
         "commit-tree",
+        *(["-p", parent] if parent else []),
         "-m",
-        f"landing lock\n\npid {os.getpid()}, nonce {os.urandom(8).hex()}",
-        f"refs/remotes/origin/{base}^{{tree}}",
+        f"{title} [skip ci]\n\npid {os.getpid()}, nonce {os.urandom(8).hex()}",
+        empty,
     ).strip()
 
 
-def locked(ours: str) -> bool:
-    """Take the landing lock: push `ours` (lock_commit) to LOCK, which origin refuses as no fast-forward while another
-    is there, so any host sees it. Its commit date is its age; one older than CEILING is stale, deleted and taken.
-    False after saying who holds it since when."""
-    for _ in range(2):
-        pushed = subprocess.run(
-            ["git", "push", "-q", "--no-verify", "origin", f"{ours}:{LOCK}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+def leased(base: str, ours: str, tip: str | None, **kw: Any) -> subprocess.CompletedProcess[str]:
+    """Push `ours`, a child of `tip` (None: the branch is missing), to the base's lock branch, leased on `tip`, so of
+    two lands pushing from one tip one wins and nothing is ever rewritten. --no-verify, since a lock commit holds the
+    empty tree and a project's pre-push checks have nothing of it to check."""
+    ref = LOCK.format(base)
+    return subprocess.run(
+        [
+            "git",
+            "push",
+            "-q",
+            "--no-verify",
+            f"--force-with-lease={ref}:{tip or ''}",
+            "origin",
+            f"{ours}:{ref}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        **kw,
+    )
+
+
+def unlock(base: str, ours: str) -> subprocess.CompletedProcess[str]:
+    """Release the landing lock: push a FREE child of `ours`, leased on it, so a lock broken as stale and taken by
+    another land meanwhile stays theirs. In a session of its own (landing says why)."""
+    return leased(base, lock_commit(FREE, ours), ours, start_new_session=True)
+
+
+def locked(base: str, held: list[str]) -> bool:
+    """Take the base's landing lock: push a HELD child of its FREE tip (the first lock commit, with no parent, where the
+    branch is missing), leased on that tip. A HELD tip is another land's; one older than CEILING by its commit date is
+    stale, broken and taken by the same push of a HELD child. Each commit is put in `held` before its push, so a stop
+    as it reaches origin still releases it. False, after saying who holds it since when, while another land holds it
+    or LEGACY, the previous version's lock, is on origin and no older than CEILING."""
+    ref, name = LOCK.format(base), lock_name(base)
+    tip, refused = (
+        "",
+        "",
+    )  # "": not read yet; a refusal of a push from the tip read again is origin's, not a race's
+    for _ in range(3):
+        listed = {
+            line.split("\t")[1] for line in git("ls-remote", "origin", LEGACY, ref).splitlines()
+        }
+        if LEGACY in listed:
+            try:
+                git("fetch", "-q", "origin", f"+{LEGACY}:{LEGACY}")
+            except subprocess.CalledProcessError as exc:
+                if git(
+                    "ls-remote", "origin", LEGACY
+                ).strip():  # still there: the fetch itself failed
+                    raise Refused(
+                        f"could not read the previous version's landing lock {LEGACY}: {' '.join(str(exc.stderr).split())}"
+                    ) from exc
+                continue  # released since the listing: read origin again
+            age = int(time.time()) - int(git("log", "-1", "--format=%ct", LEGACY).strip())
+            if age <= CEILING:
+                print(
+                    f"a land of the previous version holds the landing lock {LEGACY}: land --wait waits for it"
+                )
+                return False
+            # stale, left by a land that died: passed over, never written, as the previous version would break it
+        before, tip = tip, None
+        if ref in listed:
+            git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
+            tip = git("rev-parse", f"refs/remotes/origin/{name}").strip()
+        if refused and tip == before:
+            raise Refused(f"origin refused the landing lock {name}: {refused}")
+        if tip:
+            stamp, title, holder = git("log", "-1", "--format=%ct%x00%s%x00%b", tip).split("\0")
+            if title.startswith(HELD):
+                taken = int(stamp)
+                age = int(time.time()) - taken
+                holder = holder.strip().split(", nonce ")[0]
+                if age <= CEILING:
+                    print(
+                        f"another land holds the landing lock {name} ({holder}), taken {age // 60} minutes ago"
+                        f" ({time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(taken))}): land --wait waits for it"
+                    )
+                    return False
+                print(
+                    f"the landing lock {name} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as stale"
+                )
+        held.append(lock_commit(HELD, tip))
+        pushed = leased(base, held[-1], tip)
         if not pushed.returncode:
             return True
-        held = git("ls-remote", "origin", LOCK).split()
-        if not held:
-            raise Refused(
-                f"origin refused the landing lock {LOCK}: {' '.join(pushed.stderr.split())}"
-            )
-        try:
-            git("fetch", "-q", "origin", LOCK)
-            taken = int(git("log", "-1", "--format=%ct", held[0]).strip())
-        except subprocess.CalledProcessError:  # released meanwhile: push again
-            continue
-        age = int(time.time()) - taken
-        if age <= CEILING:
-            print(
-                f"another land holds the landing lock {LOCK}, taken {age // 60} minutes ago"
-                f" ({time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(taken))}): land --wait waits for it"
-            )
-            return False
-        print(
-            f"the landing lock {LOCK} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as stale"
-        )
-        subprocess.run(
-            [
-                "git",
-                "push",
-                "-q",
-                "--no-verify",
-                f"--force-with-lease={LOCK}:{held[0]}",
-                "origin",
-                f":{LOCK}",
-            ],
-            capture_output=True,
-            check=False,
-        )
+        refused = " ".join(pushed.stderr.split())
     print(
-        f"another land took the landing lock {LOCK} as this one broke it: land --wait waits for it"
+        f"other lands kept taking the landing lock {name} as this one tried to: land --wait waits for it"
     )
     return False
 
@@ -3763,6 +3972,12 @@ def landable(
     for line in flag(pull, issues, loop):
         print(line)
     if pull["isDraft"]:
+        # GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses
+        if in_cloud():
+            print(
+                f"{where} is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
+            )
+            return 1, False
         # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
         gh("pr", "ready", str(pull["number"]))
         print(f"{where} is ready now")
@@ -3786,7 +4001,11 @@ def landable(
 
 
 def batched(
-    named: dict[str, Any] | None, base: str, tracker: str | None, loop: str | None
+    named: dict[str, Any] | None,
+    base: str,
+    tracker: str | None,
+    loop: str | None,
+    only: bool = False,
 ) -> tuple[int, bool]:
     """Under the lock: merge every candidate's head onto `base` locally, oldest PR first, gate the result's tree once
     (or reuse a pass on it), and merge each through GitHub in that order; a red batch lands one PR at a time."""
@@ -3796,7 +4015,9 @@ def batched(
     candidates = []
     listed = {
         other["number"]
-        for other in open_pulls()
+        for other in (
+            [] if only else open_pulls()
+        )  # `only`: no other PR is read, let alone touched
         if other["baseRefName"] == base and not other["isDraft"]
     } | ({named["number"]} if named else set())
     for number in sorted(listed):
@@ -3877,7 +4098,8 @@ def merge_batch(
         reset(work, green)
         if not merged_onto(pull, work, base, [p["number"] for p, *_ in landed], failed):
             continue
-        tree, how = gate_batch(work, [pull])
+        # a one-PR batch's red run was this PR merged onto the same tip, the same tree: that is its first run alone
+        tree, how = (tree, "") if len(merged) == 1 else gate_batch(work, [pull])
         if not how:
             print(
                 f"PR #{pull['number']} is red alone on {green}: once more, in case it was a flake"
@@ -4069,7 +4291,13 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
         tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
     except OSError:
         tail = []
-    gh("pr", "ready", "--undo", str(number))
+    # GitHub turns a PR back to draft only over GraphQL, which a cloud session's proxy refuses
+    if in_cloud():
+        print(
+            f"{where} stays ready, since a cloud session can't make it a draft: make it one on GitHub"
+        )
+    else:
+        gh("pr", "ready", "--undo", str(number))
     comment(
         number,
         f"{EVICTED}\nHead: {head}\n\n`{gate()[0]}` failed twice on it merged alone onto {base} at {green}: fix it,"
@@ -4198,7 +4426,6 @@ def merges(
         done.append((pull, tree, gated, how))
     if not done:
         return
-    drop_records([pull["headRefOid"] for pull, *_ in done], command)
     git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
     tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
     actual, (_, tree, gated, _) = git("rev-parse", f"{tip}^{{tree}}").strip(), done[-1]
@@ -4218,6 +4445,8 @@ def merges(
                 publish(tip, {"head": tip, "tree": actual, "command": command})
         except MachineFault as exc:  # the PRs landed: each still gets its comment
             print(exc)
+    # after every publication above, which pushes the landed tree's record again when it is the heads' tree
+    drop_records([pull["headRefOid"] for pull, *_ in done])
     numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
     for pull, tree, gated, how in done:
         comment(
@@ -4468,7 +4697,9 @@ def verdict(pr: int, report: Path) -> int:
 
 
 def git(*args: str) -> str:
-    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+    return subprocess.run(
+        ["git", *SIGNING, *args], check=True, capture_output=True, text=True
+    ).stdout
 
 
 LOCAL_CI = ["mise", "run", "check:all"]
@@ -4590,6 +4821,78 @@ def checkout_state() -> tuple[str, str]:
     return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
 
 
+def base_branch(pr: int | None) -> str | None:
+    """The branch `local-ci` diffs against: PR `pr`'s base, else the default branch (`origin/HEAD`, else what `origin`
+    says its HEAD is); None when neither answers."""
+    if pr is not None:
+        return str(pull_request(pr)["baseRefName"])
+    with contextlib.suppress(subprocess.CalledProcessError):
+        return (
+            git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+            .strip()
+            .removeprefix("origin/")
+        )
+    with contextlib.suppress(subprocess.CalledProcessError):
+        for line in git("ls-remote", "--symref", "origin", "HEAD").splitlines():
+            if line.startswith("ref: refs/heads/"):
+                return line.split("\t")[0].removeprefix("ref: refs/heads/")
+    return None
+
+
+DEEPEN_STEPS = 3
+DEEPEN_BY = 50
+
+
+def deepened(pr: int | None) -> None:
+    """In a shallow clone, fetch the base (base_branch) into `refs/remotes/origin/<base>` and deepen until `git
+    merge-base origin/<base> HEAD` answers (`--deepen 50` up to DEEPEN_STEPS times, then `--unshallow`), so a gate
+    step that diffs against the merge base gets a ref; each step's outcome is a line on stderr. A full clone runs
+    nothing, and no tracked file changes, so the tree a pass records is the same."""
+    if git("rev-parse", "--is-shallow-repository").strip() != "true":
+        return
+    base = base_branch(pr)
+    if base is None:
+        print(
+            "local-ci: shallow clone, but no base branch is known: not deepening", file=sys.stderr
+        )
+        return
+    ref = f"origin/{base}"
+    spec = f"+refs/heads/{base}:refs/remotes/{ref}"
+
+    def fetch(*flags: str) -> bool:
+        done = subprocess.run(
+            ["git", "fetch", "--quiet", *flags, "origin", spec],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        what = " ".join(flags) or "fetch"
+        outcome = (
+            "ok" if done.returncode == 0 else f"failed: {done.stderr.strip() or done.returncode}"
+        )
+        print(
+            f"local-ci: shallow clone, git fetch {what} origin {base}: {outcome}", file=sys.stderr
+        )
+        return done.returncode == 0
+
+    def found() -> bool:
+        return (
+            subprocess.run(
+                ["git", "merge-base", ref, "HEAD"], capture_output=True, check=False
+            ).returncode
+            == 0
+        )
+
+    if fetch() and found():
+        return
+    for _ in range(DEEPEN_STEPS):
+        if fetch("--deepen", str(DEEPEN_BY)) and found():
+            return
+    if fetch("--unshallow") and found():
+        return
+    print(f"local-ci: no merge base of {ref} and HEAD after deepening", file=sys.stderr)
+
+
 def run_local_ci(
     pr: int | None, head: str | None, passed: list[str] | tuple[str, ...] = ()
 ) -> dict[str, Any]:
@@ -4604,6 +4907,7 @@ def run_local_ci(
     if before[1]:
         raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
     command, _, env = gate(passed)
+    deepened(pr)
     code = ran_gate(passed=passed)
     if code == settings(project()[1]).get("machine_exit"):
         raise Refused(
@@ -4785,7 +5089,7 @@ def env_line(env: dict[str, str | None]) -> str:
 
 def reusable(head: str, passed: list[str] | tuple[str, ...] = ()) -> dict[str, Any] | None:
     """A green pass on `head`'s tree under today's gate command (with `passed`, gate), or None: this clone's record,
-    made on any commit with that tree, else one published on `head` itself (published). The record's `head` is the
+    made on any commit with that tree, else one another clone pushed to origin for that tree (published). The record's `head` is the
     commit the pass ran on. A record without `env` (0.23.1 wrote none) never matches, since nothing says what tier it
     ran."""
     if (held := tree_of(head)) is None:
@@ -4809,31 +5113,14 @@ def reusable(head: str, passed: list[str] | tuple[str, ...] = ()) -> dict[str, A
 def published(
     head: str, held: str, command: str, env: dict[str, str] | None = None
 ) -> dict[str, Any] | None:
-    """A pass of `command` (setting `env`, default the gate's) on `head` another clone published (publish), as a
-    record, or None: a `gate` status (stated) for `head`'s own tree `held` and that command (described)."""
-    env = gate()[2] if env is None else env
-    found = stated(
-        head,
-        PUBLISHED,
-        lambda status, named: status["description"] == described(held, named[2], command),
-    )
-    if found is None:
-        record = record_ref(held, command, env)
-        if record is not None:
-            # a host shows the pass on the PR as it does its own; where the status is refused, the ref still stands
-            with contextlib.suppress(subprocess.CalledProcessError, OSError):
-                post_status(head, PUBLISHED, described(held, record["head"], command))
-        return record
-    status, named = found
-    return {
-        "head": named[2],
-        "tree": held,
-        "command": command,
-        "exit": 0,
-        "env": env,
-        "time": status["created_at"],
-        "published": True,
-    }
+    """A pass of `command` (setting `env`, default the gate's) on `head`'s tree `held` that a clone pushed to origin
+    as its record branch (publish, record_ref), as a record, or None. It is the one route another clone's pass is read
+    by: a `gate` status is only shown, never read, since anyone who can write one may type it. A reader that finds the
+    record writes the `gate` status on `head`, so the PR shows the pass, where the token allows."""
+    record = record_ref(held, command, env if env is not None else gate()[2])
+    if record is not None:
+        shown(head, record)
+    return record
 
 
 def record_name(tree: str, command: str) -> str:
@@ -4851,102 +5138,118 @@ def record_message(record: dict[str, Any]) -> str:
 
 
 def record_ref(held: str, command: str, env: dict[str, str]) -> dict[str, Any] | None:
-    """A pass of `command` under `env` on tree `held` pushed to origin as a ref (push_record), as a record, or None.
-    Only origin is read, the repo `land` pushes its lock to, so a ref on a PR's fork never counts: a ref there is the
-    base repo's write access, as a status's writer is. The ref's commit must hold `held` as its tree, its parent the
-    commit its description names, and the env line `env`, so a ref whose content is not what its name says counts for
+    """A pass of `command` under `env` on tree `held` pushed to origin as its record branch (push_record), as a
+    record, or None. Only origin is read, the repo `land` pushes its lock to, so a branch on a PR's fork never counts:
+    one in the base repo is its write access. The branch's commit must hold `held` as its tree, its parent the commit
+    its description names, and the env line `env`, so a record whose content is not what its name says counts for
     nothing. origin unreachable: None, so the check runs."""
     name = record_name(held, command)
-    wanted = [ref.format(name) for ref in RECORD_REFS]
+    ref = RECORD_BRANCH.format(name)
     try:
-        listed = git("ls-remote", "origin", *wanted)
+        listed = git("ls-remote", "origin", ref).split()
+        if ref not in listed[1::2]:
+            return None
+        git("fetch", "-q", "--no-tags", "origin", f"+{ref}:refs/loop/records/{name}")
+        body = git("cat-file", "commit", listed[listed.index(ref) - 1])
     except (subprocess.CalledProcessError, OSError):
         return None
-    pushed = {
-        fields[1]: fields[0] for line in listed.splitlines() if len(fields := line.split()) == 2
+    header, _, message = body.partition("\n\n")
+    fields = [line.split(" ", 1) for line in header.splitlines()]
+    trees = [value for key, value in fields if key == "tree"]
+    parents = [value for key, value in fields if key == "parent"]
+    committed = [value for key, value in fields if key == "committer"]
+    lines = message.splitlines()
+    if (
+        trees != [held]
+        or len(parents) != 1
+        or not lines
+        or lines[0] != described(held, parents[0], command)
+        or f"Env: {json.dumps(env, sort_keys=True)}" not in lines[1:]
+        or not committed
+    ):
+        return None
+    when = int(committed[0].rsplit(" ", 2)[1])
+    return {
+        "head": parents[0],
+        "tree": held,
+        "command": command,
+        "exit": 0,
+        "env": env,
+        "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when)),
+        "published": True,
+        "ref": ref,
     }
-    for ref in (ref for ref in wanted if ref in pushed):
-        try:
-            git("fetch", "-q", "--no-tags", "origin", f"+{ref}:refs/loop/records/{name}")
-            body = git("cat-file", "commit", pushed[ref])
-        except (subprocess.CalledProcessError, OSError):
-            continue
-        header, _, message = body.partition("\n\n")
-        fields = [line.split(" ", 1) for line in header.splitlines()]
-        trees = [value for key, value in fields if key == "tree"]
-        parents = [value for key, value in fields if key == "parent"]
-        committed = [value for key, value in fields if key == "committer"]
-        lines = message.splitlines()
-        named = PASSED.fullmatch(lines[0]) if lines else None
-        if (
-            trees != [held]
-            or len(parents) != 1
-            or not named
-            or lines[0] != described(held, parents[0], command)
-            or f"Env: {json.dumps(env, sort_keys=True)}" not in lines[1:]
-            or not committed
-        ):
-            continue
-        when = int(committed[0].rsplit(" ", 2)[1])
-        return {
-            "head": parents[0],
-            "tree": held,
-            "command": command,
-            "exit": 0,
-            "env": env,
-            "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when)),
-            "published": True,
-            "ref": ref,
-        }
-    return None
 
 
 def push_record(record: dict[str, Any]) -> str:
-    """Push a pass to origin as a ref (RECORD_REFS, the first origin takes) on a commit holding its tree, its parent
-    the commit it ran on, its message the status description and env (record_message), and return the ref; refused
-    everywhere: CalledProcessError naming each refusal."""
+    """Push a pass to origin as its record branch (RECORD_BRANCH) on a commit holding its tree, its parent the commit
+    it ran on, its message the status description and env (record_message), and return the ref. The commit's author,
+    committer and dates are fixed, so pushing a pass again pushes the same commit. Refused: CalledProcessError."""
     when = {"GIT_COMMITTER_DATE": record["time"], "GIT_AUTHOR_DATE": record["time"]}
     commit = subprocess.run(
-        ["git", "commit-tree", record["tree"], "-p", record["head"], "-m", record_message(record)],
+        [
+            "git",
+            "commit-tree",
+            record["tree"],
+            "-p",
+            record["head"],
+            "-m",
+            record_message(record),
+        ],
         check=True,
         capture_output=True,
         text=True,
         env=os.environ | RECORDER | (when if record.get("time") else {}),
     ).stdout.strip()
-    refusals = []
-    for ref in (ref.format(record_name(record["tree"], record["command"])) for ref in RECORD_REFS):
-        try:
-            git("push", "-q", "--no-verify", "origin", f"{commit}:{ref}")
-        except subprocess.CalledProcessError as exc:
-            refusals.append(f"{ref}: {' '.join((exc.stderr or str(exc)).split())}")
-            continue
-        return ref
-    raise subprocess.CalledProcessError(1, "git push", stderr="; ".join(refusals))
+    ref = RECORD_BRANCH.format(record_name(record["tree"], record["command"]))
+    git("push", "-q", "--no-verify", "origin", f"{commit}:{ref}")
+    return ref
 
 
-def drop_records(heads: list[str], command: str) -> None:
-    """Delete from origin the record branches (RECORD_REFS under refs/heads/) for the trees of `heads`, landed now, so
-    no branch a pass was pushed as outlives its PR; a ref outside refs/heads/ stays, since no branch list shows it.
-    A refusal is said, and the branch stays for a person to delete."""
-    branches = [
-        ref.format(record_name(held, command))
-        for head in heads
-        if (held := tree_of(head))
-        for ref in RECORD_REFS
-        if ref.startswith("refs/heads/")
-    ]
-    if not branches:
-        return
+def drop_records(heads: list[str]) -> None:
+    """Delete from origin the record branches no head needs any more: each of the trees of `heads`, landed now, and
+    each whose tree is no open PR's head tree and whose record is over a day old (RECORD_AGE), a head that was
+    replaced or never landed. The day spares a record pushed before its PR was opened. Only a host deletes, since a
+    cloud session can't delete a ref; a refusal is said, and the branch stays for the next land. The open PRs
+    unreadable, or an open PR's head tree unknown here (a fork's head this clone can't fetch): only the landed trees'
+    branches go, since the unknown tree may be one an old record holds."""
+    landed = {held for head in heads if (held := tree_of(head))}
     try:
-        listed = git("ls-remote", "origin", *branches)
+        # whole objects, since rest_pages decodes each line as JSON and a bare SHA is none
+        open_trees: set[str | None] | None = {
+            tree_of(pull["head"]["sha"]) for pull in rest_pages("pulls?state=open&per_page=100")
+        }
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        open_trees = None
+    if open_trees is not None and None in open_trees:
+        open_trees = None
+    try:
+        git(
+            "fetch",
+            "-q",
+            "--prune",
+            "--no-tags",
+            "origin",
+            f"+{RECORD_BRANCH.format('*')}:refs/loop/records/*",
+        )
+        listed = git(
+            "for-each-ref",
+            "--format=%(refname:lstrip=3) %(committerdate:unix)",
+            "refs/loop/records/",
+        )
     except (subprocess.CalledProcessError, OSError):
         return
-    for ref in (line.split()[1] for line in listed.splitlines() if len(line.split()) == 2):
+    old = time.time() - RECORD_AGE
+    for name, when in (line.split() for line in listed.splitlines() if len(line.split()) == 2):
+        held = name.split("-", 1)[0]
+        stale = open_trees is not None and held not in open_trees and int(when) < old
+        if held not in landed and not stale:
+            continue
         try:
-            git("push", "-q", "--no-verify", "origin", f":{ref}")
+            git("push", "-q", "--no-verify", "origin", f":{RECORD_BRANCH.format(name)}")
         except subprocess.CalledProcessError as exc:
             print(
-                f"the record branch {ref} was not deleted: {' '.join((exc.stderr or '').split())}"
+                f"the record branch {RECORD_BRANCH.format(name)} was not deleted: {' '.join((exc.stderr or '').split())}"
             )
 
 
@@ -5023,7 +5326,7 @@ def nor_head_proof(loop: str | None) -> str:
 
 def elsewhere(head: str) -> str:
     """What a refusal adds when `head`'s tree passed under another gate command: `; its tree passed under <command>`
-    for each, from this clone's records and the head's published statuses, then today's; empty when none did."""
+    for each, from this clone's records and the tree's record branches in origin, then today's; empty when none did."""
     if (held := tree_of(head)) is None:
         return ""
     command, others = gate()[0], set()
@@ -5037,22 +5340,33 @@ def elsewhere(head: str) -> str:
                     and isinstance(record.get("command"), str)
                 ):
                     others.add(record["command"])
-    with contextlib.suppress(subprocess.CalledProcessError, OSError, ValueError):
-        for status in statuses(head):
-            named = PASSED.fullmatch(status.get("description") or "")
-            if (
-                status.get("context") == PUBLISHED
-                and status.get("state") == "success"
-                and named
-                and named[1] == held
-            ):
-                others.add(named[3])
+    others |= pushed_commands(held)
     others -= {command, f"sha256 {gate_key(command)}"}
     if not others:
         return ""
     return (
         f"; its tree passed under `{'`, `'.join(sorted(others))}`, and the gate is now `{command}`"
     )
+
+
+def pushed_commands(held: str) -> set[str]:
+    """The gate commands (a digest, `sha256 <key>`, for one too long to name) of the record branches origin holds for
+    tree `held`, as their lines name them; origin unreachable: none."""
+    found = set()
+    with contextlib.suppress(subprocess.CalledProcessError, OSError):
+        for line in git("ls-remote", "origin", RECORD_BRANCH.format(f"{held}-*")).splitlines():
+            commit, ref = line.split()
+            git(
+                "fetch",
+                "-q",
+                "--no-tags",
+                "origin",
+                f"+{ref}:refs/loop/records/{ref.rsplit('/', 1)[1]}",
+            )
+            named = PASSED.fullmatch(git("log", "-1", "--format=%s", commit).strip())
+            if named and named[1] == held:
+                found.add(named[3])
+    return found
 
 
 def statuses(head: str) -> list[dict[str, Any]]:
@@ -5062,40 +5376,43 @@ def statuses(head: str) -> list[dict[str, Any]]:
     return found
 
 
+def shown(head: str, record: dict[str, Any]) -> str | None:
+    """Write the `gate` status for `record` on `head`, which the PR page shows and nothing reads; refused or
+    unreachable: why, which is no error, since the record branch is the pass."""
+    try:
+        post_status(head, PUBLISHED, described(record["tree"], record["head"], record["command"]))
+    except (subprocess.CalledProcessError, OSError) as exc:
+        return (getattr(exc, "stderr", None) or str(exc)).strip()
+    return None
+
+
 def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = None) -> None:
-    """Publish a pass as a commit status on `head`, unless one already does: success under the context `gate`, its
-    description the tree, the commit the pass ran on and the command (described), so another clone's reusable() finds
-    it; with `proof`, loop.md's `head_proof`, under its `status` instead, the description naming the values of its
-    `env` (proof_line), which `land` reads (proved). A status, since gh's token can write one and only an account that
-    can push may (a check run needs a GitHub App). GitHub refusing or unreachable: say so, and the record stays in
-    this clone."""
-    if proof is None:
-        context, line = PUBLISHED, described(record["tree"], record["head"], record["command"])
-        if published(head, record["tree"], record["command"]):
-            return
-    else:
+    """Publish a pass this clone holds. Without `proof`: push it to origin as its record branch (push_record), the one
+    route by which another clone reuses it (published), then show it as the `gate` status on `head` (shown); each
+    refusal is said, and a refused push leaves the pass in this clone only. With `proof`, loop.md's `head_proof`: post
+    it as the commit status of the proof's `status`, the description naming the values of its `env` (proof_line),
+    which `land` reads (proved), unless one already does."""
+    if proof is not None:
         context, line = proof["status"], proof_line(record, proof["env"])
         if stated(head, context, lambda status, _named: status["description"] == line):
             return
+        try:
+            post_status(head, context, line)
+        except (subprocess.CalledProcessError, OSError) as exc:
+            why = (getattr(exc, "stderr", None) or str(exc)).strip()
+            print(f"not published on GitHub, so only this clone reuses it: {why}")
+            return
+        print(f"published on {head} as the commit status `{context}`")
+        return
     try:
-        post_status(head, context, line)
+        ref = push_record(record | {"time": record.get("time") or now()})
     except (subprocess.CalledProcessError, OSError) as exc:
         why = (getattr(exc, "stderr", None) or str(exc)).strip()
-        if proof is None:
-            try:
-                ref = push_record(record | {"time": record.get("time") or now()})
-            except (subprocess.CalledProcessError, OSError) as refused:
-                why += (
-                    f"; nor as a ref: {(getattr(refused, 'stderr', None) or str(refused)).strip()}"
-                )
-            else:
-                print(
-                    f"published in origin as the ref {ref}, since GitHub refused the status: {why}"
-                )
-                return
-        print(f"not published on GitHub, so only this clone reuses it: {why}")
-        return
-    print(f"published on {head} as the commit status `{context}`")
+        print(f"not pushed to origin, so only this clone reuses it: {why}")
+    else:
+        print(f"published in origin as the record branch {ref}")
+    if why := shown(head, record):
+        print(f"the `gate` status, which only shows the pass on the PR, was not written: {why}")
 
 
 def now() -> str:
@@ -5131,6 +5448,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
         passed = proof["env"] if proof else ()
         head, changes = checkout_state()
         if changes:
+            deepened(None)
             command, code = gate(passed)[0], ran_gate(passed=passed)
             print(
                 f"{command} exited {code} on a checkout with changes, so nothing is recorded:\n{changes}"
@@ -5303,6 +5621,7 @@ def main(argv: list[str]) -> int:
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int, nargs="?")
     merging.add_argument("--wait", action="store_true")
+    merging.add_argument("--only", action="store_true")
     briefing = commands.add_parser("brief")
     briefing.add_argument("pr", type=int)
     # a verifier on another host: the absolute path there holding a clone of the repo
@@ -5363,7 +5682,9 @@ def main(argv: list[str]) -> int:
                 raise Refused("--head-proof goes with --record: the head proof is the checkout's")
             return local_ci(args.pr, proof) if leads_its_session() else detach(argv)
         if args.command == "land":
-            return land(args.pr, args.wait)
+            if args.only and args.pr is None:
+                parser.error("land --only needs a PR: there is nothing to restrict to")
+            return land(args.pr, args.wait, args.only)
         if args.command == "brief":
             return brief(args.pr, args.priorities, args.proof, args.far)
         if args.command == "release":
