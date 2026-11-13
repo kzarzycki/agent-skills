@@ -697,8 +697,8 @@ import threading
 class FakeCloud:
     """A one-connection WebSocket server that answers the app-server calls a verifier pass makes."""
 
-    def __init__(self, report: str) -> None:
-        self.report, self.seen, self.proto = report, [], ""
+    def __init__(self, report: str, question: str = "") -> None:
+        self.report, self.question, self.seen, self.proto = report, question, [], ""
         self.srv = socket.socket()
         self.srv.bind(("127.0.0.1", 0))
         self.srv.listen(1)
@@ -750,7 +750,7 @@ class FakeCloud:
                 result = {"thread": {"id": "t1", "environments": [{"environmentId": "e1"}]}}
             elif method == "command/exec":
                 cmd = msg["params"]["command"][-1]
-                result = {"exitCode": 0, "stdout": self.report if cmd.startswith("cat ") else "/home/agent/pr1\n", "stderr": ""}
+                result = {"exitCode": 0, "stdout": (self.question if cmd.endswith(".question") else self.report) if cmd.startswith("cat ") else "/home/agent/pr1\n", "stderr": ""}
             elif method == "thread/items/list":
                 result = {"data": [{"turnId": "u", "item": {"type": "agentMessage", "text": "final message"}}]}
             conn.sendall(self.frame({"id": msg["id"], "result": result}))
@@ -799,4 +799,12 @@ def test_a_dead_endpoint_fails_closed_naming_the_other_routes(route_1b, monkeypa
     monkeypatch.setattr(cv, "WS_URL", "ws://127.0.0.1:9/")
     assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 2
     assert "route 2 or the host verifier" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_a_verifier_that_stops_on_a_question_gets_it_written_and_exit_3(route_1b, monkeypatch) -> None:
+    _, brief, out = route_1b
+    monkeypatch.setattr(cv, "WS_URL", FakeCloud("", "# a question\nPlease run X").url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 3
+    assert "Please run X" in out.with_name(out.name + ".question").read_text()
     assert not out.exists()

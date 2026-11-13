@@ -16,7 +16,7 @@ On a host with no worker VM (route 1b), a Codex Cloud thread driven with the hos
 
 `thread` starts a thread, checks out the PR's head in its VM, sends the brief as a turn and writes the report (read
 back from the thread's checkout, else its final message; one without a `SATISFIED:` line is not written) at the
-brief's `- Report:` path. Exit 0 report written, 1 no report, 2 route 1b unusable (the endpoint is undocumented):
+brief's `- Report:` path. Exit 0 report written, 1 no report, 3 the verifier stopped on a question (written at `<report>.question`), 2 route 1b unusable (the endpoint is undocumented):
 use route 2 or the host verifier. No token is printed or sent to the VM.
 
 `login` runs `codex login --device-auth` with CODEX_HOME at the seed home (`$CODEX_CLOUD_HOME`, else
@@ -750,6 +750,14 @@ def thread_verify(
         body = body if not code else ""
     body = body.strip() or final.strip()
     print(f"quota after: {quota(token)}")
+    if out and "SATISFIED:" not in body:  # a verifier that stops on a question writes `<report>.question` (verifier.md)
+        code, asked = thread_exec(rpc, thread, env, f"cat {shlex.quote(checkout + '/' + str(out) + '.question')}")
+        if not code and asked.strip():
+            out.parent.mkdir(parents=True, exist_ok=True)
+            question = out.with_name(out.name + ".question")
+            question.write_text(asked)
+            print(question)
+            return 3
     if "SATISFIED:" not in body:
         print(f"the verifier wrote no report with a SATISFIED: line; its last message: {final.strip()[-500:]}", file=sys.stderr)
         return 1
