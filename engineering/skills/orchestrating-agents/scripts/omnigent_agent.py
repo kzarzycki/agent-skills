@@ -2433,6 +2433,20 @@ def move_head(workspace: Path, pr: int) -> None:
             raise Fail(f"git {cmd[0]} for {branch} in {workspace}: {done.stderr.strip()[-300:]}")
 
 
+def pr_head(pr: int, cwd: Path) -> str:
+    """The head commit of PR ``pr``, read through ``gh`` run in ``cwd``."""
+    out = subprocess.run(
+        ["gh", "pr", "view", str(pr), "--json", "headRefOid", "-q", ".headRefOid"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if out.returncode or not out.stdout.strip():
+        raise Fail(f"PR {pr}: no head commit read ({out.stderr.strip()[-200:]})")
+    return out.stdout.strip()
+
+
 def check_out_head(workspace: Path, pr: int) -> None:
     """Put ``workspace`` (a checkout on this host) at PR ``pr``'s head commit before a verifier's first turn,
     or refuse: a verifier that starts at the base reviews nothing the PR changed. A checkout already
@@ -2445,16 +2459,7 @@ def check_out_head(workspace: Path, pr: int) -> None:
             raise Fail(f"git {cmd[0]} for PR {pr} in {workspace}: {done.stderr.strip()[-300:]}")
         return done.stdout.strip()
 
-    out = subprocess.run(
-        ["gh", "pr", "view", str(pr), "--json", "headRefOid", "-q", ".headRefOid"],
-        cwd=workspace,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    head = out.stdout.strip()
-    if out.returncode or not head:
-        raise Fail(f"PR {pr}: no head commit read ({out.stderr.strip()[-200:]})")
+    head = pr_head(pr, workspace)
     if run("rev-parse", "HEAD") == head:
         return
     if run("status", "--porcelain", "--untracked-files=no"):
@@ -6786,6 +6791,16 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             refuse_pinned_checkout(args.agent, workspace)
             if verifies:
                 check_out_head(workspace, verifies)
+        elif verifies and not args.pr and args.cmd != "send":
+            # nothing here can run git on that host, so the brief must pin the commit its verifier
+            # checks out: a brief that names no head leaves the first turn to start at the base
+            head = pr_head(verifies, Path.cwd())
+            if head[:12] not in brief:
+                raise Fail(
+                    f"--pr {verifies}: the brief names no checkout of the PR's head {head[:12]}: a"
+                    " verifier on another host starts at that clone's base without it"
+                    " (`approvals.py brief --far` writes it)"
+                )
         elif args.pr and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             print(
                 f"--pr {args.pr}: the launch dir is on another host, so its HEAD is not moved here:"

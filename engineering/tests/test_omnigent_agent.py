@@ -10898,6 +10898,9 @@ class FarVerifierHost(FarFiles, FakeOmnigent):
         super().land(sid, text)
 
 
+PR7_HEAD = "0123456789abcdef0123456789abcdef01234567"
+
+
 def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) -> FarVerifierHost:
     og = FarVerifierHost()
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
@@ -10906,8 +10909,13 @@ def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) ->
     (tmp_path / "docs" / "agents").mkdir(parents=True)
     (tmp_path / "docs/agents/loop.md").write_text(f"# Loop\n\n{hosts}")
     (tmp_path / "b.md").write_text(
-        "Review PR #7 as the verifier; first `git worktree add --detach`"
+        f"Review PR #7 as the verifier; first `git worktree add --detach tree {PR7_HEAD}`"
     )
+    gh = tmp_path.parent / f"{tmp_path.name}-ghbin"
+    gh.mkdir()
+    (gh / "gh").write_text(f"#!/bin/sh\necho {PR7_HEAD}\n")
+    (gh / "gh").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{gh}{os.pathsep}{os.environ['PATH']}")
     (tmp_path / "gate.log").write_text("abc\nok\n")
     return og
 
@@ -11402,3 +11410,16 @@ def test_a_verifier_on_a_host_for_a_pr_starts_at_the_prs_head_never_the_base(
     again[5 - 1] = str(tmp_path / "tmp/r3.md")
     assert omnigent_agent.main(again) == 1
     assert run("rev-parse", "HEAD") == base
+
+
+def test_a_verifier_on_another_host_for_a_pr_needs_a_brief_that_pins_the_prs_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing here runs git on that host, so a brief that names no checkout of the head is refused
+    before any session exists; one that names it starts."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    (tmp_path / "b.md").write_text("Review PR #7 as the verifier")
+    assert omnigent_agent.main([*VERIFY_FAR]) == 1
+    assert PR7_HEAD[:12] in capsys.readouterr().err and og.sessions == {}
+    (tmp_path / "b.md").write_text(f"Review PR #7: `git worktree add --detach tree {PR7_HEAD}`")
+    assert omnigent_agent.main([*VERIFY_FAR]) == 0 and len(og.sessions) == 1
