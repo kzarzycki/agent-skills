@@ -95,6 +95,7 @@ loop:
   short_seconds: 120   # a job expected to finish within this takes the host's short lane; 0 turns the lane off
   pre_land: python3 scripts/check_fork.py   # land's check of each PR against the base, before it batches them
   delegate: all   # the delegated approver's go on a head covers a PR into the default branch too; default feature
+  pack_staleness: refuse   # approvals.py exits 1 at start when its checkout is behind its upstream and the script changed there (default warn; omnigent_agent.py only warns)
   head_proof:      # the status land requires on each head, and the names its recording takes from the caller
     status: gate-ui
     env:
@@ -536,37 +537,38 @@ verifier, review angles run as native subagents, never as full harness sessions.
 
 One rule, for every project and every machine. Heavy steps (implementation, the gate, the verifier) go, in this order:
 
-1. To the cloud worker or cloud verifier the project's `docs/agents/loop.md` names (`Cloud worker:`, `Cloud verifier:`).
-2. Else to a host that offers the harness the step needs.
+1. To the cloud worker the project's `docs/agents/loop.md` names (`Cloud worker:`), with the gate and the verifier on the same machine as the worker, which shares its checkout and build. The loop.md line `Placement:` sets where the verifier runs: `same machine` (the default when the line is absent), `hosts: <name>, <name>` or `CI`. It replaces the older `Cloud verifier:` and `Verifier hosts:` lines, which keep their meaning where a project still has one; the new line wins. For a host worker the same default means that worker's own host. A worker's machine that can't take the verifier (no Codex login, a PR that needs a Claude verifier) goes to a Codex Cloud thread, then a host.
+2. Else to a host that offers the harness the step needs. A `start` in a cloud session without `--host` follows `Placement:`: the first online host it names, and a refusal naming `--host` where it names none, never the host the bridge runs on.
 3. A step that must touch a machine itself (a production service, a device, an Apple build) stays on that machine.
 
 When a launch fails, for any reason (refused, no capacity, unreachable), take the next option on this list. Never fall back to running the step locally on the host that refused: what a machine accepts is its own configuration, so a refusal is the answer and not an obstacle. If no option is left, stop and report the refusal's text. Role files and briefs point here instead of restating it.
 
 ## Cloud worker
 
-With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead and the verifier run on
-the host and only the workers run in the cloud, as sessions of `<agent>`, a registered
+With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead runs on
+the host and the workers run in the cloud, with the verifier in the worker's VM unless `Placement:` says otherwise (Where heavy steps run), as sessions of `<agent>`, a registered
 Omnigent agent whose tools run in a cloud VM, which the lead starts. Without the line nothing
 in this section applies and every role file reads as written. The split takes coding,
 compiling and unit tests off the host. What stays there is what the VM can't do: every
 thread resolution, since GitHub's GraphQL API answers 403 in the VM (`approvals.py` reads REST
 there, so its `check`, `local-ci` and `verdict` also run in the VM, but `land` does not); the signed land, since the VM holds no key; a verifier of the other family, since Codex
-has no cloud bridge, unless loop.md places it in the worker's VM (Verifier in the worker's VM, below); anything that needs a device, a simulator, an emulator, a browser login
+has no cloud bridge, unless it runs in the worker's VM, the default (Verifier in the worker's VM, below); anything that needs a device, a simulator, an emulator, a browser login
 or the owner's private network.
 
 - **Who does what.** The lead runs intent, spec, the branch and draft PR, `check build`,
   triage, the fetch and merge (or fast-forward) of each worker's reported branch into the
-  PR branch, the full gate (`mise run
+  PR branch, the full gate where it runs (below), the instance, the verdict's post, thread
+  resolution, `land` and acceptance. The full gate (`mise run
   check`, or `local-ci --record` with `ci: false`; on a fix round started detached beside the
-  next verifier, lead.md step 7), the instance, the verdict's post, thread
-  resolution, `land` and acceptance. The worker codes and compiles, runs `mise run <task>`,
+  next verifier, lead.md step 7) runs in the worker's VM, on its checkout and build; `Placement:` never moves it, since that line places the verifier only; the host's
+  `local-ci <pr>`, `check merge` and `land` reuse its recorded pass either way. The worker codes and compiles, runs `mise run <task>`,
   the light gate (what the VM can run: compile, unit tests, headless web tests on its
   Chromium), before each push, and pushes to the `claude/…` branch its session was given,
   since a cloud session declines any other branch without its own user's permission and a
   peer's brief is not that; no brief names another push target. A worker's `local-ci --record`
   pass is pushed as its record branch as a host's is, and the host's `local-ci <pr>`,
   `check merge` and `land` reuse it from there, so nobody pastes or copies the record. Its brief names the role
-  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in a detached worktree at the head, or on another host loop.md's `Verifier hosts:` line lists, as lead.md step 7 says, or in the worker's VM where loop.md says so.
+  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs in the worker's VM by default (Where heavy steps run), else on a host in a detached worktree at the head, or on another host loop.md's `Placement: hosts:` line lists, as lead.md step 7 says.
 - **The PR is the interface for content.** The code is the worker's pushed branch. Its
   report is one comment on the PR: its branch and head SHA, each light-gate command with its
   exit code, what it left out and why. If the post fails, since the session's proxy-injected
@@ -606,7 +608,7 @@ or the owner's private network.
   stage (a local hook, `stages: [commit-msg]`), and the cloud environment's setup installs
   that hook type (`pre-commit install --hook-type commit-msg`), since a session's clone has
   only the hook types its setup installed.
-- **Verifier in the worker's VM.** With the loop.md line `Cloud verifier: worker session`, the verifier of a
+- **Verifier in the worker's VM.** With `Placement: same machine` (or the old `Cloud verifier: worker session`), the verifier of a
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host.
   `scripts/cloud_verifier.py` does it, and its docstring has each command. On the host, `login` once, then
@@ -634,7 +636,7 @@ or the owner's private network.
   session, picks the head and posts the report; the environment holds a ChatGPT login that every process in
   the VM can read, good for up to 10 days, so it suits PRs the owner's own agents wrote and not ones from
   forks; and the carrier spends its quota while it waits.
-- **Verifier on a Codex Cloud thread.** With the loop.md line `Cloud verifier: worker session, else codex thread`, a
+- **Verifier on a Codex Cloud thread.** With `Placement: same machine` (or the old `Cloud verifier: worker session, else codex thread`), a
   pass with no worker VM to carry it (the PR has no Claude cloud worker, or Claude tokens are short) runs on a Codex Cloud
   thread, driven from the host: `scripts/cloud_verifier.py thread --pr <n> --brief <file> --model M --effort E`. The
   host's own Codex login goes to OpenAI's endpoint only, never to a VM. It starts a thread (a VM that keeps its files and

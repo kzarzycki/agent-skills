@@ -20,7 +20,9 @@ design, wireframes included for a UI, and delegate the rest.
    text that ends your turn `USER NEEDED`, never through a tool that waits for the answer
    (Claude Code's AskUserQuestion, Codex's requestUserInput), since an open question holds
    every message to your session, your children's reports and the supervisor's notices
-   included, until the owner replies; otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
+   included, until the owner replies. Omnigent's `sys_ask_user_question` is the way to ask
+   without stopping: it posts a card and returns at once, so keep working, and act on the
+   answer when it arrives as a message (`[answer to <question id>]`); otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
    answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
    `--by owner` records their word and removes the label. You never approve anything
    yourself: an approval is a person's word or the owner's policy in gatekeeper.md. An issue
@@ -113,7 +115,7 @@ design, wireframes included for a UI, and delegate the rest.
    proof the spec's acceptance needs whose log names another commit, since the verifier
    counts it as missing and the pass is spent on it:
    `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
-   prints the ones to rerun. Where loop.md places the verifier in the worker's VM, the pass runs there
+   prints the ones to rerun. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
    instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
    brief already in that checkout. Where else it runs is SKILL.md, Where heavy steps run.
    A verifier on a host starts on that pushed
@@ -147,7 +149,7 @@ design, wireframes included for a UI, and delegate the rest.
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
    `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. A mixed PR's second
    verifier, running at the same time, gets its own detached worktree the same way. A verifier
-   may instead run on another host loop.md's `Verifier hosts:` line lists, so its tests and
+   may instead run on another host loop.md's `Placement: hosts:` line lists (SKILL.md, Where heavy steps run), so its tests and
    mutation runs load that host: a top-level session there (orchestrating-agents' Omnigent
    backend, Verifiers on another host) whose `--workspace` holds a clone of the repo, briefed by
    `approvals.py brief <pr> --far <that clone>`, which tells it to fetch the head and make its own

@@ -383,8 +383,8 @@ that `wait --pr <n>` writes the PR comment to.
 the same way, `start --top-level --host <name> --pr <n> --role <verifier.md> --workspace <clone>
 <report>`, where `<clone>` is an absolute path there holding a clone of the repo and the report
 is under its `tmp/loop/`. Its `--pr` names the PR it reviews, not a report channel: it writes its
-report file as any child does. With a `Verifier hosts: <name>, <name>` line in the project's
-`docs/agents/loop.md`, `start` refuses a host the line does not list, naming the list; without
+report file as any child does. With a `Placement: hosts: <name>, <name>` line (or the old `Verifier hosts:`) in the project's
+`docs/agents/loop.md` (engineering-loop, Where heavy steps run), `start` refuses a host the line does not list, naming the list; without
 it any host goes. Other sessions holding that clone don't stop it, since it works in a detached
 worktree of its own under the clone's `tmp/loop/` and never switches the clone's branch; every
 other start keeps the in-use refusal. Each `--file <local>` (a proof log, the previous report) is written beside the
@@ -656,7 +656,7 @@ routed, since the owner reads them there, and the `no event in <n>s` log line le
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
 | a quiet end again with no progress since the nudge | rule | act |
 | `deadline` | rule | a named wait: act, or with no live runner (nothing can end its wait) the revive, which acts only when it fails; unknown: the nudge, then act at the deadline after it; parked: none |
-| failed | rule | the first time a revive, after it act; a transient provider error (`authentication_failed`, a Cloudflare `Attention Required` page, any 5xx such as a cloud create's 503, `overloaded`: one table, `TRANSIENT_ERRORS`) instead a revive after a backoff of 2, 5, 10, 20 minutes, then every 20, and act once the next revive would fall more than 2 hours after the chain's first failure |
+| failed | rule | the first time a revive, after it act; a transient provider error (`authentication_failed`, a Cloudflare `Attention Required` page, any 5xx such as a cloud create's 503, `overloaded`: one table, `TRANSIENT_ERRORS`) instead a revive after a backoff of 2, 5, 10, 20 minutes, then every 20, and act once the next revive would fall more than 2 hours after the chain's first failure (`rate_limit` with no reset time too); a usage limit (`hit your … limit`, `usage limit`: `USAGE_LIMIT_ERRORS`, or a `rate_limit` printing its reset) is account-wide, so it parks instead: one post `usage limit: N sessions parked, resets <time>` (or `resets unknown`) for every lead parked on it, later ones joining unreported; one parked lead revived as a probe after the same backoff, or at once at the printed reset (`resets Nov 16, 6am (UTC)`, any IANA zone); one probe runs at a time; a probe failing on the limit again parks once more, and once a parked lead ends any other way (its turn ends, a prompt, another failure, which then routes as any other) every parked lead is revived and one post says how many resumed; act once an hour past the printed reset has passed (the reset is read once, when first parked), or with none once the next probe would fall 2 hours after the chain's first failure, and no parked lead is probed after. The parked state is each lead's `retrying` (`limit`, `resets`, `told`, `probe`), so a restart keeps it |
 | `DONE` | rule | act, and each lead registered `after=` it is told `Supervisor: <lead>, the lead you wait on, ended: <its first line>` |
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
 | `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
