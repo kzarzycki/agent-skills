@@ -43,8 +43,7 @@ def test_the_brief_quotes_the_priorities_file_as_written(
     priorities.write_text(text + "\n\n")
     assert approvals.main(["brief", "7", "--priorities", str(priorities)]) == 0
     out = capsys.readouterr().out
-    assert out.split("\nPriorities:\n", 1)[1].startswith(text + "\n")
-    assert text in out
+    assert out.split("\nPriorities:\n", 1)[1] == text + "\n"
 
 
 def test_the_roles_state_the_step_with_the_file_named_once() -> None:
