@@ -13,7 +13,9 @@ from pathlib import Path
 import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "engineering-loop" / "scripts"
-sys.path.insert(0, str(SCRIPTS))  # as when run: rulesets.py reads Refused from approvals.py beside it
+sys.path.insert(
+    0, str(SCRIPTS)
+)  # as when run: rulesets.py reads Refused from approvals.py beside it
 SPEC = importlib.util.spec_from_file_location("rulesets", SCRIPTS / "rulesets.py")
 assert SPEC and SPEC.loader
 rulesets = importlib.util.module_from_spec(SPEC)
@@ -94,9 +96,7 @@ def test_deleted_ruleset(monkeypatch, capsys):
 def test_enforcement_not_active(monkeypatch, capsys, enforcement):
     code, lines = run(monkeypatch, capsys, [MAIN], [changed(enforcement=enforcement)])
     assert code == 1
-    assert lines == [
-        f"{REPO}: ruleset main: enforcement is {enforcement}, expected active"
-    ]
+    assert lines == [f"{REPO}: ruleset main: enforcement is {enforcement}, expected active"]
 
 
 def test_narrowed_include(monkeypatch, capsys):
@@ -129,9 +129,7 @@ def test_added_bypass_actor(monkeypatch, capsys):
 
 def test_each_difference_is_its_own_line(monkeypatch, capsys):
     actor = {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}
-    broken = changed(
-        enforcement="disabled", rules=MAIN["rules"][:1], bypass_actors=[actor]
-    )
+    broken = changed(enforcement="disabled", rules=MAIN["rules"][:1], bypass_actors=[actor])
     code, lines = run(monkeypatch, capsys, [MAIN], [broken])
     assert code == 1 and len(lines) == 4
 
@@ -147,4 +145,7 @@ def test_snapshot_keeps_only_deciding_fields(monkeypatch, tmp_path):
     monkeypatch.setattr(rulesets, "toplevel", lambda: tmp_path)
     assert rulesets.snapshot(REPO) == 0
     written = json.loads((tmp_path / ".github/rulesets/tags-immutable.json").read_text())
-    assert set(written) == {"name", "target", "enforcement", "conditions", "rules", "bypass_actors"} and written["name"] == "tags immutable"
+    assert (
+        set(written) == {"name", "target", "enforcement", "conditions", "rules", "bypass_actors"}
+        and written["name"] == "tags immutable"
+    )
