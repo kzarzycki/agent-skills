@@ -4575,10 +4575,28 @@ def test_the_batch_starts_from_the_base_origin_has_once_the_lock_is_taken(
 
 
 def stop_this_thread(sig: int) -> None:
-    """Send `sig` to the thread running the test, as a stop reaches the land's one thread in its own process: a
-    signal sent to the whole process (os.kill) goes to any thread that doesn't block it, and a pytest-xdist worker
-    runs a second one (execnet's), so a stop the land holds blocked while it releases its lock would be taken there."""
-    signal.pthread_kill(threading.get_ident(), sig)
+    """Stop this process with `sig` as a stop reaches the land, whose CLI runs one thread: to the whole process
+    (os.kill) in a serial run, as in CI, and to the thread running the test in a pytest-xdist worker
+    (PYTEST_XDIST_WORKER set). A signal sent to the whole process goes to any thread that doesn't block it, and an
+    xdist worker runs a second one (execnet's, started with `_thread`, so `threading` doesn't count it), which would
+    take a stop the land holds blocked while it releases its lock."""
+    if not os.environ.get("PYTEST_XDIST_WORKER"):
+        os.kill(os.getpid(), sig)
+    else:
+        signal.pthread_kill(threading.get_ident(), sig)
+
+
+@pytest.mark.parametrize("worker, sent", [("", "process"), ("gw0", "thread")])
+def test_a_test_stop_goes_to_the_process_serially_and_to_the_test_thread_in_an_xdist_worker(
+    monkeypatch: pytest.MonkeyPatch, worker: str, sent: str
+) -> None:
+    calls: list[tuple[str, int, int]] = []
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", worker)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: calls.append(("process", pid, sig)))
+    monkeypatch.setattr(signal, "pthread_kill", lambda tid, sig: calls.append(("thread", tid, sig)))
+    stop_this_thread(signal.SIGTERM)
+    target = os.getpid() if sent == "process" else threading.get_ident()
+    assert calls == [(sent, target, signal.SIGTERM)]
 
 
 @pytest.fixture
