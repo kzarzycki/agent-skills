@@ -8943,15 +8943,13 @@ def test_without_the_line_check_merge_and_land_read_no_git(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A project without carry_over_main gates exactly as before: git runs only to read the two trees (same_tree, whose
-    tree_of fetches what the clone lacks), never to look for a carry over main."""
+    """A project without carry_over_main gates exactly as before: git runs only to read the two trees (same_tree),
+    never to look for a carry over main."""
     case = carrying({"other.txt": "main moved\n"})
     real = approvals.git
     trees = lambda *args: (
         real(*args)
-        if args[0] == "rev-parse"
-        and args[-1].endswith("^{tree}")
-        or args == ("fetch", "--quiet", "origin")
+        if args[0] == "rev-parse" and args[-1].endswith("^{tree}")
         else pytest.fail(f"git {args}")
     )
     monkeypatch.setattr(approvals, "git", trees)
@@ -9724,6 +9722,8 @@ def test_an_open_head_whose_tree_is_unknown_keeps_every_record_but_the_landed_on
     monkeypatch.chdir(clone)
     git_in(clone, "fetch", "-q", "origin")
     monkeypatch.setattr(approvals, "gh", open_prs(fork))
+    # origin has the fork's head under its record branch, so its fetch is made to have failed already this run
+    monkeypatch.setattr(approvals, "TREE_FETCHED", {(os.getcwd(), fork)})
     assert approvals.tree_of(fork) is None
     approvals.drop_records([landed])
     assert loop_gate_branches(origin) == {kept}

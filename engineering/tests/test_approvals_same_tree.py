@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -183,3 +184,86 @@ def test_commits_neither_the_clone_nor_origin_has_share_no_tree(
         merge(pr)[0]
         == f"PR #7: the newest verifier review is on {'d' * 40}, not on the head {'c' * 40}: {AFTER}"
     )
+
+
+# --- tree_of fetches only the commit it lacks, within a bound, once per run ---
+
+
+@pytest.fixture
+def behind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """A clone of `origin` made before origin got `feature` (the commit `missing`) and the unrelated branch `other`
+    (`unrelated`); the test runs in the clone."""
+    origin, author, clone = tmp_path / "origin.git", tmp_path / "author", tmp_path / "clone"
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    git(tmp_path, "init", "-q", "-b", "main", str(author))
+    (author / "app.py").write_text("one\n")
+    git(author, "add", "-A")
+    git(author, "commit", "-qm", "base")
+    git(author, "push", "-q", str(origin), "main")
+    git(tmp_path, "clone", "-q", str(origin), str(clone))
+    (author / "app.py").write_text("one, the feature\n")
+    git(author, "commit", "-qam", "feature")
+    missing = git(author, "rev-parse", "HEAD")
+    git(author, "switch", "-q", "--orphan", "other")
+    (author / "other.txt").write_text("unrelated\n")
+    git(author, "add", "-A")
+    git(author, "commit", "-qm", "unrelated")
+    unrelated = git(author, "rev-parse", "HEAD")
+    git(author, "push", "-q", str(origin), f"{missing}:refs/heads/feature", "other")
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr(approvals, "TREE_FETCHED", set())
+    return {
+        "missing": missing,
+        "unrelated": unrelated,
+        "tree": git(author, "rev-parse", f"{missing}^{{tree}}"),
+        "clone": str(clone),
+    }
+
+
+def has(where: str, sha: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=where, check=False
+        ).returncode
+        == 0
+    )
+
+
+def test_a_missing_tree_fetches_only_that_commit(behind: dict[str, str]) -> None:
+    assert approvals.tree_of(behind["missing"]) == behind["tree"]
+    assert not has(behind["clone"], behind["unrelated"])
+    assert git(Path(behind["clone"]), "branch", "-r").split() == [
+        "origin/HEAD",
+        "->",
+        "origin/main",
+        "origin/main",
+    ]
+
+
+def test_a_commit_origin_lacks_is_asked_for_once_per_run(
+    behind: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetches: list[list[str]] = []
+    real = subprocess.Popen
+
+    def spy(args: list[str], **kwargs: Any) -> Any:
+        if "fetch" in args:
+            fetches.append(args)
+        return real(args, **kwargs)
+
+    monkeypatch.setattr(approvals.subprocess, "Popen", spy)
+    assert approvals.tree_of("f" * 40) is None
+    assert approvals.tree_of("f" * 40) is None
+    assert len(fetches) == 1 and fetches[0][-1] == "f" * 40
+
+
+def test_a_fetch_that_hangs_gives_none_within_the_bound(
+    behind: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The transport (here an ssh that never answers) is killed with git at the bound."""
+    git(Path(behind["clone"]), "remote", "set-url", "origin", "ssh://nowhere.invalid/repo.git")
+    monkeypatch.setenv("GIT_SSH_COMMAND", "sleep 60 #")
+    monkeypatch.setattr(approvals, "TREE_FETCH_SECONDS", 1)
+    started = time.monotonic()
+    assert approvals.tree_of(behind["missing"]) is None
+    assert time.monotonic() - started < 15

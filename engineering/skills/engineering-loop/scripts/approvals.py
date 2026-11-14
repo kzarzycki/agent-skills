@@ -5540,12 +5540,39 @@ def described(tree: str, commit: str, command: str) -> str:
     )
 
 
+# how long tree_of waits for one commit's fetch, so a check never hangs on the network
+TREE_FETCH_SECONDS = 60
+# each (checkout, commit) tree_of already asked origin for in this run, so a missing one costs one fetch, not one per call
+TREE_FETCHED: set[tuple[str, str]] = set()
+
+
 def tree_of(commit: str) -> str | None:
-    """The tree `commit` holds, fetching `origin` once when the clone lacks it; None when neither has it."""
+    """The tree `commit` holds, else None. A commit the clone lacks is fetched from `origin` by itself (GitHub serves
+    any commit reachable from a branch or a PR), once per run and within TREE_FETCH_SECONDS, since a bare fetch brings
+    every branch and may wait on the network for ever; a failed or timed-out fetch is None."""
     with contextlib.suppress(subprocess.CalledProcessError):
         return git("rev-parse", f"{commit}^{{tree}}").strip()
+    asked = (os.getcwd(), commit)
+    if asked in TREE_FETCHED:
+        return None
+    TREE_FETCHED.add(asked)
+    fetch = ["git", *SIGNING, "fetch", "--quiet", "--no-tags", "origin", commit]
+    try:
+        # its own process group with no pipes, so a timeout kills the transport (ssh, a credential helper) too
+        run = subprocess.Popen(
+            fetch, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+        )
+    except OSError:
+        return None
+    try:
+        if run.wait(timeout=TREE_FETCH_SECONDS):
+            return None
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(run.pid, signal.SIGKILL)
+        run.wait()
+        return None
     with contextlib.suppress(subprocess.CalledProcessError):
-        git("fetch", "--quiet", "origin")
         return git("rev-parse", f"{commit}^{{tree}}").strip()
     return None
 
