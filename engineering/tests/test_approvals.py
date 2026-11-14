@@ -6335,10 +6335,19 @@ def shallow_clone(tmp_path: Path, behind: int = 3, depth: int = 1) -> tuple[Path
     git_in(work, "branch", "-M", "main")
     git_in(work, "remote", "add", "origin", str(origin))
     git_in(work, "push", "-q", "origin", "main")
-    for n in range(behind):
-        (work / "app.py").write_text(f"value = {n + 2}\n")
-        git_in(work, "commit", "-qam", f"change {n}")
-    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/feature")
+    # One `git fast-import` writes the history: no per-commit `git commit` to race a background gc or maintenance
+    # job for the index lock, sign with a host's key or need a host identity (#970).
+    stream = f"reset refs/heads/feature\nfrom {fork}\n" + "".join(
+        f"commit refs/heads/feature\ncommitter loop <loop@example.com> {1_700_000_000 + n} +0000\n"
+        f"data {len(f'change {n}')}\nchange {n}\nM 100644 inline app.py\n"
+        f"data {len(f'value = {n + 2}' + chr(10))}\nvalue = {n + 2}\n\n"
+        for n in range(behind)
+    )
+    subprocess.run(
+        ["git", "-C", str(work), "-c", "gc.auto=0", "-c", "maintenance.auto=false", "fast-import", "--quiet"],
+        input=stream, check=True, capture_output=True, text=True,
+    )  # fmt: skip
+    git_in(work, "push", "-q", "origin", "refs/heads/feature:refs/heads/feature")
     git_in(
         tmp_path, "clone", "-q", "--depth", str(depth), "--branch", "feature",
         f"file://{origin}", str(clone),
