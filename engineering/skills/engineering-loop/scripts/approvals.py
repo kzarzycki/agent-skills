@@ -6542,9 +6542,12 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
             return
         print(f"published on {head} as the commit status `{context}`")
         return
-    # with `gate_steps`, each step's record is pushed by itself, one already in origin left as it is
+    # with `gate_steps`, each step's record is pushed by itself; one already in origin, read back from it
+    # (record_ref), is left as it is, since pushing it again only fails and would say origin lacks it
     for one in record.get("steps", [record]):
-        if "steps" in record and one.get("published"):
+        if one.get("published"):
+            name = one.get("ref") or RECORD_BRANCH.format(record_name(one["tree"], one["command"]))
+            print(f"already in origin as the record branch {name}, so it is not pushed again")
             continue
         try:
             ref = push_record(one | {"time": one.get("time") or now()})
