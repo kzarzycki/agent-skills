@@ -38,9 +38,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "orchestrating-agen
 from omnigent_agent import Fail, Omnigent
 
 DB_CONTAINER = "omnigent-postgres-1"
-USAGE_SECONDS = (
-    180.0  # /v1/usage builds its window on request: slower than the 30 s of any other call
-)
+# /v1/usage builds its window on request: slower than the 30 s of any other call
+USAGE_SECONDS = 180.0
 ROLLOUTS = "~/.omnigent/codex-native/*/codex-home/sessions/*/*/*/rollout-*.jsonl"
 ROLLOUT_FILES = 15  # newest rollouts scanned for a populated rate-limit snapshot
 TOP_TREES = 15  # trees in the text and HTML tables; --json has all
