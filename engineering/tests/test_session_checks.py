@@ -112,6 +112,8 @@ NEEDING = [
         "ssh-keygen",
         "test_approvals.py::test_land_with_the_line_refuses_a_checkout_that_signs_nothing",
     ),
+    # through the `cloud_land` fixture
+    ("ssh-keygen", "test_approvals.py::test_a_cloud_land_refuses_a_section_naming_no_key_variable"),
     # the test runs it itself
     (
         "ssh-keygen",
