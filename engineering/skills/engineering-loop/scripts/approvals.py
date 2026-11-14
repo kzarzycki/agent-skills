@@ -662,7 +662,7 @@ class Rows(Table):
 # where `land` may run (loop.md's `land.where`): a host, a cloud session (CLOUD), or either
 PLACES = ("host", "cloud", "both")
 # where a gate step may run (loop.md's `gate_steps`): any machine, or only a host, never a cloud session (CLOUD)
-STEP_PLACES = ("any", "host")
+STEP_PLACES = ("any", "host", "linux")
 # loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
 # A list holds strings; `bot.<login>` is a section per bot.
 STAGES = ("intent", "spec", "plan", "build", "review", "land")
@@ -5503,8 +5503,22 @@ def inputs_key(tree: str, step: dict[str, Any]) -> str | None:
 
 
 def here(step: dict[str, Any]) -> bool:
-    """Whether `step` may run here: a `host` step never runs in a cloud session (in_cloud)."""
+    """Whether `step` may run here: a `host` step never runs in a cloud session (in_cloud), a `linux` step only
+    where `sys.platform` is Linux (a Linux host or a cloud session), never on macOS."""
+    if step["where"] == "linux":
+        return sys.platform.startswith("linux")
     return step["where"] != "host" or not in_cloud()
+
+
+def runs_only(left: list[str]) -> str:
+    """`left` steps by the place their `where` limits them to: `a, b runs only on a host (`where: host`)`, one clause per `where`."""
+    wheres = {step["name"]: step["where"] for step in gate_plan()}
+    places = {"host": "a host", "linux": "Linux"}
+    clauses = []
+    for where in dict.fromkeys(wheres.get(name, "host") for name in left):
+        names = ", ".join(f"`{name}`" for name in left if wheres.get(name, "host") == where)
+        clauses.append(f"{names} runs only on {places.get(where, where)} (`where: {where}`)")
+    return "; ".join(clauses)
 
 
 def command_line(
@@ -5881,7 +5895,7 @@ def run_steps(
             continue
         if not here(step):
             say(
-                f"{step['name']}: no pass on tree {tree}, and it runs only on a host (`where: host`)"
+                f"{step['name']}: no pass on tree {tree}, and it runs only where `where: {step['where']}` allows"
             )
             done["left"].append(step["name"])
             continue
@@ -6764,8 +6778,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
             print(f"{CHECKED} on {head}: recorded in {where}")
         if left := record.get("left"):
             print(
-                f"{head} has no pass on the whole gate yet: {', '.join(f'`{name}`' for name in left)} runs only on a"
-                " host (`where: host`), where `local-ci` runs it alone"
+                f"{head} has no pass on the whole gate yet: {runs_only(left)}, where `local-ci` runs it alone"
             )
             # each step by itself, so the `gate` status shows a step's pass, never the whole gate's
             for one in record["steps"]:
@@ -6786,8 +6799,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
         source = ""
         if left := record.get("left"):
             raise Refused(
-                f"no pass on the whole gate for {head}: {', '.join(f'`{name}`' for name in left)} runs only on a host"
-                " (`where: host`); the steps that passed here are recorded"
+                f"no pass on the whole gate for {head}: {runs_only(left)}; the steps that passed here are recorded"
             )
     else:
         raise Refused(no_pass(head, why))

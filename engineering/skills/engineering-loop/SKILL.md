@@ -154,7 +154,7 @@ carry_over_main:
 | `loop` | `cap` | a whole number (The cap) | the default |
 | | `ci` | deprecated, goes in the next release (Approvals and proof); `false` for a project without CI, whose merge proof is then `uv run <this skill's folder>/scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
 | | `gate` | the merge check `local-ci` runs: a command, with any variables it sets in front (Adopting the loop) | `mise run check:all` |
-| | `gate_steps` | the merge check as steps, in place of `gate`: a list of `name`, `command` (parsed as `gate` is), `where` (`any`, or `host`: never run in a cloud session) and optionally `paths`, globs of the files the step reads, matched on the full path as `paths` are, so its pass is reused on any tree whose files under them are the same; each step's pass recorded and reused by itself (Adopting the loop) | the one `gate` command; a step without `paths` reads the whole tree |
+| | `gate_steps` | the merge check as steps, in place of `gate`: a list of `name`, `command` (parsed as `gate` is), `where` (`any`; `host`: never run in a cloud session; or `linux`: only where `sys.platform` is Linux, a Linux host or a cloud session, never macOS) and optionally `paths`, globs of the files the step reads, matched on the full path as `paths` are, so its pass is reused on any tree whose files under them are the same; each step's pass recorded and reused by itself (Adopting the loop) | the one `gate` command; a step without `paths` reads the whole tree |
 | | `local_ci_env` | the environment variables the check reads, cleared for its run unless `gate` sets them (Adopting the loop) | none |
 | | `machine_exit` | the gate's exit that means the machine isn't ready (a locked screen, low disk), such as 78: `land` runs that gate once more on the same tree, and a second one stops the run landing, evicting and posting nothing, and `local-ci` refuses it as a machine fault (`approvals.py`'s docstring) | every non-zero exit is red |
 | | `short_seconds` | a whole number of seconds: a job expected to finish within it takes the host's short lane instead of the heavy slot, and `0` turns the lane off (Rules, One heavy gate per host slot) | `120` |
@@ -278,7 +278,7 @@ reader write on the head, where the token allows, only shows the pass on the PR,
 anyone who can write a status may type one. `land` deletes a record branch once its tree has landed, or once it is a
 day old and its tree is no open PR's head. `gate` is one command with no shell operator, so a
 chain of checks is one task, or the steps of `gate_steps`, each a command and where it runs (`any`, or `host` for one
-a cloud VM can't run, such as an Apple build). Each step's pass is its own record and branch, named by the tree and
+a cloud VM can't run, such as an Apple build, or `linux` for one a Mac can't). Each step's pass is its own record and branch, named by the tree and
 the step's command, so `local-ci`, `local-ci --record` and `land` run only the steps with no pass on the tree and print
 where each reused one passed: a host runs only the `host` steps of a tree whose other steps a cloud session pushed,
 and a cloud session runs the `any` steps and leaves the `host` ones, which `land` there refuses. A step may name
@@ -313,6 +313,15 @@ asked, and screenshots it (worker.md, Report; its docstring has the flags). `scr
 each mutation patch alone, runs the tests and restores the tree, writing a log stamped with the head: the worker
 runs it before its report and the verifier in review (verifier.md, Mutation-check the new tests; its
 docstring has the log format and exit codes).
+
+**Fixing the gate itself.** `land` reads `gate_steps` from the default branch, so a PR that changes them lands under the old
+policy, which still runs the step the PR moves (to `where: linux`, say) on a host where it can't pass. Run from a host where
+the step runs, a clean checkout of the merge tree `land` will build (`git fetch origin pull/<n>/merge`, or the queue's
+branch, then `git checkout --detach FETCH_HEAD`) and `approvals.py local-ci --record` there records and pushes the step's pass
+from the policy that tree holds, so `land` reuses it by tree and command and runs no step again. That holds for a step the
+PR keeps with the same command and no `paths`: `local-ci` plans from the checkout's own policy, so a step the PR drops is not
+in the plan and has no pass to record, and a step with `paths` is keyed on the whole `gate_steps` setting, so a pass recorded
+under the changed one is not the pass the old one asks for. For those, put the case to the owner.
 
 ### Practice
 
