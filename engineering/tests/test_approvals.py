@@ -3523,6 +3523,13 @@ def lands(
             state["calls"].append(args)
             pulls[int(args[-1])]["isDraft"] = "--undo" in args
             return ""
+        if args[:2] == ("api", "-X"):
+            # land's edit of a PR's body or comment, which session_links() names by its REST path
+            state["calls"].append(args)
+            state.setdefault("edits", {})[args[3]] = args[args.index("-f") + 1].removeprefix(
+                "body="
+            )
+            return ""
         if args[:2] == ("api", "--paginate") and args[2].split("?")[0].endswith("/commits"):
             number = int(args[2].split("/")[-2])
             # REST lists a PR's commits oldest first, each with its author's GitHub login
@@ -10323,6 +10330,7 @@ def cloud_routes(spec: str = "the spec", record_of: str | None = None) -> dict[s
         ],
         "issues/7/comments?per_page=100": [],
         "pulls/7/ccr/review_threads": [{"resolved": True, "comment_ids": [1]}],
+        "pulls/7/comments?per_page=100": [],
         "pulls/7/commits?per_page=100": [
             {
                 "author": user("loop"),

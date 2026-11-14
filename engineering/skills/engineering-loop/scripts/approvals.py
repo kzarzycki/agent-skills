@@ -22,7 +22,7 @@
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
-    uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop `Claude-Session:` lines from it
+    uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
 
 At start every verb warns on stderr, once, when this script's checkout is behind its upstream's last fetched tip (no
 fetch) and the script differs there: the count and `git pull`. loop.md's `pack_staleness: refuse` under `loop` makes
@@ -154,8 +154,10 @@ date with the base runs no gate. GitHub's required checks never stand in for it,
 command's. Otherwise it runs the gate there as `local-ci` does (below), its log under the git common dir, and records
 the pass by tree; a gate that leaves the worktree changed is red, since it no longer ran on the batch as merged.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
---match-head-commit`), with the body the repo's squash default would write less every `Claude-Session:` line, since a
-cloud session's harness adds its link to each commit and the PR may be public: under the commit-messages default the
+--match-head-commit`), with the body the repo's squash default would write less every session link line (a
+`Claude-Session:` line, or a line that is only a claude.ai session link), since a cloud session's harness adds its link
+to each commit, PR body and comment and the PR may be public, first dropping those lines from the PR's own body and
+comments on GitHub where it can edit them (`check merge` names any it can't): under the commit-messages default the
 body GitHub builds from the commits (one: its message after the subject, its co-author lines moved to the end;
 several: each message as a `* ` item, then `---------` and their co-authors), under the PR-description default the
 PR's body, and under the blank default none. A merge GitHub refuses, or leaves unmerged
@@ -505,6 +507,8 @@ CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
 NOTE = "id author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
 SPECCED = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
 ASSIGNEES = "assignees(first: 10) { nodes { login } }"
+# what land needs to edit a PR's comment, and check merge to name one it can't (session_links)
+EDITABLE = "databaseId url viewerCanUpdate"
 # who added `approved:spec` (approver) and who was assigned when (release); ponytail: the newest 100 such events
 EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT]) { nodes { __typename
   ... on LabeledEvent { createdAt actor { __typename login } label { name } }
@@ -513,10 +517,10 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
-  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
-  reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
+  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
+  reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
@@ -3310,6 +3314,9 @@ def rest_notes(number: int) -> dict[str, Any]:
     nodes = [
         {
             "id": found["node_id"],
+            # what session_links() names a comment by and edits it at; REST gives no right to edit it
+            "databaseId": found.get("id"),
+            "url": found.get("html_url"),
             "author": actor(found.get("user")),
             "body": found.get("body") or "",
             "createdAt": found["created_at"],
@@ -3463,9 +3470,27 @@ def rest_checks(head: str) -> dict[str, Any]:
 def rest_threads(number: int) -> dict[str, Any]:
     """A PR's review threads, whether each is resolved, from the review-thread route a cloud session's GitHub proxy
     serves (GitHub's own REST has none). Where it is missing, as on a host whose GraphQL refused for another reason,
-    the error raises: unresolved threads are never read as none."""
+    the error raises: unresolved threads are never read as none. Each thread's comments, which that route names by id
+    alone, come from the PR's review comments, with no right to edit them (session_links())."""
     threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
-    nodes = [{"isResolved": bool(thread.get("resolved"))} for thread in threads]
+    listed = {found["id"]: found for found in rest_pages(f"pulls/{number}/comments?per_page=100")}
+    nodes = [
+        {
+            "isResolved": bool(thread.get("resolved")),
+            "comments": {
+                "nodes": [
+                    {
+                        "body": found.get("body") or "",
+                        "databaseId": found["id"],
+                        "url": found.get("html_url"),
+                    }
+                    for found in (listed.get(each) for each in thread.get("comment_ids") or [])
+                    if found is not None
+                ]
+            },
+        }
+        for thread in threads
+    ]
     return {"totalCount": len(nodes), "nodes": nodes}
 
 
@@ -3482,6 +3507,8 @@ def rest_pull(pr: int) -> dict[str, Any]:
             "state": review["state"],
             "body": review.get("body") or "",
             "commit": {"oid": review.get("commit_id") or ""},
+            "databaseId": review.get("id"),
+            "url": review.get("html_url"),
         }
         for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
     ]
@@ -4038,7 +4065,7 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
     # advice, so it prints whatever else holds the merge and changes no exit code
     advice = (
         [f"PR #{pull['number']}: {said}"] if point == "merge" and (said := unforced(pull)) else []
-    )
+    ) + ([left] if point == "merge" and (left := stranded(pull)) else [])
     for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
         print(line)
     return 1 if found else WAITING if waiting else 0
@@ -4853,8 +4880,14 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
     )
 
 
-# a cloud session's link, which its harness adds to every commit message; land drops it from the squash body
-SESSION_LINE = re.compile(r"^Claude-Session:.*(?:\n|$)", re.MULTILINE)
+# a cloud session's link, which its harness adds to every commit message as a `Claude-Session:` line and to every PR
+# body as a bare link line, optionally in <...>, and to every body and comment its proxy writes as a `_Generated by
+# [Claude Code](<link>)_` footer; land drops each from the squash body, the PR body and the PR's comments
+SESSION_LINE = re.compile(
+    r"^(?:Claude-Session:.*|(?:<https://claude\.ai/code/session_[^\s<>]*>|https://claude\.ai/code/session_[^\s<>]*"
+    r"|_Generated by \[Claude Code\]\(https://claude\.ai/code/session_[^\s()]*\)_)[ \t\r]*)(?:\n|$)",
+    re.MULTILINE,
+)
 CO_AUTHOR = re.compile(r"^Co-authored-by:[ \t]*(.*?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
 
 
@@ -4883,7 +4916,7 @@ def squash_body(commits: list[dict[str, Any]], author: str | None) -> str:
 
 
 def unlinked(text: str) -> str:
-    """text less every `Claude-Session:` line, the blank lines around each removed one folded into one (none when
+    """text less every session link line (SESSION_LINE), the blank lines around each removed one folded into one (none when
     it sat between two text lines); blank lines elsewhere (a PR body's code block) stay as written."""
     marked = "\n".join("\0" if SESSION_LINE.match(line) else line for line in text.split("\n"))
 
@@ -4894,7 +4927,7 @@ def unlinked(text: str) -> str:
 
 
 def commit_msg(message: Path) -> int:
-    """The commit-msg hook: the message file less every `Claude-Session:` line, as unlinked() folds them for land, so a
+    """The commit-msg hook: the message file less every session link line, as unlinked() folds them for land, so a
     cloud session's branch commits carry no link either, since a public repo publishes them; a message with none is
     left as written."""
     text = message.read_text()
@@ -4903,9 +4936,96 @@ def commit_msg(message: Path) -> int:
     return 0
 
 
+def session_links(pull: dict[str, Any]) -> list[tuple[str, str, str, str, bool]]:
+    """Each text of pull that carries a session link line, as (what names it, the REST method and path that edit it,
+    its text, whether this account can edit it, by GitHub's `viewerCanUpdate`): the PR's body, each conversation
+    comment, each review's summary and each review thread's comment, since a public repo's PR page publishes them all.
+    A text read without that right (REST, when GraphQL is refused) counts as one it can't edit. ponytail: the newest
+    100 comments and reviews, and the first 50 comments of each of the first 100 threads."""
+    number, repo = pull["number"], "repos/{owner}/{repo}"
+
+    def named(word: str, found: dict[str, Any]) -> str:
+        if found.get("url"):
+            return f"the {word} {found['url']}"
+        if found.get("databaseId"):
+            return f"{word} {found['databaseId']} on PR #{number}"
+        return f"a {word} on PR #{number}"
+
+    texts = [
+        (
+            "its body",
+            "PATCH",
+            f"{repo}/pulls/{number}",
+            pull.get("body") or "",
+            pull.get("viewerCanUpdate"),
+        )
+    ]
+    texts += [
+        (
+            named("comment", note),
+            "PATCH",
+            f"{repo}/issues/comments/{note.get('databaseId')}",
+            note.get("body") or "",
+            note.get("viewerCanUpdate"),
+        )
+        for note in (pull.get("comments") or {}).get("nodes") or []
+    ]
+    texts += [
+        (
+            named("review", review),
+            "PUT",
+            f"{repo}/pulls/{number}/reviews/{review.get('databaseId')}",
+            review.get("body") or "",
+            review.get("viewerCanUpdate"),
+        )
+        for review in (pull.get("reviews") or {}).get("nodes") or []
+    ]
+    texts += [
+        (
+            named("comment", note),
+            "PATCH",
+            f"{repo}/pulls/comments/{note.get('databaseId')}",
+            note.get("body") or "",
+            note.get("viewerCanUpdate"),
+        )
+        for thread in (pull.get("reviewThreads") or {}).get("nodes") or []
+        for note in (thread.get("comments") or {}).get("nodes") or []
+    ]
+    return [
+        (what, method, path, text, bool(can))
+        for what, method, path, text, can in texts
+        if SESSION_LINE.search(text)
+    ]
+
+
+def unlink_pull(pull: dict[str, Any]) -> None:
+    """Before land merges pull: each text session_links() finds that this account can edit gets one edit holding it
+    less its session link lines, as unlinked() folds them, its other lines kept; a text with none gets no edit, and
+    one it can't edit is left to check merge, which names it. One line says what it edited."""
+    edited = []
+    for what, method, path, text, can in session_links(pull):
+        if can:
+            gh("api", "-X", method, path, "-f", f"body={unlinked(text)}")
+            edited.append(what)
+    if edited:
+        print(f"PR #{pull['number']}: dropped the session link from {', '.join(edited)}")
+
+
+def stranded(pull: dict[str, Any]) -> str | None:
+    """The line check merge prints when a text of pull still carries a session link this account can't edit (a comment
+    by another account, say), so a person removes it before the PR lands; None when there is none."""
+    left = [what for what, *_, can in session_links(pull) if not can]
+    if not left:
+        return None
+    return (
+        f"PR #{pull['number']}: a session link stays in {', '.join(left)}, which this account can't edit: remove it"
+        " by hand before the PR lands, since its page is public"
+    )
+
+
 def land_body(pull: dict[str, Any]) -> str | None:
     """The `--body` land passes to GitHub's squash of pull, whatever the repo's squash default would put a
-    `Claude-Session:` line in, or None to leave GitHub's default. The repo's `squash_merge_commit_message` picks it:
+    session link line in, or None to leave GitHub's default. The repo's `squash_merge_commit_message` picks it:
     COMMIT_MESSAGES, squash_body() less those lines; PR_BODY, the PR's body less them; BLANK, None, since GitHub
     writes no body. ponytail: under PR_BODY GitHub's own co-author lines, if it adds any, are not added here, as no
     squash on this repo shows that setting."""
@@ -4967,6 +5087,7 @@ def merges(
     for pull, tree, gated, how in landed:
         where, head = f"PR #{pull['number']}", pull["headRefOid"]
         try:
+            unlink_pull(pull)
             if local:
                 tip = signed_squash(pull, local[1], (tip, tree))
                 print(f"{where} landed in {base} as {tip}, signed by a key in {local[1]}")
