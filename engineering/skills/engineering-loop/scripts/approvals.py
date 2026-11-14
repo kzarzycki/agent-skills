@@ -3845,26 +3845,7 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
         return 0
     if point == "merge":
         base = pull["baseRefName"]
-        fetched_base = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(toplevel()),
-                "fetch",
-                "-q",
-                "origin",
-                f"+refs/heads/{base}:refs/remotes/origin/{base}",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if fetched_base.returncode:
-            raise Refused(
-                f"could not fetch origin/{base} ({' '.join(fetched_base.stderr.split()) or 'no reason given'}):"
-                " a stale ref would judge by another tip's files"
-            )
-        judge_with_base(base)
+        judge_with_base(base, fetch=True)
     found, issues = gated(point, pull, tracker, loop)
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
@@ -4043,9 +4024,29 @@ def base_drift(base: str) -> list[str]:
     return differ
 
 
-def judge_with_base(base: str) -> None:
+def judge_with_base(base: str, fetch: bool = False) -> None:
     """Refuse, naming the files, when the code or policy running here is not `origin/<base>`'s, so the caller runs from
     the base's code; under GITHUB_ACTIONS (a workflow that checks out the PR) also when HEAD is not the base's tip."""
+    if fetch:  # a land has fetched it already
+        fetched_base = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(toplevel()),
+                "fetch",
+                "-q",
+                "origin",
+                f"+refs/heads/{base}:refs/remotes/origin/{base}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if fetched_base.returncode:
+            raise Refused(
+                f"could not fetch origin/{base} ({' '.join(fetched_base.stderr.split()) or 'no reason given'}):"
+                " a stale ref would judge by another tip's files"
+            )
     if os.environ.get("GITHUB_ACTIONS") == "true":
         tip = subprocess.run(
             [
