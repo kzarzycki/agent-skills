@@ -546,7 +546,7 @@ def test_check_build_before_the_pr_judges_the_issue(
             raise subprocess.CalledProcessError(
                 1, ["gh"], stderr=f"Could not resolve to a PullRequest with the number of {n}"
             )
-        return {"number": 5, "labels": {"nodes": []}}
+        return {"number": 5, "labels": {"nodes": []}, "baseRefName": "main"}
 
     monkeypatch.setattr(approvals, "pull_request", pull_request)
     monkeypatch.setattr(approvals, "gated", lambda *a: (["gated"], []))
@@ -3466,7 +3466,7 @@ def lands(
     monkeypatch.setattr(approvals, "archive_workers", lambda _number: None)
     # its tests rewrite the policy in the work tree after opening PRs, so it is read there, as in a checkout without
     # origin (test_approvals_policy_base.py tests the read from origin/<base>)
-    monkeypatch.setattr(approvals, "policy_base", lambda _root: None)
+    monkeypatch.setattr(approvals, "policy_base", lambda _root, _base=None: None)
     origin, work = tmp_path / "origin.git", tmp_path / "work"
     git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     (origin / "hooks" / "pre-receive").write_text(NO_REWRITE)

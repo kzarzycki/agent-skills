@@ -50,8 +50,11 @@ keeps the prose for people and agents: why a path is critical, how to judge a fi
 risk criteria in words. A project without gatekeeper.md may keep the block under loop.md's
 `## Settings` for now: `approvals.py` reads it there with a deprecation line, and refuses a
 project with both, since two sources of the bar would drift. `approvals.py` reads these files,
-and issue-tracker.md, from the base's copy on `origin/<base>` (the default branch, the ref `land`
-merges onto), never the checkout's, so a PR can't loosen its own gate and a checkout behind its
+and issue-tracker.md, from the base's copy on `origin/<base>`, never the checkout's: the base the
+PR a command acts on merges onto, the ref `land` builds on (`check`, `land`, `local-ci <pr>`,
+`approve merge`, `delegate`, `brief`), else the default branch. `land` reads it again after its
+fetch under the landing lock, so a policy another land changed meanwhile decides the batch; only
+where it may run (`land.where` and its key) is the default branch's, read before any PR. So a PR can't loosen its own gate and a checkout behind its
 base can't hold an old one: a working-tree copy that differs gets one line naming the file and
 both commits, and only a checkout without that ref (no `origin`) reads its own, with a line
 saying so. A PR that changes the gate is therefore gated, recorded and landed under the base's
