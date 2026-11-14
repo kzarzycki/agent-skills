@@ -21,6 +21,8 @@ MUTATE = (
 MODULE = "def add(a, b):\n    return a + b\n\n\ndef double(x):\n    return x * 2\n"
 TEST = "from calc import add\n\nassert add(2, 3) == 5\n"
 TESTS = f"{sys.executable} test_calc.py"
+# true while add.patch's mutant is applied, so a test command can act on the patched tree alone
+MUTANT = "grep -q 'a - b' calc.py"
 
 
 def git(repo: Path, *args: str) -> str:
@@ -113,7 +115,9 @@ def stopped(repo: Path, tmp_path: Path, *signals: signal.Signals, first: str = "
     exit code."""
     killed = patch(repo, "add.patch", "a + b", "a - b")
     started = tmp_path / "started"
-    command = [sys.executable, str(MUTATE), "--test", f"{first}touch {started} && sleep 60"]
+    # the head run, without the patch, passes at once
+    test = f"if {MUTANT}; then {first}touch {started} && sleep 60; fi"
+    command = [sys.executable, str(MUTATE), "--test", test]
     run = subprocess.Popen([*command, "--log", str(log_path(repo)), str(killed)], cwd=repo)
     deadline = time.monotonic() + 30
     while not started.exists():
@@ -144,7 +148,8 @@ def test_a_patch_the_tests_catch_is_killed_and_the_run_exits_0(repo: Path) -> No
     lines = log(repo)
     assert lines[0] == git(repo, "rev-parse", "HEAD").strip()
     assert "mutate.py --test" in lines[1]
-    assert lines[2] == f"{killed}: exit 1 killed"
+    assert lines[2].startswith("short: head run ")
+    assert lines[3] == f"{killed}: exit 1 killed"
     assert f"== {killed} ==" in lines and "AssertionError" in "\n".join(lines)
     assert clean(repo) and (repo / "calc.py").read_text() == MODULE
 
@@ -154,7 +159,7 @@ def test_a_patch_no_test_catches_survives_and_the_log_names_it(repo: Path) -> No
     survivor = patch(repo, "double.patch", "x * 2", "x * 3")
     result = mutate(repo, killed, survivor)
     assert result.returncode == 1, result.stderr
-    assert log(repo)[2:4] == [f"{killed}: exit 1 killed", f"{survivor}: exit 0 survived"]
+    assert log(repo)[3:5] == [f"{killed}: exit 1 killed", f"{survivor}: exit 0 survived"]
     assert clean(repo)
 
 
@@ -187,7 +192,7 @@ def test_sigterm_while_a_patch_is_applied_leaves_the_tree_as_it_started(
     before = (git(repo, "status", "--porcelain"), git(repo, "diff"))
     assert stopped(repo, tmp_path, signal.SIGTERM) == -signal.SIGTERM
     assert (git(repo, "status", "--porcelain"), git(repo, "diff")) == before
-    assert clean(repo) and log(repo)[-1] == "stopped by SIGTERM"
+    assert clean(repo) and log(repo)[3] == "stopped by SIGTERM"
 
 
 def test_a_second_signal_during_the_restore_does_not_interrupt_it(
@@ -195,7 +200,7 @@ def test_a_second_signal_during_the_restore_does_not_interrupt_it(
 ) -> None:
     code = stopped(repo, tmp_path, signal.SIGINT, signal.SIGTERM)
     assert code in (-signal.SIGINT, -signal.SIGTERM)
-    assert clean(repo) and log(repo)[-1].startswith("stopped by SIG")
+    assert clean(repo) and log(repo)[3].startswith("stopped by SIG")
 
 
 def test_a_run_from_a_subdirectory_patches_files_outside_it(repo: Path) -> None:
@@ -203,7 +208,7 @@ def test_a_run_from_a_subdirectory_patches_files_outside_it(repo: Path) -> None:
     test = f"{sys.executable} {repo / 'test_calc.py'}"
     result = mutate(repo, killed, test=test, cwd=repo / "docs")
     assert result.returncode == 0, result.stderr
-    assert log(repo)[2] == f"{killed}: exit 1 killed"
+    assert log(repo)[3] == f"{killed}: exit 1 killed"
     assert clean(repo)
 
 
@@ -215,13 +220,14 @@ def test_the_test_command_writes_no_bytecode_that_could_hide_the_next_patch(repo
 
 def test_a_test_command_that_leaves_a_file_fails_the_restore_and_names_it(repo: Path) -> None:
     killed = patch(repo, "add.patch", "a + b", "a - b")
-    result = mutate(repo, killed, test=f"touch stray.txt; {TESTS}")
+    # only the mutant leaves it, so the head run passes clean
+    result = mutate(repo, killed, test=f"{MUTANT} && touch stray.txt; {TESTS}")
     assert result.returncode == 2
     assert "could not be restored" in result.stderr and "stray.txt" in result.stderr
     assert (repo / "calc.py").read_text() == MODULE
     # the test had finished: its result and output stay in the log beside the refusal
     lines = log(repo)
-    assert lines[2:4] == [
+    assert lines[3:5] == [
         f"{killed}: exit 1 killed",
         f"refused: the tree could not be restored after {killed}:",
     ]
@@ -258,7 +264,7 @@ def test_a_signal_whose_restore_fails_is_refused_with_exit_2(repo: Path, tmp_pat
     code = stopped(repo, tmp_path, signal.SIGTERM, first="echo edited >> docs/README.md; ")
     assert code == 2
     assert (repo / "calc.py").read_text() == MODULE
-    assert log(repo)[-1].startswith("refused: the tree could not be restored")
+    assert log(repo)[3].startswith("refused: the tree could not be restored")
 
 
 def test_test_output_that_is_not_utf8_is_logged_and_the_tree_restored(repo: Path) -> None:
@@ -423,6 +429,16 @@ def slot_env(tmp_path: Path) -> dict[str, str]:
     return {"XDG_CACHE_HOME": str(tmp_path / "cache")}
 
 
+def policy(repo: Path, short_seconds: int) -> None:
+    """Commit a policy setting `short_seconds`; 0 turns the short lane off, so every run takes the heavy slot."""
+    (repo / "docs" / "agents").mkdir(exist_ok=True)
+    (repo / "docs" / "agents" / "gatekeeper.md").write_text(
+        f"# Gatekeeper\n\n## Policy\n\n```yaml\nloop:\n  short_seconds: {short_seconds}\n```\n"
+    )
+    git(repo, "add", ".")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "policy")
+
+
 def hold(path: Path) -> subprocess.Popen[str]:
     """A process holding the slot until its stdin closes."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -443,6 +459,7 @@ def hold(path: Path) -> subprocess.Popen[str]:
 def test_the_test_command_waits_while_another_process_holds_the_slot(
     repo: Path, tmp_path: Path
 ) -> None:
+    policy(repo, 0)
     killed = patch(repo, "add.patch", "a + b", "a - b")
     started = tmp_path / "started"
     holder = hold(slot(tmp_path))
@@ -480,6 +497,7 @@ def test_a_free_slot_is_taken_without_a_wait_line(repo: Path, tmp_path: Path) ->
 
 
 def test_the_slot_is_held_around_each_patchs_test_run_only(repo: Path, tmp_path: Path) -> None:
+    policy(repo, 0)
     killed = patch(repo, "add.patch", "a + b", "a - b")
     # the test command fails when it can't take the slot itself while its parent holds it (no re-entry variable)
     probe = (
@@ -487,7 +505,7 @@ def test_the_slot_is_held_around_each_patchs_test_run_only(repo: Path, tmp_path:
         ' fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)" && exit 0 || exit 1'
     )
     mutate(repo, killed, test=probe, env=slot_env(tmp_path))
-    assert log(repo)[2] == f"{killed}: exit 1 killed"
+    assert log(repo)[3] == f"{killed}: exit 1 killed"
     # between runs it is free
     free = subprocess.run(
         [
@@ -506,13 +524,14 @@ def test_the_slot_is_held_around_each_patchs_test_run_only(repo: Path, tmp_path:
 def test_a_test_command_that_takes_the_slot_by_the_reentry_rule_does_not_deadlock(
     repo: Path, tmp_path: Path
 ) -> None:
+    policy(repo, 0)
     (repo / "tmp" / "take_slot.py").write_text(TAKE_SLOT)
     killed = patch(repo, "add.patch", "a + b", "a - b")
     test = f"{sys.executable} {repo / 'tmp' / 'take_slot.py'} {slot(tmp_path)} && {TESTS}"
     result = mutate(repo, killed, test=test, env=slot_env(tmp_path))
     assert result.returncode == 0, result.stderr
     # exit 1 from the tests, not 3 from a wrapper that waited on its parent
-    assert log(repo)[2] == f"{killed}: exit 1 killed"
+    assert log(repo)[3] == f"{killed}: exit 1 killed"
 
 
 def test_a_run_under_a_holder_of_the_slot_takes_no_lock(repo: Path, tmp_path: Path) -> None:
@@ -590,4 +609,176 @@ def test_the_hosts_slot_held_by_another_process_is_not_waited_on(
     finally:
         holder.kill()
         holder.wait()
+    assert clean(repo)
+
+
+# the short lane (#978)
+def short(tmp_path: Path) -> Path:
+    return tmp_path / "cache" / "engineering-loop" / "gate.short.lock"
+
+
+def recording(record: Path, then: str = TESTS) -> str:
+    """A test command that appends the slot it runs under to `record`, then runs `then`."""
+    return f'echo "$LOOP_GATE_SLOT_HELD" >> {record} && {then}'
+
+
+def slots(record: Path) -> list[str]:
+    return record.read_text().splitlines()
+
+
+def test_with_the_heavy_slot_held_a_fast_head_run_puts_every_patch_in_the_short_lane(
+    repo: Path, tmp_path: Path
+) -> None:
+    first = patch(repo, "add.patch", "a + b", "a - b")
+    second = patch(repo, "add2.patch", "a + b", "a * b")
+    record = tmp_path / "slots"
+    holder = hold(slot(tmp_path))
+    try:
+        # a patch run that took the heavy slot would wait on the holder until this times out
+        result = mutate(repo, first, second, test=recording(record), timeout=20)
+    finally:
+        holder.kill()
+        holder.wait()
+    assert result.returncode == 0, result.stderr
+    lines = log(repo)
+    assert lines[2].startswith("short: head run ") and lines[2].endswith(" s ≤ 120 s")
+    assert lines[3:5] == [f"{first}: exit 1 killed", f"{second}: exit 1 killed"]
+    assert "== head ==" in lines
+    assert slots(record) == [str(short(tmp_path))] * 3
+    assert clean(repo)
+
+
+def test_a_head_run_slower_than_short_seconds_puts_each_patch_in_the_heavy_slot(
+    repo: Path, tmp_path: Path
+) -> None:
+    policy(repo, 1)
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    record = tmp_path / "slots"
+    result = mutate(repo, killed, test=recording(record, f"sleep 1.3 && {TESTS}"))
+    assert result.returncode == 0, result.stderr
+    lines = log(repo)
+    assert lines[2].startswith("heavy: head run ") and lines[2].endswith(" s > 1 s")
+    assert lines[3] == f"{killed}: exit 1 killed"
+    # an overrun is the short lane's: a slow run in the heavy slot is no overrun
+    assert not any("overrun" in line for line in lines)
+    assert slots(record) == [str(short(tmp_path)), str(slot(tmp_path))]
+
+
+def test_short_seconds_0_runs_no_head_run_and_every_patch_in_the_heavy_slot(
+    repo: Path, tmp_path: Path
+) -> None:
+    policy(repo, 0)
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    record = tmp_path / "slots"
+    assert mutate(repo, killed, test=recording(record)).returncode == 0
+    lines = log(repo)
+    assert lines[2] == "heavy: short_seconds is 0"
+    assert "== head ==" not in lines
+    assert slots(record) == [str(slot(tmp_path))]
+
+
+def test_a_failing_head_run_puts_each_patch_in_the_heavy_slot_and_is_logged(
+    repo: Path, tmp_path: Path
+) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    record = tmp_path / "slots"
+    result = mutate(repo, killed, test=recording(record, "echo head broke && exit 1"))
+    assert result.returncode == 0, result.stderr
+    lines = log(repo)
+    assert lines[2] == "heavy: head run failed (exit 1)"
+    assert lines[3] == f"{killed}: exit 1 killed"
+    head = lines.index("== head ==")
+    assert lines[head + 1] == "head broke"
+    assert slots(record) == [str(short(tmp_path)), str(slot(tmp_path))]
+
+
+def test_a_run_under_a_holder_of_the_heavy_slot_stays_there_with_no_head_run(
+    repo: Path, tmp_path: Path
+) -> None:
+    (repo / "tmp" / "take_slot.py").write_text(TAKE_SLOT)
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    record = tmp_path / "slots"
+    # a heavy wrapper under the run takes no lock only while the variable still names the heavy slot
+    test = recording(
+        record, f"{sys.executable} {repo / 'tmp' / 'take_slot.py'} {slot(tmp_path)} && {TESTS}"
+    )
+    holder = hold(slot(tmp_path))
+    try:
+        result = mutate(repo, killed, test=test, env={"LOOP_GATE_SLOT_HELD": str(slot(tmp_path))})
+    finally:
+        holder.kill()
+        holder.wait()
+    assert result.returncode == 0, result.stderr
+    lines = log(repo)
+    assert lines[2:4] == ["heavy: run under a holder of the heavy slot", f"{killed}: exit 1 killed"]
+    assert slots(record) == [str(slot(tmp_path))]
+
+
+def test_the_short_lane_waits_for_another_short_job_and_says_so(repo: Path, tmp_path: Path) -> None:
+    # a bound shorter than the wait: the head run's time counts its run, not its wait for the lane
+    policy(repo, 1)
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    holder = hold(short(tmp_path))
+    run = subprocess.Popen(
+        [sys.executable, str(MUTATE), "--test", TESTS, "--log", str(log_path(repo)), str(killed)],
+        cwd=repo,
+        env={**os.environ, **slot_env(tmp_path)},
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not (
+            log_path(repo).exists() and "waiting for the short" in log_path(repo).read_text()
+        ):
+            assert time.monotonic() < deadline and run.poll() is None
+            time.sleep(0.05)
+        time.sleep(1.3)
+        assert holder.stdin is not None
+        holder.stdin.close()
+        assert run.wait(timeout=30) == 0
+    finally:
+        holder.kill()
+        run.kill()
+    lines = log(repo)
+    assert lines[2] == "head: waiting for the short gate slot"
+    assert lines[3].startswith("short: head run ")
+    assert clean(repo)
+
+
+def test_a_short_lane_patch_run_past_short_seconds_logs_an_overrun(
+    repo: Path, tmp_path: Path
+) -> None:
+    policy(repo, 1)
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    result = mutate(repo, killed, test=f"if {MUTANT}; then sleep 1.3; fi; {TESTS}")
+    assert result.returncode == 0, result.stderr
+    lines = log(repo)
+    assert lines[2].startswith("short: head run ")
+    assert lines[3] == f"{killed}: exit 1 killed"
+    assert lines[4].startswith(f"{killed}: overrun: ") and lines[4].endswith(
+        " s > 1 s in the short lane"
+    )
+
+
+def test_a_head_run_that_leaves_a_change_is_refused_before_any_patch(repo: Path) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    result = mutate(repo, killed, test=f"touch stray.txt; {TESTS}")
+    assert result.returncode == 2
+    assert "the head run left changes" in result.stderr and "stray.txt" in result.stderr
+    assert (repo / "calc.py").read_text() == MODULE
+    assert not any("killed" in line for line in log(repo))
+    (repo / "stray.txt").unlink()
+    assert clean(repo)
+
+
+def test_a_short_seconds_off_the_policy_schema_is_refused(repo: Path) -> None:
+    (repo / "docs" / "agents").mkdir()
+    (repo / "docs" / "agents" / "gatekeeper.md").write_text(
+        "# Gatekeeper\n\n## Policy\n\n```yaml\nloop:\n  short_seconds: fast\n```\n"
+    )
+    git(repo, "add", ".")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "policy")
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    result = mutate(repo, killed)
+    assert result.returncode == 2
+    assert "short_seconds" in result.stderr
     assert clean(repo)
