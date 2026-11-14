@@ -133,9 +133,9 @@ names the command that records it. `land <pr>` on a draft marks it ready first, 
 checks that starts are required, it waits (exit 3). `land <pr> --only` (with or without `--wait`) makes the named PR the only candidate: every other PR is left untouched (not
 marked ready, commented on, evicted or merged), and the rest is as without the flag; `--only` without a PR exits 2.
 A named PR that is no candidate says why: a missing proof exits 1,
-a wait for the owner or a pending required check 3, a red required check 1. A named PR missing a required check that
-GitHub reports conflicting exits 1 with the fix, `merge origin/<base> in`, since GitHub runs no workflow on a
-conflicting PR, so the check would never come.
+a wait for the owner or a pending required check 3, a red required check 1. A named PR missing a required check, or a
+named draft, that GitHub reports conflicting exits 1 with the fix, `merge origin/<base> in` (a draft is not marked
+ready first), since GitHub runs no workflow on a conflicting PR, so the check would never come.
 3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
 `pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
 (the PR's head) and `LAND_BASE` (that tip) set, so the base's tree holds the check and a PR never changes what judges
@@ -4268,7 +4268,7 @@ def landable(
     aside, since the batch's gate is the proof), no owner wait, the base's required checks green on its head, and a
     signed squash possible where loop.md asks for one. Else, after printing why, the exit it means for a named PR and
     whether a wait would clear it. A draft (only a named PR is read as one) is marked ready first. The `named` PR
-    missing a required check that GitHub reports conflicting ends the wait, since no workflow runs on it."""
+    missing a required check, or a draft, that GitHub reports conflicting ends the wait, since no workflow runs on it."""
     where, local = f"PR #{pull['number']}", signed(loop)
     if pull["isCrossRepository"]:
         print(f"{where} comes from another repository: land merges only branches of this one")
@@ -4294,6 +4294,19 @@ def landable(
         return 1, False
     for line in flag(pull, issues, loop):
         print(line)
+    # GitHub runs no workflow on a conflicting PR, so a required check it lacks never comes, nor do a draft's once
+    # it is ready: before the draft is marked ready, since that would start nothing
+    if (
+        named
+        and required
+        and pull.get("mergeable") == "CONFLICTING"
+        and (pull["isDraft"] or required - {name for name, _ in head_checks(pull, required)[0]})
+    ):
+        for line in ci(where, pull, required):
+            print(line)
+        base = pull["baseRefName"]
+        print(f"{where} conflicts with {base}: merge `origin/{base}` in")
+        return 1, False
     if pull["isDraft"]:
         # GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses
         if in_cloud():
@@ -4310,16 +4323,7 @@ def landable(
     if required and (lines := ci(where, pull, required)):
         for line in lines:
             print(line)
-        checks = head_checks(pull, required)[0]
-        if (
-            named
-            and pull.get("mergeable") == "CONFLICTING"
-            and required - {name for name, _ in checks}
-        ):
-            base = pull["baseRefName"]
-            print(f"{where} conflicts with {base}: merge `origin/{base}` in")
-            return 1, False
-        red = {state for _, state in checks} & RED
+        red = {state for _, state in head_checks(pull, required)[0]} & RED
         return (1, False) if red or any(line.endswith(PAGED) for line in lines) else (WAITING, True)
     # after CI, so the owner is never asked about a head CI could still reject
     if owner := owner_waits(pull, issues, loop):

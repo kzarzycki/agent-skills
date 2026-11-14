@@ -112,3 +112,55 @@ def test_rest_reads_mergeable_as_graphql_names_it(
 def test_graphql_reads_whether_the_pr_conflicts() -> None:
     """The host reads the PR over GraphQL, whose `mergeable` the stop reads."""
     assert " mergeable " in approvals.PULL
+
+
+@pytest.fixture
+def draft(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """PR #7 a draft on a base that requires `qualify`, whose only run is the draft's skip: green to GitHub."""
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"qualify"})
+    lands["open"](7, {"7.txt": "7\n"}, checks=(("qualify", "SKIPPED"),))
+    lands["pulls"][7]["isDraft"] = True
+    return lands
+
+
+@pytest.mark.parametrize("argv", [("7",), ("7", "--wait")])
+def test_a_conflicting_named_draft_stops_with_the_fix_and_is_not_marked_ready(
+    draft: dict[str, Any], monkeypatch: pytest.MonkeyPatch, argv: tuple[str, ...]
+) -> None:
+    """Ready starts no workflow on a conflicting PR either, so its checks would never come."""
+    draft["pulls"][7]["mergeable"] = "CONFLICTING"
+
+    def slept(_seconds: float) -> None:
+        raise AssertionError("land --wait waited on a draft no workflow runs on")
+
+    monkeypatch.setattr(approvals.time, "sleep", slept)
+    code, lines = draft["land"](*argv)
+    assert code == 1, lines
+    assert lines == ["PR #7 conflicts with main: merge `origin/main` in"]
+    assert draft["calls"] == [] and draft["pulls"][7]["isDraft"]
+
+
+@pytest.mark.parametrize("mergeable", ["MERGEABLE", "UNKNOWN"])
+def test_a_named_draft_not_reported_conflicting_is_marked_ready_and_waits(
+    draft: dict[str, Any], mergeable: str
+) -> None:
+    draft["pulls"][7]["mergeable"] = mergeable
+    code, lines = draft["land"]("7")
+    assert code == approvals.WAITING, lines
+    assert lines == [
+        "PR #7 is ready now",
+        "PR #7: CI starts on ready, so its required checks are pending",
+    ]
+    assert draft["calls"] == [("pr", "ready", "7")]
+
+
+def test_a_conflicting_named_draft_on_a_base_requiring_no_check_is_marked_ready_as_today(
+    lands: dict[str, Any],
+) -> None:
+    """No check is awaited there, so nothing waits for good: the batch's own merge finds any conflict."""
+    lands["open"](7, {"7.txt": "7\n"}, checks=())
+    lands["pulls"][7].update(isDraft=True, mergeable="CONFLICTING")
+    code, lines = lands["land"]("7")
+    assert ("pr", "ready", "7") in lands["calls"], lines
+    assert not any("merge `origin/main` in" in line for line in lines)
+    assert (code, lands["merged"]()) == (0, ["7"])
