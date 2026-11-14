@@ -152,3 +152,115 @@ def test_a_move_takes_the_loops_name_and_sets_the_mapped_column(
         0
     ] * 4
     assert moved == [(5, "In progress"), (5, "In review"), (5, "Ready"), (5, "Backlog")]
+
+
+# --- `field`: another single-select field of an issue's or PR's item, such as the PR's `Risk` ---
+
+RISKY = {
+    "id": "P",
+    "field": {
+        "id": "R",
+        "options": [
+            {"id": "r1", "name": "Low"},
+            {"id": "r2", "name": "Medium"},
+            {"id": "r3", "name": "High"},
+        ],
+    },
+}
+
+
+def _item(on: list[tuple[str, str | None]], boards: list[dict] | None = None) -> dict:
+    return {
+        "projectsV2": {"nodes": [RISKY] if boards is None else boards},
+        "issueOrPullRequest": {
+            "id": "PR_n",
+            "projectItems": {
+                "nodes": [
+                    {"project": {"id": p}, "fieldValueByName": None if s is None else {"name": s}}
+                    for p, s in on
+                ]
+            },
+        },
+    }
+
+
+def test_an_unknown_option_of_another_field_names_the_field_and_its_options() -> None:
+    assert board.target([RISKY], "High", "Risk") == ("P", "R", "r3")
+    with pytest.raises(ValueError, match="no Risk option 'Huge': the board has Low, Medium, High"):
+        board.target([RISKY], "Huge", "Risk")
+    with pytest.raises(ValueError, match="no Risk field"):
+        board.target([{"id": "P", "field": None}], "High", "Risk")
+
+
+def test_value_reads_the_items_option_on_the_repos_board() -> None:
+    assert board.value(_item([("Q", "Low"), ("P", "High")]), "Risk") == "High"
+    assert board.value(_item([("Q", "Low")]), "Risk") is None
+    assert board.value(_item([("P", None)]), "Risk") is None
+    with pytest.raises(ValueError, match="no project board is linked"):
+        board.value(_item([], boards=[]), "Risk")
+    with pytest.raises(ValueError, match="the board has no Risk field"):
+        board.value(_item([], boards=[{"id": "P", "field": None}]), "Risk")
+
+
+def test_set_field_looks_up_the_pr_adds_it_to_the_board_and_sets_the_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def graphql(query: str, **values: object) -> dict:
+        calls.append((query, values))
+        if query == board.LOOKUP:
+            return {"repository": _item([])}
+        if query == board.ADD:
+            return {"addProjectV2ItemById": {"item": {"id": "I"}}}
+        return {}
+
+    monkeypatch.setattr(board, "_graphql", graphql)
+    board.set_field(12, "Risk", "High")
+    assert calls == [
+        (board.LOOKUP, {"owner": "{owner}", "name": "{repo}", "issue": 12, "field": "Risk"}),
+        (board.ADD, {"project": "P", "issue": "PR_n"}),
+        (board.SET, {"project": "P", "item": "I", "field": "R", "option": "r3"}),
+    ]
+    # the lookup reads an issue or a PR alike, the field named by the caller
+    assert "issueOrPullRequest(number: $issue)" in board.LOOKUP
+    assert "field(name: $field)" in board.LOOKUP
+
+
+def test_set_field_with_a_lookup_already_made_reads_the_board_no_second_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def graphql(query: str, **values: object) -> dict:
+        calls.append(query)
+        return {"addProjectV2ItemById": {"item": {"id": "I"}}} if query == board.ADD else {}
+
+    monkeypatch.setattr(board, "_graphql", graphql)
+    board.set_field(12, "Risk", "Low", _item([]))
+    assert calls == [board.ADD, board.SET]
+
+
+def test_a_move_sets_the_status_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple] = []
+    monkeypatch.setattr(board, "set_field", lambda *args: calls.append(args))
+    board.move(5, "Build")
+    assert calls == [(5, "Status", "Build")]
+
+
+def test_the_field_verb_sets_the_option_and_a_refusal_exits_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple] = []
+    monkeypatch.setattr(board, "one_repo", lambda: None)
+    monkeypatch.setattr(board, "set_field", lambda *args: calls.append(args))
+    assert board.main(["field", "12", "Risk", "High"]) == 0
+    assert calls == [(12, "Risk", "High")]
+
+    def refused(*_args: object) -> None:
+        raise ValueError("no project board is linked to this repo")
+
+    monkeypatch.setattr(board, "set_field", refused)
+    assert board.main(["field", "12", "Risk", "High"]) == 1
+    assert "no project board is linked" in capsys.readouterr().err
+    assert board.main(["field", "12", "Risk"]) == 2
