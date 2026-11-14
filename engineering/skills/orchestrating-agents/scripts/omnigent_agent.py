@@ -52,7 +52,9 @@ delivered (archived, a failed revive, neither pending nor in the history), 7 whe
 a later read failed (delivered, unconfirmed: run it again, it posts no second copy). An open
 question card (``sys_ask_user_question``: elicitation id ``question_…``, not ``elicit_question_…``) holds
 nothing (``holds_input``): ``relay``, ``broadcast`` and ``watch`` treat the session as free and show
-``card open: <question>``; ``reap`` keeps it, since archiving it would end the owner's way back. A session blocked only
+``card open: <question>``; a plain relay (or ``send``, which prints the same line before it waits) is
+delivered beside it, exit 0, the line names the card still open, and the message never answers it;
+``reap`` keeps it, since archiving it would end the owner's way back. A session blocked only
 on questions (``ask_user_question``) holds the message behind them too (exit 5); ``relay
 --answer`` gives it as each question's answer instead, exit 0, since its pending inputs wait on
 the answer; an approval prompt it never answers. ``relay --from <name>`` is a notice from a task
@@ -1818,6 +1820,20 @@ def send(
     return "delivered", posted
 
 
+def still_open(og: Omnigent, sid: str) -> str:
+    """``; its question is still open (relay --answer answers it): <question>`` while ``sid`` has a
+    question open, else ``""``: what a delivered message that did not answer it adds to its line. A
+    failed look changes nothing, since the message is in."""
+    try:
+        info = og.info(sid)
+    except Fail:
+        return ""
+    asks = questions_of(info) + cards_of(info)
+    if not asks:
+        return ""
+    return "; its question is still open (relay --answer answers it): " + "; ".join(asks)
+
+
 def relay(
     og: Omnigent,
     sid: str,
@@ -1829,9 +1845,10 @@ def relay(
     skip: bool = False,
 ) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
-    the session holds it, ``Gone`` when it cannot be delivered. A session waiting on a question
-    holds ``text`` behind it like any message (``Queued``): an unrelated relay arriving while a
-    question is open must not become its answer. With ``answer``, a session blocked only on
+    the session holds it, ``Gone`` when it cannot be delivered. A question card leaves the session
+    free: ``text`` is delivered beside it, never answering it, and the line names the card still
+    open. A question the harness blocks on holds ``text`` behind it (``Queued``): an unrelated
+    relay arriving while it is open must not become its answer. With ``answer``, a session blocked only on
     questions gets ``text`` as each one's answer instead: its pending inputs wait on the answer,
     and an interrupt would drop them and hold input until the question's hook marker goes stale
     (kzarzycki/omnigent#14). An approval prompt it never answers. With ``skip``, a session with
@@ -1887,7 +1904,10 @@ def relay(
             )
             lands = f"this message stays queued and lands once the question is answered ({how})"
         raise Queued(f"session {sid}: queued {why}; {lands}")
-    return f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
+    line = f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
+    if not answer and not source:
+        line += still_open(og, sid)
+    return line
 
 
 # The first words of every message an agent or Omnigent posts into a session, never the owner's:
@@ -6689,6 +6709,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 )
             if undeleted:
                 raise undeleted
+            if opened := still_open(og, args.session):  # a card blocks nothing: it stays open
+                print(f"session {args.session}: delivered{opened}")
             print(
                 wait(og, args.session, report, args.timeout, args.verdict, since, args.pr, baseline)
             )

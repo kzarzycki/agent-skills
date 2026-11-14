@@ -401,11 +401,13 @@ rerun sends no second one. Exit 5: queued, held until the lead's current step en
 foreground command) or until a person answers the approval prompt it prints; it lands then
 with no further call. Exit 4: not deliverable, and why (archived, a revive that failed, or
 neither pending nor in the history within `--confirm-seconds`, default 60). Exit 7: `SENT_UNCONFIRMED`, the message was posted and a later read (the poll that confirms it) failed, so it is out and unconfirmed; run the command again, it finds the copy and posts no second one (a failure before the post stays exit 1). A reaped runner is
-revived in place first, as `send` does. A lead blocked only on questions (Claude's
+revived in place first, as `send` does. A question card (`sys_ask_user_question`)
+leaves the lead free: a plain `relay` is delivered beside it (exit 0), its line names the card
+still open (`send` prints the same line before it waits), and the message never answers it. A question the harness blocks on (Claude's
 AskUserQuestion, Codex's requestUserInput, both marked `ask_user_question` in its pending
-prompts) holds every message until the question is answered, so a plain `relay` waits behind
-it (exit 5) and lands once the question is answered: a relay that arrives while a question is
-open must not become its answer. `relay --answer` answers each question with the message
+prompts) holds every message until it is answered, so a plain `relay` waits behind it
+(exit 5) and lands once it is answered: a relay that arrives while it is open must not
+become its answer. `relay --answer` answers each question with the message
 instead (exit 0), through Omnigent's resolve route: the turn carries on with it as the
 answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the message up
 to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
