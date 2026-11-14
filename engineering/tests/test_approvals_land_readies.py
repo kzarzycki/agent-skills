@@ -271,3 +271,44 @@ def test_landable_says_what_a_draft_missing_a_proof_lacks_and_writes_nothing(
     verdict = approvals.landable(lands["pulls"][7], tracker, loop, set())
     assert (verdict.exit, verdict.draft, verdict.issues) == ((1, False), False, None)
     assert lands["calls"] == []
+
+
+def test_land_flags_a_high_risk_pr_that_waits_for_the_owner_and_one_that_lands(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The label write stays in land's own path: the board shows why a PR waits (the check itself writes nothing)."""
+    writes: list[Any] = []
+    monkeypatch.setattr(approvals, "label", lambda *args, **kwargs: writes.append(args))
+    lands["open"](7, {".github/ci.yml": "on: push\n"})
+    lands["pulls"][7]["files"] = {"nodes": [{"path": ".github/ci.yml"}]}
+    assert lands["land"]("7")[0] == approvals.WAITING
+    assert writes == [(7, approvals.RISK_LABEL)]
+    go(lands, hub, lands["pulls"][7]["headRefOid"])
+    lands["pulls"][7]["labels"]["nodes"] = []
+    writes.clear()
+    assert lands["land"]("7")[0] == 0
+    assert writes == [(7, approvals.RISK_LABEL)]
+
+
+def test_a_risk_label_the_gate_would_take_off_no_longer_holds_the_merge(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """land judges the PR as `unflag` leaves it, then takes the label off in its own path."""
+    writes: list[Any] = []
+    monkeypatch.setattr(approvals, "label", lambda *args, **kwargs: writes.append((*args, kwargs)))
+    lands["open"](7, {"7.txt": "7\n"})
+    pull = lands["pulls"][7]
+    pull["labels"]["nodes"] = [{"name": approvals.RISK_LABEL}]
+    pull["comments"]["nodes"].append(note(f"{approvals.FLAGGED}, since the verifier said high."))
+    pull["timelineItems"]["nodes"] = [
+        {"createdAt": "2026-01-01T00:00:00Z", "label": {"name": approvals.RISK_LABEL}}
+    ]
+    tracker, loop = approvals.project()
+    verdict = approvals.landable(pull, tracker, loop, set())
+    assert verdict.exit is None
+    assert (writes, approvals.RISK_LABEL in {n["name"] for n in pull["labels"]["nodes"]}) == (
+        [],
+        True,
+    )
+    assert lands["land"]("7")[0] == 0
+    assert writes == [(7, approvals.RISK_LABEL, {"add": False})]
