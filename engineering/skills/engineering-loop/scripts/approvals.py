@@ -3971,7 +3971,8 @@ def landing_here(
             signal.signal(sig, stopped)
         taken = locked(base, held, named[0]["number"] if named else None)
         if not taken:
-            return WAITING, True
+            # a named PR left out already is a refusal, which the wait for the lock doesn't clear: 1 over 3
+            return (1 if worst else WAITING), True
         # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
         return batched(named, base, tracker, loop, only, held, worst)
@@ -4223,7 +4224,7 @@ def readied(
     named: list[dict[str, Any]], base: str, tracker: str | None, loop: str | None
 ) -> list[dict[str, Any]]:
     """The named PRs, each draft that holds every proof marked ready (and read again), before the wait for the lock,
-    so the holder's next batch includes it. A draft with a proof missing is left as it is for `landable` to say why;
+    so the holder's next batch includes it. A draft with a proof missing or the owner's go still due is left as it is for `landable` to say why;
     in a cloud session mark_ready says it can't mark one."""
     drafts = [pull for pull in named if pull["isDraft"]]
     if not drafts:
@@ -4231,7 +4232,9 @@ def readied(
     required = required_checks(base) - {APPROVALS}
     marked: dict[int, tuple[int, bool] | None] = {}
     for pull in drafts:
-        if not proof_gaps(pull, tracker, loop)[0]:
+        lines, issues = proof_gaps(pull, tracker, loop)
+        # ready starts CI: never on a PR `landable` would refuse, the owner's go on its head included
+        if not lines and not owner_waits(pull, issues, loop):
             marked[pull["number"]] = mark_ready(pull, required)
     # the readied PR as GitHub has it now; `waiting` is what its start of CI means for this pass (mark_ready's)
     return [
@@ -4257,8 +4260,15 @@ def landable(
         return 1, False
     for line in flag(pull, issues, loop):
         print(line)
-    if pull["isDraft"] and (why := mark_ready(pull, required)):
-        return why
+    if pull["isDraft"]:
+        if owner := owner_waits(
+            pull, issues, loop
+        ):  # as `readied`: ready starts CI, so never before the go
+            for line in owner:
+                print(line)
+            return WAITING, False
+        if why := mark_ready(pull, required):
+            return why
     if pull.get(
         "waiting"
     ):  # readied by this land: its CI has only just started, and `readied` said so

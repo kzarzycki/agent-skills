@@ -17,10 +17,13 @@ from approvals_harness import (
     graphql_answers,  # noqa: F401
     hub,  # noqa: F401
     lands,  # noqa: F401
+    note,
     others_open,  # noqa: F401
     pushed,  # noqa: F401
+    record,
     refs,  # noqa: F401
     required,  # noqa: F401
+    status,
 )
 
 REF = approvals.LOCK.format("main")
@@ -183,3 +186,56 @@ def test_a_readied_draft_whose_required_checks_have_just_started_keeps_the_wait_
     assert code == approvals.WAITING
     assert "PR #7: CI starts on ready, so its required checks are pending" in lines
     assert any(line.startswith("land --wait stopped after") for line in lines), lines
+
+
+def high_risk_draft(lands: dict[str, Any]) -> None:
+    lands["open"](7, {".github/ci.yml": "on: push\n"})
+    lands["pulls"][7]["isDraft"] = True
+    lands["pulls"][7]["files"] = {"nodes": [{"path": ".github/ci.yml"}]}
+
+
+def go(lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], head: str) -> None:
+    """The owner's go on `head`, as `approve merge` leaves it: the record on the PR, the status in `hub`."""
+    lands["pulls"][7]["comments"]["nodes"].append(note(record("merge", "owner", head=head)))
+    hub.setdefault(head, []).insert(0, status("owner", f"The owner's go on {head[:12]}"))
+
+
+def test_a_high_risk_draft_with_no_go_is_not_readied_and_waits_for_the_owner(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    high_risk_draft(lands)
+    code, lines = lands["land"]("7")
+    assert (code, readied(lands), lands["pulls"][7]["isDraft"]) == (approvals.WAITING, [], True)
+    assert any(line.startswith("PR #7 waits for the owner's go on its head") for line in lines)
+
+
+def test_a_draft_with_a_go_on_an_earlier_head_is_not_readied(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    high_risk_draft(lands)
+    go(lands, hub, "c" * 40)
+    assert lands["land"]("7")[0] == approvals.WAITING
+    assert (readied(lands), lands["merged"]()) == ([], [])
+
+
+def test_a_high_risk_draft_with_a_go_on_its_head_is_readied_and_lands(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    high_risk_draft(lands)
+    go(lands, hub, lands["pulls"][7]["headRefOid"])
+    assert lands["land"]("7")[0] == 0
+    assert (readied(lands), lands["merged"]()) == (["7"], ["7"])
+
+
+def test_a_refused_pr_named_while_the_lock_is_held_exits_one_over_the_wait(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    lands["pulls"][8]["state"] = "CLOSED"
+    lock(lands, approvals.HELD)
+    code, lines = lands["land"]("7", "8")
+    assert code == 1
+    assert "PR #8 is closed: nothing to land" in lines
+    assert any(line.startswith("another land holds the landing lock") for line in lines), lines
+    assert lands["merged"]() == []
