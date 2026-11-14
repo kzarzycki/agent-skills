@@ -145,9 +145,7 @@ session, so the launcher passes none. On another host agy takes the brief as a f
 so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment
 on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since GitHub's
 GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
-and end its turn with only the comment's URL. A cloud session can't create a release or upload any binary
-through GitHub (creating a release answers HTTP 403, and its GitHub proxy answers HTTP 415 to any body that isn't
-`application/json`), but it can push branches, so a build output it must hand over goes on a branch or is built where it's used. They refuse `--pr` to an agent whose harness isn't
+and end its turn with only the comment's URL. They refuse `--pr` to an agent whose harness isn't
 `acp:claude-cloud`, naming `claude-cloud`, before any session exists: a native worker given it
 would run its build on this host, where a heavy one starves every other session. A cloud session (harness `acp:claude-cloud`)
 runs in the environment its workspace's untracked `.claude/settings.local.json` names in
@@ -161,7 +159,7 @@ pin is its own, so a local agent there is accepted. A launch dir needs no checke
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
 report path, so whatever reads the report reads a file as for any child. The worker pushes
 only to the `claude/…` branch its session started on and names it, with its head SHA, in the
-report; the lead merges that branch into the PR. A worker whose post fails (the session's token
+report; the lead merges that branch into the PR. A cloud session can't create a release or upload any binary through GitHub (creating a release answers HTTP 403, and its GitHub proxy answers HTTP 415 to any body that isn't `application/json`), but it can push branches, so a build output it must hand over goes on a branch or is built where it's used. A worker whose post fails (the session's token
 expires after a while) replies with an `UNPOSTED REPORT` line and the body; `wait` posts that
 body on PR n from this host and writes it to the report path. The VM's files never reach this
 host either, so a file under `tmp/loop/` the report names (a repro, a log) rides in the comment
