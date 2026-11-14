@@ -232,7 +232,11 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   says GitHub enforces no rules there, since its proofs are the only gate. `mise run
   setup:github` applies it; GitHub layers it on top of the repo's own rulesets, which it
   leaves untouched, and reverting deletes only it. `setup:github` also syncs the repo's
-  labels with `scripts/labels.py` (github.md, Labels).
+  labels with `scripts/labels.py` (github.md, Labels). The files here are also what
+  `scripts/rulesets.py check` compares the live rulesets against, one line per difference
+  (`rulesets.py snapshot` writes them from a repo set up by hand): GitHub sends no alert when
+  a ruleset is deleted, disabled, narrowed or given a bypass actor, so a project runs the check
+  on a schedule, for example from its hygiene job.
 
 Hooks are git hooks, installed by `mise run setup:dev`; no check runs from a coding agent's
 harness hook. A commit runs the `lint:` tasks on the staged files, and a push runs
