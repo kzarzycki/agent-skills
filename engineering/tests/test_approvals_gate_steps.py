@@ -116,7 +116,7 @@ def test_gate_steps_are_read_from_the_policy_and_a_malformed_one_is_refused(
         f"{name}: {command}" for name, command in steps["commands"].items()
     )
     bad = {
-        "where: cloud": "must be one of any, host, not 'cloud'",
+        "where: cloud": "must be one of any, host, linux, not 'cloud'",
         "where: any\n    - name: a\n      command: echo\n      where: any": "names the name 'a' twice",
     }
     for tail, said in bad.items():

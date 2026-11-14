@@ -658,7 +658,7 @@ class Rows(Table):
 # where `land` may run (loop.md's `land.where`): a host, a cloud session (CLOUD), or either
 PLACES = ("host", "cloud", "both")
 # where a gate step may run (loop.md's `gate_steps`): any machine, or only a host, never a cloud session (CLOUD)
-STEP_PLACES = ("any", "host")
+STEP_PLACES = ("any", "host", "linux")
 # loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
 # A list holds strings; `bot.<login>` is a section per bot.
 STAGES = ("intent", "spec", "plan", "build", "review", "land")
@@ -5366,7 +5366,10 @@ def inputs_key(tree: str, step: dict[str, Any]) -> str | None:
 
 
 def here(step: dict[str, Any]) -> bool:
-    """Whether `step` may run here: a `host` step never runs in a cloud session (in_cloud)."""
+    """Whether `step` may run here: a `host` step never runs in a cloud session (in_cloud), a `linux` step only
+    where `sys.platform` is Linux (a Linux host or a cloud session), never on macOS."""
+    if step["where"] == "linux":
+        return sys.platform.startswith("linux")
     return step["where"] != "host" or not in_cloud()
 
 
@@ -5717,7 +5720,7 @@ def run_steps(
             continue
         if not here(step):
             say(
-                f"{step['name']}: no pass on tree {tree}, and it runs only on a host (`where: host`)"
+                f"{step['name']}: no pass on tree {tree}, and it runs only where `where: {step['where']}` allows"
             )
             done["left"].append(step["name"])
             continue
