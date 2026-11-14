@@ -27,7 +27,8 @@ def test_a_cloud_brief_carries_the_in_turn_rule_and_not_the_detach_line(
         og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, top_level=top_level, pr=pr
     )
     brief = omnigent_agent.text_of(og.sessions[sid][1])
-    assert IN_TURN in brief and "never end a turn while it runs" in brief
+    assert IN_TURN in brief and "never by ending the turn" in brief
+    assert "Monitor tool's until-loop" in brief and "never with a plain `sleep`" in brief
     assert "`STILL WORKING` that names only your own background run is not a valid ending" in brief
     assert DETACH_LINE not in brief
 
