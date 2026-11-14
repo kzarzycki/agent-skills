@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
@@ -4573,6 +4574,13 @@ def test_the_batch_starts_from_the_base_origin_has_once_the_lock_is_taken(
     assert (lands["runs"](), lands["main"]("~1")) == (1, moved[0])
 
 
+def stop_this_thread(sig: int) -> None:
+    """Send `sig` to the thread running the test, as a stop reaches the land's one thread in its own process: a
+    signal sent to the whole process (os.kill) goes to any thread that doesn't block it, and a pytest-xdist worker
+    runs a second one (execnet's), so a stop the land holds blocked while it releases its lock would be taken there."""
+    signal.pthread_kill(threading.get_ident(), sig)
+
+
 @pytest.fixture
 def stoppable() -> Iterator[None]:
     """SIGTERM and SIGHUP at their defaults for the test, since a runner started under nohup passes SIGHUP ignored."""
@@ -4592,7 +4600,7 @@ def test_a_land_stopped_by_sigterm_or_sighup_releases_its_lock_and_exits_128_plu
 
     def stopped(*_args: Any) -> None:
         held.append(lands["lock"]())
-        os.kill(os.getpid(), sig)
+        stop_this_thread(sig)
 
     monkeypatch.setattr(approvals, "merges", stopped)
     before = {s: signal.getsignal(s) for s in approvals.STOPS}
@@ -4628,15 +4636,15 @@ def test_a_stop_while_the_lock_is_pushed_still_releases_it(
         )
         taking, releasing = state.startswith(approvals.HELD), state.startswith(approvals.FREE)
         if (when == "before taking" and taking) or (when.startswith("releasing") and releasing):
-            os.kill(os.getpid(), signal.SIGTERM)
+            stop_this_thread(signal.SIGTERM)
         done = run(args, *rest, **kw)
         if when == "taking" and taking:
-            os.kill(os.getpid(), signal.SIGTERM)
+            stop_this_thread(signal.SIGTERM)
         return done
 
     monkeypatch.setattr(approvals.subprocess, "run", pushing)
     if when == "releasing":
-        monkeypatch.setattr(approvals, "merges", lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+        monkeypatch.setattr(approvals, "merges", lambda *_: stop_this_thread(signal.SIGTERM))
     with pytest.raises(SystemExit) as stop:
         lands["land"]("7")
     assert (stop.value.code, lands["lock"]()) == (143, "")
@@ -4674,11 +4682,11 @@ def test_a_second_stop_while_the_batch_worktree_is_removed_leaves_no_worktree(
     def removing(args: Any, *rest: Any, **kw: Any) -> Any:
         if isinstance(args, list) and args[:3] == ["git", "worktree", "remove"]:
             removed.append(args[-1])
-            os.kill(os.getpid(), signal.SIGTERM)
+            stop_this_thread(signal.SIGTERM)
         return run(args, *rest, **kw)
 
     monkeypatch.setattr(approvals.subprocess, "run", removing)
-    monkeypatch.setattr(approvals, "merges", lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+    monkeypatch.setattr(approvals, "merges", lambda *_: stop_this_thread(signal.SIGTERM))
     with pytest.raises(SystemExit) as stop:
         lands["land"]("7")
     assert (stop.value.code, lands["lock"]()) == (143, "")
@@ -4695,7 +4703,7 @@ def test_a_land_that_inherits_sighup_ignored_outlives_a_hangup(
     merges = approvals.merges
 
     def hangup(*args: Any) -> Any:
-        os.kill(os.getpid(), signal.SIGHUP)
+        stop_this_thread(signal.SIGHUP)
         return merges(*args)
 
     monkeypatch.setattr(approvals, "merges", hangup)
