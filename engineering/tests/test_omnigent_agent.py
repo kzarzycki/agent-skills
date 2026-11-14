@@ -8596,8 +8596,10 @@ def test_start_says_when_the_environment_s_permission_mode_is_not_applied_and_cr
     err = capsys.readouterr().err.splitlines()
     dropped = [line for line in err if "not applied" in line]
     assert dropped == [
-        "codex takes no permission mode: bypassPermissions was not applied; its session starts in"
-        " the harness default"
+        (
+            "codex takes no permission mode: bypassPermissions was not applied; its session starts"
+            " in the harness default"
+        )
     ]
     for agent in ("claude", "agy"):  # each takes this mode, so nothing is dropped
         omnigent_agent.start(og, agent, f"t-{agent}", "do X", tmp_path / "r.md", None, 0)
