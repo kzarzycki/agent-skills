@@ -7359,7 +7359,7 @@ def test_a_quiet_waiter_whose_named_sessions_all_run_raises_no_deadline(
         (f"waiting on {LEAD}", {LEAD: {"status": "idle", "updated_at": 1.0}}, LEAD),
         (f"waiting on {OTHER}", {OTHER: {"status": "idle", "updated_at": 1.0}}, OTHER),
         ("waiting on the chief of staff for a host", {}, "chief"),
-        (f"waiting on {COS} for a host", {}, COS),
+        (f"waiting on {COS} for a host", {COS: {"status": "idle", "updated_at": 1.0}}, COS),
         ("waiting on the owner's pick", {}, "owner's"),
     ],
 )
@@ -7374,7 +7374,9 @@ def test_a_quiet_waiter_on_a_session_not_moving_or_outside_its_follow_set_raises
 def test_a_quiet_waiter_on_the_chief_of_staff_raises_its_deadline_though_it_subscribes_to_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    registry, og = manager(tmp_path, f"STILL WORKING: waiting on {COS} for a host. Report: m.md")
+    quiet = {"status": "idle", "updated_at": 1.0}  # a notified session that shows life is progress
+    wait = f"STILL WORKING: waiting on {COS} for a host. Report: m.md"
+    registry, og = manager(tmp_path, wait, **{COS: quiet})
     og.kin_of["m"] = [WORKER, COS]
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({COS})"]
@@ -11312,8 +11314,10 @@ def test_a_named_session_that_ended_is_news_to_its_waiter_again_after_the_waiter
     wait = f"STILL WORKING: waiting on {OTHER}. Report: m.md"
     registry, og = manager(tmp_path, wait, **{OTHER: done})
     og.histories[OTHER] = [ending("DONE: all merged. Report: o.md", 1300)]
-    news = lambda: [
-        t for _, t in og.inbox if t.startswith("Supervisor: m t-m:") and "ended DONE" in t
+    news = lambda: [  # told to the waiter, m, not only posted to the chief of staff
+        t
+        for s, t in og.inbox
+        if s == "m" and t.startswith("Supervisor: m t-m:") and "ended DONE" in t
     ]
     supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
     assert len(news()) == 1  # once, not once per poll
@@ -11375,3 +11379,55 @@ def test_two_quiet_sessions_waiting_on_each_other_raise_a_mutual_wait_naming_who
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     lines = [t.split("\n")[0] for _, t in og.inbox if t.startswith(f"Supervisor: {a}")]
     assert lines == [f"Supervisor: {a} t-{a}: mutual wait: {a} ↔ {b}; " + who.format(A=a, B=b)]
+
+
+def test_a_named_session_that_shows_life_is_progress_also_when_it_is_the_notified_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, f"STILL WORKING: waiting on {COS}. Report: m.md")
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [] and deadlines(registry) == []
+
+
+def test_a_lead_whose_last_message_is_a_report_path_counts_the_sessions_its_report_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, f"{tmp_path / 'm.md'}")  # OTHER runs: it progressed
+    og.files[str(tmp_path / "m.md")] = f"STILL WORKING: waiting on {OTHER}.\n"
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [] and deadlines(registry) == []
+
+
+def test_a_lead_started_by_the_manager_s_registry_that_waits_on_the_pm_is_a_mutual_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    quiet = {"status": "idle", "updated_at": time.time() - 3600}  # top level: no parent id
+    registry, og = manager(
+        tmp_path, f"STILL WORKING: waiting on {LEAD}. Report: m.md", **{LEAD: quiet}
+    )
+    og.histories[LEAD] = [ending("STILL WORKING: waiting on the PM. Report: e.md", 3600)]
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    lines = [t.split("\n")[0] for _, t in og.inbox if t.startswith("Supervisor: m t-m:")]
+    assert lines == [f"Supervisor: m t-m: mutual wait: m ↔ {LEAD}; m acts"]
+
+
+def test_an_ended_lead_whose_report_waits_on_the_pm_s_gate_is_acted_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pm, report = "9" * 32, str(tmp_path / "a.md")
+    registry = following(tmp_path)
+    og = Lead(told("brief", 600), ending(report, 400))
+    og.files[report] = "STILL WORKING: waiting on the PM's gate and verifier for #1\n"
+    og.snap = {"status": "idle"}
+    offset = skewed(monkeypatch)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, 400.0 * poll),
+        notify=pm,
+        console=True,
+    )
+    acts = [t for s, t in og.inbox if s == pm and "[act]" in t]
+    assert acts and f"waits on its supervisor, session {pm}" in acts[0]

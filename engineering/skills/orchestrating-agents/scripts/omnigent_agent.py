@@ -118,7 +118,7 @@ settled), appends each event to ``<registry stem>.events.jsonl``, labels each se
 ``status.line`` and ``status.at``, and raises ``deadline`` for a followed lead with no progress for
 20 minutes (a message to it other than its own counts, and so does life in any session its
 ``STILL WORKING`` names by full id; the event names those quiet, and one of them that ended
-``DONE``, ``USER NEEDED`` or ``PARKED`` is raised to the waiter, again after each of its turns; a deadline whose named sessions are all quiet and one of which waits on the lead, or was started by it and names no session, reads ``mutual wait``; a lead whose ``STILL WORKING`` names a
+``DONE``, ``USER NEEDED`` or ``PARKED`` is told to the waiter, again after each of its turns; a deadline whose named sessions are all quiet and one of which waits on the lead, or was started by it (its parent or its ``leads=`` registry) and names no session, reads ``mutual wait``; a lead whose ``STILL WORKING`` names a
 time raises it once that time has passed, which the supervisor settles by waking the lead, and
 none for a lead marked ``direct``,
 which the owner drives in its own session: ``direct <session> [--off]`` sets the mark); and it routes each event instead of posting it: the supervisor settles the routine ones
@@ -4596,6 +4596,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if event.get("revived"):
             return "rule", "act", "failed again after its revive"
         return "rule", "revive", "failed the first time: revive once"
+    if kind == "news":  # a session its wait names ended: only the waiter can act on it
+        return "rule", "tell", "a session its wait names ended: tell the waiter"
     if kind == "deadline":
         if event.get("direct"):
             return "rule", "record", "the owner drives it directly: no deadline"
@@ -5009,6 +5011,9 @@ def supervise_registry(
         info, items = looks.get(sid, ({}, []))
         said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
         last = text_of(said[-1]).strip() if said else ""
+        read = lead.get("report_read") or {}
+        # the text the wait was parsed from: the report's head when that is what was read
+        parsed = (read.get("head") or last) if REPORT_PATH.fullmatch(last) else last
         key = re.sub(r"quiet \d+s", "quiet", line)  # the same quiet spell is a repeat
         pending = info.get("pending_elicitations") or []
         found = standing(decisions) if decisions else ""
@@ -5044,7 +5049,7 @@ def supervise_registry(
             "parked": parked_before(og, sid, items, said[-1] if said else None),
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
-            "supervisor": notify if waits_on(last, lead, notify) else "",
+            "supervisor": notify if waits_on(parsed, lead, notify) else "",
         }
 
         def ask() -> tuple[str, str]:
@@ -5105,6 +5110,8 @@ def supervise_registry(
                 "resets": resets,
                 "told": retrying.get("told", False),
             }
+        elif action == "tell":
+            act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
         elif action in ("act", "owner", "done"):
             queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
         if action == "act" and event["limit"] and event["capped"]:  # past the cap: no more probes
@@ -5597,7 +5604,11 @@ def supervise_registry(
         # a session its STILL WORKING line names that shows life is progress, one that is archived,
         # unknown or unread is quiet
         quiet_named, mutual = [], ""
-        for other in [n for n in lead.get("named") or [] if n != notify]:
+        try:  # the sessions its own registry started, as its children are
+            started = registered(Path(lead["leads"]))[0] if lead.get("leads") else {}
+        except Exception:  # noqa: BLE001 - unread: only its children count as started by it
+            started = {}
+        for other in lead.get("named") or []:
             try:
                 info = og.info(other)
             except Exception:  # noqa: BLE001 - gone or unread: quiet
@@ -5615,7 +5626,7 @@ def supervise_registry(
             if not mutual and not over["ending"] and over["wait"] != "unknown":
                 # it waits on this lead, or on no session, and this lead started it: a mutual wait
                 mine, theirs = (
-                    info.get("parent_session_id") == sid,
+                    info.get("parent_session_id") == sid or other in started,
                     og.info(sid).get("parent_session_id"),
                 )
                 if sid in over["named"] or (mine and not over["named"]):
@@ -5625,7 +5636,7 @@ def supervise_registry(
                 at = datetime.fromtimestamp(over["turn_at"], timezone.utc).strftime("%H:%MZ")
                 head = f"{sid} {lead['title']}".rstrip()
                 line = f"{head}: {other} ended {over['ending']} at {at}; your wait still names it"
-                say(line, sid, f"deadline:{sid}:{other}:{lead.get('turn')}", "deadline")
+                say(line, sid, f"deadline:{sid}:{other}:{lead.get('turn')}", "news")
         quiet = time.time() - lead["progress_at"]
         spent = lead.get("nudged_at") == lead["progress_at"]
         if due is not None and lead["progress_at"] < due:
