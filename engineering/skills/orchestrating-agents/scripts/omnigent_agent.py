@@ -49,7 +49,10 @@ copy before it posts; a failure before the post stays exit 1.
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
-a later read failed (delivered, unconfirmed: run it again, it posts no second copy). A session blocked only
+a later read failed (delivered, unconfirmed: run it again, it posts no second copy). An open
+question card (``sys_ask_user_question``: elicitation id ``question_…``, not ``elicit_question_…``) holds
+nothing (``holds_input``): ``relay``, ``broadcast``, ``reap`` and ``watch`` treat the session as free and show
+``card open: <question>``. A session blocked only
 on questions (``ask_user_question``) holds the message behind them too (exit 5); ``relay
 --answer`` gives it as each question's answer instead, exit 0, since its pending inputs wait on
 the answer; an approval prompt it never answers. ``relay --from <name>`` is a notice from a task
@@ -1521,24 +1524,46 @@ def last_said(items: list[dict]) -> str:
     return text_of(said[-1]) if said else "(none)"
 
 
+CARD_POLICY = "sys_ask_user_question"  # a question card's ``params.policy_name``
+CARD_ID, PARKED_ID = "question_", "elicit_question_"  # a card's elicitation id, a harness's own
+
+
+def holds_input(e: dict) -> bool:
+    """Whether elicitation ``e`` holds its session's input: a harness-parked question (id prefix
+    ``elicit_question_``) and an approval prompt do. An Omnigent question card (``question_``, or
+    policy ``CARD_POLICY``) returns at once and its user answers it later, so it holds nothing."""
+    eid = str(e.get("elicitation_id") or "")
+    if eid.startswith(PARKED_ID):
+        return True
+    return not (
+        eid.startswith(CARD_ID) or (e.get("params") or {}).get("policy_name") == CARD_POLICY
+    )
+
+
+def _asks(e: dict) -> str:
+    p = e.get("params") or {}
+    return str(p.get("content_preview") or p.get("message") or e)
+
+
 def prompts_of(info: dict) -> list[str]:
-    """What each pending approval prompt asks: the tool call it holds, else its message."""
-    return [
-        str(p.get("content_preview") or p.get("message") or e)
-        for e in info.get("pending_elicitations") or []
-        for p in [e.get("params") or {}]
-    ]
+    """What each pending approval prompt or harness question asks (those that hold input): the
+    tool call it holds, else its message."""
+    return [_asks(e) for e in info.get("pending_elicitations") or [] if holds_input(e)]
 
 
 def questions_of(info: dict) -> list[str]:
     """What each pending question asks (Claude's AskUserQuestion, Codex's requestUserInput, both
-    marked ``ask_user_question``): prompts an answer settles, unlike an approval."""
+    marked ``ask_user_question``) that holds input: prompts an answer settles, unlike an approval."""
     return [
-        str(p.get("content_preview") or p.get("message") or e)
+        _asks(e)
         for e in info.get("pending_elicitations") or []
-        for p in [e.get("params") or {}]
-        if p.get("ask_user_question")
+        if holds_input(e) and (e.get("params") or {}).get("ask_user_question")
     ]
+
+
+def cards_of(info: dict) -> list[str]:
+    """What each open question card asks: shown as ``card open``, never as blocked."""
+    return [_asks(e) for e in info.get("pending_elicitations") or [] if not holds_input(e)]
 
 
 def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:
@@ -1734,18 +1759,20 @@ def relay(
     if source:
         text = f"{RELAY_FROM.format(source=source)}\n{text}"
     info = og.info(sid)
-    pending = info.get("pending_elicitations") or []
+    every = info.get("pending_elicitations") or []
+    pending = [e for e in every if holds_input(e)]
     if pending and skip:
         return f"session {sid}: skipped: waiting on a question"
     asks = questions_of(info)
-    if answer and asks and len(asks) == len(pending) and not source:
-        for e in pending:
+    asked = [e for e in every if (e.get("params") or {}).get("ask_user_question")]
+    if answer and not source and asked and len(asked) == len(every):
+        for e in every:
             questions = e["params"]["ask_user_question"].get("questions") or []
             answer = text.strip()  # a message file's trailing newline would reach the answer
             og.resolve(
                 sid, e["elicitation_id"], "accept", {q["question"]: answer for q in questions}
             )
-        return f"session {sid}: answered its open question: {'; '.join(asks)}"
+        return f"session {sid}: answered its open question: {'; '.join(_asks(e) for e in asked)}"
     if by and not source:
         text = f"{RELAYED.format(who=by)}\n{text}"
     outcome, posted = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
@@ -1760,7 +1787,7 @@ def relay(
                 " `send` again is safe, it finds the copy before it posts"
             ) from e
         asks = questions_of(info)
-        approvals = [p for p in prompts_of(info) if p not in asks]
+        approvals = [p for p in prompts_of(info) if p not in asks]  # cards hold nothing
         held = []
         if approvals:
             held.append(f"an approval prompt (`approve` answers it): {'; '.join(approvals)}")
@@ -1947,7 +1974,8 @@ def approve(og: Omnigent, sid: str, decline: bool = False) -> tuple[list[str], b
     """Resolve each pending approval prompt of ``sid``, never a question (``relay --answer`` answers those):
     a line per prompt, and whether a resolve failed. Fail when none is pending."""
     info, lines, failed = og.info(sid), [], False
-    for e, what in zip(info.get("pending_elicitations") or [], prompts_of(info)):
+    held = [e for e in info.get("pending_elicitations") or [] if holds_input(e)]
+    for e, what in zip(held, prompts_of(info)):
         if (e.get("params") or {}).get("ask_user_question"):
             continue
         try:
@@ -3566,8 +3594,14 @@ def observe(
     elif sid not in idle_since or idle_since[sid][0] != lid:  # (last message id, idle since)
         idle_since[sid] = (lid, time.monotonic() - (IDLE_GRACE_SECONDS if baseline else 0))
     if prompts := prompts_of(info):
-        ids = ",".join(str(e.get("elicitation_id") or e) for e in info["pending_elicitations"])
+        ids = ",".join(
+            str(e.get("elicitation_id") or e)
+            for e in info["pending_elicitations"]
+            if holds_input(e)
+        )
         return ("blocked", ids), f"{head}: blocked on a prompt: {'; '.join(prompts)}{tail}"
+    if cards := cards_of(info):
+        head += f" (card open: {'; '.join(cards)})"
     if status == "failed":
         e = info.get("last_task_error") or {}  # an object of strings: title, message, code, ...
         error = e.get("message") or e.get("title") or "(no error recorded)"
@@ -4236,9 +4270,6 @@ class Recorded:
         return items
 
 
-CARD_POLICY = "sys_ask_user_question"  # a question card's ``params.policy_name``
-
-
 class Uncarded:
     """``og`` with each session's question cards (``params.policy_name`` ``CARD_POLICY``) taken out
     of its ``pending_elicitations`` and kept in ``cards``: a card returns at once and its user
@@ -4254,7 +4285,7 @@ class Uncarded:
     def info(self, sid: str) -> dict:
         info = self.og.info(sid)
         pending = info.get("pending_elicitations") or []
-        cards = [e for e in pending if (e.get("params") or {}).get("policy_name") == CARD_POLICY]
+        cards = [e for e in pending if not holds_input(e)]
         self.cards[sid] = cards
         if not cards:
             return info
@@ -4851,7 +4882,7 @@ def supervise_registry(
         said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
         last = text_of(said[-1]).strip() if said else ""
         key = re.sub(r"quiet \d+s", "quiet", line)  # the same quiet spell is a repeat
-        pending = info.get("pending_elicitations") or []
+        pending = [e for e in info.get("pending_elicitations") or [] if holds_input(e)]
         found = standing(decisions) if decisions else ""
         retrying, now = lead.get("retrying") or {}, time.time()
         event = {
@@ -5090,7 +5121,7 @@ def supervise_registry(
             eid = f"asked:{sid}:{e.get('elicitation_id') or e}"
             if eid not in asked:
                 asked.add(eid)
-                what = "; ".join(prompts_of({"pending_elicitations": [e]}))
+                what = _asks(e)
                 say(f"{sid}: asked its user: {what}", sid, eid, "asked")
 
     def track(
