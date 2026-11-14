@@ -589,9 +589,12 @@ or the owner's private network.
   workers) has the worker post it and writes it to the report path on the host, so the lead
   reads a file as for any worker. The verdict is the review `approvals.py verdict` posts.
   The verifier names its evidence (screenshots, logs, result bundles) in its report, and the
-  lead posts it with the verdict as assets of a prerelease linked from a PR comment, the way
-  the `demo` skill posts videos, so the worker fixes a failure from its diagnostics without
-  the host.
+  lead attaches its media to the verdict comment with `gh pr comment --attach` (gh 2.99.0 or
+  later, as the `demo` skill does), giving alt text for an image only (`--attach
+  './shot.png#The error state'`), since gh refuses it for a video and `approvals.py` refuses
+  a screenshot posted as a release asset; logs and bundles too large for a comment stay
+  named files in the report. So the worker fixes a failure from its diagnostics without the
+  host.
 - **Control flow is the lead's own.** It starts the worker with `run --pr` (from a
   host without the worker's harness, `start --top-level --host <host> --pr`, then
   `wait --pr`), which keeps the session, and `--no-keep` where it won't be sent to again, follows its turn end, and sends a fix list or a failing log, naming the

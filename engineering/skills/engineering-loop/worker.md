@@ -85,6 +85,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    headless switch in its `docs/agents/` files.
    Before the report, mutation-check each production change you add: one patch per
    condition, branch or value, written as verifier.md, Mutation-check the new tests, says,
+   committed with its tests first, since mutate.py refuses a tree with uncommitted changes, and
    run with `uv run <this skill's folder>/scripts/mutate.py --test '<tests>' --log <log>
    <patch>…`, which queues on the host gate slot itself (the short lane when the tests pass on the head within
    `short_seconds`: SKILL.md, One heavy gate per host slot), so the test command takes no lock of its own. A survivor

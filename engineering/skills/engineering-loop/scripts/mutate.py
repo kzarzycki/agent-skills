@@ -267,7 +267,8 @@ def main(argv: list[str]) -> int:
         dirty = changes()
         if dirty:
             raise Refused(
-                f"the tree has changes, so a restore could not tell them from a patch:\n{dirty}"
+                f"the tree has changes, so a restore could not tell them from a patch:\n{dirty.rstrip()}\n"
+                "commit or stash them, then run mutate again"
             )
         for name, path in patches:
             check = git("apply", "--check", str(path), cwd=top)
