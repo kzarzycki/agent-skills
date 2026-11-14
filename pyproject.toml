@@ -10,7 +10,10 @@ dev = ["pytest==9.1.1", "ruff==0.16.0"]
 [tool.pytest.ini_options]
 testpaths = ["tests", "engineering/tests"]
 pythonpath = ["."]
-markers = ["live_agent: tests that require a live agent runtime"]
+markers = [
+  "live_agent: tests that require a live agent runtime",
+  "needs_tool(*tools): the external tools a test runs beyond git and Python; a run selecting it stops first when PATH lacks one",
+]
 
 [tool.ruff]
 target-version = "py314"

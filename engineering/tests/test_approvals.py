@@ -4967,6 +4967,7 @@ OUTSIDE = (
 )
 
 
+@pytest.mark.needs_tool("ssh-keygen")
 def test_a_green_signed_batch_gives_each_pr_a_commit_of_its_own_change(
     lands: dict[str, Any], tmp_path: Path
 ) -> None:

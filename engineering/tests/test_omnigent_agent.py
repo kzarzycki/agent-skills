@@ -2926,6 +2926,7 @@ def test_children_of_one_lead_share_one_heavy_lock_and_another_lead_s_get_their_
     assert lock_line("w5") == first
 
 
+@pytest.mark.needs_tool("perl")
 def test_worker_md_s_heavy_lock_command_waits_for_the_lock_and_passes_the_exit_through(
     tmp_path: Path,
 ) -> None:
@@ -10237,6 +10238,7 @@ def test_the_lead_preamble_asks_for_the_ending_line_with_the_report_path() -> No
     assert omnigent_agent.wait_of(wait) == "verifier"
 
 
+@pytest.mark.needs_tool("perl")
 def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Path) -> None:
     """The launcher the long-run rule names starts the command in its own session and returns at once."""
     rule = long_run_rule()

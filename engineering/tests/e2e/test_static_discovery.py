@@ -26,6 +26,7 @@ WAYFINDER_SUPPORT = {
 }
 
 
+@pytest.mark.needs_tool("apm")
 def test_apm_targets_receive_complete_canonical_inventory(tmp_path: Path) -> None:
     fixture = install_fixture(tmp_path)
     source = file_manifest(PACKAGE / "skills")
@@ -38,6 +39,7 @@ def test_apm_targets_receive_complete_canonical_inventory(tmp_path: Path) -> Non
     assert WAYFINDER_SUPPORT <= fixture.catalog(CODEX).skill_names
 
 
+@pytest.mark.needs_tool("apm")
 @pytest.mark.parametrize("mutation", ["omit", "corrupt"])
 def test_complete_inventory_rejects_symmetric_target_mutation(
     mutation: str,
@@ -58,6 +60,7 @@ def test_complete_inventory_rejects_symmetric_target_mutation(
             assert_catalog_matches(source, fixture.catalog(adapter))
 
 
+@pytest.mark.needs_tool("apm")
 def test_wayfinder_is_byte_identical_across_canonical_and_targets(tmp_path: Path) -> None:
     fixture = install_fixture(tmp_path)
     source = (PACKAGE / "skills" / "wayfinder" / "SKILL.md").read_bytes()
@@ -66,6 +69,7 @@ def test_wayfinder_is_byte_identical_across_canonical_and_targets(tmp_path: Path
     assert fixture.catalog(CODEX).file_bytes("wayfinder") == source
 
 
+@pytest.mark.needs_tool("apm")
 def test_deployed_relative_references_and_packaged_scripts_resolve(tmp_path: Path) -> None:
     fixture = install_fixture(tmp_path)
     source = file_manifest(PACKAGE / "skills")
@@ -77,6 +81,7 @@ def test_deployed_relative_references_and_packaged_scripts_resolve(tmp_path: Pat
     assert_catalog_matches(source, fixture.catalog(CODEX))
 
 
+@pytest.mark.needs_tool("apm")
 @pytest.mark.parametrize("mutation", ["omit", "corrupt"])
 def test_neutral_catalog_adapter_detects_artifact_mutation(
     mutation: str,
@@ -103,6 +108,7 @@ def test_neutral_catalog_adapter_detects_artifact_mutation(
     assert "catalog-reader-fixture" not in (PACKAGE / "apm.yml").read_text()
 
 
+@pytest.mark.needs_tool("apm")
 def test_installation_does_not_leak_global_catalog_content(tmp_path: Path) -> None:
     fixture = install_fixture(tmp_path)
 

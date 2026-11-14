@@ -2,7 +2,6 @@ import os
 import shutil
 import sys
 from collections.abc import Iterable
-from pathlib import Path
 
 # The engineering loop's script tests load modules from a shipped skill folder;
 # a bytecode cache written there would ship with the package. The variable carries
@@ -27,32 +26,33 @@ from approvals_harness import (  # noqa: F401
     required,
 )
 
-HERE = Path(__file__).parent
-
-# The tools beyond git and Python each module's tests run, by its path from here (#1022).
-TOOLS = {
-    "e2e/test_static_discovery.py": ("apm",),
-    "test_approvals.py": ("ssh-keygen",),
-    "test_consumer_e2e.py": ("apm",),
-    "test_omnigent_agent.py": ("perl",),
-}
+# The fixtures that run a tool beyond git and Python: pytest ignores a mark on a fixture, so each test that takes
+# one gets its `needs_tool` mark at collection, as a test that runs the tool itself carries it.
+FIXTURE_TOOLS = {"cloud_land": ("ssh-keygen",), "signing": ("ssh-keygen",)}
 
 
-def missing_tools(paths: Iterable[Path]) -> list[str]:
-    """The tools the modules at `paths` run that are not on PATH."""
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Before `-m` deselects, so `-m "not needs_tool"` leaves out a test that needs a tool through a fixture."""
+    for item in items:
+        for name in getattr(item, "fixturenames", ()):
+            if name in FIXTURE_TOOLS:
+                item.add_marker(pytest.mark.needs_tool(*FIXTURE_TOOLS[name]))
+
+
+def missing_tools(items: Iterable[pytest.Item]) -> list[str]:
+    """The tools the `needs_tool` marks of `items` name that are not on PATH."""
     needed = {
-        tool
-        for path in paths
-        if path.is_relative_to(HERE)
-        for tool in TOOLS.get(path.relative_to(HERE).as_posix(), ())
+        tool for item in items for mark in item.iter_markers("needs_tool") for tool in mark.args
     }
     return sorted(tool for tool in needed if shutil.which(tool) is None)
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
-    """A tool the selected tests run and PATH lacks stops the run before its first test, one line naming every
-    such tool, rather than failing each test that runs it partway through."""
-    missing = missing_tools({item.path for item in session.items})
+    """A tool a selected test runs (its `needs_tool` mark) and PATH lacks stops the run before its first test, one
+    line naming every such tool, rather than failing each test that runs it partway through; a test with no such
+    mark runs, whatever its module's other tests need (#1022)."""
+    missing = missing_tools(session.items)
     if missing:
         pytest.exit(
             f"missing tools the tests run: {', '.join(missing)}; put them on PATH",
