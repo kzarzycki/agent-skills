@@ -133,7 +133,9 @@ names the command that records it. `land <pr>` on a draft marks it ready first, 
 checks that starts are required, it waits (exit 3). `land <pr> --only` (with or without `--wait`) makes the named PR the only candidate: every other PR is left untouched (not
 marked ready, commented on, evicted or merged), and the rest is as without the flag; `--only` without a PR exits 2.
 A named PR that is no candidate says why: a missing proof exits 1,
-a wait for the owner or a pending required check 3, a red required check 1.
+a wait for the owner or a pending required check 3, a red required check 1. A named PR missing a required check that
+GitHub reports conflicting exits 1 with the fix, `merge origin/<base> in`, since GitHub runs no workflow on a
+conflicting PR, so the check would never come.
 3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
 `pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
 (the PR's head) and `LAND_BASE` (that tip) set, so the base's tree holds the check and a PR never changes what judges
@@ -498,7 +500,7 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
@@ -3412,6 +3414,10 @@ def rest_pull(pr: int) -> dict[str, Any]:
         "assignees": {"nodes": [actor(user) for user in found.get("assignees") or []]},
         "state": state,
         "isDraft": bool(found.get("draft")),
+        # REST's true or false, or null while GitHub computes it, as GraphQL's MergeableState reads them
+        "mergeable": {True: "MERGEABLE", False: "CONFLICTING"}.get(
+            found.get("mergeable"), "UNKNOWN"
+        ),
         "autoMergeRequest": {"enabledAt": None} if found.get("auto_merge") else None,
         "isInMergeQueue": None,
         "body": found.get("body") or "",
@@ -4252,12 +4258,17 @@ def repointed(base: str, held: list[str], pr: int) -> None:
 
 
 def landable(
-    pull: dict[str, Any], tracker: str | None, loop: str | None, required: set[str]
+    pull: dict[str, Any],
+    tracker: str | None,
+    loop: str | None,
+    required: set[str],
+    named: bool = False,
 ) -> tuple[int, bool] | None:
     """None when the PR is a candidate for the batch: every merge proof (gated, the head's own CI or local-ci pass
     aside, since the batch's gate is the proof), no owner wait, the base's required checks green on its head, and a
     signed squash possible where loop.md asks for one. Else, after printing why, the exit it means for a named PR and
-    whether a wait would clear it. A draft (only a named PR is read as one) is marked ready first."""
+    whether a wait would clear it. A draft (only a named PR is read as one) is marked ready first. The `named` PR
+    missing a required check that GitHub reports conflicting ends the wait, since no workflow runs on it."""
     where, local = f"PR #{pull['number']}", signed(loop)
     if pull["isCrossRepository"]:
         print(f"{where} comes from another repository: land merges only branches of this one")
@@ -4299,7 +4310,16 @@ def landable(
     if required and (lines := ci(where, pull, required)):
         for line in lines:
             print(line)
-        red = {state for _, state in head_checks(pull, required)[0]} & RED
+        checks = head_checks(pull, required)[0]
+        if (
+            named
+            and pull.get("mergeable") == "CONFLICTING"
+            and required - {name for name, _ in checks}
+        ):
+            base = pull["baseRefName"]
+            print(f"{where} conflicts with {base}: merge `origin/{base}` in")
+            return 1, False
+        red = {state for _, state in checks} & RED
         return (1, False) if red or any(line.endswith(PAGED) for line in lines) else (WAITING, True)
     # after CI, so the owner is never asked about a head CI could still reject
     if owner := owner_waits(pull, issues, loop):
@@ -4336,7 +4356,7 @@ def batched(
     } | ({named["number"]} if named else set())
     for number in sorted(listed):
         pull = named if named and number == named["number"] else pull_request(number)
-        if (why := landable(pull, tracker, loop, required)) is None:
+        if (why := landable(pull, tracker, loop, required, pull is named)) is None:
             candidates.append(pull)
         else:
             waits[number] = why
