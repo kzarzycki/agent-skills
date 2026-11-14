@@ -99,7 +99,8 @@ yourself, keeping standards and spec as separate axes.
   changes, even on one line; save the edit as a patch beside your report (`git diff --
   <file> > <patch>`, after `git add -N` for a file you recreate), run the tests, and redo the
   change with `git apply -R <patch>`. `git apply <patch>` undoes it again, so the patch is
-  also the repro. Run the patches with `uv run <this skill's folder>/scripts/mutate.py --test
+  also the repro. Commit the change and its tests before running the patches, since
+  mutate.py refuses a tree with uncommitted changes. Run the patches with `uv run <this skill's folder>/scripts/mutate.py --test
   '<tests>' --log <log> <patch>…` (the script queues on the host gate slot itself, in the short lane when the tests pass on
   the head within `short_seconds`, so the command takes no lock of its own), which applies each alone, restores the tree, stops cleanly on a signal and
   logs the head with each patch's exit code, rather than a harness of your own; the worker
