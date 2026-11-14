@@ -964,3 +964,12 @@ def test_the_thread_route_refuses_a_repeat_question_too(route_1b, monkeypatch) -
     monkeypatch.setattr(cv, "WS_URL", FakeCloud("", "# a question\nPlease run X").url)
     assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 1
     assert not out.with_name(out.name + ".question").exists()
+
+
+@pytest.mark.parametrize("marker", ["New in the answer:\n", "New in the answer:   \n"])
+def test_a_marker_line_with_no_text_after_it_is_refused(checkout, marker) -> None:
+    _, _, brief, posted, seen = checkout
+    brief.write_text(ANSWERED_BRIEF)
+    seen.update(question=f"{marker}Run X.\n")
+    assert cv.verify(7, brief, None, None) == 1
+    assert posted == []
