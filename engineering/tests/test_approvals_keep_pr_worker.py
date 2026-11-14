@@ -39,7 +39,9 @@ def test_a_land_that_merged_nothing_finishes_no_worker(
     lands["open"](7, {"7.txt": "7\n"})
     finished: list[int] = []
     monkeypatch.setattr(approvals, "archive_workers", finished.append)
-    monkeypatch.setattr(approvals, "landable", lambda *_: (approvals.WAITING, True))
+    monkeypatch.setattr(
+        approvals, "landable", lambda *_: approvals.Verdict((approvals.WAITING, True))
+    )
     assert lands["land"]("7")[0] == approvals.WAITING
     assert finished == []
 
