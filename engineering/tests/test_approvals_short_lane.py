@@ -3,7 +3,19 @@
 from __future__ import annotations
 
 import pytest
-from approvals_harness import approvals, gatekeeper_md
+from approvals_harness import (
+    added,  # noqa: F401
+    approvals,
+    assigned,  # noqa: F401
+    attached,  # noqa: F401
+    gatekeeper_md,
+    graphql_answers,  # noqa: F401
+    hub,  # noqa: F401
+    others_open,  # noqa: F401
+    pushed,  # noqa: F401
+    refs,  # noqa: F401
+    required,  # noqa: F401
+)
 
 
 def test_short_seconds_is_a_whole_number_of_the_loop_section() -> None:
