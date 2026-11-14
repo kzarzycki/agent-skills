@@ -11324,3 +11324,27 @@ def test_a_named_session_that_ended_is_news_to_its_waiter_again_after_the_waiter
     skewed(monkeypatch)[0] = 4000.0
     supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
     assert len(news()) == 2
+
+
+@pytest.mark.parametrize(
+    "wait", ["waiting on the PM", "waiting on [the pm](http://h/s/{P}) now", "waiting on {P}"]
+)
+def test_a_wait_on_the_session_the_supervisor_notifies_is_acted_on_and_names_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait: str
+) -> None:
+    pm = "9" * 32
+    registry = following(tmp_path)
+    og = Lead(told("brief", 600), ending(f"STILL WORKING: {wait.format(P=pm)}. Report: a.md", 400))
+    og.snap = {"status": "idle"}
+    offset = skewed(monkeypatch)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, 400.0 * poll),
+        notify=pm,
+        console=True,
+    )
+    acts = [t for s, t in og.inbox if s == pm and "[act]" in t]
+    assert acts and f"waits on its supervisor, session {pm}" in acts[0]

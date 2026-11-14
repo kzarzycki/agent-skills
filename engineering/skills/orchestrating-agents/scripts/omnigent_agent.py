@@ -4518,6 +4518,21 @@ def report_head(text: str) -> str:
     return "\n".join(kept) or next(iter(lines), "")
 
 
+def waits_on(text: str, lead: dict, notify: str | None) -> bool:
+    """Whether a lead's ``STILL WORKING`` wait names the session the supervisor notifies: its full
+    id, or the words ``pm``, ``pm's``, ``manager`` or ``you``."""
+    if notify and notify in (lead.get("named") or []):
+        return True
+    start = text.find("STILL WORKING")
+    return start >= 0 and bool(
+        re.search(
+            r"\bwait(?:s|ing)?\s+(?:on|for)\s+(?:the\s+)?(?:pm(?:'s)?|manager|you)\b",
+            text[start:],
+            re.I,
+        )
+    )
+
+
 def waits(wait: str) -> str:
     """A named wait as words: ``waits until <time>`` or ``waits on <wait>``."""
     return f"waits {wait}" if wait.startswith("until ") else f"waits on {wait}"
@@ -4628,6 +4643,12 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
             return "rule", "owner", "no standing decision to cover it"
         answer, why = ask()
         return "model", "owner" if answer == "owner" else "act", why
+    if event.get("supervisor"):
+        return (
+            "rule",
+            "act",
+            f"waits on its supervisor, session {event['supervisor']}: nobody else acts",
+        )
     if wait != "unknown":
         return "rule", "record", f"names its wait: {wait}"
     answer, why = ask()
@@ -5023,6 +5044,7 @@ def supervise_registry(
             "parked": parked_before(og, sid, items, said[-1] if said else None),
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
+            "supervisor": notify if waits_on(last, lead, notify) else "",
         }
 
         def ask() -> tuple[str, str]:
