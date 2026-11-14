@@ -1825,9 +1825,10 @@ def still_open(og: Omnigent, sid: str) -> str:
     question open, else ``""``: what a delivered message that did not answer it adds to its line. A
     failed look changes nothing, since the message is in."""
     try:
-        asks = questions_of(og.info(sid))
+        info = og.info(sid)
     except Fail:
         return ""
+    asks = questions_of(info) + cards_of(info)
     if not asks:
         return ""
     return "; its question is still open (relay --answer answers it): " + "; ".join(asks)
