@@ -78,7 +78,10 @@ def mutate(
     nothing behind, and subprocess.TimeoutExpired is raised."""
     run = subprocess.Popen(
         [
+            # -B: mutate.py itself, which imports approvals.py from the skill folder, writes no bytecode there, while
+            # its test command still gets the variable only from mutate.py (#1022)
             sys.executable,
+            "-B",
             str(MUTATE),
             "--test",
             test,
@@ -152,6 +155,18 @@ def test_a_patch_the_tests_catch_is_killed_and_the_run_exits_0(repo: Path) -> No
     assert lines[3] == f"{killed}: exit 1 killed"
     assert f"== {killed} ==" in lines and "AssertionError" in "\n".join(lines)
     assert clean(repo) and (repo / "calc.py").read_text() == MODULE
+
+
+def test_a_run_writes_no_bytecode_beside_mutate_py(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mutate.py imports approvals.py beside it; a scripts folder without the `__pycache__` file that stops Python
+    writing there, as a fresh copy may be, still gets no bytecode from these tests (#1022)."""
+    scripts = tmp_path / "scripts"
+    shutil.copytree(MUTATE.parent, scripts, ignore=shutil.ignore_patterns("__pycache__"))
+    monkeypatch.setattr(sys.modules[__name__], "MUTATE", scripts / MUTATE.name)
+    assert mutate(repo, patch(repo, "add.patch", "a + b", "a - b")).returncode == 0
+    assert not (scripts / "__pycache__").exists()
 
 
 def test_a_patch_no_test_catches_survives_and_the_log_names_it(repo: Path) -> None:

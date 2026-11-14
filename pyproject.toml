@@ -10,7 +10,10 @@ dev = ["pytest==9.1.1", "ruff==0.16.0"]
 [tool.pytest.ini_options]
 testpaths = ["tests", "engineering/tests"]
 pythonpath = ["."]
-markers = ["live_agent: tests that require a live agent runtime"]
+markers = [
+  "live_agent: tests that require a live agent runtime",
+  "needs_tool(*tools): the external tools a test runs beyond git and Python; a run selecting it stops first when PATH lacks one",
+]
 
 [tool.ruff]
 target-version = "py314"
@@ -19,8 +22,8 @@ line-length = 100
 per-file-target-version = { "engineering/skills/*/scripts/*.py" = "py39" }
 
 [tool.ruff.lint.per-file-ignores]
-# A module of approvals tests imports the harness's fixtures by name (each with `noqa: F401`), and
-# a test that takes one as a parameter redefines it (engineering/tests/approvals_harness.py).
+# A module of approvals tests imports a non-autouse fixture it takes from the harness by name (with
+# `noqa: F401`), and a test that takes it as a parameter redefines it (engineering/tests/approvals_harness.py).
 "engineering/tests/test_approvals_*.py" = ["F811"]
 # likewise a module that takes test_mutate.py's `repo` fixture by name
 "engineering/tests/test_mutate_*.py" = ["F811"]

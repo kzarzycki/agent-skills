@@ -63,4 +63,4 @@ Also run
 `mise run test-engineering-package` and validate both JSON manifests when
 package metadata changes.
 
-A change's new tests of `approvals.py` go in a module of their own, `tests/test_approvals_<topic>.py`, one per change and never shared by two open PRs, importing the shared harness and each autouse fixture by name from `tests/approvals_harness.py`, since tests appended to the end of `test_approvals.py` make every two PRs in flight conflict there.
+A change's new tests of `approvals.py` go in a module of their own, `tests/test_approvals_<topic>.py`, one per change and never shared by two open PRs, importing what it uses from `tests/approvals_harness.py` by name, since tests appended to the end of `test_approvals.py` make every two PRs in flight conflict there. It imports none of the harness's `AUTOUSE` fixtures: `tests/conftest.py` turns them on in every `test_approvals*` module, so a fixture a PR adds there reaches the modules main gains meanwhile.

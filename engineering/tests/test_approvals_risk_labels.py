@@ -7,20 +7,10 @@ from typing import Any
 
 import pytest
 from approvals_harness import (
-    added,  # noqa: F401
     approvals,
     approved,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
     issue,
-    others_open,  # noqa: F401
     pull,
-    pushed,  # noqa: F401
-    refs,  # noqa: F401
-    required,  # noqa: F401
 )
 
 
