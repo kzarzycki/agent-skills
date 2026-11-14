@@ -714,14 +714,14 @@ def test_wait_until_exits_0_once_the_command_does_and_its_own_code_at_the_limit(
     assert omnigent_agent.main(["wait-until", "--every", "61", "--limit", "5", "--", "true"]) == 2
 
 
-def test_wait_for_a_gate_returns_at_its_exit_line_or_still_running_with_no_log_text(
+def test_wait_for_a_gate_returns_at_its_exit_line_or_still_running_with_its_last_log_lines(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(omnigent_agent, "WAIT_FOR_EVERY", 0.01)
     log = tmp_path / "gate.log"
-    log.write_text("collecting\nSECRET progress line\n")
+    log.write_text("collecting\nexample progress 50%\n")
     assert omnigent_agent.main(["wait-for", "--log", str(log), "--budget", "0.05"]) == 6
-    assert capsys.readouterr().out == "still running\n"
+    assert capsys.readouterr().out == "still running\ncollecting\nexample progress 50%\n"
 
     def finish() -> None:
         time.sleep(0.1)
@@ -749,14 +749,14 @@ def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_
     assert capsys.readouterr().out == f"waiting on the gate lock (held by {os.getpid()})\n"
     log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")  # holds it: out of budget
     assert omnigent_agent.main(argv) == 6
-    assert capsys.readouterr().out == "still running\n"
+    assert capsys.readouterr().out == "still running\nrunning\n"  # with its progress line
     # the lock arrives mid-wait: the full budget runs from `locked`, not from entry
     log.write_text(f"run 1\nlock {lock}\n")
     threading.Timer(0.2, lambda: log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")).start()
     began = time.monotonic()
     assert omnigent_agent.main(["wait-for", "--log", str(log), "--budget", "0.3"]) == 6
     assert time.monotonic() - began >= 0.45
-    assert capsys.readouterr().out == "still running\n"
+    assert capsys.readouterr().out == "still running\nrunning\n"
     log.write_text(f"lock {lock}\n")  # waiting past the lock ceiling: no verdict
     os.utime(log, (time.time() - 7300, time.time() - 7300))
     assert omnigent_agent.main(argv) == 6
@@ -3128,9 +3128,13 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert ("api", "repos/o/r/issues/comments/42") in calls and og.posts == 1  # no nudge
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
     assert "PR #7" in brief and "gh api repos/{owner}/{repo}/issues/7/comments" in brief
-    assert LONG_RUN_POINTER in brief and "setsid" not in brief  # the role file's long-run rule
-    for nudge in (omnigent_agent.NUDGE, omnigent_agent.PR_NUDGE):
-        assert "detached" in nudge and "foreground" not in nudge
+    # a cloud brief swaps the detach pointer for the in-turn rule (#1002)
+    assert "A run may not outlive the turn" in brief and "setsid" not in brief
+    assert "detached" in omnigent_agent.NUDGE and "foreground" not in omnigent_agent.NUDGE
+    assert (
+        "restart it only if it did not" in omnigent_agent.PR_NUDGE
+        and "foreground" not in omnigent_agent.PR_NUDGE
+    )
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
 
 
@@ -3489,7 +3493,7 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     # what the clone holds; the foreground limit is the role file's long-run rule, not the brief's
     assert "checked out in the workspace this session started from" in brief
     assert "git fetch origin pull/7/head" in brief and "10 minutes" not in brief
-    assert LONG_RUN_POINTER in brief
+    assert "A run may not outlive the turn" in brief and LONG_RUN_POINTER not in brief
     # its report is the PR comment, written here although the session runs there
     assert omnigent_agent.main(["wait", "s0", "r.md", "--pr", "7"]) == 0
     assert (tmp_path / "r.md").read_text() == "Branch: claude/x at abc\n"
@@ -6442,6 +6446,81 @@ def test_relay_holds_behind_an_open_question_unless_told_to_answer_it(
     assert "Which base?" in capsys.readouterr().err
 
 
+def test_relay_beside_an_open_question_card_delivers_and_names_it_without_answering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()  # a card blocks nothing: the message lands at once
+    sid = og.create("claude", "lead")
+    og.prompts = [
+        {
+            "elicitation_id": "q1",
+            "params": {
+                "policy_name": "sys_ask_user_question",
+                "ask_user_question": {"questions": [{"question": "Which base?"}]},
+                "message": "Which base?",
+            },
+        }
+    ]
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    assert capsys.readouterr().out.strip() == (
+        f"session {sid}: delivered; its question is still open (relay --answer answers it):"
+        " Which base?"
+    )
+    assert og.resolved == []
+    assert og.posts == 1
+
+
+def test_relay_behind_a_blocking_question_is_queued_naming_it_and_answer_and_resolves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)  # the harness holds every message until it is answered
+    sid = og.create("claude", "lead")
+    og.prompts = [
+        {
+            "elicitation_id": "e1",
+            "params": {
+                "policy_name": "claude_native_permission",
+                "ask_user_question": {"questions": [{"question": "Which base?"}]},
+                "message": "Which base?",
+            },
+        }
+    ]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
+    err = capsys.readouterr().err
+    assert "Which base?" in err and "relay --answer" in err
+    assert og.resolved == []
+
+
+def test_send_beside_an_open_question_card_delivers_and_names_it_without_answering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = git_checkout(tmp_path / "w")
+    (repo / "f.md").write_text("fix Y")
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(repo)
+    sid = og.create("claude", "t")
+    og.prompts = [
+        {
+            "elicitation_id": "q1",
+            "params": {
+                "policy_name": "sys_ask_user_question",
+                "ask_user_question": {"questions": [{"question": "Which base?"}]},
+                "message": "Which base?",
+            },
+        }
+    ]
+    info = og.info
+    og.info = lambda s: ((repo / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
+    assert omnigent_agent.main(["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]) == 0
+    assert (
+        f"session {sid}: delivered; its question is still open (relay --answer answers it):"
+        " Which base?"
+    ) in capsys.readouterr().out
+    assert og.resolved == []
+    assert og.posts == 1
+
+
 def test_relay_answers_a_question_with_the_message_instead_of_posting_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -8848,6 +8927,79 @@ def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> N
         omnigent_agent.start(og, "claude-cloud", "t", "x", report, None, 0, permission_mode="plan")
 
 
+def test_start_says_when_the_environment_s_permission_mode_is_not_applied_and_creates_as_before(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")
+    og = FakeOmnigent()
+    og.harnesses["agy"] = "antigravity-native"
+    sid, _ = omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
+    assert sid in og.sessions
+    err = capsys.readouterr().err.splitlines()
+    dropped = [line for line in err if "not applied" in line]
+    assert dropped == [
+        (
+            "codex takes no permission mode: bypassPermissions was not applied; its session starts"
+            " in the harness default"
+        )
+    ]
+    for agent in ("claude", "agy"):  # each takes this mode, so nothing is dropped
+        omnigent_agent.start(og, agent, f"t-{agent}", "do X", tmp_path / "r.md", None, 0)
+        assert "not applied" not in capsys.readouterr().err
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "plan")  # agy takes bypass alone
+    omnigent_agent.start(og, "agy", "t-plan", "do X", tmp_path / "r.md", None, 0)
+    assert "agy takes no permission mode: plan was not applied" in capsys.readouterr().err
+    # The create a codex session gets is the one it got before: no launch args, no mode field.
+    calls = _agent_server(
+        monkeypatch,
+        {
+            "/v1/agents": [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()],
+            "/v1/agents?scope=user": [],
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        },
+    )
+    omnigent_agent.Omnigent().create("codex", "t")
+    body = calls[-1][2]
+    assert "terminal_launch_args" not in body and "permission_mode" not in body
+
+
+def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_warns_of_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS}
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")
+    omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0)
+    omnigent_agent.start(
+        og, "claude-cloud", "t2", "do X", tmp_path / "r.md", None, 0, permission_mode="auto"
+    )
+    assert "not applied" not in capsys.readouterr().err
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "plan")  # the server takes auto and bypass alone
+    omnigent_agent.start(og, "claude-cloud", "t3", "do X", tmp_path / "r.md", None, 0)
+    assert "claude-cloud takes no permission mode: plan was not applied" in capsys.readouterr().err
+    calls = _agent_server(monkeypatch, {"/v1/projects": {"data": []}, "/v1/sessions": {"id": "s1"}})
+    harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS, "custom": "acp:other"}
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent,
+        "agent",
+        lambda self, name: {"id": name, "harness": harnesses[name]},
+    )
+
+    def sent(agent: str, mode: str | None) -> dict:
+        omnigent_agent.Omnigent().create(agent, "t", permission_mode=mode)
+        return calls[-1][2]
+
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE")
+    assert sent("claude-cloud", "bypassPermissions")["permission_mode"] == "bypassPermissions"
+    assert sent("claude-cloud", "auto")["permission_mode"] == "auto"
+    for agent, mode in (("claude-cloud", None), ("claude-cloud", "plan"), ("custom", "auto")):
+        body = sent(agent, mode)
+        assert "permission_mode" not in body and "terminal_launch_args" not in body
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")  # the env gives it too
+    assert sent("claude-cloud", None)["permission_mode"] == "bypassPermissions"
+
+
 def test_antigravity_runs_a_role_only_with_its_approvals_bypassed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -9687,7 +9839,9 @@ def test_every_brief_points_to_the_role_file_s_long_run_rule_and_carries_no_copy
         if brief_file.is_file()
         else omnigent_agent.text_of(og.sessions[sid][1])
     )
-    assert brief.count(LONG_RUN_POINTER) == 1
+    # a cloud brief swaps it for the in-turn rule (#1002)
+    assert brief.count(LONG_RUN_POINTER) == (0 if cloud else 1)
+    assert ("A run may not outlive the turn" in brief) == cloud
     assert LONG_RUN_RULE_START not in brief and "setsid" not in brief
     assert "10 minutes" not in brief and "never short polls" not in brief
     if top_level and not pr:
@@ -11330,3 +11484,20 @@ def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_
     assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
     assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
     assert not any("Which base?" in p for p in posted(og))
+
+
+def test_call_allows_each_request_the_timeout_it_is_given_else_thirty_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[float] = []
+
+    def urlopen(req: Request, timeout: float) -> io.BytesIO:
+        seen.append(timeout)
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    og.call("GET", "/v1/x")
+    og.call("GET", "/v1/x", timeout=180.0)
+    assert seen == [30.0, 180.0]

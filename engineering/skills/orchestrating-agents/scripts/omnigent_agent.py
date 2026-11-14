@@ -52,7 +52,9 @@ delivered (archived, a failed revive, neither pending nor in the history), 7 whe
 a later read failed (delivered, unconfirmed: run it again, it posts no second copy). An open
 question card (``sys_ask_user_question``: elicitation id ``question_…``, not ``elicit_question_…``) holds
 nothing (``holds_input``): ``relay``, ``broadcast`` and ``watch`` treat the session as free and show
-``card open: <question>``; ``reap`` keeps it, since archiving it would end the owner's way back. A session blocked only
+``card open: <question>``; a plain relay (or ``send``, which prints the same line before it waits) is
+delivered beside it, exit 0, the line names the card still open, and the message never answers it;
+``reap`` keeps it, since archiving it would end the owner's way back. A session blocked only
 on questions (``ask_user_question``) holds the message behind them too (exit 5); ``relay
 --answer`` gives it as each question's answer instead, exit 0, since its pending inputs wait on
 the answer; an approval prompt it never answers. ``relay --from <name>`` is a notice from a task
@@ -287,6 +289,12 @@ RST_LITERAL = re.compile(r"(?<!`)``(?=[^\s`])[^`\n]*(?<=[^\s`])``(?!`)")
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
 # Both nudges open with NO_REPORT, so OWN_LINES finds either however the rest is worded.
 NO_REPORT = "Your turn ended without the report."
+# What a cloud session's nudge says in place of "poll a run you started detached": that run died.
+CLOUD_RUN_NUDGE = (
+    "A run you started in the background may not have outlived your turn (a cloud VM may not): check"
+    " whether it finished and posted its result, restart it only if it did not, and keep this turn"
+    " open, looping on `wait-for`, until it ends,"
+)
 NUDGE = NO_REPORT + " Poll any long run you started detached, then write the report to {report}."
 # A cloud worker's report: a comment on the PR its last message links (wait --pr).
 COMMENT_URL = re.compile(
@@ -298,13 +306,12 @@ UNPOSTED = "UNPOSTED REPORT"
 # its first line, however formatted: the brief quotes it in backticks, so `x` or **x** too
 UNPOSTED_LINE = re.compile(rf"[\W_]*{UNPOSTED}[\W_]*?(\n|$)")
 PR_NUDGE = (
-    NO_REPORT + " Poll any long run you started detached, then post the"
+    NO_REPORT + " " + CLOUD_RUN_NUDGE + " then post the"
     " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
 )
 # PR_NUDGE for a worker held from posting (pr_preamble), which never posts
 HELD_NUDGE = (
-    NO_REPORT
-    + " Poll any long run you started detached, then reply with the line `{unposted}` and the report as"
+    NO_REPORT + " " + CLOUD_RUN_NUDGE + " then reply with the line `{unposted}` and the report as"
     " your brief says, without posting it."
 )
 # The claude-cloud bridge's two failures that are no fault of the child (#510): its bootstrap
@@ -326,6 +333,16 @@ REVIVED = "Your session was restarted and may have lost its context."
 LEAD_NUDGE = (
     "Supervisor: your turn ended with no ending and no named wait. Carry on to your next step, and"
     " end your turn with DONE, STILL WORKING naming what you wait on, or USER NEEDED."
+    ' For example: "STILL WORKING: waiting on the verifier".'
+)
+# LEAD_NUDGE for a cloud lead (#1002): its own background run may not outlive its turn, so a STILL
+# WORKING naming it is no wait the supervisor can hold to.
+LEAD_NUDGE_CLOUD = (
+    "Supervisor: your turn ended with no ending and no named wait. If it ended on your own background"
+    " run, that run may not outlive the turn (a cloud VM may not): check whether it finished and"
+    " posted its result, restart it only if it did not, and keep the turn open, looping on"
+    " `wait-for`, until it ends. Then end your turn with DONE, STILL WORKING naming what you wait on"
+    " (never your own background run), or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
 )
 # A timed wait's time passed with no progress since: nothing else wakes an idle lead at its time.
@@ -564,6 +581,19 @@ FAR_READS = 3  # live sessions on another host tried for its load and memory, ne
 # The detach the role files prescribe (verifier.md, A long or locked run is detached): Perl's
 # setsid, since macOS has no setsid command.
 DETACH = "perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV'"
+# The brief's detach sentence, which holds on a host and not in a cloud VM (#1002): a follow-up turn
+# keeps the conversation, not the machine, so a run detached in one turn dies when it ends.
+DETACH_LINE = "A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role."
+CLOUD_RUN_LINE = (
+    "A run may not outlive the turn that started it, since a cloud VM may be replaced between turns,"
+    " and a foreground call there is cut short: start it detached as verifier.md's recipe says (its"
+    " log, pid and exit in files), then loop on `omnigent_agent.py wait-for --log <log> --pid <pid>"
+    " --budget 480` in the same turn, calling it again each time it prints `still running` (exit 6),"
+    " and end the turn only once the run has ended and its result is posted; never use a plain"
+    " `sleep`, which the harness blocks. The lead waits on the completion signal you post (the PR"
+    " comment or a status file), not on your turn, so a `STILL WORKING` that names only your own"
+    " background run is not a valid ending."
+)
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
@@ -651,7 +681,7 @@ CLOUD_REPLIES = {
     ),
 }
 CLOUD_NUDGE = (
-    NO_REPORT + " Poll any long run you started detached, then reply with the full report as your"
+    NO_REPORT + " " + CLOUD_RUN_NUDGE + " then reply with the full report as your"
     f" brief says, its first line `{CLOUD_REPORT_LINE}` (a lead's: its ending line), or with a first"
     f" line `{CLOUD_QUESTION_LINE}` and your question: your files stay in the cloud VM, which the"
     " host never reads."
@@ -661,11 +691,12 @@ CLOUD_LEAD_ENDING = re.compile(r"[\s*_#>-]*(DONE|USER NEEDED|STILL WORKING|PARKE
 
 
 def cloud_preamble(preamble: str, pr: int | None) -> str:
-    """``preamble`` for an ``acp:claude-cloud`` session: ``CLOUD_NOTE`` before its closing blank
-    line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
+    preamble = preamble.replace(DETACH_LINE, CLOUD_RUN_LINE)
     return preamble.removesuffix("\n") + CLOUD_NOTE + "\n"
 
 
@@ -916,8 +947,16 @@ class Omnigent:
             )
         return out.stdout.strip()
 
-    def call(self, method: str, path: str, body: object = None, *, owner: bool = False) -> dict:
-        """One request; a ``GET`` is retried on a ``TRANSIENT`` error or a ``TRANSIENT_HTTP``
+    def call(
+        self,
+        method: str,
+        path: str,
+        body: object = None,
+        *,
+        owner: bool = False,
+        timeout: float | None = None,
+    ) -> dict:
+        """One request, each attempt allowed ``timeout`` seconds (``HTTP_SECONDS``); a ``GET`` is retried on a ``TRANSIENT`` error or a ``TRANSIENT_HTTP``
         status. A ``POST`` never is: it may have taken effect. A write to an ``APPROVAL_GATED``
         path is refused unless the owner makes it (``owner=True``)."""
         if method != "GET" and not owner and APPROVAL_GATED.match(path):
@@ -939,7 +978,7 @@ class Omnigent:
                 },
             )
             try:
-                with urlopen(req, timeout=HTTP_SECONDS) as resp:
+                with urlopen(req, timeout=HTTP_SECONDS if timeout is None else timeout) as resp:
                     return json.load(resp)
             except HTTPError as e:
                 if e.code == 401 and not refreshed:
@@ -1153,6 +1192,10 @@ class Omnigent:
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
             # agy's only permission flag; its effort is the user's, part of the model in its settings.
             body["terminal_launch_args"] = [AGY_BYPASS]
+        elif mode in CLOUD_MODES and agent not in AGENTS and self.harness(agent) == CLOUD_HARNESS:
+            # The server's own field: it answers the VM's tool requests itself under bypass, since
+            # the VM starts in its default stance whatever it is launched with (#987).
+            body["permission_mode"] = mode
         # The loop role, which Omnigent's usage metrics split spend by: a role file's name.
         if role and (name := Path(role).stem) in ROLES:
             body["labels"] = {"omni.role": name}
@@ -1818,6 +1861,20 @@ def send(
     return "delivered", posted
 
 
+def still_open(og: Omnigent, sid: str) -> str:
+    """``; its question is still open (relay --answer answers it): <question>`` while ``sid`` has a
+    question open, else ``""``: what a delivered message that did not answer it adds to its line. A
+    failed look changes nothing, since the message is in."""
+    try:
+        info = og.info(sid)
+    except Fail:
+        return ""
+    asks = questions_of(info) + cards_of(info)
+    if not asks:
+        return ""
+    return "; its question is still open (relay --answer answers it): " + "; ".join(asks)
+
+
 def relay(
     og: Omnigent,
     sid: str,
@@ -1829,9 +1886,10 @@ def relay(
     skip: bool = False,
 ) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
-    the session holds it, ``Gone`` when it cannot be delivered. A session waiting on a question
-    holds ``text`` behind it like any message (``Queued``): an unrelated relay arriving while a
-    question is open must not become its answer. With ``answer``, a session blocked only on
+    the session holds it, ``Gone`` when it cannot be delivered. A question card leaves the session
+    free: ``text`` is delivered beside it, never answering it, and the line names the card still
+    open. A question the harness blocks on holds ``text`` behind it (``Queued``): an unrelated
+    relay arriving while it is open must not become its answer. With ``answer``, a session blocked only on
     questions gets ``text`` as each one's answer instead: its pending inputs wait on the answer,
     and an interrupt would drop them and hold input until the question's hook marker goes stale
     (kzarzycki/omnigent#14). An approval prompt it never answers. With ``skip``, a session with
@@ -1887,7 +1945,10 @@ def relay(
             )
             lands = f"this message stays queued and lands once the question is answered ({how})"
         raise Queued(f"session {sid}: queued {why}; {lands}")
-    return f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
+    line = f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
+    if not answer and not source:
+        line += still_open(og, sid)
+    return line
 
 
 # The first words of every message an agent or Omnigent posts into a session, never the owner's:
@@ -2289,6 +2350,9 @@ AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
 VERIFIER_ROUTES = ("codex", "gemini", "claude")
 GEMINI_AGENT = "antigravity-native-ui"
 BYPASS = "bypassPermissions"
+# the stances Omnigent's session create takes as ``permission_mode`` for a claude-cloud session; it
+# refuses any other word with a 400 (#987)
+CLOUD_MODES = ("auto", BYPASS)
 SETTINGS = Path(".claude") / "settings.local.json"
 
 
@@ -2582,15 +2646,34 @@ def start(
     session's file API before its brief is sent, so it finds them when it starts."""
     harness = agent if agent in AGENTS else og.harness(agent)
     agy = harness == AGY_HARNESS
-    if permission_mode and agent != "claude" and not (agy and permission_mode == BYPASS):
+
+    def applied(mode: str) -> bool:
+        """Whether ``agent``'s session can start in ``mode``: ``create`` sends it only then."""
+        return (
+            agent == "claude"
+            or (agy and mode == BYPASS)
+            or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
+        )
+
+    if permission_mode and not applied(permission_mode):
         raise Fail(
-            f"--permission-mode is for claude sessions (and {BYPASS} for antigravity);"
-            f" a {agent} session fails to launch with it"
+            f"--permission-mode is for claude sessions ({BYPASS} for antigravity, and"
+            f" {' or '.join(CLOUD_MODES)} for {CLOUD_HARNESS}); a {agent} session fails to"
+            " launch with it"
         )
     if agy and role and (permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")) != BYPASS:
         raise Fail(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
+        )
+    # The flag was refused above, so a mode here came from the environment: the session starts in
+    # its harness's default stance, which a run counting on the mode is told (#987).
+    mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
+    if mode and not applied(mode):
+        print(
+            f"{agent} takes no permission mode: {mode} was not applied; its session starts in"
+            " the harness default",
+            file=sys.stderr,
         )
     chosen, source = model_for(agent, model)
     if chosen:
@@ -3284,6 +3367,17 @@ def lock_text(log: Path, run: str | None) -> str | None:
     """``waiting on the gate lock (held by <pid>)`` while the log shows a lock wait, else None."""
     lock = lock_wait(log, run)
     return None if lock is None else f"waiting on the gate lock (held by {lock_holder(lock)})"
+
+
+PROGRESS_LINES = 3  # the log lines wait-for prints with ``still running``
+LOG_MARKERS = re.compile(r"(run \d+|lock .*|locked)")  # the detached recipe's own lines
+
+
+def log_progress(log: Path, run: str | None) -> list[str]:
+    """The last ``PROGRESS_LINES`` lines of the run's log that are its command's output, not the
+    detached recipe's markers, so a ``still running`` shows how far the run has got."""
+    lines = [x for x in run_lines(log, run) or [] if not LOG_MARKERS.fullmatch(x.strip())]
+    return lines[-PROGRESS_LINES:]
 
 
 def log_outcome(log: Path, code: int, run: str | None = None) -> str:
@@ -4455,6 +4549,49 @@ def ending_of(text: str) -> str | None:
     return "USER NEEDED" if "USER NEEDED" in endings else next(iter(endings), None)
 
 
+# A cloud lead's ``STILL WORKING`` whose wait is its own background run and nothing else (#1002):
+# that run may not outlive the turn, so the supervisor cannot hold to it. The object of "waiting on <object>" is split
+# into tokens and counts only when every one is in ``OWN_RUN_WORDS``: any other word ("agent",
+# "verifier", "tests", "and"), a comma or a parenthesis that is no duration keeps the route
+# ``wait_of`` gives.
+OWN_RUN_WORDS = frozenset(
+    (
+        "my",
+        "our",
+        "own",
+        "the",
+        "background",
+        "detached",
+        "gate",
+        "run",
+        "job",
+        "build",
+        "log",
+        "process",
+        "test",
+        "tests",
+    )
+)
+WAIT_OBJECT = re.compile(
+    r"STILL WORKING\b[^\n]*?\bwait(?:s|ing)?\s+(?:on|for)\s+(?P<object>.*?)(?:\.(?:\s|$)|\bReport:|$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+DURATION = re.compile(
+    r"\(\s*(?:~|about\s+)?\d+(?:\.\d+)?\s*(?:s|sec|secs|seconds?|m|min|mins|minutes?|h|hrs?|hours?)\s*\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def own_run_only(text: str) -> bool:
+    """Whether ``text``'s ``STILL WORKING`` line waits on the lead's own background run alone: its
+    wait object, less a trailing duration, holds only words of ``OWN_RUN_WORDS``."""
+    m = WAIT_OBJECT.search(text)
+    if not m:
+        return False
+    tokens = re.findall(r"[\w'-]+|\S", DURATION.sub("", m.group("object")).replace("`", " "))
+    return bool(tokens) and all(t.lower() in OWN_RUN_WORDS for t in tokens)
+
+
 def wait_of(text: str, at: float | None = None) -> str:
     """What a lead's message says it waits on: ``parked``, the wait its ``STILL WORKING`` names
     (``until <UTC time>`` for a timed one, ``TIMED`` says which, ``at`` being when the message was
@@ -4993,7 +5130,12 @@ def supervise_registry(
             "kind": kind,
             "line": line,
             "last": last,
-            "wait": lead.get("wait"),
+            "wait": "unknown"
+            if lead.get("wait") not in ("parked", None)
+            and last
+            and own_run_only(last)
+            and cloud_session(og, info)
+            else lead.get("wait"),
             "repeat": key == lead.get("last_event"),
             "question": bool(pending) and len(questions_of(info)) == len(pending),
             "nudged": lead.get("nudged_at") is not None
@@ -5048,7 +5190,8 @@ def supervise_registry(
         elif action in ("nudge", "wake"):  # one of either per progress chain
             lead.update(nudges=lead.get("nudges", 0) + 1, nudged_at=lead.get("progress_at"))
             text = LEAD_WAKE.format(time=lead["wait"].removeprefix("until "))
-            act_on(eid, [(sid, action, LEAD_NUDGE if action == "nudge" else text)])
+            nudge = LEAD_NUDGE_CLOUD if cloud_session(og, info) else LEAD_NUDGE
+            act_on(eid, [(sid, action, nudge if action == "nudge" else text)])
         elif action == "revive":
             if kind == "failed":  # its one revive after a failure; a lost runner is no failure
                 lead["revives"] = lead.get("revives", 0) + 1
@@ -6074,7 +6217,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--permission-mode",
             help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
-            " else the harness default); codex sessions take none",
+            " else the harness default); claude-cloud takes auto or bypassPermissions, codex none",
         )
         p.add_argument(
             "--author",
@@ -6449,7 +6592,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             ended = wait_for(args.log, args.pid, args.pr, args.until, args.budget)
             if ended is None:
                 waiting = args.log and lock_text(args.log, run_of(args.pid) if args.pid else None)
-                print(waiting or "still running")
+                progress = (
+                    []
+                    if waiting or not args.log
+                    else log_progress(args.log, run_of(args.pid) if args.pid else None)
+                )
+                print("\n".join([waiting or "still running", *progress]))
                 return LIMIT
             code, outcome = ended
             print(outcome)
@@ -6680,6 +6828,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 )
             if undeleted:
                 raise undeleted
+            if opened := still_open(og, args.session):  # a card blocks nothing: it stays open
+                print(f"session {args.session}: delivered{opened}")
             print(
                 wait(og, args.session, report, args.timeout, args.verdict, since, args.pr, baseline)
             )

@@ -189,6 +189,16 @@ def test_a_tree_with_a_change_is_refused_before_any_test_runs(repo: Path) -> Non
     assert clean(repo)
 
 
+def test_the_refusal_of_an_uncommitted_file_says_to_commit_or_stash_it(repo: Path) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    (repo / "test_new.py").write_text("def test_new():\n    pass\n")
+    result = mutate(repo, killed)
+    assert result.returncode == 2
+    assert "commit or stash them, then run mutate again" in result.stderr
+    (repo / "test_new.py").unlink()
+    assert clean(repo)
+
+
 def test_a_patch_that_does_not_apply_is_refused_before_any_test_runs(repo: Path) -> None:
     killed = patch(repo, "add.patch", "a + b", "a - b")
     stale = repo / "tmp" / "loop" / "stale.patch"
