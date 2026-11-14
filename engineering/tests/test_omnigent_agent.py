@@ -58,6 +58,7 @@ class FakeOmnigent:
         self.kids: list[str] = []  # sub-agents children() lists
         self.tasks: list[dict] = []  # background tasks info() reports
         self.interrupted: list[str] = []
+        self.labels: dict[str, dict[str, str]] = {}  # each session's labels
         self.prompts: list[dict] = []
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
@@ -237,6 +238,8 @@ class FakeOmnigent:
             info["background_tasks"] = self.tasks
         info["model_override"] = self.overrides.get(sid)
         info["reasoning_effort"] = self.efforts.get(sid)
+        if sid in self.labels:
+            info["labels"] = self.labels[sid]
         if sid in self.roots:
             info["root_conversation_id"] = self.roots[sid]
         if sid in self.archived:
@@ -257,6 +260,9 @@ class FakeOmnigent:
     def children(self, sid: str) -> list[str]:
         return list(self.kids)
 
+    def label(self, sid: str, labels: dict[str, str]) -> None:
+        self.labels.setdefault(sid, {}).update(labels)
+
     def archive(self, sid: str) -> None:
         if "archive" in self.fail:
             raise omnigent_agent.Fail(f"PATCH {sid}: HTTP 503")
@@ -264,6 +270,12 @@ class FakeOmnigent:
 
 
 REAL_TRIAGE = omnigent_agent.triage
+
+
+@pytest.fixture(autouse=True)
+def this_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The checkout's GitHub repository, so a `--pr` start labels its worker without `gh`."""
+    monkeypatch.setattr(omnigent_agent, "repo_slug", lambda: "o/r")
 
 
 @pytest.fixture(autouse=True)
@@ -3444,8 +3456,8 @@ def test_wait_keep_leaves_a_delivered_worker_open_for_a_relay(
     monkeypatch.chdir(tmp_path)
     relay = ["relay", "fix the finding", "--confirm-seconds", "0"]
     for title, keep, archived, code in (
-        ("t0", ["--keep"], [], 0),
-        ("t1", [], ["s1"], omnigent_agent.GONE),
+        ("t0", [], [], 0),
+        ("t1", ["--no-keep"], ["s1"], omnigent_agent.GONE),
     ):
         sid, _ = omnigent_agent.start(
             og, "claude-cloud", title, "do X", tmp_path / "r", None, 0, pr=7
@@ -3469,7 +3481,7 @@ def test_run_keep_leaves_a_delivered_worker_open_for_a_relay(
     fake_gh(monkeypatch, {"42": on_pr(7, "done")})
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
-    for title, keep, archived in (("t0", ["--keep"], []), ("t1", [], ["s1"])):
+    for title, keep, archived in (("t0", [], []), ("t1", ["--no-keep"], ["s1"])):
         argv = ["run", "claude-cloud", title, "b.md", f"{title}.md", "--pr", "7", *keep]
         assert omnigent_agent.main([*argv, "--confirm-seconds", "0"]) == 0
         assert og.archived == archived
@@ -11007,3 +11019,51 @@ def test_a_verifier_start_on_a_host_follows_the_placement_line_over_the_old_one(
     argv[argv.index("mac")] = host
     assert omnigent_agent.main(argv) == code
     assert bool(og.sessions) == (code == 0)
+
+
+# --- a question card a session posts to its user is not an act for the parent (#920) ---
+
+
+def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_acts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card (``policy_name`` ``sys_ask_user_question``) returns at once and its user answers it in
+    their Inbox: the session is not blocked, and the card is one record line per question id."""
+    registry = following(tmp_path)
+    monkeypatch.setattr(omnigent_agent, "PROMPT_CONFIRM_SECONDS", 0.0)
+    og = Lead(told("brief", 60), ending("STILL WORKING: on it", 50))
+    card = {
+        "elicitation_id": "q1",
+        "params": {
+            "policy_name": "sys_ask_user_question",
+            "ask_user_question": {"questions": [{"question": "Which base?"}]},
+            "message": "Which base?",
+        },
+    }
+    harness = {
+        "elicitation_id": "e2",
+        "params": {
+            "policy_name": "claude_native_permission",
+            "ask_user_question": {"questions": [{"question": "Go?"}]},
+            "message": "Go?",
+        },
+    }
+    og.snap = {"status": "running", "pending_elicitations": [card]}
+    states: list[str] = []
+
+    def later(poll: int) -> None:
+        states.append(state_of(registry)["leads"]["a"]["state"])
+        if poll == 3:
+            og.snap = {"status": "running", "pending_elicitations": [card, harness]}
+
+    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
+    assert states[:3] == ["running"] * 3  # the card alone blocks nothing
+    routed = [(e["kind"], e["action"], e["line"]) for e in events_of(registry)]
+    assert routed[0] == ("asked", "record", "a: asked its user: Which base?")
+    assert (events_of(registry)[0]["settled"], "Inbox" in events_of(registry)[0]["why"]) == (
+        "rule",
+        True,
+    )  # the card's own rule records it, not a guess about the lead's turn
+    assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
+    assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
+    assert not any("Which base?" in p for p in posted(og))

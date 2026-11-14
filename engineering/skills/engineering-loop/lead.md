@@ -225,7 +225,8 @@ design, wireframes included for a UI, and delegate the rest.
      on other items meanwhile. It lands every landable PR into main as one gated batch, not
      only yours (SKILL.md, Approvals and proof; `approvals.py`'s docstring has each step), and
      exit 0 means your PR merged, with a `Landed` comment naming the base commit, the tree and
-     the gate. Exit 1 names what stopped your PR, and the fix is yours:
+     the gate, and its kept `--pr` worker sessions finishing in the background (its log is named; `reap --merged
+     --pr <n>` finishes them again). Exit 1 names what stopped your PR, and the fix is yours:
      - a missing proof, with nothing on the PR changed: add the proof;
      - a conflict with main or the PRs merged before it: merge `origin/main` in, as the first
        bullet says;
@@ -246,6 +247,9 @@ design, wireframes included for a UI, and delegate the rest.
      never after another PR's merge. Whichever runs first takes the lock and lands every
      landable PR in one batch; the others wait for the lock and find their PR merged (exit 0)
      or land what is left. Host load is no reason to serialize: one gate covers the batch.
+   - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge
+     go on a head), which the owner's `approve merge --by owner` removes: a question card
+     alone holds nothing, since `land` batches every PR that is ready.
    - A check red after ready: `gh pr ready --undo`, then start a worker in the same worktree
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
      runs `mise run check` and pushes; a fresh verifier (step 7) reviews only the change
@@ -360,7 +364,9 @@ has left no report and will not wake itself: arm such a wait on its process or l
 fires, ask the child for its report.
 Finish a worker or verifier as soon as its report is read or its verdict posted, since an
 idle child keeps its agent process, MCP servers and runner alive. With Omnigent, `run` and
-`wait` already finish the child whose report they return; a report you heard any other way
+`wait` already finish the child whose report they return, except a `--pr` worker, which they keep
+for its fix rounds and which `reap` finishes once its PR is merged or closed (a verdict does not release it), and `land` once it
+merges the PR; a report you heard any other way
 (`send`, `watch`, a `run` that died, a file you read) leaves the child idle, so `reap <id>` it. At each
 wake and before each new start, finish any child whose report you have read and whose turn
 ended over 15 min ago. Only you know a report is in: an idle child still owing one looks
