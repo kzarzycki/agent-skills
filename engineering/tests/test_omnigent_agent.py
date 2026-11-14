@@ -11299,7 +11299,7 @@ def test_a_quiet_waiter_is_not_stalled_while_a_session_its_line_names_progresses
     registry, og = manager(tmp_path, wait, **snaps)
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     if quiet:
-        assert stalls(og) == [f"Supervisor: m t-m: no progress 60m (unknown)"]
+        assert stalls(og) == ["Supervisor: m t-m: no progress 60m (unknown)"]
         assert f"quiet: {OTHER}, {LEAD}" in og.inbox[-1][1]
     else:
         assert stalls(og) == [] and deadlines(registry) == []

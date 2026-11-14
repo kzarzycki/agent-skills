@@ -4528,7 +4528,7 @@ def waits_on(text: str, lead: dict, notify: str | None) -> bool:
         re.search(
             r"\bwait(?:s|ing)?\s+(?:on|for)\s+(?:the\s+)?(?:pm(?:'s)?|manager|you)\b",
             text[start:],
-            re.I,
+            re.IGNORECASE,
         )
     )
 
@@ -5608,8 +5608,10 @@ def supervise_registry(
             quiet_named.append(other)
             try:
                 over = lead_status(info, og.items(other))
-            except Exception:  # noqa: BLE001 - unread: quiet, as without it
+            except Exception as e:  # noqa: BLE001 - unread: quiet, as without it
+                log(("named", other), f"{other}: history not read: {reason(e)}")
                 continue
+            log(("named", other), None)
             if over["ending"] and over["state"] == "idle":  # news for its waiter, once per turn
                 at = datetime.fromtimestamp(over["turn_at"], timezone.utc).strftime("%H:%MZ")
                 head = f"{sid} {lead['title']}".rstrip()
