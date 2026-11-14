@@ -11367,3 +11367,52 @@ def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_
     assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
     assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
     assert not any("Which base?" in p for p in posted(og))
+
+
+def owner_posts_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, previews: list[str]
+) -> list[str]:
+    """The posts to ``cos`` when a lead blocks on one approval prompt per preview, each answered
+    before the next, with the post window passed between them."""
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "PROMPT_CONFIRM_SECONDS", 0.0)
+    og = Lead(told("brief", 60), ending("STILL WORKING: its worker runs", 5))
+
+    def prompt(n: int) -> dict:
+        item = {"elicitation_id": f"e{n}", "params": {"content_preview": previews[n]}}
+        return {"status": "running", "pending_elicitations": [item]}
+
+    og.snap = prompt(0)
+
+    def later(poll: int) -> None:
+        offset[0] = poll * 400.0
+        og.snap = prompt(poll) if poll < len(previews) else {"status": "running"}
+
+    supervised(og, registry, monkeypatch, len(previews) + 1, later, notify="cos", console=True)
+    return posted(og)
+
+
+def test_the_same_owner_item_at_a_later_turn_end_is_posted_as_info(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = owner_posts_for(tmp_path, monkeypatch, ["Bash(ls)", "Bash(ls)"])
+    assert "[owner] a t-a: blocked on a prompt: Bash(ls)" in first
+    assert second.startswith("Supervisor [info] b-")
+    assert "[info] a t-a: blocked on a prompt: Bash(ls)" in second
+
+
+def test_a_changed_owner_item_is_posted_as_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = owner_posts_for(tmp_path, monkeypatch, ["Bash(ls)", "Bash(rm x)"])
+    assert second.startswith("Supervisor [owner] b-")
+    assert "[owner] a t-a: blocked on a prompt: Bash(rm x)" in second
+    assert "[owner] a t-a: blocked on a prompt: Bash(ls)" in first
+
+
+def test_a_new_session_s_first_owner_item_is_posted_as_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    [post] = owner_posts_for(tmp_path, monkeypatch, ["Bash(ls)"])
+    assert post.startswith("Supervisor [owner] b-")
