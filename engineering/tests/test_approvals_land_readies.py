@@ -37,7 +37,7 @@ def lock(lands: dict[str, Any], title: str) -> None:
             "commit-tree",
             *(["-p", tip] if tip else []),
             "-m",
-            f"{title} [skip ci]\n\npid 1, nonce {len(tip)}{title[-4:] == "free"}",
+            f"{title} [skip ci]\n\npid 1, nonce {len(tip)}{title[-4:] == 'free'}",
             tree,
         ],
         cwd=lands["work"],
@@ -69,7 +69,11 @@ def test_a_draft_is_readied_before_the_first_wait_for_the_lock(
 ) -> None:
     draft(lands, 7)
     lock(lands, approvals.HELD)
-    assert lands["land"]("7", "--wait")[0] == approvals.WAITING
+    code, lines = lands["land"]("7", "--wait")
+    assert code == approvals.WAITING
+    assert any(line.startswith("land --wait stopped after") for line in lines), (
+        lines
+    )  # it kept waiting
     assert (readied(lands), lands["pulls"][7]["isDraft"], lands["merged"]()) == (["7"], False, [])
 
 
@@ -153,3 +157,18 @@ def test_a_cloud_session_leaves_a_named_draft_for_landable_to_refuse(
     draft(lands, 7)
     assert lands["land"]("7")[0] == 1
     assert readied(lands) == []
+
+
+def test_a_pr_named_twice_is_readied_once(lands: dict[str, Any]) -> None:
+    draft(lands, 7)
+    assert lands["land"]("7", "7")[0] == 0
+    assert (readied(lands), lands["merged"]()) == (["7"], ["7"])
+
+
+def test_a_named_pr_into_another_base_is_left_out_and_exits_one(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    lands["pulls"][8]["baseRefName"] = "release"
+    code, lines = lands["land"]("7", "8")
+    assert (code, lands["merged"]()) == (1, ["7"])
+    assert any(line.startswith("PR #8 targets release, not main like #7") for line in lines), lines
