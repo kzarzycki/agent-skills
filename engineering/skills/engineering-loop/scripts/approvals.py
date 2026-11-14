@@ -3893,9 +3893,7 @@ def policy_file(root: Path, path: Path) -> str | None:
 def policy_base(root: str) -> tuple[str, str] | None:
     """The ref the policy is read from in the checkout at `root`, `origin/<base>` for its default branch
     (default_base), and that ref's commit now, since `land` fetches it during a run; None without such a ref."""
-    base = default_base(root)
-    if base is None:
-        return None
+    base = default_base(root) or ""  # none: `refs/remotes/origin/` names no commit
     tip = subprocess.run(
         [
             "git",

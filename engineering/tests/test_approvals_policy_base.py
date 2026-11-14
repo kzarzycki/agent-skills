@@ -90,3 +90,23 @@ def test_a_checkout_without_origin_reads_the_working_tree_and_says_so(
     assert capsys.readouterr().err == UNBASED
     approvals.gate_plan()
     assert capsys.readouterr().err == ""  # once per run
+
+
+def test_the_base_is_the_branch_origin_head_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A clone's origin/HEAD names the default branch, read before asking origin, whose HEAD may name another."""
+    origin, repo = tmp_path / "origin.git", tmp_path / "repo"
+    git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    checkout(repo)
+    git_in(repo, "remote", "add", "origin", str(origin))
+    old = policy(repo, OLD, "one gate")
+    git_in(repo, "push", "-q", "origin", "main")
+    new = policy(repo, NEW, "gate steps")
+    git_in(repo, "push", "-q", "origin", "HEAD:refs/heads/trunk")
+    git_in(repo, "fetch", "-q", "origin")
+    git_in(repo, "remote", "set-head", "origin", "trunk")
+    git_in(repo, "reset", "-q", "--hard", old)
+    monkeypatch.chdir(repo)
+    assert [step["name"] for step in approvals.gate_plan()] == ["lint", "unit"]
+    assert f"differs from origin/trunk's (at {new})" in capsys.readouterr().err
