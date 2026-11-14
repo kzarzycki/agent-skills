@@ -195,12 +195,21 @@ def test_observe_names_a_card_open_and_blocks_on_the_held_prompts_only() -> None
     )
 
 
-def test_relay_queued_behind_a_long_question_names_its_id_not_its_text() -> None:
+LONG = "Which one? " * 400
+
+
+@pytest.mark.parametrize(
+    ("questions", "label"),
+    [([], LONG[:80] + "…"), ([{"header": "Pick one", "question": LONG}], "“Pick one”")],
+)
+def test_relay_queued_behind_a_long_question_names_its_id_not_its_text(
+    questions: list, label: str
+) -> None:
     long = {
         "elicitation_id": "elicit_question_long",
-        "params": {"message": "Which one? " * 400, "ask_user_question": {"questions": []}},
+        "params": {"message": LONG, "ask_user_question": {"questions": questions}},
     }
     with pytest.raises(omnigent_agent.Queued) as err:
         omnigent_agent.relay(fake(long, hold=10**6), "s1", "hi", 0)
-    lines = str(err.value).splitlines()
-    assert all(len(line) < 200 for line in lines) and "elicit_question_long" in lines[0]
+    line = str(err.value).splitlines()[0]
+    assert len(line) < 200 and "elicit_question_long" in line and label in line
