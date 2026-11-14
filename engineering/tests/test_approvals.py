@@ -96,6 +96,8 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "toplevel", Path.cwd)
     monkeypatch.setattr(approvals, "viewer", lambda: "loop")
     monkeypatch.setattr(approvals, "merged_high", lambda _branch: [])
+    # the checkout under test is not the one judged against origin/<base>: test_approvals_base_judges.py covers it
+    monkeypatch.setattr(approvals, "judge_with_base", lambda _base, fetch=False: None)
 
 
 @pytest.fixture(autouse=True)
