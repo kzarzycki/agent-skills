@@ -128,7 +128,8 @@ itself (no post, a nudge, a revive, telling the leads registered ``after=`` it o
 ``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
 what its rules can't settle, and posts what needs the notified session or the owner as
 ``Supervisor [act] b-<id>: …`` or ``Supervisor [owner] b-<id>: …``, at most one post per 5
-minutes; ``--fyi post`` posts every line as without it too, ``--decisions`` names the owner's
+minutes (an owner item it already raised for that session, same text, goes as ``[info]``, which wakes no
+one; a new or changed item raises ``[owner]``); ``--fyi post`` posts every line as without it too, ``--decisions`` names the owner's
 standing decisions for the small model. Without it, it writes none of these and posts every line.
 A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
 a user service running that same command line less ``--install`` and ``--log`` (a systemd user unit
@@ -3801,6 +3802,18 @@ def observe(
     return ("running",), f"{head}: {status}{tail}"
 
 
+def owner_item(line: str) -> str:
+    """What the owner acts on in an event ``line``, which keys an owner item as raised: a
+    prompt's text, a turn end's last message, else the line. Never the header (session, title,
+    queued inputs, open card), which changes while the request stands."""
+    first, _, rest = line.partition("\n")
+    if (at := first.find(": blocked on a prompt: ")) >= 0:
+        return first[at + 2 :]
+    if re.search(r": turn ended(, quiet \d+s)?$", first) and rest:
+        return rest
+    return line
+
+
 def watch(
     og: Omnigent, sessions: list[str], parent: str | None = None, timeout: float = 3 * 3600
 ) -> list[str]:
@@ -5258,7 +5271,13 @@ def supervise_registry(
         elif action == "tell":
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
         elif action in ("act", "owner", "done"):
-            queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
+            item = line.splitlines()[0]
+            to = "owner" if action == "owner" else "act"
+            if to == "owner" and lead.get("owner_item") == owner_item(line):
+                to = "info"  # the owner item already raised: it wakes no one
+            elif to == "owner" and lead:
+                lead["owner_item"] = owner_item(line)
+            queue(eid, sid, to, item, why)
         if action == "act" and event["limit"] and event["capped"]:  # past the cap: no more probes
             for parked in state["leads"].values():
                 if (parked.get("retrying") or {}).get("limit"):
@@ -5286,7 +5305,8 @@ def supervise_registry(
         ``told_turn``, and never one written before the run that first saw the lead
         (``seen_from``), so an old last message of a lead that never settles is no news in every
         post; the row then reads ``idle``."""
-        to = "owner" if any(e["route"] == "owner" for e in events) else "act"
+        routes = {e["route"] for e in events}
+        to = "owner" if "owner" in routes else "act" if "act" in routes else "info"
         n = len(events)
         lines = [f"Supervisor [{to}] {bid}: {n} event{'s' * (n > 1)}"]
         lines += [f"[{e['route']}] {e['line']} ({e['why']})" for e in events]
