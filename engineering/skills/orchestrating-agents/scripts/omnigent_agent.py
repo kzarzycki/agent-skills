@@ -947,8 +947,16 @@ class Omnigent:
             )
         return out.stdout.strip()
 
-    def call(self, method: str, path: str, body: object = None, *, owner: bool = False) -> dict:
-        """One request; a ``GET`` is retried on a ``TRANSIENT`` error or a ``TRANSIENT_HTTP``
+    def call(
+        self,
+        method: str,
+        path: str,
+        body: object = None,
+        *,
+        owner: bool = False,
+        timeout: float | None = None,
+    ) -> dict:
+        """One request, each attempt allowed ``timeout`` seconds (``HTTP_SECONDS``); a ``GET`` is retried on a ``TRANSIENT`` error or a ``TRANSIENT_HTTP``
         status. A ``POST`` never is: it may have taken effect. A write to an ``APPROVAL_GATED``
         path is refused unless the owner makes it (``owner=True``)."""
         if method != "GET" and not owner and APPROVAL_GATED.match(path):
@@ -970,7 +978,7 @@ class Omnigent:
                 },
             )
             try:
-                with urlopen(req, timeout=HTTP_SECONDS) as resp:
+                with urlopen(req, timeout=HTTP_SECONDS if timeout is None else timeout) as resp:
                     return json.load(resp)
             except HTTPError as e:
                 if e.code == 401 and not refreshed:
