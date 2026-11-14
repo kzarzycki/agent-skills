@@ -286,8 +286,9 @@ RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
 NO_REPORT = "Your turn ended without the report."
 # What a cloud session's nudge says in place of "poll a run you started detached": that run died.
 CLOUD_RUN_NUDGE = (
-    "A run you started in the background did not outlive your turn (the VM may not): it was lost, so"
-    " restart it, do not wait on it, and keep this turn open, polling it, until it finishes,"
+    "A run you started in the background may not have outlived your turn (a cloud VM may not): check"
+    " whether it finished and posted its result, restart it only if it did not, and keep this turn"
+    " open, looping on `wait-for`, until it ends,"
 )
 NUDGE = NO_REPORT + " Poll any long run you started detached, then write the report to {report}."
 # A cloud worker's report: a comment on the PR its last message links (wait --pr).
@@ -329,13 +330,14 @@ LEAD_NUDGE = (
     " end your turn with DONE, STILL WORKING naming what you wait on, or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
 )
-# LEAD_NUDGE for a cloud lead (#1002): its own background run died with its turn, so a STILL WORKING
-# naming it waits on nothing.
+# LEAD_NUDGE for a cloud lead (#1002): its own background run may not outlive its turn, so a STILL
+# WORKING naming it is no wait the supervisor can hold to.
 LEAD_NUDGE_CLOUD = (
     "Supervisor: your turn ended with no ending and no named wait. If it ended on your own background"
-    " run, that run was lost with the turn (the VM may not outlive it): restart it, do not wait on it,"
-    " and keep the turn open, polling it, until it finishes. Then end your turn with DONE, STILL"
-    " WORKING naming what you wait on (never your own background run), or USER NEEDED."
+    " run, that run may not outlive the turn (a cloud VM may not): check whether it finished and"
+    " posted its result, restart it only if it did not, and keep the turn open, looping on"
+    " `wait-for`, until it ends. Then end your turn with DONE, STILL WORKING naming what you wait on"
+    " (never your own background run), or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
 )
 # A timed wait's time passed with no progress since: nothing else wakes an idle lead at its time.
@@ -578,12 +580,14 @@ DETACH = "perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV'"
 # keeps the conversation, not the machine, so a run detached in one turn dies when it ends.
 DETACH_LINE = "A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role."
 CLOUD_RUN_LINE = (
-    "A run must finish inside the turn that started it, since the VM may not outlive the turn, and a"
-    " foreground call there is cut short: start it detached as verifier.md's recipe says (its log,"
-    " pid and exit in files), then loop on `omnigent_agent.py wait-for --log <log> --pid <pid> --budget 480` in the"
-    " same turn, calling it again each time it prints `still running` (exit 6), never ending the turn"
-    " while the run lives and never with a plain `sleep`, which the harness blocks."
-    " A `STILL WORKING` that names only your own background run is not a valid ending."
+    "A run may not outlive the turn that started it, since a cloud VM may be replaced between turns,"
+    " and a foreground call there is cut short: start it detached as verifier.md's recipe says (its"
+    " log, pid and exit in files), then loop on `omnigent_agent.py wait-for --log <log> --pid <pid>"
+    " --budget 480` in the same turn, calling it again each time it prints `still running` (exit 6),"
+    " and end the turn only once the run has ended and its result is posted; never use a plain"
+    " `sleep`, which the harness blocks. The lead waits on the completion signal you post (the PR"
+    " comment or a status file), not on your turn, so a `STILL WORKING` that names only your own"
+    " background run is not a valid ending."
 )
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
@@ -4456,7 +4460,7 @@ def ending_of(text: str) -> str | None:
 
 
 # A cloud lead's ``STILL WORKING`` whose wait is its own background run and nothing else (#1002):
-# that run died with the turn, so it waits on nothing. The object of "waiting on <object>" is split
+# that run may not outlive the turn, so the supervisor cannot hold to it. The object of "waiting on <object>" is split
 # into tokens and counts only when every one is in ``OWN_RUN_WORDS``: any other word ("agent",
 # "verifier", "tests", "and"), a comma or a parenthesis that is no duration keeps the route
 # ``wait_of`` gives.

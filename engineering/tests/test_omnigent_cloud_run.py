@@ -16,7 +16,7 @@ from test_omnigent_agent import (
 )
 
 DETACH_LINE = "A long or locked run is detached"
-IN_TURN = "A run must finish inside the turn that started it"
+IN_TURN = "A run may not outlive the turn that started it"
 
 
 @pytest.mark.parametrize(("top_level", "pr"), [(True, None), (False, None)])
@@ -29,9 +29,9 @@ def test_a_cloud_brief_carries_the_in_turn_rule_and_not_the_detach_line(
         og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, top_level=top_level, pr=pr
     )
     brief = omnigent_agent.text_of(og.sessions[sid][1])
-    assert IN_TURN in brief and "never ending the turn while the run lives" in brief
+    assert IN_TURN in brief and "end the turn only once the run has ended" in brief
     assert "loop on `omnigent_agent.py wait-for --log <log> --pid <pid> --budget 480`" in brief
-    assert "`still running` (exit 6)" in brief and "never with a plain `sleep`" in brief
+    assert "`still running` (exit 6)" in brief and "never use a plain `sleep`" in brief
     assert "Monitor" not in brief and "in the foreground" not in brief
     assert "`STILL WORKING` that names only your own background run is not a valid ending" in brief
     assert DETACH_LINE not in brief
@@ -51,7 +51,8 @@ def test_a_host_brief_keeps_the_detach_line(preamble: str) -> None:
 
 def test_the_cloud_nudges_name_the_restart_and_the_host_nudge_keeps_polling() -> None:
     for nudge in (omnigent_agent.CLOUD_NUDGE, omnigent_agent.PR_NUDGE, omnigent_agent.HELD_NUDGE):
-        assert "restart it" in nudge and "detached" not in nudge
+        assert "restart it only if it did not" in nudge and "detached" not in nudge
+        assert "was lost" not in nudge
     assert "Poll any long run you started detached" in omnigent_agent.NUDGE
 
 
@@ -73,7 +74,7 @@ def test_the_supervisor_nudge_of_a_cloud_lead_names_the_restart(tmp_path, monkey
         console=True,
     )
     assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_NUDGE_CLOUD]
-    assert "restart it" in omnigent_agent.LEAD_NUDGE_CLOUD
+    assert "restart it only if it did not" in omnigent_agent.LEAD_NUDGE_CLOUD
 
 
 @pytest.mark.parametrize(

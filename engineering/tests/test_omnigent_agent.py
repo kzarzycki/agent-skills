@@ -3083,9 +3083,12 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
     assert "PR #7" in brief and "gh api repos/{owner}/{repo}/issues/7/comments" in brief
     # a cloud brief swaps the detach pointer for the in-turn rule (#1002)
-    assert "A run must finish inside the turn" in brief and "setsid" not in brief
+    assert "A run may not outlive the turn" in brief and "setsid" not in brief
     assert "detached" in omnigent_agent.NUDGE and "foreground" not in omnigent_agent.NUDGE
-    assert "restart it" in omnigent_agent.PR_NUDGE and "foreground" not in omnigent_agent.PR_NUDGE
+    assert (
+        "restart it only if it did not" in omnigent_agent.PR_NUDGE
+        and "foreground" not in omnigent_agent.PR_NUDGE
+    )
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
 
 
@@ -3444,7 +3447,7 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     # what the clone holds; the foreground limit is the role file's long-run rule, not the brief's
     assert "checked out in the workspace this session started from" in brief
     assert "git fetch origin pull/7/head" in brief and "10 minutes" not in brief
-    assert "A run must finish inside the turn" in brief and LONG_RUN_POINTER not in brief
+    assert "A run may not outlive the turn" in brief and LONG_RUN_POINTER not in brief
     # its report is the PR comment, written here although the session runs there
     assert omnigent_agent.main(["wait", "s0", "r.md", "--pr", "7"]) == 0
     assert (tmp_path / "r.md").read_text() == "Branch: claude/x at abc\n"
@@ -9644,7 +9647,7 @@ def test_every_brief_points_to_the_role_file_s_long_run_rule_and_carries_no_copy
     )
     # a cloud brief swaps it for the in-turn rule (#1002)
     assert brief.count(LONG_RUN_POINTER) == (0 if cloud else 1)
-    assert ("A run must finish inside the turn" in brief) == cloud
+    assert ("A run may not outlive the turn" in brief) == cloud
     assert LONG_RUN_RULE_START not in brief and "setsid" not in brief
     assert "10 minutes" not in brief and "never short polls" not in brief
     if top_level and not pr:
