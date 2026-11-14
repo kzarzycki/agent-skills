@@ -240,9 +240,10 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   Metadata and Actions read. Organization permission: Projects read and write (`board.py`
   writes the board through GraphQL). It gets no Administration, so the rulesets bind the agents.
   Open question, unproved: `approvals.py check` reads each head's check runs
-  (`commits/<sha>/check-runs`, `check-suites`, and the `actions/runs` that name them, plus the
-  commit statuses), and GitHub's fine-grained permissions table has no Checks permission and
-  lists none of these routes. If the token can't read check runs, `check` has no CI result to
+  (`commits/<sha>/check-runs` and `check-suites`, plus the `actions/runs` that name them and the
+  commit statuses). GitHub's fine-grained permissions table lists the `actions/runs` and commit
+  status routes (under Actions and Commit statuses, read), but it has no Checks permission and
+  lists neither check-runs nor check-suites. If the token can't read check runs, `check` has no CI result to
   read and `check merge` can't tell a green head from a missing one, so it holds the merge
   (it has no fallback to the statuses alone); until someone runs
   `gh api repos/<owner>/<repo>/commits/<sha>/check-runs` with such a token and records the
