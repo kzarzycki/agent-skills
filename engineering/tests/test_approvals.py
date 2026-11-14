@@ -3523,7 +3523,7 @@ def lands(
             state["calls"].append(args)
             pulls[int(args[-1])]["isDraft"] = "--undo" in args
             return ""
-        if args[:3] == ("api", "-X", "PATCH"):
+        if args[:2] == ("api", "-X"):
             # land's edit of a PR's body or comment, which session_links() names by its REST path
             state["calls"].append(args)
             state.setdefault("edits", {})[args[3]] = args[args.index("-f") + 1].removeprefix(

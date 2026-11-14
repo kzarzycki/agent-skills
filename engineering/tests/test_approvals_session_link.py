@@ -150,3 +150,48 @@ def test_check_merge_names_a_comment_carrying_a_link_it_cannot_edit(
     pr["comments"]["nodes"][:] = [editable(note("Clean."), databaseId=15)]
     assert approvals.main(["check", "merge", "7"]) == code
     assert "a session link stays in" not in capsys.readouterr().out
+
+
+def test_land_edits_a_review_summary_carrying_the_link_and_check_merge_names_one_it_cannot_edit(
+    lands: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A review's summary is a text of the PR as its comments are: one this account can edit gets one PUT keeping its
+    other lines, and check merge names one it can't."""
+    summary = {"author": {"login": "loop"}, "state": "COMMENTED", "commit": {"oid": "0" * 40}}
+    mine = editable(
+        {**summary, "body": f"Verifier, pass 1.\n\nVERDICT: 0 blocker\n\n{FOOTER}"},
+        databaseId=31,
+        url="https://example.com/v31",
+    )
+    lands["open"](7, {"7.txt": "7\n"})
+    # older than the verdict on the head, which stays the newest review
+    lands["pulls"][7]["reviews"]["nodes"].insert(0, mine)
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert lands["edits"] == {
+        "repos/{owner}/{repo}/pulls/7/reviews/31": "Verifier, pass 1.\n\nVERDICT: 0 blocker"
+    }
+    edits = [args[:4] for args in lands["calls"] if args[:2] == ("api", "-X")]
+    assert edits == [("api", "-X", "PUT", "repos/{owner}/{repo}/pulls/7/reviews/31")]
+    assert "PR #7: dropped the session link from the review https://example.com/v31" in lines
+    theirs = {
+        **summary,
+        "body": f"Looks fine.\n\n{LINK}",
+        "databaseId": 32,
+        "url": "https://example.com/v32",
+    }
+    pr = pull(reviews=(theirs,))
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    monkeypatch.setattr(approvals, "project", lambda: (None, LOOP))
+    approvals.main(["check", "merge", "7"])
+    assert [
+        line for line in capsys.readouterr().out.splitlines() if "a session link stays in" in line
+    ] == [
+        (
+            "PR #7: a session link stays in the review https://example.com/v32, which this account can't edit: remove"
+            " it by hand before the PR lands, since its page is public"
+        )
+    ]

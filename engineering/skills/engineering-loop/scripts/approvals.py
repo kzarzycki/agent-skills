@@ -519,7 +519,7 @@ ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENT
 ASSIGNED = "Assigned: @"
 PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
-  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
+  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
@@ -4913,37 +4913,64 @@ def commit_msg(message: Path) -> int:
     return 0
 
 
-def session_links(pull: dict[str, Any]) -> list[tuple[str, str, str, bool]]:
-    """Each text of pull that carries a session link line, as (what names it, its REST path, its text, whether this
-    account can edit it, by GitHub's `viewerCanUpdate`): the PR's body, then each of its conversation comments and its
-    review threads' comments, since a public repo's PR page publishes them all. A text read without that right (REST,
-    when GraphQL is refused) counts as one it can't edit. ponytail: the newest 100 comments, and the first 50 comments
-    of each of the first 100 threads; a review's own body is not read."""
-    number = pull["number"]
+def session_links(pull: dict[str, Any]) -> list[tuple[str, str, str, str, bool]]:
+    """Each text of pull that carries a session link line, as (what names it, the REST method and path that edit it,
+    its text, whether this account can edit it, by GitHub's `viewerCanUpdate`): the PR's body, each conversation
+    comment, each review's summary and each review thread's comment, since a public repo's PR page publishes them all.
+    A text read without that right (REST, when GraphQL is refused) counts as one it can't edit. ponytail: the newest
+    100 comments and reviews, and the first 50 comments of each of the first 100 threads."""
+    number, repo = pull["number"], "repos/{owner}/{repo}"
+
+    def named(word: str, found: dict[str, Any]) -> str:
+        if found.get("url"):
+            return f"the {word} {found['url']}"
+        if found.get("databaseId"):
+            return f"{word} {found['databaseId']} on PR #{number}"
+        return f"a {word} on PR #{number}"
+
     texts = [
         (
             "its body",
-            f"repos/{{owner}}/{{repo}}/pulls/{number}",
+            "PATCH",
+            f"{repo}/pulls/{number}",
             pull.get("body") or "",
             pull.get("viewerCanUpdate"),
         )
     ]
-    for kind, nodes in [("issues", (pull.get("comments") or {}).get("nodes") or [])] + [
-        ("pulls", (thread.get("comments") or {}).get("nodes") or [])
+    texts += [
+        (
+            named("comment", note),
+            "PATCH",
+            f"{repo}/issues/comments/{note.get('databaseId')}",
+            note.get("body") or "",
+            note.get("viewerCanUpdate"),
+        )
+        for note in (pull.get("comments") or {}).get("nodes") or []
+    ]
+    texts += [
+        (
+            named("review", review),
+            "PUT",
+            f"{repo}/pulls/{number}/reviews/{review.get('databaseId')}",
+            review.get("body") or "",
+            review.get("viewerCanUpdate"),
+        )
+        for review in (pull.get("reviews") or {}).get("nodes") or []
+    ]
+    texts += [
+        (
+            named("comment", note),
+            "PATCH",
+            f"{repo}/pulls/comments/{note.get('databaseId')}",
+            note.get("body") or "",
+            note.get("viewerCanUpdate"),
+        )
         for thread in (pull.get("reviewThreads") or {}).get("nodes") or []
-    ]:
-        texts += [
-            (
-                f"the comment {note.get('url') or note.get('databaseId')}",
-                f"repos/{{owner}}/{{repo}}/{kind}/comments/{note.get('databaseId')}",
-                note.get("body") or "",
-                note.get("viewerCanUpdate"),
-            )
-            for note in nodes
-        ]
+        for note in (thread.get("comments") or {}).get("nodes") or []
+    ]
     return [
-        (what, path, text, bool(can))
-        for what, path, text, can in texts
+        (what, method, path, text, bool(can))
+        for what, method, path, text, can in texts
         if SESSION_LINE.search(text)
     ]
 
@@ -4953,9 +4980,9 @@ def unlink_pull(pull: dict[str, Any]) -> None:
     less its session link lines, as unlinked() folds them, its other lines kept; a text with none gets no edit, and
     one it can't edit is left to check merge, which names it. One line says what it edited."""
     edited = []
-    for what, path, text, can in session_links(pull):
+    for what, method, path, text, can in session_links(pull):
         if can:
-            gh("api", "-X", "PATCH", path, "-f", f"body={unlinked(text)}")
+            gh("api", "-X", method, path, "-f", f"body={unlinked(text)}")
             edited.append(what)
     if edited:
         print(f"PR #{pull['number']}: dropped the session link from {', '.join(edited)}")
@@ -4964,7 +4991,7 @@ def unlink_pull(pull: dict[str, Any]) -> None:
 def stranded(pull: dict[str, Any]) -> str | None:
     """The line check merge prints when a text of pull still carries a session link this account can't edit (a comment
     by another account, say), so a person removes it before the PR lands; None when there is none."""
-    left = [what for what, _, _, can in session_links(pull) if not can]
+    left = [what for what, *_, can in session_links(pull) if not can]
     if not left:
         return None
     return (
