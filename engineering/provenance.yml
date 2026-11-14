@@ -220,7 +220,7 @@ owned_overlays:
   sha256: 98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83
   mode: '100644'
 - path: overlays/skills/wizard/template.sh
-  sha256: 6566f147299bc6f1d941e64591ed04385416d543e11f96f564c7228f5018d0ed
+  sha256: a4d9b05dffbbe0604dec0a5e0a106d946e9c97090d890d54fa675342692bbcfe
   mode: '100644'
 source_mappings:
 - source_repository: https://github.com/mattpocock/skills.git
@@ -727,5 +727,5 @@ output_files:
   sha256: 98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83
   mode: '100644'
 - path: skills/wizard/template.sh
-  sha256: 6566f147299bc6f1d941e64591ed04385416d543e11f96f564c7228f5018d0ed
+  sha256: a4d9b05dffbbe0604dec0a5e0a106d946e9c97090d890d54fa675342692bbcfe
   mode: '100644'

@@ -114,4 +114,4 @@
 - upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   skill: wizard
   decision: ported
-  note: "template.sh fixes taken whole (readline ask, EOF failure, single-quoted .env values written through symlinks at 0600, tput clear fallback, opener warning, run_wizard wrapper); SKILL.md says to keep stages inside run_wizard and the last line as is"
+  note: "template.sh fixes taken whole (readline ask, EOF failure, single-quoted .env values written through symlinks at 0600, tput clear fallback, opener warning, run_wizard wrapper); SKILL.md says to keep stages inside run_wizard and the last line as is; unlike upstream, a value holding ' and none of \" \\ $ ` is written double-quoted, since dotenv parsers cut the shell escape short"
