@@ -11161,6 +11161,83 @@ def test_a_pr_or_issue_reference_after_waiting_on_is_a_named_wait() -> None:
     assert wait_of("STILL WORKING: on it") == "unknown"
 
 
+@pytest.mark.parametrize(
+    ("text", "hosts"),
+    [
+        ("Placement: hosts: box, mac\n", ["box", "mac"]),
+        ("Placement: same machine\n", []),
+        ("Placement: CI\n", []),
+        ("Verifier hosts: box, mac\n", ["box", "mac"]),
+        ("Cloud verifier: worker session\n", []),
+        ("Verifier hosts: box\nPlacement: hosts: mac\n", ["mac"]),
+        ("Verifier hosts: box\nPlacement: same machine\n", []),
+        ("Owner: someone\n", []),
+    ],
+)
+def test_the_placement_line_names_hosts_and_the_two_old_lines_keep_their_meaning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str, hosts: list[str]
+) -> None:
+    far_verifier(tmp_path, monkeypatch, text)
+    assert omnigent_agent.placement_hosts(str(tmp_path)) == hosts
+
+
+START_CLOUD = ["start", "claude", "w", "do X", "/there/repo/tmp/r.md", "--top-level"]
+START_CLOUD += ["--workspace", "/there/repo", "--confirm-seconds", "0"]
+
+
+def test_a_cloud_start_without_host_follows_the_placement_line_never_the_bridge_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    og = far_verifier(tmp_path, monkeypatch, "Placement: same machine\n")
+    assert omnigent_agent.main(START_CLOUD) == 1
+    assert "--host" in capsys.readouterr().err and og.sessions == {}
+    (tmp_path / "docs/agents/loop.md").write_text("Placement: hosts: box, mac\n")
+    real = og.call
+    hosts = [
+        {"host_id": "h", "name": "here", "status": "online"},
+        {"host_id": "b", "name": "box", "status": "offline"},
+        {"host_id": "mac", "name": "mac", "status": "online"},
+    ]
+    og.call = lambda m, path, *a, **k: (  # type: ignore[method-assign]
+        {"hosts": hosts} if (m, path) == ("GET", "/v1/hosts") else real(m, path, *a, **k)
+    )
+    assert omnigent_agent.main(START_CLOUD) == 0
+    assert og.hosts_of["s0"] == "mac"
+    # an explicit --host works as before, even when the setting names another and in a cloud session
+    (tmp_path / "docs/agents/loop.md").write_text("Placement: hosts: here, mac\n")
+    assert omnigent_agent.main([*START_CLOUD, "--host", "mac"]) == 0
+    assert og.hosts_of["s1"] == "mac"
+    # outside a cloud session nothing changes: this host
+    monkeypatch.delenv("CLAUDE_CODE_REMOTE")
+    (tmp_path / "docs/agents/loop.md").write_text("Placement: same machine\n")
+    argv = ["start", "claude", "w2", "do Y", str(tmp_path / "tmp/r2.md"), "--top-level"]
+    assert omnigent_agent.main([*argv, "--workspace", str(tmp_path), "--confirm-seconds", "0"]) == 0
+    assert og.hosts_of["s2"] == "h"
+
+
+@pytest.mark.parametrize(
+    ("line", "host", "code"),
+    [
+        ("Placement: hosts: box, mac\n", "mac", 0),
+        ("Placement: hosts: box, other\n", "mac", 1),
+        ("Verifier hosts: mac\nPlacement: hosts: box\n", "mac", 1),
+        ("Verifier hosts: box\nPlacement: hosts: mac\n", "mac", 0),
+        ("Verifier hosts: box\nPlacement: same machine\n", "mac", 0),
+    ],
+)
+def test_a_verifier_start_on_a_host_follows_the_placement_line_over_the_old_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, line: str, host: str, code: int
+) -> None:
+    """A Placement hosts: list limits a verifier's host as Verifier hosts: did, and the new line
+    wins; a Placement that names no hosts (same machine) limits nothing, as no line did."""
+    og = far_verifier(tmp_path, monkeypatch, line)
+    argv = [*VERIFY_FAR]
+    argv[argv.index("mac")] = host
+    assert omnigent_agent.main(argv) == code
+    assert bool(og.sessions) == (code == 0)
+
+
 # --- a question card a session posts to its user is not an act for the parent (#920) ---
 
 
