@@ -253,6 +253,7 @@ def test_a_single_command_gate_records_its_seconds_and_its_wait_for_the_host_gat
     assert record["slot_wait_seconds"] >= 1 and isinstance(record["seconds"], int)
     assert set(record) == {
         "head", "tree", "command", "exit", "env", "time", "host", "seconds", "slot_wait_seconds",
+        "load_1m", "swap_used_mb",
     }  # fmt: skip
 
 
