@@ -7357,7 +7357,7 @@ def test_a_quiet_waiter_whose_named_sessions_all_run_raises_no_deadline(
         ("waiting on my leads", {"y": {"status": "idle", "updated_at": None}}, "lead"),
         (f"waiting on {WORKER}", {WORKER: {"status": "idle", "updated_at": 1.0}}, WORKER),
         (f"waiting on {LEAD}", {LEAD: {"status": "idle", "updated_at": 1.0}}, LEAD),
-        (f"waiting on {OTHER}", {}, OTHER),
+        (f"waiting on {OTHER}", {OTHER: {"status": "idle", "updated_at": 1.0}}, OTHER),
         ("waiting on the chief of staff for a host", {}, "chief"),
         (f"waiting on {COS} for a host", {}, COS),
         ("waiting on the owner's pick", {}, "owner's"),
@@ -7383,7 +7383,8 @@ def test_a_quiet_waiter_on_the_chief_of_staff_raises_its_deadline_though_it_subs
 def test_a_quiet_waiter_on_a_session_id_when_its_children_are_unread_raises_its_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    registry, og = manager(tmp_path, f"STILL WORKING: waiting on {WORKER}. Report: m.md")
+    gone = {"status": "idle", "updated_at": 1.0}  # a named session that shows life is progress
+    registry, og = manager(tmp_path, f"STILL WORKING: waiting on {WORKER}. Report: m.md", **{WORKER: gone})
     og.kin_of["m"] = omnigent_agent.Fail("GET /v1/sessions/m/child_sessions: HTTP 503")
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({WORKER})"]
@@ -11284,3 +11285,19 @@ def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_
     assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
     assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
     assert not any("Which base?" in p for p in posted(og))
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_a_quiet_waiter_is_not_stalled_while_a_session_its_line_names_progresses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quiet: bool
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    snaps = {OTHER: gone, LEAD: gone} if quiet else {LEAD: gone}  # OTHER, running, progressed
+    wait = f"STILL WORKING: waiting on [one](http://h/s/{OTHER}) and {LEAD}. Report: m.md"
+    registry, og = manager(tmp_path, wait, **snaps)
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    if quiet:
+        assert stalls(og) == [f"Supervisor: m t-m: no progress 60m (unknown)"]
+        assert f"quiet: {OTHER}, {LEAD}" in og.inbox[-1][1]
+    else:
+        assert stalls(og) == [] and deadlines(registry) == []

@@ -116,7 +116,8 @@ With ``--console``, the chief of staff's or a project manager's console (it labe
 stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a restart re-posts no event it
 settled), appends each event to ``<registry stem>.events.jsonl``, labels each session with
 ``status.line`` and ``status.at``, and raises ``deadline`` for a followed lead with no progress for
-20 minutes (a message to it other than its own counts; a lead whose ``STILL WORKING`` names a
+20 minutes (a message to it other than its own counts, and so does life in any session its
+``STILL WORKING`` names by full id; the event names those quiet; a lead whose ``STILL WORKING`` names a
 time raises it once that time has passed, which the supervisor settles by waking the lead, and
 none for a lead marked ``direct``,
 which the owner drives in its own session: ``direct <session> [--off]`` sets the mark); and it routes each event instead of posting it: the supervisor settles the routine ones
@@ -4441,6 +4442,7 @@ def lead_status(info: dict, items: list[dict]) -> dict:
         "error": error if state == "failed" else None,
         "ending": ending_of(text),
         "wait": wait_of(text, said[-1].get("created_at") if said else None),
+        "named": named_of(text),
         "last_line": text.splitlines()[0][:200] if text else "",
         "turn": str(said[-1].get("id") or said[-1].get("created_at") or "") if said else "",
         "turn_at": float(said[-1].get("created_at") or 0) if said else 0.0,
@@ -4485,6 +4487,15 @@ def wait_of(text: str, at: float | None = None) -> str:
     if m := NAMED.search(text):
         return m.group(1).lower()
     return "unknown"
+
+
+def named_of(text: str) -> list[str]:
+    """The full session ids (32 hex, in a link or bare) a message's ``STILL WORKING`` line names."""
+    start = text.find("STILL WORKING")
+    if start < 0:
+        return []
+    line = text[start:].split("\n", 1)[0]
+    return list(dict.fromkeys(re.findall(r"(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])", line)))
 
 
 def report_head(text: str) -> str:
@@ -5350,7 +5361,11 @@ def supervise_registry(
                 return
             head = report_head(text)
             lead["report_read"] = {"id": mid, "head": head, "error": None}
-            lead.update(ending=ending_of(head), wait=wait_of(head, said[-1].get("created_at")))
+            lead.update(
+                ending=ending_of(head),
+                wait=wait_of(head, said[-1].get("created_at")),
+                named=named_of(head),
+            )
             return
         if not REPORT_PATH.fullmatch(text):
             lead.pop("report_read", None)
@@ -5368,7 +5383,11 @@ def supervise_registry(
             read = lead["report_read"] = {"id": mid, "head": head, "error": error}
         if read["head"] is not None:
             at = said[-1].get("created_at")  # the report was written by then
-            lead.update(ending=ending_of(read["head"]), wait=wait_of(read["head"], at))
+            lead.update(
+                ending=ending_of(read["head"]),
+                wait=wait_of(read["head"], at),
+                named=named_of(read["head"]),
+            )
 
     def active(sid: str) -> float:
         """``og.active``, else 0 with the error logged: a missed read only delays a deadline."""
@@ -5552,6 +5571,18 @@ def supervise_registry(
         lead["progress_at"] = max(lead["progress_at"], og.active(sid), written(sid, lead))
         if due is None and moving(sid, lead):
             return  # what it waits on all shows life: no stall of its own
+        # a session its STILL WORKING line names that shows life is progress, one that is archived,
+        # unknown or unread is quiet
+        quiet_named = []
+        for other in [n for n in lead.get("named") or [] if n != notify]:
+            try:
+                info = og.info(other)
+            except Exception:  # noqa: BLE001 - gone or unread: quiet
+                quiet_named.append(other)
+                continue
+            if alive(other, info):
+                return
+            quiet_named.append(other)
         quiet = time.time() - lead["progress_at"]
         spent = lead.get("nudged_at") == lead["progress_at"]
         if due is not None and lead["progress_at"] < due:
@@ -5570,6 +5601,8 @@ def supervise_registry(
                 then = " after a wake" if due is not None else " after a nudge"
                 why = f"no progress {quiet / 60:.0f}m{then * (nudged == ':nudged')}"
                 line = f"{head}: {why} ({lead['wait']})\nlast message: {lead['last_line']}"
+                if quiet_named:
+                    line += f"\nquiet: {', '.join(quiet_named)}"
                 say(line, sid, f"deadline:{sid}:{lead['progress_at']:.0f}{nudged}", "deadline")
 
     def due(sid: str, lead: dict) -> None:
