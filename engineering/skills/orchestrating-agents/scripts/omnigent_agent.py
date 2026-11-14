@@ -3967,11 +3967,20 @@ def file_mtime(og: Omnigent, sid: str, path: Path, far: bool) -> int | None:
         return int(og.modified(sid, str(path)) * 1e9) or None
     except Gone:
         return None
+    except Fail as e:  # the host's file API fails: a host that went away, whenever it did
+        raise offline(og, sid, path) from e
 
 
 def file_text(og: Omnigent, sid: str, path: Path, far: bool) -> str:
     """``path``'s text on ``sid``'s host (``far``: another one)."""
-    return og.read_file(sid, str(path)) if far else path.read_text(errors="replace")
+    if not far:
+        return path.read_text(errors="replace")
+    try:
+        return og.read_file(sid, str(path))
+    except Gone:
+        raise
+    except Fail as e:
+        raise offline(og, sid, path) from e
 
 
 def file_write(og: Omnigent, sid: str, path: Path, text: str, far: bool) -> None:
@@ -6844,11 +6853,6 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # a path on the session's host, which this one neither resolves nor reads (as start's)
             far = not args.pr and elsewhere(og, og.info(args.session))
             report = args.report if far else args.report.resolve()
-            if far and not og.info(args.session).get("runner_online", True):
-                try:  # offline: a report left on that host can't be read now
-                    file_mtime(og, args.session, report, far)
-                except Fail as e:
-                    raise offline(og, args.session, report) from e
             try:
                 got = wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr)
             except Asked as asked:

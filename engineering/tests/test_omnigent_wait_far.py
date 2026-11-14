@@ -12,7 +12,10 @@ from test_omnigent_agent import (  # noqa: F401  (the fixtures apply here by nam
     this_repo,
 )
 
-REMOTE = "/remote/work/tmp/loop/r.md"
+REMOTE_DIR = "remote/work/tmp/loop"  # under tmp_path: a copy written to it by mistake lands there
+
+
+REMOTE = ""
 
 
 class Far(FakeOmnigent):
@@ -47,6 +50,8 @@ class Far(FakeOmnigent):
 
 
 def far(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Far, str]:
+    global REMOTE
+    REMOTE = str(tmp_path / REMOTE_DIR / "r.md")  # absolute, on the session's host only
     og = Far()
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.chdir(tmp_path)
@@ -58,10 +63,11 @@ def test_wait_on_a_report_only_on_the_remote_host_returns_its_local_copy(
 ) -> None:
     og, sid = far(monkeypatch, tmp_path)
     og.files[REMOTE] = "DONE: ok\n"
-    assert not Path(REMOTE).exists()
+    assert not Path(REMOTE).exists() and not Path(REMOTE).parent.exists()
     assert omnigent_agent.main(["wait", sid, REMOTE, "--keep"]) == 0
     copy = Path("tmp/loop/r.md")
     assert copy.read_text() == "DONE: ok\n"
+    assert not Path(REMOTE).exists()  # nothing was written at the remote path here
     assert capsys.readouterr().out.strip() == str(copy)  # a path this host reads
 
 
@@ -95,3 +101,40 @@ def test_a_host_that_stops_answering_mid_copy_is_named_with_the_remote_path(
     og.info = lambda s: {"host_id": "mac", "runner_online": True}  # type: ignore[method-assign]
     with pytest.raises(omnigent_agent.Fail, match=f"host did not answer: {REMOTE} is on that"):
         omnigent_agent.bring_home(og, sid, Path(REMOTE))
+
+
+def test_a_host_that_goes_offline_on_a_later_poll_is_named_with_the_remote_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Online at the first look, gone at the next: the file API's HTTP error is not what is shown."""
+    _og, sid = far(monkeypatch, tmp_path)
+    reads = {"n": 0}
+    first = Far.modified
+
+    def modified(self: Far, s: str, path: str) -> float:
+        reads["n"] += 1
+        if reads["n"] > 2:  # the question's and the report's look of the first poll
+            self.down = True
+        return first(self, s, path)
+
+    monkeypatch.setattr(Far, "modified", modified)
+    assert omnigent_agent.main(["wait", sid, REMOTE, "--keep"]) == 1
+    err = capsys.readouterr().err
+    assert "host is offline" in err and REMOTE in err and "HTTP 502" not in err
+    assert reads["n"] > 2
+
+
+@pytest.mark.parametrize("name", ["r.md", "r.md.question"])
+def test_a_local_copy_is_never_written_through_a_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    og, sid = far(monkeypatch, tmp_path)
+    og.files[REMOTE + name[4:]] = "remote text\n"
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("mine\n")
+    Path("tmp/loop").mkdir(parents=True)
+    Path("tmp/loop", name).symlink_to(target)
+    omnigent_agent.main(["wait", sid, REMOTE, "--keep"])
+    copy = Path("tmp/loop", name)
+    assert target.read_text() == "mine\n"
+    assert not copy.is_symlink() and copy.read_text() == "remote text\n"
