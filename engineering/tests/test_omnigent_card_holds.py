@@ -80,13 +80,15 @@ def test_approve_still_resolves_approvals_only() -> None:
     assert [r[1] for r in og.resolved] == ["elicit_approval_1"] and len(lines) == 1
 
 
-def test_reap_archives_a_session_with_only_a_card_and_keeps_one_with_a_parked_question() -> None:
-    states = {"card": [CARD], "parked": [PARKED]}
+@pytest.mark.parametrize("force", [False, True])
+def test_reap_keeps_a_session_with_an_open_card_and_a_parked_question_alike(force: bool) -> None:
+    states = {"card": [CARD], "parked": [PARKED], "free": []}
     og = base.FakeOmnigent()
     og.info = lambda s: {"status": "idle", "title": s, "pending_elicitations": states[s]}  # type: ignore[method-assign]
     og.children = lambda p: list(states)  # type: ignore[attr-defined]
-    lines, _ = omnigent_agent.reap(og, [], parent="p")
-    assert og.archived == ["card"]
+    lines, _ = omnigent_agent.reap(og, [], parent="p", force=force)
+    assert og.archived == ["free"]
+    assert lines[0] == "card card: kept (card open: Land it?)"
     assert lines[1] == "parked parked: kept (blocked on a prompt)"
 
 

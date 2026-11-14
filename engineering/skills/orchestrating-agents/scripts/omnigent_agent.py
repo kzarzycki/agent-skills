@@ -3487,7 +3487,7 @@ def reap(
     pr: int | None = None,
 ) -> tuple[list[str], bool]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
-    its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
+    its sub-agents: not running, no prompt waiting, no open question card and no input pending. Return a line per session
     saying which: ``archived``, ``already archived``, or kept and why, and whether any finish
     failed. Each session it
     finishes first leaves ``registry``: the caller is the one the supervisor would tell.
@@ -3519,6 +3519,11 @@ def reap(
             if why := held[found] if found else f"label {label!r} names no PR":
                 lines.append(f"{sid} {info.get('title') or ''}: kept ({why})")
                 continue
+        if cards := cards_of(
+            info
+        ):  # the owner's question: archiving ends its way back, --force too
+            lines.append(f"{sid} {info.get('title') or ''}: kept (card open: {'; '.join(cards)})")
+            continue
         if force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None:
             arm_quietly(registry, sid)
             try:
