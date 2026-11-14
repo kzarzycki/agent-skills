@@ -4029,7 +4029,7 @@ def test_a_machine_fault_twice_on_the_tip_after_the_merges_still_says_landed(
     refusing(monkeypatch, lambda args: args[2] == "8")
     codes = iter([0, 78, 78])
     monkeypatch.setattr(
-        approvals, "ran_step", lambda _step, cwd=None, out=None: (next(codes), 0, 0)
+        approvals, "ran_step", lambda _step, cwd=None, out=None, load=None: (next(codes), 0, 0)
     )
     code, lines = lands["land"]()
     assert (code, lands["merged"]()) == (1, ["7"])

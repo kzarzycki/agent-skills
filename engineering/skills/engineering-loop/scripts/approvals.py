@@ -213,15 +213,23 @@ its command included (`GATE_UI_TESTS=0 mise run check:all`), one command run wit
 such as `&&` is refused. It runs with every name loop.md's `local_ci_env` lists
 removed from the environment unless the command sets it, so a host's ambient tier never changes what ran and the
 command alone says what a pass proves. A pass also leaves a record keyed by tree and command under the git common dir
-(`approvals/local-ci/<tree>-<key>.json`: head, tree, command, exit, env, time, host, seconds, slot_wait_seconds, `head`
-being the commit it ran on, `env` the variables the command sets, `<key>` a digest of the command, `seconds` how long it
-ran and `slot_wait_seconds` how long it waited for the host gate slot), which every worktree sees and nothing
-commits. With loop.md's `gate_steps` under `loop` (a list of `name`, `command`, parsed as `gate` is, and `where`: `any`,
+(`approvals/local-ci/<tree>-<key>.json`: head, tree, command, exit, env, time, host, seconds, slot_wait_seconds,
+load_1m, swap_used_mb, `head` being the commit it ran on, `env` the variables the command sets, `<key>` a digest of
+the command, `seconds` how long it ran, `slot_wait_seconds` how long it waited for the host gate slot, and `load_1m`
+and `swap_used_mb` the host's 1-minute load average and swap in use, in MiB, when it started, each null where the host
+doesn't say), which every worktree sees and nothing commits. With loop.md's `gate_steps` under `loop` (a list of `name`, `command`, parsed as `gate` is, and `where`: `any`,
 or `host`, never run in a cloud session), in place of `gate`, the gate is those steps in order, and each step is a gate
 of its own: its pass is recorded, published and reused by its tree and command alone, its record naming it as `step`,
 so `local-ci`, `local-ci --record` and `land` run only the steps with no pass on the tree, stop at the first that fails
 (a failed step records nothing, so it is never reused), and print one line per step naming the record branch or
-commit each reused one passed on. A cloud session runs no `host` step: `local-ci --record` there runs the rest, says
+commit each reused one passed on. A step may also name `paths`, a list of globs (fnmatch, case and all) of the files
+it reads (#963): its pass is then found by its command and its inputs key, a digest of the `gate_steps` setting as
+read and the mode, object id and path of each file under its paths in the tree, held as the record's `inputs` and its
+record branch's `Inputs: <key>` line, so any tree with the same key reuses it, from this clone's records or from
+origin's record branches of that command, and the step's line says `<step>: reused, inputs unchanged since <tree>`. A
+found record counts only when today's `paths` give its own tree the same key, so one whose tree holds other inputs
+counts for nothing. A step without `paths`, with an empty list, or whose paths match no file in the tree is keyed by
+the tree, as above; a change to `gate_steps` changes every keyed step's key. A cloud session runs no `host` step: `local-ci --record` there runs the rest, says
 which step it left and exits 0, with no head proof and no pass on the whole gate, which `local-ci <pr>` and `land` need
 and refuse there. Each step that runs, or the one gate, holds the host gate slot (an exclusive flock on
 `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock`) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
@@ -663,7 +671,12 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "local_ci_env": list,
         "gate": str,
         "gate_steps": Rows(
-            name=str, command=str, where=Choice(STEP_PLACES), unique=("name", "command")
+            name=str,
+            command=str,
+            where=Choice(STEP_PLACES),
+            paths=list,
+            unique=("name", "command"),
+            optional=("paths",),
         ),
         "batch_queue": bool,
         "owner": str,
@@ -4734,7 +4747,9 @@ def landed_pass(tip: str, tree: str) -> dict[str, Any]:
         steps.append(
             {"head": tip, "tree": tree, "command": step["command"], "env": step["sets"]}
             | {key: found[key] for key in TIMED if isinstance(found.get(key), int)}
+            | {key: found[key] for key in LOADED if found.get(key) is not None}
             | step_field(step)
+            | inputs_field(tree, step)
         )
     if plan[0]["legacy"]:
         return steps[0]
@@ -5269,6 +5284,8 @@ def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
                 "sets": sets,
                 "where": "any",
                 "legacy": True,
+                "paths": None,
+                "setting": None,
             }
         ]
     if loop.get("gate"):
@@ -5287,9 +5304,40 @@ def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
                 "sets": sets,
                 "where": step["where"],
                 "legacy": False,
+                "paths": step.get("paths"),
+                "setting": written,
             }
         )
     return plan
+
+
+def inputs_key(tree: str, step: dict[str, Any]) -> str | None:
+    """A gate step's inputs key on `tree` (#963): a digest of the `gate_steps` setting as read (which holds every
+    step's command and `paths`) and the mode, object id and path of each file under the step's `paths` in `tree` (globs
+    matched on the full path, case and all, so every host reads the same files), or None, which keys the step on the
+    whole tree as #940 did: a step without `paths`, an empty one, one matching no file in `tree`, or a tree git can't
+    list. A pass is found by its command (the record's name, recorded) and this key, so any tree with the same key
+    reuses it: a change outside the step's paths runs nothing again, while a change to the setting, the command a
+    head proof runs (gate) or a file the step reads gives another."""
+    globs = step.get("paths")
+    if not globs:
+        return None
+    try:
+        listed = git("ls-tree", "-r", "-z", "--full-tree", tree)
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    read = [
+        entry
+        for entry in listed.split("\0")
+        if "\t" in entry
+        and any(fnmatch.fnmatchcase(entry.split("\t", 1)[1], glob) for glob in globs)
+    ]
+    if not read:
+        return None
+    digest = hashlib.sha256()
+    for part in (json.dumps(step["setting"], sort_keys=True), *sorted(read)):
+        digest.update(part.encode() + b"\0")
+    return digest.hexdigest()
 
 
 def here(step: dict[str, Any]) -> bool:
@@ -5343,13 +5391,19 @@ def ran_gate(
 
 
 def ran_step(
-    step: dict[str, Any], cwd: Path | None = None, out: Any = None
+    step: dict[str, Any],
+    cwd: Path | None = None,
+    out: Any = None,
+    load: dict[str, Any] | None = None,
 ) -> tuple[int, int, int]:
     """Run one gate step (gate_plan) in its environment (gate_env) under the host gate slot (heavy_slot), in `cwd`
-    with its output to `out` when given: its exit, the seconds it ran and the seconds it waited for the slot. A
-    command that isn't there is refused, naming the gate, since loop.md is hand-written."""
+    with its output to `out` when given: its exit, the seconds it ran and the seconds it waited for the slot; `load`,
+    when given, gets the host's load at the step's start, once it holds the slot (host_load). A command that isn't
+    there is refused, naming the gate, since loop.md is hand-written."""
     where = {"cwd": cwd, "stdout": out, "stderr": subprocess.STDOUT} if cwd else {}
     with heavy_slot(step["name"], out) as (slot, waited):
+        if load is not None:
+            load.update(host_load())
         began = time.monotonic()
         try:
             code = subprocess.run(
@@ -5359,6 +5413,38 @@ def ran_step(
             what = "gate" if step["legacy"] else f"gate step `{step['name']}`"
             raise Refused(f"loop.md's {what} {step['command']!r} can't run: {exc}") from None
         return code, round(time.monotonic() - began), waited
+
+
+def host_load() -> dict[str, Any]:
+    """The host's 1-minute load average and the swap it uses, in whole MiB, each None where the host doesn't say, so a
+    step's seconds can be read beside the load it ran under (#963)."""
+    try:
+        load: float | None = round(os.getloadavg()[0], 2)
+    except OSError:
+        load = None
+    return {"load_1m": load, "swap_used_mb": swap_used_mb()}
+
+
+MEMINFO = "/proc/meminfo"
+
+
+def swap_used_mb() -> int | None:
+    """Swap in use, in whole MiB: Linux's /proc/meminfo, else macOS's `sysctl vm.swapusage`; None for neither."""
+    with contextlib.suppress(OSError, KeyError, ValueError, IndexError):
+        with open(MEMINFO) as info:
+            kib = {
+                name: int(rest.split()[0])
+                for name, _, rest in (line.partition(":") for line in info)
+                if name in ("SwapTotal", "SwapFree")
+            }
+        return (kib["SwapTotal"] - kib["SwapFree"]) // 1024
+    with contextlib.suppress(OSError, subprocess.SubprocessError, ValueError):
+        said = subprocess.run(
+            ["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, check=False
+        ).stdout
+        if used := re.search(r"used = ([\d.]+)M", said):
+            return int(float(used[1]))
+    return None
 
 
 def gate_env(step: dict[str, Any]) -> dict[str, str]:
@@ -5566,7 +5652,7 @@ def run_local_ci(
         raise Refused(
             f"{command} changed the checkout, so it did not run on the head as pushed:\n{done['changed']}"
         )
-    return whole(done["records"], passed) | ({"left": done["left"]} if done["left"] else {})
+    return whole(done["records"], passed, tree) | ({"left": done["left"]} if done["left"] else {})
 
 
 def run_steps(
@@ -5596,7 +5682,12 @@ def run_steps(
         # a gate without `gate_steps` says nothing more than it did: its one step is the gate
         say = print if not step["legacy"] else (lambda *_a, **_k: None)
         if (found := step_pass(commit, tree, step)) is not None:
-            say(f"{step['name']}: passed on tree {tree} before, reused from {origin_of(found)}")
+            if found["tree"] == tree:
+                say(f"{step['name']}: passed on tree {tree} before, reused from {origin_of(found)}")
+            else:
+                say(
+                    f"{step['name']}: reused, inputs unchanged since {found['tree']} (from {origin_of(found)})"
+                )
             done["records"].append(found)
             continue
         if not here(step):
@@ -5605,21 +5696,27 @@ def run_steps(
             )
             done["left"].append(step["name"])
             continue
-        code, seconds, waited = ran_step(step, cwd, out)
+        load: dict[str, Any] = {}
+        code, seconds, waited = ran_step(step, cwd, out, load)
         done["ran"].append(step["name"])
         if code or (changed := changes()):
             return done | {"code": code, "step": step, "changed": "" if code else changed}
-        record = {
-            "head": commit,
-            "tree": tree,
-            "command": step["command"],
-            "exit": 0,
-            "env": step["sets"],
-            "time": now(),
-            "host": socket.gethostname(),
-            "seconds": seconds,
-            "slot_wait_seconds": waited,
-        } | step_field(step)
+        record = (
+            {
+                "head": commit,
+                "tree": tree,
+                "command": step["command"],
+                "exit": 0,
+                "env": step["sets"],
+                "time": now(),
+                "host": socket.gethostname(),
+                "seconds": seconds,
+                "slot_wait_seconds": waited,
+                **{key: load.get(key) for key in LOADED},
+            }
+            | step_field(step)
+            | inputs_field(tree, step)
+        )
         stored(record)
         say(
             f"{step['name']}: passed in {seconds} s, after {waited} s waiting for the host gate slot"
@@ -5649,11 +5746,14 @@ def origin_of(record: dict[str, Any]) -> str:
     return record.get("ref") or f"this clone's record of its run on {record['head']}"
 
 
-def whole(found: list[dict[str, Any]], passed: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
+def whole(
+    found: list[dict[str, Any]], passed: list[str] | tuple[str, ...] = (), tree: str | None = None
+) -> dict[str, Any]:
     """The gate's pass made of its steps' passes `found`, in plan order (gate_plan): without `gate_steps`, the one
     record itself; else one built from them, as a pass is read (head, tree, command and env as gate() names them,
     exit, time, seconds and slot_wait_seconds), the newest step's commit and time, the seconds summed, and `steps`,
-    each step's record. Nothing writes it: each step's record is the stored and published pass."""
+    each step's record. Its tree is `tree`, the one gated, when given, since a step reused by its inputs (#963)
+    passed on another. Nothing writes it: each step's record is the stored and published pass."""
     plan = gate_plan(passed)
     if plan[0]["legacy"]:
         return found[0] if found else {}
@@ -5661,7 +5761,7 @@ def whole(found: list[dict[str, Any]], passed: list[str] | tuple[str, ...] = ())
     newest = max(found, key=lambda record: record["time"]) if found else {}
     return {
         "head": newest.get("head"),
-        "tree": newest.get("tree"),
+        "tree": tree or newest.get("tree"),
         "command": command,
         "exit": 0,
         "env": env,
@@ -5810,10 +5910,14 @@ def local_ci_status(head: str) -> int:
         commands = plain
     command, held = "; ".join(commands), str(tree_of(head))
     single = len(commands) == 1
+    # a step keyed by its inputs (inputs_key) may have passed on another tree with the same inputs
+    keyed = {step["command"]: step for step in gate_plan() if inputs_key(held, step) is not None}
     if code == 0 and not all(
         recorded(held, one).exists()
         or not single
         and record_ref(held, one, command_line(one, "gate")[2]) is not None
+        or one in keyed
+        and step_pass(head, held, keyed[one], show=False) is not None
         for one in commands
     ):
         # a run on a checkout with changes, or on another PR's head, exits 0 with no pass on this one
@@ -5869,7 +5973,7 @@ def reusable(
                 )
             return None
         found.append(record)
-    return whole(found, passed)
+    return whole(found, passed, held)
 
 
 def step_pass(
@@ -5879,7 +5983,10 @@ def step_pass(
     any commit with that tree, else one another clone pushed to origin for that tree (published). A record without
     `env` (0.23.1 wrote none) never matches, since nothing says what tier it ran; nor does a failed one, which is never
     recorded. With `why`, the reason origin's record branch, found, was rejected is appended to it (record_ref).
-    Without `show`, origin's record is read without writing the `gate` status on `head` (published)."""
+    Without `show`, origin's record is read without writing the `gate` status on `head` (published). A step whose
+    `paths` give it an inputs key on `held` (inputs_key) is found by that key alone (input_pass), on any tree."""
+    if (key := inputs_key(held, step)) is not None:
+        return input_pass(head, key, step, why, show)
     command, env = step["command"], step["sets"]
     try:
         record = json.loads(recorded(held, command).read_text())
@@ -5897,6 +6004,86 @@ def step_pass(
         published(head, held, command, env, why) if show else record_ref(held, command, env, why)
     )
     return found | step_field(step) if found is not None else None
+
+
+def input_pass(
+    head: str,
+    key: str,
+    step: dict[str, Any],
+    why: list[str] | None = None,
+    show: bool = True,
+) -> dict[str, Any] | None:
+    """A green pass of gate step `step` on any tree whose inputs key (inputs_key) is `key`, or None: this
+    clone's record of the step's command holding `key`, else origin's record branch for a tree whose `Inputs:` line
+    says it (input_candidates), sound as record_ref reads one. Either counts only when today's `paths` give its own
+    tree the same key, so a record saying a key its tree doesn't hold counts for nothing; of this clone's, the newest.
+    With `why` and `show` as step_pass's."""
+    command, env, name = step["command"], step["sets"], step["name"]
+    found = []
+    with contextlib.suppress(OSError):
+        for path in local_ci_dir().glob(f"*-{gate_key(command)}.json"):
+            try:
+                record = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if (
+                isinstance(record, dict)
+                and all(isinstance(record.get(field), str) for field in ("head", "time", "tree"))
+                and (
+                    record.get("command"),
+                    record.get("exit"),
+                    record.get("env"),
+                    record.get("step"),
+                    record.get("inputs"),
+                )
+                == (command, 0, env, name, key)
+                and inputs_key(record["tree"], step) == key
+            ):
+                found.append(record)
+    if found:
+        return max(found, key=lambda record: record["time"])
+    for tree in input_candidates(command, key, why):
+        record = record_ref(tree, command, env, why)
+        if record is not None and inputs_key(tree, step) == key:
+            if show:
+                shown(head, record)
+            return record | step_field(step)
+    return None
+
+
+def input_candidates(command: str, key: str, why: list[str] | None = None) -> list[str]:
+    """The trees of origin's record branches of `command` whose message says the inputs key `key` (record_message),
+    each still to be read as record_ref reads one; origin unreachable: none, with the reason appended to `why`."""
+    pattern = RECORD_BRANCH.format(f"*-{gate_key(command)}")
+    trees = []
+    try:
+        listed = [line.split("\t") for line in git("ls-remote", "origin", pattern).splitlines()]
+        if not listed:
+            return []
+        names = {ref: ref.rsplit("/", 1)[1] for _, ref in listed}
+        git(
+            "fetch",
+            "-q",
+            "--no-tags",
+            "origin",
+            *(f"+{ref}:refs/loop/records/{name}" for ref, name in names.items()),
+        )
+        for commit, ref in listed:
+            message = git("cat-file", "commit", commit).partition("\n\n")[2]
+            if f"{INPUTS}{key}" in message.splitlines()[1:]:
+                trees.append(names[ref].split("-", 1)[0])
+    except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+        if why is not None:
+            cause = " ".join((getattr(exc, "stderr", None) or str(exc)).split())
+            why.append(f"origin's record branches for `{command}` could not be read: {cause}")
+        return []
+    return trees
+
+
+def inputs_field(tree: str, step: dict[str, Any]) -> dict[str, str]:
+    """A gate step's record's `inputs` field, its inputs key on `tree` (inputs_key); none for a step keyed by tree."""
+    key = inputs_key(tree, step)
+    return {"inputs": key} if key else {}
 
 
 def step_field(step: dict[str, Any]) -> dict[str, str]:
@@ -5928,6 +6115,10 @@ def record_name(tree: str, command: str) -> str:
 
 # a pushed record's lines for the seconds its run took and waited for the host gate slot (record_message)
 TIMED = {"seconds": "Seconds: ", "slot_wait_seconds": "Slot wait seconds: "}
+# a record's fields and a pushed record's lines for the host's load at the step's start (host_load), and the line for
+# its inputs key (inputs_key)
+LOADED = {"load_1m": "Load 1m: ", "swap_used_mb": "Swap used MB: "}
+INPUTS = "Inputs: "
 
 
 def record_message(record: dict[str, Any]) -> str:
@@ -5937,9 +6128,15 @@ def record_message(record: dict[str, Any]) -> str:
     timed = "".join(
         f"{line}{record[key]}\n" for key, line in TIMED.items() if isinstance(record.get(key), int)
     )
+    loaded = "".join(
+        f"{line}{record[key]}\n"
+        for key, line in LOADED.items()
+        if type(record.get(key)) in (int, float)
+    )
+    inputs = f"{INPUTS}{record['inputs']}\n" if record.get("inputs") else ""
     return (
         f"{described(record['tree'], record['head'], record['command'])}\n\n"
-        f"Env: {json.dumps(env, sort_keys=True)}\n{timed}"
+        f"Env: {json.dumps(env, sort_keys=True)}\n{timed}{loaded}{inputs}"
     )
 
 
@@ -5998,6 +6195,14 @@ def record_ref(
         for line in lines[1:]
         if line.startswith(prefix) and line[len(prefix) :].isdigit()
     }
+    loaded: dict[str, Any] = {}
+    for key, prefix in LOADED.items():
+        for line in lines[1:]:
+            if line.startswith(prefix):
+                with contextlib.suppress(ValueError):
+                    value = float(line[len(prefix) :])
+                    loaded[key] = int(value) if key == "swap_used_mb" else value
+    inputs = [line[len(INPUTS) :] for line in lines[1:] if line.startswith(INPUTS)]
     return {
         "head": parents[0],
         "tree": held,
@@ -6006,6 +6211,8 @@ def record_ref(
         "env": env,
         "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when)),
         **timed,
+        **loaded,
+        **({"inputs": inputs[0]} if inputs else {}),
         "published": True,
         "ref": ref,
     }
@@ -6294,6 +6501,13 @@ def no_pass(head: str, why: list[str] | tuple[str, ...] = ()) -> str:
     for step in gate_plan():
         command, env = step["command"], step["sets"]
         said = "" if step["legacy"] else f"step `{step['name']}`: "
+        if (key := inputs_key(held, step)) is not None:
+            if step_pass(head, held, step, show=False) is None:
+                lines.append(
+                    f"{said}no pass on its inputs in tree {held} (key {key[:12]}, the files under its `paths`):"
+                    f" looked in this clone's records and origin's record branches of {command}"
+                )
+            continue
         ref = RECORD_BRANCH.format(record_name(held, command))
         found = []
         try:
