@@ -586,21 +586,24 @@ def landing_world(tmp_path, monkeypatch):
     repo.mkdir(parents=True)
     git(repo, "init", "-q", "-b", "main")
     git(repo, "remote", "add", "origin", "https://github.com/o/r.git")
-    git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+    (repo / ".gitignore").write_text(".worktrees/\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "base")
     git(repo, "push", "-q", "origin", "main")
     pulls = {}
 
-    def worktree(name, commit_message=None):
+    def worktree(name, commit_message=None, parent=None):
         """A detached worktree: at main's tip, or at a new commit on no remote branch, whose closed PR #9 lists it."""
-        git(repo, "worktree", "add", "-q", "--detach", str(dev / f"wt-{name}"), "main")
+        path = parent / ".worktrees" / name if parent else dev / f"wt-{name}"
+        git(repo, "worktree", "add", "-q", "--detach", str(path), "main")
         if commit_message:
-            git(dev / f"wt-{name}", "commit", "-q", "--allow-empty", "-m", commit_message)
-        sha = git(dev / f"wt-{name}", "rev-parse", "HEAD")
+            git(path, "commit", "-q", "--allow-empty", "-m", commit_message)
+        sha = git(path, "rev-parse", "HEAD")
         pulls[sha] = [{"number": 9, "state": "closed", "head": {"sha": sha}}]
         (home / "gh-pulls.json").write_text(json.dumps(pulls))
-        gitdir = Path(git(dev / f"wt-{name}", "rev-parse", "--absolute-git-dir"))
+        gitdir = Path(git(path, "rev-parse", "--absolute-git-dir"))
         age_git_state(gitdir, time.time() - 30 * 86400)
-        return dev / f"wt-{name}", gitdir
+        return path, gitdir
 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("PATH", env["PATH"])
@@ -1762,3 +1765,17 @@ def test_uv_lock_holder_with_an_unreadable_environment_is_not_forced(tmp_path, m
     )
     assert "forcing" not in said and "--force" not in said, said
     assert "the environment of pid 12 of pid 11 (uv run server.py) could not be read" in said, said
+
+
+def test_a_remote_tip_worktree_nested_in_a_closed_pr_worktree_is_kept_with_its_parent(
+    tmp_path, monkeypatch
+):
+    worktree, run = landing_world(tmp_path, monkeypatch)
+    outer, _ = worktree("outer", "verified")  # removable alone: old git state, closed PR, no remote
+    inner, _ = worktree("inner", parent=outer)  # at origin/main, so live
+    out = run()
+    assert "would remove" not in out, out
+    assert (
+        f"skip worktree {outer} (o/r#9 closed)" in out and "another checkout is inside it" in out
+    ), out
+    assert str(inner) not in out, out  # the live child is not reported

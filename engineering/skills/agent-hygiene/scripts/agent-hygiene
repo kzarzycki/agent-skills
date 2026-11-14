@@ -394,7 +394,7 @@ def worktrees(run, found, dev, procs, asks):
     # Deepest first: `git worktree remove` deletes ignored files too, so a worktree nested inside
     # another one goes (or is kept) before the outer one is judged.
     candidates.sort(key=lambda c: -len(Path(c[2]['worktree']).parts))
-    prs = {}
+    prs, live = {}, set()  # live: detached at a remote branch's tip, never judged, not even with an outer merged worktree
     for root, repo, w in candidates:
         if (branch := w.get('branch', '').removeprefix('refs/heads/')) and Path(w['worktree']).is_dir():
             pr = json.loads(sh(['gh', 'pr', 'list', '-R', repo, '--state', 'merged', '--head', branch,
@@ -403,13 +403,14 @@ def worktrees(run, found, dev, procs, asks):
                 prs[Path(w['worktree'])] = f'{repo}#{pr[0]["number"]} merged', pr[0]
         elif 'detached' in w and Path(w['worktree']).is_dir():  # a verifier's checkout at a PR's head: a squash leaves it on no branch
             if (git(root, 'branch', '-r', '--points-at', w['HEAD']) or '').strip():
+                live.add(Path(w['worktree']))
                 continue  # at a remote branch's tip (a landing checkout at the default branch): live, and a landed PR's head is that tip
             pulls = json.loads(sh(['gh', 'api', f'repos/{repo}/commits/{w["HEAD"]}/pulls']) or '[]')
             if pr := next((p for p in pulls if p['state'] == 'closed' and p['head']['sha'] == w['HEAD']), None):
                 prs[Path(w['worktree'])] = f'{repo}#{pr["number"]} closed', {'number': pr['number'], 'headRefOid': w['HEAD']}
     for root, repo, w in candidates:
         path = Path(w['worktree'])
-        if not path.is_dir():
+        if not path.is_dir() or path in live:
             continue
         outer = None
         if path in prs:
