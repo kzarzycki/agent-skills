@@ -206,7 +206,8 @@ def test_a_high_risk_draft_with_no_go_is_not_readied_and_waits_for_the_owner(
     high_risk_draft(lands)
     code, lines = lands["land"]("7")
     assert (code, readied(lands), lands["pulls"][7]["isDraft"]) == (approvals.WAITING, [], True)
-    assert any(line.startswith("PR #7 waits for the owner's go on its head") for line in lines)
+    # said once: the pre-lock check's verdict is the batch's, not asked again
+    assert sum(line.startswith("PR #7 waits for the owner's go on its head") for line in lines) == 1
 
 
 def test_a_draft_with_a_go_on_an_earlier_head_is_not_readied(
