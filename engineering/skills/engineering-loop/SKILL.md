@@ -438,7 +438,7 @@ until they approve. A spec the owner approved and then edited for wording needs 
 needs nothing. `mise run loop:approvals build` before building and `mise run
 loop:approvals merge` before merging check every proof (`scripts/approvals.py` lists
 them); `merge` exits 3 while it waits for `check` or the owner's go, and 1 when a proof
-is missing. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land [<pr>]` (the
+is missing. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land [<pr>...]` (the
 project's `loop:land` task). It lands every landable PR into the base as one batch, so a base
 that moved costs one gate, not a merge, a gate and a verdict per PR, and no PR lands on a base
 it was never gated on:
@@ -449,7 +449,8 @@ it was never gated on:
   merges and is broken at once; one older than 2 hours (a land that died before them) is broken too.
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
   wait, with the owner's go where the change is high risk and the base's required checks
-  green. `land <pr>` marks that PR ready first, never on a missing proof, since ready starts CI.
+  green. `land <pr>...` marks each named draft ready, before it waits for the lock so the holder's next batch includes it, never on a missing proof, since ready starts CI.
+  Several named PRs land in one batch; one that is no candidate is left out with its reason and the rest land, the exit being the worst of them (1 over 3 over 0).
 - With gatekeeper.md's `head_proof`, a candidate's head also carries a green status of its `status`
   name for its own tree, since the batch gate runs one fixed tier and some changes need
   another (a UI test tier). The lead records it on a clean checkout of the head with the tier
@@ -468,7 +469,7 @@ it was never gated on:
   (back to draft, with its log's tail), and when the first PR is red twice the bare base is
   gated: red there stops the run and evicts nobody, since the fault is on the base.
 
-`land <pr> --only` lands that PR alone and leaves every other PR untouched, for a lead that must not land another lead's work.
+`land <pr>... --only` lands those PRs alone and leaves every other PR untouched, for a lead that must not land another lead's work.
 With `--wait` it is one background command that ends when the batch landed or needs someone
 (exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction). Never run `gh pr
 ready` or `gh pr merge` by hand, because `land` is what refuses a PR whose proof is missing. A repo with

@@ -10,7 +10,7 @@
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
-    uv run scripts/approvals.py land [<pr> [--only]] [--wait]  # land every landable PR as one gated batch; exit 0, 1 or 3
+    uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR as one gated batch; exit 0, 1 or 3
     uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
     uv run scripts/approvals.py approve merge <pr> --head <sha> --by <owner|delegate> [--withdraw]  # a go on that head
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
@@ -99,7 +99,7 @@ left no loop trail (no verifier review, no `Approved: spec` record or `approved:
 workflow posts success and its author merges it their usual way; `land` never takes it into a batch, and named,
 prints the same line and exits 1, so the loop never merges it. Risk rules and `risk:high` hold no such PR. `check build` is
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
-`land [<pr> [--only]]` is the one way an agent merges. It lands every landable PR into one base, the named PR's or else the
+`land [<pr>... [--only]]` is the one way an agent merges. It lands every landable PR into one base, the first named PR's or else the
 repository's default branch, as one batch:
 1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
 pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
@@ -125,11 +125,13 @@ proof of `check merge` but its CI wait, is not outside the loop (`opt_out`, belo
 risk, and has the checks the base requires on GitHub (`required_checks`, but `loop:approvals`, which is check merge's
 own output) green on its head. Under `ci: false` the head needs no `local-ci` pass of its own: the gate on the batch is
 the proof. With loop.md's `head_proof`, the head also carries its head proof (below), else it is no candidate and `land`
-names the command that records it. `land <pr>` on a draft marks it ready first, never on a missing proof, since ready starts CI; while the
-checks that starts are required, it waits (exit 3). `land <pr> --only` (with or without `--wait`) makes the named PR the only candidate: every other PR is left untouched (not
+names the command that records it. `land <pr>` on a draft marks it ready, never on a missing proof, since ready starts CI, and does so before it
+waits for the lock, so the holder's next batch includes it; while the checks that starts are required, it waits (exit 3).
+`land` takes several PRs: each named draft is marked ready the same way, and the named PRs land in one batch with the other
+candidates. `land <pr>... --only` (with or without `--wait`) makes the named PRs the only candidates: every other PR is left untouched (not
 marked ready, commented on, evicted or merged), and the rest is as without the flag; `--only` without a PR exits 2.
-A named PR that is no candidate says why: a missing proof exits 1,
-a wait for the owner or a pending required check 3, a red required check 1.
+A named PR that is no candidate (or is closed, or targets another base than the first's) is left out and says why, and the rest still land: a missing proof exits 1,
+a wait for the owner or a pending required check 3, a red required check 1; with several PRs named the exit is the worst of them, 1 over 3 over 0.
 3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
 `pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
 (the PR's head) and `LAND_BASE` (that tip) set, so the base's tree holds the check and a PR never changes what judges
@@ -418,7 +420,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -3889,7 +3891,7 @@ def branch_issue() -> int | None:
     return int(found[1]) if found else None
 
 
-def land(pr: int | None, wait: bool = False, only: bool = False) -> int:
+def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False) -> int:
     """landing() once, or with `wait` again every POLL seconds while it waits on something time clears, printing each
     new state once: until it ends, or exit 3 at CEILING."""
     if not wait:
@@ -3913,27 +3915,42 @@ def land(pr: int | None, wait: bool = False, only: bool = False) -> int:
         time.sleep(POLL)
 
 
-def landing(pr: int | None, only: bool = False) -> tuple[int, bool]:
-    """Land every landable PR into the base (PR `pr`'s, else the default branch) as one gated batch, under the landing
-    lock, where loop.md lets land run (placed) (`only`: the named PR alone); the exit, and whether a wait would end it
-    (lock, CI on a head), so land --wait runs it again."""
+def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
+    """Land every landable PR into the base (the first named PR's, else the default branch) as one gated batch, under
+    the landing lock, where loop.md lets land run (placed) (`only`: the named PRs alone); the exit, and whether a wait
+    would end it (lock, CI on a head), so land --wait runs it again."""
     tracker, loop = project()
     with placed(loop):
         return landing_here(pr, tracker, loop, only)
 
 
 def landing_here(
-    pr: int | None, tracker: str | None, loop: str | None, only: bool = False
+    pr: int | Sequence[int] | None, tracker: str | None, loop: str | None, only: bool = False
 ) -> tuple[int, bool]:
-    named = None if pr is None else pull_request(pr)
-    if named is not None:
-        if named["state"] == "MERGED":
-            print(f"PR #{pr} is merged")
-            return 0, False
-        if named["state"] != "OPEN":
-            raise Refused(f"PR #{pr} is closed: nothing to land")
+    numbers = [] if pr is None else [pr] if isinstance(pr, int) else list(dict.fromkeys(pr))
+    named: list[dict[str, Any]] = []
+    worst = 0  # of the named PRs that end here, 1 over 3 over 0
+    for number in numbers:
+        pull = pull_request(number)
+        if pull["state"] == "MERGED":
+            print(f"PR #{number} is merged")
+        elif pull["state"] != "OPEN":
+            if len(numbers) == 1:
+                raise Refused(f"PR #{number} is closed: nothing to land")
+            print(f"PR #{number} is closed: nothing to land")
+            worst = 1
+        elif named and pull["baseRefName"] != named[0]["baseRefName"]:
+            print(
+                f"PR #{number} targets {pull['baseRefName']}, not {named[0]['baseRefName']} like #{named[0]['number']}:"
+                " land one base at a time"
+            )
+            worst = 1
+        else:
+            named.append(pull)
+    if numbers and not named:
+        return worst, False
     base = (
-        named["baseRefName"]
+        named[0]["baseRefName"]
         if named
         else fast(
             lambda: gh(
@@ -3942,6 +3959,8 @@ def landing_here(
             lambda: rest("repos/{owner}/{repo}")["default_branch"],
         )
     )
+    # a draft is ready before the wait for the lock, so the holder's next batch includes it
+    named = readied(named, base, tracker, loop)
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
     stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
     # every lock commit pushed, each before its push; taken stays None while the last one's push may have reached origin
@@ -3950,12 +3969,12 @@ def landing_here(
     try:
         for sig in stoppable:  # a land under nohup still outlives a hangup
             signal.signal(sig, stopped)
-        taken = locked(base, held, named["number"] if named else None)
+        taken = locked(base, held, named[0]["number"] if named else None)
         if not taken:
             return WAITING, True
         # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
-        return batched(named, base, tracker, loop, only, held)
+        return batched(named, base, tracker, loop, only, held, worst)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
@@ -4153,6 +4172,76 @@ def repointed(base: str, held: list[str], pr: int) -> None:
         )
 
 
+def proof_gaps(
+    pull: dict[str, Any], tracker: str | None, loop: str | None
+) -> tuple[list[str], Any]:
+    """What keeps the PR from landing before CI is asked about, as lines to print (none: it holds every proof, and a
+    draft may be marked ready, since ready starts CI), with the issues its spec links."""
+    where, local = f"PR #{pull['number']}", signed(loop)
+    if pull["isCrossRepository"]:
+        return [
+            f"{where} comes from another repository: land merges only branches of this one"
+        ], None
+    if why := outside(pull, loop):
+        # land is the loop's merge: a PR no verifier saw merges its author's way
+        return [why], None
+    found, issues = gated("merge", pull, tracker, loop)
+    if found:
+        return holds(pull, issues, loop) + found, issues
+    if (proof := head_proof(loop)) and not proved(pull["headRefOid"], proof["status"]):
+        names = f", with the tier set in {', '.join(proof['env'])}" if proof["env"] else ""
+        gone = (
+            f"{where}: its head {pull['headRefOid']} has no green `{proof['status']}` status for its tree (loop.md"
+            f" `head_proof`): run `approvals.py local-ci --record --head-proof` on a clean checkout of it{names}"
+        )
+        return [gone], issues
+    if local and (why := unsignable(pull, *local)):
+        return [why], issues
+    return [], issues
+
+
+def mark_ready(pull: dict[str, Any], required: set[str]) -> tuple[int, bool] | None:
+    """Mark a draft ready, never called on a missing proof (ready starts CI). None when it is ready now and its
+    required checks (if any) need no wait; else the exit it means."""
+    where = f"PR #{pull['number']}"
+    # GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses
+    if in_cloud():
+        print(
+            f"{where} is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
+        )
+        return 1, False
+    # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
+    gh("pr", "ready", str(pull["number"]))
+    print(f"{where} is ready now")
+    if required:
+        print(f"{where}: CI starts on ready, so its required checks are pending")
+        return WAITING, True
+    return None
+
+
+def readied(
+    named: list[dict[str, Any]], base: str, tracker: str | None, loop: str | None
+) -> list[dict[str, Any]]:
+    """The named PRs, each draft that holds every proof marked ready (and read again), before the wait for the lock,
+    so the holder's next batch includes it. A draft with a proof missing is left as it is for `landable` to say why,
+    and a cloud session's is too, since it can't mark one."""
+    drafts = [pull for pull in named if pull["isDraft"] and not in_cloud()]
+    if not drafts:
+        return named
+    required = required_checks(base) - {APPROVALS}
+    marked: dict[int, tuple[int, bool] | None] = {}
+    for pull in drafts:
+        if not proof_gaps(pull, tracker, loop)[0]:
+            marked[pull["number"]] = mark_ready(pull, required)
+    # the readied PR as GitHub has it now; `waiting` is what its start of CI means for this pass (mark_ready's)
+    return [
+        {**pull_request(p["number"]), "waiting": marked[p["number"]]}
+        if p["number"] in marked
+        else p
+        for p in named
+    ]
+
+
 def landable(
     pull: dict[str, Any], tracker: str | None, loop: str | None, required: set[str]
 ) -> tuple[int, bool] | None:
@@ -4160,44 +4249,20 @@ def landable(
     aside, since the batch's gate is the proof), no owner wait, the base's required checks green on its head, and a
     signed squash possible where loop.md asks for one. Else, after printing why, the exit it means for a named PR and
     whether a wait would clear it. A draft (only a named PR is read as one) is marked ready first."""
-    where, local = f"PR #{pull['number']}", signed(loop)
-    if pull["isCrossRepository"]:
-        print(f"{where} comes from another repository: land merges only branches of this one")
-        return 1, False
-    if why := outside(pull, loop):
-        # land is the loop's merge: a PR no verifier saw merges its author's way
-        print(why)
-        return 1, False
-    found, issues = gated("merge", pull, tracker, loop)
-    if found:  # never ready on a missing proof: ready starts CI
-        for line in holds(pull, issues, loop) + found:
+    where = f"PR #{pull['number']}"
+    lines, issues = proof_gaps(pull, tracker, loop)
+    if lines:
+        for line in lines:
             print(line)
-        return 1, False
-    if (proof := head_proof(loop)) and not proved(pull["headRefOid"], proof["status"]):
-        names = f", with the tier set in {', '.join(proof['env'])}" if proof["env"] else ""
-        print(
-            f"{where}: its head {pull['headRefOid']} has no green `{proof['status']}` status for its tree (loop.md"
-            f" `head_proof`): run `approvals.py local-ci --record --head-proof` on a clean checkout of it{names}"
-        )
-        return 1, False
-    if local and (why := unsignable(pull, *local)):
-        print(why)
         return 1, False
     for line in flag(pull, issues, loop):
         print(line)
-    if pull["isDraft"]:
-        # GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses
-        if in_cloud():
-            print(
-                f"{where} is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
-            )
-            return 1, False
-        # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
-        gh("pr", "ready", str(pull["number"]))
-        print(f"{where} is ready now")
-        if required:
-            print(f"{where}: CI starts on ready, so its required checks are pending")
-            return WAITING, True
+    if pull["isDraft"] and (why := mark_ready(pull, required)):
+        return why
+    if pull.get(
+        "waiting"
+    ):  # readied by this land: its CI has only just started, and `readied` said so
+        return pull["waiting"]
     if required and (lines := ci(where, pull, required)):
         for line in lines:
             print(line)
@@ -4215,12 +4280,13 @@ def landable(
 
 
 def batched(
-    named: dict[str, Any] | None,
+    named: list[dict[str, Any]],
     base: str,
     tracker: str | None,
     loop: str | None,
     only: bool = False,
     held: list[str] | None = None,
+    worst: int = 0,
 ) -> tuple[int, bool]:
     """Under the lock (`held`, its commits): merge every candidate's head onto `base` locally, oldest PR first, gate
     the result's tree once (or reuse a pass on it), move the lock to name the last PR to land (repointed), and merge each
@@ -4235,9 +4301,10 @@ def batched(
             [] if only else open_pulls()
         )  # `only`: no other PR is read, let alone touched
         if other["baseRefName"] == base and not other["isDraft"]
-    } | ({named["number"]} if named else set())
+    } | {pull["number"] for pull in named}
+    pulls = {pull["number"]: pull for pull in named}
     for number in sorted(listed):
-        pull = named if named and number == named["number"] else pull_request(number)
+        pull = pulls.get(number) or pull_request(number)
         if (why := landable(pull, tracker, loop, required)) is None:
             candidates.append(pull)
         else:
@@ -4254,15 +4321,16 @@ def batched(
                 repointed(base, held, landed[-1][0]["number"])
             if landed:
                 merges(landed, base, tip, work, loop, failed)
-    number = named["number"] if named else None
-    if number is not None:
-        if number in waits:
-            return waits[number]
-        return (
-            (0, False)
-            if any(pull["number"] == number for pull, *_ in landed) and number not in failed
-            else (1, False)
-        )
+    if named:
+        # each named PR's exit: its wait's, else 0 when it merged, else 1; the worst of them, 1 over 3 over 0
+        done = {pull["number"] for pull, *_ in landed} - failed
+        exits = [
+            waits[p["number"]] if p["number"] in waits else (0 if p["number"] in done else 1, False)
+            for p in named
+        ]
+        code = max((c for c, _ in exits), key=lambda c: {1: 2, WAITING: 1}.get(c, 0), default=0)
+        code = 1 if worst else code
+        return code, code == WAITING and any(again for c, again in exits if c == WAITING)
     if failed:
         return 1, False
     return (WAITING, True) if any(again for _, again in waits.values()) else (0, False)
@@ -6318,7 +6386,7 @@ def main(argv: list[str]) -> int:
     recording.add_argument("--status", metavar="HEAD")
     recording.add_argument("--head-proof", action="store_true")
     merging = commands.add_parser("land")
-    merging.add_argument("pr", type=int, nargs="?")
+    merging.add_argument("pr", type=int, nargs="*")
     merging.add_argument("--wait", action="store_true")
     merging.add_argument("--only", action="store_true")
     briefing = commands.add_parser("brief")
@@ -6387,9 +6455,9 @@ def main(argv: list[str]) -> int:
                 raise Refused("--head-proof goes with --record: the head proof is the checkout's")
             return local_ci(args.pr, proof, args.run) if leads_its_session() else detach(argv)
         if args.command == "land":
-            if args.only and args.pr is None:
+            if args.only and not args.pr:
                 parser.error("land --only needs a PR: there is nothing to restrict to")
-            return land(args.pr, args.wait, args.only)
+            return land(args.pr or None, args.wait, args.only)
         if args.command == "brief":
             return brief(args.pr, args.priorities, args.proof, args.far)
         if args.command == "release":

@@ -240,7 +240,9 @@ design, wireframes included for a UI, and delegate the rest.
      each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what
-     refuses a PR whose proof is missing. A push after it needs `gh pr ready --undo` first; the
+     refuses a PR whose proof is missing: `land` itself marks each draft it names ready, before it
+     waits for the lock, so the batch ahead of you takes it, and several PRs named in one `land`
+     land in one batch. A push after it needs `gh pr ready --undo` first; the
      owner's go carries over only merges of the base whose verdict says `Logic change: none`
      (SKILL.md, Approvals and proof), and after the verdict on the new head `land` runs again.
    - Land every approved PR at once: start `land --wait` on each as soon as its proofs hold,
