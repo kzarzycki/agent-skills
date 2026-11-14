@@ -260,3 +260,146 @@ def test_each_command_on_a_pr_reads_its_bases_policy(
     with pytest.raises(approvals.Refused, match="read"):
         command()
     assert read == ["feature"]
+
+
+def where(place: str) -> str:
+    return gatekeeper_md(
+        f"loop:\n  gate: echo {place}\nland:\n  signed_squash_to: main\n  allowed_signers: signers\n"
+        f"  where: {place}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("main", "feature", "refused"),
+    [("host", "cloud", True), ("cloud", "host", False)],
+    ids=["feature excludes the host", "feature allows the host"],
+)
+def test_where_a_land_runs_is_its_bases_policy(
+    based: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    main: str,
+    feature: str,
+    refused: bool,
+) -> None:
+    """A land of a PR into `feature` on a host is placed by feature's `land.where`, not main's."""
+    repo = based["repo"]
+    policy(repo, where(main), "main's place")
+    git_in(repo, "push", "-q", "origin", "main")
+    git_in(repo, "switch", "-q", "feature")
+    policy(repo, where(feature), "feature's place")
+    git_in(repo, "push", "-q", "origin", "feature")
+    git_in(repo, "switch", "-q", "main")
+    monkeypatch.setattr(approvals, "in_cloud", lambda: False)
+    monkeypatch.setattr(approvals, "landing_here", lambda *_a: (0, False))
+    if refused:
+        with pytest.raises(
+            approvals.Refused, match="`land.where` is `cloud`, so land does not run in a host"
+        ):
+            approvals.landing(7)
+    else:
+        assert approvals.landing(7) == (0, False)
+
+
+OWNED = gatekeeper_md("loop:\n  gate: echo newer\n  owner: ann\n")
+
+
+def test_a_land_reads_origins_policy_not_the_clones_last_fetch(
+    based: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another land changed main's policy before this one started, and the clone's origin/main is behind it: drafts are
+    readied under origin's policy."""
+    based["pull"].update(baseRefName="main", isDraft=True)
+    based["push"](OWNED)  # origin moved; this clone's origin/main did not
+    monkeypatch.setattr(approvals, "in_cloud", lambda: False)
+    seen: list[Any] = []
+
+    def readied(named: list[dict[str, Any]], base: str, tracker: Any, loop: Any) -> Any:
+        seen.append(approvals.settings(loop).get("owner"))
+        raise approvals.Refused("readied")
+
+    monkeypatch.setattr(approvals, "readied", readied)
+    with pytest.raises(approvals.Refused, match="readied"):
+        approvals.landing(7)
+    assert seen == ["ann"]
+
+
+@pytest.mark.parametrize(
+    ("changed", "undone"),
+    [(OWNED, True), (gatekeeper_md("loop:\n  gate: echo newer\n"), False)],
+    ids=["now waits for the owner", "still ready to mark"],
+)
+def test_a_draft_readied_before_the_lock_wait_goes_back_to_draft_when_the_new_policy_would_not_ready_it(
+    based: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    changed: str,
+    undone: bool,
+) -> None:
+    based["pull"].update(baseRefName="main", isDraft=True)
+    monkeypatch.setattr(approvals, "in_cloud", lambda: False)
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: set())
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(approvals, "gh", lambda *args, **_kw: calls.append(args) or "")
+    # readied() marked it ready under the policy before the wait
+    monkeypatch.setattr(
+        approvals,
+        "readied",
+        lambda named, *_a: [{**pull, "isDraft": False, "readied": True} for pull in named],
+    )
+
+    def landable(pull: dict[str, Any], _tracker: Any, loop: Any, *_a: Any, **_kw: Any) -> Any:
+        assert pull["isDraft"]
+        if approvals.settings(loop).get("owner"):
+            return approvals.Verdict((approvals.WAITING, False), issues=[])
+        return approvals.Verdict(None, draft=True, issues=[])
+
+    monkeypatch.setattr(approvals, "landable", landable)
+    monkeypatch.setattr(approvals, "locked", lambda *_a: based["push"](changed) or True)
+    monkeypatch.setattr(approvals, "unlock", lambda *_a: subprocess.CompletedProcess([], 0, "", ""))
+    judged: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(approvals, "batched", lambda named, *_a: judged.append(named) or (0, False))
+    capsys.readouterr()
+    assert approvals.landing(7) == (0, False)
+    [[pull]] = judged
+    lines = capsys.readouterr().out.splitlines()
+    if undone:
+        assert calls == [("pr", "ready", "--undo", "7")]
+        assert lines == [
+            (
+                "PR #7 is a draft again: it was readied under the policy the base had before this land's wait, and"
+                " the base's policy now would not ready it"
+            )
+        ]
+        assert (pull["isDraft"], pull["verdict"].exit, "readied" in pull) == (
+            True,
+            (approvals.WAITING, False),
+            False,
+        )
+    else:
+        assert (calls, lines) == ([], [])
+        assert (pull["isDraft"], pull["readied"], "verdict" in pull) == (False, True, False)
+
+
+def test_a_shallow_clone_is_deepened_for_the_base_the_command_resolved(
+    based: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Under `local-ci <pr>` the base is resolved once (policy_from): deepened() does not read the PR again."""
+    shallow = tmp_path / "shallow"
+    git_in(
+        tmp_path,
+        "clone",
+        "-q",
+        "--depth",
+        "1",
+        "--single-branch",
+        "-b",
+        "main",
+        (tmp_path / "origin.git").as_uri(),
+        str(shallow),
+    )
+    monkeypatch.chdir(shallow)
+    monkeypatch.setattr(approvals, "pull_request", lambda n: pytest.fail(f"PR #{n} read again"))
+    with approvals.policy_from("feature"):
+        approvals.deepened(7)
+    assert git_in(shallow, "rev-parse", "--verify", "-q", "refs/remotes/origin/feature").strip()

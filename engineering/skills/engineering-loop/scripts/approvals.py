@@ -4230,16 +4230,22 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
     """Land every landable PR into the base (the first named PR's, else the default branch) as one gated batch, under
     the landing lock, where loop.md lets land run (placed) (`only`: the named PRs alone); the exit, and whether a wait
-    would end it (lock, CI on a head), so land --wait runs it again. Where land may run and the key it signs with
-    (placed) are the default branch's policy, since that refusal comes before any PR is read; the rest is the policy of
-    the base the PRs merge onto (policy_from), read before the lock to ready drafts and again after the fetch under it
-    for every decision from there on (landing_here)."""
-    with placed(project()[1]):
-        named, base, worst = land_base(pr)
-        if named is None:
-            return worst, False
-        with policy_from(base):
-            tracker, loop = project()
+    would end it (lock, CI on a head), so land --wait runs it again. Every decision is the policy of the base the PRs
+    merge onto (policy_from): the named PRs' base is read first (land_base, which changes no PR), the base fetched,
+    and its policy read to place the land (placed: where it may run and the key it signs with) and to ready drafts,
+    then read again after the fetch under the lock for the batch (landing_here)."""
+    named, base, worst = land_base(pr)
+    if named is None:
+        return worst, False
+    # origin's policy now, not the clone's last fetch of it, so no draft is readied under a policy already replaced
+    subprocess.run(
+        ["git", "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
+        capture_output=True,
+        check=False,
+    )
+    with policy_from(base):
+        tracker, loop = project()
+        with placed(loop):
             return landing_here(named, base, worst, tracker, loop, only)
 
 
@@ -4293,8 +4299,9 @@ def landing_here(
 ) -> tuple[int, bool]:
     """land_base's batch under the lock. `tracker` and `loop`, the policy read before the lock, decide only which
     drafts to mark ready before the wait, so the holder's next batch includes them; after the fetch under the lock the
-    policy is read again, and that copy alone decides the batch: every PR is judged under it, a draft readied before
-    included, and a verdict readied() kept for a draft it refused is reused only when the policy is unchanged."""
+    policy is read again, and that copy alone decides the batch: every PR is judged under it, a draft this land
+    readied that it would not have readied goes back to draft (unreadied), and a verdict readied() kept for a draft it
+    refused is reused only when the policy is unchanged."""
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
     named = readied(named, base, tracker, loop)
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
@@ -4314,7 +4321,9 @@ def landing_here(
         # another land may have changed the base's policy while this one waited: from here on only the fetched one
         fresh = project()
         if fresh != (tracker, loop):
-            named = [{k: v for k, v in pull.items() if k != "verdict"} for pull in named]
+            named = unreadied(
+                [{k: v for k, v in pull.items() if k != "verdict"} for pull in named], base, *fresh
+            )
         return batched(named, base, *fresh, only, held, worst)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
@@ -4593,6 +4602,35 @@ def readied(
             "waiting": waiting,
         }
     return [found.get(pull["number"], pull) for pull in named]
+
+
+def unreadied(
+    named: list[dict[str, Any]], base: str, tracker: str | None, loop: str | None
+) -> list[dict[str, Any]]:
+    """The named PRs once the policy changed while the land waited for the lock: each draft readied() marked ready that
+    `landable` under the new policy would not ready goes back to draft, with a line
+    saying why, and is returned as a draft with that verdict, so the batch leaves it out; the rest as they were."""
+    required = required_checks(base) - {APPROVALS}
+    found = []
+    for pull in named:
+        if not pull.get("readied"):
+            found.append(pull)
+            continue
+        draft = {k: v for k, v in pull.items() if k not in ("readied", "waiting")} | {
+            "isDraft": True
+        }
+        verdict = landable(draft, tracker, loop, required, named=True)
+        if verdict.draft:
+            found.append(pull)
+            continue
+        # never in a cloud session, where landable readies no draft
+        gh("pr", "ready", "--undo", str(pull["number"]))
+        print(
+            f"PR #{pull['number']} is a draft again: it was readied under the policy the base had before this land's"
+            " wait, and the base's policy now would not ready it"
+        )
+        found.append({**draft, "verdict": verdict})
+    return found
 
 
 def landable(
@@ -5826,7 +5864,8 @@ def deepened(pr: int | None) -> None:
     nothing, and no tracked file changes, so the tree a pass records is the same."""
     if git("rev-parse", "--is-shallow-repository").strip() != "true":
         return
-    base = base_branch(pr)
+    # a `local-ci <pr>` resolved its base already (policy_from)
+    base = POLICY_BASE.get() or base_branch(pr)
     if base is None:
         print(
             "local-ci: shallow clone, but no base branch is known: not deepening", file=sys.stderr

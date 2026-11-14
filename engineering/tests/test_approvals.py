@@ -5353,11 +5353,12 @@ def test_land_refuses_where_loop_md_excludes_the_place_it_runs(
     )
     if not marker:
         monkeypatch.delenv(approvals.CLOUD)
-    # never a PR read: the refusal comes first
-    monkeypatch.setattr(approvals, "pull_request", lambda n: pytest.fail(f"PR #{n} read"))
+    # never a PR changed (readied, labelled, merged): the refusal comes first, after only the read of its base, whose
+    # policy it is (#1047)
     assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
         f"loop.md's `land.where` is `{where}`, so land does not run in {place}"
     ]
+    assert cloud_land["calls"] == []
     unmoved(cloud_land)
 
 
