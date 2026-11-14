@@ -107,3 +107,8 @@ def test_rest_reads_mergeable_as_graphql_names_it(
     for name in ("rest_notes", "rest_threads", "rest_authored", "rest_timeline", "rest_checks"):
         monkeypatch.setattr(approvals, name, lambda *_args: {})
     assert approvals.rest_pull(7)["mergeable"] == graphql
+
+
+def test_graphql_reads_whether_the_pr_conflicts() -> None:
+    """The host reads the PR over GraphQL, whose `mergeable` the stop reads."""
+    assert " mergeable " in approvals.PULL
