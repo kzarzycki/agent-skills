@@ -3331,7 +3331,7 @@ def test_with_a_deny_list_a_cloud_worker_replies_with_its_report_and_the_host_ch
     sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
     brief = omnigent_agent.text_of(og.sessions[sid][1])
     assert "which you don't post: reply with the line `UNPOSTED REPORT`" in brief
-    assert "gh api" not in brief and "comment's URL" not in brief
+    assert "/comments" not in brief and "comment's URL" not in brief
     assert (
         "<!-- file: tmp/loop/<name> -->" in brief
     )  # its files still travel in the report it replies with
@@ -9752,6 +9752,14 @@ def test_the_cloud_preamble_forbids_a_question_tool_a_page_and_a_session_link() 
     assert "never call an interactive question tool, since its prompt waits on someone" in preamble
     assert "Never publish a page or artifact, since it waits on a permission nobody" in preamble
     assert "co-author line only, with no session link, since the commit reaches a" in preamble
+
+
+def test_the_cloud_preamble_reads_issues_and_prs_through_rest() -> None:
+    """GraphQL answers 403 in a cloud VM, so `gh issue view` and `gh pr view` fail there (#1011)."""
+    preamble = omnigent_agent.PR_PREAMBLE
+    assert "Read issues and PRs through REST too, since GraphQL answers 403 here" in preamble
+    assert "`gh api repos/{{owner}}/{{repo}}/issues/<n>` and `.../pulls/<n>`" in preamble
+    assert "never `gh issue view` or `gh pr view`" in preamble
 
 
 class CloudFake(FakeOmnigent):
