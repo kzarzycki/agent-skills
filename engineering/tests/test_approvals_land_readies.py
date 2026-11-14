@@ -239,3 +239,35 @@ def test_a_refused_pr_named_while_the_lock_is_held_exits_one_over_the_wait(
     assert "PR #8 is closed: nothing to land" in lines
     assert any(line.startswith("another land holds the landing lock") for line in lines), lines
     assert lands["merged"]() == []
+
+
+def test_landable_on_a_draft_with_every_proof_writes_nothing_to_github(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read-only probe must not ready a draft whose handover was left a draft, nor add `risk:high` (#969)."""
+    high_risk_draft(lands)
+    go(lands, hub, lands["pulls"][7]["headRefOid"])
+    writes: list[Any] = []
+    monkeypatch.setattr(approvals, "label", lambda *args, **kwargs: writes.append(args))
+    tracker, loop = approvals.project()
+    verdict = approvals.landable(lands["pulls"][7], tracker, loop, set())
+    assert (verdict.exit, verdict.draft) == (None, True)
+    assert (lands["calls"], writes, lands["comments"], lands["pulls"][7]["isDraft"]) == (
+        [],
+        [],
+        [],
+        True,
+    )
+    # the same draft through `land` is readied, and its risk flagged: the writes belong to land's own path
+    assert lands["land"]("7")[0] == 0
+    assert (readied(lands), writes) == (["7"], [(7, approvals.RISK_LABEL)])  # flagged once
+
+
+def test_landable_says_what_a_draft_missing_a_proof_lacks_and_writes_nothing(
+    lands: dict[str, Any],
+) -> None:
+    draft(lands, 7, reviews=())
+    tracker, loop = approvals.project()
+    verdict = approvals.landable(lands["pulls"][7], tracker, loop, set())
+    assert (verdict.exit, verdict.draft, verdict.issues) == ((1, False), False, None)
+    assert lands["calls"] == []

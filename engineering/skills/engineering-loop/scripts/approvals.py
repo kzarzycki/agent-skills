@@ -130,6 +130,7 @@ waits for the lock, so the holder's next batch includes it; while the checks tha
 `land` takes several PRs: each named draft is marked ready the same way, and the named PRs land in one batch with the other
 candidates. `land <pr>... --only` (with or without `--wait`) makes the named PRs the only candidates: every other PR is left untouched (not
 marked ready, commented on, evicted or merged), and the rest is as without the flag; `--only` without a PR exits 2.
+The check of each PR (`landable`) writes nothing to GitHub: `land`'s own path marks a ready draft ready and adds `risk:high`, so a probe that only reads never readies a draft.
 A named PR that is no candidate (or is closed, or targets another base than the first's) is left out and says why, and the rest still land: a missing proof exits 1,
 a wait for the owner or a pending required check 3, a red required check 1; with several PRs named the exit is the worst of them, 1 over 3 over 0.
 3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
@@ -422,7 +423,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 try:
     import yaml
@@ -1239,10 +1240,12 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     return found
 
 
-def unflag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
-    """Take off a `risk:high` the gate added for the verifier's `Risk:` line (FLAGGED) once nothing holds the change
-    high without it, since the verifier re-judges a disputed risk. A label added after the gate's comment is a
-    person's or the lead's raise, which only the owner lowers."""
+def unflaggable(
+    pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None
+) -> dict[str, Any] | None:
+    """The PR without the `risk:high` the gate added for the verifier's `Risk:` line (FLAGGED), when nothing holds the
+    change high without it and unflag would take it off; else None. Reads only, so a check can judge the PR as unflag
+    leaves it."""
     flagged = [note["createdAt"] for note in notes(pull) if note["body"].startswith(FLAGGED)]
     added = [
         event["createdAt"]
@@ -1250,9 +1253,16 @@ def unflag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None)
         if (event.get("label") or {}).get("name") == RISK_LABEL
     ]
     if not flagged or max(added, default="") > max(flagged):
-        return []
+        return None
     unlabelled = {**pull, "labels": {"nodes": [{"name": n} for n in names(pull) - {RISK_LABEL}]}}
-    if risk(unlabelled, issues, loop) is not None:
+    return unlabelled if risk(unlabelled, issues, loop) is None else None
+
+
+def unflag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
+    """Take off a `risk:high` the gate added for the verifier's `Risk:` line (FLAGGED) once nothing holds the change
+    high without it, since the verifier re-judges a disputed risk. A label added after the gate's comment is a
+    person's or the lead's raise, which only the owner lowers."""
+    if (unlabelled := unflaggable(pull, issues, loop)) is None:
         return []
     where = f"PR #{pull['number']}"
     try:
@@ -4202,15 +4212,9 @@ def proof_gaps(
 
 
 def mark_ready(pull: dict[str, Any], required: set[str]) -> tuple[int, bool] | None:
-    """Mark a draft ready, never called on a missing proof (ready starts CI). None when it is ready now and its
-    required checks (if any) need no wait; else the exit it means."""
+    """Mark a draft ready (a write: `land`'s own path only, never on a PR `landable` refused, since ready starts CI).
+    None when its required checks (if any) need no wait; else the exit its start of CI means."""
     where = f"PR #{pull['number']}"
-    # GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses
-    if in_cloud():
-        print(
-            f"{where} is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
-        )
-        return 1, False
     # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
     gh("pr", "ready", str(pull["number"]))
     print(f"{where} is ready now")
@@ -4220,73 +4224,92 @@ def mark_ready(pull: dict[str, Any], required: set[str]) -> tuple[int, bool] | N
     return None
 
 
+class Verdict(NamedTuple):
+    """What `landable` found. `exit`: None when the PR may land, else the exit it means for a named PR and whether a wait
+    would clear it. `draft`: a draft that holds every proof, ready to mark (a write for `land`'s own path). `issues`: the
+    issues its spec links, None while a proof is missing, so `land` flags a PR's risk only once its proofs hold."""
+
+    exit: tuple[int, bool] | None
+    draft: bool = False
+    issues: list[dict[str, Any]] | None = None
+
+
 def readied(
-    named: list[dict[str, Any]], base: str, tracker: str | None, loop: str | None
+    named: list[dict[str, Any]],
+    base: str,
+    tracker: str | None,
+    loop: str | None,
 ) -> list[dict[str, Any]]:
-    """The named PRs, each draft that holds every proof marked ready (and read again), before the wait for the lock,
-    so the holder's next batch includes it. A draft with a proof missing or the owner's go still due is left as it is for `landable` to say why;
-    in a cloud session mark_ready says it can't mark one."""
+    """The named PRs, each draft `landable` finds ready to mark flagged and marked ready (and read again) before the
+    wait for the lock, so the holder's next batch includes it. A draft it refuses is returned with its verdict in
+    `verdict`, which `batched` reuses instead of asking again; a readied one with `readied`, and `waiting` for what its
+    start of CI means for this pass."""
     drafts = [pull for pull in named if pull["isDraft"]]
     if not drafts:
         return named
     required = required_checks(base) - {APPROVALS}
-    marked: dict[int, tuple[int, bool] | None] = {}
+    found: dict[int, dict[str, Any]] = {}
     for pull in drafts:
-        lines, issues = proof_gaps(pull, tracker, loop)
-        # ready starts CI: never on a PR `landable` would refuse, the owner's go on its head included
-        if not lines and not owner_waits(pull, issues, loop):
-            marked[pull["number"]] = mark_ready(pull, required)
-    # the readied PR as GitHub has it now; `waiting` is what its start of CI means for this pass (mark_ready's)
-    return [
-        {**pull_request(p["number"]), "waiting": marked[p["number"]]}
-        if p["number"] in marked
-        else p
-        for p in named
-    ]
+        verdict = landable(pull, tracker, loop, required)
+        if not verdict.draft:
+            found[pull["number"]] = {**pull, "verdict": verdict}
+            continue
+        for line in flag(pull, verdict.issues or [], loop):
+            print(line)
+        waiting = mark_ready(pull, required)
+        found[pull["number"]] = {
+            **pull_request(pull["number"]),
+            "readied": True,
+            "waiting": waiting,
+        }
+    return [found.get(pull["number"], pull) for pull in named]
 
 
 def landable(
     pull: dict[str, Any], tracker: str | None, loop: str | None, required: set[str]
-) -> tuple[int, bool] | None:
-    """None when the PR is a candidate for the batch: every merge proof (gated, the head's own CI or local-ci pass
-    aside, since the batch's gate is the proof), no owner wait, the base's required checks green on its head, and a
-    signed squash possible where loop.md asks for one. Else, after printing why, the exit it means for a named PR and
-    whether a wait would clear it. A draft (only a named PR is read as one) is marked ready first."""
+) -> Verdict:
+    """A check, which writes nothing to GitHub: whether the PR is a candidate for the batch (every merge proof, gated,
+    the head's own CI or local-ci pass aside, since the batch's gate is the proof; no owner wait; the base's required
+    checks green on its head; a signed squash possible where loop.md asks for one), or a draft that holds all that and is
+    ready to mark, or why not, said once on stdout. The PR is judged as `flag` leaves it (a `risk:high` the gate added
+    that `unflag` would take off no longer holds it); `land` writes the label and the ready mark itself."""
     where = f"PR #{pull['number']}"
     lines, issues = proof_gaps(pull, tracker, loop)
     if lines:
         for line in lines:
             print(line)
-        return 1, False
-    for line in flag(pull, issues, loop):
-        print(line)
+        return Verdict((1, False))
+    if RISK_LABEL in names(pull) and (view := unflaggable(pull, issues, loop)) is not None:
+        pull = view
     if pull["isDraft"]:
-        if owner := owner_waits(
-            pull, issues, loop
-        ):  # as `readied`: ready starts CI, so never before the go
+        if owner := owner_waits(pull, issues, loop):  # ready starts CI, so never before the go
             for line in owner:
                 print(line)
-            return WAITING, False
-        if why := mark_ready(pull, required):
-            return why
-    if pull.get(
-        "waiting"
-    ):  # readied by this land: its CI has only just started, and `readied` said so
-        return pull["waiting"]
+            return Verdict((WAITING, False), issues=issues)
+        # GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses
+        if in_cloud():
+            print(
+                f"{where} is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
+            )
+            return Verdict((1, False), issues=issues)
+        return Verdict(None, draft=True, issues=issues)
+    if pull.get("waiting"):  # readied by this land: its CI has only just started
+        return Verdict(pull["waiting"], issues=issues)
     if required and (lines := ci(where, pull, required)):
         for line in lines:
             print(line)
         red = {state for _, state in head_checks(pull, required)[0]} & RED
-        return (1, False) if red or any(line.endswith(PAGED) for line in lines) else (WAITING, True)
+        wait = (1, False) if red or any(line.endswith(PAGED) for line in lines) else (WAITING, True)
+        return Verdict(wait, issues=issues)
     # after CI, so the owner is never asked about a head CI could still reject
     if owner := owner_waits(pull, issues, loop):
         for line in owner:
             print(line)
-        return WAITING, False  # the owner is asked, not polled
+        return Verdict((WAITING, False), issues=issues)  # the owner is asked, not polled
     if risk(pull, issues, loop):
         for line in whose(pull, loop):
             print(line)
-    return None
+    return Verdict(None, issues=issues)
 
 
 def batched(
@@ -4315,10 +4338,15 @@ def batched(
     pulls = {pull["number"]: pull for pull in named}
     for number in sorted(listed):
         pull = pulls.get(number) or pull_request(number)
-        if (why := landable(pull, tracker, loop, required)) is None:
+        verdict = pull.get("verdict") or landable(pull, tracker, loop, required)
+        # the board shows why a PR waits: flag its risk once its proofs hold, before it is refused for anything else
+        if verdict.issues is not None and not pull.get("readied"):
+            for line in flag(pull, verdict.issues, loop):
+                print(line)
+        if verdict.exit is None:
             candidates.append(pull)
         else:
-            waits[number] = why
+            waits[number] = verdict.exit
     failed: set[int] = set()
     # each PR to land, the tree it lands, the tree gated with it, and how that passed
     landed: list[tuple[dict[str, Any], str, str, str]] = []
