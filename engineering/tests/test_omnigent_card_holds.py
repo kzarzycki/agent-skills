@@ -37,6 +37,9 @@ def test_holds_input_by_kind() -> None:
         {"elicitation_id": "x", "params": {"policy_name": "sys_ask_user_question"}}
     )
     assert omnigent_agent.holds_input(PARKED)
+    assert omnigent_agent.holds_input(  # the harness's own id wins over a card policy name
+        {"elicitation_id": "elicit_question_2", "params": {"policy_name": "sys_ask_user_question"}}
+    )
     assert omnigent_agent.holds_input(APPROVAL)
 
 
