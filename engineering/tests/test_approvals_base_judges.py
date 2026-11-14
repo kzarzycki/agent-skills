@@ -26,9 +26,7 @@ REAL = approvals.base_drift  # the shared fixtures replace it per test
 
 
 @pytest.fixture(autouse=True)
-def judging(
-    monkeypatch: pytest.MonkeyPatch, lands: dict[str, Any], pushed: None
-) -> dict[str, Any]:
+def judging(monkeypatch: pytest.MonkeyPatch, lands: dict[str, Any], pushed: None) -> dict[str, Any]:
     """The real comparison back (the shared fixtures stub it), in a checkout whose policy files and a copy of the script
     are on origin's main, as a project that adopted the loop has them."""
     monkeypatch.setattr(approvals, "base_drift", REAL)
@@ -36,7 +34,9 @@ def judging(
     script = work / "scripts" / "approvals.py"
     script.parent.mkdir()
     script.write_text(Path(approvals.__file__).read_text())
-    skill = Path(approvals.__file__).parent.parent / "SKILL.md"  # which the script reads beside itself
+    skill = (
+        Path(approvals.__file__).parent.parent / "SKILL.md"
+    )  # which the script reads beside itself
     (work / "SKILL.md").write_text(skill.read_text())
     monkeypatch.setattr(approvals, "__file__", str(script))
     git_in(work, "add", "-A")

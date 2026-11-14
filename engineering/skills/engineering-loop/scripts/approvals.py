@@ -3846,7 +3846,15 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
     if point == "merge":
         base = pull["baseRefName"]
         subprocess.run(
-            ["git", "-C", str(toplevel()), "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
+            [
+                "git",
+                "-C",
+                str(toplevel()),
+                "fetch",
+                "-q",
+                "origin",
+                f"+refs/heads/{base}:refs/remotes/origin/{base}",
+            ],
             capture_output=True,
             check=False,
         )
@@ -4002,7 +4010,9 @@ def base_drift(base: str) -> list[str]:
     root = toplevel()
     ref = f"refs/remotes/origin/{base}"
     if subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "--verify", "-q", ref], capture_output=True, check=False
+        ["git", "-C", str(root), "rev-parse", "--verify", "-q", ref],
+        capture_output=True,
+        check=False,
     ).returncode:
         return []
     paths = [TRACKER, LOOP, POLICY]
@@ -4013,7 +4023,9 @@ def base_drift(base: str) -> list[str]:
     differ = []
     for path in paths:
         shown = subprocess.run(
-            ["git", "-C", str(root), "show", f"{ref}:{path.as_posix()}"], capture_output=True, check=False
+            ["git", "-C", str(root), "show", f"{ref}:{path.as_posix()}"],
+            capture_output=True,
+            check=False,
         )
         theirs = shown.stdout if shown.returncode == 0 else None
         try:
@@ -4030,7 +4042,15 @@ def judge_with_base(base: str) -> None:
     the base's code; under GITHUB_ACTIONS (a workflow that checks out the PR) also when HEAD is not the base's tip."""
     if os.environ.get("GITHUB_ACTIONS") == "true":
         tip = subprocess.run(
-            ["git", "-C", str(toplevel()), "rev-parse", "--verify", "-q", f"refs/remotes/origin/{base}^{{commit}}"],
+            [
+                "git",
+                "-C",
+                str(toplevel()),
+                "rev-parse",
+                "--verify",
+                "-q",
+                f"refs/remotes/origin/{base}^{{commit}}",
+            ],
             capture_output=True,
             text=True,
             check=False,
