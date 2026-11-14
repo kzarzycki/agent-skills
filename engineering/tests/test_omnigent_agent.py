@@ -8075,16 +8075,22 @@ def test_a_probe_past_the_limit_that_then_fails_or_asks_still_lifts_it_for_the_o
 def test_a_limit_still_failing_past_its_reset_is_reported_once_the_reset_and_margin_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, template: str
 ) -> None:
-    # the reset 20 minutes in: probes keep failing past it, and the stored reset still caps them
-    run = limited_leads(tmp_path, monkeypatch, 120, None, resets_text(template, 20 * 60))
-    cap = run.start + 20 * 60 + omnigent_agent.LIMIT_MARGIN_SECONDS
-    when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(run.start + 20 * 60))
+    # the reset 3h in, past the 2h cap a limit with no reset has: probes keep failing past it,
+    # and the stored reset, not the 2h, caps them
+    after = 3 * 3600
+    assert after > omnigent_agent.RETRY_CAP_SECONDS
+    run = limited_leads(tmp_path, monkeypatch, 300, None, resets_text(template, after))
+    cap = run.start + after + omnigent_agent.LIMIT_MARGIN_SECONDS
+    when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(run.start + after))
     timed = [(at, line) for at, post in run.timeline for line in acts(post)]
     assert timed[0][1].startswith(f"[act] usage limit: 3 sessions parked, resets {when} (")
     own = [(at, line) for at, line in timed if not line.startswith("[act] usage limit")]
-    assert own and all(at > cap for at, _ in own)  # none per session before the reset + margin
     assert len(own) == 1 and "still failing past its reset" in own[0][1]
-    assert run.start + 20 * 60 in run.sent  # one probe at the reset itself
+    # none before the reset + margin, and no later than the first probe to fail after it: one
+    # probe interval (the longest backoff), the poll its failure shows on, and the post's wait
+    late = omnigent_agent.backoff(len(omnigent_agent.BACKOFF_MINUTES)) + 60
+    assert cap < own[0][0] <= cap + late + omnigent_agent.POST_SECONDS
+    assert run.start + after in run.sent  # one probe at the reset itself
 
 
 def test_a_reset_before_the_first_backoff_is_probed_at_the_reset(
