@@ -6547,7 +6547,9 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
     for one in record.get("steps", [record]):
         if one.get("published"):
             if "steps" not in record:
-                name = one.get("ref") or RECORD_BRANCH.format(record_name(one["tree"], one["command"]))
+                name = one.get("ref") or RECORD_BRANCH.format(
+                    record_name(one["tree"], one["command"])
+                )
                 print(f"already in origin as the record branch {name}, so it is not pushed again")
             continue
         try:
