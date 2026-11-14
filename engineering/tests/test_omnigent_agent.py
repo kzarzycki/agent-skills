@@ -11065,6 +11065,9 @@ class FarVerifierHost(FarFiles, FakeOmnigent):
         super().land(sid, text)
 
 
+PR7_HEAD = "0123456789abcdef0123456789abcdef01234567"
+
+
 def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) -> FarVerifierHost:
     og = FarVerifierHost()
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
@@ -11073,8 +11076,13 @@ def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) ->
     (tmp_path / "docs" / "agents").mkdir(parents=True)
     (tmp_path / "docs/agents/loop.md").write_text(f"# Loop\n\n{hosts}")
     (tmp_path / "b.md").write_text(
-        "Review PR #7 as the verifier; first `git worktree add --detach`"
+        f"Review PR #7 as the verifier; first `git worktree add --detach tree {PR7_HEAD}`"
     )
+    gh = tmp_path.parent / f"{tmp_path.name}-ghbin"
+    gh.mkdir()
+    (gh / "gh").write_text(f"#!/bin/sh\necho {PR7_HEAD}\n")
+    (gh / "gh").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{gh}{os.pathsep}{os.environ['PATH']}")
     (tmp_path / "gate.log").write_text("abc\nok\n")
     return og
 
@@ -11156,6 +11164,7 @@ def test_a_lead_names_a_host_by_its_id_and_a_file_needs_another_host(
 ) -> None:
     """The line lists names; a host given by its id is checked by its name. --file is refused for
     a session here, which reads its own worktree."""
+    monkeypatch.setattr(omnigent_agent, "check_out_head", lambda *a: None)  # no remote here
     og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: here\n")
     argv = [*VERIFY_FAR]
     argv[argv.index("mac")] = "h"
@@ -11204,6 +11213,7 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
 ) -> None:
     """A far verifier works in a worktree of its own under the clone, so a lead holding the clone
     does not stop it; a worker there, or a verifier on this host, is still refused."""
+    monkeypatch.setattr(omnigent_agent, "check_out_head", lambda *a: None)  # no remote here
     og = far_verifier(tmp_path, monkeypatch, "")
     og.others = [
         {
@@ -11497,6 +11507,89 @@ def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_
     assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
     assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
     assert not any("Which base?" in p for p in posted(og))
+
+
+# --- a child never falls back to the runner's host, and a host verifier runs at the PR's head (#917) ---
+
+
+def test_a_cloud_verifier_start_without_host_sends_no_create_and_names_the_in_vm_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    og = far_verifier(tmp_path, monkeypatch, "")
+    verifier = [
+        "start",
+        "claude",
+        "v",
+        "b.md",
+        str(tmp_path / "tmp/r.md"),
+        "--confirm-seconds",
+        "0",
+    ]
+    verifier += ["--pr", "7", "--role", "roles/verifier.md"]
+    assert omnigent_agent.main(verifier) == 1
+    err = capsys.readouterr().err
+    assert "cloud_verifier.py verify" in err and "--host" in err and og.sessions == {}
+    # any other child is refused too, naming both routes; an explicit --host start still works
+    worker = ["start", "claude", "w", "b.md", str(tmp_path / "tmp/r2.md"), "--confirm-seconds", "0"]
+    assert omnigent_agent.main(worker) == 1
+    err = capsys.readouterr().err
+    assert "--host" in err and "claude-cloud" in err and og.sessions == {}
+    assert omnigent_agent.main([*VERIFY_FAR]) == 0 and len(og.sessions) == 1
+
+
+def test_a_verifier_on_a_host_for_a_pr_starts_at_the_prs_head_never_the_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+
+    def run(*cmd: str) -> str:
+        done = subprocess.run(
+            [*git, *cmd], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+        return done.stdout.strip()
+
+    run("add", "-A")
+    run("commit", "-q", "-m", "base")
+    base = run("rev-parse", "HEAD")
+    (tmp_path / "change.txt").write_text("pr\n")
+    run("add", "-A")
+    run("commit", "-q", "-m", "pr")
+    head = run("rev-parse", "HEAD")
+    run("checkout", "-q", "--detach", base)
+    # origin is this repo, whose pull/7/head names the PR's commit
+    run("update-ref", "refs/pull/7/head", head)
+    run("remote", "add", "origin", str(tmp_path))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(f"#!/bin/sh\necho {head}\n")
+    (bin_dir / "gh").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    argv = ["start", "claude", "v", "b.md", str(tmp_path / "tmp/r.md"), "--confirm-seconds", "0"]
+    argv += ["--pr", "7", "--role", "roles/verifier.md", "--workspace", str(tmp_path)]
+    assert omnigent_agent.main(argv) == 0 and len(og.sessions) == 1
+    assert run("rev-parse", "HEAD") == head
+    # a checkout with tracked changes is refused, never moved under them
+    run("checkout", "-q", "--detach", base)
+    (tmp_path / "b.md").write_text("edited\n")
+    again = [*argv]
+    again[5 - 1] = str(tmp_path / "tmp/r3.md")
+    assert omnigent_agent.main(again) == 1
+    assert run("rev-parse", "HEAD") == base
+
+
+def test_a_verifier_on_another_host_for_a_pr_needs_a_brief_that_pins_the_prs_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing here runs git on that host, so a brief that names no checkout of the head is refused
+    before any session exists; one that names it starts."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    (tmp_path / "b.md").write_text("Review PR #7 as the verifier")
+    assert omnigent_agent.main([*VERIFY_FAR]) == 1
+    assert PR7_HEAD[:12] in capsys.readouterr().err and og.sessions == {}
+    (tmp_path / "b.md").write_text(f"Review PR #7: `git worktree add --detach tree {PR7_HEAD}`")
+    assert omnigent_agent.main([*VERIFY_FAR]) == 0 and len(og.sessions) == 1
 
 
 @pytest.mark.parametrize("quiet", [False, True])
