@@ -44,10 +44,10 @@ def test_holds_input_by_kind() -> None:
 
 
 def test_prompts_and_questions_ignore_a_card() -> None:
-    info = {"pending_elicitations": [CARD, PARKED, APPROVAL]}
+    info = {"pending_elicitations": [CARD, CARD_ANSWERABLE, PARKED, APPROVAL]}
     assert omnigent_agent.prompts_of(info) == ["Which one?", "Claude wants to call Bash"]
     assert omnigent_agent.questions_of(info) == ["Which one?"]
-    assert omnigent_agent.cards_of(info) == ["Land it?"]
+    assert omnigent_agent.cards_of(info) == ["Land it?", "Pick"]
 
 
 def test_relay_delivers_past_a_card_but_queues_behind_a_parked_question() -> None:
@@ -99,3 +99,13 @@ def test_watch_status_shows_a_card_open_not_blocked() -> None:
         == "blocked"
     )
     assert og.info("s1")["pending_elicitations"] == [CARD]
+
+
+def test_observe_names_a_card_open_and_blocks_on_the_held_prompts_only() -> None:
+    og = fake(CARD)
+    key, line = omnigent_agent.observe(og, "s1", {})
+    assert key[0] != "blocked" and "card open: Land it?" in line and "blocked" not in line
+    og = fake(CARD, APPROVAL)
+    key, line = omnigent_agent.observe(og, "s1", {})
+    assert key == ("blocked", "elicit_approval_1")
+    assert "blocked on a prompt: Claude wants to call Bash" in line
