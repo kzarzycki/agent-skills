@@ -31,3 +31,6 @@ def test_this_repos_policy_and_tracker_settings_parse(copy: str, monkeypatch) ->
     assert approvals.gate()[1]
     assert approvals.tracker_settings(tracker)
     assert approvals.label_names(tracker)["component"]
+    # qualify's QUALIFY_TIMEOUT exit (tools/capability_pack/cli.py), so a gate timed out on a loaded host is a
+    # machine fault that land reruns and then stops on, never an eviction (#851)
+    assert approvals.settings(policy).get("machine_exit") == 78

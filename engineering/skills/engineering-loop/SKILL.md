@@ -34,7 +34,7 @@ question for the owner, not a guess:
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` on each pushed head, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
 | `docs/agents/gatekeeper.md` | Policy (the block `approvals.py` reads, below), which nothing else reads | Spec, Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models), `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Gate base: <variable>` (the one its `check` reads as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), which agents read. | every step but Gates |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models), `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Gate base: <variable>` (the one its `check` reads as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), with `Cloud verifier: worker session` beside it where the verifier runs in the worker's VM, and `Verifier hosts: <name>, <name>` (the Omnigent hosts a verifier may run on: lead.md step 7), which agents read. | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -78,6 +78,9 @@ spec:
     - bug
     - follow-up
     - sub-issue
+    - paths:   # a spec labelled spec:paths whose PR stays inside these globs
+        - mise.toml
+        - docs/agents/**
 
 loop:
   cap: 3
@@ -89,8 +92,10 @@ loop:
   batch_queue: true   # deprecated with ci and carry_over_main: land batches every landable PR
   owner: octocat   # whose own approved:spec label, added after the spec's last edit, is their approval
   machine_exit: 78   # the gate's exit for "this machine isn't ready": land runs it again, then stops
+  short_seconds: 120   # a job expected to finish within this takes the host's short lane; 0 turns the lane off
   pre_land: python3 scripts/check_fork.py   # land's check of each PR against the base, before it batches them
   delegate: all   # the delegated approver's go on a head covers a PR into the default branch too; default feature
+  pack_staleness: refuse   # approvals.py exits 1 at start when its checkout is behind its upstream and the script changed there (default warn; omnigent_agent.py only warns)
   head_proof:      # the status land requires on each head, and the names its recording takes from the caller
     status: gate-ui
     env:
@@ -108,6 +113,8 @@ risk:
   paths:
     - .github/**
     - CODEOWNERS
+  merge_paths:   # the owner's own go on the head, whatever the labels and the verifier say
+    - src/orders/**
 
 plan:
   labels:
@@ -143,19 +150,22 @@ carry_over_main:
 
 | Section | Key | Value | Without it |
 |---|---|---|---|
-| `spec` | `auto` | a list of `bug`, `follow-up` and `sub-issue`, or `true` for every spec (Approvals and proof) | every spec waits for the owner |
+| `spec` | `auto` | a list of `bug`, `follow-up`, `sub-issue` and `paths` terms, or `true` for every spec (Approvals and proof) | every spec waits for the owner |
 | `loop` | `cap` | a whole number (The cap) | the default |
 | | `ci` | deprecated, goes in the next release (Approvals and proof); `false` for a project without CI, whose merge proof is then `uv run <this skill's folder>/scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
 | | `gate` | the merge check `local-ci` runs: a command, with any variables it sets in front (Adopting the loop) | `mise run check:all` |
+| | `gate_steps` | the merge check as steps, in place of `gate`: a list of `name`, `command` (parsed as `gate` is) and `where` (`any`, or `host`: never run in a cloud session), each step's pass recorded and reused by itself (Adopting the loop) | the one `gate` command |
 | | `local_ci_env` | the environment variables the check reads, cleared for its run unless `gate` sets them (Adopting the loop) | none |
 | | `machine_exit` | the gate's exit that means the machine isn't ready (a locked screen, low disk), such as 78: `land` runs that gate once more on the same tree, and a second one stops the run landing, evicting and posting nothing, and `local-ci` refuses it as a machine fault (`approvals.py`'s docstring) | every non-zero exit is red |
+| | `short_seconds` | a whole number of seconds: a job expected to finish within it takes the host's short lane instead of the heavy slot, and `0` turns the lane off (Rules, One heavy gate per host slot) | `120` |
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
 | | `pre_land` | a check `land` runs for each PR before batching it, parsed as `gate` is, from the base's tree with `LAND_HEAD` and `LAND_BASE` set, such as one refusing a branch forked before a restructuring; non-zero leaves that PR out of the batch with one comment per head holding its output, and it stays ready (`approvals.py`'s docstring says how) | no check |
 | | `head_proof` | `status`, a commit status `land` requires on each head, and `env`, the variables `local-ci --record --head-proof` takes from the caller for that run, both required (Approvals and proof) | the batch gate is the only proof |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
+| `risk` | `merge_paths` | globs matched on the PR's files, as `paths` are: a PR touching one merges only on the owner's go on its head (Approvals and proof) | the rule above decides |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
-| `land` | `signed_squash_to`, `allowed_signers`, both | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`approvals.py`'s docstring says how) | GitHub merges |
+| `land` | `signed_squash_to`, `allowed_signers`, both required; `where` (`host`, `cloud` or `both`), `signing_key_env` and `merge_queue` | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub; `where` is where `land` may run, and in a cloud session it signs with the key in the variable `signing_key_env` names, which must be in the allowed signers, never the session's own, and lands a PR there only with `merge_queue: false`, since REST can't say whether the base requires a merge queue (`approvals.py`'s docstring says how) | GitHub merges, on a host only |
 | `carry_over_main` | `except`, a list of globs, required | deprecated, goes in the next release (Approvals and proof); the project's merge-check configuration (lint, type, test and gate config, lockfiles): clean merges of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
 
 issue-tracker.md holds its label and board facts in a block of the same form under its own
@@ -236,12 +246,21 @@ Merge-queue (`merge_group`) and push runs have no draft and run as before. While
 draft, `mise run check` on each pushed head is its check. With `ci: false` in gatekeeper.md, the
 check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
 instead, and is the gate while iterating too: it runs the merge check, gatekeeper.md's `gate`
-(default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and publishes it as a
-commit status `gate` on the head once GitHub has it, so `local-ci <pr>` at landing posts
-that pass rather than running the check again: on this host for any commit with the same
-tree and gate command (a rebase or reworded commit keeps its tree), on another for the
-commit whose `gate` status names them. `gate` is one command with no shell operator, so a
-chain of checks is one task. A run on a
+(default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and pushes it
+to the base repo as the branch `loop-gate/<tree>-<key>`, named by its tree and command, so `local-ci <pr>` at landing
+posts that pass rather than running the check again (with no usable pass it refuses, naming the head, tree, record branch and what was wrong with a record found; `--run` runs the check on this host): in this clone for any commit with the same tree and gate
+command (a rebase or reworded commit keeps its tree), in any other, host or cloud session, from that branch, at every
+risk, through the same code. The branch is the one route a pass travels: the `gate` commit status the run and each
+reader write on the head, where the token allows, only shows the pass on the PR, and no decision reads it, since
+anyone who can write a status may type one. `land` deletes a record branch once its tree has landed, or once it is a
+day old and its tree is no open PR's head. `gate` is one command with no shell operator, so a
+chain of checks is one task, or the steps of `gate_steps`, each a command and where it runs (`any`, or `host` for one
+a cloud VM can't run, such as an Apple build). Each step's pass is its own record and branch, named by the tree and
+the step's command, so `local-ci`, `local-ci --record` and `land` run only the steps with no pass on the tree and print
+where each reused one passed: a host runs only the `host` steps of a tree whose other steps a cloud session pushed,
+and a cloud session runs the `any` steps and leaves the `host` ones, which `land` there refuses. Each step that runs
+holds the host gate slot (Rules, One heavy gate per host slot) for its own run only, and every record, a step's or the
+one gate's, carries the seconds it ran and the seconds it waited for the slot. A run on a
 checkout with changes records nothing. A project whose check reads environment variables (a
 tier, a scope) names them in gatekeeper.md's `local_ci_env`, and they are cleared for the run, so a
 host's own setting never changes what a pass proves; the tier the merge needs goes in
@@ -288,8 +307,8 @@ an approval record, since an agent approving its own work is no approval; where 
 was asked, the authority is the owner's standing policy in gatekeeper.md, which
 `approvals.py` evaluates from the evidence on GitHub. A spec or plan approval is a comment
 `uv run <this skill's folder>/scripts/approvals.py approve <spec|plan> <issue> --by owner` writes on the
-owner's word, tied to the spec's or plan's last edit as GitHub's edit history shows it, so
-a later edit needs approving again, plus the `approved:<point>` label. A re-approval says
+owner's word, tied to the spec's or plan's text by its sha256, so any change to the text
+needs approving again, plus the `approved:<point>` label. A re-approval says
 what changed and minimizes the records it supersedes as outdated. The verifier only gives
 the verdict, which `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>` posts as a PR
 review on the commit it reviewed.
@@ -302,6 +321,18 @@ gatekeeper.md's policy (Settings) holds:
   epic the owner approved (their current record and `approved:spec`), opened by an account
   with write access to the repo. Any other spec, a new epic for one, needs the owner's
   approval; without `auto`, or with `false` or an empty list, every spec does.
+- A `paths` term in the `spec.auto` list (`- paths: [mise.toml, docs/agents/**]`), globs
+  matched as a rule's `paths` are, approves by policy the spec of an issue labelled
+  `spec:paths`, which the lead adds when the spec's change stays inside them, such as the
+  project's own tooling. The label is the claim, since the gate can't read where a change
+  lands from the spec; `check build` and `check merge` judge it on every path the PR touches
+  (before the PR, the branch's files so far). It approves only while every path matches a
+  glob, a renamed or copied file's old name as well as its new one, so a move across the
+  boundary either way voids it; GitHub gives every file and old name; neither the issue nor
+  the PR carries `risk:high` and the `risk` rule doesn't hold, its `verifier` term included
+  once a review is read; and the issue's author can write to the repo. Otherwise the spec
+  waits for the owner's record and `approved:spec`, and `check` names why, the files outside
+  the globs included. The label without the term approves nothing.
 - `spec.auto: true` approves every spec by policy, epics included, so the owner reads only the
   critical ones: a spec the `risk` rule matches, or one opened by an account without write
   access, since anyone who can open an issue would otherwise approve their own, waits for
@@ -318,8 +349,10 @@ gatekeeper.md's policy (Settings) holds:
   matched exactly on the PR and its issues as GitHub names them (`size:L` and `size:XL`
   for large or larger, `area:billing`, `kind:bug`); `paths`, globs matched on the PR's
   files; `always: true`; and `verifier: true`. `approvals.py` reads the keys, never the
-  words, so a path such as `docs/verifier.md` is only a path. Paths it can't judge, past
-  the one page of files it reads, hold, since nothing else would enforce them.
+  words, so a path such as `docs/verifier.md` is only a path. A glob matches every path
+  the PR touches on either side of the change, a renamed or copied file's old name too, since
+  moving a file out of a listed directory changes it as much as editing it. Paths it can't
+  judge, past the one page of files it reads, hold, since nothing else would enforce them.
   The `verifier` term holds when the verifier judges the change high: the newest
   pass on the head, by a trusted account, says `Risk: high`, any word but `low`, or has no
   `Risk:` line (verifier.md). Paths beside it hold whatever the verifier says, so
@@ -329,6 +362,15 @@ gatekeeper.md's policy (Settings) holds:
   for that term comes off when a later pass says `Risk: low`; one added again after it
   stays. loop.md § Risk criteria adds the project's own criteria in words, which the
   verifier reads.
+- `risk.merge_paths`, globs matched on the PR's files as `paths` are, names the paths whose
+  merge the owner always approves, such as the code that places orders or moves money. A PR
+  touching one is high risk whatever its labels, `spec.auto` and the verifier's `Risk:` line
+  say, and only the owner's go on its head (`approve merge <pr> --head <sha> --by owner`)
+  lets it merge, into any branch: `check merge`, `check queue` and `land` wait for it, a new
+  push needs a new go, `approve merge --by delegate` and `delegate` refuse it, and
+  `approved:merge` is no go, since a rule that depends on someone remembering a label is no
+  rule. It is a list of its own beside `paths`, so a project keeps a wide list holding the
+  spec under `auto: true` and a short one holding every merge. Paths it can't judge hold.
 - `plan` asks for the owner's approval of a matching plan.
 - `bot.<login>`, such as `bot.dependabot[bot]` with `paths` `uv.lock` and
   `pyproject.toml`: a PR that bot opens needs no verifier review when every commit is the
@@ -363,10 +405,12 @@ owner to say it where the landing runs, or record it as the delegate's. The dele
 approver's go may be relayed to the session where landing runs: `approve merge <pr> --head
 <sha> --by delegate` records it, pinned to that head the same way, with a status and a record
 that name it the delegate's, so the PR shows whose go landed it, and `check merge` and `land`
-print whose go they used. Into the default branch it is refused unless the policy sets
-`delegate: all` under `loop`, and there a delegate's go counts only while it does; without the
+print whose go they used. Into the default branch it is refused unless the policy on
+`origin/<base>` sets `delegate: all` under `loop` (a branch's own edit of it is not the owner's;
+a base with no policy file leaves the checkout's), and there a delegate's go counts only while it does; without the
 key (`feature`) the owner's go alone covers the default branch. A status covers one commit, so
-it never covers code the approver did not see. Into the default branch these are the only go:
+it never covers code the approver did not see; it carries to a head whose commits since are
+only merges of the base, once the verifier's pass there says `Logic change: none`. Into the default branch these are the only go:
 anyone with triage rights can add a label, so `approved:merge` there is no go. On a change that is not high risk
 `approved:merge` means nothing. On a PR into a feature branch (any base but the default
 branch) the label added after the head's push is a go too, and it may be the delegated
@@ -399,8 +443,11 @@ is missing. An agent merges only with `uv run <this skill's folder>/scripts/appr
 project's `loop:land` task). It lands every landable PR into the base as one batch, so a base
 that moved costs one gate, not a merge, a gate and a verdict per PR, and no PR lands on a base
 it was never gated on:
-- It takes a lock any host sees, the ref `refs/loop/landing` on `origin`, so two lands never
-  run at once; a lock older than 2 hours was left by a land that died and is broken.
+- It takes a lock any host sees, the branch `loop-landing/<base>` on `origin`, so two lands never
+  run at once; it only moves forward, so a host that may only create and fast-forward branches
+  (a cloud session) takes and releases it too. The lock names the last PR its land
+  merges, so a lock whose PR is merged and in the base was left by a land that died after its
+  merges and is broken at once; one older than 2 hours (a land that died before them) is broken too.
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
   wait, with the owner's go where the change is high risk and the base's required checks
   green. `land <pr>` marks that PR ready first, never on a missing proof, since ready starts CI.
@@ -418,10 +465,11 @@ it was never gated on:
   date with the base, with a pass on its head, runs no gate.
 - Green: it merges each PR through GitHub in the same order, pinned to its head, checks the
   base ended at the gated tree, publishes the pass on the new tip, and comments `Landed` on each.
-- Red: it lands one PR at a time on the last green commit. A PR red alone twice is evicted
+- Red: it lands one PR at a time on the last green commit (a one-PR batch's red run is its first run alone). A PR red alone twice is evicted
   (back to draft, with its log's tail), and when the first PR is red twice the bare base is
   gated: red there stops the run and evicts nobody, since the fault is on the base.
 
+`land <pr> --only` lands that PR alone and leaves every other PR untouched, for a lead that must not land another lead's work.
 With `--wait` it is one background command that ends when the batch landed or needs someone
 (exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction). Never run `gh pr
 ready` or `gh pr merge` by hand, because `land` is what refuses a PR whose proof is missing. A repo with
@@ -454,7 +502,7 @@ or several; `check merge`, `check queue` and `land` print one line per merge nam
 first parent and the predicate. Anything else (a PR commit after H, new, edited or rebased,
 a conflict, an evil merge, an overlapping file, a touched except path, a git error) carries
 nothing, and the check prints which condition failed: the head needs its own verifier pass. The gate never carries: H'
-runs its own, as CI does, and under `ci: false` that is `local-ci <pr>` on H', since a
+runs its own, as CI does, and under `ci: false` that is `local-ci <pr> --run` on H', since a
 `local-ci` record stands in for CI on one exact tree. This skips a review on purpose, so a
 project opts in by writing the section.
 
@@ -485,29 +533,42 @@ Agents are started, messaged, watched and closed with the `orchestrating-agents`
 and questions as files among them. Inside a worker or
 verifier, review angles run as native subagents, never as full harness sessions.
 
+## Where heavy steps run
+
+One rule, for every project and every machine. Heavy steps (implementation, the gate, the verifier) go, in this order:
+
+1. To the cloud worker the project's `docs/agents/loop.md` names (`Cloud worker:`), with the gate and the verifier on the same machine as the worker, which shares its checkout and build. The loop.md line `Placement:` sets where the verifier runs: `same machine` (the default when the line is absent), `hosts: <name>, <name>` or `CI`. It replaces the older `Cloud verifier:` and `Verifier hosts:` lines, which keep their meaning where a project still has one; the new line wins. For a host worker the same default means that worker's own host. A worker's machine that can't take the verifier (no Codex login, a PR that needs a Claude verifier) goes to a Codex Cloud thread, then a host.
+2. Else to a host that offers the harness the step needs. A `start` in a cloud session without `--host` follows `Placement:`: the first online host it names, and a refusal naming `--host` where it names none, never the host the bridge runs on.
+3. A step that must touch a machine itself (a production service, a device, an Apple build) stays on that machine.
+
+When a launch fails, for any reason (refused, no capacity, unreachable), take the next option on this list. Never fall back to running the step locally on the host that refused: what a machine accepts is its own configuration, so a refusal is the answer and not an obstacle. If no option is left, stop and report the refusal's text. Role files and briefs point here instead of restating it.
+
 ## Cloud worker
 
-With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead and the verifier run on
-the host and only the workers run in the cloud, as sessions of `<agent>`, a registered
+With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead runs on
+the host and the workers run in the cloud, with the verifier in the worker's VM unless `Placement:` says otherwise (Where heavy steps run), as sessions of `<agent>`, a registered
 Omnigent agent whose tools run in a cloud VM, which the lead starts. Without the line nothing
 in this section applies and every role file reads as written. The split takes coding,
 compiling and unit tests off the host. What stays there is what the VM can't do: every
-`approvals.py` call and every thread resolution, since GitHub's GraphQL API answers 403 in the
-VM; the signed land, since the VM holds no key; a verifier of the other family, since Codex
-has no cloud bridge; anything that needs a device, a simulator, an emulator, a browser login
+thread resolution, since GitHub's GraphQL API answers 403 in the VM (`approvals.py` reads REST
+there, so its `check`, `local-ci` and `verdict` also run in the VM, but `land` does not); the signed land, since the VM holds no key; a verifier of the other family, since Codex
+has no cloud bridge, unless it runs in the worker's VM, the default (Verifier in the worker's VM, below); anything that needs a device, a simulator, an emulator, a browser login
 or the owner's private network.
 
 - **Who does what.** The lead runs intent, spec, the branch and draft PR, `check build`,
   triage, the fetch and merge (or fast-forward) of each worker's reported branch into the
-  PR branch, the full gate (`mise run
+  PR branch, the full gate where it runs (below), the instance, the verdict's post, thread
+  resolution, `land` and acceptance. The full gate (`mise run
   check`, or `local-ci --record` with `ci: false`; on a fix round started detached beside the
-  next verifier, lead.md step 7), the instance, the verdict's post, thread
-  resolution, `land` and acceptance. The worker codes and compiles, runs `mise run <task>`,
+  next verifier, lead.md step 7) runs in the worker's VM, on its checkout and build; `Placement:` never moves it, since that line places the verifier only; the host's
+  `local-ci <pr>`, `check merge` and `land` reuse its recorded pass either way. The worker codes and compiles, runs `mise run <task>`,
   the light gate (what the VM can run: compile, unit tests, headless web tests on its
   Chromium), before each push, and pushes to the `claude/…` branch its session was given,
   since a cloud session declines any other branch without its own user's permission and a
-  peer's brief is not that; no brief names another push target. Its brief names the role
-  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in a detached worktree at the head, as lead.md step 7 says.
+  peer's brief is not that; no brief names another push target. A worker's `local-ci --record`
+  pass is pushed as its record branch as a host's is, and the host's `local-ci <pr>`,
+  `check merge` and `land` reuse it from there, so nobody pastes or copies the record. Its brief names the role
+  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs in the worker's VM by default (Where heavy steps run), else on a host in a detached worktree at the head, or on another host loop.md's `Placement: hosts:` line lists, as lead.md step 7 says.
 - **The PR is the interface for content.** The code is the worker's pushed branch. Its
   report is one comment on the PR: its branch and head SHA, each light-gate command with its
   exit code, what it left out and why. If the post fails, since the session's proxy-injected
@@ -519,9 +580,9 @@ or the owner's private network.
   lead posts it with the verdict as assets of a prerelease linked from a PR comment, the way
   the `demo` skill posts videos, so the worker fixes a failure from its diagnostics without
   the host.
-- **Control flow is the lead's own.** It starts the worker with `run --pr --keep` (from a
+- **Control flow is the lead's own.** It starts the worker with `run --pr` (from a
   host without the worker's harness, `start --top-level --host <host> --pr`, then
-  `wait --pr --keep`), follows its turn end, and sends a fix list or a failing log, naming the
+  `wait --pr`), which keeps the session, and `--no-keep` where it won't be sent to again, follows its turn end, and sends a fix list or a failing log, naming the
   review or comment to read, to that kept worker with `send --pr` while it is still there,
   since a fresh session is a fresh VM, clone and build and a kept one revives with its clone;
   else as a fresh `run --pr`. Nothing in
@@ -537,6 +598,56 @@ or the owner's private network.
   cloud.
 - **Nothing on GitHub names a host, a path or a session**: not the report, the verdict, the
   evidence or a brief's text quoted there, since a public repo publishes them.
+  The commits too: the cloud harness tells each session to end every commit with a
+  `Claude-Session:` link, and neither a brief nor a committed `attribution.commit` in
+  `.claude/settings.json` removes that instruction. `land` drops the line from the squash
+  body, so `main` stays clean, but the PR branch's commits keep it. A private repo may accept
+  that. A public repo publishes its branch commits, so it strips the line at the source with
+  `approvals.py commit-msg <file>`, which removes every `Claude-Session:` line and folds the
+  blank lines as `land` does: its pre-commit config runs that command at the `commit-msg`
+  stage (a local hook, `stages: [commit-msg]`), and the cloud environment's setup installs
+  that hook type (`pre-commit install --hook-type commit-msg`), since a session's clone has
+  only the hook types its setup installed.
+- **Verifier in the worker's VM.** With `Placement: same machine` (or the old `Cloud verifier: worker session`), the verifier of a
+  Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
+  installed tools, the build and the running containers instead of paying for them again on a host.
+  `scripts/cloud_verifier.py` does it, and its docstring has each command. On the host, `login` once, then
+  `seed` before starting the worker: it stores a copy without the refresh token in the cloud environment,
+  of the host's own Codex login when that has a day left, else of a login of its own that it keeps fresh, so no VM
+  can break a login for the others. A host login with under `--host-refresh-days` left (default 3) is refreshed in
+  place, the way the Codex CLI does it, in one atomic replace of the host's `auth.json`; a refused refresh exits 2
+  and names `codex login`. `--env` repeats, to seed every environment in one run. To keep them fresh without the
+  owner, run `seed` every 2 days as an Omnigent scheduled task on the host that holds the login, on a small model,
+  keeping the run (`sys_session_keep`) when it exits non-zero. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
+  PR's head, runs Codex on the brief and posts the report as a PR comment. The worker's session only carries
+  the pass: the lead sends it the brief `approvals.py brief` prints, with `send --pr`, asking it to save the
+  brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
+  reviewing nothing itself. `wait --pr` writes the comment to the report path, and the lead posts the verdict
+  from it as for a host verifier. The VM has no Codex configuration, so the lead passes the model and effort
+  the host's Codex is configured with as `--model` and `--effort` (or the `Verifier model:` tier's model);
+  without them the CLI's own default runs. Exit 3 means the verifier stopped on a question, posted as that
+  comment: answer it and send the pass again. Exit 4 means the pass left the checkout changed, whatever else it did (the
+  verifier's leftovers, or a checkout that failed part way): the script deletes and restores nothing, since git
+  can't say which leftover hides an older file, so the checkout stays as it is, named in the output, and the
+  worker puts it back before the next pass, which refuses a tree with changes. Exit 1 is a failed pass: Codex failed (a login that ran out shows here, in its output),
+  wrote no report, or the comment could not be posted. Exit 2 names a missing precondition, such as a session
+  without a login: seed again and start a fresh session, since a session gets the login when it starts. The project accepts
+  three things with the line: the author's session starts its own verifier, though the script, not the
+  session, picks the head and posts the report; the environment holds a ChatGPT login that every process in
+  the VM can read, good for up to 10 days, so it suits PRs the owner's own agents wrote and not ones from
+  forks; and the carrier spends its quota while it waits.
+- **Verifier on a Codex Cloud thread.** With `Placement: same machine` (or the old `Cloud verifier: worker session, else codex thread`), a
+  pass with no worker VM to carry it (the PR has no Claude cloud worker, or Claude tokens are short) runs on a Codex Cloud
+  thread, driven from the host: `scripts/cloud_verifier.py thread --pr <n> --brief <file> --model M --effort E`. The
+  host's own Codex login goes to OpenAI's endpoint only, never to a VM. It starts a thread (a VM that keeps its files and
+  Docker images), checks out the PR's head there, sends the brief as a turn, reads the report back from the thread's
+  checkout (else the final message) and writes it at the brief's `- Report:` path on the host; the lead posts the
+  verdict from it as for a host verifier. It prints the weekly Codex quota before and after, the thread id and its
+  environment id; a later pass passes `--thread` and `--env` to run on the same machine. Use the routes in this order:
+  the worker's VM when a Claude cloud worker holds the build, the thread otherwise, a host verifier last. Never for a
+  Codex-written PR: it needs a Claude verifier. The endpoint is undocumented and may change, so every surprise ends
+  in exit 2 ("use route 2 or the host verifier"): take that exit as the cue to use the next route, never to skip the
+  verifier. Exit 1 is a pass that wrote no report with a `SATISFIED:` line.
 - **Auto-fix stays off on loop PRs** (a cloud session that subscribes to its own PR), since it
   pushes fixes and replies on threads by its own judgment, which is the lead's triage, and the
   lead already briefs the worker on each fix.
@@ -576,12 +687,22 @@ or the owner's private network.
   itself however the run exits), or, in a project without it, a lock on the same file,
   `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock`, around its heavy check. A parallel runner takes the
   `GATE_JOBS` it exports (the cores free at start), never `-n auto` or a fixed count.
-  `test:changed` while iterating and the lint parts stay outside the slot.
+  `test:changed` while iterating and the lint parts stay outside the slot. `approvals.py`'s
+  `local-ci` and `land` take that file's lock around each gate step they run and set
+  `LOOP_GATE_SLOT_HELD` to its path, as `mutate.py` does, so a wrapper under them that finds
+  the variable naming its lock takes none, since it would wait on its own parent.
+  Beside it runs a short lane, a lock on `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.short.lock`, which
+  a job expected to finish within the policy's `short_seconds` (Settings, default 120) takes instead of the
+  heavy one, so a two-minute job waits only for another short job, never behind a long gate: at most one heavy
+  and one short job load a host at once. A short-lane run that goes past `short_seconds` prints one overrun
+  line, so a job wrongly declared short shows in its log; `short_seconds: 0` turns the lane off and every job
+  takes the heavy slot. `mutate.py` measures rather than declares: it runs the tests once on the unmutated head
+  in the short lane and keeps the patches there only when that run passed within `short_seconds`.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
   either), since it misses different things; otherwise, as for a user with one family installed, a fresh
-  session of the same family is the normal path. The PR body names which ran
+  session of the same family is the normal path. When Codex refuses, lead.md's Verifier route names the two fallbacks, Gemini through agy and then a same-family Claude, each labelled and neither landing a high-risk change. The PR body names which ran
   (`verifier: same family` for the latter). A PR with code from both families gets a
   verifier for each family's changes where both are available, integration edits
   included; each writes its own report, and the cap counts rounds they share. The family
@@ -675,25 +796,25 @@ or the owner's private network.
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds
   silently.
-- **Models.** Never pick a model: every agent runs on its harness's configured default,
-  which the owner sets, unless the owner names one for a task or loop.md's `Worker model:
+- **Models.** Every start names a model fit for the job, never the harness default. The owner's named model wins; else loop.md's `Worker model:
   <tier> for <condition>` line names a tier for a worker whose issue matches the condition
-  (on the issue's labels), so the choice sits in one file the owner can change. A `Verifier model:` line does the same for a verifier whose PR
+  (on the issue's labels), so the choice sits in one file the owner can change; else the lead
+  picks: `frontier` for hard design, root-cause work, risky reviews; `top` or `mid` for routine work by size; effort high or below. A `Verifier model:` line does the same for a verifier whose PR
   matches, judged as `check merge` judges risk: on the labels of the PR and its issues and
   on the PR's files, so a PR that `check merge` rates high never gets a lower tier. The
   verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
   `Risk: high` takes the PR out of the condition, so the PR needs a default-tier verdict on
   its head before it lands, even when the lower-tier verdict is satisfied; `check merge`
   reads the tier from the verdict's `Verifier:` line (verifier.md) and refuses until then. It applies within the verifier's own family: it lowers the tier, never the family, which
-  stays the other one from the author's (Independent verification). The tier is `top`, `mid` or `small` (Claude's Opus, Sonnet, Haiku;
-  Codex's Sol, Terra, Luna; each family names its own), so one line holds for every family
-  and outlives a release. A family's frontier model above `top` (Claude's Fable, Codex's
-  Astra) is no tier and never runs, because it costs several times `top`. Resolve the tier
+  stays the other one from the author's (Independent verification). The tier is `frontier`, `top`, `mid` or `small` (Claude's Fable, Opus, Sonnet, Haiku;
+  Codex's Astra, Sol, Terra, Luna; each family names its own), so one line holds for every family
+  and outlives a release. `frontier` costs several times `top`: use it only when the job needs it. Resolve the tier
   at launch from the newest generation of the family's tier models only: its model of that
   tier, else its closest higher tier (its highest when none is higher), never an older
   generation's model, which the family has already superseded. A lead that can't read the
-  family's current lineup (the backend's Model section) leaves the default. A launch that fails on
-  capacity is retried later on the same model (the backend's Model section). When one
+  family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them. A launch that fails on
+  capacity takes the next placement option (Where heavy steps run); with none left it is retried
+  later on the same model (the backend's Model section). When one
   family is out of quota, continue on the other in a fresh session briefed from the run's
   notes, the spec and the PR, never a fork of the old session, since every turn of a fork
   re-reads the whole transcript it copied; revive a stuck or interrupted agent rather than

@@ -56,19 +56,27 @@ yourself, keeping standards and spec as separate axes.
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
   after a fix for a CI check red on a ready PR is the same: only the change since that
   report's head.
-- **A long or locked run is detached.** A gate, repro or e2e run that may wait on a lock
-  or a queue, or outlast one tool call, starts detached with its pid, output and exit code
-  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; echo "run $$" > <log>; flock <lock> <cmd> >> <log> 2>&1; echo "exit $?" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --pid $$ --notify' >/dev/null 2>&1`
+- **A long or locked run is detached.** This is every role's rule for a long run, worker's
+  and lead's too. A gate, repro or e2e run that may wait on a lock
+  or a queue, or outlast one tool call, starts detached (in its own session) with its pid, output and exit code
+  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; echo "run $$" > <log>; echo "lock <lock>" >> <log>; flock <lock> sh -c "echo \$\$ > <lock>; echo locked; exec \"\$@\"" sh <cmd> >> <log> 2>&1; echo "exit $?" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --pid $$ --notify' >/dev/null 2>&1`
   (Perl's `setsid`, since macOS has no `setsid` command; the `run <pid>` line marks where this
   run's log starts, so `wait-for --pid` never takes a previous run's `exit` line from a reused
-  log path; the last step tells the session in `$LOOP_NOTIFY`, when set, how it ended),
+  log path; `lock` and `locked` bracket the wait on the lock, so `wait-for` reads a run still queued behind another's gate as waiting, not as out of budget: its own budget starts at `locked`, and past 2 hours of waiting it ends "gave up waiting on the gate lock", which is no verdict on the change, so report the check as not yet run; the last step tells the session in `$LOOP_NOTIFY`, when set, how it ended),
   and is waited on up to a total budget you state, in as few calls as you can: each call is
   `omnigent_agent.py wait-for --log <log> --pid <pid>`, which blocks close to a 10-minute tool
   call (`--budget` for another limit) and prints only the outcome, never short polls or a sleep
-  loop of your own, since every call re-reads the whole context. A blocker that is only your own call timing out
-  spends the pass on nothing, and Claude Code's low-memory reaper stops in-session
-  background shells. A gate the machine allows
-  by rule is the exception: run it as the bare command (Gates and repros). A queued run or
+  loop of your own, since every call re-reads the whole context. Where that script is not at hand,
+  each call blocks close to the tool's limit (the longest yield the harness allows on a running
+  command, or a sleep loop that checks the log for its exit line), never short polls. Where a
+  foreground command stops at 10 minutes (a session in a hosted VM), the run is waited on within
+  the same turn, since that is less than a cold gate can take. A blocker that is only your own call timing out
+  spends the pass on nothing, a held lock can outlast a foreground call, and Claude Code's low-memory reaper stops in-session
+  background shells. Never end a turn saying you wait, since a background command's completion
+  never wakes you, unless it is a `run`, `send` or `wait` started with `--notify` and `LOOP_NOTIFY`
+  set (or your harness's own background-run support), which tells you when it ends. A gate the machine allows
+  by rule (a gate your role file says to run bare) is the exception: run it as the bare command
+  (Gates and repros), since an allow rule matches only a plain command. A queued run or
   any other pending condition is waited on the same way, in the foreground (orchestrating-agents'
   `scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <check>`, each call under
   the tool timeout), and past the limit you state the pass ends with a report naming it, never
@@ -79,8 +87,10 @@ yourself, keeping standards and spec as separate axes.
   says how: your own headless browser, never one attached over CDP unless the check needs its logins), the API with its client,
   each result checked against the reference the spec names. Then read the server's log
   for the time you drove it; a traceback or error there is a finding even when the page
-  looked right. Real data you see may go in your report, never in anything bound for the
-  tracker. When the sandbox can't reach the instance or its log, say so.
+  looked right. The report is posted as the PR review, so it holds no real data: a figure,
+  name or record you saw on the instance goes in a local file next to the report (under
+  `tmp/loop/`), and the report cites that file by path and says what it shows, without the
+  values. When the sandbox can't reach the instance or its log, say so.
 - **Run loop.md § Verifier checklist**, when it has one.
 - **Mutation-check the new tests.** Undo each production change the spec adds on its own
   (one condition, branch or value), never the whole diff at once, since a whole-patch revert
@@ -90,8 +100,8 @@ yourself, keeping standards and spec as separate axes.
   <file> > <patch>`, after `git add -N` for a file you recreate), run the tests, and redo the
   change with `git apply -R <patch>`. `git apply <patch>` undoes it again, so the patch is
   also the repro. Run the patches with `uv run <this skill's folder>/scripts/mutate.py --test
-  '<tests>' --log <log> <patch>…` (the test command under the heavy lock when your brief
-  names one), which applies each alone, restores the tree, stops cleanly on a signal and
+  '<tests>' --log <log> <patch>…` (the script queues on the host gate slot itself, in the short lane when the tests pass on
+  the head within `short_seconds`, so the command takes no lock of its own), which applies each alone, restores the tree, stops cleanly on a signal and
   logs the head with each patch's exit code, rather than a harness of your own; the worker
   ran it on its own patches, so its log is a starting point, not the check. A change whose undoing leaves every test green is untested: report it as a
   major. Before the report, `git status --porcelain` must match what it showed at the start:
@@ -117,17 +127,25 @@ yourself, keeping standards and spec as separate axes.
   `risk` (docs/agents/gatekeeper.md) lets a low change merge without the owner, so judge it on the diff, not on
   how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls.
-- **A full heavy slot.** A gate or mutation run that waits for the host's heavy slot is the
-  one pending run that ends in a question, not a report: wait for it in the foreground as
-  above, with a 30-minute limit. Past it, stop the run (so its mutation can't apply after
+- **A run the sandbox refuses.** A gate, mutation or instance run the sandbox won't let you
+  make (a lock or path it can't write, such as a read-only heavy-slot lock) ends in a question
+  at once, not a report: a report with no finding but `SATISFIED: no` spends a pass, can reach
+  the cap and makes the gate add `risk:high`. So does a gate or mutation run that waits for
+  the host's heavy slot past a 30-minute limit, waited on in the foreground as above. Stop the run (so its mutation can't apply after
   you), redo any patch you undid so the tree is as you found it, and write
   `<report>.question` asking the lead for a proof run with the brief in
   [proof-run.md](proof-run.md). Name the gate command, the tests, each patch verbatim and
   the commands that undo and redo it, since the lead fills the brief from the question
   alone. The lead has the runs made off this host and answers with the head-stamped logs; a
   verdict without them would be repeated once the logs exist.
+- **An acceptance line you did not run** through the path a user takes (the spec's acceptance
+  examples, on the instance when one is up) blocks `SATISFIED: yes`, whatever the reason:
+  mark each acceptance line run (with its evidence), failing or not run. A line not run ends
+  the turn as a run the sandbox refuses does, in `<report>.question` naming the run the lead
+  must make; `approvals.py` refuses a satisfied report with a `Not run:` line. Probing a
+  neighbouring component is context, not the run.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
-  what it holds, and report it as not run with the exact owner action, since parking it is
+  what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is
   the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
 - **Gates and repros:** you may run `mise run check`. Run a gate as the bare command
   (`mise run check`), with no wrapper, redirect or detach around it, and keep it running with
@@ -152,6 +170,9 @@ keep these lines exact:
   verdict names a lower tier, and reads a line without one as the default tier.
   Text after the pass number is a qualifier the posted review's first line carries, such as
   `Verifier: claude, same-family, pass 2 (merge of main)`.
+  A Gemini pass through agy gives its signature, `Verifier: agy/gemini-4-hydrogen-medium/?, pass 1`, and a
+  same-family one on the Codex fallback `Verifier: claude, same-family, pass 1 (Codex out of quota)`: `check
+  merge` reads either as a fallback and refuses it for a high-risk change.
 - Sections: the Review skill's (code-review's Standards and Spec), then Correctness.
 - Per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, the
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR
@@ -165,6 +186,9 @@ keep these lines exact:
   worktree), then `VERDICT: <n> blocker, <n> major, <n> minor`, `SATISFIED: yes|no` and
   `Risk: low — <reason>` or `Risk: high — <reason>` (Steering, Judge the risk). The gate
   reads any word but `low`, or no line, as high, and `verdict` refuses a report without one.
+  The gate sets the board's `Risk` field from it (github.md, Board).
+  On a delta of merges of the base alone, add `Logic change: none` when its conflict fixes
+  change no behaviour, which carries the owner's go to the head, else `Logic change: <what>`.
   The merge reads the review as covering that commit only, so a push after your review
   needs its own.
 

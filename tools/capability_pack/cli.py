@@ -13,10 +13,15 @@ from tools.capability_pack.qualify import (
     ConfigurationError,
     PortRequiredError,
     QualificationError,
+    QualificationTimeoutError,
     qualify,
     upstream_deltas,
     validate_release_candidate,
 )
+
+# EX_CONFIG: this machine isn't ready. A step that stops on QUALIFY_TIMEOUT failed for the
+# host's load, not the change, so a loop.md naming it as machine_exit reruns, then stops.
+MACHINE_EXIT = 78
 
 
 def write_deltas(directory: Path, error: PortRequiredError) -> list[dict]:
@@ -44,7 +49,7 @@ def write_deltas(directory: Path, error: PortRequiredError) -> list[dict]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="capability-pack")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("update", "check"):
+    for command in ("update", "check", "regenerate"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("package", type=Path)
         subparser.add_argument("--summary", type=Path)
@@ -92,7 +97,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "release-check":
             validate_release_candidate(args.package, args.tag)
             return 0
-        mode = "update" if args.command == "update" else "locked"
+        mode = "locked" if args.command == "check" else args.command
         result = qualify(args.package, mode, args.summary)
     except PortRequiredError as error:
         print(error, file=sys.stderr)
@@ -107,6 +112,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except BreakingDriftError as error:
         print(error, file=sys.stderr)
         return 3
+    except QualificationTimeoutError as error:
+        print(error, file=sys.stderr)
+        return MACHINE_EXIT
     except (QualificationError, GitHubError, OSError, ValueError) as error:
         print(error, file=sys.stderr)
         return 4

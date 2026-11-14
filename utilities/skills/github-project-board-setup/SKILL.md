@@ -7,7 +7,7 @@ description: "Work a GitHub Projects v2 board that is the single home for a repo
 
 **Milestone** (M0…Mn) → **epic issue** (`epic` label) → **story/task sub-issues**, never deeper: the board's Parent issue field names only the direct parent, so a grandchild would not show under its epic. Order is real `blocked by` issue dependencies, not prose. Anything with a status lives on the board; repo docs hold only what stays true regardless of which story is in flight.
 
-One board field carries the position: `Status`. Its columns are the stages of the project's own engineering loop, in order, ending in `Closed` — the project's docs name them (e.g. Intent→Needs owner→Ready→Build→Verify→Closed). The last column holds every closed issue, completed, not planned or duplicate, so it is named for the state, not for work done; the card's icon shows the reason, and a loop that calls its last stage `Done` maps it there in its own docs. A column no ticket ever enters is a lie about the loop, so there is no second `Phase` field to keep in step. What a ticket is (epic, story, bug, enhancement) is a label; the board's built-in Labels field shows it. Where the project ranks work, `Priority` is a single-select field (P0…P3), since it holds one value per item, in its options' order, where an item can carry several labels.
+One board field carries the position: `Status`. Its columns are the stages of the project's own engineering loop, in order, ending in `Closed` — the project's docs name them (e.g. Intent→Needs owner→Ready→Build→Verify→Closed). The last column holds every closed issue, completed, not planned or duplicate, so it is named for the state, not for work done; the card's icon shows the reason, and a loop that calls its last stage `Done` maps it there in its own docs. A column no ticket ever enters is a lie about the loop, so there is no second `Phase` field to keep in step. What a ticket is (epic, story, bug, enhancement) is a label; the board's built-in Labels field shows it. Where the project ranks work, `Priority` is a single-select field (P0…P3), since it holds one value per item, in its options' order, where an item can carry several labels; where the engineering loop runs, `Risk` (Low, Medium, High) holds a pull request's risk beside its `risk:high` label the same way.
 
 **No board yet, or a board of pull requests?** → `references/new-board-setup.md` (its section A board of pull requests). Everything below assumes one exists.
 
@@ -56,7 +56,7 @@ move_on_board "$N" "$FIRST_COLUMN"   # the loop's first stage
 
 Sub-issue linking takes the **REST numeric id** with `-F`, not the issue number with `-f`. `gh issue create` prints the new URL on stdout and errors on stderr. Without the `[ -n "$N" ]` gate a failed create leaves `$N` empty and the next steps run against nothing. Before retrying, check whether the issue exists — `gh issue list --search` lags a few seconds behind creation, so use `gh issue list --limit 5` and read the titles.
 
-Body follows the **Story** template in `references/templates.md` (Problem / Change / Acceptance / Proof / For the implementer). No acceptance list you can write → the story isn't ready; say so rather than filing a vague one.
+Body follows the **Story** template in `references/templates.md` (Problem / Root cause for a bug / Change / Acceptance / Proof / For the implementer). No acceptance list you can write → the story isn't ready; say so rather than filing a vague one.
 
 ## Add an epic
 

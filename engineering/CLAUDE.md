@@ -18,7 +18,9 @@ future coding-agent adapters.
 
 Never hand-edit a generated path. Change an overlay at its source, an untuned
 imported skill through a substitution or by tuning it, then run
-`mise run vendor-engineering`.
+`mise run vendor-engineering-regenerate`: it rewrites the leaves, provenance and version at
+the locked upstream commit, so the edit takes in nothing upstream did since. `mise run
+vendor-engineering` follows upstream `main`, so it is the intake's task, not an edit's.
 
 ## Tuning contract
 
@@ -60,3 +62,5 @@ Before every commit that changes this package, run
 Also run
 `mise run test-engineering-package` and validate both JSON manifests when
 package metadata changes.
+
+A change's new tests of `approvals.py` go in a module of their own, `tests/test_approvals_<topic>.py`, one per change and never shared by two open PRs, importing the shared harness and each autouse fixture by name from `tests/approvals_harness.py`, since tests appended to the end of `test_approvals.py` make every two PRs in flight conflict there.

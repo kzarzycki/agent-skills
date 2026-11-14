@@ -7,12 +7,15 @@ import io
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 SKILL = Path(__file__).resolve().parents[1] / "skills/agent-hygiene"
 SCRIPT = SKILL / "scripts/agent-hygiene"
@@ -95,11 +98,16 @@ def test_brew_skips_a_prefix_whose_lock_folder_it_cannot_write(tmp_path, monkeyp
         return (tmp_path / "log").read_text()
 
     assert "would run brew cleanup" in said()
-    locks.chmod(0o555)
-    try:
-        assert said().endswith(f"skip brew: this account does not own {prefix}\n")
-    finally:
-        locks.chmod(0o755)
+    # fake the write check the code uses: file modes do not stop root
+    real_access = hygiene.os.access
+    monkeypatch.setattr(
+        hygiene.os,
+        "access",
+        lambda path, mode, *a, **k: (
+            False if Path(path) == locks else real_access(path, mode, *a, **k)
+        ),
+    )
+    assert said().endswith(f"skip brew: this account does not own {prefix}\n")
 
 
 def test_agent_hygiene(tmp_path, monkeypatch):
@@ -197,6 +205,11 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         "copydiff",
         "mystatic",
         "copydir",
+        "tmpold",
+        "tmpnew",
+        "tmpkeep",
+        "tmpkeepmix",
+        "tmpfile",
     ):
         git(repo, "worktree", "add", "-q", "-b", branch, str(dev / f"wt-{branch}"))
         wt = dev / f"wt-{branch}"
@@ -208,6 +221,15 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         if branch == "webuisrc":  # a tracked web-ui/ source dir, with a local ignored file in it
             (wt / "web-ui").mkdir()
             (wt / "web-ui/app.js").write_text("source")
+        if branch.startswith(
+            "tmp"
+        ):  # a repo that does not ignore tmp/: its reports are untracked, `?? tmp/`
+            (wt / ".gitignore").write_text((repo / ".gitignore").read_text() + "!tmp\n")
+        if branch.startswith(
+            "tmpkeep"
+        ):  # a tracked tmp/.gitkeep: git lists each report, `?? tmp/old.md`
+            (wt / "tmp").mkdir()
+            (wt / "tmp/.gitkeep").write_text("")
         if branch.startswith("apm"):  # what `apm install` deployed, as its lockfile lists it
             (wt / "apm.lock.yaml").write_text(
                 "dependencies:\n- repo_url: o/skills\n  deployed_files:\n"
@@ -245,6 +267,11 @@ def test_agent_hygiene(tmp_path, monkeypatch):
             "copydiff",
             "mystatic",
             "copydir",
+            "tmpold",
+            "tmpnew",
+            "tmpkeep",
+            "tmpkeepmix",
+            "tmpfile",
         ):
             git(wt, "push", "-q", "origin", branch)
         merged[branch] = git(wt, "rev-parse", "HEAD")
@@ -288,6 +315,31 @@ def test_agent_hygiene(tmp_path, monkeypatch):
     (dev / "wt-squashed/pkg/mod.pyc").write_text("")
     for path in [*(dev / "wt-squashed/tmp").rglob("*"), dev / "wt-squashed/tmp"]:
         os.utime(path, (old, old))  # a day-old tmp/ goes
+    for name in ("tmpold", "tmpnew"):
+        (dev / f"wt-{name}/tmp/loop").mkdir(parents=True)
+        (dev / f"wt-{name}/tmp/loop/report.md").write_text("proof")
+    for path in [*(dev / "wt-tmpold/tmp").rglob("*"), dev / "wt-tmpold/tmp"]:
+        os.utime(
+            path, (old, old)
+        )  # an untracked tmp/ a day old goes; one changed today stays, unasked
+    (dev / "wt-tmpkeep/tmp/link").symlink_to(
+        ".."
+    )  # a link to a directory goes as a link, not by rmtree
+    os.utime(dev / "wt-tmpkeep/tmp/link", (old, old), follow_symlinks=False)
+    for name in (
+        "tmpkeep",
+        "tmpkeepmix",
+    ):  # untracked files beside a tracked one count like a folded tmp/
+        (dev / f"wt-{name}/tmp/old.md").write_text("proof")
+        for path in (dev / f"wt-{name}/tmp/old.md", dev / f"wt-{name}/tmp"):
+            os.utime(path, (old, old))
+    (dev / "wt-tmpfile/tmp").write_text(
+        "mine"
+    )  # an untracked file named tmp is not a tmp/ directory
+    os.utime(dev / "wt-tmpfile/tmp", (old, old))
+    (dev / "wt-tmpkeepmix/tmp/new.md").write_text(
+        "today"
+    )  # changed today: the worktree stays, unasked
     (dev / "wt-fresh/tmp/loop").mkdir(parents=True)  # a lead may still read today's report
     (dev / "wt-fresh/tmp/loop/report.md").write_text("proof")
     for name in ("apm", "apm-mine", "apm-bad"):
@@ -498,7 +550,10 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
     )  # the real ones would fetch and run
     hygiene.CACHES = [(n, c, 1 if n == "go" else t, b) for n, c, t, b in hygiene.CACHES]
     told = []
-    hygiene.tell = lambda text: told.append(text) or "cos-session"
+    hygiene.told_to = []
+    hygiene.tell = lambda text, repo=None: (
+        told.append(text) or hygiene.told_to.append(repo) or "cos-session"
+    )
     pin = {"remote": {"defaultEnvironmentId": "env_1"}}
     for text, wanted in (
         (json.dumps(pin), True),
@@ -536,6 +591,11 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
             "wt-swift-dotbuild",
             "wt-swift-foo",
             "wt-fresh/tmp/loop/report.md",
+            "wt-tmpnew/tmp/loop/report.md",
+            "wt-tmpkeepmix/tmp/old.md",
+            "wt-tmpkeepmix/tmp/new.md",
+            "wt-tmpkeepmix/tmp/.gitkeep",
+            "wt-tmpfile/tmp",
             "wt-apm-mine/.claude/skills/mine/SKILL.md",
             "wt-held/held.lock",
             "wt-apm-bad/.claude/skills/mine/SKILL.md",
@@ -579,6 +639,8 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
             "wt-nest/.worktrees/agent",
             "wt-nest",
             "wt-squashed",
+            "wt-tmpold",
+            "wt-tmpkeep",
             "wt-apm",
             "wt-locks",
             "wt-lockdir",
@@ -616,6 +678,9 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
     assert not old_state.exists() and (home / ".local/state/agent-hygiene/carried").exists()
     code, out = run("--floor-gb", "0")
     assert code == 0, out
+    assert "o/r" in hygiene.told_to and any(  # a worktree question goes to its repo's manager
+        "wt-dirty" in text and "simulator" not in text for text in told
+    ), (hygiene.told_to, told)
     assert all(p.exists() for p in kept), out
     for name in ("swift-build", "swift-dotbuild", "swift-foo"):
         line = next(
@@ -652,6 +717,10 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
             "another checkout is inside it"
         ),
         f"skip worktree {dev}/wt-fresh (o/r#7 merged): its tmp/ changed in the last 24 h",
+        f"skip worktree {dev}/wt-tmpnew (o/r#7 merged): its tmp/ changed in the last 24 h",
+        f"skip worktree {dev}/wt-tmpkeepmix (o/r#7 merged): its tmp/ changed in the last 24 h\n",
+        f"removed worktree {dev}/wt-tmpkeep (o/r#7 merged)",
+        f"skip worktree {dev}/wt-tmpfile (o/r#7 merged): not clean: ?? tmp\n",
         f"skip worktree {dev}/wt-apm-mine (o/r#7 merged): ignored files that may not rebuild: .claude/skills/mine/SKILL.md\n",
         f"skip worktree {dev}/wt-held (o/r#7 merged): a process has it open",
         f"skip worktree {dev}/wt-deep-tmp (o/r#7 merged): its tmp/ changed in the last 24 h",
@@ -1153,6 +1222,59 @@ def test_tell(tmp_path, monkeypatch):
             server.server_close()
 
 
+def test_tell_sends_a_repos_question_to_its_project_manager(tmp_path, monkeypatch):
+    """Of a live chief of staff and a live manager of o/r, a question about o/r's worktree goes to the manager, the rest to
+    the chief of staff, and a repo no manager names goes to the chief of staff."""
+    monkeypatch.setenv("HOME", str(tmp_path.resolve()))
+    hygiene = load("agent_hygiene_route")
+    posts = []
+    sessions = [
+        {"id": "cos1", "labels": {"omni.role": "cos"}},
+        {"id": "pm-other", "labels": {"omni.role": "pm", "omni.repos": "other"}},
+        {"id": "pm-old", "labels": {"omni.role": "pm", "omni.repos": "r"}, "archived": True},
+        {"id": "pm1", "labels": {"omni.role": "pm", "omni.repos": "r"}},
+    ]
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def reply(self, body):
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            self.reply(
+                {"data": sessions}
+                if self.path.startswith("/v1/sessions?")
+                else {"runner_online": True}
+            )
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            posts.append(self.path)
+            self.reply({})
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    (tmp_path / ".omnigent").mkdir()
+    (tmp_path / ".omnigent/config.yaml").write_text(f"server: {url}\n")
+    hygiene.OMNIGENT_PYTHON = sys.executable
+    hygiene.LOGINS = f'import json; print(json.dumps({{"{url}": "t"}}))'
+    try:
+        assert hygiene.tell("about r", "kzarzycki/r") == f"pm1 on {url}"
+        assert hygiene.tell("about nobody", "o/none") == f"cos1 on {url}"
+        assert hygiene.tell("the rest") == f"cos1 on {url}"
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert posts == [f"/v1/sessions/{sid}/events" for sid in ("pm1", "cos1", "cos1")], posts
+
+
 def test_dead_terminals(tmp_path, monkeypatch):
     """Real child processes stand in for terminal wrappers; only their ppid is faked, since a test's children are not orphans."""
     hygiene = load("agent_hygiene_terminals")
@@ -1290,3 +1412,243 @@ def test_dead_terminals(tmp_path, monkeypatch):
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(p.pid, signal.SIGKILL)
             p.wait()
+
+
+def uv_lock_setup(tmp_path, monkeypatch, holders, ps, txt, env=None):
+    """agent-hygiene with only the uv cache, and stubbed uv, lsof and ps; a plain prune hangs, a forced one works."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    hygiene = load("agent_hygiene_uv_lock")
+    cache = (tmp_path / "uvcache").resolve()
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    stubs = {
+        "uv": f'[ "$1 $2" = "cache dir" ] && {{ echo {cache}; exit 0; }}\n'
+        'case "$*" in *--force*) echo forced; exit 0;; esac\nexec sleep 5',
+        "ps": f"cat {tmp_path}/ps.txt",
+        "lsof": 'case "$*" in\n'
+        f'  *.lock) printf "{holders}";;\n'
+        + "".join(
+            f"  *-p\\ {pid}) " + ("exit 1" if out is None else f'printf "{out}"') + ";;\n"
+            for pid, out in txt.items()
+        )
+        + "esac",
+    }
+    for name, body in stubs.items():
+        (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
+        (bin_ / name).chmod(0o755)
+    (tmp_path / "ps.txt").write_text(ps)
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    monkeypatch.setattr(hygiene, "CACHES", [("uv", ["uv", "cache", "prune"], 1, None)])
+    monkeypatch.setattr(hygiene, "read_environ", lambda pid: (env or {}).get(pid, {}))
+    run = hygiene.Run(False, tmp_path / "log")
+    hygiene.caches(run, [], [])
+    return cache, (tmp_path / "log").read_text()
+
+
+def test_uv_lock_held_only_by_old_uv_run_forces_the_prune(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run server.py\n12 11 05:00 /venv/bin/python server.py\n21 1 1-02:00:00 /bin/uvx tool\n"
+    _, said = uv_lock_setup(
+        tmp_path,
+        monkeypatch,
+        r"p11\np21\n",
+        ps,
+        {11: r"n/usr/bin/uv\n", 12: r"n/venv/bin/python\n", 21: r"n/usr/bin/uvx\n"},
+    )
+    assert "uv cache lock held by pid 11 (uv run server.py) started " in said, said
+    assert "uv cache lock held by pid 21 (/bin/uvx tool) started " in said, said
+    assert "uv: uv cache prune --force: freed" in said and "skip" not in said, said
+
+
+def test_uv_lock_holder_running_from_the_cache_is_not_forced(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run --script s.py\n12 11 05:00 python s.py\n"
+    cache = tmp_path.resolve() / "uvcache"
+    _, said = uv_lock_setup(
+        tmp_path,
+        monkeypatch,
+        r"p11\n",
+        ps,
+        {11: r"n/usr/bin/uv\n", 12: rf"n{cache}/environments-v2/s-abc/bin/python\n"},
+    )
+    assert "forcing" not in said and "--force" not in said, said
+    assert "skip uv: still running after 1s, in use; pid 11 (uv run --script s.py) runs " in said, (
+        said
+    )
+    assert "environments-v2/s-abc/bin/python from the cache" in said, said
+
+
+def test_uv_lock_held_by_another_process_keeps_the_skip(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run server.py\n31 1 09:00 uv sync\n"
+    _, said = uv_lock_setup(tmp_path, monkeypatch, r"p11\np31\n", ps, {11: "", 31: ""})
+    assert "forcing" not in said and "--force" not in said, said
+    assert (
+        "skip uv: still running after 1s, in use; the lock is held by pid 31 (uv sync)" in said
+    ), said
+
+
+def test_uv_lock_held_by_a_uv_run_younger_than_the_wait_is_not_forced(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run server.py\n41 1 00:00 uv run fresh.py\n"
+    _, said = uv_lock_setup(
+        tmp_path, monkeypatch, r"p11\np41\n", ps, {11: r"n/usr/bin/uv\n", 41: r"n/usr/bin/uv\n"}
+    )
+    assert "forcing" not in said and "--force" not in said, said
+    assert "the lock is held by pid 41 (uv run fresh.py), not a uv run older than the wait" in said
+
+
+def test_uv_lock_with_a_failed_interpreter_lookup_is_not_forced(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run server.py\n12 11 05:00 python server.py\n"
+    _, said = uv_lock_setup(tmp_path, monkeypatch, r"p11\n", ps, {11: r"n/usr/bin/uv\n", 12: None})
+    assert "forcing" not in said and "--force" not in said, said
+    assert "the open-file lookup for pid 12 of pid 11 (uv run server.py) failed" in said, said
+
+
+def test_uv_lock_holder_with_a_symlinked_interpreter_in_the_cache_is_not_forced(
+    tmp_path, monkeypatch
+):
+    """A link inside the cache to a system python is still the holder's environment."""
+    cache = tmp_path.resolve() / "uvcache"
+    (cache / "environments-v2/s-abc/bin").mkdir(parents=True)
+    link = cache / "environments-v2/s-abc/bin/python"
+    link.symlink_to(sys.executable)
+    ps = "11 1 05:00 uv run --script s.py\n12 11 05:00 python s.py\n"
+    _, said = uv_lock_setup(
+        tmp_path, monkeypatch, r"p11\n", ps, {11: r"n/usr/bin/uv\n", 12: rf"n{link}\n"}
+    )
+    assert "forcing" not in said and "--force" not in said, said
+    assert f"runs {link} from the cache" in said, said
+
+
+def test_uv_lock_holder_with_a_library_or_cwd_in_the_cache_is_not_forced(tmp_path, monkeypatch):
+    """lsof names a link's target, so only the files a python maps or sits in show its environment."""
+    ps = "11 1 05:00 uv run server.py\n12 11 05:00 python server.py\n"
+    for name, entry in (
+        ("lib", "archive-v0/x/site-packages/numpy/core.so"),
+        ("cwd", "environments-v2/s"),
+    ):
+        root = tmp_path / name
+        root.mkdir()
+        cache = root.resolve() / "uvcache"
+        _, said = uv_lock_setup(
+            root,
+            monkeypatch,
+            r"p11\n",
+            ps,
+            {11: r"n/usr/bin/uv\n", 12: rf"n/usr/bin/python3\nn{cache}/{entry}\n"},
+        )
+        assert "forcing" not in said and "--force" not in said, said
+        assert f"runs {cache}/{entry} from the cache" in said, said
+
+
+def uv_real_holder(tmp_path, monkeypatch, alias, masked=False):
+    """uv_force against the real lsof and ps and a real process holding the lock through a link in the cache."""
+    hygiene = load("agent_hygiene_uv_real")
+    real = tmp_path.resolve() / "real"
+    (real / "env/bin").mkdir(parents=True)
+    (real / "env/bin/uv").symlink_to(sys.executable)
+    shown = real
+    if alias:
+        shown = tmp_path.resolve() / "alias"
+        shown.symlink_to(real)
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "uv").write_text(f"#!/bin/sh\necho {shown}\n")
+    (bin_ / "uv").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    ready = tmp_path / "ready"
+    script = tmp_path / "hold.py"
+    script.write_text(
+        f"import time\nlock = open({str(real / '.lock')!r}, 'a')\n"
+        f"open({str(ready)!r}, 'w').close()\ntime.sleep(60)\n"
+    )
+    # the command reads `uv -X run ...`: a one-word-argument python launched through the cache link
+    code = 'exec(open(__import__("sys").argv[1]).read())'.replace(" ", "")
+    if masked:
+        # a python run through the cache link under another name, from outside the cache: no lsof entry or
+        # argument names the cache, only the environment `uv run` sets does
+        env = {
+            **os.environ,
+            "VIRTUAL_ENV": str(shown / "env"),
+            "PATH": f"{shown}/env/bin:{os.environ['PATH']}",
+        }
+        child = subprocess.Popen(
+            ["uv", "-X", "run", "-c", code, str(script)],
+            executable=str(shown / "env/bin/uv"),
+            cwd=tmp_path,
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
+    else:
+        child = subprocess.Popen(
+            [str(shown / "env/bin/uv"), "-X", "run", "-c", code, str(script)],
+            stdin=subprocess.DEVNULL,
+        )
+    try:
+        for _ in range(100):
+            if ready.exists():
+                break
+            time.sleep(0.1)
+        assert ready.exists()
+        time.sleep(2)  # ps shows whole seconds: older than a wait of 0
+        run = hygiene.Run(False, tmp_path / "log")
+        return hygiene.uv_force(run, 0), child.pid
+    finally:
+        child.kill()
+        child.wait()
+
+
+@pytest.mark.skipif(not shutil.which("lsof"), reason="needs the real lsof")
+@pytest.mark.parametrize("alias", [False, True])
+def test_uv_lock_holder_started_through_a_cache_link_is_not_forced_by_real_lsof(
+    tmp_path, monkeypatch, alias
+):
+    (forced, why), pid = uv_real_holder(tmp_path, monkeypatch, alias)
+    assert forced is None, why
+    assert f"pid {pid}" in why and "cache" in why, why
+
+
+@pytest.mark.skipif(
+    not shutil.which("lsof") or not Path("/proc/self/environ").exists(),
+    reason="needs lsof and /proc",
+)
+@pytest.mark.parametrize("alias", [False, True])
+def test_uv_lock_holder_hidden_but_for_its_environment_is_not_forced(tmp_path, monkeypatch, alias):
+    """A python run through a cache link, renamed, from outside the cache: the environment is the one sign."""
+    (forced, why), pid = uv_real_holder(tmp_path, monkeypatch, alias, masked=True)
+    assert forced is None, why
+    assert f"pid {pid}" in why and "in its environment" in why, why
+
+
+def test_uv_lock_holder_with_an_environment_in_the_cache_is_not_forced(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run server.py\n12 11 05:00 python server.py\n"
+    for name, key, tail in (
+        ("venv", "VIRTUAL_ENV", "environments-v2/s-abc"),
+        ("path", "PATH", "environments-v2/s-abc/bin"),
+        ("pythonpath", "PYTHONPATH", "archive-v0/x"),
+    ):
+        root = tmp_path / name
+        root.mkdir()
+        cache = root.resolve() / "uvcache"
+        env = {key: f"/usr/bin:{cache}/{tail}" if key != "VIRTUAL_ENV" else f"{cache}/{tail}"}
+        _, said = uv_lock_setup(
+            root,
+            monkeypatch,
+            r"p11\n",
+            ps,
+            {11: r"n/usr/bin/uv\n", 12: r"n/usr/bin/python3\n"},
+            {12: env},
+        )
+        assert "forcing" not in said and "--force" not in said, said
+        assert "in its environment" in said, said
+
+
+def test_uv_lock_holder_with_an_unreadable_environment_is_not_forced(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run server.py\n12 11 05:00 python server.py\n"
+    _, said = uv_lock_setup(
+        tmp_path,
+        monkeypatch,
+        r"p11\n",
+        ps,
+        {11: r"n/usr/bin/uv\n", 12: r"n/usr/bin/python3\n"},
+        {12: None},
+    )
+    assert "forcing" not in said and "--force" not in said, said
+    assert "the environment of pid 12 of pid 11 (uv run server.py) could not be read" in said, said

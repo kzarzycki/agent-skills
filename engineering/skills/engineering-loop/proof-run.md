@@ -1,8 +1,8 @@
 # Proof run
 
 A brief the lead fills in and sends to a cloud child (`run --pr <n>`, SKILL.md, Cloud worker)
-when a verifier asks for its runs because the host's heavy slot was not free (verifier.md,
-A full heavy slot). The child returns the logs; the verifier reads them as its own. The undo
+when a verifier asks for its runs because the host's heavy slot was not free, or its sandbox refused a run (verifier.md,
+A run the sandbox refuses). The child returns the logs; the verifier reads them as its own. The undo
 and redo commands are the ones verifier.md, Mutation-check the new tests gives for its
 patches, copied from the verifier's question, since the template would drift from that
 paragraph if it named them itself.

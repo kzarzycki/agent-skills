@@ -306,10 +306,15 @@ def test_the_poll_hands_the_boards_standing_decisions_to_the_model(
 ) -> None:
     board = tmp_path / "board.md"
     board.write_text("## Standing decisions\n- merge on green\n\n## Needs the owner\n- x\n")
-    seen = []
+    (tmp_path / "projects" / "app").mkdir(parents=True)
+    (tmp_path / "projects" / "app" / "board.md").write_text("")
+    (tmp_path / "app-leads.registry").write_text("")
+    (tmp_path / "app-leads.state.json").write_text(json.dumps({"leads": {SID: {"title": "t"}}}))
+    seen, got = [], []
 
     def collect(og: object, leads: dict, memo: dict, **kw: object) -> list:
         seen.append(kw.get("decisions"))
+        got.append(set(leads))
         memo.update(warnings=[], projects=["trinity"])
         return []
 
@@ -326,6 +331,7 @@ def test_the_poll_hands_the_boards_standing_decisions_to_the_model(
     with pytest.raises(SystemExit):
         cos_page.poll(snap, tmp_path / "leads.registry", board, "https://work.example")
     assert seen == ["- merge on green"] and snap["error"] is None
+    assert got == [{SID}]  # a manager's leads are polled too
     assert snap["projects"] == ["trinity"]
     assert servers == ["https://work.example"]  # the page reads the server its links point to
 
@@ -373,3 +379,37 @@ def test_a_board_bullet_joins_its_sessions_project_else_the_area_it_names(tmp_pa
     assert f"/c/{C}" in group("Voice note") and "follow-ups" in group("Voice note")  # its session's
     assert "fix the transcript" in group("Voice note") and "Pick a name" in group("Other")
     assert "🟡 2 later" in group("Disk space")
+
+
+def test_the_page_reads_every_node_of_a_chief_of_staff_tree(tmp_path: Path) -> None:
+    (tmp_path / "board.md").write_text("## Needs the owner\n- 🔴 **app:** root ask\n")
+    reports, node = tmp_path / "reports", tmp_path / "projects" / "app"
+    reports.mkdir()
+    node.mkdir(parents=True)
+    (node / "board.md").write_text(
+        "## Needs the owner\n- 🔴 **Android:** manager ask\n- 🔴 **App:** own area\n"
+    )
+    (reports / "app-leads.registry").write_text("")
+    (reports / "app-leads.state.json").write_text(
+        json.dumps({"leads": {SID: {"title": "App lead", "state": "blocked"}}})
+    )
+    (reports / "app-leads.events.jsonl").write_text(
+        json.dumps({"at": 5, "session": SID, "kind": "quiet"})
+    )
+    (reports / "leads.events.jsonl").write_text(
+        json.dumps({"at": 3, "session": SID, "kind": "stalled"})
+    )
+    snap = {"rows": [], "at": 0, "projects": ["app"]}
+    page = cos_page.render(reports / "leads.registry", tmp_path / "board.md", URL, snap, now=10)
+    now = page.split("Needs you now")[1].split("By project")[0]
+    app = now.split("<h3>app</h3>")[1]
+    assert app.index("root ask") < app.index("Android: manager ask")  # the root's first, area kept
+    assert "<b>own area</b>" in app  # its own name as the area adds nothing
+    assert "App lead" in now  # the manager's supervisor state
+    assert page.index(">quiet") < page.index(">stalled")  # every node's events, newest first
+    assert "app-leads" not in page  # read, so no warning
+    for f in reports.glob("app-leads.*"):  # a manager with no supervisor yet warns of nothing
+        f.unlink()
+    assert "app-leads" not in cos_page.render(
+        reports / "leads.registry", tmp_path / "board.md", URL, snap
+    )

@@ -41,6 +41,10 @@ class BreakingDriftError(QualificationError):
     """An imported skill disappeared or was renamed upstream."""
 
 
+class QualificationTimeoutError(QualificationError):
+    """A step stopped on ``QUALIFY_TIMEOUT``: the host was too slow, nothing failed."""
+
+
 class PatchError(QualificationError):
     def __init__(self, patch: str, detail: str) -> None:
         super().__init__(f"patch failed: {patch}: {detail}")
@@ -846,8 +850,8 @@ def _timeout(default: int = 120) -> int:
     return int(raw)
 
 
-def _timed_out(what: str, timeout: int) -> QualificationError:
-    return QualificationError(
+def _timed_out(what: str, timeout: int) -> QualificationTimeoutError:
+    return QualificationTimeoutError(
         f"{what} timed out after {timeout} seconds; on a loaded host raise {TIMEOUT_VARIABLE}"
     )
 
@@ -996,9 +1000,15 @@ def _validate_locked_reproduction(package: Path, proposed: Provenance) -> None:
         raise QualificationError("locked reproduction differs from committed legal files")
 
 
+LOCKED_TEST_COMMAND = "python -m pytest -q -m 'not live_agent' tests"
+LOCKED_TEST_SKIPPED = (
+    "NOT RUN (locked: the stage matches the committed package, which mise run test covers)"
+)
+
+
 def _run_package_tests(stage: Path) -> tuple[str, str]:
     tests = stage / "tests"
-    command_text = "python -m pytest -q -m 'not live_agent' tests"
+    command_text = LOCKED_TEST_COMMAND
     if not tests.is_dir():
         return command_text, "NOT RUN (no package tests)"
     env = os.environ.copy()
@@ -1033,14 +1043,14 @@ def _replace_atomically(package: Path, staged: Path) -> None:
 
 def qualify(
     package_root: Path,
-    mode: Literal["update", "locked"],
+    mode: Literal["update", "locked", "regenerate"],
     summary_path: Path | None = None,
     *,
     source_tag: str | None = None,
     candidate_commit: str | None = None,
 ) -> QualificationResult:
     package = package_root.resolve()
-    if mode not in {"update", "locked"}:
+    if mode not in {"update", "locked", "regenerate"}:
         raise ValueError(f"unknown qualification mode: {mode}")
     if not package.is_dir():
         raise ConfigurationError(f"package does not exist: {package}")
@@ -1103,7 +1113,8 @@ def qualify(
                 tuple(policy.get("exclusions", [])),
             )
         managed = _managed_skills(committed_config)
-        _sync_manifest(staged, mode)
+        # regenerate writes like update but syncs the lock's commit, so an overlay edit stays local.
+        _sync_manifest(staged, "update" if mode == "update" else "locked")
         if mode == "update":
             (staged / VENDIR_MANIFEST).write_text(yaml.safe_dump(committed_config, sort_keys=False))
         _validate_symlinks(staged)
@@ -1138,10 +1149,10 @@ def qualify(
         source_commit = _source_commit(staged)
         source_mappings = _source_mappings(committed_config, source_commit, inventory)
         license_files = _license_manifest(staged, previous, (committed_config,))
-        if mode == "update" and previous and previous.license_files != license_files:
+        if mode != "locked" and previous and previous.license_files != license_files:
             raise LicenseDriftError("upstream license files changed; explicit review is required")
         tuned = tuple(sorted(set(overlay_names) & set(managed)))
-        if mode == "update" and previous:
+        if mode != "locked" and previous:
             _require_ported(package, previous, source_files, source_commit, tuned, source_mappings)
         patch_files: tuple[FileHash, ...] = ()
         try:
@@ -1222,13 +1233,22 @@ def qualify(
         has_versioned_metadata = (staged / "apm.yml").exists() or (
             staged / ".claude-plugin" / "plugin.json"
         ).exists()
-        if mode == "update" and content_changed and has_versioned_metadata:
+        if mode != "locked" and content_changed and has_versioned_metadata:
             proposed_version = _update_package_version(
                 staged,
                 _version_magnitude(previous, source_tag, (*added, *retired)),
                 _released_version(package),
             )
-        test_command, test_result = _run_package_tests(staged)
+        if mode == "locked":
+            # An identical stage is the pass condition, so validate it first: the staged
+            # tests would run the files `mise run test` runs from the checkout.
+            _validate_locked_reproduction(package, proposed)
+            if previous and previous != proposed:
+                raise QualificationError("locked reproduction differs from committed provenance")
+            test_command = LOCKED_TEST_COMMAND
+            test_result = LOCKED_TEST_SKIPPED
+        else:
+            test_command, test_result = _run_package_tests(staged)
         summary = render_summary(
             previous,
             proposed,
@@ -1243,15 +1263,12 @@ def qualify(
             transitioned_to_owned=overlay_names,
             retired=retired,
         )
-        if mode == "update":
+        if mode != "locked":
             if summary_path:
                 summary_path.write_text(summary)
             _replace_atomically(package, staged)
             changed = previous != proposed
         else:
-            _validate_locked_reproduction(package, proposed)
-            if previous and previous != proposed:
-                raise QualificationError("locked reproduction differs from committed provenance")
             if summary_path:
                 summary_path.write_text(summary)
             changed = False
