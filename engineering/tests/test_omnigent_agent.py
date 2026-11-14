@@ -9749,6 +9749,14 @@ def test_the_cloud_preamble_forbids_a_question_tool_a_page_and_a_session_link() 
     assert "co-author line only, with no session link, since the commit reaches a" in preamble
 
 
+def test_the_cloud_preamble_reads_issues_and_prs_through_rest() -> None:
+    """GraphQL answers 403 in a cloud VM, so `gh issue view` and `gh pr view` fail there (#1011)."""
+    preamble = omnigent_agent.PR_PREAMBLE
+    assert "Read issues and PRs through REST too, since GraphQL answers 403 here" in preamble
+    assert "`gh api repos/{{owner}}/{{repo}}/issues/<n>` and `.../pulls/<n>`" in preamble
+    assert "never `gh issue view` or `gh pr view`" in preamble
+
+
 class CloudFake(FakeOmnigent):
     """Sessions of ``claude-cloud``, whose record names the agent (``CLOUD_RECORD``), not its
     harness."""
