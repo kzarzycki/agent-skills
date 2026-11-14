@@ -215,7 +215,7 @@ def test_land_decides_under_the_policy_it_fetched_under_the_lock(
     )
     assert approvals.landing(7) == (0, False)
     [(named, policy)] = judged
-    assert (policy["gate"], policy["owner"]) == ("echo newer", "ann")
+    assert (policy["gate"], policy.get("owner")) == ("echo newer", "ann")
     assert "verdict" not in named[0]
 
 
