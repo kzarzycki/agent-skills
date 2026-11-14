@@ -22,14 +22,15 @@ from approvals_harness import (
 )
 
 LOOP = "docs/agents/loop.md"
-REAL = approvals.base_drift  # the shared fixtures replace it per test
+REAL = approvals.judge_with_base  # the shared fixtures replace it per test
 
 
 @pytest.fixture(autouse=True)
 def judging(monkeypatch: pytest.MonkeyPatch, lands: dict[str, Any], pushed: None) -> dict[str, Any]:
     """The real comparison back (the shared fixtures stub it), in a checkout whose policy files and a copy of the script
     are on origin's main, as a project that adopted the loop has them."""
-    monkeypatch.setattr(approvals, "base_drift", REAL)
+    monkeypatch.setattr(approvals, "judge_with_base", REAL)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)  # CI sets it; the tests that need it say so
     work = lands["work"]
     script = work / "scripts" / "approvals.py"
     script.parent.mkdir()
