@@ -433,6 +433,18 @@ def test_every_brief_says_a_message_that_adds_no_task_never_rewrites_the_report(
         assert RELAY_RULE in omnigent_agent.brief_of(report).read_text()
 
 
+def test_a_held_cloud_worker_with_a_pr_still_gets_the_relay_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deny = tmp_path / "deny.txt"
+    deny.write_text("Acme\n")
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    og = FakeOmnigent()
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, pr=7)
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    assert "which you don't post" in brief and RELAY_RULE in brief
+
+
 def test_a_running_session_signs_from_its_omnigent_record_first(tmp_path: Path) -> None:
     """A Codex child's rollout sits under a private CODEX_HOME, so the record is what holds."""
     rows = [

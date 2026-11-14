@@ -596,10 +596,8 @@ HELD_POST = (
     " comment body verbatim, and it is checked and posted for you."
     " It names no host, path or session, since the PR may be public."
 )
-SELF_POSTED = re.compile(
-    r"Your final report is one comment on PR #\{pr\}, posted once.*?(?=\n(?:A file under|Never address))",
-    re.DOTALL,
-)
+# The report paragraph is one line, so a sentence added after it survives the swap.
+SELF_POSTED = re.compile(r"Your final report is one comment on PR #\{pr\}, posted once[^\n]*")
 WHEN_POSTED = re.compile(r"When done, reply with only the comment's URL\..*?(?=\n\n)", re.DOTALL)
 # A top-level lead talks to the owner directly, so it asks instead of writing a question; and since
 # anyone may have written its brief, it says whose words approve.
