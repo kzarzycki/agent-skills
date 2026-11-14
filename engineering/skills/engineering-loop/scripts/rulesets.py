@@ -31,7 +31,6 @@ import argparse
 import json
 import subprocess
 import sys
-from pathlib import Path
 
 # importing approvals.py would cache its bytecode in the installed skill folder, an untracked change there
 sys.dont_write_bytecode = True
