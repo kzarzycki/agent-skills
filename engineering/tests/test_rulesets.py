@@ -147,4 +147,4 @@ def test_snapshot_keeps_only_deciding_fields(monkeypatch, tmp_path):
     monkeypatch.setattr(rulesets, "toplevel", lambda: tmp_path)
     assert rulesets.snapshot(REPO) == 0
     written = json.loads((tmp_path / ".github/rulesets/tags-immutable.json").read_text())
-    assert set(written) == set(rulesets.FIELDS) and written["name"] == "tags immutable"
+    assert set(written) == {"name", "target", "enforcement", "conditions", "rules", "bypass_actors"} and written["name"] == "tags immutable"
