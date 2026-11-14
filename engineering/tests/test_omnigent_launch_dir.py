@@ -81,7 +81,9 @@ def test_a_launch_dir_inside_a_same_repo_checkout_is_a_worktree_without_blobs(
     assert git("rev-parse", "--git-common-dir", cwd=dest) == str(main / ".git")  # a linked worktree
     assert git("rev-parse", "HEAD", cwd=dest) == git("rev-parse", "origin/pr-branch", cwd=main)
     assert not (dest / "a.txt").exists() and not (dest / "b.txt").exists()
-    assert not Path(git("rev-parse", "--path-format=absolute", "--git-path", "index", cwd=dest)).exists()
+    assert not Path(
+        git("rev-parse", "--path-format=absolute", "--git-path", "index", cwd=dest)
+    ).exists()
     assert missing(dest, "HEAD") == before and len(before) == 2  # no blob came with it
     pin = json.loads((dest / ".claude" / "settings.local.json").read_text())
     assert pin == {"remote": {"defaultEnvironmentId": "env_1"}}
@@ -127,7 +129,9 @@ def test_trust_is_by_path_so_a_clone_inside_a_trusted_folder_is_untrusted(
     assert not omnigent_agent.folder_trusted(dest)
 
 
-def test_trust_flag_writes_the_entry_as_before(tmp_path: Path, bare: Path, real_trust: Path) -> None:
+def test_trust_flag_writes_the_entry_as_before(
+    tmp_path: Path, bare: Path, real_trust: Path
+) -> None:
     main = checkout(bare, tmp_path / "main")
     dest = tmp_path / "launch"
     omnigent_agent.launch_dir(f"file://{bare}", "main", "env_1", dest, trust=True, here=main)

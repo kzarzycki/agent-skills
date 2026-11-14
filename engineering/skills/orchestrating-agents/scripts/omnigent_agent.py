@@ -2553,8 +2553,12 @@ def launch_dir(
     print(
         f"launch dir {path}: {branch}, environment {env}"
         + (f", worktree of {source[0]}" if source else ", clone")
-        + (", trusted" if trusted else ", NOT trusted: `start` refuses it; re-run from a trusted"
-           " checkout of the repository, or pass --trust as the user's decision")
+        + (
+            ", trusted"
+            if trusted
+            else ", NOT trusted: `start` refuses it; re-run from a trusted"
+            " checkout of the repository, or pass --trust as the user's decision"
+        )
     )
 
 
