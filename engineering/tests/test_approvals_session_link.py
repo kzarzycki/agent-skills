@@ -5,10 +5,13 @@ merge names one it can't edit (#1059)."""
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 import pytest
 from approvals_harness import (
+    HEAD,
     LOOP,
     Cloud,
     added,  # noqa: F401
@@ -224,3 +227,110 @@ def test_over_rest_every_linked_text_is_named_by_its_url_and_none_is_edited(
         " since its page is public"
     )
     capsys.readouterr()
+
+
+def selection(query: str) -> dict[str, Any]:
+    """The fields a GraphQL query selects, as {its key in the answer (an alias, else the field): what it selects
+    under it, or None for a leaf}; arguments are dropped and an inline fragment's fields merge into its parent's."""
+    while re.search(r"\([^()]*\)", query):
+        query = re.sub(r"\([^()]*\)", "", query)
+    tokens = re.findall(r"\.\.\.|\w+|[{}:]", query)
+
+    def fields(at: int) -> tuple[dict[str, Any], int]:
+        found: dict[str, Any] = {}
+        while tokens[at] != "}":
+            if tokens[at] == "...":
+                under, at = fields(at + 4)  # `... on Type {`
+                found.update(under)
+                continue
+            key, at = tokens[at], at + 1
+            if tokens[at] == ":":
+                at += 2  # `alias: field`, answered under the alias
+            under = None
+            if tokens[at] == "{":
+                under, at = fields(at + 1)
+            found[key] = under
+        return found, at + 1
+
+    return fields(tokens.index("{") + 1)[0]
+
+
+def answered(data: Any, selected: dict[str, Any] | None) -> Any:
+    """data as GitHub would answer the selection: only the fields it names, at every depth."""
+    if selected is None or data is None:
+        return data
+    if isinstance(data, list):
+        return [answered(each, selected) for each in data]
+    return {key: answered(data[key], under) for key, under in selected.items() if key in data}
+
+
+def test_the_pr_query_reads_each_texts_link_id_and_right_to_edit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Through pull_request()'s own GraphQL query, answered with only the fields it names: the body's, each
+    conversation comment's, each review's and each thread comment's text, id, link and right to edit all come back,
+    so session_links() finds every one as editable."""
+    link = f"Text.\n\n{LINK}"
+    found = pull(
+        body=link, comments=(editable(note(link), databaseId=11, url="https://example.com/c11"),)
+    )
+    found["viewerCanUpdate"] = True
+    found["reviews"]["nodes"] = [
+        editable(
+            {
+                "author": {"login": "loop"},
+                "state": "COMMENTED",
+                "body": link,
+                "commit": {"oid": HEAD},
+            },
+            databaseId=31,
+            url="https://example.com/v31",
+        )
+    ]
+    found["reviewThreads"] = {
+        "totalCount": 1,
+        "nodes": [
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        editable({"body": link}, databaseId=21, url="https://example.com/r21")
+                    ]
+                },
+            }
+        ],
+    }
+    queries = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        query = next(arg for arg in args if arg.startswith("query="))
+        queries.append(query)
+        return json.dumps(
+            {"data": answered({"repository": {"pullRequest": found}}, selection(query[6:]))}
+        )
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "_rest_only", False)
+    texts = approvals.session_links(approvals.pull_request(7))
+    assert len(queries) == 1
+    assert [(what, method, path, can) for what, method, path, _text, can in texts] == [
+        ("its body", "PATCH", "repos/{owner}/{repo}/pulls/7", True),
+        (
+            "the comment https://example.com/c11",
+            "PATCH",
+            "repos/{owner}/{repo}/issues/comments/11",
+            True,
+        ),
+        (
+            "the review https://example.com/v31",
+            "PUT",
+            "repos/{owner}/{repo}/pulls/7/reviews/31",
+            True,
+        ),
+        (
+            "the comment https://example.com/r21",
+            "PATCH",
+            "repos/{owner}/{repo}/pulls/comments/21",
+            True,
+        ),
+    ]
