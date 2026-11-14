@@ -50,7 +50,7 @@ out the PR's head detached, so nothing the verifier does moves the worker's bran
 off (the VM is the sandbox, and the verifier needs Docker and the network), under an `AGENT_SIGNATURE=` line
 naming the model and effort it was given, and posts the report as one comment on
 the PR through REST, unchanged, printing the comment's URL as its last line. The report is the file the brief's
-`- Report: <path>` line names (approvals.py brief), else Codex's final message; one without a `SATISFIED:` line is
+`- Report: <path>` line names (approvals.py brief), else Codex's final message, else the file inside the checkout that message links; one without a `SATISFIED:` line is
 not posted, and a report or question file counts only when this pass wrote it, so an earlier pass's file is never
 posted again and none is deleted. A verifier that stops on a question (`<report>.question`, verifier.md) gets that file posted
 instead, headed `## Verifier question`. It returns the checkout to where it was. When the verifier left
@@ -439,6 +439,45 @@ def text(path: Path) -> str:
     return path.read_bytes().decode("utf-8", "replace") if path.is_file() else ""
 
 
+ANSWERED = re.compile(r"^## Answer to your question\s*$", re.MULTILINE)
+NEW_IN_ANSWER = re.compile(r"^New in the answer:[ \t]*\S", re.MULTILINE)
+
+
+def repeat_ask(brief: str, ask: str) -> str:
+    """The reason a question is not handed to the lead, else "". A brief carrying the lead's marked answer section
+    (`## Answer to your question`, lead.md) says this pass already had a question answered, so a new one must name
+    what the answer made necessary on a `New in the answer:` line (verifier.md): without it the verifier left runs
+    out of its first question, and each repeat costs another cloud run and heavy-slot hold."""
+    if ANSWERED.search(brief) and not NEW_IN_ANSWER.search(ask):
+        return (
+            "the brief carries the lead's answer to an earlier question, and the new question has no "
+            "`New in the answer:` line, so it is not passed on; list every run the pass needs in one question "
+            "(verifier.md), or name the log of the answer that made another necessary"
+        )
+    return ""
+
+
+def linked_files(final: str) -> list[str]:
+    """What the final message names as a file: markdown link targets, then bare paths ending in .md, each once."""
+    found = re.findall(r"\]\(([^)\s]+)\)", final) + re.findall(
+        r"(?<![\w/.:-])([\w./-]+\.md)\b", final
+    )
+    return [f for i, f in enumerate(found) if "://" not in f and f not in found[:i]]
+
+
+def linked_report(final: str, root: Path) -> tuple[str, str] | None:
+    """The first file the final message names, inside `root`, that holds a `SATISFIED:` line, with its path.
+    A path that resolves outside `root` (an absolute one, `..`, a symlink out) is never read."""
+    top = root.resolve()
+    for name in linked_files(final):
+        path = (top / name).resolve()
+        if top in path.parents and path.is_file():
+            body = text(path)
+            if re.search(r"^SATISFIED:", body, re.MULTILINE):
+                return str(path.relative_to(top)), body
+    return None
+
+
 def codex_exec(cmd: list[str], brief: str) -> int:
     return subprocess.run(cmd, input=brief, text=True, check=False).returncode
 
@@ -506,6 +545,15 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
             p: text(p) for p in (report, question) if p and written(p) not in (None, before[p])
         }
         wrote[final] = text(final)
+        # A verdict of its own in the report file, else in the final message, wins. Failing both, Codex may have
+        # written the report elsewhere and ended on a link to it: read it before the checkout goes back.
+        if not re.search(r"^SATISFIED:", wrote.get(report, ""), re.MULTILINE):
+            if re.search(r"^SATISFIED:", wrote[final], re.MULTILINE):
+                wrote.pop(report, None)
+            elif linked := linked_report(wrote[final], Path.cwd()):
+                print(f"the report is read from {linked[0]}, which the final message names")
+                wrote[final] = linked[1]
+                wrote.pop(report, None)
     finally:
         # The script never deletes or restores a file: git can't say which leftover hides something older (an
         # ignored file, a folder with its own repository), so a tree the verifier changed stays as it is,
@@ -518,6 +566,9 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         wrote.get(report, "").strip() and wrote[report] or wrote[final],
     )
     try:
+        if not code and ask.strip() and (why := repeat_ask(brief, ask)):
+            print(f"cloud_verifier: {why}", file=sys.stderr)
+            return 4 if stuck else 1
         if not code and ask.strip():
             # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
             print(post(pr, f"## Verifier question\n\n{ask}"))
@@ -842,6 +893,10 @@ def thread_verify(
         code, body = thread_exec(rpc, thread, env, f"cat {shlex.quote(checkout + '/' + str(out))}")
         body = body if not code else ""
     body = body.strip() or final.strip()
+    if (
+        "SATISFIED:" not in body and "SATISFIED:" in final
+    ):  # the final message's own verdict beats a link
+        body = final.strip()
     print(f"quota after: {quota(token)}")
     if (
         out and "SATISFIED:" not in body
@@ -849,12 +904,30 @@ def thread_verify(
         code, asked = thread_exec(
             rpc, thread, env, f"cat {shlex.quote(checkout + '/' + str(out) + '.question')}"
         )
+        if not code and asked.strip() and (why := repeat_ask(brief, asked)):
+            print(f"cloud_verifier: {why}", file=sys.stderr)
+            return 1
         if not code and asked.strip():
             out.parent.mkdir(parents=True, exist_ok=True)
             question = out.with_name(out.name + ".question")
             question.write_text(asked)
             print(question)
             return 3
+    if "SATISFIED:" not in body:
+        # the final message may end on a link to a report written elsewhere in the checkout (never outside it)
+        top = shlex.quote(checkout)
+        for name in linked_files(final):
+            code, got = thread_exec(
+                rpc,
+                thread,
+                env,
+                f'cd {top} && p=$(realpath -- {shlex.quote(name)}) && test -f "$p" '
+                f'&& case "$p" in "$(realpath .)"/*) cat "$p";; *) exit 1;; esac',
+            )
+            if not code and re.search(r"^SATISFIED:", got, re.MULTILINE):
+                print(f"the report is read from {name}, which the final message names")
+                body = got
+                break
     if "SATISFIED:" not in body:
         print(
             f"the verifier wrote no report with a SATISFIED: line; its last message: {final.strip()[-500:]}",

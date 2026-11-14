@@ -440,6 +440,31 @@ def test_the_final_message_is_the_report_when_the_brief_names_no_file(checkout) 
     )  # no model named: Codex's configured default
 
 
+def test_a_final_message_linking_the_report_file_yields_it_but_a_link_outside_the_checkout_does_not(
+    checkout, tmp_path, capsys
+) -> None:
+    work, _, brief, posted, seen = checkout
+    report = "Head: x\nSATISFIED: yes\n"
+    seen["do"] = lambda: (work / "tmp/loop/pr12-v2.md").write_text(report)
+    seen["final"] = "Report: [pr12-v2.md](tmp/loop/pr12-v2.md)\n"
+    assert cv.verify(7, brief, None, None) == 0
+    assert posted == [report] and "read from tmp/loop/pr12-v2.md" in capsys.readouterr().out
+    posted.clear()
+    outside = tmp_path / "outside.md"
+    outside.write_text(report)
+    seen["final"] = f"Report: [outside.md]({outside})\n"
+    assert cv.verify(7, brief, None, None) == 1 and not posted
+
+
+def test_a_final_message_with_its_own_verdict_beats_the_file_it_links(checkout) -> None:
+    work, _, brief, posted, seen = checkout
+    seen["report"] = "incomplete\n"
+    seen["do"] = lambda: (work / "tmp/loop/pr12-v2.md").write_text("SATISFIED: yes\n")
+    seen["final"] = "SATISFIED: no\nReport: [pr12-v2.md](tmp/loop/pr12-v2.md)\n"
+    assert cv.verify(7, brief, None, None) == 0
+    assert posted == [seen["final"]]
+
+
 def test_a_report_without_a_satisfied_line_is_not_posted(checkout) -> None:
     work, _, brief, posted, seen = checkout
     seen["final"] = "I ran out of time.\n"
@@ -769,6 +794,28 @@ class FakeCloud:
                         )
                     )
                     continue
+                if (
+                    self.quirks.get("root") and "realpath" in cmd
+                ):  # run the guard on a real checkout
+                    done = subprocess.run(
+                        ["bash", "-c", cmd.replace("/work/pr1", self.quirks["root"])],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    conn.sendall(
+                        self.frame(
+                            {
+                                "id": msg["id"],
+                                "result": {
+                                    "exitCode": done.returncode,
+                                    "stdout": done.stdout,
+                                    "stderr": "",
+                                },
+                            }
+                        )
+                    )
+                    continue
                 result = {
                     "exitCode": 0,
                     "stdout": (self.question if cmd.endswith(".question") else self.report)
@@ -783,7 +830,11 @@ class FakeCloud:
                 }
                 new = {
                     "turnId": "u1",
-                    "item": {"id": "i2", "type": "agentMessage", "text": "final message"},
+                    "item": {
+                        "id": "i2",
+                        "type": "agentMessage",
+                        "text": self.quirks.get("final", "final message"),
+                    },
                 }
                 result = {
                     "data": [new, old] if self.turned and not self.quirks.get("silent") else [old]
@@ -866,6 +917,26 @@ def test_a_thread_pass_without_a_satisfied_line_writes_no_report(route_1b, monke
     assert not out.exists()
 
 
+def test_a_thread_pass_reads_the_file_the_final_message_links_but_not_one_outside_the_checkout(
+    route_1b, monkeypatch, tmp_path
+) -> None:
+    _, brief, out = route_1b
+    root = tmp_path / "pr1"
+    (root / "tmp/loop").mkdir(parents=True)
+    (root / "tmp/loop/pr12-v2.md").write_text("Head: abc123\nSATISFIED: yes\n")
+    (tmp_path / "outside.md").write_text("SATISFIED: yes\n")
+    link = "Report: [pr12-v2.md](tmp/loop/pr12-v2.md)"
+    fake = FakeCloud("", final=link, root=str(root))
+    monkeypatch.setattr(cv, "WS_URL", fake.url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 0
+    assert "SATISFIED: yes" in out.read_text()
+    out.unlink()
+    outside = FakeCloud("", final=f"Report: [x.md]({tmp_path}/outside.md)", root=str(root))
+    monkeypatch.setattr(cv, "WS_URL", outside.url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 1
+    assert not out.exists()
+
+
 def test_a_dead_endpoint_fails_closed_naming_the_other_routes(
     route_1b, monkeypatch, capsys
 ) -> None:
@@ -930,3 +1001,46 @@ def test_a_report_that_cannot_be_cleared_stops_the_pass_before_the_turn(
     monkeypatch.setattr(cv, "WS_URL", fake.url)
     assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 2
     assert "turn/addUserMessage" not in fake.seen and not out.exists()
+
+
+ANSWERED_BRIEF = "Review PR #7.\n- Report: tmp/loop/pr7-v1.md\n\nPriorities:\n## Answer to your question\nlogs: tmp/loop/a.log\n"
+
+
+def test_a_second_question_without_a_new_in_the_answer_line_is_refused(checkout, capsys) -> None:
+    _, _, brief, posted, seen = checkout
+    brief.write_text(ANSWERED_BRIEF)
+    seen.update(question="Please run the mutants too.\n")
+    assert cv.verify(7, brief, None, None) == 1
+    assert posted == []
+    assert "New in the answer:" in capsys.readouterr().err
+
+
+def test_a_second_question_with_the_line_and_a_first_question_are_passed_on(checkout) -> None:
+    _, _, brief, posted, seen = checkout
+    brief.write_text(ANSWERED_BRIEF)
+    asked = "New in the answer: tmp/loop/a.log shows a failure.\nRun X.\n"
+    seen.update(question=asked)
+    assert cv.verify(7, brief, None, None) == 3
+    assert posted == [f"## Verifier question\n\n{asked}"]
+    posted.clear()
+    brief.write_text("Review PR #7.\n- Report: tmp/loop/pr7-v1.md\n")  # no answer yet
+    seen.update(question="Run all of it.\n")
+    assert cv.verify(7, brief, None, None) == 3
+    assert posted == ["## Verifier question\n\nRun all of it.\n"]
+
+
+def test_the_thread_route_refuses_a_repeat_question_too(route_1b, monkeypatch) -> None:
+    _, brief, out = route_1b
+    brief.write_text(brief.read_text() + "\n## Answer to your question\nlogs\n")
+    monkeypatch.setattr(cv, "WS_URL", FakeCloud("", "# a question\nPlease run X").url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 1
+    assert not out.with_name(out.name + ".question").exists()
+
+
+@pytest.mark.parametrize("marker", ["New in the answer:\n", "New in the answer:   \n"])
+def test_a_marker_line_with_no_text_after_it_is_refused(checkout, marker) -> None:
+    _, _, brief, posted, seen = checkout
+    brief.write_text(ANSWERED_BRIEF)
+    seen.update(question=f"{marker}Run X.\n")
+    assert cv.verify(7, brief, None, None) == 1
+    assert posted == []

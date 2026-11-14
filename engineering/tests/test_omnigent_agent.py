@@ -400,6 +400,51 @@ def test_the_brief_signs_with_the_model_the_session_took_not_the_one_asked(tmp_p
     assert (tmp_path / "r.md.brief").read_text().startswith("AGENT_SIGNATURE=codex/?/?\n")
 
 
+RELAY_RULE = (
+    "A message that adds no task (a relay, a notice, a correction) is answered in the turn's"
+    " ending line only: the report changes only through work on the task, and an"
+    " acknowledgement never replaces an earlier report's results."
+)
+
+
+@pytest.mark.parametrize(
+    ("agent", "pr", "top_level"),
+    [
+        ("claude", None, False),
+        ("codex", None, False),
+        ("claude", None, True),
+        ("claude-cloud", None, False),  # cloud, no --pr: the last message is the report
+        ("claude-cloud", None, True),
+        ("claude-cloud", 7, False),  # cloud, --pr
+    ],
+)
+def test_every_brief_says_a_message_that_adds_no_task_never_rewrites_the_report(
+    tmp_path: Path, agent: str, pr: int | None, top_level: bool
+) -> None:
+    og = FakeOmnigent()
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(
+        og, agent, "t", "do X", report, None, 0, top_level=top_level, pr=pr
+    )
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    if agent == "claude-cloud":
+        assert RELAY_RULE in brief
+    else:
+        assert RELAY_RULE in omnigent_agent.brief_of(report).read_text()
+
+
+def test_a_held_cloud_worker_with_a_pr_still_gets_the_relay_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deny = tmp_path / "deny.txt"
+    deny.write_text("Acme\n")
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    og = FakeOmnigent()
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, pr=7)
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    assert "which you don't post" in brief and RELAY_RULE in brief
+
+
 def test_a_running_session_signs_from_its_omnigent_record_first(tmp_path: Path) -> None:
     """A Codex child's rollout sits under a private CODEX_HOME, so the record is what holds."""
     rows = [
@@ -2784,6 +2829,7 @@ DEFAULT_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
+A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
 
@@ -8800,6 +8846,43 @@ def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> N
     assert not omnigent_agent.brief_of(report).exists()
     with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
         omnigent_agent.start(og, "claude-cloud", "t", "x", report, None, 0, permission_mode="plan")
+
+
+def test_start_says_when_the_environment_s_permission_mode_is_not_applied_and_creates_as_before(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")
+    og = FakeOmnigent()
+    og.harnesses["agy"] = "antigravity-native"
+    sid, _ = omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
+    assert sid in og.sessions
+    err = capsys.readouterr().err.splitlines()
+    dropped = [line for line in err if "not applied" in line]
+    assert dropped == [
+        (
+            "codex takes no permission mode: bypassPermissions was not applied; its session starts"
+            " in the harness default"
+        )
+    ]
+    for agent in ("claude", "agy"):  # each takes this mode, so nothing is dropped
+        omnigent_agent.start(og, agent, f"t-{agent}", "do X", tmp_path / "r.md", None, 0)
+        assert "not applied" not in capsys.readouterr().err
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "plan")  # agy takes bypass alone
+    omnigent_agent.start(og, "agy", "t-plan", "do X", tmp_path / "r.md", None, 0)
+    assert "agy takes no permission mode: plan was not applied" in capsys.readouterr().err
+    # The create a codex session gets is the one it got before: no launch args, no mode field.
+    calls = _agent_server(
+        monkeypatch,
+        {
+            "/v1/agents": [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()],
+            "/v1/agents?scope=user": [],
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        },
+    )
+    omnigent_agent.Omnigent().create("codex", "t")
+    body = calls[-1][2]
+    assert "terminal_launch_args" not in body and "permission_mode" not in body
 
 
 def test_antigravity_runs_a_role_only_with_its_approvals_bypassed(
