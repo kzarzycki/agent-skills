@@ -3331,7 +3331,7 @@ def test_with_a_deny_list_a_cloud_worker_replies_with_its_report_and_the_host_ch
     sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
     brief = omnigent_agent.text_of(og.sessions[sid][1])
     assert "which you don't post: reply with the line `UNPOSTED REPORT`" in brief
-    assert "gh api" not in brief and "comment's URL" not in brief
+    assert "/comments" not in brief and "comment's URL" not in brief
     assert (
         "<!-- file: tmp/loop/<name> -->" in brief
     )  # its files still travel in the report it replies with
