@@ -202,7 +202,10 @@ design, wireframes included for a UI, and delegate the rest.
      (`Conflicts in the landing batch`): `land` merges every head onto main itself and gates
      the result, so a PR behind main lands without a merge. When you do merge it in, rerun the
      gates and get a verifier pass on the merge (step 7), since `land` merges only a head with
-     a verdict of its own. When main's changes touch no file the PR changes and no merge check
+     a verdict of its own. A head with an earlier head's tree (`git rev-parse <sha>^{tree}`), as
+     after a reword of commit messages only, keeps that head's verdict (unsatisfied or with
+     findings open, it stays so) and go with no new pass, since no file changed: `check merge`
+     and `land` print `verdict on <old> carried: same tree <tree>`. When main's changes touch no file the PR changes and no merge check
      (a `check:` task, a tool it runs, or the lint, type or test configuration), that pass is
      the short delta pass. Where loop.md still has `carry_over_main` (deprecated), no pass is
      needed when `check merge` prints that the merge carries the head's verdict. When every

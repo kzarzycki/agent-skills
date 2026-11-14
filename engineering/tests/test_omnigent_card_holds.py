@@ -55,7 +55,7 @@ def test_prompts_and_questions_ignore_a_card() -> None:
 
 def test_relay_delivers_past_a_card_but_queues_behind_a_parked_question() -> None:
     og = fake(CARD)
-    assert omnigent_agent.relay(og, "s1", "hi", 0).endswith("delivered")
+    assert omnigent_agent.relay(og, "s1", "hi", 0).startswith("session s1: delivered")
     with pytest.raises(omnigent_agent.Queued, match="behind a question"):
         omnigent_agent.relay(fake(PARKED, hold=10**6), "s1", "hi", 0)
     with pytest.raises(omnigent_agent.Queued, match="behind an approval prompt"):
@@ -142,7 +142,7 @@ def test_broadcast_delivers_to_a_card_session_and_skips_a_held_one(
     if skipped:
         assert out.endswith(": skipped: waiting on a question\n") and og.posts == 0
     else:
-        assert out.endswith(": delivered\n") and og.posts == 1
+        assert ": delivered" in out and og.posts == 1
         assert "queued" not in out and "skipped" not in out
 
 
