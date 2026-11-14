@@ -97,7 +97,8 @@ design, wireframes included for a UI, and delegate the rest.
    Before the first worker starts, write the verifier's priority checks once, from the spec and
    its comments (a later comment can narrow the spec), into `tmp/loop/priorities-<pr>.md`, the
    file `approvals.py brief <pr> --priorities <file>` takes at step 7. Paste its lines into each
-   worker's brief under "the verifier will check", so the worker runs them on its own head
+   worker's brief under "the verifier will check" (text, not a path, so a worker on another
+   machine needs no file), so the worker runs them on its own head
    before reporting: a finding the worker could have checked costs a fix round, a full gate and
    another pass. The worker gets those checks only, never a verdict, review text or the
    verifier's report, so the verifier stays independent and runs the same checks itself.
@@ -124,15 +125,16 @@ design, wireframes included for a UI, and delegate the rest.
    `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
    prints the ones to rerun. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
    instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
-   brief already in that checkout. Where else it runs is SKILL.md, Where heavy steps run.
+   brief and the priorities file already in that checkout (copied there like the logs). Where else it runs is SKILL.md, Where heavy steps run.
    A verifier on a host starts on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
    yours while it reviews and no commit of yours moves the head under review. Copy into its
-   `tmp/loop/` the proof logs and, on a later pass, the previous report (as the
+   `tmp/loop/` the priorities file from step 4 (it exists only in your checkout, and `brief
+   --priorities` runs there), the proof logs and, on a later pass, the previous report (as the
    `tmp/loop/pr<pr>-v<n>.md` the brief names) and its repros, since a read outside its
    workspace is prompted. Give it the path of `verifier.md`, the base, the reviewed head, the
-   spec number, the priorities file from step 4 (extended with any a later finding adds), and a report path under `tmp/loop/` in that
+   spec number, the priorities (that copy, extended with any a later finding adds), and a report path under `tmp/loop/` in that
    worktree, which the project gitignores. `uv run <this skill's folder>/scripts/approvals.py brief
    <pr> --priorities <file> --proof <log>…`, run from that worktree through that worktree's
    own copy of the skill, since the role path it prints follows the script's copy and only

@@ -51,7 +51,10 @@ def test_the_roles_state_the_step_with_the_file_named_once() -> None:
     assert len(re.findall(r"priorities-<pr>\.md", lead)) == 1
     assert "priorities-<pr>" not in worker
     assert "write the verifier's priority checks once, from the spec and its comments" in lead
-    assert 'under "the verifier will check"' in lead
+    assert "Before the first worker starts, write the verifier's priority checks once" in lead
+    assert 'under "the verifier will check" (text, not a path' in lead
+    assert "the priorities file from step 4 (it exists only in your checkout" in lead
+    assert "and the priorities file already in that checkout" in lead
     assert "never a verdict, review text or the verifier's report" in lead
     assert 'A brief with "the verifier will check"' in worker
     assert "run each on your own head before you report" in worker
