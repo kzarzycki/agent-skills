@@ -3519,9 +3519,8 @@ def reap(
             if why := held[found] if found else f"label {label!r} names no PR":
                 lines.append(f"{sid} {info.get('title') or ''}: kept ({why})")
                 continue
-        if cards := cards_of(
-            info
-        ):  # the owner's question: archiving ends its way back, --force too
+        # an open card is the owner's question: archiving ends its way back, --force too
+        if cards := cards_of(info):
             lines.append(f"{sid} {info.get('title') or ''}: kept (card open: {'; '.join(cards)})")
             continue
         if force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None:
