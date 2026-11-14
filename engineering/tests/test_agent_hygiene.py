@@ -1414,7 +1414,7 @@ def test_dead_terminals(tmp_path, monkeypatch):
             p.wait()
 
 
-def uv_lock_setup(tmp_path, monkeypatch, holders, ps, txt):
+def uv_lock_setup(tmp_path, monkeypatch, holders, ps, txt, env=None):
     """agent-hygiene with only the uv cache, and stubbed uv, lsof and ps; a plain prune hangs, a forced one works."""
     monkeypatch.setenv("HOME", str(tmp_path))
     hygiene = load("agent_hygiene_uv_lock")
@@ -1439,6 +1439,7 @@ def uv_lock_setup(tmp_path, monkeypatch, holders, ps, txt):
     (tmp_path / "ps.txt").write_text(ps)
     monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
     monkeypatch.setattr(hygiene, "CACHES", [("uv", ["uv", "cache", "prune"], 1, None)])
+    monkeypatch.setattr(hygiene, "read_environ", lambda pid: (env or {}).get(pid, {}))
     run = hygiene.Run(False, tmp_path / "log")
     hygiene.caches(run, [], [])
     return cache, (tmp_path / "log").read_text()
@@ -1537,7 +1538,7 @@ def test_uv_lock_holder_with_a_library_or_cwd_in_the_cache_is_not_forced(tmp_pat
         assert f"runs {cache}/{entry} from the cache" in said, said
 
 
-def uv_real_holder(tmp_path, monkeypatch, alias):
+def uv_real_holder(tmp_path, monkeypatch, alias, masked=False):
     """uv_force against the real lsof and ps and a real process holding the lock through a link in the cache."""
     hygiene = load("agent_hygiene_uv_real")
     real = tmp_path.resolve() / "real"
@@ -1560,10 +1561,26 @@ def uv_real_holder(tmp_path, monkeypatch, alias):
     )
     # the command reads `uv -X run ...`: a one-word-argument python launched through the cache link
     code = 'exec(open(__import__("sys").argv[1]).read())'.replace(" ", "")
-    child = subprocess.Popen(
-        [str(shown / "env/bin/uv"), "-X", "run", "-c", code, str(script)],
-        stdin=subprocess.DEVNULL,
-    )
+    if masked:
+        # a python run through the cache link under another name, from outside the cache: no lsof entry or
+        # argument names the cache, only the environment `uv run` sets does
+        env = {
+            **os.environ,
+            "VIRTUAL_ENV": str(shown / "env"),
+            "PATH": f"{shown}/env/bin:{os.environ['PATH']}",
+        }
+        child = subprocess.Popen(
+            ["uv", "-X", "run", "-c", code, str(script)],
+            executable=str(shown / "env/bin/uv"),
+            cwd=tmp_path,
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
+    else:
+        child = subprocess.Popen(
+            [str(shown / "env/bin/uv"), "-X", "run", "-c", code, str(script)],
+            stdin=subprocess.DEVNULL,
+        )
     try:
         for _ in range(100):
             if ready.exists():
@@ -1586,3 +1603,52 @@ def test_uv_lock_holder_started_through_a_cache_link_is_not_forced_by_real_lsof(
     (forced, why), pid = uv_real_holder(tmp_path, monkeypatch, alias)
     assert forced is None, why
     assert f"pid {pid}" in why and "cache" in why, why
+
+
+@pytest.mark.skipif(
+    not shutil.which("lsof") or not Path("/proc/self/environ").exists(),
+    reason="needs lsof and /proc",
+)
+@pytest.mark.parametrize("alias", [False, True])
+def test_uv_lock_holder_hidden_but_for_its_environment_is_not_forced(tmp_path, monkeypatch, alias):
+    """A python run through a cache link, renamed, from outside the cache: the environment is the one sign."""
+    (forced, why), pid = uv_real_holder(tmp_path, monkeypatch, alias, masked=True)
+    assert forced is None, why
+    assert f"pid {pid}" in why and "in its environment" in why, why
+
+
+def test_uv_lock_holder_with_an_environment_in_the_cache_is_not_forced(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run server.py\n12 11 05:00 python server.py\n"
+    for name, key, tail in (
+        ("venv", "VIRTUAL_ENV", "environments-v2/s-abc"),
+        ("path", "PATH", "environments-v2/s-abc/bin"),
+        ("pythonpath", "PYTHONPATH", "archive-v0/x"),
+    ):
+        root = tmp_path / name
+        root.mkdir()
+        cache = root.resolve() / "uvcache"
+        env = {key: f"/usr/bin:{cache}/{tail}" if key != "VIRTUAL_ENV" else f"{cache}/{tail}"}
+        _, said = uv_lock_setup(
+            root,
+            monkeypatch,
+            r"p11\n",
+            ps,
+            {11: r"n/usr/bin/uv\n", 12: r"n/usr/bin/python3\n"},
+            {12: env},
+        )
+        assert "forcing" not in said and "--force" not in said, said
+        assert "in its environment" in said, said
+
+
+def test_uv_lock_holder_with_an_unreadable_environment_is_not_forced(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run server.py\n12 11 05:00 python server.py\n"
+    _, said = uv_lock_setup(
+        tmp_path,
+        monkeypatch,
+        r"p11\n",
+        ps,
+        {11: r"n/usr/bin/uv\n", 12: r"n/usr/bin/python3\n"},
+        {12: None},
+    )
+    assert "forcing" not in said and "--force" not in said, said
+    assert "the environment of pid 12 of pid 11 (uv run server.py) could not be read" in said, said

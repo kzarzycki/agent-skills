@@ -227,6 +227,30 @@ def in_cache(path, roots):
                for r in {*roots, *map(os.path.realpath, roots)})
 
 
+def read_environ(pid):
+    """A process's environment as a dict, or None when it cannot be read (no permission, gone)."""
+    if Path('/proc/self/environ').exists():
+        try:
+            raw = Path(f'/proc/{pid}/environ').read_bytes().decode(errors='replace')
+        except OSError:
+            return None
+        return dict(item.partition('=')[::2] for item in raw.split('\0') if '=' in item)
+    out = sh(['ps', 'eww', '-o', 'command=', '-p', str(pid)])  # macOS: the variables follow the command
+    if out is None or not out.strip():
+        return None
+    return dict(w.partition('=')[::2] for w in out.split() if re.match(r'[A-Za-z_][A-Za-z0-9_]*=', w))
+
+
+def environment_in_cache(env, roots):
+    """The first VIRTUAL_ENV, PATH or PYTHONPATH entry of env under the cache, or None: uv run sets them
+    for the program it starts, so they show an environment in the cache that no file or argument names."""
+    for key in ('VIRTUAL_ENV', 'PATH', 'PYTHONPATH'):
+        for entry in [env.get(key, '')] if key == 'VIRTUAL_ENV' else env.get(key, '').split(':'):
+            if entry and in_cache(entry, roots):
+                return entry
+    return None
+
+
 def uv_force(run, wait):
     """(forced prune command or None, why it was not forced) after a uv prune waited out `wait` on the cache lock.
     Every holder must be a uv run older than the wait, none with an interpreter inside the cache, since
@@ -270,6 +294,11 @@ def uv_force(run, wait):
                       and in_cache(l[1:], roots)]
             if inside:
                 return None, f'; {who} runs {inside[0]} from the cache'
+            env = read_environ(member)
+            if env is None:
+                return None, f'; the environment of pid {member} of {who} could not be read'
+            if (entry := environment_in_cache(env, roots)):
+                return None, f'; {who} has {entry} from the cache in its environment'
             args = procs[member][2]
             named = [w for w in args.split() for w in (w, w.partition('=')[2]) if w and in_cache(w, roots)]
             if named or any(r in args for r in roots):
