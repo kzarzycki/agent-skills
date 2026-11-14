@@ -277,7 +277,10 @@ it quoted.
   that waits for the answer (Claude Code's AskUserQuestion, Codex's requestUserInput): it holds
   your turn open, and Omnigent delivers new input only when a turn ends, so every relay,
   supervisor event and idle compaction waits behind the question until the owner replies,
-  often hours later. Their reply arrives as your next message.
+  often hours later. Their reply arrives as your next message. Omnigent's
+  `sys_ask_user_question` is the way to ask without stopping: it posts a card and returns at
+  once, so keep working, and act on the answer when it arrives as a message
+  (`[answer to <question id>]`).
 - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge go on a head): a question
   alone holds nothing, since `land` batches every PR that is ready.
 
