@@ -102,7 +102,7 @@ yourself, keeping standards and spec as separate axes.
   also the repro. Run the patches with `uv run <this skill's folder>/scripts/mutate.py --test
   '<tests>' --log <log> <patch>…` (the script queues on the host gate slot itself, in the short lane when the tests pass on
   the head within `short_seconds`, so the command takes no lock of its own), which applies each alone, restores the tree, stops cleanly on a signal and
-  logs the head with each patch's exit code, rather than a harness of your own; the worker
+  logs the head with each patch's exit code, rather than a harness of your own; for a compiled target pass `--built <path>` (repeatable, globs) naming the build output folder of each target the test installs or loads (for an app bundle, the bundle, since a Debug build keeps its code in a library beside a stub main binary that never changes), so a patch the build never reached is `not built: inconclusive` instead of a false survivor, and have the test command exit with the project's reserved code (`mutate.inconclusive_exit` in the policy, default 75) when its setup fails (a device gone, a build broken), so that run is `inconclusive` instead of a false kill; an inconclusive patch makes the run exit 3, and you rerun it after fixing the setup, since it says nothing about the patch; the worker
   ran it on its own patches, so its log is a starting point, not the check. A change whose undoing leaves every test green is untested: report it as a
   major. Before the report, `git status --porcelain` must match what it showed at the start:
   revert any mutation of yours still applied, and report a tree you cannot clean as a finding

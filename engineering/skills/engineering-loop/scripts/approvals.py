@@ -361,7 +361,7 @@ running this counts as a writer, by its own permissions on the repo.
 The policy block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
 the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue`, `owner`, `machine_exit`,
-`short_seconds` (mutate.py's), `pre_land` and `head_proof`; `spec` holds `auto`.
+`short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -687,6 +687,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "delegate": Choice(("all", "feature")),
         "pack_staleness": Choice(("warn", "refuse")),
     },
+    "mutate": {"inconclusive_exit": int},
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
     "risk": {"always": bool, "labels": list, "paths": list, "verifier": bool, "merge_paths": list},

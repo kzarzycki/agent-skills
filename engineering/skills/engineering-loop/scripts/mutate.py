@@ -10,7 +10,13 @@
 Each patch undoes one change (verifier.md, Mutation-check the new tests, says how to write one). On a clean checkout
 it applies each patch alone with `git apply`, runs the test command through the shell, records its exit code, undoes
 the patch with `git apply -R` and checks the tree is clean again before the next one. A test command that fails has
-killed the patch; one that passes means no test covers that change, and the patch survived.
+killed the patch; one that passes means no test covers that change, and the patch survived. Two outcomes say nothing
+about the patch and are `inconclusive`, never killed or survived: a test command that exits with the reserved code
+(75, or the policy's `mutate.inconclusive_exit`) means setup failed, no verdict, and with `--built <path>` (repeatable,
+globs: a file, or a directory hashed over every file under it) naming what the test command builds, a patch whose hashes
+equal the head run's was never built into what the tests ran (`not built: inconclusive`). Hashes are taken after the
+head run, which `--built` makes run even where the lane would run none, and after each patch's run; a glob that matches
+nothing after the head run is refused. Without `--built` and the reserved code the log and exit codes are as before.
 
 It refuses a tracked change or an untracked file that isn't ignored, the check `approvals.py local-ci` makes, so
 patches under a gitignored `tmp/loop/` don't count, and it refuses any patch that doesn't apply before running a test,
@@ -33,10 +39,10 @@ the slot takes no lock. There is no option to skip the slot.
 
 The log: line 1 is `git rev-parse HEAD`, line 2 this command line, line 3 the lane and why (`short: head run 6.5 s ≤
 120 s`, `heavy: head run 412.0 s > 120 s`, `heavy: head run failed (exit 1)`, `heavy: short_seconds is 0`, `heavy:
-run under a holder of the heavy slot`), then `<patch>: exit <n> killed|survived` per patch, then the head run's
+run under a holder of the heavy slot`), then `<patch>: exit <n> killed|survived|inconclusive: ...` per patch, then the head run's
 output under `== head ==` and each patch's test output under a `== <patch> ==` header. It is rewritten after every
-run, so a stopped run keeps what it finished. Exit 0 when every patch was killed, 1 when one survived (the log names it), 2 when it
-refuses, a patch doesn't apply, or the tree can't be restored (stderr names the paths). The log goes outside the
+run, so a stopped run keeps what it finished. Exit 0 when every patch was killed, 1 when one survived (the log names it),
+else 3 when one was inconclusive, 2 when it refuses, a patch doesn't apply, or the tree can't be restored (stderr names the paths). The log goes outside the
 checkout or to an ignored path, never a tracked file or a patch, since writing it would destroy that file. Standard
 library and git, and approvals.py, beside it, to read the policy (so PyYAML).
 """
@@ -45,6 +51,8 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import glob
+import hashlib
 import os
 import shlex
 import signal
@@ -95,6 +103,9 @@ HEAVY, SHORT = "gate.1.lock", "gate.short.lock"
 # the policy's `short_seconds` when it sets none
 SHORT_SECONDS = 120
 SLOT_HELD = "LOOP_GATE_SLOT_HELD"
+# the policy's `mutate.inconclusive_exit` when it sets none: a test command's exit for "setup failed, no verdict"
+# (EX_TEMPFAIL, sysexits.h), which no test runner reports for a failed assertion
+INCONCLUSIVE_EXIT = 75
 
 
 def slot_path(name: str = HEAVY) -> str:
@@ -103,16 +114,54 @@ def slot_path(name: str = HEAVY) -> str:
     return os.path.join(cache, "engineering-loop", name)
 
 
-def short_seconds() -> int:
-    """The policy's `short_seconds` (SKILL.md, Settings), SHORT_SECONDS without it; a policy off its schema is refused,
-    as approvals.py refuses it."""
+def policy() -> tuple[int, int]:
+    """The policy's `short_seconds` (SKILL.md, Settings, SHORT_SECONDS without it) and `mutate.inconclusive_exit`
+    (INCONCLUSIVE_EXIT without it); a policy off its schema is refused, as approvals.py refuses it, and so is a
+    reserved exit outside 1..255, which no command can return or which would read a pass as a setup failure."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import approvals
 
     try:
-        return approvals.settings(approvals.project()[1]).get("short_seconds", SHORT_SECONDS)
+        settings = approvals.settings(approvals.project()[1])
     except approvals.Refused as refusal:
         raise Refused(str(refusal)) from refusal
+    reserved = settings.get("mutate", {}).get("inconclusive_exit", INCONCLUSIVE_EXIT)
+    if not 1 <= reserved <= 255:
+        raise Refused(
+            f"`mutate.inconclusive_exit` is {reserved}: it must be a whole number from 1 to 255"
+        )
+    return settings.get("short_seconds", SHORT_SECONDS), reserved
+
+
+def digest(paths: list[str], head: bool = False) -> str:
+    """One hash over what `paths` (globs, relative to the working directory) name: a file's bytes, and for a directory
+    every file under it by relative path and bytes, so a library beside an unchanged stub binary still changes it.
+    A glob that names nothing is refused for the head run, since an empty comparison would call every patch not built;
+    after a patch's run it only counts as a difference (that build removed its output), since the patch is applied."""
+    whole = hashlib.sha256()
+    for pattern in paths:
+        found = sorted(glob.glob(pattern, recursive=True))
+        if not found and head:
+            raise Refused(f"--built {pattern} matches nothing after the head run")
+        whole.update(f"pattern {pattern} {len(found)}\0".encode())
+        for match in found:
+            files = (
+                sorted(
+                    os.path.join(root, name) for root, _, names in os.walk(match) for name in names
+                )
+                if os.path.isdir(match)
+                else [match]
+            )
+            for file in files:
+                whole.update(file.encode() + b"\0")
+                if os.path.islink(file):
+                    whole.update(b"link " + os.readlink(file).encode())
+                else:
+                    with open(file, "rb") as handle:
+                        for chunk in iter(lambda: handle.read(1 << 20), b""):
+                            whole.update(chunk)
+                whole.update(b"\0")
+    return whole.hexdigest()
 
 
 def take_slot(path: str, waiting: Callable[[], None]) -> int | None:
@@ -149,16 +198,22 @@ def run_test(
             os.close(fd)
 
 
-def lane(command: str, limit: int, waiting: Callable[[], None]) -> tuple[str, str, str | None]:
+def lane(
+    command: str, limit: int, waiting: Callable[[], None], built: bool = False
+) -> tuple[str, str, str | None]:
     """The slot every patch's run takes, the log's line saying why, and the head run's output (None when none ran): the
-    short lane when the test command passes on the unmutated head, in the short lane, within `limit` seconds."""
+    short lane when the test command passes on the unmutated head, in the short lane, within `limit` seconds. With
+    `built` a head run is needed whatever the lane, since its outputs are what each patch's are compared to: one that
+    would run none runs once in the heavy slot."""
     heavy = slot_path(HEAVY)
     # its holder is this run's parent: a short-lane run would hand its children a variable that no longer names the
     # heavy slot, and a heavy wrapper under them would wait on that parent
     if os.environ.get(SLOT_HELD) == heavy:
-        return heavy, "heavy: run under a holder of the heavy slot", None
+        why = "heavy: run under a holder of the heavy slot"
+        return heavy, why, run_test(command, heavy, waiting)[1] if built else None
     if limit <= 0:
-        return heavy, f"heavy: short_seconds is {limit}", None
+        why = f"heavy: short_seconds is {limit}"
+        return heavy, why, run_test(command, heavy, waiting)[1] if built else None
     code, output, seconds = run_test(command, slot_path(SHORT), waiting)
     if code:
         return heavy, f"heavy: head run failed (exit {code})", output
@@ -225,6 +280,14 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--test", required=True, help="the test command, run through the shell")
     parser.add_argument("--log", required=True, type=Path)
+    parser.add_argument(
+        "--built",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="what the test command builds from the code under test (repeatable, globs): a file, or a directory"
+        " hashed over every file under it; a patch whose hash equals the head run's is inconclusive, not built",
+    )
     parser.add_argument("patches", nargs="+", type=Path)
     args = parser.parse_args(argv)
     head = git("rev-parse", "HEAD")
@@ -261,7 +324,7 @@ def main(argv: list[str]) -> int:
     write_log()
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
-    survived = False
+    survived = inconclusive = False
     current: Path | None = None
     try:
         dirty = changes()
@@ -273,7 +336,7 @@ def main(argv: list[str]) -> int:
             check = git("apply", "--check", str(path), cwd=top)
             if check.returncode:
                 raise Refused(f"{name} does not apply: {check.stderr.strip()}")
-        limit = short_seconds()
+        limit, reserved = policy()
 
         def waiting(name: object, slot: str) -> Callable[[], None]:
             def said() -> None:
@@ -284,11 +347,15 @@ def main(argv: list[str]) -> int:
 
             return said
 
-        slot, why, head_output = lane(args.test, limit, waiting("head", slot_path(SHORT)))
+        slot, why, head_output = lane(
+            args.test, limit, waiting("head", slot_path(SHORT)), bool(args.built)
+        )
         lines.append(why)
         if head_output is not None:
             outputs += ["", "== head ==", head_output.rstrip("\n")]
         write_log()
+        # what the head run built, which a patch's run must differ from to have reached it
+        built = digest(args.built, head=True) if args.built else None
         # a change the head run left would read as the first patch's own and fail its restore
         left = changes()
         if left:
@@ -298,9 +365,17 @@ def main(argv: list[str]) -> int:
             # applies: --check passed on this same tree, which restore() left clean
             git("apply", str(path), cwd=top)
             code, output, seconds = run_test(args.test, slot, waiting(name, slot))
-            survived |= code == 0
+            # a setup failure, or a build that left the output as the head's, says nothing about the patch
+            if code == reserved:
+                verdict = "inconclusive: setup failed, no verdict"
+            elif built is not None and digest(args.built) == built:
+                verdict = "not built: inconclusive"
+            else:
+                verdict = "survived" if code == 0 else "killed"
+            survived |= verdict == "survived"
+            inconclusive |= "inconclusive" in verdict
             # logged before the restore, so a restore that refuses keeps the result it followed
-            lines.append(f"{name}: exit {code} {'survived' if code == 0 else 'killed'}")
+            lines.append(f"{name}: exit {code} {verdict}")
             if slot == slot_path(SHORT) and seconds > limit:
                 lines.append(f"{name}: overrun: {seconds:.1f} s > {limit} s in the short lane")
             outputs += ["", f"== {name} ==", output.rstrip("\n")]
@@ -326,7 +401,7 @@ def main(argv: list[str]) -> int:
         if current:
             git("apply", "-R", str(current), cwd=top)
         raise
-    return 1 if survived else 0
+    return 1 if survived else 3 if inconclusive else 0
 
 
 if __name__ == "__main__":
