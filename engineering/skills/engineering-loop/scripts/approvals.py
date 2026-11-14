@@ -138,6 +138,9 @@ marked ready, commented on, evicted or merged), and the rest is as without the f
 The check of each PR (`landable`) writes nothing to GitHub: `land`'s own path marks a ready draft ready and adds `risk:high`, so a probe that only reads never readies a draft.
 A named PR that is no candidate (or is closed, or targets another base than the first's) is left out and says why, and the rest still land: a missing proof exits 1,
 a wait for the owner or a pending required check 3, a red required check 1; with several PRs named the exit is the worst of them, 1 over 3 over 0.
+A named PR missing a required check, or a named draft, that GitHub reports conflicting exits 1 with the fix, `merge
+origin/<base> in` (a draft is not marked ready first), since GitHub runs no workflow on a conflicting PR, so the check
+would never come.
 3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
 `pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
 (the PR's head) and `LAND_BASE` (that tip) set, so the base's tree holds the check and a PR never changes what judges
@@ -362,7 +365,7 @@ running this counts as a writer, by its own permissions on the repo.
 The policy block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
 the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue`, `owner`, `machine_exit`,
-`short_seconds` (mutate.py's), `pre_land` and `head_proof`; `spec` holds `auto`.
+`short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -510,7 +513,7 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
@@ -688,6 +691,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "delegate": Choice(("all", "feature")),
         "pack_staleness": Choice(("warn", "refuse")),
     },
+    "mutate": {"inconclusive_exit": int},
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
     "risk": {"always": bool, "labels": list, "paths": list, "verifier": bool, "merge_paths": list},
@@ -2050,8 +2054,8 @@ def reviewed(
     verdicts: list[tuple[str, int, dict[str, str]]] | str | None = None,
 ) -> list[str]:
     """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
-    since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried,
-    which prints a line either way where loop.md opts in), or on its commit the highest pass (a mixed PR's two
+    since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried: on
+    the same tree, or where loop.md opts in, which prints a line either way), or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
     blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
     needs none (exempt). `verdicts` is passes()'s, when the caller has read it."""
@@ -2525,7 +2529,10 @@ def carried(
     first-parent line down to `verified` is a merge whose second parent is on the base (an ancestor of its tip), whose
     tree is git merge-tree's of its parents, and where merged() finds the base's changes disjoint from the PR's and
     neither side's touching an except glob. So a PR commit after `verified` (new, edited or rebased) carries nothing.
-    A string names why it carries nothing; None without the setting, which then reads no git at all."""
+    A head with `verified`'s tree (same_tree) carries it with or without the setting, by one same_tree_line(). A
+    string names why it carries nothing; None without the setting and with another tree."""
+    if tree := same_tree(pull["headRefOid"], verified):
+        return verified, [same_tree_line(verified, tree)]
     guard = settings(loop).get("carry_over_main")
     if guard is None:
         return None
@@ -2545,6 +2552,19 @@ def carried(
             return f"{commit}'s tree is not git merge-tree's of its parents: the merge resolved or added something"
         lines.insert(0, carry_line(commit, first, second, found[1], base))
     return verified, lines
+
+
+def same_tree(head: str, old: str) -> str | None:
+    """The tree `head` and `old` both hold (tree_of), else None: a head whose tree is an earlier head's keeps that
+    head's verdict (carried) and go (carried_go), since every file reviewed and approved there is byte-for-byte the
+    same, as after a reword of commit messages only. A tree neither the clone nor origin has is None."""
+    mine = tree_of(head)
+    return mine if mine is not None and mine == tree_of(old) else None
+
+
+def same_tree_line(old: str, tree: str) -> str:
+    """The line check merge and land print when the head carries `old`'s verdict on the same tree (same_tree)."""
+    return f"verdict on {old} carried: same tree {tree}"
 
 
 def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] | str:
@@ -2784,10 +2804,11 @@ def owned(pull: dict[str, Any], loop: str | None = None) -> str | None:
 
 def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str | None:
     """(whose, the head it is on) for the go (go_on) covering the PR's head: the go on the head itself, else the go
-    on the head of the PR's newest merge record, when every commit since is a merge of the base (base_merges) and the
-    newest verifier pass on the head is satisfied with no blocker or major open and says `Logic change: none`, since
-    the approver saw that change and a merge adds none to it. Any status on the head decides alone, so a go withdrawn
-    there stays withdrawn. A string names why the older go carries nothing; None: no go to carry."""
+    on the head of the PR's newest merge record, when the head has that head's tree (same_tree), or every commit since
+    is a merge of the base (base_merges) and the newest verifier pass on the head is satisfied with no blocker or major
+    open and says `Logic change: none`, since the approver saw that change and a merge adds none to it. Any status on
+    the head decides alone, so a go withdrawn there stays withdrawn. A string names why the older go carries nothing;
+    None: no go to carry."""
     head = pull["headRefOid"]
     by = go_on(pull, head, loop)
     if by is not None:
@@ -2800,6 +2821,8 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     if not earlier or not (by := go_on(pull, earlier[-1], loop)):
         return None
     old = earlier[-1]
+    if same_tree(head, old):
+        return by, old
     why = unchanged(pull, old.lower())
     return f"the go on {old} carries nothing to {head}: {why}" if why else (by, old)
 
@@ -2869,7 +2892,9 @@ def whose(pull: dict[str, Any], loop: str | None) -> list[str]:
     by, old = found
     head = f"PR #{pull['number']}: the go on {old}"
     line = f"{head} is the delegate's{DELEGATED}" if by == DELEGATE else f"{head} is the owner's"
-    if old != pull["headRefOid"]:
+    if old != pull["headRefOid"] and (tree := same_tree(pull["headRefOid"], old)):
+        line += f", carried to {pull['headRefOid']}: same tree {tree}"
+    elif old != pull["headRefOid"]:
         line += (
             f", carried to {pull['headRefOid']}: every commit since is a merge of {pull['baseRefName']}, and the"
             f" verifier's pass on it says `{LOGIC}: none`"
@@ -3474,6 +3499,10 @@ def rest_pull(pr: int) -> dict[str, Any]:
         "assignees": {"nodes": [actor(user) for user in found.get("assignees") or []]},
         "state": state,
         "isDraft": bool(found.get("draft")),
+        # REST's true or false, or null while GitHub computes it, as GraphQL's MergeableState reads them
+        "mergeable": {True: "MERGEABLE", False: "CONFLICTING"}.get(
+            found.get("mergeable"), "UNKNOWN"
+        ),
         "autoMergeRequest": {"enabledAt": None} if found.get("auto_merge") else None,
         "isInMergeQueue": None,
         "body": found.get("body") or "",
@@ -4398,7 +4427,7 @@ def readied(
     required = required_checks(base) - {APPROVALS}
     found: dict[int, dict[str, Any]] = {}
     for pull in drafts:
-        verdict = landable(pull, tracker, loop, required)
+        verdict = landable(pull, tracker, loop, required, named=True)
         if not verdict.draft:
             found[pull["number"]] = {**pull, "verdict": verdict}
             continue
@@ -4414,13 +4443,18 @@ def readied(
 
 
 def landable(
-    pull: dict[str, Any], tracker: str | None, loop: str | None, required: set[str]
+    pull: dict[str, Any],
+    tracker: str | None,
+    loop: str | None,
+    required: set[str],
+    named: bool = False,
 ) -> Verdict:
     """A check, which writes nothing to GitHub: whether the PR is a candidate for the batch (every merge proof, gated,
     the head's own CI or local-ci pass aside, since the batch's gate is the proof; no owner wait; the base's required
     checks green on its head; a signed squash possible where loop.md asks for one), or a draft that holds all that and is
     ready to mark, or why not, said once on stdout. The PR is judged as `flag` leaves it (a `risk:high` the gate added
-    that `unflag` would take off no longer holds it); `land` writes the label and the ready mark itself."""
+    that `unflag` would take off no longer holds it); `land` writes the label and the ready mark itself. The `named` PR
+    missing a required check, or a draft, that GitHub reports conflicting ends the wait, since no workflow runs on it."""
     where = f"PR #{pull['number']}"
     lines, issues = proof_gaps(pull, tracker, loop)
     if lines:
@@ -4428,6 +4462,19 @@ def landable(
             print(line)
         return Verdict((1, False))
     pull = flagged_as(pull, issues, loop)
+    # GitHub runs no workflow on a conflicting PR, so a required check it lacks never comes, nor do a draft's once
+    # it is ready: before the draft is marked ready, since that would start nothing
+    if (
+        named
+        and required
+        and pull.get("mergeable") == "CONFLICTING"
+        and (pull["isDraft"] or required - {name for name, _ in head_checks(pull, required)[0]})
+    ):
+        for line in ci(where, pull, required):
+            print(line)
+        base = pull["baseRefName"]
+        print(f"{where} conflicts with {base}: merge `origin/{base}` in")
+        return Verdict((1, False), issues=issues)
     if pull["isDraft"]:
         if owner := owner_waits(pull, issues, loop):  # ready starts CI, so never before the go
             for line in owner:
@@ -4485,7 +4532,7 @@ def batched(
     pulls = {pull["number"]: pull for pull in named}
     for number in sorted(listed):
         pull = pulls.get(number) or pull_request(number)
-        verdict = pull.get("verdict") or landable(pull, tracker, loop, required)
+        verdict = pull.get("verdict") or landable(pull, tracker, loop, required, number in pulls)
         # the board shows why a PR waits: flag its risk once its proofs hold, before it is refused for anything else
         if verdict.issues is not None and not pull.get("readied"):
             for line in flag(pull, verdict.issues, loop):
@@ -5544,12 +5591,39 @@ def described(tree: str, commit: str, command: str) -> str:
     )
 
 
+# how long tree_of waits for one commit's fetch, so a check never hangs on the network
+TREE_FETCH_SECONDS = 60
+# each (checkout, commit) tree_of already asked origin for in this run, so a missing one costs one fetch, not one per call
+TREE_FETCHED: set[tuple[str, str]] = set()
+
+
 def tree_of(commit: str) -> str | None:
-    """The tree `commit` holds, fetching `origin` once when the clone lacks it; None when neither has it."""
+    """The tree `commit` holds, else None. A commit the clone lacks is fetched from `origin` by itself (GitHub serves
+    any commit reachable from a branch or a PR), once per run and within TREE_FETCH_SECONDS, since a bare fetch brings
+    every branch and may wait on the network for ever; a failed or timed-out fetch is None."""
     with contextlib.suppress(subprocess.CalledProcessError):
         return git("rev-parse", f"{commit}^{{tree}}").strip()
+    asked = (os.getcwd(), commit)
+    if asked in TREE_FETCHED:
+        return None
+    TREE_FETCHED.add(asked)
+    fetch = ["git", *SIGNING, "fetch", "--quiet", "--no-tags", "origin", commit]
+    try:
+        # its own process group with no pipes, so a timeout kills the transport (ssh, a credential helper) too
+        run = subprocess.Popen(
+            fetch, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+        )
+    except OSError:
+        return None
+    try:
+        if run.wait(timeout=TREE_FETCH_SECONDS):
+            return None
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(run.pid, signal.SIGKILL)
+        run.wait()
+        return None
     with contextlib.suppress(subprocess.CalledProcessError):
-        git("fetch", "--quiet", "origin")
         return git("rev-parse", f"{commit}^{{tree}}").strip()
     return None
 

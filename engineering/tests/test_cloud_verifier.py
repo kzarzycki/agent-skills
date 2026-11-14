@@ -1001,3 +1001,46 @@ def test_a_report_that_cannot_be_cleared_stops_the_pass_before_the_turn(
     monkeypatch.setattr(cv, "WS_URL", fake.url)
     assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 2
     assert "turn/addUserMessage" not in fake.seen and not out.exists()
+
+
+ANSWERED_BRIEF = "Review PR #7.\n- Report: tmp/loop/pr7-v1.md\n\nPriorities:\n## Answer to your question\nlogs: tmp/loop/a.log\n"
+
+
+def test_a_second_question_without_a_new_in_the_answer_line_is_refused(checkout, capsys) -> None:
+    _, _, brief, posted, seen = checkout
+    brief.write_text(ANSWERED_BRIEF)
+    seen.update(question="Please run the mutants too.\n")
+    assert cv.verify(7, brief, None, None) == 1
+    assert posted == []
+    assert "New in the answer:" in capsys.readouterr().err
+
+
+def test_a_second_question_with_the_line_and_a_first_question_are_passed_on(checkout) -> None:
+    _, _, brief, posted, seen = checkout
+    brief.write_text(ANSWERED_BRIEF)
+    asked = "New in the answer: tmp/loop/a.log shows a failure.\nRun X.\n"
+    seen.update(question=asked)
+    assert cv.verify(7, brief, None, None) == 3
+    assert posted == [f"## Verifier question\n\n{asked}"]
+    posted.clear()
+    brief.write_text("Review PR #7.\n- Report: tmp/loop/pr7-v1.md\n")  # no answer yet
+    seen.update(question="Run all of it.\n")
+    assert cv.verify(7, brief, None, None) == 3
+    assert posted == ["## Verifier question\n\nRun all of it.\n"]
+
+
+def test_the_thread_route_refuses_a_repeat_question_too(route_1b, monkeypatch) -> None:
+    _, brief, out = route_1b
+    brief.write_text(brief.read_text() + "\n## Answer to your question\nlogs\n")
+    monkeypatch.setattr(cv, "WS_URL", FakeCloud("", "# a question\nPlease run X").url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 1
+    assert not out.with_name(out.name + ".question").exists()
+
+
+@pytest.mark.parametrize("marker", ["New in the answer:\n", "New in the answer:   \n"])
+def test_a_marker_line_with_no_text_after_it_is_refused(checkout, marker) -> None:
+    _, _, brief, posted, seen = checkout
+    brief.write_text(ANSWERED_BRIEF)
+    seen.update(question=f"{marker}Run X.\n")
+    assert cv.verify(7, brief, None, None) == 1
+    assert posted == []
