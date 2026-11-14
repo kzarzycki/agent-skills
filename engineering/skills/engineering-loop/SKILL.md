@@ -49,7 +49,20 @@ gatekeeper.md holds the gatekeeper's policy, a fenced `yaml` block under `## Pol
 keeps the prose for people and agents: why a path is critical, how to judge a finding, the
 risk criteria in words. A project without gatekeeper.md may keep the block under loop.md's
 `## Settings` for now: `approvals.py` reads it there with a deprecation line, and refuses a
-project with both, since two sources of the bar would drift. The block is YAML because a person
+project with both, since two sources of the bar would drift. `approvals.py` reads these files,
+and issue-tracker.md, from the base's copy on `origin/<base>`, never the checkout's: the base the
+PR a command acts on merges onto, the ref `land` builds on (`check`, `land`, `local-ci <pr>`,
+`approve merge`, `delegate`, `brief`), else the default branch. `land` fetches the base before
+it reads the policy (where it may run, its key, which drafts to ready) and reads it again after
+its fetch under the landing lock, so a policy another land changed meanwhile decides the batch:
+it places the land again (refused, the lock released, where the base now excludes the place it
+runs; signed with the key it now names), and a draft it readied that the new policy would not
+ready goes back to draft. A failed fetch before the lock readies no draft. So a PR can't
+loosen its own gate and a checkout behind its
+base can't hold an old one: a working-tree copy that differs gets one line naming the file and
+both commits, and only a checkout without that ref (no `origin`) reads its own, with a line
+saying so. A PR that changes the gate is therefore gated, recorded and landed under the base's
+gate, and its own applies from the next PR on. The block is YAML because a person
 reads and edits it by hand as `key: value` under section names, a list one item per line,
 and it is typed (a boolean, a number and a list are each their own kind, so none is a
 string the reader guesses at). A string needs no quotes unless YAML would read it otherwise:
@@ -419,7 +432,7 @@ approver's go may be relayed to the session where landing runs: `approve merge <
 that name it the delegate's, so the PR shows whose go landed it, and `check merge` and `land`
 print whose go they used. Into the default branch it is refused unless the policy on
 `origin/<base>` sets `delegate: all` under `loop` (a branch's own edit of it is not the owner's;
-a base with no policy file leaves the checkout's), and there a delegate's go counts only while it does; without the
+a base with no policy file leaves the default branch's), and there a delegate's go counts only while it does; without the
 key (`feature`) the owner's go alone covers the default branch. A status covers one commit, so
 it never covers code the approver did not see; it carries to a head whose commits since are
 only merges of the base, once the verifier's pass there says `Logic change: none`. Into the default branch these are the only go:

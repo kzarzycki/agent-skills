@@ -421,6 +421,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
 import fcntl
 import fnmatch
 import functools
@@ -2921,7 +2922,8 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
     head = pull["headRefOid"]
     who = "the delegate" if by == DELEGATE else "the owner"
     if by == DELEGATE and not withdraw:
-        loop = project()[1]
+        with policy_from(pull["baseRefName"]):
+            loop = project()[1]
         if sole := owners_only(pull, loop):
             raise Refused(
                 f"PR #{number}: the delegate's go is no go here, since {sole}: it waits for the owner's"
@@ -3845,19 +3847,133 @@ def one_repo() -> None:
         )
 
 
-def project() -> tuple[str | None, str | None]:
-    """The checkout's docs/agents/issue-tracker.md and its policy, None for one it lacks: a repo without the files has
-    no rules, and its issues no label shape. The policy is gatekeeper.md's (a Policy), else loop.md's `## Settings`
-    block, read with a deprecation line; a project with both is refused, since two sources of the bar would drift.
-    Settings off their schema are refused here, before any proof is printed or any PR touched."""
-    root = toplevel()
-    tracker, loop, policy = (
-        read(root / path) if (root / path).exists() else None for path in (TRACKER, LOOP, POLICY)
-    )
+# the base the PR a command acts on merges onto, which project() reads the policy from (policy_from); None: the
+# default branch, for a command with no PR
+POLICY_BASE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "POLICY_BASE", default=None
+)
+
+
+@contextlib.contextmanager
+def policy_from(base: str | None) -> Any:
+    """Read the policy from `origin/<base>` for what runs inside, every project() call down to gate() and gate_plan():
+    the entry point that has a PR (check, land, local-ci <pr>, batch, go, delegate, brief) sets its base once, so no
+    caller looks it up again. None leaves the default branch."""
+    token = POLICY_BASE.set(base)
+    try:
+        yield
+    finally:
+        POLICY_BASE.reset(token)
+
+
+def project(*, base: str | None = None) -> tuple[str | None, str | None]:
+    """The base's docs/agents/issue-tracker.md and its policy, None for one it lacks: a repo without the files has no
+    rules, and its issues no label shape. Each file is read from `origin/<base>` (policy_base), the ref `land` builds
+    its merge on: `base`, else the one policy_from set, else the default branch, so a PR can't loosen its own gate and a checkout behind its base can't hold an old one; a copy in the
+    working tree that differs gets one stderr line naming the file and both commits, and the base's is used. Without
+    that ref (no origin) the working tree's are read, with one stderr line saying so. The policy is gatekeeper.md's (a
+    Policy), else loop.md's `## Settings` block, read with a deprecation line; a project with both is refused, since
+    two sources of the bar would drift. Settings off their schema are refused here, before any proof is printed or any
+    PR touched."""
+    root, base = toplevel(), base or POLICY_BASE.get()
+    tracker, loop, policy = (policy_file(root, path, base) for path in (TRACKER, LOOP, POLICY))
     loop = chosen(loop, policy)
     if tracker is not None:
         tracker_settings(tracker)
     return tracker, loop
+
+
+def policy_file(root: Path, path: Path, base: str | None = None) -> str | None:
+    """`path` as project() reads it: from `origin/<base>` (policy_base), None where the base lacks it, printing
+    `differs` once when the working tree's copy is another; from the working tree, printing `unbased` once, when there
+    is no such ref."""
+    found = policy_base(str(root), base)
+    held = read(root / path) if (root / path).exists() else None
+    if found is None:
+        unbased(str(root))
+        return held
+    ref, tip = found
+    shown = subprocess.run(
+        ["git", "-C", str(root), "show", f"{tip}:./{path.as_posix()}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    based = shown.stdout if shown.returncode == 0 else None
+    if held != based:
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        differs(path.as_posix(), head or "no commit", ref, tip)
+    return based
+
+
+def policy_base(root: str, base: str | None = None) -> tuple[str, str] | None:
+    """The ref the policy is read from in the checkout at `root`, `origin/<base>` (`base`, else its default branch:
+    default_base), and that ref's commit now, since `land` fetches it during a run; None without such a ref."""
+    base = base or default_base(root) or ""  # none: `refs/remotes/origin/` names no commit
+    tip = subprocess.run(
+        [
+            "git",
+            "-C",
+            root,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"refs/remotes/origin/{base}^{{commit}}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return (f"origin/{base}", tip) if tip else None
+
+
+@functools.cache
+def default_base(root: str) -> str | None:
+    """The default branch of the checkout at `root`, as base_branch finds it (origin/HEAD, else what `origin` says its
+    HEAD is), None when neither answers. Once per run, since project() is read many times and asking origin is a
+    network call."""
+
+    def ask(*args: str) -> str:
+        done = subprocess.run(
+            ["git", "-C", root, *args], capture_output=True, text=True, check=False
+        )
+        return done.stdout.strip() if done.returncode == 0 else ""
+
+    if base := ask("symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/"):
+        return base
+    for line in ask("ls-remote", "--symref", "origin", "HEAD").splitlines():
+        if line.startswith("ref: refs/heads/"):
+            return line.split("\t")[0].removeprefix("ref: refs/heads/")
+    return None
+
+
+@functools.cache
+def unbased(root: str) -> None:
+    """One line per run and checkout, however often the policy is read; none for a directory that is no checkout (a
+    test's, since toplevel() refuses one), which has no base to fall back from."""
+    inside = subprocess.run(
+        ["git", "-C", root, "rev-parse", "--is-inside-work-tree"], capture_output=True, check=False
+    )
+    if inside.returncode:
+        return
+    print(
+        "approvals.py: no origin/<base> ref, so the policy is read from the working tree",
+        file=sys.stderr,
+    )
+
+
+@functools.cache
+def differs(path: str, head: str, ref: str, tip: str) -> None:
+    """One line per run, file and pair of commits, however often the policy is read."""
+    print(
+        f"approvals.py: {path} in the working tree (at {head}) differs from {ref}'s (at {tip}): using {ref}'s",
+        file=sys.stderr,
+    )
 
 
 def chosen(loop: str | None, policy: str | None) -> str | None:
@@ -3877,8 +3993,8 @@ def chosen(loop: str | None, policy: str | None) -> str | None:
 
 
 def base_policy(base: str, checkout: str | None) -> str | None:
-    """The policy on `origin/<base>` after a fetch of it, chosen from its files as project() chooses the checkout's,
-    since a branch's own edit of the policy is not the one the owner approved; `checkout`, the running checkout's, when
+    """The policy on `origin/<base>` after a fetch of it, chosen from its files as project() chooses the default
+    branch's, since a branch's own edit of the policy is not the one the owner approved; `checkout`, project()'s, when
     that ref holds neither file (or no fetch ever made it), today's rule. A failed fetch reads the ref as last fetched."""
     ref = f"refs/remotes/origin/{base}"
     root = toplevel()
@@ -3999,10 +4115,13 @@ NO_PULL = ("Could not resolve to a PullRequest", "Not Found")
 
 
 def check(point: str, pr: int | None, head: str | None = None, issue: int | None = None) -> int:
-    tracker, loop = project()
+    """`check <point>`: with a PR, under the policy of the base it merges onto (policy_from), else the default
+    branch's."""
+    toplevel()  # outside a checkout, refused before GitHub is asked
     if issue is not None:
-        return unbuilt(issue, tracker, loop)
+        return unbuilt(issue, *project())
     if pr is None and (pr := current_pr()) is None:
+        project()  # a policy off its schema is refused here too
         if point == "build":
             if (issue := branch_issue()) is None:
                 print(
@@ -4010,7 +4129,7 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
                     " needs an approved spec"
                 )
                 return 1
-            return unbuilt(issue, tracker, loop)
+            return unbuilt(issue, *project())
         print("no PR for this branch yet: nothing to gate")
         return 0
     try:
@@ -4018,9 +4137,15 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
     except subprocess.CalledProcessError as exc:
         if point == "build" and any(text in (exc.stderr or "") for text in NO_PULL):
             return unbuilt(
-                pr, tracker, loop
+                pr, *project()
             )  # a number no PR has is the issue's, as `--issue` reads it
         raise
+    with policy_from(pull["baseRefName"]):
+        return checked(point, pull, head)
+
+
+def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
+    tracker, loop = project()
     if point == "queue" and head is not None:
         return queueable(pull, head, tracker, loop)
     if point == "merge" and (why := outside(pull, loop)):
@@ -4105,15 +4230,36 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
     """Land every landable PR into the base (the first named PR's, else the default branch) as one gated batch, under
     the landing lock, where loop.md lets land run (placed) (`only`: the named PRs alone); the exit, and whether a wait
-    would end it (lock, CI on a head), so land --wait runs it again."""
-    tracker, loop = project()
-    with placed(loop):
-        return landing_here(pr, tracker, loop, only)
+    would end it (lock, CI on a head), so land --wait runs it again. Every decision is the policy of the base the PRs
+    merge onto (policy_from): the named PRs' base is read first (land_base, which changes no PR), the base fetched,
+    and its policy read to place the land (placed: where it may run and the key it signs with) and to ready drafts,
+    then read again after the fetch under the lock for the batch (landing_here)."""
+    named, base, worst = land_base(pr)
+    if named is None:
+        return worst, False
+    # origin's policy now, not the clone's last fetch of it, so no draft is readied under a policy already replaced
+    fetch = subprocess.run(
+        ["git", "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if fetch.returncode:
+        print(
+            f"land could not fetch {base} from origin, so it readies no draft before the lock:"
+            f" {' '.join(fetch.stderr.split()) or f'exit {fetch.returncode}'}"
+        )
+    with policy_from(base):
+        tracker, loop = project()
+        with placed(loop):
+            return landing_here(named, base, worst, tracker, loop, only, not fetch.returncode)
 
 
-def landing_here(
-    pr: int | Sequence[int] | None, tracker: str | None, loop: str | None, only: bool = False
-) -> tuple[int, bool]:
+def land_base(
+    pr: int | Sequence[int] | None,
+) -> tuple[list[dict[str, Any]] | None, str, int]:
+    """The named PRs that can land together, the base they merge onto (the first one's, else the default branch) and
+    the worst exit of those left out (1 or 0); None for the PRs when every named one was left out."""
     numbers = [] if pr is None else [pr] if isinstance(pr, int) else list(dict.fromkeys(pr))
     named: list[dict[str, Any]] = []
     worst = 0  # of the named PRs that end here, 1 over 3 over 0
@@ -4135,7 +4281,7 @@ def landing_here(
         else:
             named.append(pull)
     if numbers and not named:
-        return worst, False
+        return None, "", worst
     base = (
         named[0]["baseRefName"]
         if named
@@ -4146,8 +4292,28 @@ def landing_here(
             lambda: rest("repos/{owner}/{repo}")["default_branch"],
         )
     )
+    return named, base, worst
+
+
+def landing_here(
+    named: list[dict[str, Any]],
+    base: str,
+    worst: int,
+    tracker: str | None,
+    loop: str | None,
+    only: bool = False,
+    ready: bool = True,
+) -> tuple[int, bool]:
+    """land_base's batch under the lock. `tracker` and `loop`, the policy read before the lock, decide only which
+    drafts to mark ready before the wait (none without `ready`: the base's fetch failed, so its policy may be stale),
+    so the holder's next batch includes them; after the fetch under the lock the policy is read again, and that copy
+    alone decides the batch: the land is placed again under it (placed: refused, the lock released, where it now
+    excludes this place, and signed with its key), every PR is judged under it, a draft this land readied that it would
+    not have readied goes back to draft (unreadied), and a verdict readied() kept for a draft it refused is reused only
+    when the policy is unchanged."""
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
-    named = readied(named, base, tracker, loop)
+    if ready:
+        named = readied(named, base, tracker, loop)
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
     stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
     # every lock commit pushed, each before its push; taken stays None while the last one's push may have reached origin
@@ -4162,7 +4328,14 @@ def landing_here(
             return (1 if worst else WAITING), True
         # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
-        return batched(named, base, tracker, loop, only, held, worst)
+        # another land may have changed the base's policy while this one waited: from here on only the fetched one
+        fresh = project()
+        if fresh != (tracker, loop):
+            named = unreadied(
+                [{k: v for k, v in pull.items() if k != "verdict"} for pull in named], base, *fresh
+            )
+        with placed(fresh[1]):
+            return batched(named, base, *fresh, only, held, worst)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
@@ -4440,6 +4613,35 @@ def readied(
             "waiting": waiting,
         }
     return [found.get(pull["number"], pull) for pull in named]
+
+
+def unreadied(
+    named: list[dict[str, Any]], base: str, tracker: str | None, loop: str | None
+) -> list[dict[str, Any]]:
+    """The named PRs once the policy changed while the land waited for the lock: each draft readied() marked ready that
+    `landable` under the new policy would not ready goes back to draft, with a line
+    saying why, and is returned as a draft with that verdict, so the batch leaves it out; the rest as they were."""
+    required = required_checks(base) - {APPROVALS}
+    found = []
+    for pull in named:
+        if not pull.get("readied"):
+            found.append(pull)
+            continue
+        draft = {k: v for k, v in pull.items() if k not in ("readied", "waiting")} | {
+            "isDraft": True
+        }
+        verdict = landable(draft, tracker, loop, required, named=True)
+        if verdict.draft:
+            found.append(pull)
+            continue
+        # never in a cloud session, where landable readies no draft
+        gh("pr", "ready", "--undo", str(pull["number"]))
+        print(
+            f"PR #{pull['number']} is a draft again: it was readied under the policy the base had before this land's"
+            " wait, and the base's policy now would not ready it"
+        )
+        found.append({**draft, "verdict": verdict})
+    return found
 
 
 def landable(
@@ -5098,7 +5300,9 @@ def delegate(number: int) -> int:
     refused: there the go is pinned to a head (go). So is a PR touching a path `risk.merge_paths` names, whose merge
     only the owner's go on the head allows (owners_only)."""
     pull = pull_request(number)
-    if sole := owners_only(pull, project()[1]):
+    with policy_from(pull["baseRefName"]):
+        loop = project()[1]
+    if sole := owners_only(pull, loop):
         raise Refused(
             f"PR #{number}: `{MERGE_LABEL}` is no go here, since {sole}: it waits for the owner's go on its head"
         )
@@ -5339,7 +5543,8 @@ WHOLE = "gate"
 
 def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
     """The gate's steps, in order, each `name`, `command` (as gate() reads one, with `passed`), `words`, `sets` and
-    `where` (`any`, or `host`: never run in a cloud session): loop.md's `gate_steps`, else the one `gate` command as
+    `where` (`any`, or `host`: never run in a cloud session): the base's policy's `gate_steps` (project(), so a PR's own
+    edit of its gate is not the one it is gated by), else the one `gate` command as
     the step WHOLE, `any`, flagged `legacy`, which records, publishes and prints as the one gate always did (a plan
     from `gate_steps` is stepped whatever its names or length: its steps are not `legacy`). Each step's pass is recorded and reused by itself, keyed by its tree and command (recorded),
     so a step that passed on a tree anywhere is not run again; a project without `gate_steps` keeps one record. A
@@ -5670,7 +5875,8 @@ def deepened(pr: int | None) -> None:
     nothing, and no tracked file changes, so the tree a pass records is the same."""
     if git("rev-parse", "--is-shallow-repository").strip() != "true":
         return
-    base = base_branch(pr)
+    # a `local-ci <pr>` resolved its base already (policy_from)
+    base = POLICY_BASE.get() or base_branch(pr)
     if base is None:
         print(
             "local-ci: shallow clone, but no base branch is known: not deepening", file=sys.stderr
@@ -6651,42 +6857,47 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
     `head_proof` (`--head-proof`, no PR), the gate takes its `env` names from this process (gate), and the pass is
     published as the head proof instead. With `gate_steps`, a step with a pass on the tree is reused and only the
     others run; in a cloud session a `host` step is left for a host, said, and the steps that passed are published,
-    but no head proof, nor a pass for a PR, since the gate as a whole has none."""
-    if pr is None:
-        passed = proof["env"] if proof else ()
-        # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
-        RAN["command"] = "\n".join(step["command"] for step in gate_plan(passed) if here(step))
-        head, changes = checkout_state()
-        if changes:
-            deepened(None)
-            command, code = gate(passed)[0], ran_gate(passed=passed)
-            print(
-                f"{command} exited {code} on a checkout with changes, so nothing is recorded:\n{changes}"
-            )
-            return code
-        if record := reusable(head, passed):
-            print(f"{CHECKED} on {head}: {reused(record)}")
-        else:
-            record = run_local_ci(None, None, passed)
-            where = (
-                local_ci_dir() if "steps" in record else recorded(record["tree"], record["command"])
-            )
-            print(f"{CHECKED} on {head}: recorded in {where}")
-        if left := record.get("left"):
-            print(
-                f"{head} has no pass on the whole gate yet: {', '.join(f'`{name}`' for name in left)} runs only on a"
-                " host (`where: host`), where `local-ci` runs it alone"
-            )
-            # each step by itself, so the `gate` status shows a step's pass, never the whole gate's
-            for one in record["steps"]:
-                if not one.get("published"):
-                    publish(head, one)
-            return 0
-        if proof:
-            publish(head, record, proof)
-        elif not record.get("published"):
-            publish(head, record)
+    but no head proof, nor a pass for a PR, since the gate as a whole has none. With a PR the gate is the policy of the
+    base it merges onto (policy_from); without one, the default branch's."""
+    if pr is not None:
+        with policy_from(base_branch(pr)):
+            return pr_local_ci(pr, run)
+    passed = proof["env"] if proof else ()
+    # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
+    RAN["command"] = "\n".join(step["command"] for step in gate_plan(passed) if here(step))
+    head, changes = checkout_state()
+    if changes:
+        deepened(None)
+        command, code = gate(passed)[0], ran_gate(passed=passed)
+        print(
+            f"{command} exited {code} on a checkout with changes, so nothing is recorded:\n{changes}"
+        )
+        return code
+    if record := reusable(head, passed):
+        print(f"{CHECKED} on {head}: {reused(record)}")
+    else:
+        record = run_local_ci(None, None, passed)
+        where = local_ci_dir() if "steps" in record else recorded(record["tree"], record["command"])
+        print(f"{CHECKED} on {head}: recorded in {where}")
+    if left := record.get("left"):
+        print(
+            f"{head} has no pass on the whole gate yet: {', '.join(f'`{name}`' for name in left)} runs only on a"
+            " host (`where: host`), where `local-ci` runs it alone"
+        )
+        # each step by itself, so the `gate` status shows a step's pass, never the whole gate's
+        for one in record["steps"]:
+            if not one.get("published"):
+                publish(head, one)
         return 0
+    if proof:
+        publish(head, record, proof)
+    elif not record.get("published"):
+        publish(head, record)
+    return 0
+
+
+def pr_local_ci(pr: int, run: bool) -> int:
+    """local_ci for PR `pr`, under its base's policy."""
     head = pull_request(pr)["headRefOid"]
     why: list[str] = []
     if record := reusable(head, why=why):
@@ -6720,10 +6931,11 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path], far: Path | None
     detached worktree under `far`'s `tmp/loop/` first, the role is read there, and the report, the previous report and
     the proof logs are in `far`'s `tmp/loop/`, where the lead's `start --file` writes the last two, as are the previous
     pass's repros, each named by its path there from the copy of that report `wait` brought to `tmp/loop/` here."""
-    _, loop = project()
+    pull = pull_request(pr)
+    with policy_from(pull["baseRefName"]):
+        _, loop = project()
     if isinstance(loop, Policy):
         loop = read(toplevel() / LOOP) if (toplevel() / LOOP).exists() else None
-    pull = pull_request(pr)
     head = pull["headRefOid"]
     if missing := [str(log) for log in proofs if not log.is_file()]:
         raise Refused(f"PR #{pr}: no proof log at {', '.join(missing)}")
