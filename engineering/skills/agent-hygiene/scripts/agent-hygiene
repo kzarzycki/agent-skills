@@ -775,24 +775,79 @@ def tell(text, repo=None):
                        + '; '.join(missed))
 
 
-def drift(run):
-    """dotagents doctor's findings, each logged: a tool a skill needs that is missing or too old, a stale skill copy."""
+def doctor(run):
+    """dotagents doctor's findings, or None when it failed (logged, and the run fails)."""
     if not DOTAGENTS.is_file():
-        return []
+        return None
     try:
         done = subprocess.run([str(DOTAGENTS), 'doctor'], text=True, capture_output=True, timeout=900)
     except (OSError, subprocess.TimeoutExpired) as error:
         run.failed = True
         run.say(f'FAIL dotagents doctor: {error}')
-        return []
+        return None
     found = done.stdout.splitlines()
     if done.returncode == 2:  # dotagents' usage exit: this checkout predates its doctor
         found = [f'{DOTAGENTS} has no doctor command: pull it and run `dotagents install`']
-    for line in found:
-        run.say(f'DRIFT: {line}')
     if done.returncode not in (0, 1, 2) or (done.returncode == 1 and not found):
         run.failed = True
         run.say(f'FAIL dotagents doctor: exit {done.returncode}: {done.stderr.strip()[-300:]}')
+    return found
+
+
+def checkout_of(line):
+    """The git checkout root holding the first path a finding names (a path under HOME, not HOME itself), else None."""
+    for word in re.findall(r"(?<![\w.~-])/[^\s:;,'\")]+", line):
+        for parent in (Path(word), *Path(word).parents):
+            if parent == HOME or parent == parent.parent:
+                break
+            if (parent / '.git').exists():
+                return parent
+    return None
+
+
+def catch_up(run, root):
+    """git pull --ff-only in a checkout that is on its default branch, clean, with no local commits and origin strictly
+    ahead; true when it moved. A dirty, diverged or other-branch checkout is never touched: a person owns its state."""
+    default = (git(root, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD') or '').strip()
+    if not default or git(root, 'fetch', '--quiet', 'origin', timeout=180) is None:
+        return False
+    if ((git(root, 'branch', '--show-current') or '').strip() != default.split('/', 1)[-1]
+            or git(root, 'status', '--porcelain') != ''
+            or git(root, 'rev-list', '--count', f'{default}..HEAD') != '0\n'
+            or (git(root, 'rev-list', '--count', f'HEAD..{default}') or '0\n') == '0\n'):
+        return False
+    if run.dry:
+        run.say(f'would pull {root} (clean, on {default.split("/", 1)[-1]}, behind {default})')
+        return False
+    before = (git(root, 'rev-parse', '--short', 'HEAD') or '').strip()
+    if git(root, 'pull', '--ff-only', '--quiet', timeout=180) is None:
+        run.say(f'FAIL git pull --ff-only in {root}')
+        return False
+    run.say(f'pulled {root}: {before} -> {(git(root, "rev-parse", "--short", "HEAD") or "").strip()}')
+    return True
+
+
+DRIFT_ROUTES = {}  # a doctor finding inside a repo -> that repo (owner/name), whose manager is told
+
+
+def drift(run):
+    """dotagents doctor's findings, each logged: a tool a skill needs that is missing or too old, a stale skill copy.
+    A finding inside a checkout that is only behind its origin is tried by a pull first, and logged, not returned, when
+    it clears."""
+    found = doctor(run)
+    if found is None:
+        return []
+    roots = {line: checkout_of(line) for line in found}
+    if any([catch_up(run, root) for root in dict.fromkeys(r for r in roots.values() if r)]):
+        if (again := doctor(run)) is not None:
+            for line in found:
+                if line not in again:
+                    run.say(f'CLEARED: {line}')
+            found = again
+    for line in found:
+        run.say(f'DRIFT: {line}')
+        if (root := roots.get(line) or checkout_of(line)) and (repo := github(root)):
+            DRIFT_ROUTES[line] = repo
     return found
 
 
@@ -933,6 +988,25 @@ def main():
     if old and old not in asked:  # told once per pair of copies
         parts.append(old)
     pending = [line for line in dict.fromkeys(drifted) if line not in asked]  # each finding told once
+    sent = set()
+    by_repo = {}  # a finding inside a repo goes to its manager; the chief of staff gets the rest, and any whose manager can't be told
+    for line in pending:
+        if repo := DRIFT_ROUTES.get(line):
+            by_repo.setdefault(repo, []).append(line)
+    pending = [line for line in pending if line not in DRIFT_ROUTES]
+    for repo, lines in by_repo.items():
+        body = (f'agent-hygiene on {who}, for the owner to decide (log {run.log} on that account):\n\n'
+                'dotagents doctor, in a checkout of this repo (dotagents README, Skill requirements and doctor):\n'
+                + '\n'.join(f'- {line}' for line in lines[:ASK_MAX]))
+        if args.dry_run:
+            run.say(f'would tell the manager of {repo}:\n' + '\n'.join(lines[:ASK_MAX]))
+            continue
+        try:
+            run.say(f'told the manager of {repo} (session {tell(body, repo)}): {len(lines[:ASK_MAX])} drift findings')
+            sent.update(lines[:ASK_MAX])
+        except Exception as error:  # noqa: BLE001 - its findings go to the chief of staff instead
+            run.say(f'FAIL telling the manager of {repo}: {error}')
+            pending += lines
     if new_drift := pending[:ASK_MAX]:
         parts.append('dotagents doctor: what this account\'s agents\' skills need and lack, or old skill copies they can reach '
                      '(dotagents README, Skill requirements and doctor):\n' + '\n'.join(f'- {line}' for line in new_drift)
@@ -953,6 +1027,8 @@ def main():
                      + (f'\n- and {len(fresh) - ASK_MAX} more, in the log' if len(fresh) > ASK_MAX else ''))
     code = 1 if run.failed else 2 if low else 0
     if not parts and not routed:
+        if sent:
+            asked_file.write_text(json.dumps(sorted(asked | sent)))
         return code
     header = f'agent-hygiene on {who}, for the owner to decide (log {run.log} on that account):\n\n'
     text = header + '\n\n'.join(parts)
@@ -962,7 +1038,6 @@ def main():
         if parts:
             run.say(f'would tell the chief of staff:\n{text}')
         return code
-    sent = set()
     for repo, lines in routed.items():
         body = header + 'Kept, since they may hold something wanted. Which may go?\n' + '\n'.join(
             f'- {line}' for line in lines[:ASK_MAX]) + (f'\n- and {len(lines) - ASK_MAX} more, in the log' if len(lines) > ASK_MAX else '')
