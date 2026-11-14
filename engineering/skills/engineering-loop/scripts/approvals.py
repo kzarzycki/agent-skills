@@ -138,6 +138,9 @@ marked ready, commented on, evicted or merged), and the rest is as without the f
 The check of each PR (`landable`) writes nothing to GitHub: `land`'s own path marks a ready draft ready and adds `risk:high`, so a probe that only reads never readies a draft.
 A named PR that is no candidate (or is closed, or targets another base than the first's) is left out and says why, and the rest still land: a missing proof exits 1,
 a wait for the owner or a pending required check 3, a red required check 1; with several PRs named the exit is the worst of them, 1 over 3 over 0.
+A named PR missing a required check, or a named draft, that GitHub reports conflicting exits 1 with the fix, `merge
+origin/<base> in` (a draft is not marked ready first), since GitHub runs no workflow on a conflicting PR, so the check
+would never come.
 3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
 `pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
 (the PR's head) and `LAND_BASE` (that tip) set, so the base's tree holds the check and a PR never changes what judges
@@ -510,7 +513,7 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
@@ -3475,6 +3478,10 @@ def rest_pull(pr: int) -> dict[str, Any]:
         "assignees": {"nodes": [actor(user) for user in found.get("assignees") or []]},
         "state": state,
         "isDraft": bool(found.get("draft")),
+        # REST's true or false, or null while GitHub computes it, as GraphQL's MergeableState reads them
+        "mergeable": {True: "MERGEABLE", False: "CONFLICTING"}.get(
+            found.get("mergeable"), "UNKNOWN"
+        ),
         "autoMergeRequest": {"enabledAt": None} if found.get("auto_merge") else None,
         "isInMergeQueue": None,
         "body": found.get("body") or "",
@@ -4399,7 +4406,7 @@ def readied(
     required = required_checks(base) - {APPROVALS}
     found: dict[int, dict[str, Any]] = {}
     for pull in drafts:
-        verdict = landable(pull, tracker, loop, required)
+        verdict = landable(pull, tracker, loop, required, named=True)
         if not verdict.draft:
             found[pull["number"]] = {**pull, "verdict": verdict}
             continue
@@ -4415,13 +4422,18 @@ def readied(
 
 
 def landable(
-    pull: dict[str, Any], tracker: str | None, loop: str | None, required: set[str]
+    pull: dict[str, Any],
+    tracker: str | None,
+    loop: str | None,
+    required: set[str],
+    named: bool = False,
 ) -> Verdict:
     """A check, which writes nothing to GitHub: whether the PR is a candidate for the batch (every merge proof, gated,
     the head's own CI or local-ci pass aside, since the batch's gate is the proof; no owner wait; the base's required
     checks green on its head; a signed squash possible where loop.md asks for one), or a draft that holds all that and is
     ready to mark, or why not, said once on stdout. The PR is judged as `flag` leaves it (a `risk:high` the gate added
-    that `unflag` would take off no longer holds it); `land` writes the label and the ready mark itself."""
+    that `unflag` would take off no longer holds it); `land` writes the label and the ready mark itself. The `named` PR
+    missing a required check, or a draft, that GitHub reports conflicting ends the wait, since no workflow runs on it."""
     where = f"PR #{pull['number']}"
     lines, issues = proof_gaps(pull, tracker, loop)
     if lines:
@@ -4429,6 +4441,19 @@ def landable(
             print(line)
         return Verdict((1, False))
     pull = flagged_as(pull, issues, loop)
+    # GitHub runs no workflow on a conflicting PR, so a required check it lacks never comes, nor do a draft's once
+    # it is ready: before the draft is marked ready, since that would start nothing
+    if (
+        named
+        and required
+        and pull.get("mergeable") == "CONFLICTING"
+        and (pull["isDraft"] or required - {name for name, _ in head_checks(pull, required)[0]})
+    ):
+        for line in ci(where, pull, required):
+            print(line)
+        base = pull["baseRefName"]
+        print(f"{where} conflicts with {base}: merge `origin/{base}` in")
+        return Verdict((1, False), issues=issues)
     if pull["isDraft"]:
         if owner := owner_waits(pull, issues, loop):  # ready starts CI, so never before the go
             for line in owner:
@@ -4486,7 +4511,7 @@ def batched(
     pulls = {pull["number"]: pull for pull in named}
     for number in sorted(listed):
         pull = pulls.get(number) or pull_request(number)
-        verdict = pull.get("verdict") or landable(pull, tracker, loop, required)
+        verdict = pull.get("verdict") or landable(pull, tracker, loop, required, number in pulls)
         # the board shows why a PR waits: flag its risk once its proofs hold, before it is refused for anything else
         if verdict.issues is not None and not pull.get("readied"):
             for line in flag(pull, verdict.issues, loop):
