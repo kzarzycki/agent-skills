@@ -4456,26 +4456,44 @@ def ending_of(text: str) -> str | None:
 
 
 # A cloud lead's ``STILL WORKING`` whose wait is its own background run and nothing else (#1002):
-# that run died with the turn, so it waits on nothing. The object of "waiting on <object>" must be
-# wholly an own-run phrase ("my gate", "my own test run", "the background run"); any other word in it
-# ("the agent and my gate", "tests and my gate") keeps the route ``wait_of`` gives.
-OWN_RUN_NOUN = r"(?:gate|run|job|build|log|process|tests?)s?"
-OWN_RUN = re.compile(
-    rf"(?:(?:my|our|own)\s+(?:\w+\s+){{0,2}}?{OWN_RUN_NOUN}"
-    rf"|(?:(?:the|a|my)\s+)?(?:background|detached)\s+(?:\w+\s+)?{OWN_RUN_NOUN})",
-    re.IGNORECASE,
+# that run died with the turn, so it waits on nothing. The object of "waiting on <object>" is split
+# into tokens and counts only when every one is in ``OWN_RUN_WORDS``: any other word ("agent",
+# "verifier", "tests", "and"), a comma or a parenthesis that is no duration keeps the route
+# ``wait_of`` gives.
+OWN_RUN_WORDS = frozenset(
+    (
+        "my",
+        "our",
+        "own",
+        "the",
+        "background",
+        "detached",
+        "gate",
+        "run",
+        "job",
+        "build",
+        "log",
+        "process",
+    )
 )
 WAIT_OBJECT = re.compile(
-    r"STILL WORKING\b[^\n]*?\bwait(?:s|ing)?\s+(?:on|for)\s+(?P<object>[^.;,\n(\u2014]*?)"
-    r"(?=\s*(?:[.;,(\u2014]|--|Report:|$))",
+    r"STILL WORKING\b[^\n]*?\bwait(?:s|ing)?\s+(?:on|for)\s+(?P<object>.*?)(?:\.(?:\s|$)|\bReport:|$)",
     re.IGNORECASE | re.MULTILINE,
+)
+DURATION = re.compile(
+    r"\(\s*(?:~|about\s+)?\d+(?:\.\d+)?\s*(?:s|sec|secs|seconds?|m|min|mins|minutes?|h|hrs?|hours?)\s*\)\s*$",
+    re.IGNORECASE,
 )
 
 
 def own_run_only(text: str) -> bool:
-    """Whether ``text``'s ``STILL WORKING`` line waits on the lead's own background run alone."""
+    """Whether ``text``'s ``STILL WORKING`` line waits on the lead's own background run alone: its
+    wait object, less a trailing duration, holds only words of ``OWN_RUN_WORDS``."""
     m = WAIT_OBJECT.search(text)
-    return bool(m and OWN_RUN.fullmatch(m.group("object").strip(" `")))
+    if not m:
+        return False
+    tokens = re.findall(r"[\w'-]+|\S", DURATION.sub("", m.group("object")).replace("`", " "))
+    return bool(tokens) and all(t.lower() in OWN_RUN_WORDS for t in tokens)
 
 
 def wait_of(text: str, at: float | None = None) -> str:
