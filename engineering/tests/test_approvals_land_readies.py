@@ -172,3 +172,14 @@ def test_a_named_pr_into_another_base_is_left_out_and_exits_one(lands: dict[str,
     code, lines = lands["land"]("7", "8")
     assert (code, lands["merged"]()) == (1, ["7"])
     assert any(line.startswith("PR #8 targets release, not main like #7") for line in lines), lines
+
+
+def test_a_readied_draft_whose_required_checks_have_just_started_keeps_the_wait_going(
+    lands: dict[str, Any], one_wait: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"check"})
+    draft(lands, 7)
+    code, lines = lands["land"]("7", "--wait")
+    assert code == approvals.WAITING
+    assert "PR #7: CI starts on ready, so its required checks are pending" in lines
+    assert any(line.startswith("land --wait stopped after") for line in lines), lines

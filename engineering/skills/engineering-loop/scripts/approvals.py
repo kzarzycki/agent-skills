@@ -4223,9 +4223,9 @@ def readied(
     named: list[dict[str, Any]], base: str, tracker: str | None, loop: str | None
 ) -> list[dict[str, Any]]:
     """The named PRs, each draft that holds every proof marked ready (and read again), before the wait for the lock,
-    so the holder's next batch includes it. A draft with a proof missing is left as it is for `landable` to say why,
-    and a cloud session's is too, since it can't mark one."""
-    drafts = [pull for pull in named if pull["isDraft"] and not in_cloud()]
+    so the holder's next batch includes it. A draft with a proof missing is left as it is for `landable` to say why;
+    in a cloud session mark_ready says it can't mark one."""
+    drafts = [pull for pull in named if pull["isDraft"]]
     if not drafts:
         return named
     required = required_checks(base) - {APPROVALS}
