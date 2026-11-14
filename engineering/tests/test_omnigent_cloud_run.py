@@ -1,5 +1,7 @@
 """A cloud session's run must finish inside its turn (#1002): its VM may not outlive the turn."""
 
+import subprocess
+
 import pytest
 from test_omnigent_agent import (
     CLOUD_RECORD,
@@ -81,6 +83,11 @@ def test_the_supervisor_nudge_of_a_cloud_lead_names_the_restart(tmp_path, monkey
         ("STILL WORKING: waiting on my background run. Report: r.md", True),
         ("STILL WORKING: waiting on the verifier background session. Report: r.md", False),
         ("STILL WORKING: waiting on the verifier and my background gate. Report: r.md", False),
+        ("STILL WORKING: waiting on the agent and my gate. Report: r.md", False),
+        ("STILL WORKING: waiting on my tests and my gate. Report: r.md", False),
+        ("STILL WORKING: waiting on the deployment and my gate. Report: r.md", False),
+        ("STILL WORKING: waiting on my own test run (14 min). Report: r.md", True),
+        ("STILL WORKING: waiting on the background run. Report: r.md", True),
         ("STILL WORKING: waiting on the verifier. Report: r.md", False),
     ],
 )
@@ -89,10 +96,14 @@ def test_only_a_wait_naming_nothing_but_its_own_run_counts_as_lost(ending: str, 
 
 
 def test_wait_for_prints_the_last_log_lines_with_still_running(tmp_path, capsys) -> None:
-    log = tmp_path / "gate.log"
-    log.write_text("run 7\nlock x\nlocked\nstep 1\nstep 2\nstep 3\nstep 4\n")
-    argv = ["wait-for", "--log", str(log), "--pid", "7", "--budget", "0.05"]
-    (tmp_path / "7").write_text("7\n")
-    argv[argv.index("7")] = str(tmp_path / "7")
-    assert omnigent_agent.main(argv) == omnigent_agent.LIMIT
-    assert capsys.readouterr().out == "still running\nstep 2\nstep 3\nstep 4\n"
+    run = subprocess.Popen(["sleep", "30"])  # a live run of the test's own, stopped below
+    try:
+        log, pid = tmp_path / "gate.log", tmp_path / "gate.pid"
+        pid.write_text(f"{run.pid}\n")
+        log.write_text(f"run {run.pid}\nlock x\nlocked\nstep 1\nstep 2\nstep 3\nstep 4\n")
+        argv = ["wait-for", "--log", str(log), "--pid", str(pid), "--budget", "0.05"]
+        assert omnigent_agent.main(argv) == omnigent_agent.LIMIT
+        assert capsys.readouterr().out == "still running\nstep 2\nstep 3\nstep 4\n"
+    finally:
+        run.kill()
+        run.wait()

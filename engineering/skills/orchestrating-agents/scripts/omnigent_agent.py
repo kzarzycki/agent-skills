@@ -4455,24 +4455,27 @@ def ending_of(text: str) -> str | None:
     return "USER NEEDED" if "USER NEEDED" in endings else next(iter(endings), None)
 
 
-# A cloud lead's ``STILL WORKING`` naming only its own background run (#1002): that run died with the
-# turn, so it waits on nothing. "my gate" or "my background run", not "the verifier background
-# session"; a message that also names another wait (``OTHER_WAIT``) keeps that wait's route.
+# A cloud lead's ``STILL WORKING`` whose wait is its own background run and nothing else (#1002):
+# that run died with the turn, so it waits on nothing. The object of "waiting on <object>" must be
+# wholly an own-run phrase ("my gate", "my own test run", "the background run"); any other word in it
+# ("the agent and my gate", "tests and my gate") keeps the route ``wait_of`` gives.
+OWN_RUN_NOUN = r"(?:gate|run|job|build|log|process|tests?)s?"
 OWN_RUN = re.compile(
-    r"STILL WORKING\b[^\n]*?\b(?:(?:my|our|own)\b[^\n.]*?\b(?:gate|run|job|process|tests?|build)s?"
-    r"|(?:background|detached)\s+(?:gate|run|job|process|tests?|build)s?|nohup)",
+    rf"(?:(?:my|our|own)\s+(?:\w+\s+){{0,2}}?{OWN_RUN_NOUN}"
+    rf"|(?:(?:the|a|my)\s+)?(?:background|detached)\s+(?:\w+\s+)?{OWN_RUN_NOUN})",
     re.IGNORECASE,
 )
-OTHER_WAIT = re.compile(
-    r"\b(?:verifier|worker|lead|merge|reviewer|CI|checks?|session|PR|pull request)\b|[0-9a-f]{32}|#\d+",
-    re.IGNORECASE,
+WAIT_OBJECT = re.compile(
+    r"STILL WORKING\b[^\n]*?\bwait(?:s|ing)?\s+(?:on|for)\s+(?P<object>[^.;,\n(\u2014]*?)"
+    r"(?=\s*(?:[.;,(\u2014]|--|Report:|$))",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
 def own_run_only(text: str) -> bool:
-    """Whether ``text``'s ``STILL WORKING`` line names the lead's own background run and no other wait."""
-    m = OWN_RUN.search(text)
-    return bool(m and not OTHER_WAIT.search(text[text.find("STILL WORKING") :].split("\n", 1)[0]))
+    """Whether ``text``'s ``STILL WORKING`` line waits on the lead's own background run alone."""
+    m = WAIT_OBJECT.search(text)
+    return bool(m and OWN_RUN.fullmatch(m.group("object").strip(" `")))
 
 
 def wait_of(text: str, at: float | None = None) -> str:
