@@ -11416,3 +11416,73 @@ def test_a_new_session_s_first_owner_item_is_posted_as_owner(
 ) -> None:
     [post] = owner_posts_for(tmp_path, monkeypatch, ["Bash(ls)"])
     assert post.startswith("Supervisor [owner] b-")
+
+
+def owner_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, looks: list[tuple[dict, str]]
+) -> list[str]:
+    """The route of each post to ``cos`` when the lead shows one look per poll, the post window
+    passed between them: a look is its ``snap`` and, unless empty, the turn end it then writes."""
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "PROMPT_CONFIRM_SECONDS", 0.0)
+    og = Lead(told("brief", 60), ending("STILL WORKING: its worker runs", 5))
+
+    def show(n: int) -> None:
+        snap, text = looks[n]
+        og.snap = snap
+        if text:
+            og.histories["a"].append({**ending(text, 0), "id": f"end{n}"})
+
+    show(0)
+
+    def later(poll: int) -> None:
+        offset[0] = poll * 400.0
+        if poll < len(looks):
+            show(poll)
+        else:
+            og.snap = {"status": "running"}
+
+    supervised(og, registry, monkeypatch, len(looks) + 1, later, notify="cos", console=True)
+    return [re.match(r"Supervisor \[(\w+)\]", p).group(1) for p in posted(og)]  # type: ignore[union-attr]
+
+
+def prompt_look(n: int, title: str, queued: int) -> tuple[dict, str]:
+    item = {"elicitation_id": f"e{n}", "params": {"content_preview": "Bash(ls)"}}
+    inputs = [{"id": f"i{k}"} for k in range(queued)]
+    return {
+        "status": "running",
+        "pending_elicitations": [item],
+        "title": title,
+        "pending_inputs": inputs,
+    }, ""
+
+
+@pytest.mark.parametrize(
+    ("looks", "routes"),
+    [
+        pytest.param(
+            [({}, "USER NEEDED: approve A"), ({}, "USER NEEDED: approve B")],
+            ["owner", "owner"],
+            id="two-different-requests",
+        ),
+        pytest.param(
+            [
+                ({}, "USER NEEDED: approve A"),
+                ({}, "DONE: step one"),
+                ({}, "USER NEEDED: approve A"),
+            ],
+            ["owner", "act", "info"],
+            id="one-request-twice",
+        ),
+        pytest.param(
+            [prompt_look(0, "t-a", 0), prompt_look(1, "t-a renamed", 2)],
+            ["owner", "info"],
+            id="one-prompt-under-a-new-title-and-queue",
+        ),
+    ],
+)
+def test_an_owner_item_is_keyed_on_what_the_owner_acts_on_not_its_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, looks: list, routes: list[str]
+) -> None:
+    assert owner_routes(tmp_path, monkeypatch, looks) == routes

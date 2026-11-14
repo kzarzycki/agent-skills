@@ -3714,6 +3714,18 @@ def observe(
     return ("running",), f"{head}: {status}{tail}"
 
 
+def owner_item(line: str) -> str:
+    """What the owner acts on in an event ``line``, which keys an owner item as raised: a
+    prompt's text, a turn end's last message, else the line. Never the header (session, title,
+    queued inputs, open card), which changes while the request stands."""
+    first, _, rest = line.partition("\n")
+    if (at := first.find(": blocked on a prompt: ")) >= 0:
+        return first[at + 2 :]
+    if re.search(r": turn ended(, quiet \d+s)?$", first) and rest:
+        return rest
+    return line
+
+
 def watch(
     og: Omnigent, sessions: list[str], parent: str | None = None, timeout: float = 3 * 3600
 ) -> list[str]:
@@ -5085,10 +5097,10 @@ def supervise_registry(
         elif action in ("act", "owner", "done"):
             item = line.splitlines()[0]
             to = "owner" if action == "owner" else "act"
-            if to == "owner" and lead.get("owner_item") == item:
+            if to == "owner" and lead.get("owner_item") == owner_item(line):
                 to = "info"  # the owner item already raised: it wakes no one
             elif to == "owner" and lead:
-                lead["owner_item"] = item
+                lead["owner_item"] = owner_item(line)
             queue(eid, sid, to, item, why)
         if action == "act" and event["limit"] and event["capped"]:  # past the cap: no more probes
             for parked in state["leads"].values():

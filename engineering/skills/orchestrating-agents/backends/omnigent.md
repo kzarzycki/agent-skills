@@ -694,7 +694,7 @@ a later write failed keeps its place in the hour, and the retry acts on its answ
 What needs the notified session waits in the state's `attention` queue and goes out as one post,
 at most one per 5 minutes (`rate.next_post_at`, written before the post), so a restart or a
 successor keeps the window: `Supervisor [act] b-<id>: <n> events`, or `[owner]` when one is the
-owner's (an owner item with the same text as the last one raised for that session, kept in the
+owner's (an owner item with the same request, a prompt's text or a turn end's last message, as the last one raised for that session, kept in the
 lead's `owner_item`, is `[info]`, which wakes no one), one line per event with why, then each lead's status row and the first 5 lines of its
 report (read through the file API, from any host; a failed read is noted). A row gives a turn end
 (`turn ended: <last line>`) once per turn, keyed on its last message's id (else its time) in the
