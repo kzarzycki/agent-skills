@@ -578,10 +578,11 @@ DETACH = "perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV'"
 # keeps the conversation, not the machine, so a run detached in one turn dies when it ends.
 DETACH_LINE = "A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role."
 CLOUD_RUN_LINE = (
-    "A run must finish inside the turn that started it, since the VM may not outlive the turn:"
-    " start it with the harness's own background support if needed, and wait on it with the"
-    " Monitor tool's until-loop (a loop that returns once the run's exit shows), never with a plain"
-    " `sleep`, which the harness blocks, and never by ending the turn, since the run is lost with it."
+    "A run must finish inside the turn that started it, since the VM may not outlive the turn, and a"
+    " foreground call there stops at 10 minutes: start it detached as verifier.md's recipe says (its log,"
+    " pid and exit in files), then loop on `omnigent_agent.py wait-for --log <log> --pid <pid>` in the"
+    " same turn, calling it again each time it prints `still running` (exit 6), never ending the turn"
+    " while the run lives and never with a plain `sleep`, which the harness blocks."
     " A `STILL WORKING` that names only your own background run is not a valid ending."
 )
 PREAMBLE = """\
