@@ -2433,6 +2433,41 @@ def move_head(workspace: Path, pr: int) -> None:
             raise Fail(f"git {cmd[0]} for {branch} in {workspace}: {done.stderr.strip()[-300:]}")
 
 
+def check_out_head(workspace: Path, pr: int) -> None:
+    """Put ``workspace`` (a checkout on this host) at PR ``pr``'s head commit before a verifier's first turn,
+    or refuse: a verifier that starts at the base reviews nothing the PR changed. A checkout already
+    there is left alone; one with tracked changes is refused rather than moved under them."""
+    git = ["git", "-C", str(workspace)]
+
+    def run(*cmd: str) -> str:
+        done = subprocess.run([*git, *cmd], capture_output=True, text=True, check=False)
+        if done.returncode:
+            raise Fail(f"git {cmd[0]} for PR {pr} in {workspace}: {done.stderr.strip()[-300:]}")
+        return done.stdout.strip()
+
+    out = subprocess.run(
+        ["gh", "pr", "view", str(pr), "--json", "headRefOid", "-q", ".headRefOid"],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    head = out.stdout.strip()
+    if out.returncode or not head:
+        raise Fail(f"PR {pr}: no head commit read ({out.stderr.strip()[-200:]})")
+    if run("rev-parse", "HEAD") == head:
+        return
+    if run("status", "--porcelain", "--untracked-files=no"):
+        raise Fail(
+            f"{workspace} is not at PR {pr}'s head {head[:12]} and has tracked changes: use a"
+            " clean worktree for the verifier"
+        )
+    run("fetch", "-q", "origin", f"pull/{pr}/head")
+    if run("rev-parse", "FETCH_HEAD") != head:
+        raise Fail(f"PR {pr}'s head moved while it was fetched; start the verifier again")
+    run("checkout", "-q", "--detach", head)
+
+
 def pr_branch(pr: int, workspace: Path) -> str:
     """The head branch name of PR ``pr`` in the repository ``workspace`` is a clone of."""
     out = subprocess.run(
@@ -6592,9 +6627,31 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         verifier = args.cmd in ("run", "start") and reviews(args.role)
         if verifier and args.verifier_route != "codex":
             apply_route(args)
+        verifies = args.pr if verifier else None
         if verifier and args.pr and og.harness(args.agent) != CLOUD_HARNESS:
             args.pr = None
         cloud = os.environ.get("CLAUDE_CODE_REMOTE") == "true"
+        if (
+            args.cmd in ("run", "start")
+            and cloud
+            and not args.host
+            and not args.top_level
+            and og.harness(args.agent) != CLOUD_HARNESS
+        ):
+            # Omnigent runs a child on its parent's runner, the bridge's host: where that runs says
+            # nothing about where heavy work should go
+            raise Fail(
+                "a child started from a cloud session runs on the runner's host, never"
+                " there by default. "
+                + (
+                    "A verifier runs in this VM: `cloud_verifier.py verify --pr N --brief FILE`"
+                    " (engineering-loop, Cloud worker); or pass --top-level --host <name> for"
+                    " a host loop.md's Placement line lists"
+                    if verifier
+                    else "Pass --top-level --host <name> to run it on a host, or start a"
+                    " claude-cloud agent to run it in its own VM"
+                )
+            )
         if args.cmd == "start" and args.top_level and not args.host and cloud:
             args.host = cloud_default_host(og, placement_hosts(os.getcwd()))
         if verifier and args.host:
@@ -6727,6 +6784,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 move_head(workspace, args.pr)
         elif not remote:
             refuse_pinned_checkout(args.agent, workspace)
+            if verifies:
+                check_out_head(workspace, verifies)
         elif args.pr and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             print(
                 f"--pr {args.pr}: the launch dir is on another host, so its HEAD is not moved here:"
