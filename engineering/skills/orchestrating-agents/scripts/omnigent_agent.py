@@ -49,8 +49,10 @@ copy before it posts; a failure before the post stays exit 1.
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
-a later read failed (delivered, unconfirmed: run it again, it posts no second copy). A session blocked only
-on questions (``ask_user_question``) holds the message behind them too (exit 5); ``relay
+a later read failed (delivered, unconfirmed: run it again, it posts no second copy). A question card
+(``sys_ask_user_question``) leaves the session free: a plain relay is delivered beside it, exit 0,
+the line names the card still open, and the message never answers it. Only a question the
+harness blocks on (Claude's AskUserQuestion) holds the message behind it (exit 5); ``relay
 --answer`` gives it as each question's answer instead, exit 0, since its pending inputs wait on
 the answer; an approval prompt it never answers. ``relay --from <name>`` is a notice from a task
 or an agent: a first line says it is not the owner's words, and it never answers a question,
@@ -1721,9 +1723,10 @@ def relay(
     skip: bool = False,
 ) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
-    the session holds it, ``Gone`` when it cannot be delivered. A session waiting on a question
-    holds ``text`` behind it like any message (``Queued``): an unrelated relay arriving while a
-    question is open must not become its answer. With ``answer``, a session blocked only on
+    the session holds it, ``Gone`` when it cannot be delivered. A question card leaves the session
+    free: ``text`` is delivered beside it, never answering it, and the line names the card still
+    open. A question the harness blocks on holds ``text`` behind it (``Queued``): an unrelated
+    relay arriving while it is open must not become its answer. With ``answer``, a session blocked only on
     questions gets ``text`` as each one's answer instead: its pending inputs wait on the answer,
     and an interrupt would drop them and hold input until the question's hook marker goes stale
     (kzarzycki/omnigent#14). An approval prompt it never answers. With ``skip``, a session with
@@ -1777,7 +1780,17 @@ def relay(
             )
             lands = f"this message stays queued and lands once the question is answered ({how})"
         raise Queued(f"session {sid}: queued {why}; {lands}")
-    return f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
+    line = f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
+    if not answer and not source:
+        try:
+            open_asks = questions_of(og.info(sid))
+        except Fail:  # the message is in: a failed look at the cards changes nothing
+            open_asks = []
+        if open_asks:
+            line += (
+                "; its question is still open (relay --answer answers it): " + "; ".join(open_asks)
+            )
+    return line
 
 
 # The first words of every message an agent or Omnigent posts into a session, never the owner's:

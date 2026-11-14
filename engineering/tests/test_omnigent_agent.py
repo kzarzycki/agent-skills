@@ -6394,6 +6394,51 @@ def test_relay_holds_behind_an_open_question_unless_told_to_answer_it(
     assert "Which base?" in capsys.readouterr().err
 
 
+def test_relay_beside_an_open_question_card_delivers_and_names_it_without_answering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()  # a card blocks nothing: the message lands at once
+    sid = og.create("claude", "lead")
+    og.prompts = [
+        {
+            "elicitation_id": "q1",
+            "params": {
+                "policy_name": "sys_ask_user_question",
+                "ask_user_question": {"questions": [{"question": "Which base?"}]},
+                "message": "Which base?",
+            },
+        }
+    ]
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    assert capsys.readouterr().out.strip() == (
+        f"session {sid}: delivered; its question is still open (relay --answer answers it):"
+        " Which base?"
+    )
+    assert og.resolved == []
+    assert og.posts == 1
+
+
+def test_relay_behind_a_blocking_question_is_queued_naming_it_and_answer_and_resolves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)  # the harness holds every message until it is answered
+    sid = og.create("claude", "lead")
+    og.prompts = [
+        {
+            "elicitation_id": "e1",
+            "params": {
+                "policy_name": "claude_native_permission",
+                "ask_user_question": {"questions": [{"question": "Which base?"}]},
+                "message": "Which base?",
+            },
+        }
+    ]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
+    err = capsys.readouterr().err
+    assert "Which base?" in err and "relay --answer" in err
+    assert og.resolved == []
+
+
 def test_relay_answers_a_question_with_the_message_instead_of_posting_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
