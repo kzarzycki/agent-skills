@@ -156,7 +156,8 @@ before its PR opened). A refused delete is said and never fails the landing.
 Different, because a refusal left only part of the batch on the base or someone merged by hand meanwhile: it says
 which, gates the tip, and publishes only a pass. Each PR landed gets one comment, `Landed`, then `Base:` the new tip,
 `Tree:` the tree it landed (the base with it and the PRs before it merged), `Gate:` the command, `run` or `reused`,
-and the tree it passed on, and `Batch:` the PRs landed together.
+and the tree it passed on, and `Batch:` the PRs landed together. Each PR it merged then has its kept `--pr` worker sessions finished by a detached
+(orchestrating-agents' `omnigent_agent.py reap --merged --pr <n>`), whose outcome goes to its own log, never the land's.
 6. Red: it lands one PR at a time instead, each merged onto the last green commit and gated alone (a one-PR batch's red run counts as its first run alone). A PR red alone is
 gated once more (green then is a flake, and it lands), then evicted: back to draft, so later batches leave it out until
 `land <pr>` marks it ready again, and a comment holding its log's last 30 lines. When the first PR alone is red twice,
@@ -4723,6 +4724,34 @@ def merges(
             pull["number"],
             f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}\n",
         )
+        archive_workers(pull["number"])
+
+
+def archive_workers(number: int) -> None:
+    """Start, detached, the finish of the kept `--pr` worker sessions of PR #number, which merged:
+    orchestrating-agents' `omnigent_agent.py reap --merged --pr <n>`. It is not waited on, so a slow Omnigent or
+    GitHub never holds the land, and its outcome goes to its own log, named in the line printed. A checkout without
+    that skill, or a start that fails, is a printed line only: the PR has landed, and a session left open is the
+    next `reap`'s."""
+    script = Path(__file__).resolve().parents[2] / "orchestrating-agents/scripts/omnigent_agent.py"
+    if not script.is_file():
+        print(f"PR #{number}: no worker sessions finished: {script.name} is not installed")
+        return
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", prefix=f"reap-pr{number}-", suffix=".log", delete=False
+        ) as log:
+            subprocess.Popen(
+                [sys.executable, str(script), "reap", "--merged", "--pr", str(number)],
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+    except OSError as exc:
+        print(f"PR #{number}: worker sessions not finished: {exc}")
+        return
+    print(f"PR #{number}: finishing its worker sessions in the background, log {log.name}")
 
 
 def approve(point: str, number: int, seen: str | None = None) -> int:
