@@ -79,5 +79,8 @@ def test_a_steps_pass_pushes_only_its_steps_not_yet_in_origin(
 ) -> None:
     steps = [pass_of("lint", published=True, ref=REF), pass_of("test")]
     approvals.publish(HEAD_SHA, pass_of("check", steps=steps))
+    out = capsys.readouterr().out
     assert calls["pushed"] == ["test"]
+    assert f"already in origin as the record branch {REF}" in out
+    assert "not pushed to origin" not in out
     assert calls["shown"] == [HEAD_SHA]

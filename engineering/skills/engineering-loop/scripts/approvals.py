@@ -6546,11 +6546,8 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
     # (record_ref), is left as it is, since pushing it again only fails and would say origin lacks it
     for one in record.get("steps", [record]):
         if one.get("published"):
-            if "steps" not in record:
-                name = one.get("ref") or RECORD_BRANCH.format(
-                    record_name(one["tree"], one["command"])
-                )
-                print(f"already in origin as the record branch {name}, so it is not pushed again")
+            name = one.get("ref") or RECORD_BRANCH.format(record_name(one["tree"], one["command"]))
+            print(f"already in origin as the record branch {name}, so it is not pushed again")
             continue
         try:
             ref = push_record(one | {"time": one.get("time") or now()})
