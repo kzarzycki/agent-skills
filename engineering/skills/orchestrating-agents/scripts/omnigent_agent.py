@@ -3982,14 +3982,34 @@ def file_write(og: Omnigent, sid: str, path: Path, text: str, far: bool) -> None
         path.write_text(text)
 
 
-def bring_home(og: Omnigent, sid: str, report: Path) -> Path:
-    """Copy a verifier's report on another host (``report``, a path there) to ``tmp/loop/`` here,
-    under its own name, and return the copy: ``approvals.py verdict`` and the next pass's previous
-    report read a local file."""
-    home = Path("tmp/loop") / report.name
+def bring_home(og: Omnigent, sid: str, report: Path, keep: bool = False) -> Path:
+    """Copy a report or question on another host (``report``, a path there) here and return the
+    copy, since ``approvals.py verdict`` and the next step read a local file. A relative path is
+    copied to itself, an absolute one (a path on that host) to ``tmp/loop/`` under its own name;
+    ``keep`` returns the copy as written, else resolved. A host that cannot be read is named
+    with the path left there (``offline``)."""
+    home = Path("tmp/loop") / report.name if report.is_absolute() else report
+    try:
+        text = og.read_file(sid, str(report))
+    except Gone:
+        raise
+    except Fail as e:
+        raise offline(og, sid, report) from e
     home.parent.mkdir(parents=True, exist_ok=True)
-    home.write_text(og.read_file(sid, str(report)))
-    return home.resolve()
+    if home.is_symlink():
+        home.unlink()  # else the write lands wherever it points
+    home.write_text(text)
+    return home if keep else home.resolve()
+
+
+def offline(og: Omnigent, sid: str, path: Path) -> Fail:
+    """The failure for a session whose host's file API can't be read: it names ``path``, which
+    stays there, and says whether the runner reads offline, since a lead waiting on it would
+    otherwise see only an HTTP error."""
+    state = "is offline" if not og.info(sid).get("runner_online", True) else "did not answer"
+    return Fail(
+        f"session {sid}'s host {state}: {path} is on that host, and this one cannot read it"
+    )
 
 
 def apply_route(args: argparse.Namespace) -> None:
@@ -6824,8 +6844,23 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # a path on the session's host, which this one neither resolves nor reads (as start's)
             far = not args.pr and elsewhere(og, og.info(args.session))
             report = args.report if far else args.report.resolve()
-            got = wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr)
-            print(bring_home(og, args.session, report) if far and args.verdict else got)
+            if far and not og.info(args.session).get("runner_online", True):
+                try:  # offline: a report left on that host can't be read now
+                    file_mtime(og, args.session, report, far)
+                except Fail as e:
+                    raise offline(og, args.session, report) from e
+            try:
+                got = wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr)
+            except Asked as asked:
+                if far:  # the question is on its host too: leave a copy here, as for a report
+                    here = bring_home(og, args.session, Path(asked.args[0]), keep=True)
+                    raise Asked(str(here)) from asked
+                raise
+            if far:
+                home = bring_home(og, args.session, report, keep=not args.verdict)
+                print(home)
+            else:
+                print(got)
             # the caller has the result: the supervisor's line for it would be a second wake
             arm_quietly(registry, args.session)
             if not keeps(args, args.verdict):
