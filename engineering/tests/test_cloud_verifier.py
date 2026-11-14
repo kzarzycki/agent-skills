@@ -932,9 +932,7 @@ def test_a_report_that_cannot_be_cleared_stops_the_pass_before_the_turn(
     assert "turn/addUserMessage" not in fake.seen and not out.exists()
 
 
-ANSWERED_BRIEF = (
-    "Review PR #7.\n- Report: tmp/loop/pr7-v1.md\n\nPriorities:\n## Answer to your question\nlogs: tmp/loop/a.log\n"
-)
+ANSWERED_BRIEF = "Review PR #7.\n- Report: tmp/loop/pr7-v1.md\n\nPriorities:\n## Answer to your question\nlogs: tmp/loop/a.log\n"
 
 
 def test_a_second_question_without_a_new_in_the_answer_line_is_refused(checkout, capsys) -> None:
