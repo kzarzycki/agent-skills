@@ -13,6 +13,7 @@ from approvals_harness import (
     approvals,
     assigned,  # noqa: F401
     attached,  # noqa: F401
+    board_risks,  # noqa: F401
     git_in,
     graphql_answers,  # noqa: F401
     hub,  # noqa: F401
@@ -313,3 +314,20 @@ def test_a_risk_label_the_gate_would_take_off_no_longer_holds_the_merge(
     )
     assert lands["land"]("7")[0] == 0
     assert writes == [(7, approvals.RISK_LABEL, {"add": False})]
+
+
+def test_a_board_field_at_high_holds_a_draft_in_landable_and_land_writes_the_label(
+    lands: dict[str, Any], board_risks: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """flag() treats a board `Risk` field at `High` as a known high risk (#929): landable judges the PR so, reading
+    only, and the label write stays in land's own path, so the draft is neither readied nor left unflagged."""
+    writes: list[Any] = []
+    monkeypatch.setattr(approvals, "label", lambda *args, **kwargs: writes.append(args))
+    draft(lands, 7)
+    board_risks["values"][7] = "High"
+    tracker, loop = approvals.project()
+    verdict = approvals.landable(lands["pulls"][7], tracker, loop, set())
+    assert (verdict.exit, verdict.draft, writes) == ((approvals.WAITING, False), False, [])
+    assert [n["name"] for n in lands["pulls"][7]["labels"]["nodes"]] == []
+    assert lands["land"]("7")[0] == approvals.WAITING
+    assert (readied(lands), writes) == ([], [(7, approvals.RISK_LABEL)])

@@ -186,6 +186,7 @@ keep these lines exact:
   worktree), then `VERDICT: <n> blocker, <n> major, <n> minor`, `SATISFIED: yes|no` and
   `Risk: low — <reason>` or `Risk: high — <reason>` (Steering, Judge the risk). The gate
   reads any word but `low`, or no line, as high, and `verdict` refuses a report without one.
+  The gate sets the board's `Risk` field from it (github.md, Board).
   On a delta of merges of the base alone, add `Logic change: none` when its conflict fixes
   change no behaviour, which carries the owner's go to the head, else `Logic change: <what>`.
   The merge reads the review as covering that commit only, so a push after your review
