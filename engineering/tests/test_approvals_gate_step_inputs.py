@@ -217,6 +217,14 @@ def test_a_step_without_paths_keeps_the_whole_tree_key(
     assert approvals.inputs_key("f" * 40, step("apple")) is None  # a tree git doesn't hold
 
 
+def test_a_step_without_paths_never_lists_the_tree(
+    inputs: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A step keyed by the tree reads no listing of it, which on a large tree costs each lookup a walk of it."""
+    monkeypatch.setattr(approvals, "git", lambda *args: pytest.fail(f"git {' '.join(args)}"))
+    assert approvals.inputs_key(inputs["first"], step("unit")) is None
+
+
 def test_a_land_whose_host_steps_all_reuse_takes_no_heavy_slot(
     inputs: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -418,6 +426,7 @@ def test_a_pushed_pass_is_reused_by_inputs_only_when_its_own_tree_holds_them(
     found = approvals.step_pass(b_head, b_tree, lint, show=False)
     assert found is not None and (found["tree"], found["head"]) == (a_tree, a_head)
     assert (found["inputs"], found["load_1m"], found["swap_used_mb"]) == (key, 4.25, 640)
+    assert isinstance(found["swap_used_mb"], int)
     # with A's branch gone, C's, which lies about its inputs, is no pass
     git_in(
         work,
