@@ -72,6 +72,16 @@ def test_land_of_a_pr_closing_a_signoff_issue_prints_the_line_and_exits_1(
             ),
         ),
         (
+            # the keyword linking #1 itself, not another issue's nor a weaker link to #1
+            "Closes #2\nPart of #1\nFixes #1",
+            ("area:web",),
+            (),
+            (
+                "#1: the PR says `Fixes #1`, but #1 waits for the owner's sign-off after landing, since it matches"
+                " a sign-off rule (label `area:web`): use `Implements #1`, which leaves it open"
+            ),
+        ),
+        (
             "closes: #1",
             ("area:api",),
             ("app/main.swift",),
