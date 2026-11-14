@@ -81,7 +81,10 @@ chose.
 choice, set in the environment once. Omnigent applies it as the session's
 `terminal_launch_args` when it launches the terminal, so `info` shows it. A Codex child takes
 none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
-`start` refuses the flag for Codex and ignores the variable.
+`start` refuses the flag for Codex and says on stderr that the variable's mode was not applied.
+A claude-cloud child takes `auto` or `bypassPermissions`, sent as the session create's
+`permission_mode` (the server answers the VM's tool requests itself under bypass), and
+`start` treats any other mode for it as it does a mode for Codex.
 
 **Effort.** `--effort <level>` sets the child's reasoning effort, as its harness names the levels
 (Claude, native or cloud: `low` to `max`). Without it the level comes from `OMNIGENT_EFFORT_<AGENT>`
