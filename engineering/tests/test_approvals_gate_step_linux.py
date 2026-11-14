@@ -80,3 +80,16 @@ def test_an_unknown_where_is_still_refused(linux_step: dict[str, Any]) -> None:
     )
     with pytest.raises(approvals.Refused, match="must be one of any, host, linux, not 'windows'"):
         approvals.gate_plan()
+
+
+def test_every_message_for_a_left_linux_step_names_linux_not_a_host(
+    linux_step: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    out = capsys.readouterr().out
+    assert "`toolchain` runs only on Linux (`where: linux`), where `local-ci` runs it alone" in out
+    assert "`where: host`" not in out
+    assert approvals.runs_only(["toolchain"]) == "`toolchain` runs only on Linux (`where: linux`)"

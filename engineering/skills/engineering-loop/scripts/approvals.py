@@ -5373,6 +5373,17 @@ def here(step: dict[str, Any]) -> bool:
     return step["where"] != "host" or not in_cloud()
 
 
+def runs_only(left: list[str]) -> str:
+    """`left` steps by the place their `where` limits them to: `a, b runs only on a host (`where: host`)`, one clause per `where`."""
+    wheres = {step["name"]: step["where"] for step in gate_plan()}
+    places = {"host": "a host", "linux": "Linux"}
+    clauses = []
+    for where in dict.fromkeys(wheres.get(name, "host") for name in left):
+        names = ", ".join(f"`{name}`" for name in left if wheres.get(name, "host") == where)
+        clauses.append(f"{names} runs only on {places.get(where, where)} (`where: {where}`)")
+    return "; ".join(clauses)
+
+
 def command_line(
     written: str, key: str, passed: list[str] | tuple[str, ...] = ()
 ) -> tuple[str, list[str], dict[str, str]]:
@@ -6600,8 +6611,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
             print(f"{CHECKED} on {head}: recorded in {where}")
         if left := record.get("left"):
             print(
-                f"{head} has no pass on the whole gate yet: {', '.join(f'`{name}`' for name in left)} runs only on a"
-                " host (`where: host`), where `local-ci` runs it alone"
+                f"{head} has no pass on the whole gate yet: {runs_only(left)}, where `local-ci` runs it alone"
             )
             # each step by itself, so the `gate` status shows a step's pass, never the whole gate's
             for one in record["steps"]:
@@ -6622,8 +6632,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
         source = ""
         if left := record.get("left"):
             raise Refused(
-                f"no pass on the whole gate for {head}: {', '.join(f'`{name}`' for name in left)} runs only on a host"
-                " (`where: host`); the steps that passed here are recorded"
+                f"no pass on the whole gate for {head}: {runs_only(left)}; the steps that passed here are recorded"
             )
     else:
         raise Refused(no_pass(head, why))
