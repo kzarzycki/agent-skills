@@ -54,8 +54,10 @@ and issue-tracker.md, from the base's copy on `origin/<base>`, never the checkou
 PR a command acts on merges onto, the ref `land` builds on (`check`, `land`, `local-ci <pr>`,
 `approve merge`, `delegate`, `brief`), else the default branch. `land` fetches the base before
 it reads the policy (where it may run, its key, which drafts to ready) and reads it again after
-its fetch under the landing lock, so a policy another land changed meanwhile decides the batch,
-and a draft it readied that the new policy would not ready goes back to draft. So a PR can't
+its fetch under the landing lock, so a policy another land changed meanwhile decides the batch:
+it places the land again (refused, the lock released, where the base now excludes the place it
+runs; signed with the key it now names), and a draft it readied that the new policy would not
+ready goes back to draft. A failed fetch before the lock readies no draft. So a PR can't
 loosen its own gate and a checkout behind its
 base can't hold an old one: a working-tree copy that differs gets one line naming the file and
 both commits, and only a checkout without that ref (no `origin`) reads its own, with a line

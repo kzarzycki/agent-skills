@@ -2196,15 +2196,19 @@ def placed(loop: str | None) -> Any:
                 f"the key in the variable {name} (loop.md's `land.signing_key_env`) is not in {signers}: add its"
                 " public key there"
             )
-        SIGNING = [
-            *("-c", "gpg.format=ssh"),
-            *("-c", f"user.signingkey={file}"),
-            *("-c", "gpg.ssh.program=ssh-keygen"),
-        ]
+        # a placement checked again inside another (landing_here, under the lock) gives the outer one back its key
+        previous, SIGNING = (
+            SIGNING,
+            [
+                *("-c", "gpg.format=ssh"),
+                *("-c", f"user.signingkey={file}"),
+                *("-c", "gpg.ssh.program=ssh-keygen"),
+            ],
+        )
         try:
             yield
         finally:
-            SIGNING = []
+            SIGNING = previous
     finally:
         shutil.rmtree(folder, ignore_errors=True)
 
@@ -4238,15 +4242,21 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     if named is None:
         return worst, False
     # origin's policy now, not the clone's last fetch of it, so no draft is readied under a policy already replaced
-    subprocess.run(
+    fetch = subprocess.run(
         ["git", "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
         capture_output=True,
+        text=True,
         check=False,
     )
+    if fetch.returncode:
+        print(
+            f"land could not fetch {base} from origin, so it readies no draft before the lock:"
+            f" {' '.join(fetch.stderr.split()) or f'exit {fetch.returncode}'}"
+        )
     with policy_from(base):
         tracker, loop = project()
         with placed(loop):
-            return landing_here(named, base, worst, tracker, loop, only)
+            return landing_here(named, base, worst, tracker, loop, only, not fetch.returncode)
 
 
 def land_base(
@@ -4296,14 +4306,18 @@ def landing_here(
     tracker: str | None,
     loop: str | None,
     only: bool = False,
+    ready: bool = True,
 ) -> tuple[int, bool]:
     """land_base's batch under the lock. `tracker` and `loop`, the policy read before the lock, decide only which
-    drafts to mark ready before the wait, so the holder's next batch includes them; after the fetch under the lock the
-    policy is read again, and that copy alone decides the batch: every PR is judged under it, a draft this land
-    readied that it would not have readied goes back to draft (unreadied), and a verdict readied() kept for a draft it
-    refused is reused only when the policy is unchanged."""
+    drafts to mark ready before the wait (none without `ready`: the base's fetch failed, so its policy may be stale),
+    so the holder's next batch includes them; after the fetch under the lock the policy is read again, and that copy
+    alone decides the batch: the land is placed again under it (placed: refused, the lock released, where it now
+    excludes this place, and signed with its key), every PR is judged under it, a draft this land readied that it would
+    not have readied goes back to draft (unreadied), and a verdict readied() kept for a draft it refused is reused only
+    when the policy is unchanged."""
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
-    named = readied(named, base, tracker, loop)
+    if ready:
+        named = readied(named, base, tracker, loop)
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
     stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
     # every lock commit pushed, each before its push; taken stays None while the last one's push may have reached origin
@@ -4324,7 +4338,8 @@ def landing_here(
             named = unreadied(
                 [{k: v for k, v in pull.items() if k != "verdict"} for pull in named], base, *fresh
             )
-        return batched(named, base, *fresh, only, held, worst)
+        with placed(fresh[1]):
+            return batched(named, base, *fresh, only, held, worst)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its

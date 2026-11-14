@@ -168,7 +168,7 @@ def test_a_pr_into_a_feature_branch_is_gated_by_that_branchs_policy(
     monkeypatch.setattr(
         approvals,
         "landing_here",
-        lambda named, base, worst, tracker, loop, only: (
+        lambda named, base, worst, tracker, loop, *_a: (
             seen.append(("land", approvals.settings(loop)["gate"])) or (0, False)
         ),
     )
@@ -416,3 +416,95 @@ def test_a_shallow_clone_is_deepened_for_the_base_the_command_resolved(
     with approvals.policy_from("feature"):
         approvals.deepened(7)
     assert git_in(shallow, "rev-parse", "--verify", "-q", "refs/remotes/origin/feature").strip()
+
+
+def test_a_base_that_stops_allowing_this_place_during_the_wait_refuses_and_releases_the_lock(
+    based: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = based["repo"]
+    policy(repo, where("host"), "main lands on a host")
+    git_in(repo, "push", "-q", "origin", "main")
+    based["pull"].update(baseRefName="main")
+    monkeypatch.setattr(approvals, "in_cloud", lambda: False)
+    monkeypatch.setattr(approvals, "readied", lambda named, *_a: named)
+    # the lock taken, its commit in `held`, as locked() leaves it
+    monkeypatch.setattr(
+        approvals,
+        "locked",
+        lambda _base, held, _pr: based["push"](where("cloud")) or held.append("c" * 40) or True,
+    )
+    released: list[str] = []
+    monkeypatch.setattr(
+        approvals,
+        "unlock",
+        lambda base, _tip: released.append(base) or subprocess.CompletedProcess([], 0, "", ""),
+    )
+    monkeypatch.setattr(approvals, "batched", lambda *_a: pytest.fail("batched"))
+    with pytest.raises(
+        approvals.Refused, match="`land.where` is `cloud`, so land does not run in a host"
+    ):
+        approvals.landing(7)
+    assert released == ["main"]
+
+
+def test_a_land_signs_with_the_key_the_policy_names_under_the_lock(
+    based: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """In a cloud session the policy names the key's variable: one changed during the wait signs the batch."""
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    signers = []
+    for name in ("first", "second"):
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", name, "-f", str(keys / name)],
+            check=True,
+        )
+        monkeypatch.setenv(f"{name.upper()}_KEY", (keys / name).read_text())
+        signers.append(f"loop@example.com {(keys / f'{name}.pub').read_text()}")
+    (keys / "signers").write_text("".join(signers))
+
+    def keyed(name: str) -> str:
+        return gatekeeper_md(
+            "loop:\n  gate: echo cloud\nland:\n  signed_squash_to: main\n"
+            f"  allowed_signers: {keys / 'signers'}\n  where: cloud\n  signing_key_env: {name}\n"
+        )
+
+    repo = based["repo"]
+    policy(repo, keyed("FIRST_KEY"), "the first key")
+    git_in(repo, "push", "-q", "origin", "main")
+    based["pull"].update(baseRefName="main")
+    monkeypatch.setattr(approvals, "in_cloud", lambda: True)
+    monkeypatch.setattr(approvals, "readied", lambda named, *_a: named)
+    monkeypatch.setattr(approvals, "locked", lambda *_a: based["push"](keyed("SECOND_KEY")) or True)
+    monkeypatch.setattr(approvals, "unlock", lambda *_a: subprocess.CompletedProcess([], 0, "", ""))
+    used: list[str] = []
+
+    def batched(*_a: Any) -> tuple[int, bool]:
+        key = next(arg for arg in approvals.SIGNING if arg.startswith("user.signingkey="))
+        used.append(Path(key.removeprefix("user.signingkey=")).read_text())
+        return 0, False
+
+    monkeypatch.setattr(approvals, "batched", batched)
+    assert approvals.landing(7) == (0, False)
+    assert used == [(keys / "second").read_text()]
+    assert approvals.SIGNING == []
+
+
+def test_a_failed_fetch_of_the_base_readies_no_draft_and_goes_on_to_the_lock(
+    based: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    based["pull"].update(baseRefName="main", isDraft=True)
+    git_in(based["repo"], "remote", "set-url", "origin", str(tmp_path / "gone.git"))
+    monkeypatch.setattr(approvals, "in_cloud", lambda: False)
+    monkeypatch.setattr(approvals, "readied", lambda *_a: pytest.fail("readied"))
+    monkeypatch.setattr(approvals, "locked", lambda *_a: False)  # another land holds it
+    capsys.readouterr()
+    assert approvals.landing(7) == (approvals.WAITING, True)
+    out = capsys.readouterr().out
+    assert out.startswith(
+        "land could not fetch main from origin, so it readies no draft before the lock: "
+    )
+    assert out.count("\n") == 1
