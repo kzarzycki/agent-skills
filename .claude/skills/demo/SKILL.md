@@ -1,6 +1,6 @@
 ---
 name: demo
-description: Record a short video of a change running and post it to its PR, so a reviewer judges a visible change without checking out the branch. Use when a PR changes what a user sees (a command and its output, a page, a screen, a speed-up), on "record a demo", or when the project's instructions or spec ask for one.
+description: Record a short video or take a screenshot of a change running and post it to its PR, so a reviewer judges a visible change without checking out the branch. Use when a PR changes what a user sees (a command and its output, a page, a screen, a speed-up), on "record a demo", or when the project's instructions or spec ask for one.
 metadata:
   requires: "gh>=2.99.0 vhs ttyd ffmpeg"
 ---
@@ -20,13 +20,18 @@ scripts/demo.sh [--pr <number>] [--caption "<what it shows>"] <recording>...
 
 `scripts/` is relative to this skill's folder. One command records and posts: a `.tape` is
 rendered with VHS, a `.webm` or `.mov` is converted to H.264 MP4 with ffmpeg, and an `.mp4`
-is posted as it is. All of them go into one `## Demo` comment naming the head commit, each
+is posted as it is, and a `.png` or `.jpg` screenshot is posted as it is. All of them go into one `## Demo` comment naming the head commit, each
 attached with `gh pr comment --attach` (gh 2.99.0 or later), so it plays inline. Your
 earlier `## Demo` comments are minimized as outdated, so only the current one is open;
 other people's are left alone. The PR defaults to the current branch's, and without
 `--caption` the comment names the recordings. Then name the demo in the PR body's Evidence.
 
-Every refusal comes before anything records: a missing file or an unknown type (exit 2),
+Pick the form by the change. A screenshot when the change is a still result (a card that
+renders differently, a new label, a layout fix): it is read at a glance, and a video of a
+still page is only waiting. A video when the change is something happening (a flow, typing,
+an animation, a speed-up). The author decides.
+
+Every refusal comes before anything records: a missing file or an unknown type (not a tape, video, `.png` or `.jpg`) (exit 2),
 gh older than 2.99.0 or `ttyd` missing for a tape (exit 1), and a checkout that is not
 the PR's head or holds uncommitted or untracked files (exit 3), since the video must show
 the head everyone else gets.

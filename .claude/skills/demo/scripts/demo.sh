@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Record and post a PR demo: render each `.tape` with VHS, convert each `.webm` or `.mov` to H.264
 # MP4, take each `.mp4` as is, and post them all in one `## Demo` comment with `gh pr comment
-# --attach`, so every video plays inline. Earlier `## Demo` comments by the same poster are
+# --attach`, so every video plays inline. A `.png` or `.jpg` is attached as it is, for a change
+# with nothing moving. Earlier `## Demo` comments by the same poster are
 # minimized as outdated. Every refusal runs before anything records.
 # Usage: demo.sh [--pr <number>] [--caption "<what it shows>"] <recording>...
 set -euo pipefail
@@ -25,8 +26,8 @@ for recording in "$@"; do
   [ -s "$recording" ] || { echo "demo: $recording is missing or empty" >&2; exit 2; }
   case "$recording" in
     *.tape) tapes=1 ;;
-    *.webm | *.mov | *.mp4) ;;
-    *) echo "demo: $recording is not a .tape, .webm, .mov or .mp4" >&2; exit 2 ;;
+    *.webm | *.mov | *.mp4 | *.png | *.jpg) ;;
+    *) echo "demo: $recording is not a .tape, .webm, .mov, .mp4, .png or .jpg" >&2; exit 2 ;;
   esac
 done
 
@@ -73,12 +74,13 @@ i=0
 for recording in "$@"; do
   i=$((i + 1))
   video="$staging/pr$pr-${head:0:7}-$i.mp4"
+  case "$recording" in *.png | *.jpg) video="$staging/pr$pr-${head:0:7}-$i.${recording##*.}" ;; esac
   case "$recording" in
     *.tape) vhs "$recording" -o "$video" ;;
     *.webm | *.mov) ffmpeg -loglevel error -y -i "$recording" -c:v libx264 -pix_fmt yuv420p -movflags +faststart "$video" ;;
-    *.mp4) cp "$recording" "$video" ;;
+    *.mp4 | *.png | *.jpg) cp "$recording" "$video" ;;
   esac
-  [ -s "$video" ] || { echo "demo: $recording produced no video" >&2; exit 1; }
+  [ -s "$video" ] || { echo "demo: $recording produced no file" >&2; exit 1; }
   attach+=(--attach "$video")
   names+="${names:+, }$(basename "$recording")"
 done

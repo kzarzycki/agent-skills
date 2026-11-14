@@ -5,7 +5,7 @@ disable-model-invocation: true
 argument-hint: "What would you like to learn about?"
 ---
 
-Teach the user a topic over several sessions. The current directory is the teaching workspace and holds all the state:
+Teach the user a topic over several sessions. The current directory is the teaching workspace and holds all the state; its paths (`./lessons/` and the rest) resolve from the directory the skill was run in, and only the `*-FORMAT.md` links resolve from this skill's folder:
 
 - `MISSION.md`: why the user is learning this. Every lesson traces back to it. Format: [MISSION-FORMAT.md](./MISSION-FORMAT.md).
 - `RESOURCES.md`: the high-trust sources and communities teaching draws on. Format: [RESOURCES-FORMAT.md](./RESOURCES-FORMAT.md).
@@ -31,7 +31,7 @@ Numbered files take the highest existing number plus one.
 - Built from `assets/`: read it first, link the shared stylesheet, and put anything a second lesson could reuse into a component instead of inlining it.
 - Built around one skill: only the knowledge that skill needs, with citations, then practice with immediate feedback, automatic where possible (in-browser quizzes and tasks, or guided real-world steps).
 - Aimed at long-term retention over in-the-moment fluency: retrieval practice, spacing, and interleaving for skills practice.
-- Quiz answer options have the same word count, and character count where possible, so formatting gives no clue.
+- Quiz answer options have the same word count, and character count where possible, and the correct one's position varies across questions, so neither formatting nor order gives a clue.
 - Each lesson links related lessons and reference sheets, recommends the single best primary source to read or watch, and reminds the user to bring follow-up questions to you.
 - Open the lesson for the user with a CLI command when you can.
 - Distill each lesson into `reference/` as you go: the user rarely revisits a lesson, but keeps coming back to its reference sheet.
