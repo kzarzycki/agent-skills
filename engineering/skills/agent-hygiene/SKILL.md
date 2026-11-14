@@ -55,6 +55,11 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
   - `git status` is clean apart from untracked `*.lock` files (also inside an untracked
     directory that holds nothing else);
   - HEAD is on a remote branch, or is the PR's head (same commit or tree), or in it;
+  - a detached worktree's HEAD is no remote branch's tip (a landing checkout parked at the
+    default branch's tip is live, and a landed PR's head is that tip), and none of its own git
+    dir's `HEAD`, `index`, `logs/HEAD` or `FETCH_HEAD` (a checkout touches the first three,
+    a fetch the last) has changed in 24 hours, a worktree used lately being kept without
+    a question;
   - the worktree isn't locked (`git worktree lock`);
   - no process has its cwd or a file in it (a held lock file included) or names it;
   - its `tmp/` and `.bootstrap-state/` (run reports, ignored or untracked) haven't changed in

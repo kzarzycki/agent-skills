@@ -49,11 +49,13 @@ copy before it posts; a failure before the post stays exit 1.
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
-a later read failed (delivered, unconfirmed: run it again, it posts no second copy). A question card
-(``sys_ask_user_question``) leaves the session free: a plain relay (or ``send``, which prints the
-same line before it waits) is delivered beside it, exit 0,
-the line names the card still open, and the message never answers it. Only a question the
-harness blocks on (Claude's AskUserQuestion) holds the message behind it (exit 5); ``relay
+a later read failed (delivered, unconfirmed: run it again, it posts no second copy). An open
+question card (``sys_ask_user_question``: elicitation id ``question_…``, not ``elicit_question_…``) holds
+nothing (``holds_input``): ``relay``, ``broadcast`` and ``watch`` treat the session as free and show
+``card open: <question>``; a plain relay (or ``send``, which prints the same line before it waits) is
+delivered beside it, exit 0, the line names the card still open, and the message never answers it;
+``reap`` keeps it, since archiving it would end the owner's way back. A session blocked only
+on questions (``ask_user_question``) holds the message behind them too (exit 5); ``relay
 --answer`` gives it as each question's answer instead, exit 0, since its pending inputs wait on
 the answer; an approval prompt it never answers. ``relay --from <name>`` is a notice from a task
 or an agent: a first line says it is not the owner's words, and it never answers a question,
@@ -175,7 +177,7 @@ its file would be here, and the report is written there, so follow the lead with
 writes here. A verifier (a ``--role`` whose file is ``verifier.md``) takes ``--pr`` as the PR it
 reviews, not a report channel, starts on another host's clone however many sessions hold it (it
 works in a worktree of its own), and runs on another host only when the project's loop.md has no
-``Verifier hosts: <name>, <name>`` line or that line lists the host; ``--file`` writes a local
+``Placement: hosts: <name>, <name>`` line (or the old ``Verifier hosts:`` one) or that line lists the host; ``--file`` writes a local
 file (a proof log, the previous report) beside its report there before its brief, and
 ``wait --verdict`` copies its report to ``tmp/loop/`` here and prints that path,
 saying it left the far worktree's tracked changes unchecked, since the file API runs no git.
@@ -214,12 +216,13 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, NoReturn
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
 # A Claude worker or verifier gets only the built-in tools its role calls and no user MCP servers,
@@ -332,6 +335,14 @@ LEAD_WAKE = (
     "Supervisor: the time your STILL WORKING named, {time}, has passed. Check what you wait on and"
     " carry on, then end your turn with DONE, STILL WORKING naming what you wait on, or USER NEEDED."
 )
+# A failure whose text matches one of these is a usage limit: the account behind every session
+# ran out, so every session fails alike until it resets (at the time the text may print) or the
+# owner resets it early. Each is transient too, but parked with the others rather than revived on
+# its own: one probe revive at a time, all revived once it succeeds, and one report for them all.
+USAGE_LIMIT_ERRORS = (
+    r"\bhit your\b.{0,40}?\blimit",  # "You've hit your weekly limit · resets Nov 16, 6am (UTC)"
+    r"\busage limit",
+)
 # A failure whose text matches one of these is a transient provider error, which clears when the
 # provider recovers: the supervisor revives it again after each backoff (minutes, the last
 # repeated) until the next revive would fall past the cap, and only then reports it. A false
@@ -344,15 +355,59 @@ TRANSIENT_ERRORS = (
     r"\brunner (lost|is offline|disconnected|went away)",  # the host went away: a lost runner
     r"\bhost (went away|restarted|rebooted|is (offline|unreachable|gone))",  # or a host restart
     r"made no progress for \d+s",  # a cloud worker cut with its host reads as silence
+    r"\brate_limit",  # a provider's rate limit: it clears within minutes, per session
+    *USAGE_LIMIT_ERRORS,
 )
 TRANSIENT_FAILURE = re.compile("|".join(TRANSIENT_ERRORS), re.IGNORECASE)
+USAGE_LIMIT = re.compile("|".join(USAGE_LIMIT_ERRORS), re.IGNORECASE)
+# a rate limit that prints its reset time is account-wide too, parked as a usage limit is
+LIMITED = re.compile("|".join((*USAGE_LIMIT_ERRORS, r"\brate_limit")), re.IGNORECASE)
 BACKOFF_MINUTES = (2, 5, 10, 20)
 RETRY_CAP_SECONDS = 2 * 3600.0
+LIMIT_MARGIN_SECONDS = 3600.0  # past a usage limit's printed reset, how long its probes go on
+RESETS = re.compile(
+    r"\bresets\s+(?:(?P<month>[a-z]{3})[a-z]*\.?\s+(?P<day>\d{1,2}),?\s+)?"
+    r"(?P<hour>\d{1,2})(?::(?P<minute>\d\d))?\s*(?P<half>[ap]m)\s*\((?P<zone>[^)]+)\)",
+    re.IGNORECASE,
+)
+MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 
 
 def backoff(count: int) -> float:
     """The seconds before the revive after ``count`` earlier ones in a transient chain."""
     return BACKOFF_MINUTES[min(count, len(BACKOFF_MINUTES) - 1)] * 60.0
+
+
+def reset_time(text: str, now: float) -> float | None:
+    """The instant (epoch seconds) a usage limit's ``resets Nov 16, 6am (UTC)`` names: the first
+    one after ``now``, so a date with no year rolls into the next year, and a time with no date
+    (``resets 6:30pm (Europe/Warsaw)``) into the next day. ``None`` when ``text`` names none, or
+    names a zone or date that does not exist."""
+    match = RESETS.search(text)
+    if not match:
+        return None
+    try:
+        zone = ZoneInfo(match["zone"].strip())
+    except (ValueError, ZoneInfoNotFoundError):
+        return None
+    hour = int(match["hour"]) % 12 + 12 * (match["half"].lower() == "pm")
+    minute = int(match["minute"] or 0)
+    today = datetime.fromtimestamp(now, zone)
+    if match["month"]:
+        if match["month"].lower() not in MONTHS:
+            return None
+        month, day = MONTHS.index(match["month"].lower()) + 1, int(match["day"])
+        days = [(year, month, day) for year in (today.year, today.year + 1)]
+    else:
+        days = [(d.year, d.month, d.day) for d in (today, today + timedelta(days=1))]
+    for year, month, day in days:
+        try:
+            at = datetime(year, month, day, hour, minute, tzinfo=zone).timestamp()
+        except ValueError:  # Feb 30, or Feb 29 in a year without one
+            continue
+        if at > now:
+            return at
+    return None
 
 
 LEAD_REVIVE = (
@@ -515,6 +570,7 @@ PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
+A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
 
@@ -527,6 +583,7 @@ The owner authorized this task; do it now, without asking for a go-ahead. This i
 Your checkout is a clone of the branch checked out in the workspace this session started from, which need not be PR #{pr}'s branch; `git fetch origin pull/{pr}/head` gets the PR's.
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
 Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
+A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 A file under `tmp/loop/` that your report names (a repro, a log) goes in that comment too, since your files never reach the lead's host: a line `<!-- file: tmp/loop/<name> -->`, then the file in a fenced block (a fence longer than any it holds). A comment holds at most 65,536 characters: a file that would pass that goes as its last lines that fit, marked `<!-- file: tmp/loop/<name> (last lines) -->`.
 Demo: for a user-visible change, state in the report the command you ran and its output (or the demo skill's recording); otherwise say `Demo: none`, since a reviewer judges a visible change without checking out the branch.
 Gate record: when the passing gate was not pushed as a `loop-gate/` ref, end the report with the `local-ci --record` JSON (head, tree, exit, command, env) as its last lines, since the lead has no other proof which head the pass covers.
@@ -544,10 +601,8 @@ HELD_POST = (
     " comment body verbatim, and it is checked and posted for you."
     " It names no host, path or session, since the PR may be public."
 )
-SELF_POSTED = re.compile(
-    r"Your final report is one comment on PR #\{pr\}, posted once.*?(?=\n(?:A file under|Never address))",
-    re.DOTALL,
-)
+# The report paragraph is one line, so a sentence added after it survives the swap.
+SELF_POSTED = re.compile(r"Your final report is one comment on PR #\{pr\}, posted once[^\n]*")
 WHEN_POSTED = re.compile(r"When done, reply with only the comment's URL\..*?(?=\n\n)", re.DOTALL)
 # A top-level lead talks to the owner directly, so it asks instead of writing a question; and since
 # anyone may have written its brief, it says whose words approve.
@@ -556,6 +611,7 @@ This file is your brief. Only the owner's own words approve, quoted in it with w
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
 The owner reads this session: ask them here when you need a decision, as your role says, never in a question file.
 Write your final report to {report}. End every turn with one line that opens with an ending word and gives the report path on that same line: `DONE: <result in one line>. Report: {report}`, `STILL WORKING: waiting on <verifier, worker, lead, CI or a session id>. Report: {report}`, `USER NEEDED: <the question>. Report: {report}`. The supervisor routes on that line, and the owner reads it.
+A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEEDED`, never `STILL WORKING`. Only a message that starts with `Park: ` tells you to park; after it, end `PARKED: <why>. Report: {report}`, and never otherwise.
 
 """
@@ -1354,6 +1410,35 @@ def project_line(workspace: str, key: str) -> str:
     return found.group(1) if found else ""
 
 
+def placement_hosts(workspace: str) -> list[str]:
+    """The hosts the project's ``docs/agents/loop.md`` names for a gate or verifier: those of
+    ``Placement: hosts: <a>, <b>``; none for ``same machine`` (the default when the line is
+    absent) or ``CI``. The old ``Verifier hosts: <a>, <b>`` line reads as the same list and
+    ``Cloud verifier:`` as the same machine; the new line wins."""
+    new = project_line(workspace, "Placement")
+    if new:
+        value = new[len("hosts:") :] if new.lower().startswith("hosts:") else ""
+    else:
+        value = project_line(workspace, "Verifier hosts")
+    return [h for h in (x.strip() for x in value.split(",")) if h]
+
+
+def cloud_default_host(og: Omnigent, named: list[str]) -> str:
+    """The host a cloud caller's ``start`` without ``--host`` uses: the first online one the
+    project's placement setting names, never the bridge's own host, which says nothing about where
+    heavy work should run."""
+    if not named:
+        raise Fail(
+            "start in a cloud session without --host: loop.md's Placement line names no host; "
+            "pass --host <name>"
+        )
+    online = {h["name"]: h.get("status") == "online" for h in og.call("GET", "/v1/hosts")["hosts"]}
+    for name in named:
+        if online.get(name):
+            return name
+    raise Fail(f"no host loop.md's Placement line names is online: {', '.join(named)}; pass --host")
+
+
 def lean_args(workspace: str, role: str) -> list[str]:
     """The launch args of a lean Claude ``role`` child (``LEAN_TOOLS``), plus what the project's
     ``<Role> tools:`` line names beyond them: a tool, or an MCP server configured for the checkout
@@ -1524,24 +1609,46 @@ def last_said(items: list[dict]) -> str:
     return text_of(said[-1]) if said else "(none)"
 
 
+CARD_POLICY = "sys_ask_user_question"  # a question card's ``params.policy_name``
+CARD_ID, PARKED_ID = "question_", "elicit_question_"  # a card's elicitation id, a harness's own
+
+
+def holds_input(e: dict) -> bool:
+    """Whether elicitation ``e`` holds its session's input: a harness-parked question (id prefix
+    ``elicit_question_``) and an approval prompt do. An Omnigent question card (``question_``, or
+    policy ``CARD_POLICY``) returns at once and its user answers it later, so it holds nothing."""
+    eid = str(e.get("elicitation_id") or "")
+    if eid.startswith(PARKED_ID):
+        return True
+    return not (
+        eid.startswith(CARD_ID) or (e.get("params") or {}).get("policy_name") == CARD_POLICY
+    )
+
+
+def _asks(e: dict) -> str:
+    p = e.get("params") or {}
+    return str(p.get("content_preview") or p.get("message") or e)
+
+
 def prompts_of(info: dict) -> list[str]:
-    """What each pending approval prompt asks: the tool call it holds, else its message."""
-    return [
-        str(p.get("content_preview") or p.get("message") or e)
-        for e in info.get("pending_elicitations") or []
-        for p in [e.get("params") or {}]
-    ]
+    """What each pending approval prompt or harness question asks (those that hold input): the
+    tool call it holds, else its message."""
+    return [_asks(e) for e in info.get("pending_elicitations") or [] if holds_input(e)]
 
 
 def questions_of(info: dict) -> list[str]:
     """What each pending question asks (Claude's AskUserQuestion, Codex's requestUserInput, both
-    marked ``ask_user_question``): prompts an answer settles, unlike an approval."""
+    marked ``ask_user_question``) that holds input: prompts an answer settles, unlike an approval."""
     return [
-        str(p.get("content_preview") or p.get("message") or e)
+        _asks(e)
         for e in info.get("pending_elicitations") or []
-        for p in [e.get("params") or {}]
-        if p.get("ask_user_question")
+        if holds_input(e) and (e.get("params") or {}).get("ask_user_question")
     ]
+
+
+def cards_of(info: dict) -> list[str]:
+    """What each open question card asks: shown as ``card open``, never as blocked."""
+    return [_asks(e) for e in info.get("pending_elicitations") or [] if not holds_input(e)]
 
 
 def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:
@@ -1751,18 +1858,20 @@ def relay(
     if source:
         text = f"{RELAY_FROM.format(source=source)}\n{text}"
     info = og.info(sid)
-    pending = info.get("pending_elicitations") or []
+    every = info.get("pending_elicitations") or []
+    pending = [e for e in every if holds_input(e)]
     if pending and skip:
         return f"session {sid}: skipped: waiting on a question"
     asks = questions_of(info)
-    if answer and asks and len(asks) == len(pending) and not source:
-        for e in pending:
+    asked = [e for e in every if (e.get("params") or {}).get("ask_user_question")]
+    if answer and not source and asked and len(asked) == len(every):
+        for e in every:
             questions = e["params"]["ask_user_question"].get("questions") or []
             answer = text.strip()  # a message file's trailing newline would reach the answer
             og.resolve(
                 sid, e["elicitation_id"], "accept", {q["question"]: answer for q in questions}
             )
-        return f"session {sid}: answered its open question: {'; '.join(asks)}"
+        return f"session {sid}: answered its open question: {'; '.join(_asks(e) for e in asked)}"
     if by and not source:
         text = f"{RELAYED.format(who=by)}\n{text}"
     outcome, posted = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
@@ -1777,7 +1886,7 @@ def relay(
                 " `send` again is safe, it finds the copy before it posts"
             ) from e
         asks = questions_of(info)
-        approvals = [p for p in prompts_of(info) if p not in asks]
+        approvals = [p for p in prompts_of(info) if p not in asks]  # cards hold nothing
         held = []
         if approvals:
             held.append(f"an approval prompt (`approve` answers it): {'; '.join(approvals)}")
@@ -1967,7 +2076,8 @@ def approve(og: Omnigent, sid: str, decline: bool = False) -> tuple[list[str], b
     """Resolve each pending approval prompt of ``sid``, never a question (``relay --answer`` answers those):
     a line per prompt, and whether a resolve failed. Fail when none is pending."""
     info, lines, failed = og.info(sid), [], False
-    for e, what in zip(info.get("pending_elicitations") or [], prompts_of(info)):
+    held = [e for e in info.get("pending_elicitations") or [] if holds_input(e)]
+    for e, what in zip(held, prompts_of(info)):
         if (e.get("params") or {}).get("ask_user_question"):
             continue
         try:
@@ -2500,6 +2610,15 @@ def start(
         raise Fail(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
+        )
+    # The flag was refused above, so a mode here came from the environment: the session starts in
+    # its harness's default stance, which a run counting on the mode is told (#987).
+    mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
+    if mode and agent != "claude" and not (agy and mode == BYPASS):
+        print(
+            f"{agent} takes no permission mode: {mode} was not applied; its session starts in"
+            " the harness default",
+            file=sys.stderr,
         )
     chosen, source = model_for(agent, model)
     if chosen:
@@ -3479,7 +3598,7 @@ def reap(
     pr: int | None = None,
 ) -> tuple[list[str], bool]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
-    its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
+    its sub-agents: not running, no prompt waiting, no open question card and no input pending. Return a line per session
     saying which: ``archived``, ``already archived``, or kept and why, and whether any finish
     failed. Each session it
     finishes first leaves ``registry``: the caller is the one the supervisor would tell.
@@ -3511,6 +3630,10 @@ def reap(
             if why := held[found] if found else f"label {label!r} names no PR":
                 lines.append(f"{sid} {info.get('title') or ''}: kept ({why})")
                 continue
+        # an open card is the owner's question: archiving ends its way back, --force too
+        if cards := cards_of(info):
+            lines.append(f"{sid} {info.get('title') or ''}: kept (card open: {'; '.join(cards)})")
+            continue
         if force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None:
             arm_quietly(registry, sid)
             try:
@@ -3586,8 +3709,14 @@ def observe(
     elif sid not in idle_since or idle_since[sid][0] != lid:  # (last message id, idle since)
         idle_since[sid] = (lid, time.monotonic() - (IDLE_GRACE_SECONDS if baseline else 0))
     if prompts := prompts_of(info):
-        ids = ",".join(str(e.get("elicitation_id") or e) for e in info["pending_elicitations"])
+        ids = ",".join(
+            str(e.get("elicitation_id") or e)
+            for e in info["pending_elicitations"]
+            if holds_input(e)
+        )
         return ("blocked", ids), f"{head}: blocked on a prompt: {'; '.join(prompts)}{tail}"
+    if cards := cards_of(info):
+        head += f" (card open: {'; '.join(cards)})"
     if status == "failed":
         e = info.get("last_task_error") or {}  # an object of strings: title, message, code, ...
         error = e.get("message") or e.get("title") or "(no error recorded)"
@@ -4256,9 +4385,6 @@ class Recorded:
         return items
 
 
-CARD_POLICY = "sys_ask_user_question"  # a question card's ``params.policy_name``
-
-
 class Uncarded:
     """``og`` with each session's question cards (``params.policy_name`` ``CARD_POLICY``) taken out
     of its ``pending_elicitations`` and kept in ``cards``: a card returns at once and its user
@@ -4274,7 +4400,7 @@ class Uncarded:
     def info(self, sid: str) -> dict:
         info = self.og.info(sid)
         pending = info.get("pending_elicitations") or []
-        cards = [e for e in pending if (e.get("params") or {}).get("policy_name") == CARD_POLICY]
+        cards = [e for e in pending if not holds_input(e)]
         self.cards[sid] = cards
         if not cards:
             return info
@@ -4421,8 +4547,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     ``blocked``, ``failed``, ``ended``, ``deadline``; ``terminal`` and ``notice`` for a session
     owing a report), ``last``, the lead's last message, and whether it is a ``repeat`` of the
     lead's last event, blocked only on a ``question``, ``nudged`` on this progress chain,
-    ``revived`` once, a failure that is a ``transient`` provider error and whether its next
-    backoff revive is past the cap (``capped``), ``parked`` (a park message came before its end), ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
+    ``revived`` once, a failure that is a ``transient`` provider error, whether that is a usage
+    ``limit`` (account-wide), and whether its next backoff revive is past the cap (``capped``), ``parked`` (a park message came before its end), ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
     progress since), and whether any standing ``decisions`` exist;
     ``head`` is the ``report_head`` of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
     end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
@@ -4431,7 +4557,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     quiet end nudges; ``unsure`` acts.
 
     Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``wake`` (a timed
-    wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``done``
+    wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``park`` (a usage limit:
+    join the parked sessions, which one probe at a time revives), ``done``
     (act, and tell each lead waiting on it), ``act`` (to the chief of staff), ``owner`` (queued
     for the owner) and ``read-report`` (read ``head``, then route again). Nothing approves: a
     prompt is the owner's."""
@@ -4454,11 +4581,19 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     if kind == "failed":
         if event.get("transient"):
             if event.get("capped"):
+                if event.get("limit"):
+                    return (
+                        "rule",
+                        "act",
+                        "a usage limit, still failing past its reset or 2h: all left",
+                    )
                 return (
                     "rule",
                     "act",
                     "a transient provider error, still failing after 2h of revives",
                 )
+            if event.get("limit"):
+                return "rule", "park", "a usage limit: parked with the others until a probe passes"
             return "rule", "retry", "a transient provider error: revive it after a backoff"
         if event.get("revived"):
             return "rule", "act", "failed again after its revive"
@@ -4874,6 +5009,14 @@ def supervise_registry(
         pending = info.get("pending_elicitations") or []
         found = standing(decisions) if decisions else ""
         retrying, now = lead.get("retrying") or {}, time.time()
+        error = lead.get("error") or line
+        # the reset is read once, when first parked: read again once passed, the same text
+        # names next year's (or tomorrow's) and the cap would never come
+        resets = (retrying.get("resets") if retrying.get("limit") else None) or (
+            reset_time(error, now) if LIMITED.search(error) else None
+        )
+        limit = bool(USAGE_LIMIT.search(error) or (resets and LIMITED.search(error)))
+        resets = resets if limit else None
         event = {
             "kind": kind,
             "line": line,
@@ -4884,8 +5027,13 @@ def supervise_registry(
             "nudged": lead.get("nudged_at") is not None
             and lead.get("nudged_at") == lead.get("progress_at"),
             "revived": bool(lead.get("revives")),
-            "transient": bool(TRANSIENT_FAILURE.search(lead.get("error") or line)),
-            "capped": now + backoff(retrying.get("count", 0)) - retrying.get("since", now)
+            "transient": bool(TRANSIENT_FAILURE.search(error)),
+            "limit": limit,
+            # a limit with a printed reset: past that reset plus a margin, not 2h; else the
+            # next revive would fall more than 2h after the chain's start
+            "capped": now > resets + LIMIT_MARGIN_SECONDS
+            if resets
+            else backoff(retrying.get("count", 0)) + now - retrying.get("since", now)
             > RETRY_CAP_SECONDS,
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
@@ -4941,8 +5089,23 @@ def supervise_registry(
                 "at": now + backoff(count),
                 "event": eid,
             }
+        elif action == "park":  # ``limits`` reports the parked set once and sends its probes
+            count, at = retrying.get("count", 0), now + backoff(retrying.get("count", 0))
+            lead["retrying"] = {
+                "count": count + 1,
+                "since": retrying.get("since", now),
+                "at": min(at, resets) if resets and resets > now else at,  # at the reset, at once
+                "event": eid,
+                "limit": True,
+                "resets": resets,
+                "told": retrying.get("told", False),
+            }
         elif action in ("act", "owner", "done"):
             queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
+        if action == "act" and event["limit"] and event["capped"]:  # past the cap: no more probes
+            for parked in state["leads"].values():
+                if (parked.get("retrying") or {}).get("limit"):
+                    parked.pop("retrying")
         if action == "done":
             result = LEAD_TOLD.format(lead=head, line=lead.get("last_line") or "")
             act_on(
@@ -5110,7 +5273,7 @@ def supervise_registry(
             eid = f"asked:{sid}:{e.get('elicitation_id') or e}"
             if eid not in asked:
                 asked.add(eid)
-                what = "; ".join(prompts_of({"pending_elicitations": [e]}))
+                what = _asks(e)
                 say(f"{sid}: asked its user: {what}", sid, eid, "asked")
 
     def track(
@@ -5164,6 +5327,12 @@ def supervise_registry(
         )
         if console:
             from_report(sid, lead, items)
+        limited = lead["state"] == "failed" and LIMITED.search(lead.get("error") or "")
+        if (lead.get("retrying") or {}).get("told") and lead["state"] != "running" and not limited:
+            # a parked lead past the limit, however its turn then ended (idle, a prompt, another
+            # failure): the limit lifted (``limits``); its own ending routes as any other
+            lead["lifted"] = True
+            lead.pop("retrying")
         if lead["state"] == "idle":  # a turn ended without failing: the provider is back
             lead.pop("retrying", None)
         if lead["state"] in ("blocked", "failed") and lead["state"] != was:
@@ -5436,8 +5605,8 @@ def supervise_registry(
         """Send a transient failure's revive once its backoff (``retrying.at``) has passed, through
         the same intent as the first revive; none when the lead no longer reads failed."""
         retrying = lead.get("retrying") or {}
-        if "at" not in retrying or time.time() < retrying["at"]:
-            return
+        if retrying.get("limit") or "at" not in retrying or time.time() < retrying["at"]:
+            return  # a usage limit's revive is ``limits``' probe
 
         def send() -> None:
             del retrying["at"]
@@ -5447,6 +5616,67 @@ def supervise_registry(
                 act_on(retrying["event"], [(sid, "revive", LEAD_REVIVE)])
 
         undoing(send)
+
+    def limits() -> None:
+        """The usage-limit sessions as one: the leads parked on a usage limit (``retrying.limit``)
+        are reported in one line once, and a lead parked after it joins them unreported. When the
+        earliest parked ``at`` passes (a backoff, or the printed reset) one of them is revived as a
+        probe; a probe failing on the limit again parks once more. Once a told lead ends any other
+        way (``lifted``: the probe got past the limit, or someone revived it), every parked lead
+        is revived and that is reported in one line."""
+        now, leads = time.time(), state["leads"]
+        parked = {s: lead for s, lead in leads.items() if (lead.get("retrying") or {}).get("limit")}
+        lifted = [s for s, lead in leads.items() if lead.pop("lifted", False)]
+        if lifted:
+            for lead in parked.values():
+                lead.pop("retrying")
+            n = len(lifted) + len(parked)
+            eid = f"limit:resumed:{now:.0f}"
+            line = f"usage limit lifted: {n} session{'s' * (n > 1)} resumed"
+            queue(eid, lifted[0], "act", line, "a probe got past the limit")
+            print(stamp(f"{eid}: rule: revive ({line})"), flush=True)
+            act_on(
+                eid,
+                [
+                    (s, "revive", LEAD_REVIVE)
+                    for s, lead in parked.items()
+                    if lead.get("state") == "failed"
+                ],
+            )
+            return
+        if not parked:
+            return
+        fresh = [lead["retrying"] for lead in parked.values() if not lead["retrying"]["told"]]
+        if len(fresh) == len(parked):  # none told yet: the one report, naming the earliest reset
+            resets = [r["resets"] for r in fresh if r.get("resets")]
+            when = (
+                time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(min(resets)))
+                if resets
+                else "unknown"
+            )
+            n, first = len(parked), next(iter(parked))
+            line = f"usage limit: {n} session{'s' * (n > 1)} parked, resets {when}"
+            queue(f"limit:parked:{now:.0f}", first, "act", line, "one probe revives them")
+        for retrying in fresh:
+            retrying["told"] = True
+        probing = [r for r in (lead["retrying"] for lead in parked.values()) if "probe" in r]
+        if any(now - r["probe"] < backoff(len(BACKOFF_MINUTES)) for r in probing):
+            return  # a probe's revive runs: its turn ends (lifted) or fails (parked again)
+        waiting = [(lead["retrying"].get("at", now), s) for s, lead in parked.items()]
+        at, sid = min(waiting)
+        if now < at or parked[sid].get("state") != "failed":
+            return
+        retrying = parked[sid]["retrying"]
+        after = now + backoff(retrying["count"])
+        resets = [r["resets"] for r in (lead["retrying"] for lead in parked.values())]
+        after = min([after, *(r for r in resets if r and r > now)])
+        for lead in parked.values():  # the next probe: after this one's backoff, or at the reset
+            lead["retrying"]["at"] = max(lead["retrying"].get("at", now), after)
+        retrying.update(probe=now)
+        retrying.pop("at", None)
+        why = f"a usage limit: probe {retrying['count']} of {len(parked)} parked"
+        print(stamp(f"{retrying['event']}: rule: revive ({why})"), flush=True)
+        act_on(retrying["event"], [(sid, "revive", LEAD_REVIVE)])
 
     while True:
         flush()
@@ -5536,6 +5766,12 @@ def supervise_registry(
                 for part in ("leads", "settled"):
                     state[part] = {s: v for s, v in state[part].items() if s in owed}
             try:
+                undoing(limits)
+            except Exception as e:  # noqa: BLE001 - never fatal; settled again next poll
+                log("limits", f"usage limit not settled: {reason(e)}")
+            else:
+                log("limits", None)
+            try:
                 undoing(deliver)
             except Exception as e:  # noqa: BLE001 - never fatal; delivered at a later poll
                 log("deliver", f"post not made: {reason(e)}")
@@ -5593,6 +5829,33 @@ def archive_delivered(og: Omnigent, sid: str) -> None:
         og.archive(sid)
     except Fail as e:
         print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
+
+
+def pack_behind(script: Path | str) -> str | None:
+    """One line, or None: how many commits its upstream's last fetched tip holds that the checkout lacks and that
+    changed ``script``, counted since the merge base, so a local commit to it, or upstream changes elsewhere, say
+    nothing. Never fetches, so it stays fast and offline-safe; a checkout with no upstream,
+    one not behind, or one whose script is unchanged upstream is None. A short copy of this lives in
+    engineering-loop's approvals.py (`pack_behind`), since skills install separately and neither may import
+    the other: change both together."""
+    here = Path(script).resolve()
+
+    def ask(*args: str) -> str | None:
+        try:  # a probe that fails for any reason says nothing, since it must never stop a command
+            done = subprocess.run(
+                ["git", "-C", str(here.parent), *args], capture_output=True, text=True, check=False
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    behind = ask("rev-list", "--count", "HEAD..@{upstream}", "--", str(here))
+    if behind is None or int(behind) == 0:
+        return None
+    return (
+        f"{here.name}: this checkout is behind its upstream, where {behind} commit(s) changed this script: "
+        "run `git pull`"
+    )
 
 
 # What a supervise service reads from its environment, carried over from the install: the
@@ -5877,7 +6140,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--host",
             help="with --top-level, the Omnigent host (name or id) to start the lead, the --pr"
-            " cloud worker, or a verifier (one loop.md's Verifier hosts: line lists) on",
+            " cloud worker, or a verifier (one loop.md's Placement: hosts: line lists) on",
         )
         p.add_argument(
             "--file",
@@ -6142,6 +6405,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 " finished session from (default: $OMNIGENT_SUPERVISE_REGISTRY)",
             )
     args = ap.parse_args(argv)
+    if stale := pack_behind(__file__):
+        print(stale, file=sys.stderr)  # only a warning: the refusal setting is approvals.py's
     if getattr(args, "notify", False) and args.cmd in ("run", "send", "wait"):
         ended["report"] = str(args.report.resolve())
     sid, registry = getattr(args, "session", None), getattr(args, "registry", None)
@@ -6357,9 +6622,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             apply_route(args)
         if verifier and args.pr and og.harness(args.agent) != CLOUD_HARNESS:
             args.pr = None
+        cloud = os.environ.get("CLAUDE_CODE_REMOTE") == "true"
+        if args.cmd == "start" and args.top_level and not args.host and cloud:
+            args.host = cloud_default_host(og, placement_hosts(os.getcwd()))
         if verifier and args.host:
-            allowed = [h.strip() for h in project_line(os.getcwd(), "Verifier hosts").split(",")]
-            allowed = [h for h in allowed if h]
+            allowed = placement_hosts(os.getcwd())
             if allowed and not {args.host, og.hosts().get(og.host(args.host), "")} & set(allowed):
                 raise Fail(
                     f"--host {args.host} is no verifier host loop.md lists: {', '.join(allowed)}"
