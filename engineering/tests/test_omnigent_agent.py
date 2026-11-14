@@ -10989,6 +10989,7 @@ def test_a_lead_names_a_host_by_its_id_and_a_file_needs_another_host(
 ) -> None:
     """The line lists names; a host given by its id is checked by its name. --file is refused for
     a session here, which reads its own worktree."""
+    monkeypatch.setattr(omnigent_agent, "check_out_head", lambda *a: None)  # no remote here
     og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: here\n")
     argv = [*VERIFY_FAR]
     argv[argv.index("mac")] = "h"
@@ -11037,6 +11038,7 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
 ) -> None:
     """A far verifier works in a worktree of its own under the clone, so a lead holding the clone
     does not stop it; a worker there, or a verifier on this host, is still refused."""
+    monkeypatch.setattr(omnigent_agent, "check_out_head", lambda *a: None)  # no remote here
     og = far_verifier(tmp_path, monkeypatch, "")
     og.others = [
         {
