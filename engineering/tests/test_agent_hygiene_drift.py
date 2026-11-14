@@ -138,7 +138,9 @@ def test_a_diverged_or_other_branch_clone_is_not_pulled(tmp_path, monkeypatch):
     assert len(calls) == 2, calls
 
 
-def test_a_clone_whose_upstream_is_another_branch_gets_the_default_branch_not_that_branch(tmp_path, monkeypatch):
+def test_a_clone_whose_upstream_is_another_branch_gets_the_default_branch_not_that_branch(
+    tmp_path, monkeypatch
+):
     clones, heads, run, _calls, git = world(tmp_path, monkeypatch, ["acme/managed"])
     clone = clones["acme/managed"]
     git(clone, "branch", "side", "main")
