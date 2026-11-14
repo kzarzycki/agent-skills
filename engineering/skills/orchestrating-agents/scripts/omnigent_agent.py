@@ -1894,7 +1894,7 @@ def relay(
                 " relay, never after one"
             )
             lands = f"this message stays queued and lands once the question is answered ({how})"
-        raise Queued(f"session {sid}: queued {why}; {lands}")
+        raise Queued(f"session {sid}: queued {why}\n{lands}")
     return f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
 
 

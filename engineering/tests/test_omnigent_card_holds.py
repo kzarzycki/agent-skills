@@ -202,5 +202,5 @@ def test_relay_queued_behind_a_long_question_names_its_id_not_its_text() -> None
     }
     with pytest.raises(omnigent_agent.Queued) as err:
         omnigent_agent.relay(fake(long, hold=10**6), "s1", "hi", 0)
-    named = str(err.value).split("; this message")[0]  # the question's part of the line
-    assert len(named) < 200 and "elicit_question_long" in named
+    lines = str(err.value).splitlines()
+    assert all(len(line) < 200 for line in lines) and "elicit_question_long" in lines[0]

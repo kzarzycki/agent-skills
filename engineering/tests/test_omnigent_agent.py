@@ -6367,7 +6367,7 @@ def test_relay_to_a_session_in_a_long_step_returns_queued_and_a_rerun_sends_no_s
     og = FakeOmnigent(hold=10**6)  # a foreground command that outlasts the call
     sid = og.create("claude", "lead")
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
-    assert "queued until the session's current step ends; it lands then" in capsys.readouterr().err
+    assert "queued until the session's current step ends\nit lands then" in capsys.readouterr().err
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
     assert og.posts == 1
 
@@ -6501,7 +6501,7 @@ def test_relay_never_answers_an_approval_prompt_and_says_what_holds_it(
     assert og.resolved == []
     assert capsys.readouterr().err.strip() == (
         f"session {sid}: queued behind an approval prompt (`approve` answers it): e2: Bash(rm -rf build)"
-        f" and a question: e1: {QUESTION['params']['content_preview']}; {LANDS_AFTER_A_QUESTION}"
+        f" and a question: e1: {QUESTION['params']['content_preview']}\n{LANDS_AFTER_A_QUESTION}"
     )
 
 
@@ -6521,8 +6521,8 @@ def test_relay_behind_only_a_question_names_relay_answer_for_next_time_not_appro
     og.prompts = [QUESTION]
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
     assert capsys.readouterr().err.strip() == (
-        f"session {sid}: queued behind a question: e1: {QUESTION['params']['content_preview']};"
-        f" {LANDS_AFTER_A_QUESTION}"
+        f"session {sid}: queued behind a question: e1: {QUESTION['params']['content_preview']}\n"
+        f"{LANDS_AFTER_A_QUESTION}"
     )
     assert [omnigent_agent.text_of(p) for p in og.info(sid)["pending_inputs"]] == [
         f"{omnigent_agent.RELAYED.format(who='cos')}\ngo"
@@ -6539,8 +6539,8 @@ def test_relay_from_a_task_behind_a_question_says_only_the_owner_answers_it(
         omnigent_agent.QUEUED
     )
     assert capsys.readouterr().err.strip() == (
-        f"session {sid}: queued behind a question: e1: {QUESTION['params']['content_preview']};"
-        " this message stays queued and lands once the question is answered"
+        f"session {sid}: queued behind a question: e1: {QUESTION['params']['content_preview']}\n"
+        "this message stays queued and lands once the question is answered"
         " (only the owner's own relay answers a question)"
     )
 
@@ -6763,7 +6763,7 @@ def test_broadcast_reports_a_held_message_queued_and_skips_a_pending_prompt_unan
     sid = og.add("busy")
     assert broadcast(og, tmp_path, monkeypatch, "--include", sid) == 0
     assert capsys.readouterr().out.endswith(
-        ": queued until the session's current step ends; it lands then\n"
+        ": queued until the session's current step ends\nit lands then\n"
     )
     for prompts in ([QUESTION], [APPROVAL], [QUESTION, APPROVAL]):
         asked = BroadcastFake()
