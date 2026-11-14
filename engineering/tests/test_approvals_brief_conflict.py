@@ -29,7 +29,16 @@ ROLES = Path(__file__).resolve().parents[1] / "skills" / "engineering-loop"
 
 def git(cwd: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", *args],
+        [
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            *args,
+        ],
         cwd=cwd,
         check=True,
         capture_output=True,
