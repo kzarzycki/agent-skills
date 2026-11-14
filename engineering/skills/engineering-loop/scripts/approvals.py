@@ -3845,7 +3845,7 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
         return 0
     if point == "merge":
         base = pull["baseRefName"]
-        subprocess.run(
+        fetched_base = subprocess.run(
             [
                 "git",
                 "-C",
@@ -3856,8 +3856,14 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
                 f"+refs/heads/{base}:refs/remotes/origin/{base}",
             ],
             capture_output=True,
+            text=True,
             check=False,
         )
+        if fetched_base.returncode:
+            raise Refused(
+                f"could not fetch origin/{base} ({' '.join(fetched_base.stderr.split()) or 'no reason given'}):"
+                " a stale ref would judge by another tip's files"
+            )
         judge_with_base(base)
     found, issues = gated(point, pull, tracker, loop)
     # flag() first, since a `risk:high` it takes off no longer holds the merge
@@ -4005,8 +4011,8 @@ def landing_here(
 def base_drift(base: str) -> list[str]:
     """The running approvals.py and the three policy files (tracker, loop.md, gatekeeper.md) whose text here differs from
     `origin/<base>`'s, as repo paths, since a PR's own edit of the code or rules that judge it must not judge it. Reads
-    the ref as fetched (a land has just fetched it); a ref that is missing, or a script outside the checkout or absent on
-    the base (installed under another path), has nothing to compare and counts as equal."""
+    the ref as fetched (a land has just fetched it); a script inside the checkout that the base lacks (a PR adds or moves it) differs; only one
+    installed outside the checkout, or a ref that is missing, has nothing to compare and counts as equal."""
     root = toplevel()
     ref = f"refs/remotes/origin/{base}"
     if subprocess.run(
@@ -4032,7 +4038,7 @@ def base_drift(base: str) -> list[str]:
             ours = (root / path).read_bytes()
         except OSError:
             ours = None
-        if ours != theirs and not (theirs is None and path not in (TRACKER, LOOP, POLICY)):
+        if ours != theirs:
             differ.append(path.as_posix())
     return differ
 

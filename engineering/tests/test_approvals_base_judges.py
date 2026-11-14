@@ -150,3 +150,49 @@ def test_outside_actions_a_head_that_is_not_the_base_tip_is_no_refusal(
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     git_in(judging["work"], "switch", "-q", "--detach", head)
     approvals.judge_with_base("main")
+
+
+def moved_script(judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> str:
+    """The running script, now at a path inside the checkout that origin's main has no file at (a PR adds or moves it)."""
+    moved = judging["work"] / "scripts" / "moved_approvals.py"
+    moved.write_text((judging["work"] / "scripts" / "approvals.py").read_text())
+    monkeypatch.setattr(approvals, "__file__", str(moved))
+    return "scripts/moved_approvals.py"
+
+
+def test_a_running_script_inside_the_checkout_that_the_base_lacks_differs(
+    judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name = moved_script(judging, monkeypatch)
+    assert approvals.base_drift("main") == [name]
+
+
+def test_land_and_check_merge_refuse_a_script_the_base_lacks_naming_it(
+    judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    judging["open"](7, {"7.txt": "7\n"})
+    pr_by_number(monkeypatch, judging, 7)
+    name = moved_script(judging, monkeypatch)
+    with pytest.raises(approvals.Refused, match=name):
+        approvals.check("merge", 7)
+    code, lines = judging["land"]("7")
+    assert code == 1
+    assert any(name in line for line in lines)
+    assert judging["merged"]() == []
+
+
+def test_a_script_installed_outside_the_checkout_has_nothing_to_compare(
+    judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(approvals, "__file__", str(tmp_path / "elsewhere" / "approvals.py"))
+    assert approvals.base_drift("main") == []
+
+
+def test_check_merge_stops_when_it_cannot_fetch_the_base_naming_the_ref(
+    judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    judging["open"](7, {"7.txt": "7\n"})
+    pr_by_number(monkeypatch, judging, 7)
+    git_in(judging["work"], "remote", "set-url", "origin", str(tmp_path / "gone.git"))
+    with pytest.raises(approvals.Refused, match="could not fetch origin/main"):
+        approvals.check("merge", 7)
