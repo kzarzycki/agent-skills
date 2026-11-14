@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run -q --script
 # /// script
 # requires-python = ">=3.9"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Mutation check (engineering-loop): undo one production change at a time and see whether a test notices.
 
@@ -13,23 +13,32 @@ the patch with `git apply -R` and checks the tree is clean again before the next
 killed the patch; one that passes means no test covers that change, and the patch survived.
 
 It refuses a tracked change or an untracked file that isn't ignored, the check `approvals.py local-ci` makes, so
-patches under a gitignored `tmp/loop/` don't count, and it refuses any patch that doesn't apply before running a test.
+patches under a gitignored `tmp/loop/` don't count, and it refuses any patch that doesn't apply before running a test,
+and a head run (below) that leaves a change, which the first patch's restore would take for its own.
 On SIGINT or SIGTERM it stops the test command, undoes the applied patch and then dies of that signal, so a killed run
 leaves no mutation in the tree. The test command runs with PYTHONDONTWRITEBYTECODE=1, since a .pyc written in the
-same second as its source would hide the next same-sized patch of that file. Each patch's test run takes the host
-gate slot, an exclusive flock on `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock` (the file a project's gate
-takes, SKILL.md, One heavy gate per host slot), so it waits, with a `waiting for the host gate slot` line in the log,
-while a gate holds it; the slot is held per patch, so a gate can take it between two. The test command gets
-`LOOP_GATE_SLOT_HELD=<lock path>`: a wrapper that takes the same lock runs its command without taking it again, since
-it would otherwise wait on its own parent. A run already started under that variable naming the slot takes no lock.
-There is no option to skip the slot.
+same second as its source would hide the next same-sized patch of that file.
 
-The log: line 1 is `git rev-parse HEAD`, line 2 this command line, then `<patch>: exit <n> killed|survived` per
-patch, then each patch's test output under a `== <patch> ==` header. It is rewritten after every patch, so a stopped
-run keeps what it finished. Exit 0 when every patch was killed, 1 when one survived (the log names it), 2 when it
+Each test run takes a host gate slot (SKILL.md, One heavy gate per host slot): the heavy slot, an exclusive flock on
+`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock` (the file a project's gate takes), or the short lane,
+`gate.short.lock` beside it, which waits only for another short job. Before any patch, the test command runs once on
+the unmutated head in the short lane, timed: when it passes within the policy's `short_seconds` (default 120), every
+patch runs in the short lane too, and otherwise, or when it fails, each takes the heavy slot. `short_seconds: 0` runs
+no head run, and neither does a run already under a holder of the heavy slot: every patch takes the heavy slot. A run
+waits for its slot with a `waiting for the host gate slot` (or `short gate slot`) line in the log, and a short-lane
+patch run past `short_seconds` adds an `overrun` line; the slot is held per run, so a gate can take it between two.
+The test command gets `LOOP_GATE_SLOT_HELD=<lock path>`: a wrapper that takes the same lock runs its command without
+taking it again, since it would otherwise wait on its own parent. A run already started under that variable naming
+the slot takes no lock. There is no option to skip the slot.
+
+The log: line 1 is `git rev-parse HEAD`, line 2 this command line, line 3 the lane and why (`short: head run 6.5 s ≤
+120 s`, `heavy: head run 412.0 s > 120 s`, `heavy: head run failed (exit 1)`, `heavy: short_seconds is 0`, `heavy:
+run under a holder of the heavy slot`), then `<patch>: exit <n> killed|survived` per patch, then the head run's
+output under `== head ==` and each patch's test output under a `== <patch> ==` header. It is rewritten after every
+run, so a stopped run keeps what it finished. Exit 0 when every patch was killed, 1 when one survived (the log names it), 2 when it
 refuses, a patch doesn't apply, or the tree can't be restored (stderr names the paths). The log goes outside the
 checkout or to an ignored path, never a tracked file or a patch, since writing it would destroy that file. Standard
-library and git.
+library and git, and approvals.py, beside it, to read the policy (so PyYAML).
 """
 
 from __future__ import annotations
@@ -41,6 +50,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -80,16 +90,35 @@ def on_signal(signum: int, _frame: object) -> None:
     raise Interrupted(signum)
 
 
-def slot_path() -> str:
-    """The host gate slot's lock file, the one SKILL.md and the project's gate wrapper name."""
+# the host's two gate slots (SKILL.md, One heavy gate per host slot): the heavy one, and the short lane
+HEAVY, SHORT = "gate.1.lock", "gate.short.lock"
+# the policy's `short_seconds` when it sets none
+SHORT_SECONDS = 120
+SLOT_HELD = "LOOP_GATE_SLOT_HELD"
+
+
+def slot_path(name: str = HEAVY) -> str:
+    """A host gate slot's lock file, the one SKILL.md and the project's gate wrapper name."""
     cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.environ.get("HOME", "~"), ".cache")
-    return os.path.join(cache, "engineering-loop", "gate.1.lock")
+    return os.path.join(cache, "engineering-loop", name)
+
+
+def short_seconds() -> int:
+    """The policy's `short_seconds` (SKILL.md, Settings), SHORT_SECONDS without it; a policy off its schema is refused,
+    as approvals.py refuses it."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import approvals
+
+    try:
+        return approvals.settings(approvals.project()[1]).get("short_seconds", SHORT_SECONDS)
+    except approvals.Refused as refusal:
+        raise Refused(str(refusal)) from refusal
 
 
 def take_slot(path: str, waiting: Callable[[], None]) -> int | None:
     """Hold the slot's exclusive flock and return its fd (closing it frees the lock, as does the process dying);
     None when this run already runs under a holder of that same path. `waiting` is called once, before blocking."""
-    if os.environ.get("LOOP_GATE_SLOT_HELD") == path:
+    if os.environ.get(SLOT_HELD) == path:
         return None
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
@@ -105,16 +134,37 @@ def take_slot(path: str, waiting: Callable[[], None]) -> int | None:
     return fd
 
 
-def run_test(command: str, waiting: Callable[[], None] = lambda: None) -> tuple[int, str]:
-    """The test command's exit code and output, run under the host gate slot; on a signal its whole process group is
-    stopped first."""
-    slot = slot_path()
+def run_test(
+    command: str, slot: str, waiting: Callable[[], None] = lambda: None
+) -> tuple[int, str, float]:
+    """The test command's exit code, output and seconds (the wait for the slot not counted), run under the gate slot
+    whose lock file is `slot`; on a signal its whole process group is stopped first."""
     fd = take_slot(slot, waiting)
     try:
-        return run_command(command, slot)
+        began = time.monotonic()
+        code, output = run_command(command, slot)
+        return code, output, time.monotonic() - began
     finally:
         if fd is not None:
             os.close(fd)
+
+
+def lane(command: str, limit: int, waiting: Callable[[], None]) -> tuple[str, str, str | None]:
+    """The slot every patch's run takes, the log's line saying why, and the head run's output (None when none ran): the
+    short lane when the test command passes on the unmutated head, in the short lane, within `limit` seconds."""
+    heavy = slot_path(HEAVY)
+    # its holder is this run's parent: a short-lane run would hand its children a variable that no longer names the
+    # heavy slot, and a heavy wrapper under them would wait on that parent
+    if os.environ.get(SLOT_HELD) == heavy:
+        return heavy, "heavy: run under a holder of the heavy slot", None
+    if limit <= 0:
+        return heavy, f"heavy: short_seconds is {limit}", None
+    code, output, seconds = run_test(command, slot_path(SHORT), waiting)
+    if code:
+        return heavy, f"heavy: head run failed (exit {code})", output
+    if seconds <= limit:
+        return slot_path(SHORT), f"short: head run {seconds:.1f} s ≤ {limit} s", output
+    return heavy, f"heavy: head run {seconds:.1f} s > {limit} s", output
 
 
 def run_command(command: str, slot: str) -> tuple[int, str]:
@@ -129,7 +179,7 @@ def run_command(command: str, slot: str) -> tuple[int, str]:
         errors="replace",
         start_new_session=True,
         # a .pyc written in the same second as its source hides the next same-sized patch of it
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "LOOP_GATE_SLOT_HELD": slot},
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", SLOT_HELD: slot},
     )
     try:
         output, _ = proc.communicate()
@@ -223,19 +273,36 @@ def main(argv: list[str]) -> int:
             check = git("apply", "--check", str(path), cwd=top)
             if check.returncode:
                 raise Refused(f"{name} does not apply: {check.stderr.strip()}")
+        limit = short_seconds()
+
+        def waiting(name: object, slot: str) -> Callable[[], None]:
+            def said() -> None:
+                lines.append(
+                    f"{name}: waiting for the {'short' if slot == slot_path(SHORT) else 'host'} gate slot"
+                )
+                write_log()
+
+            return said
+
+        slot, why, head_output = lane(args.test, limit, waiting("head", slot_path(SHORT)))
+        lines.append(why)
+        if head_output is not None:
+            outputs += ["", "== head ==", head_output.rstrip("\n")]
+        write_log()
+        # a change the head run left would read as the first patch's own and fail its restore
+        left = changes()
+        if left:
+            raise Refused(f"the head run left changes in the tree:\n{left}")
         for name, path in patches:
             current = path
             # applies: --check passed on this same tree, which restore() left clean
             git("apply", str(path), cwd=top)
-
-            def waiting(name: Path = name) -> None:
-                lines.append(f"{name}: waiting for the host gate slot")
-                write_log()
-
-            code, output = run_test(args.test, waiting)
+            code, output, seconds = run_test(args.test, slot, waiting(name, slot))
             survived |= code == 0
             # logged before the restore, so a restore that refuses keeps the result it followed
             lines.append(f"{name}: exit {code} {'survived' if code == 0 else 'killed'}")
+            if slot == slot_path(SHORT) and seconds > limit:
+                lines.append(f"{name}: overrun: {seconds:.1f} s > {limit} s in the short lane")
             outputs += ["", f"== {name} ==", output.rstrip("\n")]
             write_log()
             restore(top, path)

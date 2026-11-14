@@ -92,6 +92,7 @@ loop:
   batch_queue: true   # deprecated with ci and carry_over_main: land batches every landable PR
   owner: octocat   # whose own approved:spec label, added after the spec's last edit, is their approval
   machine_exit: 78   # the gate's exit for "this machine isn't ready": land runs it again, then stops
+  short_seconds: 120   # a job expected to finish within this takes the host's short lane; 0 turns the lane off
   pre_land: python3 scripts/check_fork.py   # land's check of each PR against the base, before it batches them
   delegate: all   # the delegated approver's go on a head covers a PR into the default branch too; default feature
   head_proof:      # the status land requires on each head, and the names its recording takes from the caller
@@ -155,6 +156,7 @@ carry_over_main:
 | | `gate_steps` | the merge check as steps, in place of `gate`: a list of `name`, `command` (parsed as `gate` is) and `where` (`any`, or `host`: never run in a cloud session), each step's pass recorded and reused by itself (Adopting the loop) | the one `gate` command |
 | | `local_ci_env` | the environment variables the check reads, cleared for its run unless `gate` sets them (Adopting the loop) | none |
 | | `machine_exit` | the gate's exit that means the machine isn't ready (a locked screen, low disk), such as 78: `land` runs that gate once more on the same tree, and a second one stops the run landing, evicting and posting nothing, and `local-ci` refuses it as a machine fault (`approvals.py`'s docstring) | every non-zero exit is red |
+| | `short_seconds` | a whole number of seconds: a job expected to finish within it takes the host's short lane instead of the heavy slot, and `0` turns the lane off (Rules, One heavy gate per host slot) | `120` |
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
 | | `pre_land` | a check `land` runs for each PR before batching it, parsed as `gate` is, from the base's tree with `LAND_HEAD` and `LAND_BASE` set, such as one refusing a branch forked before a restructuring; non-zero leaves that PR out of the batch with one comment per head holding its output, and it stays ready (`approvals.py`'s docstring says how) | no check |
 | | `head_proof` | `status`, a commit status `land` requires on each head, and `env`, the variables `local-ci --record --head-proof` takes from the caller for that run, both required (Approvals and proof) | the batch gate is the only proof |
@@ -687,6 +689,13 @@ or the owner's private network.
   `local-ci` and `land` take that file's lock around each gate step they run and set
   `LOOP_GATE_SLOT_HELD` to its path, as `mutate.py` does, so a wrapper under them that finds
   the variable naming its lock takes none, since it would wait on its own parent.
+  Beside it runs a short lane, a lock on `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.short.lock`, which
+  a job expected to finish within the policy's `short_seconds` (Settings, default 120) takes instead of the
+  heavy one, so a two-minute job waits only for another short job, never behind a long gate: at most one heavy
+  and one short job load a host at once. A short-lane run that goes past `short_seconds` prints one overrun
+  line, so a job wrongly declared short shows in its log; `short_seconds: 0` turns the lane off and every job
+  takes the heavy slot. `mutate.py` measures rather than declares: it runs the tests once on the unmutated head
+  in the short lane and keeps the patches there only when that run passed within `short_seconds`.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
