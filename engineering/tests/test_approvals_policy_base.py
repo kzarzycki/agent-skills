@@ -504,7 +504,6 @@ def test_a_failed_fetch_of_the_base_readies_no_draft_and_goes_on_to_the_lock(
     capsys.readouterr()
     assert approvals.landing(7) == (approvals.WAITING, True)
     out = capsys.readouterr().out
-    assert out.startswith(
-        "land could not fetch main from origin, so it readies no draft before the lock: "
-    )
-    assert out.count("\n") == 1
+    said = "land could not fetch main from origin, so it readies no draft before the lock: "
+    assert out.startswith(said) and out.count("\n") == 1
+    assert out.removeprefix(said).strip()  # git's reason
