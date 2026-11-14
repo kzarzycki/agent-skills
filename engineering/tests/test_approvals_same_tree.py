@@ -260,10 +260,25 @@ def test_a_commit_origin_lacks_is_asked_for_once_per_run(
 def test_a_fetch_that_hangs_gives_none_within_the_bound(
     behind: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The transport (here an ssh that never answers) is killed with git at the bound."""
+    """The transport (here an ssh that never answers) is killed with git at the bound, so nothing is left running."""
     git(Path(behind["clone"]), "remote", "set-url", "origin", "ssh://nowhere.invalid/repo.git")
-    monkeypatch.setenv("GIT_SSH_COMMAND", "sleep 60 #")
+    pid = Path(behind["clone"]).parent / "ssh.pid"
+    monkeypatch.setenv("GIT_SSH_COMMAND", f"echo $$ > {pid}; exec sleep 60 #")
     monkeypatch.setattr(approvals, "TREE_FETCH_SECONDS", 1)
     started = time.monotonic()
     assert approvals.tree_of(behind["missing"]) is None
     assert time.monotonic() - started < 15
+    assert not alive(int(pid.read_text()))
+
+
+def alive(pid: int) -> bool:
+    """Whether `pid` still runs, within a second for its kill to land; a zombie nobody reaped yet has stopped."""
+    stat = Path(f"/proc/{pid}/stat")
+    for _ in range(20):
+        try:
+            if stat.read_text().rsplit(")", 1)[1].split()[0] == "Z":
+                return False
+        except FileNotFoundError, ProcessLookupError:
+            return False
+        time.sleep(0.05)
+    return True
