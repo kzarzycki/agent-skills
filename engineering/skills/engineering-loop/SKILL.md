@@ -161,6 +161,7 @@ carry_over_main:
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
 | | `pre_land` | a check `land` runs for each PR before batching it, parsed as `gate` is, from the base's tree with `LAND_HEAD` and `LAND_BASE` set, such as one refusing a branch forked before a restructuring; non-zero leaves that PR out of the batch with one comment per head holding its output, and it stays ready (`approvals.py`'s docstring says how) | no check |
 | | `head_proof` | `status`, a commit status `land` requires on each head, and `env`, the variables `local-ci --record --head-proof` takes from the caller for that run, both required (Approvals and proof) | the batch gate is the only proof |
+| `mutate` | `inconclusive_exit` | a whole number from 1 to 255: the exit a test command returns for "setup failed, no verdict", which `mutate.py` reports as an inconclusive patch (never killed) and exits 3 for; the project's test command exits with it when its device or build setup fails (verifier.md, Mutation-check the new tests) | `75` |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
 | `risk` | `merge_paths` | globs matched on the PR's files, as `paths` are: a PR touching one merges only on the owner's go on its head (Approvals and proof) | the rule above decides |
@@ -399,7 +400,8 @@ gatekeeper.md's policy (Settings) holds:
   `Sign-off: owner` or `Sign-off: none`, and `owner` there asks for it where no rule does.
   The PR links such an issue with `Implements #<n>`, which GitHub does not close, so the
   issue stays open for the sign-off, and every other issue with `Closes #<n>`; `Part of
-  #<n>` suits both. `check merge` refuses the wrong keyword. Without a `signoff` section
+  #<n>` suits both. `check merge` refuses the wrong keyword, and so does `check build` on
+  a PR, so it is fixed before the PR reaches `land`. Without a `signoff` section
   no keyword is checked, and `Implements` is a link like `Part of`.
 
 A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
@@ -588,9 +590,12 @@ or the owner's private network.
   workers) has the worker post it and writes it to the report path on the host, so the lead
   reads a file as for any worker. The verdict is the review `approvals.py verdict` posts.
   The verifier names its evidence (screenshots, logs, result bundles) in its report, and the
-  lead posts it with the verdict as assets of a prerelease linked from a PR comment, the way
-  the `demo` skill posts videos, so the worker fixes a failure from its diagnostics without
-  the host.
+  lead attaches its media to the verdict comment with `gh pr comment --attach` (gh 2.99.0 or
+  later, as the `demo` skill does), giving alt text for an image only (`--attach
+  './shot.png#The error state'`), since gh refuses it for a video and `approvals.py` refuses
+  a screenshot posted as a release asset; logs and bundles too large for a comment stay
+  named files in the report. So the worker fixes a failure from its diagnostics without the
+  host.
 - **Control flow is the lead's own.** It starts the worker with `run --pr` (from a
   host without the worker's harness, `start --top-level --host <host> --pr`, then
   `wait --pr`), which keeps the session, and `--no-keep` where it won't be sent to again, follows its turn end, and sends a fix list or a failing log, naming the

@@ -40,7 +40,7 @@ Each probe tests one prediction; change one variable at a time. Prefer a debugge
 
 ## 5. Fix with a regression test
 
-Write the regression test before the fix, at a seam where it exercises the bug as it happens at the real call site; a seam too shallow to replicate the triggering chain gives false confidence. If no such seam exists, that is a finding: report it and suggest `/improve-codebase-architecture`. Otherwise turn the minimised repro into a failing test there, watch it fail, fix, watch it pass, then rerun the Phase 1 loop on the original, un-minimised scenario.
+Write the regression test before the fix, at a seam where it exercises the bug as it happens at the real call site; a seam too shallow to replicate the triggering chain gives false confidence. If no such seam exists, that is a finding: report it and suggest `/improve-codebase-architecture`. Otherwise turn the minimised repro into a failing test there, watch it fail (if you forced the red by mutating code or a fixture, `diff` against a pristine copy to prove the mutation landed before you trust it), fix, watch it pass, then rerun the Phase 1 loop on the original, un-minimised scenario.
 
 ## 6. Clean up
 

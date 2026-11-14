@@ -19,8 +19,10 @@ Work in rounds. Each round, ask the whole frontier (every question whose prerequ
 ➡️ <your recommended answer>
 ```
 
+Word each question so that "yes" accepts your recommended answer.
+
 Then wait for the answers, recompute the frontier, and ask the next round. A question that depends on another one still open this round waits for a later round.
 
-Facts are yours to find, never the user's; decisions are the user's. Look facts up in the code, docs and tools while you ask the rest of the frontier (hand a lookup to a background agent when it would flood your context), and hold back only the questions that depend on it.
+Facts are yours to find, never the user's; decisions are the user's. Look facts up in the code, docs and tools while you ask the rest of the frontier (hand a lookup to a background agent, started with a fresh context window rather than a fork of yours, when it would flood your context), and hold back only the questions that depend on it.
 
 The session ends when the frontier is empty and nothing is silently assumed. Act on it only after the user confirms the shared understanding.
