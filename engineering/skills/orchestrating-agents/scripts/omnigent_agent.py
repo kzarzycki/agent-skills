@@ -117,7 +117,8 @@ stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a restart re-pos
 settled), appends each event to ``<registry stem>.events.jsonl``, labels each session with
 ``status.line`` and ``status.at``, and raises ``deadline`` for a followed lead with no progress for
 20 minutes (a message to it other than its own counts, and so does life in any session its
-``STILL WORKING`` names by full id; the event names those quiet; a lead whose ``STILL WORKING`` names a
+``STILL WORKING`` names by full id; the event names those quiet, and one of them that ended
+``DONE``, ``USER NEEDED`` or ``PARKED`` is raised to the waiter, again after each of its turns; a lead whose ``STILL WORKING`` names a
 time raises it once that time has passed, which the supervisor settles by waking the lead, and
 none for a lead marked ``direct``,
 which the owner drives in its own session: ``direct <session> [--off]`` sets the mark); and it routes each event instead of posting it: the supervisor settles the routine ones
@@ -5583,6 +5584,15 @@ def supervise_registry(
             if alive(other, info):
                 return
             quiet_named.append(other)
+            try:
+                over = lead_status(info, og.items(other))
+            except Exception:  # noqa: BLE001 - unread: quiet, as without it
+                continue
+            if over["ending"] and over["state"] == "idle":  # news for its waiter, once per turn
+                at = datetime.fromtimestamp(over["turn_at"], timezone.utc).strftime("%H:%MZ")
+                head = f"{sid} {lead['title']}".rstrip()
+                line = f"{head}: {other} ended {over['ending']} at {at}; your wait still names it"
+                say(line, sid, f"deadline:{sid}:{other}:{lead.get('turn')}", "deadline")
         quiet = time.time() - lead["progress_at"]
         spent = lead.get("nudged_at") == lead["progress_at"]
         if due is not None and lead["progress_at"] < due:

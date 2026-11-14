@@ -7384,7 +7384,9 @@ def test_a_quiet_waiter_on_a_session_id_when_its_children_are_unread_raises_its_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     gone = {"status": "idle", "updated_at": 1.0}  # a named session that shows life is progress
-    registry, og = manager(tmp_path, f"STILL WORKING: waiting on {WORKER}. Report: m.md", **{WORKER: gone})
+    registry, og = manager(
+        tmp_path, f"STILL WORKING: waiting on {WORKER}. Report: m.md", **{WORKER: gone}
+    )
     og.kin_of["m"] = omnigent_agent.Fail("GET /v1/sessions/m/child_sessions: HTTP 503")
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({WORKER})"]
@@ -11301,3 +11303,24 @@ def test_a_quiet_waiter_is_not_stalled_while_a_session_its_line_names_progresses
         assert f"quiet: {OTHER}, {LEAD}" in og.inbox[-1][1]
     else:
         assert stalls(og) == [] and deadlines(registry) == []
+
+
+def test_a_named_session_that_ended_is_news_to_its_waiter_again_after_the_waiters_next_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    done = {"status": "idle", "updated_at": time.time() - 1300}
+    wait = f"STILL WORKING: waiting on {OTHER}. Report: m.md"
+    registry, og = manager(tmp_path, wait, **{OTHER: done})
+    og.histories[OTHER] = [ending("DONE: all merged. Report: o.md", 1300)]
+    news = lambda: [
+        t for _, t in og.inbox if t.startswith("Supervisor: m t-m:") and "ended DONE" in t
+    ]
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert len(news()) == 1  # once, not once per poll
+    assert re.fullmatch(
+        rf"Supervisor: m t-m: {OTHER} ended DONE at \d\d:\d\dZ; your wait still names it", news()[0]
+    )
+    og.histories["m"].append(ending(wait, 0))  # its next turn names it again
+    skewed(monkeypatch)[0] = 4000.0
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert len(news()) == 2
