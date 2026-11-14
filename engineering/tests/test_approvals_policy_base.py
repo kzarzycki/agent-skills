@@ -337,6 +337,10 @@ def test_a_draft_readied_before_the_lock_wait_goes_back_to_draft_when_the_new_po
     undone: bool,
 ) -> None:
     based["pull"].update(baseRefName="main", isDraft=True)
+    # PR 7 a draft this land readies, PR 8 ready already
+    monkeypatch.setattr(
+        approvals, "pull_request", lambda n: {**based["pull"], "number": n, "isDraft": n == 7}
+    )
     monkeypatch.setattr(approvals, "in_cloud", lambda: False)
     monkeypatch.setattr(approvals, "required_checks", lambda _base: set())
     calls: list[tuple[str, ...]] = []
@@ -345,10 +349,15 @@ def test_a_draft_readied_before_the_lock_wait_goes_back_to_draft_when_the_new_po
     monkeypatch.setattr(
         approvals,
         "readied",
-        lambda named, *_a: [{**pull, "isDraft": False, "readied": True} for pull in named],
+        lambda named, *_a: [
+            {**pull, "isDraft": False, "readied": True} if pull["isDraft"] else pull
+            for pull in named
+        ],
     )
+    judging: list[int] = []
 
     def landable(pull: dict[str, Any], _tracker: Any, loop: Any, *_a: Any, **_kw: Any) -> Any:
+        judging.append(pull["number"])
         assert pull["isDraft"]
         if approvals.settings(loop).get("owner"):
             return approvals.Verdict((approvals.WAITING, False), issues=[])
@@ -360,8 +369,12 @@ def test_a_draft_readied_before_the_lock_wait_goes_back_to_draft_when_the_new_po
     judged: list[list[dict[str, Any]]] = []
     monkeypatch.setattr(approvals, "batched", lambda named, *_a: judged.append(named) or (0, False))
     capsys.readouterr()
-    assert approvals.landing(7) == (0, False)
-    [[pull]] = judged
+    assert approvals.landing([7, 8]) == (0, False)
+    assert judging == [
+        7
+    ]  # only the PR this land readied is judged again here; the batch judges the rest
+    [[pull, ready]] = judged
+    assert (ready["number"], ready["isDraft"], "readied" in ready) == (8, False, False)
     lines = capsys.readouterr().out.splitlines()
     if undone:
         assert calls == [("pr", "ready", "--undo", "7")]
