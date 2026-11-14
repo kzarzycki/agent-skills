@@ -138,6 +138,18 @@ def test_a_diverged_or_other_branch_clone_is_not_pulled(tmp_path, monkeypatch):
     assert len(calls) == 2, calls
 
 
+def test_a_clone_whose_upstream_is_another_branch_gets_the_default_branch_not_that_branch(tmp_path, monkeypatch):
+    clones, heads, run, _calls, git = world(tmp_path, monkeypatch, ["acme/managed"])
+    clone = clones["acme/managed"]
+    git(clone, "branch", "side", "main")
+    git(clone, "worktree", "add", "-q", str(tmp_path / "wt"), "side")
+    git(tmp_path / "wt", "commit", "-q", "--allow-empty", "-m", "side work")
+    git(tmp_path / "wt", "push", "-q", "origin", "side")
+    git(clone, "branch", "--set-upstream-to=origin/side", "main")
+    out = run()
+    assert git(clone, "rev-parse", "HEAD") == heads["acme/managed"], out
+
+
 def test_a_finding_goes_to_its_repos_manager_and_one_in_a_repo_without_goes_to_the_chief_of_staff(
     tmp_path, monkeypatch
 ):

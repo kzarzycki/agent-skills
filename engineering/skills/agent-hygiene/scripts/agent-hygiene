@@ -806,7 +806,7 @@ def checkout_of(line):
 
 
 def catch_up(run, root):
-    """git pull --ff-only in a checkout that is on its default branch, clean, with no local commits and origin strictly
+    """A fast-forward to origin's default branch (just fetched; not `git pull`, which follows the branch's own upstream) in a checkout that is on its default branch, clean, with no local commits and origin strictly
     ahead; true when it moved. A dirty, diverged or other-branch checkout is never touched: a person owns its state."""
     default = (git(root, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD') or '').strip()
     if not default or git(root, 'fetch', '--quiet', 'origin', timeout=180) is None:
@@ -820,8 +820,8 @@ def catch_up(run, root):
         run.say(f'would pull {root} (clean, on {default.split("/", 1)[-1]}, behind {default})')
         return False
     before = (git(root, 'rev-parse', '--short', 'HEAD') or '').strip()
-    if git(root, 'pull', '--ff-only', '--quiet', timeout=180) is None:
-        run.say(f'FAIL git pull --ff-only in {root}')
+    if git(root, 'merge', '--ff-only', '--quiet', default, timeout=180) is None:
+        run.say(f'FAIL git merge --ff-only in {root}')
         return False
     run.say(f'pulled {root}: {before} -> {(git(root, "rev-parse", "--short", "HEAD") or "").strip()}')
     return True

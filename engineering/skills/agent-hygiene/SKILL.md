@@ -135,7 +135,7 @@ at most 30 per message:
   `doctor` command (exit 2) is itself a finding. A doctor that times out, exits other than
   0, 1 or 2, or exits 1 with no finding makes the run exit 1. A finding inside a checkout on its
   default branch with no changes, no local commits and `origin` ahead is first tried by
-  `git pull --ff-only` and a second doctor run: one that clears is logged, not told; a dirty,
+  a fast-forward to origin's default branch (`git merge --ff-only`, not `git pull`, which follows the branch's own upstream) and a second doctor run: one that clears is logged, not told; a dirty,
   diverged or other-branch checkout is never touched.
 
 ## Self-update
