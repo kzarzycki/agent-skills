@@ -118,7 +118,7 @@ settled), appends each event to ``<registry stem>.events.jsonl``, labels each se
 ``status.line`` and ``status.at``, and raises ``deadline`` for a followed lead with no progress for
 20 minutes (a message to it other than its own counts, and so does life in any session its
 ``STILL WORKING`` names by full id; the event names those quiet, and one of them that ended
-``DONE``, ``USER NEEDED`` or ``PARKED`` is raised to the waiter, again after each of its turns; a lead whose ``STILL WORKING`` names a
+``DONE``, ``USER NEEDED`` or ``PARKED`` is raised to the waiter, again after each of its turns; a deadline whose named sessions are all quiet and one of which waits on the lead, or was started by it and names no session, reads ``mutual wait``; a lead whose ``STILL WORKING`` names a
 time raises it once that time has passed, which the supervisor settles by waking the lead, and
 none for a lead marked ``direct``,
 which the owner drives in its own session: ``direct <session> [--off]`` sets the mark); and it routes each event instead of posting it: the supervisor settles the routine ones
@@ -5596,7 +5596,7 @@ def supervise_registry(
             return  # what it waits on all shows life: no stall of its own
         # a session its STILL WORKING line names that shows life is progress, one that is archived,
         # unknown or unread is quiet
-        quiet_named = []
+        quiet_named, mutual = [], ""
         for other in [n for n in lead.get("named") or [] if n != notify]:
             try:
                 info = og.info(other)
@@ -5612,6 +5612,15 @@ def supervise_registry(
                 log(("named", other), f"{other}: history not read: {reason(e)}")
                 continue
             log(("named", other), None)
+            if not mutual and not over["ending"] and over["wait"] != "unknown":
+                # it waits on this lead, or on no session, and this lead started it: a mutual wait
+                mine, theirs = (
+                    info.get("parent_session_id") == sid,
+                    og.info(sid).get("parent_session_id"),
+                )
+                if sid in over["named"] or (mine and not over["named"]):
+                    who = sid if mine else other if theirs == other else f"{sid} and {other}"
+                    mutual = f"mutual wait: {sid} ↔ {other}; {who} acts"
             if over["ending"] and over["state"] == "idle":  # news for its waiter, once per turn
                 at = datetime.fromtimestamp(over["turn_at"], timezone.utc).strftime("%H:%MZ")
                 head = f"{sid} {lead['title']}".rstrip()
@@ -5634,7 +5643,8 @@ def supervise_registry(
                 head = f"{sid} {lead['title']}".rstrip()
                 then = " after a wake" if due is not None else " after a nudge"
                 why = f"no progress {quiet / 60:.0f}m{then * (nudged == ':nudged')}"
-                line = f"{head}: {why} ({lead['wait']})\nlast message: {lead['last_line']}"
+                what = mutual or f"{why} ({lead['wait']})"
+                line = f"{head}: {what}\nlast message: {lead['last_line']}"
                 if quiet_named:
                     line += f"\nquiet: {', '.join(quiet_named)}"
                 say(line, sid, f"deadline:{sid}:{lead['progress_at']:.0f}{nudged}", "deadline")

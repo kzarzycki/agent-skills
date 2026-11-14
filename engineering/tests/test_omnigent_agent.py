@@ -11348,3 +11348,30 @@ def test_a_wait_on_the_session_the_supervisor_notifies_is_acted_on_and_names_it(
     )
     acts = [t for s, t in og.inbox if s == pm and "[act]" in t]
     assert acts and f"waits on its supervisor, session {pm}" in acts[0]
+
+
+@pytest.mark.parametrize(
+    ("b_wait", "b_parent", "who"),
+    [
+        ("waiting on the PM", "A", "{A} acts"),  # B, started by A, names no session
+        ("waiting on {A}", None, "{A} and {B} acts"),  # B names A by id; neither started the other
+        ("waiting on {A}", "B", "{B} acts"),
+    ],
+)
+def test_two_quiet_sessions_waiting_on_each_other_raise_a_mutual_wait_naming_who_acts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, b_wait: str, b_parent: str | None, who: str
+) -> None:
+    a, b = "a" * 32, "b" * 32
+    registry = follows(tmp_path, a)
+    og = Leads(
+        **{a: [told("brief", 4000), ending(f"STILL WORKING: waiting on {b}. Report: a.md", 3600)]}
+    )
+    og.histories[b] = [ending(f"STILL WORKING: {b_wait.format(A=a)}. Report: b.md", 3600)]
+    quiet = {"status": "idle", "updated_at": time.time() - 3600}
+    og.snaps[a] = {"status": "running", **quiet}
+    og.snaps[b] = {**quiet, **({"parent_session_id": a} if b_parent == "A" else {})}
+    if b_parent == "B":
+        og.snaps[a]["parent_session_id"] = b
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    lines = [t.split("\n")[0] for _, t in og.inbox if t.startswith(f"Supervisor: {a}")]
+    assert lines == [f"Supervisor: {a} t-{a}: mutual wait: {a} ↔ {b}; " + who.format(A=a, B=b)]
