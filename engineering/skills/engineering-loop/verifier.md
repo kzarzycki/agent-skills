@@ -137,12 +137,20 @@ yourself, keeping standards and spec as separate axes.
   [proof-run.md](proof-run.md). Name the gate command, the tests, each patch verbatim and
   the commands that undo and redo it, since the lead fills the brief from the question
   alone. The lead has the runs made off this host and answers with the head-stamped logs; a
-  verdict without them would be repeated once the logs exist.
+  verdict without them would be repeated once the logs exist. Before you write the question,
+  go through the whole pass and list every run it needs in that one question: each acceptance
+  line not yet run, each mutant, each instance or device proof and each gate step, since every
+  later question costs another cloud run and heavy-slot hold. After an answer (a brief with a
+  `## Answer to your question` section), ask again only for a run the answer itself made
+  necessary, such as a log that shows a new failure, with a `New in the answer: <the log>` line
+  naming that log; `cloud_verifier.py` hands no later question to the lead without that line
+  (exit 1).
 - **An acceptance line you did not run** through the path a user takes (the spec's acceptance
   examples, on the instance when one is up) blocks `SATISFIED: yes`, whatever the reason:
   mark each acceptance line run (with its evidence), failing or not run. A line not run ends
   the turn as a run the sandbox refuses does, in `<report>.question` naming the run the lead
-  must make; `approvals.py` refuses a satisfied report with a `Not run:` line. Probing a
+  must make, and every other run the pass needs, listed as above (after an answer, only a run it
+  made necessary, under a `New in the answer:` line); `approvals.py` refuses a satisfied report with a `Not run:` line. Probing a
   neighbouring component is context, not the run.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is

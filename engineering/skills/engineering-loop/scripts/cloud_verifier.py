@@ -439,6 +439,24 @@ def text(path: Path) -> str:
     return path.read_bytes().decode("utf-8", "replace") if path.is_file() else ""
 
 
+ANSWERED = re.compile(r"^## Answer to your question\s*$", re.MULTILINE)
+NEW_IN_ANSWER = re.compile(r"^New in the answer:[ \t]*\S", re.MULTILINE)
+
+
+def repeat_ask(brief: str, ask: str) -> str:
+    """The reason a question is not handed to the lead, else "". A brief carrying the lead's marked answer section
+    (`## Answer to your question`, lead.md) says this pass already had a question answered, so a new one must name
+    what the answer made necessary on a `New in the answer:` line (verifier.md): without it the verifier left runs
+    out of its first question, and each repeat costs another cloud run and heavy-slot hold."""
+    if ANSWERED.search(brief) and not NEW_IN_ANSWER.search(ask):
+        return (
+            "the brief carries the lead's answer to an earlier question, and the new question has no "
+            "`New in the answer:` line, so it is not passed on; list every run the pass needs in one question "
+            "(verifier.md), or name the log of the answer that made another necessary"
+        )
+    return ""
+
+
 def codex_exec(cmd: list[str], brief: str) -> int:
     return subprocess.run(cmd, input=brief, text=True, check=False).returncode
 
@@ -518,6 +536,9 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         wrote.get(report, "").strip() and wrote[report] or wrote[final],
     )
     try:
+        if not code and ask.strip() and (why := repeat_ask(brief, ask)):
+            print(f"cloud_verifier: {why}", file=sys.stderr)
+            return 4 if stuck else 1
         if not code and ask.strip():
             # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
             print(post(pr, f"## Verifier question\n\n{ask}"))
@@ -849,6 +870,9 @@ def thread_verify(
         code, asked = thread_exec(
             rpc, thread, env, f"cat {shlex.quote(checkout + '/' + str(out) + '.question')}"
         )
+        if not code and asked.strip() and (why := repeat_ask(brief, asked)):
+            print(f"cloud_verifier: {why}", file=sys.stderr)
+            return 1
         if not code and asked.strip():
             out.parent.mkdir(parents=True, exist_ok=True)
             question = out.with_name(out.name + ".question")
