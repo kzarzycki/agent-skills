@@ -147,7 +147,7 @@ design, wireframes included for a UI, and delegate the rest.
    all of them, made in one heavy-slot hold where one host can make them all, since a hold
    per run waits on the slot each time. The next pass's brief carries the answer under a
    `## Answer to your question` heading (put it in the `--priorities` file), which is how
-   `cloud_verifier.py` knows a question was answered: a later question without a
+   the verifier script knows a question was answered: a later question without a
    `New in the answer:` line is refused (exit 1), so the verifier asks once. Post each finished report with
    `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,

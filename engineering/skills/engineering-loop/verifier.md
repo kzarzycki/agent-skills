@@ -140,10 +140,10 @@ yourself, keeping standards and spec as separate axes.
   verdict without them would be repeated once the logs exist. Before you write the question,
   go through the whole pass and list every run it needs in that one question: each acceptance
   line not yet run, each mutant, each instance or device proof and each gate step, since every
-  later question costs another cloud run and heavy-slot hold. After an answer (a brief with a
+  later question costs another run and heavy-slot hold. After an answer (a brief with a
   `## Answer to your question` section), ask again only for a run the answer itself made
   necessary, such as a log that shows a new failure, with a `New in the answer: <the log>` line
-  naming that log; `cloud_verifier.py` hands no later question to the lead without that line
+  naming that log; the verifier script hands no later question to the lead without that line
   (exit 1).
 - **An acceptance line you did not run** through the path a user takes (the spec's acceptance
   examples, on the instance when one is up) blocks `SATISFIED: yes`, whatever the reason:
