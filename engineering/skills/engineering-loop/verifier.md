@@ -99,10 +99,11 @@ yourself, keeping standards and spec as separate axes.
   changes, even on one line; save the edit as a patch beside your report (`git diff --
   <file> > <patch>`, after `git add -N` for a file you recreate), run the tests, and redo the
   change with `git apply -R <patch>`. `git apply <patch>` undoes it again, so the patch is
-  also the repro. Run the patches with `uv run <this skill's folder>/scripts/mutate.py --test
+  also the repro. Commit the change and its tests before running the patches, since
+  mutate.py refuses a tree with uncommitted changes. Run the patches with `uv run <this skill's folder>/scripts/mutate.py --test
   '<tests>' --log <log> <patch>…` (the script queues on the host gate slot itself, in the short lane when the tests pass on
   the head within `short_seconds`, so the command takes no lock of its own), which applies each alone, restores the tree, stops cleanly on a signal and
-  logs the head with each patch's exit code, rather than a harness of your own; the worker
+  logs the head with each patch's exit code, rather than a harness of your own; for a compiled target pass `--built <path>` (repeatable, globs) pointing at what the compiler writes for each target the test installs or loads, never at a signed or zipped package around it, since a package's signature and timestamps change on every build and would count an unbuilt patch as built (for Android, the dex files `classes*.dex` or the intermediate dex folder; for an Apple app bundle, the bundle, since its library changes while the stub main binary does not), so a patch the build never reached is `not built: inconclusive` instead of a false survivor, and have the test command exit with the project's reserved code (`mutate.inconclusive_exit` in the policy, default 75) when its setup fails (a device gone, a build broken), so that run is `inconclusive` instead of a false kill; an inconclusive patch makes the run exit 3, and you rerun it after fixing the setup, since it says nothing about the patch; the worker
   ran it on its own patches, so its log is a starting point, not the check. A change whose undoing leaves every test green is untested: report it as a
   major. Before the report, `git status --porcelain` must match what it showed at the start:
   revert any mutation of yours still applied, and report a tree you cannot clean as a finding
@@ -137,12 +138,20 @@ yourself, keeping standards and spec as separate axes.
   [proof-run.md](proof-run.md). Name the gate command, the tests, each patch verbatim and
   the commands that undo and redo it, since the lead fills the brief from the question
   alone. The lead has the runs made off this host and answers with the head-stamped logs; a
-  verdict without them would be repeated once the logs exist.
+  verdict without them would be repeated once the logs exist. Before you write the question,
+  go through the whole pass and list every run it needs in that one question: each acceptance
+  line not yet run, each mutant, each instance or device proof and each gate step, since every
+  later question costs another run and heavy-slot hold. After an answer (a brief with a
+  `## Answer to your question` section), ask again only for a run the answer itself made
+  necessary, such as a log that shows a new failure, with a `New in the answer: <the log>` line
+  naming that log; the verifier script hands no later question to the lead without that line
+  (exit 1).
 - **An acceptance line you did not run** through the path a user takes (the spec's acceptance
   examples, on the instance when one is up) blocks `SATISFIED: yes`, whatever the reason:
   mark each acceptance line run (with its evidence), failing or not run. A line not run ends
   the turn as a run the sandbox refuses does, in `<report>.question` naming the run the lead
-  must make; `approvals.py` refuses a satisfied report with a `Not run:` line. Probing a
+  must make, and every other run the pass needs, listed as above (after an answer, only a run it
+  made necessary, under a `New in the answer:` line); `approvals.py` refuses a satisfied report with a `Not run:` line. Probing a
   neighbouring component is context, not the run.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is
@@ -186,10 +195,13 @@ keep these lines exact:
   worktree), then `VERDICT: <n> blocker, <n> major, <n> minor`, `SATISFIED: yes|no` and
   `Risk: low — <reason>` or `Risk: high — <reason>` (Steering, Judge the risk). The gate
   reads any word but `low`, or no line, as high, and `verdict` refuses a report without one.
+  The gate sets the board's `Risk` field from it (github.md, Board).
   On a delta of merges of the base alone, add `Logic change: none` when its conflict fixes
   change no behaviour, which carries the owner's go to the head, else `Logic change: <what>`.
   The merge reads the review as covering that commit only, so a push after your review
-  needs its own.
+  needs its own, unless the new head has your commit's tree (`git rev-parse <sha>^{tree}`),
+  as after a reword of commit messages only: every file you reviewed is the same, so your
+  verdict, its findings and `Risk:` line included, and the owner's go hold for it.
 
 Before replying, run `uv run <this skill's folder>/scripts/approvals.py report <report path>` and fix the
 report until it exits 0: it reads the report as `verdict` does, without GitHub, so a report

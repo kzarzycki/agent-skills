@@ -539,7 +539,120 @@ def test_agent_hygiene(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("PATH", env["PATH"])
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", env["GIT_CONFIG_GLOBAL"])
+    for gitdir in (repo / ".git/worktrees").iterdir():  # made just now, so long idle only once aged
+        age_git_state(gitdir, old)
     agent_hygiene_runs(home, dev, repo, git, monkeypatch)
+
+
+def age_git_state(gitdir, when):
+    for name in ("HEAD", "index", "logs/HEAD", "FETCH_HEAD"):
+        if (gitdir / name).exists():
+            os.utime(gitdir / name, (when, when))
+
+
+def landing_world(tmp_path, monkeypatch):
+    """A repo with a closed PR #9 whose head is a commit no remote branch has, and one that main's tip is too."""
+    home = tmp_path.resolve()
+    dev, bin_ = home / "dev", home / "fakebin"
+    bin_.mkdir()
+    for name, body in {
+        "lsof": "true",
+        "ps": "true",
+        "gh": f'exec python3 {home}/gh.py "$@"',
+    }.items():
+        (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
+        (bin_ / name).chmod(0o755)
+    (home / "gh.py").write_text(
+        "import json, sys\n"
+        'if sys.argv[1] == "api":\n'
+        f'    print(json.dumps(json.load(open("{home}/gh-pulls.json")).get(sys.argv[2].split("/")[4], [])))\n'
+        "else:\n    print('[]')\n"
+    )
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"),
+        "PATH": f"{bin_}:{os.environ['PATH']}",
+    }
+    git = lambda cwd, *a: subprocess.run(
+        ["git", "-C", str(cwd), *a], env=env, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    (home / ".gitconfig").write_text(
+        f'[user]\nname = t\nemail = t@t\n[url "{home}/origin.git"]\n'
+        "\tinsteadOf = https://github.com/o/r.git\n"
+    )
+    git(home, "init", "-q", "--bare", "origin.git")
+    repo = dev / "r"
+    repo.mkdir(parents=True)
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "remote", "add", "origin", "https://github.com/o/r.git")
+    (repo / ".gitignore").write_text(".worktrees/\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "base")
+    git(repo, "push", "-q", "origin", "main")
+    pulls = {}
+
+    def worktree(name, commit_message=None, parent=None):
+        """A detached worktree: at main's tip, or at a new commit on no remote branch, whose closed PR #9 lists it."""
+        path = parent / ".worktrees" / name if parent else dev / f"wt-{name}"
+        git(repo, "worktree", "add", "-q", "--detach", str(path), "main")
+        if commit_message:
+            git(path, "commit", "-q", "--allow-empty", "-m", commit_message)
+        sha = git(path, "rev-parse", "HEAD")
+        pulls[sha] = [{"number": 9, "state": "closed", "head": {"sha": sha}}]
+        (home / "gh-pulls.json").write_text(json.dumps(pulls))
+        gitdir = Path(git(path, "rev-parse", "--absolute-git-dir"))
+        age_git_state(gitdir, time.time() - 30 * 86400)
+        return path, gitdir
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", env["PATH"])
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", env["GIT_CONFIG_GLOBAL"])
+    hygiene = load("agent_hygiene_landing")
+    hygiene.REPO, hygiene.DOTAGENTS = home / "no-checkout", home / "no-doctor"
+    hygiene.tell = lambda text, repo=None: "cos-session"
+    hygiene.told_to = []
+
+    def run():
+        monkeypatch.setattr(sys, "argv", ["agent-hygiene", "--dev", str(dev), "--dry-run"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            hygiene.main()
+        return out.getvalue()
+
+    return worktree, run
+
+
+def test_a_worktree_at_a_remote_branch_tip_is_kept_though_a_closed_pr_has_that_head(
+    tmp_path, monkeypatch
+):
+    worktree, run = landing_world(tmp_path, monkeypatch)
+    path, _ = worktree("landing")  # at origin/main, which a landed PR's head also is
+    out = run()
+    assert str(path) not in out, out
+
+
+def test_a_worktree_whose_git_state_changed_an_hour_ago_is_kept_with_that_reason(
+    tmp_path, monkeypatch
+):
+    worktree, run = landing_world(tmp_path, monkeypatch)
+    path, gitdir = worktree("recent", "verified")
+    os.utime(gitdir / "logs/HEAD", (time.time() - 3600,) * 2)
+    out = run()
+    assert (
+        f"skip worktree {path} (o/r#9 closed): its git state changed in the last 24 h (logs/HEAD)\n"
+        in out
+    ), out
+    assert "would remove" not in out and "Which may go?" not in out, out
+
+
+def test_a_closed_pr_worktree_with_old_git_state_and_no_remote_branch_is_removed(
+    tmp_path, monkeypatch
+):
+    worktree, run = landing_world(tmp_path, monkeypatch)
+    path, _ = worktree("finished", "verified")
+    out = run()
+    assert f"would remove worktree {path} (o/r#9 closed)" in out, out
 
 
 def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
@@ -1652,3 +1765,17 @@ def test_uv_lock_holder_with_an_unreadable_environment_is_not_forced(tmp_path, m
     )
     assert "forcing" not in said and "--force" not in said, said
     assert "the environment of pid 12 of pid 11 (uv run server.py) could not be read" in said, said
+
+
+def test_a_remote_tip_worktree_nested_in_a_closed_pr_worktree_is_kept_with_its_parent(
+    tmp_path, monkeypatch
+):
+    worktree, run = landing_world(tmp_path, monkeypatch)
+    outer, _ = worktree("outer", "verified")  # removable alone: old git state, closed PR, no remote
+    inner, _ = worktree("inner", parent=outer)  # at origin/main, so live
+    out = run()
+    assert "would remove" not in out, out
+    assert (
+        f"skip worktree {outer} (o/r#9 closed)" in out and "another checkout is inside it" in out
+    ), out
+    assert str(inner) not in out, out  # the live child is not reported

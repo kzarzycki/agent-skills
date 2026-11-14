@@ -8,6 +8,7 @@ from approvals_harness import (
     approvals,
     assigned,  # noqa: F401
     attached,  # noqa: F401
+    board_risks,  # noqa: F401
     gatekeeper_md,
     graphql_answers,  # noqa: F401
     hub,  # noqa: F401

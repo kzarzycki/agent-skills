@@ -22,3 +22,5 @@ per-file-target-version = { "engineering/skills/*/scripts/*.py" = "py39" }
 # A module of approvals tests imports the harness's fixtures by name (each with `noqa: F401`), and
 # a test that takes one as a parameter redefines it (engineering/tests/approvals_harness.py).
 "engineering/tests/test_approvals_*.py" = ["F811"]
+# likewise a module that takes test_mutate.py's `repo` fixture by name
+"engineering/tests/test_mutate_*.py" = ["F811"]

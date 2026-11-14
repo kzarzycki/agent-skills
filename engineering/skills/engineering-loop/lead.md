@@ -143,7 +143,12 @@ design, wireframes included for a UI, and delegate the rest.
    so the verifier finds it and its log there and can drive it. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. A verifier's `<report>.question` asking for a
    proof run (verifier.md, A run the sandbox refuses) is answered by filling `proof-run.md` from it
-   and sending the logs back. Post each finished report with
+   and sending the logs back: a question that lists several runs gets one proof brief with
+   all of them, made in one heavy-slot hold where one host can make them all, since a hold
+   per run waits on the slot each time. The next pass's brief carries the answer under a
+   `## Answer to your question` heading (put it in the `--priorities` file), which is how
+   the verifier script knows a question was answered: a later question without a
+   `New in the answer:` line is refused (exit 1), so the verifier asks once. Post each finished report with
    `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
@@ -197,7 +202,10 @@ design, wireframes included for a UI, and delegate the rest.
      (`Conflicts in the landing batch`): `land` merges every head onto main itself and gates
      the result, so a PR behind main lands without a merge. When you do merge it in, rerun the
      gates and get a verifier pass on the merge (step 7), since `land` merges only a head with
-     a verdict of its own. When main's changes touch no file the PR changes and no merge check
+     a verdict of its own. A head with an earlier head's tree (`git rev-parse <sha>^{tree}`), as
+     after a reword of commit messages only, keeps that head's verdict (unsatisfied or with
+     findings open, it stays so) and go with no new pass, since no file changed: `check merge`
+     and `land` print `verdict on <old> carried: same tree <tree>`. When main's changes touch no file the PR changes and no merge check
      (a `check:` task, a tool it runs, or the lint, type or test configuration), that pass is
      the short delta pass. Where loop.md still has `carry_over_main` (deprecated), no pass is
      needed when `check merge` prints that the merge carries the head's verdict. When every
@@ -242,7 +250,9 @@ design, wireframes included for a UI, and delegate the rest.
      each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what
-     refuses a PR whose proof is missing. A push after it needs `gh pr ready --undo` first; the
+     refuses a PR whose proof is missing: `land` itself marks each draft it names ready, before it
+     waits for the lock, so the batch ahead of you takes it, and several PRs named in one `land`
+     land in one batch. A push after it needs `gh pr ready --undo` first; the
      owner's go carries over only merges of the base whose verdict says `Logic change: none`
      (SKILL.md, Approvals and proof), and after the verdict on the new head `land` runs again.
    - Land every approved PR at once: start `land --wait` on each as soon as its proofs hold,

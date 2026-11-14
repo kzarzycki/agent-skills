@@ -31,6 +31,12 @@ SPEC = importlib.util.spec_from_file_location("approvals", SCRIPTS / "approvals.
 assert SPEC and SPEC.loader
 approvals = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(approvals)
+# board.py reads names from approvals.py beside it, as when run
+sys.path.insert(0, str(SCRIPTS))
+BOARD_SPEC = importlib.util.spec_from_file_location("board", SCRIPTS / "board.py")
+assert BOARD_SPEC and BOARD_SPEC.loader
+board = importlib.util.module_from_spec(BOARD_SPEC)
+BOARD_SPEC.loader.exec_module(board)
 
 PROJECT = Path(__file__).resolve().parent / "fixtures" / "loop-project"
 TRACKER = (PROJECT / "docs" / "agents" / "issue-tracker.md").read_text()
@@ -191,6 +197,48 @@ def added(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, str, bool]]:
         approvals, "label", lambda number, name, add: calls.append((number, name, add))
     )
     return calls
+
+
+@pytest.fixture(autouse=True)
+def board_risks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The repo's board as board.py reads and sets it over gh, instead of GitHub: a `Risk` field whose option for
+    each PR on the board is in `values`, every option set in `set` (which leaves `values`, so a test that checks
+    a PR twice reads the board it set up), no linked board once `linked` is False, and `refused` the stderr each gh
+    call fails with."""
+    state: dict[str, Any] = {"values": {}, "set": [], "linked": True, "refused": None}
+    items: dict[str, int] = {}
+
+    def graphql(query: str, **values: Any) -> Any:
+        if state["refused"]:
+            raise subprocess.CalledProcessError(1, "gh", stderr=state["refused"])
+        if query == board.LOOKUP:
+            number, said = values["issue"], state["values"].get(values["issue"])
+            on = (
+                []
+                if said is None
+                else [{"project": {"id": "P"}, "fieldValueByName": {"name": said}}]
+            )
+            field = {
+                "id": "F",
+                "options": [{"id": f"o-{o}", "name": o} for o in ("Low", "Medium", "High")],
+            }
+            boards = [{"id": "P", "field": field}] if state["linked"] else []
+            return {
+                "repository": {
+                    "issueOrPullRequest": {"id": f"N{number}", "projectItems": {"nodes": on}},
+                    "projectsV2": {"nodes": boards},
+                }
+            }
+        if query == board.ADD:
+            items[f"I-{values['issue']}"] = int(values["issue"][1:])
+            return {"addProjectV2ItemById": {"item": {"id": f"I-{values['issue']}"}}}
+        assert query == board.SET, query
+        state["set"].append((items[values["item"]], values["option"].removeprefix("o-")))
+        return {}
+
+    monkeypatch.setattr(board, "_graphql", graphql)
+    monkeypatch.setattr(approvals, "board", lambda: board)
+    return state
 
 
 @pytest.fixture(autouse=True)
@@ -1439,13 +1487,14 @@ def test_an_issue_a_signoff_rule_matches_is_implemented_not_closed() -> None:
     assert merge(linking("Part of"), [web], SIGNOFF) == []
     assert merge(linking("Closes"), [web], SIGNOFF) == [
         (
-            "#1 waits for the owner's sign-off after landing, since it matches a sign-off rule"
-            " (label `area:web`): the PR says `Implements #1`, which leaves it open,"
-            " not a closing keyword"
+            "#1: the PR says `Closes #1`, but #1 waits for the owner's sign-off after landing, since it"
+            " matches a sign-off rule (label `area:web`): use `Implements #1`, which leaves it open"
         )
     ]
     # GitHub's own link, with no line in the body, closes the issue on merge
-    assert merge(LANDED, [web], SIGNOFF)[0].startswith("#1 waits for the owner's sign-off")
+    assert merge(LANDED, [web], SIGNOFF)[0].startswith(
+        "#1: GitHub links #1 to the PR as closing, with no line in its body, but #1 waits for the owner's sign-off"
+    )
     # the PR's files and labels count, as for a risk rule
     api = approved(1, "area:api")
     assert approvals.linked(linking("Implements", files=("app/main.swift",)), [api], SIGNOFF) == []
@@ -1458,8 +1507,8 @@ def test_an_issue_no_signoff_rule_matches_is_closed() -> None:
     assert approvals.linked(linking("Part of"), [api], SIGNOFF) == []
     assert approvals.linked(linking("Implements"), [api], SIGNOFF) == [
         (
-            "#1 needs no sign-off (no sign-off rule matches): the PR says `Closes #1`, since"
-            " `Implements` would leave it open for a sign-off nobody asked for"
+            "#1: the PR says `Implements #1`, but #1 needs no sign-off (no sign-off rule matches): use"
+            " `Closes #1`, since `Implements` would leave it open for a sign-off nobody asked for"
         )
     ]
 
@@ -1469,8 +1518,8 @@ def test_the_spec_asks_for_a_signoff_and_never_waives_a_rule() -> None:
     assert approvals.linked(linking("Implements"), [owner], SIGNOFF) == []
     assert approvals.linked(linking("Closes"), [owner], SIGNOFF) == [
         (
-            "#1 waits for the owner's sign-off after landing, since its spec says `Sign-off: owner`:"
-            " the PR says `Implements #1`, which leaves it open, not a closing keyword"
+            "#1: the PR says `Closes #1`, but #1 waits for the owner's sign-off after landing, since its"
+            " spec says `Sign-off: owner`: use `Implements #1`, which leaves it open"
         )
     ]
     waived = approved(1, "area:web", body="the spec\n\nSign-off: none\n")
@@ -1478,8 +1527,9 @@ def test_the_spec_asks_for_a_signoff_and_never_waives_a_rule() -> None:
     none = approved(1, "area:api", body="the spec\n\nSign-off: none\n")
     assert approvals.linked(linking("Implements"), [none], SIGNOFF) == [
         (
-            "#1 needs no sign-off (no sign-off rule matches and its spec says `Sign-off: none`): the PR"
-            " says `Closes #1`, since `Implements` would leave it open for a sign-off nobody asked for"
+            "#1: the PR says `Implements #1`, but #1 needs no sign-off (no sign-off rule matches and its"
+            " spec says `Sign-off: none`): use `Closes #1`, since `Implements` would leave it open for a"
+            " sign-off nobody asked for"
         )
     ]
     quoted = approved(1, "area:api", body="the spec\n\n`Sign-off: owner` is an example\n")
@@ -1494,8 +1544,8 @@ def test_signoff_paths_past_the_files_the_gate_reads_ask_for_the_signoff() -> No
 
     assert approvals.linked(crowded("Implements"), [approved(1, "area:api")], SIGNOFF) == []
     assert approvals.linked(crowded("Closes"), [approved(1, "area:api")], SIGNOFF)[0].startswith(
-        "#1 waits for the owner's sign-off after landing, since the gate can't read every file the PR"
-        " changes, so the sign-off rule's `paths` hold"
+        "#1: the PR says `Closes #1`, but #1 waits for the owner's sign-off after landing, since the gate"
+        " can't read every file the PR changes, so the sign-off rule's `paths` hold"
     )
 
 
@@ -1503,7 +1553,7 @@ def test_signoff_always_asks_for_implements_and_a_rule_matching_nothing_asks_for
     web = approved(1, "area:web")
     assert approvals.linked(linking("Closes"), [web], add(LOOP, "signoff", "always: true\n"))[
         0
-    ].startswith("#1 waits for the owner's sign-off after landing")
+    ].startswith("#1: the PR says `Closes #1`, but #1 waits for the owner's sign-off after landing")
     nothing = add(LOOP, "signoff", "labels:\n  - area:nothing\n")
     assert approvals.linked(linking("Closes"), [web], nothing) == []
 
@@ -3981,7 +4031,7 @@ def test_a_machine_fault_twice_on_the_tip_after_the_merges_still_says_landed(
     refusing(monkeypatch, lambda args: args[2] == "8")
     codes = iter([0, 78, 78])
     monkeypatch.setattr(
-        approvals, "ran_step", lambda _step, cwd=None, out=None: (next(codes), 0, 0)
+        approvals, "ran_step", lambda _step, cwd=None, out=None, load=None: (next(codes), 0, 0)
     )
     code, lines = lands["land"]()
     assert (code, lands["merged"]()) == (1, ["7"])
@@ -7354,10 +7404,14 @@ def test_check_build_refuses_an_issue_another_open_pr_closes_and_each_names_the_
 
     monkeypatch.setattr(approvals, "gh", gh)
     monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    # `always: true` wants `Implements`, so a closing keyword here also gets the keyword check's line
+    also = lambda: [
+        line for line in capsys.readouterr().out.splitlines() if " is also closed " in line
+    ]
     assert approvals.main(["check", "build", "7"]) == 1
-    assert capsys.readouterr().out.splitlines() == [duplicate(1, 8, "second")]
+    assert also() == [duplicate(1, 8, "second")]
     assert approvals.main(["check", "build", "8"]) == 1
-    assert capsys.readouterr().out.splitlines() == [duplicate(1, 7, "feature")]
+    assert also() == [duplicate(1, 7, "feature")]
     assert len(calls) == 2  # one list call per check
 
 
@@ -8552,6 +8606,9 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
             git("merge", "-q", "--no-ff", "-m", f"the feature takes main {n}", moved)
             first = git("rev-parse", "HEAD")
             git("switch", "-q", f"base{n}")
+            # main moves once more, so the merge's tree is not the head's (same_tree)
+            write({"crossed.txt": "main moved again\n"})
+            git("commit", "-qm", f"main moved again {n}")
         base = git("rev-parse", "HEAD")
         git("switch", "-q", "--detach", first)
         subprocess.run(
@@ -8892,9 +8949,16 @@ def test_without_the_line_check_merge_and_land_read_no_git(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A project without carry_over_main gates exactly as before: nothing runs git to look for a carry."""
+    """A project without carry_over_main gates exactly as before: git runs only to read the two trees (same_tree),
+    never to look for a carry over main."""
     case = carrying({"other.txt": "main moved\n"})
-    monkeypatch.setattr(approvals, "git", lambda *args: pytest.fail(f"git {args}"))
+    real = approvals.git
+    trees = lambda *args: (
+        real(*args)
+        if args[0] == "rev-parse" and args[-1].endswith("^{tree}")
+        else pytest.fail(f"git {args}")
+    )
+    monkeypatch.setattr(approvals, "git", trees)
     monkeypatch.setattr(approvals, "fetched", lambda sha: pytest.fail(f"fetched {sha}"))
     monkeypatch.setattr(approvals, "reusable", lambda head: None)  # the merge proof, not a carry
     monkeypatch.setattr(approvals, "elsewhere", lambda head: "")  # and what its refusal adds
@@ -9664,6 +9728,8 @@ def test_an_open_head_whose_tree_is_unknown_keeps_every_record_but_the_landed_on
     monkeypatch.chdir(clone)
     git_in(clone, "fetch", "-q", "origin")
     monkeypatch.setattr(approvals, "gh", open_prs(fork))
+    # origin has the fork's head under its record branch, so its fetch is made to have failed already this run
+    monkeypatch.setattr(approvals, "TREE_FETCHED", {(os.getcwd(), fork)})
     assert approvals.tree_of(fork) is None
     approvals.drop_records([landed])
     assert loop_gate_branches(origin) == {kept}
