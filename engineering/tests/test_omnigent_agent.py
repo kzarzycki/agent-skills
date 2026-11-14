@@ -6464,7 +6464,7 @@ def test_relay_beside_an_open_question_card_delivers_and_names_it_without_answer
     assert relay(og, sid, tmp_path, monkeypatch) == 0
     assert capsys.readouterr().out.strip() == (
         f"session {sid}: delivered; its question is still open (relay --answer answers it):"
-        " Which base?"
+        " q1: Which base?"
     )
     assert og.resolved == []
     assert og.posts == 1
@@ -6515,7 +6515,7 @@ def test_send_beside_an_open_question_card_delivers_and_names_it_without_answeri
     assert omnigent_agent.main(["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]) == 0
     assert (
         f"session {sid}: delivered; its question is still open (relay --answer answers it):"
-        " Which base?"
+        " q1: Which base?"
     ) in capsys.readouterr().out
     assert og.resolved == []
     assert og.posts == 1
