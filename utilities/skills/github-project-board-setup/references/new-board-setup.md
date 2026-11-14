@@ -45,7 +45,7 @@ STATUS_FIELD_ID=$(jq -r '.fields[]|select(.name=="Status").id' <<<"$FIELDS")
 FIRST_COLUMN_OPTION_ID=$(jq -r '.fields[]|select(.name=="Status").options[0].id' <<<"$FIELDS")
 ```
 
-No other field is needed, except `Priority` where the project ranks work: a single-select field holds one value per item and sorts in its options' order (P0 first), where an item can carry several labels.
+No other field is needed, except `Priority` where the project ranks work, and `Risk` where the project's engineering loop runs: a single-select field holds one value per item and sorts in its options' order (P0 first), where an item can carry several labels.
 
 ```bash
 gh api graphql -f p="$PID" -f query='mutation($p:ID!){createProjectV2Field(input:{projectId:$p,dataType:SINGLE_SELECT,name:"Priority",singleSelectOptions:[
@@ -53,22 +53,30 @@ gh api graphql -f p="$PID" -f query='mutation($p:ID!){createProjectV2Field(input
  {name:"P2",color:YELLOW,description:"Planned"},{name:"P3",color:GRAY,description:"Someday"}]}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}'
 ```
 
+`Risk` holds a pull request's risk, one value where its `risk:*` labels could show two. The engineering loop's `board.py field <pr> Risk <option>` sets it, adding the PR to the board, and its merge check reads only the `risk:high` label, since a workflow's token can't read a board a personal account owns:
+
+```bash
+gh api graphql -f p="$PID" -f query='mutation($p:ID!){createProjectV2Field(input:{projectId:$p,dataType:SINGLE_SELECT,name:"Risk",singleSelectOptions:[
+ {name:"Low",color:GREEN,description:""},{name:"Medium",color:YELLOW,description:""},
+ {name:"High",color:RED,description:"Waits for the owner"}]}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}'
+```
+
 Views come from REST, which sets a view's layout, filter, visible fields, grouping (`group_by`, swimlanes), board columns (`vertical_group_by`) and sort (`sort_by`) when it creates it. GraphQL's `createProjectV2View` and `updateProjectV2View` set only the first three, and nothing regroups an existing view, so create every view this way, in the order the tabs should show, then delete the default `View 1`. REST takes the fields' numeric REST ids. The built-in "Assignees", "Parent issue" and "Sub-issues progress" fields show only where a view lists them.
 
 ```bash
 BASE=orgs/OWNER/projectsV2/$NUM   # users/OWNER/projectsV2/$NUM for a user's board
 F=$(gh api "$BASE/fields" --paginate); f() { jq --arg n "$1" '.[]|select(.name==$n).id' <<<"$F"; }
-T=$(f Title) S=$(f Status) A=$(f Assignees) L=$(f Labels) PA=$(f "Parent issue") SP=$(f "Sub-issues progress") P=$(f Priority)
+T=$(f Title) S=$(f Status) A=$(f Assignees) L=$(f Labels) PA=$(f "Parent issue") SP=$(f "Sub-issues progress") P=$(f Priority) R=$(f Risk)
 view() { gh api -X POST "$BASE/views" --input - -q '[.number,.name]|@tsv' <<<"$1"; }
-view '{"name":"Board","layout":"board","vertical_group_by":['$S'],"sort_by":[['$P',"asc"]],"visible_fields":['$T,$P,$A,$L,$PA,$SP']}'
-view '{"name":"By epic","layout":"table","filter":"-label:epic","group_by":['$PA'],"sort_by":[['$P',"asc"]],"visible_fields":['$T,$S,$P,$A,$L']}'
-view '{"name":"Epics","layout":"table","filter":"label:epic","visible_fields":['$T,$S,$P,$A,$SP']}'
+view '{"name":"Board","layout":"board","vertical_group_by":['$S'],"sort_by":[['$P',"asc"]],"visible_fields":['$T,$P,$R,$A,$L,$PA,$SP']}'
+view '{"name":"By epic","layout":"table","filter":"-label:epic","group_by":['$PA'],"sort_by":[['$P',"asc"]],"visible_fields":['$T,$S,$P,$R,$A,$L']}'
+view '{"name":"Epics","layout":"table","filter":"label:epic","visible_fields":['$T,$S,$P,$R,$A,$SP']}'
 view '{"name":"Not planned","layout":"table","filter":"is:closed reason:\"not planned\",duplicate","visible_fields":['$T,$L,$PA']}'
 V1=$(gh api graphql -f p="$PID" -f query='query($p:ID!){node(id:$p){... on ProjectV2{views(first:1){nodes{id}}}}}' -q '.data.node.views.nodes[0].id')
 gh api graphql -f v="$V1" -f query='mutation($v:ID!){deleteProjectV2View(input:{viewId:$v}){clientMutationId}}'
 ```
 
-Without a Priority field, drop `$P` and the `sort_by` entries. `Title`, `Reviewers`, `Linked pull requests` and `Sub-issues progress` can't be grouped on.
+Without a Priority field, drop `$P` and the `sort_by` entries; without a Risk field, drop `$R`. `Title`, `Reviewers`, `Linked pull requests` and `Sub-issues progress` can't be grouped on.
 
 A board created through the API has the built-in "Item closed" and "Item added to project" workflows switched off; only "Auto-add sub-issues to project" is on. Which ones a board keeps on is the project's rule; `scripts/project_workflows.py` switches on the ones it wants (step 7). "Item closed" setting `Closed` is the one almost every board wants, since GitHub closes issues on a PR's `Closes` without anything else moving them. Where it stays off, whatever closes an issue sets `Closed` itself.
 

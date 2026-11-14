@@ -7,6 +7,7 @@
 
     uv run scripts/board.py <issue> <column>
     uv run scripts/board.py column <issue>
+    uv run scripts/board.py field <issue or PR> <field> <option>
 
 The columns are the loop's stages (the skill's issues.md, Board), each shown in the board column of its own name unless
 the `board` section of docs/agents/issue-tracker.md's settings block maps it to another, one key per loop column
@@ -20,6 +21,9 @@ blocks a ticket. Needs the `project` token scope (`gh auth refresh -s project`).
 `needs-owner` is `Needs owner`, `approved:spec` is `Ready`, neither is `Intent`), since the labels are the state and a
 board move may have failed. A board column no loop column maps to and the loop does not name is printed as is. `Sign-off` is a landed change
 whose issue stays open for the owner's check in use (`Implements #n`), so it comes after `Verify` and before `Done`.
+
+`field` sets another single-select field of an issue's or PR's item the same way, by the field's and the option's
+names (`field 12 Risk High`): the board template's `Risk` holds a PR's risk beside its `risk:high` label.
 """
 
 from __future__ import annotations
@@ -44,12 +48,14 @@ from approvals import (
 )
 
 # ponytail: the repo's first linked project is the board; pick by title when a second one is linked.
-LOOKUP = """query($owner: String!, $name: String!, $issue: Int!) {
-  repository(owner: $owner, name: $name) {
-    issue(number: $issue) { id }
-    projectsV2(first: 1) { nodes { id field(name: "Status") { ... on ProjectV2SingleSelectField { id options { id name } } } } }
-  }
-}"""
+# an issue's or a PR's id and its items' value of the field, beside the board's field
+ITEM = """id projectItems(first: 20) { nodes { project { id } fieldValueByName(name: $field) { ... on ProjectV2ItemFieldSingleSelectValue { name } } } }"""
+LOOKUP = f"""query($owner: String!, $name: String!, $issue: Int!, $field: String!) {{
+  repository(owner: $owner, name: $name) {{
+    issueOrPullRequest(number: $issue) {{ ... on Issue {{ {ITEM} }} ... on PullRequest {{ {ITEM} }} }}
+    projectsV2(first: 1) {{ nodes {{ id field(name: $field) {{ ... on ProjectV2SingleSelectField {{ id options {{ id name }} }} }} }} }}
+  }}
+}}"""
 ADD = """mutation($project: ID!, $issue: ID!) {
   addProjectV2ItemById(input: {projectId: $project, contentId: $issue}) { item { id } }
 }"""
@@ -64,8 +70,10 @@ SET = """mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
 }"""
 
 
-def target(projects: list[dict[str, Any]], column: str) -> tuple[str, str, str]:
-    """The board's project id, its Status field id and the column's option id."""
+def target(
+    projects: list[dict[str, Any]], column: str, field: str = "Status"
+) -> tuple[str, str, str]:
+    """The board's project id, the field's id and the option's id; the field is Status, whose options are columns."""
     if not projects:
         raise ValueError("no project board is linked to this repo")
     project = projects[0]
@@ -73,8 +81,9 @@ def target(projects: list[dict[str, Any]], column: str) -> tuple[str, str, str]:
         option["name"]: option["id"] for option in (project["field"] or {}).get("options", [])
     }
     if column not in options:
+        kind = "column" if field == "Status" else f"{field} option"
         raise ValueError(
-            f"no column {column!r}: the board has {', '.join(options) or 'no Status field'}"
+            f"no {kind} {column!r}: the board has {', '.join(options) or f'no {field} field'}"
         )
     return project["id"], project["field"]["id"], options[column]
 
@@ -101,15 +110,44 @@ def _graphql(query: str, **values: int | str) -> Any:
     return json.loads(out)["data"]
 
 
+def lookup(issue: int, field: str) -> dict[str, Any]:
+    """The repo's board with the field, and the issue or PR with its items' value of it."""
+    # gh fills owner and repo from the checkout
+    return _graphql(LOOKUP, owner="{owner}", name="{repo}", issue=issue, field=field)["repository"]
+
+
+def value(repo: dict[str, Any], field: str) -> str | None:
+    """The field's option on the item of the repo's board (lookup()), None when it is off the board or unset; raises
+    ValueError without a board or that field, as set_field() would."""
+    boards = repo["projectsV2"]["nodes"]
+    if not boards:
+        raise ValueError("no project board is linked to this repo")
+    if not boards[0]["field"]:
+        raise ValueError(f"the board has no {field} field")
+    return next(
+        (
+            (item["fieldValueByName"] or {}).get("name")
+            for item in repo["issueOrPullRequest"]["projectItems"]["nodes"]
+            if item["project"]["id"] == boards[0]["id"]
+        ),
+        None,
+    )
+
+
+def set_field(issue: int, field: str, option: str, repo: dict[str, Any] | None = None) -> None:
+    """Set the single-select field of the issue's or PR's item to the option, adding it to the board first;
+    `repo` is a lookup() already made."""
+    repo = repo or lookup(issue, field)
+    project, field_id, option_id = target(repo["projectsV2"]["nodes"], option, field)
+    # the existing item when already there
+    added = _graphql(ADD, project=project, issue=repo["issueOrPullRequest"]["id"])
+    item = added["addProjectV2ItemById"]["item"]["id"]
+    _graphql(SET, project=project, item=item, field=field_id, option=option_id)
+
+
 def move(issue: int, column: str) -> None:
     """Set the issue's board column, a board column name (main maps the loop's)."""
-    # gh fills owner and repo from the checkout
-    repo = _graphql(LOOKUP, owner="{owner}", name="{repo}", issue=issue)["repository"]
-    project, field, option = target(repo["projectsV2"]["nodes"], column)
-    # the existing item when already there
-    added = _graphql(ADD, project=project, issue=repo["issue"]["id"])["addProjectV2ItemById"]
-    item = added["item"]["id"]
-    _graphql(SET, project=project, item=item, field=field, option=option)
+    set_field(issue, "Status", column)
 
 
 # the loop's columns in stage order (issues.md, Board)
@@ -172,6 +210,13 @@ def main(argv: list[str]) -> int:
             print(exc.stderr.strip(), file=sys.stderr)
             return 1
         print(column_of(repo, mapped))
+        return 0
+    if len(argv) == 4 and argv[0] == "field" and argv[1].isdigit():
+        try:
+            set_field(int(argv[1]), argv[2], argv[3])
+        except (ValueError, subprocess.CalledProcessError) as exc:
+            print(getattr(exc, "stderr", "").strip() or exc, file=sys.stderr)
+            return 1
         return 0
     if len(argv) != 2 or not argv[0].isdigit():
         print(__doc__, file=sys.stderr)
