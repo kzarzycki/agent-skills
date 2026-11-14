@@ -2450,6 +2450,8 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
 ) -> None:
     """The base is the merge-base with the default branch, the head the PR's, the pass one after the newest verdict
     review's, whose commit is the previous report's head; loop.md's `## Verifier brief` is appended."""
+    # no clone here, so the unforced-merge read's fetch of the made-up head fails at once
+    monkeypatch.chdir(tmp_path)
     earlier = "c" * 40
     reviews = (
         verdict_on(earlier, heading="Verifier (codex), pass 1"),
@@ -2527,6 +2529,8 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
     """A verifier on another host makes its own detached worktree at the head there: the brief gives the fetch and the
     worktree line, the role in that worktree, and the report, previous report and proof logs in its clone's tmp/loop/,
     where start --file writes them. A relative --far is no path there."""
+    # no clone here, so the unforced-merge read's fetch of the made-up head fails at once
+    monkeypatch.chdir(tmp_path)
     earlier = "c" * 40
     pr = pull(
         body="Closes #12.\n", reviews=(verdict_on(earlier, heading="Verifier (codex), pass 1"),)
@@ -2557,7 +2561,6 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
         "- Proof log: /there/repo/tmp/loop/gate.log (its first line is the head)",
     ]
     # the previous pass saved its repros beside its report in the clone's tmp/loop/: named there by path
-    monkeypatch.chdir(tmp_path)
     (tmp_path / "tmp" / "loop").mkdir(parents=True)
     (tmp_path / "tmp/loop/pr7-v1.md").write_text(
         "Repro: `uv run pytest tmp/loop/pr7-v1-repro.py`, again tmp/loop/pr7-v1-repro.py,"
@@ -3409,6 +3412,8 @@ def lands(
     onto origin's main as GitHub does. The gate fails on a tree holding `red.txt`, and twice on one holding
     `flaky.txt`, and changes `app.py` on one holding `dirty.txt`; on one holding `machine.txt`, it exits 78 the number of
     times the file says, leaving `leftover.txt`; `runs()` counts its runs. `land(*argv)` runs it: (exit, lines)."""
+    # a landed PR's worker sessions are Omnigent's, which no land here may reach (test_approvals_keep_pr_worker.py)
+    monkeypatch.setattr(approvals, "archive_workers", lambda _number: None)
     origin, work = tmp_path / "origin.git", tmp_path / "work"
     git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     (origin / "hooks" / "pre-receive").write_text(NO_REWRITE)
@@ -3515,7 +3520,18 @@ def lands(
             ).strip()
             git_in(origin, "update-ref", "refs/heads/main", squash, tip)
             pulls[number]["state"] = "MERGED"
+            state.setdefault("squashes", {})[number] = squash
             return ""
+        if args[0] == "api" and re.fullmatch(r"repos/\{owner\}/\{repo\}/pulls/\d+", args[1]):
+            # the PR as REST reads it, which land re-reads after a failed merge call (#923)
+            number = int(args[1].rsplit("/", 1)[1])
+            return json.dumps(
+                {
+                    "merged": pulls[number]["state"] == "MERGED",
+                    "head": {"sha": pulls[number]["headRefOid"]},
+                    "merge_commit_sha": state.get("squashes", {}).get(number),
+                }
+            )
         raise AssertionError(args)
 
     def comment(number: int, body: str) -> None:
@@ -3964,7 +3980,9 @@ def test_a_machine_fault_twice_on_the_tip_after_the_merges_still_says_landed(
         lands["open"](number, {f"{number}.txt": f"{number}\n"})
     refusing(monkeypatch, lambda args: args[2] == "8")
     codes = iter([0, 78, 78])
-    monkeypatch.setattr(approvals, "ran_gate", lambda cwd=None, out=None: next(codes))
+    monkeypatch.setattr(
+        approvals, "ran_step", lambda _step, cwd=None, out=None: (next(codes), 0, 0)
+    )
     code, lines = lands["land"]()
     assert (code, lands["merged"]()) == (1, ["7"])
     assert any("a machine fault, not the change's" in line for line in lines)
@@ -9269,7 +9287,7 @@ def test_check_merge_and_land_reuse_a_record_branch_with_no_status_at_every_risk
     lines = merge(pr, [approved(1, "area:web")], no_ci)
     assert lines == [] or not [line for line in lines if "local check" in line]
     git_in(tmp_path / "b", "checkout", "-q", head)
-    monkeypatch.setattr(approvals, "ran_gate", lambda *_a, **_k: pytest.fail("land ran the gate"))
+    monkeypatch.setattr(approvals, "ran_step", lambda *_a, **_k: pytest.fail("land ran the gate"))
     assert approvals.gate_batch(tmp_path / "b", [pr]) == (approvals.tree_of(head), "reused")
     assert f"passed on it before, reused from {branch_of(head)}" in capsys.readouterr().out
     assert hub.get(head) is None

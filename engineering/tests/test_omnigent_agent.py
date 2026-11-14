@@ -58,6 +58,7 @@ class FakeOmnigent:
         self.kids: list[str] = []  # sub-agents children() lists
         self.tasks: list[dict] = []  # background tasks info() reports
         self.interrupted: list[str] = []
+        self.labels: dict[str, dict[str, str]] = {}  # each session's labels
         self.prompts: list[dict] = []
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
@@ -237,6 +238,8 @@ class FakeOmnigent:
             info["background_tasks"] = self.tasks
         info["model_override"] = self.overrides.get(sid)
         info["reasoning_effort"] = self.efforts.get(sid)
+        if sid in self.labels:
+            info["labels"] = self.labels[sid]
         if sid in self.roots:
             info["root_conversation_id"] = self.roots[sid]
         if sid in self.archived:
@@ -257,6 +260,9 @@ class FakeOmnigent:
     def children(self, sid: str) -> list[str]:
         return list(self.kids)
 
+    def label(self, sid: str, labels: dict[str, str]) -> None:
+        self.labels.setdefault(sid, {}).update(labels)
+
     def archive(self, sid: str) -> None:
         if "archive" in self.fail:
             raise omnigent_agent.Fail(f"PATCH {sid}: HTTP 503")
@@ -264,6 +270,12 @@ class FakeOmnigent:
 
 
 REAL_TRIAGE = omnigent_agent.triage
+
+
+@pytest.fixture(autouse=True)
+def this_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The checkout's GitHub repository, so a `--pr` start labels its worker without `gh`."""
+    monkeypatch.setattr(omnigent_agent, "repo_slug", lambda: "o/r")
 
 
 @pytest.fixture(autouse=True)
@@ -539,6 +551,106 @@ def test_run_fails_only_on_a_tracked_change_the_child_made(
     assert omnigent_agent.main(argv) == 1
 
 
+def notify_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A ``$LOOP_NOTIFY`` that appends one line of its arguments per call to the returned file."""
+    calls = tmp_path / "calls"
+    tell = tmp_path / "tell.sh"
+    tell.write_text(f'#!/bin/sh\necho "$@" >> {calls}\n')
+    tell.chmod(0o755)
+    monkeypatch.setenv("LOOP_NOTIFY", str(tell))
+    return calls
+
+
+def notify_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, og: FakeOmnigent
+) -> tuple[str, Path]:
+    repo = git_checkout(tmp_path / "w")
+    (repo / "f.md").write_text("fix Y")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(repo)
+    return og.create("claude", "t"), repo
+
+
+def test_send_notify_tells_loop_notify_once_the_exit_and_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    og = FakeOmnigent(reply="done")
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    info = og.info
+    og.info = lambda s: ((repo / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
+    argv = ["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main([*argv, "--notify"]) == 0
+    assert calls.read_text().splitlines() == [f"exit 0: {repo / 'r.md'}"]
+
+
+def test_send_notify_names_the_exit_and_the_first_line_of_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    og = FakeOmnigent(deaf={0})
+    sid, _ = notify_session(tmp_path, monkeypatch, og)
+    argv = ["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]
+    code = omnigent_agent.main([*argv, "--notify"])
+    assert code != 0
+    (line,) = calls.read_text().splitlines()
+    assert line.startswith(f"exit {code}: ") and "neither pending nor in history" in line
+
+
+def test_wait_notify_tells_loop_notify_once_the_report_is_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    og = FakeOmnigent()
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    (repo / "r.md").write_text("ok")
+    assert omnigent_agent.main(["wait", sid, "r.md", "--notify"]) == 0
+    assert calls.read_text().splitlines() == [f"exit 0: {repo / 'r.md'}"]
+
+
+def test_run_notify_tells_loop_notify_once_the_report_is_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    repo = git_checkout(tmp_path / "w")
+    (repo / "b.md").write_text("do X")
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(repo)
+    info = og.info
+    og.info = lambda s: ((repo / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0", "--notify"]
+    assert omnigent_agent.main(argv) == 0
+    assert calls.read_text().splitlines() == [f"exit 0: {repo / 'r.md'}"]
+
+
+def test_notify_tells_loop_notify_of_an_unexpected_exception_and_reraises_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    og = FakeOmnigent()
+    sid, _ = notify_session(tmp_path, monkeypatch, og)
+
+    def boom(*a: object, **k: object) -> None:
+        raise RuntimeError("client broke\nsecond line")
+
+    og.info = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        omnigent_agent.main(["wait", sid, "r.md", "--notify"])
+    assert calls.read_text().splitlines() == ["exit 1: client broke"]
+
+
+def test_without_notify_loop_notify_is_never_called(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    og = FakeOmnigent()
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    (repo / "r.md").write_text("ok")
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+    assert not calls.exists()
+
+
 def test_wait_until_exits_0_once_the_command_does_and_its_own_code_at_the_limit(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -576,6 +688,32 @@ def test_wait_for_a_gate_returns_at_its_exit_line_or_still_running_with_no_log_t
     assert omnigent_agent.main(["wait-for", "--log", str(log)]) == 2
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "exit 2" and out[-1] == "FAILED test_x" and len(out) == 1 + 30
+
+
+def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_timeout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "WAIT_FOR_EVERY", 0.01)
+    log, lock = tmp_path / "gate.log", tmp_path / "gate.lock"
+    lock.write_text(f"{os.getpid()}\n")
+    argv = ["wait-for", "--log", str(log), "--budget", "0.05"]
+    log.write_text(f"run 1\nlock {lock}\n")  # queued: the run's budget has not started
+    assert omnigent_agent.main(argv) == 6
+    assert capsys.readouterr().out == f"waiting on the gate lock (held by {os.getpid()})\n"
+    log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")  # holds it: out of budget
+    assert omnigent_agent.main(argv) == 6
+    assert capsys.readouterr().out == "still running\n"
+    # the lock arrives mid-wait: the full budget runs from `locked`, not from entry
+    log.write_text(f"run 1\nlock {lock}\n")
+    threading.Timer(0.2, lambda: log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")).start()
+    began = time.monotonic()
+    assert omnigent_agent.main(["wait-for", "--log", str(log), "--budget", "0.3"]) == 6
+    assert time.monotonic() - began >= 0.45
+    assert capsys.readouterr().out == "still running\n"
+    log.write_text(f"lock {lock}\n")  # waiting past the lock ceiling: no verdict
+    os.utime(log, (time.time() - 7300, time.time() - 7300))
+    assert omnigent_agent.main(argv) == 6
+    assert capsys.readouterr().out.startswith("gave up waiting on the gate lock")
 
 
 def test_wait_for_a_pid_ends_when_the_run_is_gone(
@@ -3318,8 +3456,8 @@ def test_wait_keep_leaves_a_delivered_worker_open_for_a_relay(
     monkeypatch.chdir(tmp_path)
     relay = ["relay", "fix the finding", "--confirm-seconds", "0"]
     for title, keep, archived, code in (
-        ("t0", ["--keep"], [], 0),
-        ("t1", [], ["s1"], omnigent_agent.GONE),
+        ("t0", [], [], 0),
+        ("t1", ["--no-keep"], ["s1"], omnigent_agent.GONE),
     ):
         sid, _ = omnigent_agent.start(
             og, "claude-cloud", title, "do X", tmp_path / "r", None, 0, pr=7
@@ -3343,7 +3481,7 @@ def test_run_keep_leaves_a_delivered_worker_open_for_a_relay(
     fake_gh(monkeypatch, {"42": on_pr(7, "done")})
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
-    for title, keep, archived in (("t0", ["--keep"], []), ("t1", [], ["s1"])):
+    for title, keep, archived in (("t0", [], []), ("t1", ["--no-keep"], ["s1"])):
         argv = ["run", "claude-cloud", title, "b.md", f"{title}.md", "--pr", "7", *keep]
         assert omnigent_agent.main([*argv, "--confirm-seconds", "0"]) == 0
         assert og.archived == archived
@@ -10516,6 +10654,18 @@ VERIFY_FAR += ["--host", "mac", "--pr", "7", "--role", "roles/verifier.md"]
 VERIFY_FAR += ["--workspace", "/there/repo", "--confirm-seconds", "0"]
 
 
+def test_a_cloud_pr_start_on_another_host_says_its_launch_dir_head_is_not_moved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "")
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    argv = ["start", "claude-cloud", "w", "do X", str(tmp_path / "tmp" / "r.md"), "--top-level"]
+    argv += ["--host", "mac", "--pr", "7", "--workspace", "/there/repo", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    err = capsys.readouterr().err
+    assert "launch dir is on another host" in err and "HEAD is not moved" in err
+
+
 def test_a_verifier_starts_on_a_host_loop_md_lists_with_its_files_there_and_reports_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -10653,6 +10803,131 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
     assert "is in use on host h by live session" in err and "M lead" in err
 
 
+def test_supervise_install_writes_a_restarting_service_per_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unit and plist run the supervise command less --install and --log, restart it and
+    log to the file, in directive forms systemd accepts; each registry gets its own name; only
+    the variables the script reads are carried over. Neither systemctl nor launchctl runs."""
+    one, two = tmp_path / "a.registry", tmp_path / "b.registry"
+    log, cwd = tmp_path / "supervise.log", tmp_path / "work dir"
+    argv = omnigent_agent.service_argv(
+        [
+            "supervise",
+            "--registry",
+            str(one),
+            "--notify",
+            "S",
+            "--install",
+            "--log",
+            str(log),
+            "X=r.md",
+        ],
+        ["X=r.md"],
+    )
+    assert argv[2:] == ["supervise", "--registry", str(one), "--notify", "S"]
+    name = omnigent_agent.service_name(one)
+    session_env = {
+        "PATH": "/tmp/terminal-shim/bin:/home/u/.local/bin:/usr/bin",
+        "TMPDIR": "/scratch/t",
+        "RUNNER_SERVER_URL": "http://server",
+        "OMNIGENT_USER_ID": "u1",
+        "OMNIGENT_SUPERVISE_REGISTRY": str(one),
+        "OMNIGENT_MODEL_CLAUDE": "m",
+        "OMNIGENT_STUCK_SECONDS": "900",
+        "OMNIGENT_RUNNER_ID": "runner-token",
+        "OMNIGENT_RUNNER_PARENT_PID": "41",
+        "OMNIGENT_ZYGOTE_SOCKET": "/tmp/z.sock",
+        "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID": "t1",
+        "OMNIGENT_SESSION_ID": "s1",
+        "OMNIGENT_PROCESS_LOG_FILE": "/tmp/p.log",
+        "OMNIGENT_CONNECT_MARKER": "m",
+        "HOME": "/home/u",
+    }
+    session_env["PATH"] += ":/scratch/t/x/bin"
+    env = omnigent_agent.service_env(session_env)
+    assert env == {
+        "PATH": "/home/u/.local/bin:/usr/bin",
+        "OMNIGENT_MODEL_CLAUDE": "m",
+        "OMNIGENT_STUCK_SECONDS": "900",
+        "OMNIGENT_SUPERVISE_REGISTRY": str(one),
+        "OMNIGENT_USER_ID": "u1",
+        "RUNNER_SERVER_URL": "http://server",
+    }
+    unit = omnigent_agent.systemd_unit(argv, log, name, env, cwd).splitlines()
+    exec_start = next(line for line in unit if line.startswith("ExecStart="))
+    assert f'"{one}" "--notify" "S"' in exec_start and "--install" not in exec_start
+    assert "--log" not in exec_start and "X=r.md" not in exec_start
+    # systemd takes these unquoted: a quoted WorkingDirectory is "not absolute"
+    assert f"WorkingDirectory={cwd}" in unit
+    assert f"StandardOutput=append:{log}" in unit and f"StandardError=append:{log}" in unit
+    assert "Restart=always" in unit and 'Environment="PATH=/home/u/.local/bin:/usr/bin"' in unit
+    assert not any(x in "\n".join(unit) for x in ("RUNNER_ID", "terminal-shim", "z.sock"))
+    plist = omnigent_agent.launchd_plist(argv, log, omnigent_agent.service_label(one), env, cwd)
+    assert plist["Label"] == "omnigent.supervise." + name.rsplit("-", 1)[1]
+    assert plist["ProgramArguments"] == argv and plist["KeepAlive"] and plist["RunAtLoad"]
+    assert plist["StandardOutPath"] == plist["StandardErrorPath"] == str(log)
+    assert plist["EnvironmentVariables"] == env
+    assert name.startswith("omnigent-supervise-") and name != omnigent_agent.service_name(two)
+    assert omnigent_agent.service_name(tmp_path / "x" / ".." / "a.registry") == name
+
+    # A re-install must restart a running unit so it takes the new command line: `restart`, not
+    # `start` or `enable --now`. The one runner function is recorded, so nothing runs.
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        omnigent_agent, "_service_call", lambda cmd, check=True: calls.append(cmd) or ""
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(omnigent_agent.sys, "platform", "linux")
+    omnigent_agent.install_service(argv, log, one)
+    systemctl = [c[2:] for c in calls if c[:2] == ["systemctl", "--user"]]
+    assert systemctl == [["daemon-reload"], ["enable", name], ["restart", name]]
+    assert (tmp_path / "home/.config/systemd/user" / f"{name}.service").is_file()
+    calls.clear()
+    monkeypatch.setattr(omnigent_agent.sys, "platform", "darwin")
+    omnigent_agent.install_service(argv, log, one)
+    label = omnigent_agent.service_label(one)
+    assert [c[:2] for c in calls] == [["launchctl", "bootout"], ["launchctl", "bootstrap"]]
+    assert calls[0][2].endswith(f"/{label}") and calls[1][3].endswith(f"/{label}.plist")
+
+
+def test_supervise_install_arms_its_pairs_and_uninstall_removes_the_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through main: --install arms its <session>=<report> pairs in the registry, not in the
+    unit's ExecStart, and --uninstall stops and removes the unit or plist. The one runner
+    function is recorded, so neither systemctl nor launchctl runs."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        omnigent_agent, "_service_call", lambda cmd, check=True: calls.append(cmd) or ""
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    registry, log = tmp_path / "r.registry", tmp_path / "s.log"
+    name, label = omnigent_agent.service_name(registry), omnigent_agent.service_label(registry)
+    unit = tmp_path / "home/.config/systemd/user" / f"{name}.service"
+    plist = tmp_path / "home/Library/LaunchAgents" / f"{label}.plist"
+    supervise = ["supervise", "--registry", str(registry)]
+
+    monkeypatch.setattr(omnigent_agent.sys, "platform", "linux")
+    assert omnigent_agent.main([*supervise, "--install", "--log", str(log), "S1=rep.md"]) == 0
+    assert "S1" in omnigent_agent.registered(registry)[0]
+    assert f"S1={tmp_path / 'rep.md'}" in registry.read_text()
+    exec_start = next(x for x in unit.read_text().splitlines() if x.startswith("ExecStart="))
+    assert "S1" not in exec_start and "rep.md" not in exec_start
+    calls.clear()
+    assert omnigent_agent.main([*supervise, "--uninstall"]) == 0
+    assert ["systemctl", "--user", "disable", "--now", name] in calls
+    assert ["systemctl", "--user", "daemon-reload"] in calls and not unit.exists()
+
+    monkeypatch.setattr(omnigent_agent.sys, "platform", "darwin")
+    assert omnigent_agent.main([*supervise, "--install", "--log", str(log)]) == 0
+    assert plist.is_file()
+    calls.clear()
+    assert omnigent_agent.main([*supervise, "--uninstall"]) == 0
+    assert [c[:2] for c in calls] == [["launchctl", "bootout"]] and not plist.exists()
+
+
 # --- a wait on a PR or issue reference is a named wait (#919) ---
 
 
@@ -10667,3 +10942,51 @@ def test_a_pr_or_issue_reference_after_waiting_on_is_a_named_wait() -> None:
         wait_of("STILL WORKING: waiting on the/repo#12") == "the/repo#12"
     )  # an owner named like a pronoun
     assert wait_of("STILL WORKING: on it") == "unknown"
+
+
+# --- a question card a session posts to its user is not an act for the parent (#920) ---
+
+
+def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_acts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card (``policy_name`` ``sys_ask_user_question``) returns at once and its user answers it in
+    their Inbox: the session is not blocked, and the card is one record line per question id."""
+    registry = following(tmp_path)
+    monkeypatch.setattr(omnigent_agent, "PROMPT_CONFIRM_SECONDS", 0.0)
+    og = Lead(told("brief", 60), ending("STILL WORKING: on it", 50))
+    card = {
+        "elicitation_id": "q1",
+        "params": {
+            "policy_name": "sys_ask_user_question",
+            "ask_user_question": {"questions": [{"question": "Which base?"}]},
+            "message": "Which base?",
+        },
+    }
+    harness = {
+        "elicitation_id": "e2",
+        "params": {
+            "policy_name": "claude_native_permission",
+            "ask_user_question": {"questions": [{"question": "Go?"}]},
+            "message": "Go?",
+        },
+    }
+    og.snap = {"status": "running", "pending_elicitations": [card]}
+    states: list[str] = []
+
+    def later(poll: int) -> None:
+        states.append(state_of(registry)["leads"]["a"]["state"])
+        if poll == 3:
+            og.snap = {"status": "running", "pending_elicitations": [card, harness]}
+
+    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
+    assert states[:3] == ["running"] * 3  # the card alone blocks nothing
+    routed = [(e["kind"], e["action"], e["line"]) for e in events_of(registry)]
+    assert routed[0] == ("asked", "record", "a: asked its user: Which base?")
+    assert (events_of(registry)[0]["settled"], "Inbox" in events_of(registry)[0]["why"]) == (
+        "rule",
+        True,
+    )  # the card's own rule records it, not a guess about the lead's turn
+    assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
+    assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
+    assert not any("Which base?" in p for p in posted(og))

@@ -45,7 +45,8 @@ stderr line saying so.
 exit 3 prints that path. Answer from the spec and the owner's stated intent, or ask the
 owner only when neither settles it, then run
 `python3 scripts/omnigent_agent.py send <session> <answer-file> <report>` in the
-background. It continues the same session while its cache is warm and waits as `run`
+background (a bare `&` is not woken by its exit: set `LOOP_NOTIFY` and add `--notify`, or use the
+harness's own background-run support). It continues the same session while its cache is warm and waits as `run`
 does; add `--verdict` when the child is a verifier, because `send` and `wait` are not
 given the role. A child still in a turn gets the answer at its next tool boundary; until
 then `send` reports it queued and waits, and a rerun of the same `send` waits for the
@@ -150,7 +151,8 @@ worktree's missing pin from its main checkout (keeping the file's other settings
 when neither has one. They refuse a local agent in a main checkout whose own file names the pin, naming
 `claude-cloud` and a worktree as the routes: that checkout is where cloud sessions launch from,
 and a local agent working there switches its branch under every later start. A worktree's copied
-pin is its own, so a local agent there is accepted. `wait` (and so `run`) with `--pr <n>` fetches
+pin is its own, so a local agent there is accepted. A launch dir needs no checked-out files: nothing on the cloud path reads them (the bridge checks for a git repo, the CLI bundles it and reads the pin and the folder trust). `launch-dir <remote> <branch> <env-id> <path>` makes one as a blobless `--no-checkout` clone with HEAD on the branch, the pin and a `tmp/loop/`, a few dozen MB instead of a full checkout; `--trust` also writes the folder-trust entry in the user's Claude config, which is the user's call and never done otherwise. `pin_environment` accepts such a clone with its own pin and refuses one without, naming the helper. `start --pr <n>` on a `claude-cloud` agent points the launch dir's HEAD at the PR's branch (fetching it) without checking files out, and leaves a directory with a working tree alone. It fetches the PR's own ref (`refs/pull/<n>/head`, so a fork's branch works), reads the PR from the launch dir's repository, and runs git where the launch dir is: a `start` for a workspace on another host leaves its HEAD to that host's own `start`.
+`wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
 report path, so whatever reads the report reads a file as for any child. The worker pushes
 only to the `claude/…` branch its session started on and names it, with its head SHA, in the
@@ -168,8 +170,8 @@ that report, since `<report>.question` is a path here too. Only a comment GitHub
 PR n of this checkout's repository (`gh repo view`, checked against the comment's
 `issue_url`) counts, since the link is only what the worker typed: another PR's or another
 repository's counts for nothing. The nudge asks for the comment, and a second turn ending
-without one fails. `run` and `wait` finish a worker once its report is in, unless given
-`--keep`: a fresh cloud session is a fresh VM, clone and build, while a kept one, even idle
+without one fails. `run` and `wait` with `--pr` keep the worker once its report is in (`--no-keep` finishes it;
+`--keep` is still accepted), and `reap` finishes it once its PR is merged or closed (Finished sessions): a fresh cloud session is a fresh VM, clone and build, while a kept one, even idle
 past its VM's reclaim, revives on the next message with its clone and conversation, so a fix
 round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). A cloud
 child that fails in setup, before its first turn (`cloud session setup failed` and no assistant
@@ -229,7 +231,9 @@ It needs no session, so it serves every backend. Its `--notify` runs `$LOOP_NOTI
 once the run ends, as a merge queue tells a lane, so a detached run's wrapper ends with
 `omnigent_agent.py wait-for --log <log> --notify` and the session that set `LOOP_NOTIFY="python3
 <this skill>/scripts/omnigent_agent.py relay --from gate <its session id>"` gets one message
-when it ends; unset, nothing is sent.
+when it ends; unset, nothing is sent. `run`, `send` and `wait`, which can wait hours on a child,
+take the same `--notify`: once they end, however they end, `$LOOP_NOTIFY` gets one line, `exit <code>:`
+and the report path, or the failure's first line.
 
 **Waiting on a condition.** `python3 scripts/omnigent_agent.py wait-until --every <s> --limit
 <s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so
@@ -741,33 +745,43 @@ names one), with its own registry, set as `OMNIGENT_SUPERVISE_REGISTRY` for its 
 `send`. An in-session background command or a session cron dies when the session restarts,
 and with it every wake it owed. The one-shot form serves a single check in the foreground.
 
-**Running the supervisor detached.** The service manager keeps the supervisor running past
-the session it wakes. A job starts with a bare `PATH` (launchd's is `/usr/bin:/bin:/usr/sbin:/sbin`),
-so it sets one that finds `omnigent`, whose interpreter refreshes the token. Give each
-supervisor its own label or unit name. On macOS, until logout:
+**Running the supervisor detached.** A service manager keeps the supervisor running past
+the session it wakes, and past a reboot. Install it as a user service with the command line
+it would run, plus `--install` and the log it appends to:
 
 ```bash
-launchctl submit -l <label> -o <log>.out -e <log>.err -- /bin/sh -c \
-  "PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin exec /usr/bin/python3 <abs-path>/scripts/omnigent_agent.py --server $RUNNER_SERVER_URL supervise --registry <file> --notify <session>"
+python3 <abs-path>/scripts/omnigent_agent.py --server "$RUNNER_SERVER_URL" supervise \
+  --registry <file> --notify <session> --install --log <log>
 ```
 
-A job also starts without the session's `RUNNER_SERVER_URL`, so the command names the server
-(the shell expands it at submit time). `omnigent_agent.py` acts on the first of `--server`,
+It writes a service running that same command line less `--install` and `--log`, from this
+directory, then enables and starts it. On Linux that is a systemd user unit
+`~/.config/systemd/user/omnigent-supervise-<hash>.service` with `Restart=always` (`systemctl
+--user status omnigent-supervise-<hash>` shows it); on macOS a LaunchAgent
+`~/Library/LaunchAgents/omnigent.supervise.<hash>.plist` with `KeepAlive` and `RunAtLoad`
+(`launchctl print gui/$(id -u)/omnigent.supervise.<hash>`). The hash is of the registry's
+resolved path, so each registry gets its own service and installing again for the same one
+replaces and restarts it. `supervise --registry <file> --uninstall` stops and removes it.
+`<session>=<report>` pairs on the install line are armed in the registry first, not baked
+into the service, so a restart reposts none.
+
+A job starts with a bare environment (launchd's `PATH` is `/usr/bin:/bin:/usr/sbin:/sbin`)
+and without the session's `RUNNER_SERVER_URL`, so the service carries over, from the install's
+environment, only what the script reads: `RUNNER_SERVER_URL`, `OMNIGENT_USER_ID`, its
+`OMNIGENT_*` settings (`OMNIGENT_SUPERVISE_*`, `OMNIGENT_MODEL_*`, `OMNIGENT_STUCK_SECONDS`
+and the like, listed as `SERVICE_VARIABLES` and `SERVICE_PREFIXES` in the script) and `PATH`,
+which finds `omnigent`, whose interpreter refreshes the token, less its entries under a temp
+directory. The rest of a session's environment is its runner's state (ids, tokens, pids, log
+files), which the service outlives. Naming the server with
+`--server` keeps the command explicit. `omnigent_agent.py` acts on the first of `--server`,
 `$RUNNER_SERVER_URL` (set by the runner in every session), and the one login in
 `auth_tokens.json`. `config.yaml`'s `server:` is not read, because one account runs workloads on
 several servers and a single default sends some of them to the wrong one. Outside a session with
 several logins and no `--server`, the script refuses rather than guess.
 
-launchd restarts it if it exits; `launchctl print gui/$(id -u)/<label>` shows it and
-`launchctl remove <label>` stops it. For one that survives a reboot, write a LaunchAgent
-`~/Library/LaunchAgents/<label>.plist` with that command as `ProgramArguments`, `KeepAlive`
-and `RunAtLoad` true, `StandardOutPath` and `StandardErrorPath`, and `PATH` under
-`EnvironmentVariables`, and load it with `launchctl bootstrap gui/$(id -u) <plist>`
-(`launchctl bootout gui/$(id -u)/<label>` stops it). On Linux, a systemd user unit
-`~/.config/systemd/user/<name>.service` with `ExecStart=` the command, `Environment=PATH=…`,
-`Restart=always` and `WantedBy=default.target`, started with
-`systemctl --user enable --now <name>`; `loginctl enable-linger $USER` keeps it running while
-the user is logged out, and `journalctl --user -u <name>` shows its log.
+On Linux a user unit starts at boot only with lingering on: the install prints
+`loginctl show-user`'s `Linger` value and leaves `loginctl enable-linger $USER` to the owner,
+since it changes what runs on the host while nobody is logged in.
 
 An update needs no restart: when `omnigent_agent.py` is replaced on disk (a skills sync
 installing a new one), `supervise --registry` re-executes itself in place with the same
@@ -777,13 +791,19 @@ half-written file is not taken, and a new file that does not compile is logged o
 running copy carries on.
 
 **Finished sessions.** `run` and `wait` finish the session whose report or verdict they
-return, unless given `--keep` (Cloud workers); a session that asked a question stays, since
+return, unless given `--keep` or, with `--pr`, not given `--no-keep` (Cloud workers: a kept
+worker is finished by `reap` or `land`, below); a session that asked a question stays, since
 the answer goes to it. Finishing ends the session's agent process and keeps its transcript.
 It archives the session, a sub-agent too: Omnigent leaves the runner it shares with its parent up, on a build with
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
-each and `already archived` for one finished before, and prints which it kept. A finish that fails is printed and the rest still run, and
+each and `already archived` for one finished before, and prints which it kept. It keeps a `--pr` worker, `--force` included, until its PR is merged or closed, saying why: `start --pr`
+labels the session `omni.pr=<owner>/<name>#<n>` (a start whose label fails archives the session and fails), and
+`reap` looks the PR up in that repository, never the caller's checkout; a PR it can't read keeps the worker. A
+verdict does not release it, since the landing gate alone judges a verdict. `reap --merged [--pr <n>]` also
+finishes every live `--pr` worker whose PR is merged or closed, leaving an open PR's; `approvals.py land` starts it
+detached for each PR it merged, so a slow server never holds the land, and the outcome goes to a log it names. A finish that fails is printed and the rest still run, and
 `reap` then exits 1. It cannot tell an idle child whose report is still
 to come from a finished one, so a child whose `run` died is re-attached with `wait` (above),
 which finishes it on return, never reaped. Run `reap --children

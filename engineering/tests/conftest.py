@@ -26,6 +26,19 @@ def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _own_gate_slot(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """approvals.py's gate steps take the host gate slot: its tests take one of their own, since the host's may be
+    held by a gate running above this suite (#940)."""
+    if request.module.__name__.startswith("test_approvals"):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("cache")))
+        monkeypatch.delenv("LOOP_GATE_SLOT_HELD", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_user_git_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
 ) -> None:

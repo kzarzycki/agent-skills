@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
-    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep]
+    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep|--no-keep] [--notify]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE]] [--workspace DIR]
-    python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
-    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
+    python3 scripts/omnigent_agent.py launch-dir <remote> <branch> <env-id> <path> [--trust]
+    python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
+   python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
-    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N]
+    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
@@ -14,10 +15,11 @@
     python3 scripts/omnigent_agent.py status <session>...
     python3 scripts/omnigent_agent.py report <session> [<path>] [--registry <file>]
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
-    python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>] [--force]
+    python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>] [--force] [--merged [--pr N]]
     python3 scripts/omnigent_agent.py direct <session> [--off] [--registry <file>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
     python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [--console [--fyi skip|post] [--decisions FILE]] [<session>=<report>...]
+    python3 scripts/omnigent_agent.py supervise --registry <file> ... --install --log <file> | --uninstall
 
 ``run`` is ``start`` then ``wait`` in one process: exit 0 prints the report path (a verifier's
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
@@ -35,7 +37,8 @@ REST and end its turn with the comment's URL, and tells it that its checkout is 
 workspace it started from and that a foreground command stops at 10 minutes; ``wait --pr N`` then writes that comment's body to the report path,
 so the report is a file here as for any child; ``send --pr N`` takes only a comment created after
 the report there, and reaches a session whose workspace is on another host. A lead launches it as one background command, so its
-exit is the wake. ``send`` answers that question in the same session, also mid-turn, then waits the
+exit is the wake; ``run``, ``send`` and ``wait`` take ``--notify`` as ``wait-for`` does, running
+``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. ``send`` answers that question in the same session, also mid-turn, then waits the
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
@@ -70,7 +73,7 @@ tool call it answered; exit 1 when none was pending (naming any pending question
 approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
 seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for`` is how a role
 waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
-call), prints nothing meanwhile, and ends at the first of: the log's ``exit <n>`` line (the detached
+call), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change), and ends at the first of: the log's ``exit <n>`` line (the detached
 recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
 exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
 which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
@@ -120,6 +123,15 @@ what its rules can't settle, and posts what needs the notified session or the ow
 ``Supervisor [act] b-<id>: …`` or ``Supervisor [owner] b-<id>: …``, at most one post per 5
 minutes; ``--fyi post`` posts every line as without it too, ``--decisions`` names the owner's
 standing decisions for the small model. Without it, it writes none of these and posts every line.
+A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
+a user service running that same command line less ``--install`` and ``--log`` (a systemd user unit
+``omnigent-supervise-<hash>`` with ``Restart=always`` on Linux, a launchd agent
+``omnigent.supervise.<hash>`` with ``KeepAlive`` on macOS; the hash is of the registry's resolved
+path, so each registry has one and installing again replaces it), carrying over only the variables
+it reads (``SERVICE_VARIABLES``, ``SERVICE_PREFIXES``) and ``PATH`` less its temp-directory entries, appending
+its output to the log, then enables and starts it. Starting at boot without a login needs systemd
+lingering, which it reports and leaves to the owner. ``--uninstall`` with the same registry stops and
+removes it.
 ``run``, ``start`` and ``send`` arm the registry given by ``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``, once their message is in the history (``start`` with its brief
 file, ``send`` appending its message file, each marking a verifier's line as ``wait`` would
@@ -128,8 +140,12 @@ child, arms nothing and subscribes that lead, since its helper is the lead's to 
 return the report or a question; ``reap`` drops the line of each session it finishes, before
 finishing it, so the supervisor posts no ``archived`` for a finish its notified session ran.
 ``run`` and ``wait`` finish the session whose report or verdict they return, not one that asked a
-question, nor one given ``--keep``, which a fix round then reaches with ``send``; ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
-the rest, exiting 1 when a finish failed; it cannot tell a child still owing its report from a finished one, so it runs once every
+question, nor one given ``--keep``, nor a worker given ``--pr`` unless ``--no-keep`` (``--keep`` stays accepted):
+a fix round or the next verifier pass reaches a kept worker with ``send``, warm, where a fresh one repeats its setup.
+``start --pr`` labels the worker ``omni.pr=<owner/name>#<n>``, and fails, archiving the session, when it can't. ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
+the rest, exiting 1 when a finish failed; it keeps a ``--pr`` worker, ``--force`` included, until its PR (looked up in the
+repository its label names) is merged or closed, saying why, and a PR it can't read keeps it; ``reap --merged [--pr N]``
+also finishes every live ``--pr`` worker whose PR is merged or closed (``approvals.py land`` starts it detached for each PR it merged); it cannot tell a child still owing its report from a finished one, so it runs once every
 report is in. Finishing archives the session, which keeps its transcript; nothing here deletes a
 session. A session running with no new history item for ``OMNIGENT_STUCK_SECONDS`` (default 1800, longer than a foreground
 command or a heavy-slot wait) is stuck: ``status`` and ``watch`` report it once as ``stuck (no activity for N min)`` (``run``'s and ``supervise``'s look at a child owing a report says so once too, naming ``reap --force``), and
@@ -181,7 +197,9 @@ import hashlib
 import http.client
 import json
 import os
+import plistlib
 import posixpath
+import pwd
 import re
 import shlex
 import shutil
@@ -217,6 +235,8 @@ DEFAULT_MODELS = {"claude-cloud": "sonnet"}
 IDENTITY = ("id", "version", "created_at", "updated_at", "object")
 CONFIG = Path.home() / ".omnigent" / "config.yaml"
 AUTH_TOKENS = Path.home() / ".omnigent" / "auth_tokens.json"
+# the label start puts on a --pr worker: the PR whose closing or merge ends it
+PR_LABEL = "omni.pr"
 RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
@@ -446,6 +466,7 @@ EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
 WAIT_FOR_BUDGET = 570.0
 WAIT_FOR_EVERY = 2.0  # a local read: a log or a pid
 WAIT_FOR_PR_EVERY = 30.0  # a GitHub call, so fewer
+LOCK_CEILING = 7200.0  # seconds a run may wait on the gate lock, as long as the landing lock's wait
 PID_SLACK = 5.0  # seconds a pid file may be written after its process starts (ps rounds down too)
 LOG_TAIL = 30  # the lines of a red run's log wait-for prints
 GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
@@ -637,6 +658,14 @@ def repo_name() -> str:
     except (OSError, subprocess.CalledProcessError):
         return Path.cwd().name
     return re.sub(r"\.git$", "", re.split(r"[/:]", url.rstrip("/"))[-1]) or Path.cwd().name
+
+
+def repo_slug() -> str:
+    """``owner/name`` of this checkout's GitHub repository (``gh repo view``); a failure is a ``Fail``."""
+    slug = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
+    if not re.fullmatch(r"[^/\s]+/[^/\s]+", slug):
+        raise Fail(f"gh repo view named no repository: {slug[:80]!r}")
+    return slug
 
 
 class Fail(Exception):
@@ -2218,7 +2247,93 @@ def pin_environment(workspace: Path) -> None:
         + (f", nor does {main / SETTINGS}" if main else "")
         + ": the cloud session would land in the account's default environment; pin the"
         ' environment there ({"remote": {"defaultEnvironmentId": "<id>"}})'
+        + ("" if main else "; make a launch dir with `launch-dir` (no files checked out)")
     )
+
+
+def launch_dir(
+    remote: str, branch: str, env: str, path: Path, trust: bool = False, config: Path | None = None
+) -> None:
+    """A directory cloud sessions launch from, with no working tree: nothing on the cloud path reads
+    its files (the bridge checks for a git repo, the CLI bundles it and reads the pin), so a
+    blobless ``--no-checkout`` clone with HEAD on ``branch`` stands in for a full checkout. It holds
+    the pin (``remote.defaultEnvironmentId``) and the ``tmp/loop/`` that briefs and reports use. The
+    folder-trust entry in the user's Claude config (``config``, default ``~/.claude.json``) is
+    written only with ``trust``: trust is the user's decision, never this script's."""
+    if path.exists() and any(path.iterdir()):
+        raise Fail(f"{path} is not empty")
+    done = subprocess.run(
+        [
+            "git",
+            "clone",
+            "--no-checkout",
+            "--filter=blob:none",
+            "--branch",
+            branch,
+            remote,
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if done.returncode:
+        raise Fail(f"git clone {remote} ({branch}): {done.stderr.strip()[-300:]}")
+    (path / SETTINGS).parent.mkdir(parents=True, exist_ok=True)
+    (path / SETTINGS).write_text(
+        json.dumps({"remote": {"defaultEnvironmentId": env}}, indent=2) + "\n"
+    )
+    (path / "tmp" / "loop").mkdir(parents=True, exist_ok=True)
+    if trust:
+        config = config or Path.home() / ".claude.json"
+        data = json.loads(config.read_text()) if config.exists() else {}
+        data.setdefault("projects", {}).setdefault(str(path.resolve()), {})[
+            "hasTrustDialogAccepted"
+        ] = True
+        config.write_text(json.dumps(data, indent=2) + "\n")
+    print(f"launch dir {path}: {branch}, environment {env}" + (", trusted" * trust))
+
+
+def move_head(workspace: Path, pr: int) -> None:
+    """Point a launch dir's HEAD at PR ``pr``'s head branch (fetched from origin when needed) without checking
+    files out, so a cloud session starts on it. A directory with a working tree (it has an index)
+    is left alone: moving its HEAD under its files would corrupt it. It runs git where the launch dir
+    is, so a ``start`` for a workspace on another host (``remote``) leaves it: ponytail: run it on
+    the host that holds the launch dir, as that host's own ``start``; upgrade: a host-side verb."""
+    index = subprocess.run(
+        ["git", "-C", str(workspace), "rev-parse", "--path-format=absolute", "--git-path", "index"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if not index or Path(index).exists():
+        return
+    branch = pr_branch(pr, workspace)
+    for cmd in (
+        # the PR's own ref, which a fork's branch has too and a same-named origin branch can't shadow
+        ["fetch", "-q", "origin", f"+refs/pull/{pr}/head:refs/remotes/origin/pr/{pr}"],
+        ["update-ref", f"refs/heads/{branch}", f"refs/remotes/origin/pr/{pr}"],
+        ["symbolic-ref", "HEAD", f"refs/heads/{branch}"],
+    ):
+        done = subprocess.run(
+            ["git", "-C", str(workspace), *cmd], capture_output=True, text=True, check=False
+        )
+        if done.returncode:
+            raise Fail(f"git {cmd[0]} for {branch} in {workspace}: {done.stderr.strip()[-300:]}")
+
+
+def pr_branch(pr: int, workspace: Path) -> str:
+    """The head branch name of PR ``pr`` in the repository ``workspace`` is a clone of."""
+    out = subprocess.run(
+        ["gh", "pr", "view", str(pr), "--json", "headRefName", "-q", ".headRefName"],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if out.returncode or not out.stdout.strip():
+        raise Fail(f"PR {pr}: no head branch read ({out.stderr.strip()[-200:]})")
+    return out.stdout.strip()
 
 
 def briefed_by_file(og: Omnigent, agent: str, host_id: str | None) -> bool:
@@ -2551,6 +2666,14 @@ def start(
         except Fail as e:  # the session is there, so a brief signed "?" beats none
             took = {}
             print(f"no session record read back for {sid} ({e}): it signs ?", file=sys.stderr)
+        if pr and not reviews(role):
+            # the PR `reap` reads to hold this worker until it closes: an unlabelled one can be
+            # neither held nor found by `reap --merged`, so a failed label fails the start
+            try:
+                og.label(sid, {PR_LABEL: f"{repo_slug()}#{pr}"})
+            except Fail as e:
+                abandon(sid)
+                raise failed(f"start failed: {sid}: not labelled with PR #{pr}: {e}") from e
         sig = signature(harness, took.get("model_override"), took.get("reasoning_effort"))
         full = f"AGENT_SIGNATURE={sig}\n" + body
         text = message(full)
@@ -3025,6 +3148,33 @@ def exit_of(log: Path, run: str | None = None) -> int | None:
     return int(ends[-1][1]) if ends else None
 
 
+def lock_wait(log: Path, run: str | None = None) -> str | None:
+    """The lock path of a run's last ``lock <path>`` line when no ``locked`` line follows it (the
+    run waits on the host's gate slot, so its budget has not started), else None."""
+    lines = run_lines(log, run) or []
+    for line in reversed(lines):
+        if line.strip() == "locked":
+            return None
+        if line.startswith("lock "):
+            return line[5:].strip()
+    return None
+
+
+def lock_holder(lock: str) -> str:
+    """The pid the lock file names while that process lives, else ``unknown``."""
+    try:
+        text = Path(lock).read_text().strip()
+    except OSError:
+        return "unknown"
+    return text if text.isdigit() and alive(int(text)) else "unknown"
+
+
+def lock_text(log: Path, run: str | None) -> str | None:
+    """``waiting on the gate lock (held by <pid>)`` while the log shows a lock wait, else None."""
+    lock = lock_wait(log, run)
+    return None if lock is None else f"waiting on the gate lock (held by {lock_holder(lock)})"
+
+
 def log_outcome(log: Path, code: int, run: str | None = None) -> str:
     """``exit <n>``, then on green the last line before it (the gate's summary), on red its last
     ``LOG_TAIL`` lines, all from ``run_lines(log, run)``."""
@@ -3083,9 +3233,29 @@ def wait_for(
             return None
         return code, log_outcome(log, code, run)
 
+    def gave_up() -> tuple[int, str] | None:
+        """A lock wait past ``LOCK_CEILING`` (the lock line is the log's last write): no verdict."""
+        if not log or lock_wait(log, run_of(pid) if pid else None) is None:
+            return None
+        try:
+            waited = time.time() - log.stat().st_mtime
+        except OSError:
+            return None
+        if waited > LOCK_CEILING:
+            return (
+                LIMIT,
+                f"gave up waiting on the gate lock after {waited:.0f}s: the check has not run",
+            )
+        return None
+
+    queued = False
     while True:
-        if outcome := ended():
+        if outcome := ended() or gave_up():
             return outcome
+        waiting = bool(log) and lock_wait(log, run_of(pid) if pid else None) is not None
+        if queued and not waiting:  # the lock came during this wait: the budget starts here
+            deadline = time.monotonic() + budget
+        queued = waiting
         if pr is not None:
             if (left := deadline - time.monotonic()) <= 0:
                 return None
@@ -3249,12 +3419,44 @@ def merged_since(repo: str, old: str, new: str) -> str:
     return ", ".join(prs) or f"no PR named in its {n} commit{'s' * (n != 1)}"
 
 
+def pr_label(label: object) -> tuple[str, int] | None:
+    """The repository and PR number of a ``PR_LABEL`` value (``owner/name#7``), else None."""
+    m = re.fullmatch(r"([^/\s#]+/[^/\s#]+)#(\d+)", str(label))
+    return (m[1], int(m[2])) if m else None
+
+
+def pr_hold(repo: str, pr: int) -> str | None:
+    """Why a worker of PR ``pr`` of ``repo`` is still held: the PR is open; None once it is merged
+    or closed. A PR that can't be read holds the worker, saying so. The lookup names ``repo``, never
+    the caller's checkout, since the label outlives it."""
+    try:
+        state = json.loads(gh("pr", "view", str(pr), "--repo", repo, "--json", "state")).get(
+            "state"
+        )
+    except (Fail, ValueError, AttributeError) as e:
+        return f"{repo}#{pr} not read ({e})"
+    return f"{repo}#{pr} is open" if state == "OPEN" else None
+
+
+def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
+    """The live sessions labelled with a PR (``PR_LABEL``), of PR number ``pr`` when given."""
+    page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
+    found = []
+    for s in page.get("data", []):
+        label = pr_label((s.get("labels") or {}).get(PR_LABEL, ""))
+        if not s.get("archived") and label and (pr is None or label[1] == pr):
+            found.append(str(s["id"]))
+    return found
+
+
 def reap(
     og: Omnigent,
     sessions: list[str],
     parent: str | None = None,
     registry: Path | None = None,
     force: bool = False,
+    merged: bool = False,
+    pr: int | None = None,
 ) -> tuple[list[str], bool]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
     its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
@@ -3267,14 +3469,28 @@ def reap(
 
     ``force`` also finishes a stuck session (``stuck_minutes``): it stops the turn first, then
     archives it, and names the session's workspace, since a dead run can leave a patch applied
-    there. A running session that is not stuck stays kept, and the line says so."""
+    there. A running session that is not stuck stays kept, and the line says so.
+
+    A ``--pr`` worker (labelled ``PR_LABEL`` ``owner/name#N``) is kept, ``force`` included, while its PR
+    is open (or can't be read), since a fix round or the next verifier pass reaches it warm; it is
+    finished once the PR is merged or closed. ``merged`` also takes every live worker of a
+    PR number (``pr``'s, when given), finishing those whose PR is merged or closed and leaving the open ones."""
     lines, failed = [], False
-    for sid in dict.fromkeys(sessions + (og.children(parent) if parent else [])):
+    held: dict[tuple[str, int], str | None] = {}
+    named = pr_workers(og, pr) if merged else []
+    for sid in dict.fromkeys(sessions + (og.children(parent) if parent else []) + named):
         info = og.info(sid)
         status = str(info.get("status"))
         if info.get("archived"):
             lines.append(f"{sid} {info.get('title') or ''}: already archived")
             continue
+        if label := (info.get("labels") or {}).get(PR_LABEL):
+            found = pr_label(label)
+            if found and found not in held:
+                held[found] = pr_hold(*found)
+            if why := held[found] if found else f"label {label!r} names no PR":
+                lines.append(f"{sid} {info.get('title') or ''}: kept ({why})")
+                continue
         if force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None:
             arm_quietly(registry, sid)
             try:
@@ -4020,6 +4236,31 @@ class Recorded:
         return items
 
 
+CARD_POLICY = "sys_ask_user_question"  # a question card's ``params.policy_name``
+
+
+class Uncarded:
+    """``og`` with each session's question cards (``params.policy_name`` ``CARD_POLICY``) taken out
+    of its ``pending_elicitations`` and kept in ``cards``: a card returns at once and its user
+    answers it in their Inbox, so it blocks nothing and holds no step for the parent. A
+    harness's own question (Claude's AskUserQuestion, Codex's requestUserInput) stays."""
+
+    def __init__(self, og: Omnigent) -> None:
+        self.og, self.cards = og, {}
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.og, name)
+
+    def info(self, sid: str) -> dict:
+        info = self.og.info(sid)
+        pending = info.get("pending_elicitations") or []
+        cards = [e for e in pending if (e.get("params") or {}).get("policy_name") == CARD_POLICY]
+        self.cards[sid] = cards
+        if not cards:
+            return info
+        return {**info, "pending_elicitations": [e for e in pending if e not in cards]}
+
+
 def fresh_state() -> dict:
     """An empty ``state.json``."""
     return {
@@ -4222,6 +4463,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "act", "a session owing a report: its outcome"
     if kind == "notice":
         return "rule", "record", "the supervisor's own revive or resume line"
+    if kind == "asked":
+        return "rule", "record", "a question card to its user, who answers it in their Inbox"
     text = event.get("last") or ""
     if REPORT_PATH.fullmatch(text):
         if event.get("head") is None:
@@ -4394,6 +4637,7 @@ def supervise_registry(
     (``deliver``); with ``fyi`` ``post`` every line is posted as without it too. The standing
     decisions the small model weighs are ``decisions``' (``standing``).
     """
+    og = Uncarded(og)
     rec = Recorded(og) if console else og
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
@@ -4425,6 +4669,7 @@ def supervise_registry(
     resumed: dict[str, float] = {}
     idle_since: dict[str, tuple] = {}  # followed leads, as ``follow`` keeps them
     told: dict = {}
+    asked: set[str] = set()  # the question cards already said, by event id
     holding: dict[str, tuple[tuple, float]] = {}
     unsent: set[str] = set()  # ponytail: in memory, so a restart loses a revive line still unsent
     logged: dict[object, str] = {}  # the error last logged per session (or registry, post, drop)
@@ -4839,6 +5084,15 @@ def supervise_registry(
         outbox.append((line, event, eid, sid, kind))
         flush()
 
+    def cards(sid: str) -> None:
+        """Say each question card ``sid`` posted to its user once, by its id: news, not a step."""
+        for e in og.cards.get(sid, []):
+            eid = f"asked:{sid}:{e.get('elicitation_id') or e}"
+            if eid not in asked:
+                asked.add(eid)
+                what = "; ".join(prompts_of({"pending_elicitations": [e]}))
+                say(f"{sid}: asked its user: {what}", sid, eid, "asked")
+
     def track(
         sid: str,
         report: Path,
@@ -5228,6 +5482,7 @@ def supervise_registry(
                         log(sid, None)
                         if console:
                             label(sid, lead)
+                        cards(sid)
                         if event:
                             window = time.monotonic()
                             say(event, sid, eid, kind)
@@ -5245,6 +5500,7 @@ def supervise_registry(
                     )
                     if console:
                         label(sid, track(sid, report, briefs, followed, after, direct, leads))
+                    cards(sid)
                     eid, kind = f"terminal:{sid}:{since}", "terminal"
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
@@ -5304,6 +5560,12 @@ def text_or_file(arg: str) -> tuple[str, Path | None]:
         raise error from e
 
 
+def keeps(args: argparse.Namespace, verifier: bool) -> bool:
+    """Whether ``run`` or ``wait`` leaves the session open once it returns: ``--keep``, or a worker
+    started with ``--pr`` unless ``--no-keep`` (a verifier ends with its verdict)."""
+    return bool(args.keep or (args.pr and not verifier and not args.no_keep))
+
+
 def archive_delivered(og: Omnigent, sid: str) -> None:
     """Finish a session whose report or verdict came back (``Omnigent.archive``): its agent process
     frees the runner's file descriptors. A failed finish is reported, not fatal."""
@@ -5340,7 +5602,211 @@ def pack_behind(script: Path | str) -> str | None:
     )
 
 
+# What a supervise service reads from its environment, carried over from the install: the
+# server and settings this script reads, and the small model's config. Everything else is left
+# out, since a session's environment also holds its runner's state (ids, tokens, pids, log
+# files), which a service outliving that session must not take for its own.
+SERVICE_VARIABLES = (
+    "RUNNER_SERVER_URL",
+    "OMNIGENT_USER_ID",
+    "OMNIGENT_PROJECT",
+    "OMNIGENT_PERMISSION_MODE",
+    "OMNIGENT_SMALL_MODEL",
+    "OMNIGENT_STUCK_SECONDS",
+    "OMNIGENT_VERIFIER_ROUTE",
+    "OMNIGENT_CAPACITY_WAIT_SECONDS",
+    "OMNIGENT_MIN_CPU_IDLE",
+    "OMNIGENT_MAX_LOAD_PER_CORE",
+    "OMNIGENT_MIN_AVAILABLE_MB",
+    "LOOP_DENY_LIST",
+    "LOOP_HEAVY_LOCK",
+    "XDG_CACHE_HOME",
+    "CLAUDE_CONFIG_DIR",
+)
+SERVICE_PREFIXES = (
+    "OMNIGENT_SUPERVISE_",
+    "OMNIGENT_MODEL_",
+    "OMNIGENT_EFFORT_",
+    "OMNIGENT_MIN_AVAILABLE_MB_",
+    "OMNIGENT_MAX_LOAD_",
+)
+
+
+def service_name(registry: Path) -> str:
+    """The unit name for a registry, from its resolved path: one service per registry, so
+    installing again for the same one replaces it."""
+    digest = hashlib.sha1(str(registry.resolve()).encode()).hexdigest()[:8]
+    return f"omnigent-supervise-{digest}"
+
+
+def service_label(registry: Path) -> str:
+    """The launchd label for a registry, the same hash as ``service_name``."""
+    return "omnigent.supervise." + service_name(registry).rsplit("-", 1)[1]
+
+
+def service_argv(argv: list[str], owed: tuple[str, ...] | list[str] = ()) -> list[str]:
+    """The command a supervise service runs: this interpreter and script with ``argv`` less
+    ``--install``, ``--uninstall``, ``--log`` and the ``<session>=<report>`` pairs (the install
+    arms those in the registry, as a running supervisor does, so a restart reposts none)."""
+    kept, skip = [], False
+    for arg in argv:
+        if skip:
+            skip = False
+        elif arg in ("--install", "--uninstall") or arg.startswith("--log="):
+            pass
+        elif arg == "--log":
+            skip = True
+        elif arg not in owed:
+            kept.append(arg)
+    return [sys.executable, str(Path(__file__).resolve()), *kept]
+
+
+def service_env(env: dict[str, str]) -> dict[str, str]:
+    """What a service would lack from the install-time ``env``: ``SERVICE_VARIABLES``, those
+    under ``SERVICE_PREFIXES``, and ``PATH`` (to find ``omnigent``, ``gh`` and ``claude``) less
+    its entries under a temp directory, which a session's terminal adds and a reboot removes."""
+    temps = {
+        os.path.realpath(t)
+        for t in ("/tmp", "/var/tmp", env.get("TMPDIR"), env.get("TMP"), env.get("TEMP"))
+        if t
+    }
+
+    def kept(entry: str) -> bool:
+        real = os.path.realpath(entry)
+        return os.path.isabs(entry) and not any(
+            real == t or real.startswith(t.rstrip("/") + "/") for t in temps
+        )
+
+    carried = {
+        k: v
+        for k, v in sorted(env.items())
+        if k in SERVICE_VARIABLES or k.startswith(SERVICE_PREFIXES)
+    }
+    if path := ":".join(e for e in env.get("PATH", "").split(":") if e and kept(e)):
+        carried = {"PATH": path, **carried}
+    return carried
+
+
+def _systemd_quote(text: str) -> str:
+    """One word for a unit file: double-quoted, ``%`` and ``$`` escaped from expansion."""
+    text = text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    return f'"{text}"'
+
+
+def systemd_unit(argv: list[str], log: Path, name: str, env: dict[str, str], cwd: Path) -> str:
+    """The systemd user unit running ``argv`` for ever, appending its output to ``log``."""
+    log_path = str(log).replace("%", "%%")  # append: takes the rest of the line, unquoted
+    lines = [
+        "[Unit]",
+        f"Description=Omnigent supervisor {name}",
+        "",
+        "[Service]",
+        "ExecStart=" + " ".join(_systemd_quote(a).replace("$", "$$") for a in argv),
+        f"WorkingDirectory={str(cwd).replace('%', '%%')}",  # systemd takes no quotes here
+        *(f"Environment={_systemd_quote(f'{k}={v}')}" for k, v in env.items()),
+        "Restart=always",
+        "RestartSec=5",
+        f"StandardOutput=append:{log_path}",
+        f"StandardError=append:{log_path}",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def launchd_plist(argv: list[str], log: Path, label: str, env: dict[str, str], cwd: Path) -> dict:
+    """The launchd agent running ``argv`` for ever, writing its output to ``log``."""
+    return {
+        "Label": label,
+        "ProgramArguments": list(argv),
+        "WorkingDirectory": str(cwd),
+        "EnvironmentVariables": dict(env),
+        "KeepAlive": True,
+        "RunAtLoad": True,
+        "StandardOutPath": str(log),
+        "StandardErrorPath": str(log),
+    }
+
+
+def _service_call(cmd: list[str], check: bool = True) -> str:
+    """Run one service-manager command; its stdout, or ``Fail`` with its stderr when ``check``."""
+    out = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if check and out.returncode:
+        raise Fail(f"{' '.join(cmd)} exited {out.returncode}: {out.stderr.strip()[-300:]}")
+    return out.stdout.strip()
+
+
+def install_service(argv: list[str], log: Path, registry: Path) -> None:
+    """Write the user service running ``argv`` (systemd on Linux, launchd on macOS), then
+    enable and start it, replacing the running one for the same registry."""
+    env, cwd, log = service_env(dict(os.environ)), Path.cwd(), log.resolve()
+    log.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "darwin":
+        label = service_label(registry)
+        plist = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        with plist.open("wb") as f:
+            plistlib.dump(launchd_plist(argv, log, label, env, cwd), f)
+        domain = f"gui/{os.getuid()}"
+        _service_call(["launchctl", "bootout", f"{domain}/{label}"], check=False)
+        _service_call(["launchctl", "bootstrap", domain, str(plist)])
+        print(f"installed and started {label}: {plist}, logging to {log}")
+        return
+    if not sys.platform.startswith("linux"):
+        raise Fail(f"supervise --install knows systemd and launchd, not {sys.platform}")
+    name = service_name(registry)
+    unit = Path.home() / ".config/systemd/user" / f"{name}.service"
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.write_text(systemd_unit(argv, log, name, env, cwd))
+    _service_call(["systemctl", "--user", "daemon-reload"])
+    _service_call(["systemctl", "--user", "enable", name])
+    _service_call(["systemctl", "--user", "restart", name])  # starts it, or restarts a re-install
+    user = pwd.getpwuid(os.getuid()).pw_name
+    linger = _service_call(["loginctl", "show-user", user, "-p", "Linger"], check=False)
+    print(f"installed and started {name}: {unit}, logging to {log}")
+    print(
+        f"{linger or 'Linger=unknown'}: starting at boot without a login needs lingering"
+        f" (`loginctl enable-linger {user}`), which the owner enables"
+    )
+
+
+def uninstall_service(registry: Path) -> None:
+    """Stop, disable and remove the registry's user service."""
+    if sys.platform == "darwin":
+        label = service_label(registry)
+        plist = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
+        _service_call(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], check=False)
+        plist.unlink(missing_ok=True)
+        print(f"removed {label}")
+        return
+    if not sys.platform.startswith("linux"):
+        raise Fail(f"supervise --uninstall knows systemd and launchd, not {sys.platform}")
+    name = service_name(registry)
+    _service_call(["systemctl", "--user", "disable", "--now", name], check=False)
+    (Path.home() / ".config/systemd/user" / f"{name}.service").unlink(missing_ok=True)
+    _service_call(["systemctl", "--user", "daemon-reload"])
+    print(f"removed {name}")
+
+
 def main(argv: list[str] | None = None) -> int:
+    """Run one command; with ``--notify`` on run, send or wait, tell ``$LOOP_NOTIFY`` how it ended."""
+    ended: dict[str, str] = {}
+    try:
+        code = command(argv, ended)
+    except BaseException as e:
+        # an uncaught exception is an ending too: exit 1, as Python gives, and its first line
+        if "report" in ended:
+            ended.setdefault("failure", (str(e).splitlines() or [type(e).__name__])[0])
+            notify(f"exit {1 if isinstance(e, Exception) else 130}: {ended['failure']}")
+        raise
+    if "report" in ended:
+        notify(f"exit {code}: {ended.get('failure') or ended['report']}")
+    return code
+
+
+def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -5487,6 +5953,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser(
+        "launch-dir",
+        description="make a directory cloud sessions launch from, with no files checked out",
+    )
+    p.add_argument("remote")
+    p.add_argument("branch")
+    p.add_argument("env", help="the claude.ai environment id to pin")
+    p.add_argument("path", type=Path)
+    p.add_argument(
+        "--trust", action="store_true", help="also write the folder-trust entry (the user's call)"
+    )
+    p = sub.add_parser(
         "capacity", description="exit 0 when this host, or --host, has room for another session"
     )
     p.add_argument(
@@ -5529,6 +6006,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also stop and finish a session that is running but stuck (no item past OMNIGENT_STUCK_SECONDS)",
     )
+    p.add_argument(
+        "--merged",
+        action="store_true",
+        help="also finish every kept --pr worker whose PR is merged or closed",
+    )
+    p.add_argument("--pr", type=int, help="with --merged, only the workers of this PR")
     p = sub.add_parser("supervise")
     p.add_argument(
         "owed", nargs="*", metavar="SESSION=REPORT", help="a session and the report it owes"
@@ -5563,6 +6046,21 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=1800.0,
         help="no history item for this long: one resume line, then given up (default 1800)",
+    )
+    service = p.add_mutually_exclusive_group()
+    service.add_argument(
+        "--install",
+        action="store_true",
+        help="with --registry and --log, install this command as a user service (systemd on"
+        " Linux, launchd on macOS) that restarts it and survives a reboot, then start it",
+    )
+    service.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="with --registry, stop and remove the user service --install wrote for it",
+    )
+    p.add_argument(
+        "--log", type=Path, help="with --install, the file the service appends its output to"
     )
     p = sub.add_parser("wait")
     p.add_argument("session")
@@ -5606,11 +6104,22 @@ def main(argv: list[str] | None = None) -> int:
                 type=int,
                 help="a cloud worker's PR: it reports as a comment there, which wait writes to the report path",
             )
+        if p.prog.split()[-1] in ("run", "send", "wait"):
+            p.add_argument(
+                "--notify",
+                action="store_true",
+                help="once it ends, run $LOOP_NOTIFY <outcome> (unset: nothing)",
+            )
         if p.prog.split()[-1] in ("run", "wait"):
             p.add_argument(
                 "--keep",
                 action="store_true",
-                help="leave the session open once its report is in, for a fix round to reach it",
+                help="leave the session open once its report is in (the default with --pr)",
+            )
+            p.add_argument(
+                "--no-keep",
+                action="store_true",
+                help="finish a --pr worker's session once its report is in, not keep it",
             )
         if p.prog.split()[-1] in ("send", "wait"):
             p.add_argument(
@@ -5642,6 +6151,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if stale := pack_behind(__file__):
         print(stale, file=sys.stderr)  # only a warning: the refusal setting is approvals.py's
+    if getattr(args, "notify", False) and args.cmd in ("run", "send", "wait"):
+        ended["report"] = str(args.report.resolve())
     sid, registry = getattr(args, "session", None), getattr(args, "registry", None)
     unreported: Path | None = None
     stops = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
@@ -5649,6 +6160,26 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {s: signal.signal(s, interrupt) for s in stops} if launches else {}
     try:
         owed = {s: r.resolve() for s, r in map(pair, getattr(args, "owed", []))}
+        if args.cmd == "supervise" and (args.install or args.uninstall):
+            if not args.registry:
+                raise Fail(
+                    "--install and --uninstall need --registry: the service is the registry's"
+                )
+            if args.uninstall:
+                uninstall_service(args.registry)
+                return 0
+            if not args.log:
+                raise Fail("--install needs --log: a service has no terminal to print to")
+            for s, r in owed.items():
+                arm(args.registry, s, r)
+            install_service(
+                service_argv(sys.argv[1:] if argv is None else argv, args.owed),
+                args.log,
+                args.registry,
+            )
+            return 0
+        if args.cmd == "supervise" and args.log:
+            raise Fail("--log needs --install")
         if args.cmd == "supervise" and not (owed or args.registry):
             raise Fail("supervise needs <session>=<report> pairs or --registry")
         if args.cmd == "supervise" and (args.fyi or args.decisions) and not args.console:
@@ -5689,13 +6220,17 @@ def main(argv: list[str] | None = None) -> int:
                 raise usage
             ended = wait_for(args.log, args.pid, args.pr, args.until, args.budget)
             if ended is None:
-                print("still running")
+                waiting = args.log and lock_text(args.log, run_of(args.pid) if args.pid else None)
+                print(waiting or "still running")
                 return LIMIT
             code, outcome = ended
             print(outcome)
             if args.notify:
                 notify(outcome)
             return code
+        if args.cmd == "launch-dir":
+            launch_dir(args.remote, args.branch, args.env, args.path, args.trust)
+            return 0
         if args.cmd == "capacity" and not args.host:
             ok, line = capacity()
             print(line)
@@ -5788,9 +6323,11 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(watch(og, args.sessions, args.children, args.timeout)))
             return 0
         if args.cmd == "reap":
-            if not args.sessions and not args.children:
-                raise Fail("reap needs a session or --children <parent>")
-            lines, failed = reap(og, args.sessions, args.children, args.registry, args.force)
+            if not args.sessions and not args.children and not args.merged:
+                raise Fail("reap needs a session, --children <parent> or --merged")
+            lines, failed = reap(
+                og, args.sessions, args.children, args.registry, args.force, args.merged, args.pr
+            )
             print("\n".join(lines))
             return 1 if failed else 0
         if args.cmd == "supervise":
@@ -5819,7 +6356,7 @@ def main(argv: list[str] | None = None) -> int:
             print(bring_home(og, args.session, report) if far and args.verdict else got)
             # the caller has the result: the supervisor's line for it would be a second wake
             arm_quietly(registry, args.session)
-            if not args.keep:
+            if not keeps(args, args.verdict):
                 archive_delivered(og, args.session)
             return 0
         # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
@@ -5956,8 +6493,16 @@ def main(argv: list[str] | None = None) -> int:
         # The aliases are native harnesses; a workspace on another host is that host's to check.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             pin_environment(workspace)
+            if args.pr:
+                move_head(workspace, args.pr)
         elif not remote:
             refuse_pinned_checkout(args.agent, workspace)
+        elif args.pr and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
+            print(
+                f"--pr {args.pr}: the launch dir is on another host, so its HEAD is not moved here:"
+                " the session starts on the branch that dir holds; name the PR's branch in the brief",
+                file=sys.stderr,
+            )
         if here:  # a remote lead's report is written on its host, never read here
             report.parent.mkdir(parents=True, exist_ok=True)
         # what the child's tree held before it ran: wait fails only on a change it made
@@ -6022,7 +6567,7 @@ def main(argv: list[str] | None = None) -> int:
                 wait(og, sid, report, args.timeout, verifier, launched, args.pr, baseline, launch)
             )
             arm_quietly(registry, sid)
-            if not args.keep:
+            if not keeps(args, verifier):
                 archive_delivered(og, sid)
         if survivors:
             raise Fail(f"abandoned sessions survive: {', '.join(survivors)}")
@@ -6033,6 +6578,7 @@ def main(argv: list[str] | None = None) -> int:
         elif unreported:
             write_failed(og, sid, unreported, e)
         print(e, file=sys.stderr)
+        ended["failure"] = (str(e).splitlines() or [""])[0]
         return e.code
     finally:
         for s, handler in handlers.items():
