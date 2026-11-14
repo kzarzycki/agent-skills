@@ -2196,19 +2196,15 @@ def placed(loop: str | None) -> Any:
                 f"the key in the variable {name} (loop.md's `land.signing_key_env`) is not in {signers}: add its"
                 " public key there"
             )
-        # a placement checked again inside another (landing_here, under the lock) gives the outer one back its key
-        previous, SIGNING = (
-            SIGNING,
-            [
-                *("-c", "gpg.format=ssh"),
-                *("-c", f"user.signingkey={file}"),
-                *("-c", "gpg.ssh.program=ssh-keygen"),
-            ],
-        )
+        SIGNING = [
+            *("-c", "gpg.format=ssh"),
+            *("-c", f"user.signingkey={file}"),
+            *("-c", "gpg.ssh.program=ssh-keygen"),
+        ]
         try:
             yield
         finally:
-            SIGNING = previous
+            SIGNING = []
     finally:
         shutil.rmtree(folder, ignore_errors=True)
 
