@@ -201,6 +201,8 @@ def behind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     git(author, "commit", "-qm", "base")
     git(author, "push", "-q", str(origin), "main")
     git(tmp_path, "clone", "-q", str(origin), str(clone))
+    # a clone set to fetch every tag (a fetch by commit stores no ref, so it follows none on its own)
+    git(clone, "config", "remote.origin.tagOpt", "--tags")
     (author / "app.py").write_text("one, the feature\n")
     git(author, "commit", "-qam", "feature")
     missing = git(author, "rev-parse", "HEAD")
@@ -209,7 +211,7 @@ def behind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     git(author, "add", "-A")
     git(author, "commit", "-qm", "unrelated")
     unrelated = git(author, "rev-parse", "HEAD")
-    # a tag on the commit asked for, which a fetch would follow without --no-tags, and one on another commit
+    # a tag on the commit asked for and one on another, which the clone's tagOpt fetches without --no-tags
     git(author, "tag", "-a", "-m", "on the feature", "v-feature", missing)
     git(author, "tag", "v-other", unrelated)
     git(author, "push", "-q", str(origin), f"{missing}:refs/heads/feature", "other", "--tags")
