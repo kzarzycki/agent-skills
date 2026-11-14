@@ -1,11 +1,63 @@
 import os
+import shutil
 import sys
+from collections.abc import Iterable
+from pathlib import Path
 
 # The engineering loop's script tests load modules from a shipped skill folder;
-# a bytecode cache written there would ship with the package.
+# a bytecode cache written there would ship with the package. The variable carries
+# the same to the scripts the tests run as subprocesses (#1022).
 sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 import pytest
+
+# The approvals.py fixtures, visible to every module here; _approvals_stubs turns them on.
+from approvals_harness import (  # noqa: F401
+    AUTOUSE,
+    added,
+    assigned,
+    attached,
+    board_risks,
+    graphql_answers,
+    hub,
+    others_open,
+    pushed,
+    refs,
+    required,
+)
+
+HERE = Path(__file__).parent
+
+# The tools beyond git and Python each module's tests run, by its path from here (#1022).
+TOOLS = {
+    "e2e/test_static_discovery.py": ("apm",),
+    "test_approvals.py": ("ssh-keygen",),
+    "test_consumer_e2e.py": ("apm",),
+    "test_omnigent_agent.py": ("perl",),
+}
+
+
+def missing_tools(paths: Iterable[Path]) -> list[str]:
+    """The tools the modules at `paths` run that are not on PATH."""
+    needed = {
+        tool
+        for path in paths
+        if path.is_relative_to(HERE)
+        for tool in TOOLS.get(path.relative_to(HERE).as_posix(), ())
+    }
+    return sorted(tool for tool in needed if shutil.which(tool) is None)
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """A tool the selected tests run and PATH lacks stops the run before its first test, one line naming every
+    such tool, rather than failing each test that runs it partway through."""
+    missing = missing_tools({item.path for item in session.items})
+    if missing:
+        pytest.exit(
+            f"missing tools the tests run: {', '.join(missing)}; put them on PATH",
+            returncode=pytest.ExitCode.USAGE_ERROR,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -47,3 +99,12 @@ def _no_user_git_config(
     empty.touch()
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+@pytest.fixture(autouse=True)
+def _approvals_stubs(request: pytest.FixtureRequest) -> None:
+    """Every test of approvals.py runs under the harness's AUTOUSE fixtures, though its module imports none, so a
+    module that main gains while a PR adds a fixture still gets it (#1015)."""
+    if request.module.__name__.startswith("test_approvals"):
+        for name in AUTOUSE:
+            request.getfixturevalue(name)

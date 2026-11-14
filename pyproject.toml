@@ -19,6 +19,6 @@ line-length = 100
 per-file-target-version = { "engineering/skills/*/scripts/*.py" = "py39" }
 
 [tool.ruff.lint.per-file-ignores]
-# A module of approvals tests imports the harness's fixtures by name (each with `noqa: F401`), and
-# a test that takes one as a parameter redefines it (engineering/tests/approvals_harness.py).
+# A module of approvals tests imports a non-autouse fixture it takes from the harness by name (with
+# `noqa: F401`), and a test that takes it as a parameter redefines it (engineering/tests/approvals_harness.py).
 "engineering/tests/test_approvals_*.py" = ["F811"]
