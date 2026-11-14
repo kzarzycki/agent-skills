@@ -11367,3 +11367,20 @@ def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_
     assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
     assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
     assert not any("Which base?" in p for p in posted(og))
+
+
+def test_call_allows_each_request_the_timeout_it_is_given_else_thirty_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[float] = []
+
+    def urlopen(req: Request, timeout: float) -> io.BytesIO:
+        seen.append(timeout)
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    og.call("GET", "/v1/x")
+    og.call("GET", "/v1/x", timeout=180.0)
+    assert seen == [30.0, 180.0]
