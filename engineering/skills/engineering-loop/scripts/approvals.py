@@ -4937,7 +4937,7 @@ def session_links(pull: dict[str, Any]) -> list[tuple[str, str, str, bool]]:
                 f"the comment {note.get('url') or note.get('databaseId')}",
                 f"repos/{{owner}}/{{repo}}/{kind}/comments/{note.get('databaseId')}",
                 note.get("body") or "",
-                note.get("viewerCanUpdate") and note.get("databaseId") is not None,
+                note.get("viewerCanUpdate"),
             )
             for note in nodes
         ]
