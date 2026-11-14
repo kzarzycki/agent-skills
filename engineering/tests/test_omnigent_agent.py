@@ -8585,6 +8585,41 @@ def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> N
         omnigent_agent.start(og, "claude-cloud", "t", "x", report, None, 0, permission_mode="plan")
 
 
+def test_start_says_when_the_environment_s_permission_mode_is_not_applied_and_creates_as_before(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")
+    og = FakeOmnigent()
+    og.harnesses["agy"] = "antigravity-native"
+    sid, _ = omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
+    assert sid in og.sessions
+    err = capsys.readouterr().err.splitlines()
+    dropped = [line for line in err if "not applied" in line]
+    assert dropped == [
+        "codex takes no permission mode: bypassPermissions was not applied; its session starts in"
+        " the harness default"
+    ]
+    for agent in ("claude", "agy"):  # each takes this mode, so nothing is dropped
+        omnigent_agent.start(og, agent, f"t-{agent}", "do X", tmp_path / "r.md", None, 0)
+        assert "not applied" not in capsys.readouterr().err
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "plan")  # agy takes bypass alone
+    omnigent_agent.start(og, "agy", "t-plan", "do X", tmp_path / "r.md", None, 0)
+    assert "agy takes no permission mode: plan was not applied" in capsys.readouterr().err
+    # The create a codex session gets is the one it got before: no launch args, no mode field.
+    calls = _agent_server(
+        monkeypatch,
+        {
+            "/v1/agents": [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()],
+            "/v1/agents?scope=user": [],
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        },
+    )
+    omnigent_agent.Omnigent().create("codex", "t")
+    body = calls[-1][2]
+    assert "terminal_launch_args" not in body and "permission_mode" not in body
+
+
 def test_antigravity_runs_a_role_only_with_its_approvals_bypassed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
