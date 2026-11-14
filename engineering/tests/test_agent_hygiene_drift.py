@@ -112,10 +112,11 @@ def test_a_dirty_clone_is_not_pulled_and_its_finding_is_routed(tmp_path, monkeyp
 def test_a_diverged_or_other_branch_clone_is_not_pulled(tmp_path, monkeypatch):
     clones, heads, run, calls, git = world(tmp_path, monkeypatch, ["acme/managed", "acme/bare"])
     git(clones["acme/managed"], "commit", "-q", "--allow-empty", "-m", "local")
-    git(clones["acme/bare"], "checkout", "-q", "-b", "topic")
+    git(clones["acme/bare"], "checkout", "-q", "-b", "topic", "--track", "origin/main")
     moved = {r: git(c, "rev-parse", "HEAD") for r, c in clones.items()}
     out = run()
-    assert {r: git(c, "rev-parse", "HEAD") for r, c in clones.items()} == moved and "pulled" not in out, out
+    assert {r: git(c, "rev-parse", "HEAD") for r, c in clones.items()} == moved, out
+    assert "pulled" not in out and "git pull" not in out, out  # not even tried
     assert len(calls) == 2, calls
 
 
@@ -129,6 +130,15 @@ def test_a_finding_goes_to_its_repos_manager_and_one_in_a_repo_without_goes_to_t
     assert str(clones["acme/managed"]) in told["acme/managed"] and str(clones["acme/bare"]) not in told["acme/managed"]
     assert "told the manager of acme/managed (session pm-session)" in out, out
     assert "told the manager of acme/bare (session cos-session)" in out, out  # tell() falls back to the chief of staff itself
+    run()
+    assert len(calls) == 2, "each finding is told once"
+
+
+def test_a_clone_that_is_not_behind_is_not_pulled(tmp_path, monkeypatch):
+    clones, heads, run, calls, git = world(tmp_path, monkeypatch, ["acme/managed"])
+    git(clones["acme/managed"], "pull", "-q", "--ff-only")
+    out = run()
+    assert "pulled" not in out and "git pull" not in out and calls == [], (out, calls)
 
 
 def test_a_finding_whose_manager_cannot_be_told_goes_to_the_chief_of_staff(tmp_path, monkeypatch):
