@@ -2520,7 +2520,7 @@ def launch_dir(
     source = same_repo_checkout(remote, here or Path.cwd())
     if source:
         main, name = source
-        # the remote by name, so a partial clone keeps fetching without blobs
+        # the checkout's own remote, by name: its settings (a partial clone's among them) apply
         steps = [
             ["git", "-C", str(main), "fetch", "-q", name, branch],
             # a branch of its own: the one named may be checked out in the caller's checkout
