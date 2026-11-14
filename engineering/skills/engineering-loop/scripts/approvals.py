@@ -22,7 +22,7 @@
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
-    uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop `Claude-Session:` lines from it
+    uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
 
 At start every verb warns on stderr, once, when this script's checkout is behind its upstream's last fetched tip (no
 fetch) and the script differs there: the count and `git pull`. loop.md's `pack_staleness: refuse` under `loop` makes
@@ -154,8 +154,10 @@ date with the base runs no gate. GitHub's required checks never stand in for it,
 command's. Otherwise it runs the gate there as `local-ci` does (below), its log under the git common dir, and records
 the pass by tree; a gate that leaves the worktree changed is red, since it no longer ran on the batch as merged.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
---match-head-commit`), with the body the repo's squash default would write less every `Claude-Session:` line, since a
-cloud session's harness adds its link to each commit and the PR may be public: under the commit-messages default the
+--match-head-commit`), with the body the repo's squash default would write less every session link line (a
+`Claude-Session:` line, or a line that is only a claude.ai session link), since a cloud session's harness adds its link
+to each commit and PR body and the PR may be public, first dropping those lines from the PR's own body on GitHub when
+it carries one: under the commit-messages default the
 body GitHub builds from the commits (one: its message after the subject, its co-author lines moved to the end;
 several: each message as a `* ` item, then `---------` and their co-authors), under the PR-description default the
 PR's body, and under the blank default none. A merge GitHub refuses, or leaves unmerged
@@ -4853,8 +4855,13 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
     )
 
 
-# a cloud session's link, which its harness adds to every commit message; land drops it from the squash body
-SESSION_LINE = re.compile(r"^Claude-Session:.*(?:\n|$)", re.MULTILINE)
+# a cloud session's link, which its harness adds to every commit message as a `Claude-Session:` line and to every PR
+# body as a bare link line, optionally in <...>; land drops it from the squash body and the PR body
+SESSION_LINE = re.compile(
+    r"^(?:Claude-Session:.*|(?:<https://claude\.ai/code/session_[^\s<>]*>|https://claude\.ai/code/session_[^\s<>]*)"
+    r"[ \t\r]*)(?:\n|$)",
+    re.MULTILINE,
+)
 CO_AUTHOR = re.compile(r"^Co-authored-by:[ \t]*(.*?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
 
 
@@ -4883,7 +4890,7 @@ def squash_body(commits: list[dict[str, Any]], author: str | None) -> str:
 
 
 def unlinked(text: str) -> str:
-    """text less every `Claude-Session:` line, the blank lines around each removed one folded into one (none when
+    """text less every session link line (SESSION_LINE), the blank lines around each removed one folded into one (none when
     it sat between two text lines); blank lines elsewhere (a PR body's code block) stay as written."""
     marked = "\n".join("\0" if SESSION_LINE.match(line) else line for line in text.split("\n"))
 
@@ -4894,7 +4901,7 @@ def unlinked(text: str) -> str:
 
 
 def commit_msg(message: Path) -> int:
-    """The commit-msg hook: the message file less every `Claude-Session:` line, as unlinked() folds them for land, so a
+    """The commit-msg hook: the message file less every session link line, as unlinked() folds them for land, so a
     cloud session's branch commits carry no link either, since a public repo publishes them; a message with none is
     left as written."""
     text = message.read_text()
@@ -4903,9 +4910,18 @@ def commit_msg(message: Path) -> int:
     return 0
 
 
+def unlink_body(pull: dict[str, Any]) -> None:
+    """Drop every session link line from pull's own body on GitHub, as unlinked() folds them, since a public repo's PR
+    page publishes it; a body with none is left untouched, with no edit."""
+    body = pull.get("body") or ""
+    if SESSION_LINE.search(body):
+        gh("pr", "edit", str(pull["number"]), "--body", unlinked(body))
+        print(f"PR #{pull['number']}: dropped the session link from its body")
+
+
 def land_body(pull: dict[str, Any]) -> str | None:
     """The `--body` land passes to GitHub's squash of pull, whatever the repo's squash default would put a
-    `Claude-Session:` line in, or None to leave GitHub's default. The repo's `squash_merge_commit_message` picks it:
+    session link line in, or None to leave GitHub's default. The repo's `squash_merge_commit_message` picks it:
     COMMIT_MESSAGES, squash_body() less those lines; PR_BODY, the PR's body less them; BLANK, None, since GitHub
     writes no body. ponytail: under PR_BODY GitHub's own co-author lines, if it adds any, are not added here, as no
     squash on this repo shows that setting."""
@@ -4967,6 +4983,7 @@ def merges(
     for pull, tree, gated, how in landed:
         where, head = f"PR #{pull['number']}", pull["headRefOid"]
         try:
+            unlink_body(pull)
             if local:
                 tip = signed_squash(pull, local[1], (tip, tree))
                 print(f"{where} landed in {base} as {tip}, signed by a key in {local[1]}")

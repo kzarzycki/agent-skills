@@ -3523,6 +3523,10 @@ def lands(
             state["calls"].append(args)
             pulls[int(args[-1])]["isDraft"] = "--undo" in args
             return ""
+        if args[:2] == ("pr", "edit"):
+            state["calls"].append(args)
+            pulls[int(args[2])]["body"] = args[args.index("--body") + 1]
+            return ""
         if args[:2] == ("api", "--paginate") and args[2].split("?")[0].endswith("/commits"):
             number = int(args[2].split("/")[-2])
             # REST lists a PR's commits oldest first, each with its author's GitHub login

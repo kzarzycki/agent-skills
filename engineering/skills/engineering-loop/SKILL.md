@@ -616,10 +616,12 @@ or the owner's private network.
   evidence or a brief's text quoted there, since a public repo publishes them.
   The commits too: the cloud harness tells each session to end every commit with a
   `Claude-Session:` link, and neither a brief nor a committed `attribution.commit` in
-  `.claude/settings.json` removes that instruction. `land` drops the line from the squash
-  body, so `main` stays clean, but the PR branch's commits keep it. A private repo may accept
+  `.claude/settings.json` removes that instruction; a PR body it writes ends with a bare line
+  holding the link even under an empty `attribution.pr`. `land` drops both kinds of line from
+  the squash body and from the PR's body on GitHub, so `main` and the PR page stay clean, but
+  the PR branch's commits keep it. A private repo may accept
   that. A public repo publishes its branch commits, so it strips the line at the source with
-  `approvals.py commit-msg <file>`, which removes every `Claude-Session:` line and folds the
+  `approvals.py commit-msg <file>`, which removes every such line and folds the
   blank lines as `land` does: its pre-commit config runs that command at the `commit-msg`
   stage (a local hook, `stages: [commit-msg]`), and the cloud environment's setup installs
   that hook type (`pre-commit install --hook-type commit-msg`), since a session's clone has
