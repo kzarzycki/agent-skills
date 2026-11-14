@@ -5575,6 +5575,33 @@ def archive_delivered(og: Omnigent, sid: str) -> None:
         print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
 
 
+def pack_behind(script: Path | str) -> str | None:
+    """One line, or None: how many commits its upstream's last fetched tip holds that the checkout lacks and that
+    changed ``script``, counted since the merge base, so a local commit to it, or upstream changes elsewhere, say
+    nothing. Never fetches, so it stays fast and offline-safe; a checkout with no upstream,
+    one not behind, or one whose script is unchanged upstream is None. A short copy of this lives in
+    engineering-loop's approvals.py (`pack_behind`), since skills install separately and neither may import
+    the other: change both together."""
+    here = Path(script).resolve()
+
+    def ask(*args: str) -> str | None:
+        try:  # a probe that fails for any reason says nothing, since it must never stop a command
+            done = subprocess.run(
+                ["git", "-C", str(here.parent), *args], capture_output=True, text=True, check=False
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    behind = ask("rev-list", "--count", "HEAD..@{upstream}", "--", str(here))
+    if behind is None or int(behind) == 0:
+        return None
+    return (
+        f"{here.name}: this checkout is behind its upstream, where {behind} commit(s) changed this script: "
+        "run `git pull`"
+    )
+
+
 # What a supervise service reads from its environment, carried over from the install: the
 # server and settings this script reads, and the small model's config. Everything else is left
 # out, since a session's environment also holds its runner's state (ids, tokens, pids, log
@@ -6122,6 +6149,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 " finished session from (default: $OMNIGENT_SUPERVISE_REGISTRY)",
             )
     args = ap.parse_args(argv)
+    if stale := pack_behind(__file__):
+        print(stale, file=sys.stderr)  # only a warning: the refusal setting is approvals.py's
     if getattr(args, "notify", False) and args.cmd in ("run", "send", "wait"):
         ended["report"] = str(args.report.resolve())
     sid, registry = getattr(args, "session", None), getattr(args, "registry", None)
