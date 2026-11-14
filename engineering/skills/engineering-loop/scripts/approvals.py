@@ -197,6 +197,7 @@ there, it goes to origin as a ref. There REST alone answers, and it says neither
 whether classic branch protection requires one, so a PR is a candidate there only with `merge_queue: false` in the
 section, the project's word that its base requires none (`required_checks` still refuses a ruleset that does); a draft is refused, and an evicted PR stays
 ready, each said, since GitHub changes a draft only over GraphQL. Off a cloud session only `where` is new.
+`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip.
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
 printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
@@ -3842,6 +3843,14 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
     if point == "merge" and (why := outside(pull, loop)):
         print(why)
         return 0
+    if point == "merge":
+        base = pull["baseRefName"]
+        subprocess.run(
+            ["git", "-C", str(toplevel()), "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
+            capture_output=True,
+            check=False,
+        )
+        judge_with_base(base)
     found, issues = gated(point, pull, tracker, loop)
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
@@ -3960,6 +3969,7 @@ def landing_here(
             return WAITING, True
         # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        judge_with_base(base)
         return batched(named, base, tracker, loop, only, held)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
@@ -3982,6 +3992,59 @@ def landing_here(
         signal.pthread_sigmask(signal.SIG_SETMASK, mask)
         if waiting:
             sys.exit(128 + min(waiting))
+
+
+def base_drift(base: str) -> list[str]:
+    """The running approvals.py and the three policy files (tracker, loop.md, gatekeeper.md) whose text here differs from
+    `origin/<base>`'s, as repo paths, since a PR's own edit of the code or rules that judge it must not judge it. Reads
+    the ref as fetched (a land has just fetched it); a ref that is missing, or a script outside the checkout or absent on
+    the base (installed under another path), has nothing to compare and counts as equal."""
+    root = toplevel()
+    ref = f"refs/remotes/origin/{base}"
+    if subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", "-q", ref], capture_output=True, check=False
+    ).returncode:
+        return []
+    paths = [TRACKER, LOOP, POLICY]
+    try:
+        paths.insert(0, Path(__file__).resolve().relative_to(root.resolve()))
+    except ValueError:
+        pass
+    differ = []
+    for path in paths:
+        shown = subprocess.run(
+            ["git", "-C", str(root), "show", f"{ref}:{path.as_posix()}"], capture_output=True, check=False
+        )
+        theirs = shown.stdout if shown.returncode == 0 else None
+        try:
+            ours = (root / path).read_bytes()
+        except OSError:
+            ours = None
+        if ours != theirs and not (theirs is None and path not in (TRACKER, LOOP, POLICY)):
+            differ.append(path.as_posix())
+    return differ
+
+
+def judge_with_base(base: str) -> None:
+    """Refuse, naming the files, when the code or policy running here is not `origin/<base>`'s, so the caller runs from
+    the base's code; under GITHUB_ACTIONS (a workflow that checks out the PR) also when HEAD is not the base's tip."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        tip = subprocess.run(
+            ["git", "-C", str(toplevel()), "rev-parse", "--verify", "-q", f"refs/remotes/origin/{base}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        if tip and tip != git("rev-parse", "HEAD").strip():
+            raise Refused(
+                f"the checked-out commit is not origin/{base}'s tip ({tip[:12]}): a workflow that checks out the PR judges"
+                " it by its own rules; check out the base"
+            )
+    if differ := base_drift(base):
+        raise Refused(
+            f"{', '.join(differ)} differ{'s' * (len(differ) == 1)} from origin/{base}'s: a PR's own copy would judge it;"
+            f" run from the base's code (a checkout of origin/{base})"
+        )
 
 
 def stopped(signum: int, _frame: Any) -> None:
