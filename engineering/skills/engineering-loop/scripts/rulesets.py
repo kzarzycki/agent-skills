@@ -31,7 +31,6 @@ import argparse
 import json
 import subprocess
 import sys
-from pathlib import Path
 
 # importing approvals.py would cache its bytecode in the installed skill folder, an untracked change there
 sys.dont_write_bytecode = True
@@ -71,7 +70,9 @@ def differences(want: dict, have: dict) -> list[str]:
     if have["enforcement"] != want["enforcement"] or have["enforcement"] != "active":
         found.append(f"enforcement is {have['enforcement']}, expected {want['enforcement']}")
     if want["conditions"] != have["conditions"]:
-        found.append(f"conditions changed: {dump(have['conditions'])}, expected {dump(want['conditions'])}")
+        found.append(
+            f"conditions changed: {dump(have['conditions'])}, expected {dump(want['conditions'])}"
+        )
     wanted_rules = {rule["type"]: rule for rule in want["rules"]}
     live_rules = {rule["type"]: rule for rule in have["rules"]}
     for kind in sorted(wanted_rules.keys() | live_rules.keys()):
@@ -97,7 +98,9 @@ def live(repo: str) -> list[dict]:
 
 
 def default_repo() -> str:
-    return gh("api", "repos/{owner}/{repo}", "--jq", ".full_name").strip()  # REST: GraphQL is blocked in some sessions
+    return gh(
+        "api", "repos/{owner}/{repo}", "--jq", ".full_name"
+    ).strip()  # REST: GraphQL is blocked in some sessions
 
 
 def expected(repo: str) -> list[dict] | None:
