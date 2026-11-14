@@ -1,4 +1,4 @@
-source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
 source_tag: null
 stable_baseline_tag: v1.2.3
 included_skills:
@@ -224,103 +224,103 @@ owned_overlays:
   mode: '100644'
 source_mappings:
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/ask-matt
   destination_path: skills/ask-matt
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/in-progress/claude-handoff
   destination_path: skills/claude-handoff
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/code-review
   destination_path: skills/code-review
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/codebase-design
   destination_path: skills/codebase-design
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/diagnosing-bugs
   destination_path: skills/diagnosing-bugs
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/domain-modeling
   destination_path: skills/domain-modeling
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/grill-with-docs
   destination_path: skills/grill-with-docs
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/productivity/grilling
   destination_path: skills/grilling
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/productivity/handoff
   destination_path: skills/handoff
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/implement
   destination_path: skills/implement
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/implement-spec
   destination_path: skills/implement-spec
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/improve-codebase-architecture
   destination_path: skills/improve-codebase-architecture
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/in-progress/loop-me
   destination_path: skills/loop-me
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/pr
   destination_path: skills/pr
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/prototype
   destination_path: skills/prototype
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/research
   destination_path: skills/research
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/retro
   destination_path: skills/retro
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/tdd
   destination_path: skills/tdd
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/productivity/teach
   destination_path: skills/teach
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/to-spec
   destination_path: skills/to-spec
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/to-tickets
   destination_path: skills/to-tickets
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/triage
   destination_path: skills/triage
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/productivity/wait-what
   destination_path: skills/wait-what
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/wayfinder
   destination_path: skills/wayfinder
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  source_commit: 5863806dd4e15c63174bee4e7515a4256792ecfa
   source_path: skills/engineering/wizard
   destination_path: skills/wizard
 source_files:
