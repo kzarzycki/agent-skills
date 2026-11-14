@@ -8885,6 +8885,42 @@ def test_start_says_when_the_environment_s_permission_mode_is_not_applied_and_cr
     assert "terminal_launch_args" not in body and "permission_mode" not in body
 
 
+def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_warns_of_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS}
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")
+    omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0)
+    omnigent_agent.start(
+        og, "claude-cloud", "t2", "do X", tmp_path / "r.md", None, 0, permission_mode="auto"
+    )
+    assert "not applied" not in capsys.readouterr().err
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "plan")  # the server takes auto and bypass alone
+    omnigent_agent.start(og, "claude-cloud", "t3", "do X", tmp_path / "r.md", None, 0)
+    assert "claude-cloud takes no permission mode: plan was not applied" in capsys.readouterr().err
+    calls = _agent_server(monkeypatch, {"/v1/projects": {"data": []}, "/v1/sessions": {"id": "s1"}})
+    harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS, "custom": "acp:other"}
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent,
+        "agent",
+        lambda self, name: {"id": name, "harness": harnesses[name]},
+    )
+
+    def sent(agent: str, mode: str | None) -> dict:
+        omnigent_agent.Omnigent().create(agent, "t", permission_mode=mode)
+        return calls[-1][2]
+
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE")
+    assert sent("claude-cloud", "bypassPermissions")["permission_mode"] == "bypassPermissions"
+    assert sent("claude-cloud", "auto")["permission_mode"] == "auto"
+    for agent, mode in (("claude-cloud", None), ("claude-cloud", "plan"), ("custom", "auto")):
+        body = sent(agent, mode)
+        assert "permission_mode" not in body and "terminal_launch_args" not in body
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")  # the env gives it too
+    assert sent("claude-cloud", None)["permission_mode"] == "bypassPermissions"
+
+
 def test_antigravity_runs_a_role_only_with_its_approvals_bypassed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

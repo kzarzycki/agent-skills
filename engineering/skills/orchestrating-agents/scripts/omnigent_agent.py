@@ -1153,6 +1153,10 @@ class Omnigent:
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
             # agy's only permission flag; its effort is the user's, part of the model in its settings.
             body["terminal_launch_args"] = [AGY_BYPASS]
+        elif mode in CLOUD_MODES and agent not in AGENTS and self.harness(agent) == CLOUD_HARNESS:
+            # The server's own field: it answers the VM's tool requests itself under bypass, since
+            # the VM starts in its default stance whatever it is launched with (#987).
+            body["permission_mode"] = mode
         # The loop role, which Omnigent's usage metrics split spend by: a role file's name.
         if role and (name := Path(role).stem) in ROLES:
             body["labels"] = {"omni.role": name}
@@ -2289,6 +2293,9 @@ AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
 VERIFIER_ROUTES = ("codex", "gemini", "claude")
 GEMINI_AGENT = "antigravity-native-ui"
 BYPASS = "bypassPermissions"
+# the stances Omnigent's session create takes as ``permission_mode`` for a claude-cloud session; it
+# refuses any other word with a 400 (#987)
+CLOUD_MODES = ("auto", BYPASS)
 SETTINGS = Path(".claude") / "settings.local.json"
 
 
@@ -2582,10 +2589,20 @@ def start(
     session's file API before its brief is sent, so it finds them when it starts."""
     harness = agent if agent in AGENTS else og.harness(agent)
     agy = harness == AGY_HARNESS
-    if permission_mode and agent != "claude" and not (agy and permission_mode == BYPASS):
+
+    def applied(mode: str) -> bool:
+        """Whether ``agent``'s session can start in ``mode``: ``create`` sends it only then."""
+        return (
+            agent == "claude"
+            or (agy and mode == BYPASS)
+            or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
+        )
+
+    if permission_mode and not applied(permission_mode):
         raise Fail(
-            f"--permission-mode is for claude sessions (and {BYPASS} for antigravity);"
-            f" a {agent} session fails to launch with it"
+            f"--permission-mode is for claude sessions ({BYPASS} for antigravity, and"
+            f" {' or '.join(CLOUD_MODES)} for {CLOUD_HARNESS}); a {agent} session fails to"
+            " launch with it"
         )
     if agy and role and (permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")) != BYPASS:
         raise Fail(
@@ -2595,7 +2612,7 @@ def start(
     # The flag was refused above, so a mode here came from the environment: the session starts in
     # its harness's default stance, which a run counting on the mode is told (#987).
     mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
-    if mode and agent != "claude" and not (agy and mode == BYPASS):
+    if mode and not applied(mode):
         print(
             f"{agent} takes no permission mode: {mode} was not applied; its session starts in"
             " the harness default",
@@ -6083,7 +6100,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--permission-mode",
             help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
-            " else the harness default); codex sessions take none",
+            " else the harness default); claude-cloud takes auto or bypassPermissions, codex none",
         )
         p.add_argument(
             "--author",
