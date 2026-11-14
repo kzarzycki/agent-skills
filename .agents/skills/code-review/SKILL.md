@@ -27,7 +27,7 @@ In order: issue references in the commit messages (`#123`, `Closes #45`, GitLab 
 
 ## 3. Find the standards
 
-Whatever the repo documents about how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`. On top of that, the Standards axis always applies this baseline of Fowler smells (*Refactoring*, ch. 3):
+Search the repo for every file that documents how code should be written; `CODING_STANDARDS.md` and `CONTRIBUTING.md` are always on the list when they exist. On top of that, the Standards axis always applies this baseline of Fowler smells (*Refactoring*, ch. 3):
 
 > Mysterious Name, Duplicated Code, Feature Envy, Data Clumps, Primitive Obsession, Repeated Switches, Shotgun Surgery, Divergent Change, Speculative Generality (anything the spec doesn't need), Message Chains, Middle Man, Refused Bequest.
 

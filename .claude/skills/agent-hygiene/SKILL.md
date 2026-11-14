@@ -38,7 +38,13 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
   daemon answers). A tool that isn't installed is skipped. A tool with a running process
   is skipped, and one still running after its timeout is stopped and logged as in use:
   `uv cache prune` waits for every other uv process, so a long `uv run` turns it into a
-  skip, never a wait. A uv cache shared with another account, which owns part of it, stops
+  skip, never a wait, unless every holder of the cache's `.lock` is a `uv run` or `uvx`
+  older than the wait, and neither it nor a program it started has an open file, a command
+  line or an environment (`VIRTUAL_ENV`, `PATH`, `PYTHONPATH`) naming a path under the cache dir: the prune is then retried
+  once with `--force`, each holder logged (pid, start time, command); any other holder, one
+  running from the cache, or one whose files or environment cannot be read keeps the skip and
+  is named in it. The guard cannot see a program launched with no cache path anywhere in its
+  files, command line or environment. A uv cache shared with another account, which owns part of it, stops
   the prune at that account's files (`Permission denied`): the round doesn't fail on it, and
   tells the chief of staff once, naming the cache folder and how to share or split it; it
   changes no ownership or permissions itself.
@@ -49,10 +55,17 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
   - `git status` is clean apart from untracked `*.lock` files (also inside an untracked
     directory that holds nothing else);
   - HEAD is on a remote branch, or is the PR's head (same commit or tree), or in it;
+  - a detached worktree's HEAD is no remote branch's tip (a landing checkout parked at the
+    default branch's tip is live, and a landed PR's head is that tip), and none of its own git
+    dir's `HEAD`, `index`, `logs/HEAD` or `FETCH_HEAD` (a checkout touches the first three,
+    a fetch the last) has changed in 24 hours, a worktree used lately being kept without
+    a question;
   - the worktree isn't locked (`git worktree lock`);
   - no process has its cwd or a file in it (a held lock file included) or names it;
-  - its `tmp/` and `.bootstrap-state/` (run reports) haven't changed in 24 hours, since a
-    lead may still read a report there over ssh, where the process scan can't see it;
+  - its `tmp/` and `.bootstrap-state/` (run reports, ignored or untracked) haven't changed in
+    24 hours, since a lead may still read a report there over ssh, where the process scan
+    can't see it; stale untracked ones go with the worktree, file by file beside a tracked
+    `tmp/.gitkeep`;
   - every ignored file in it is one of: an environment; build output (also a SwiftPM
     `.build/`, a directory holding `CACHEDIR.TAG`, a file whose first line says it is
     generated and not to be edited, an `*.xcodeproj/` beside the `project.yml` XcodeGen
@@ -104,7 +117,9 @@ shell), a stale pack and drift.
 ## What it tells the chief of staff
 
 The run posts into the chief of staff's Omnigent session (project `Chief of staff`, label
-`omni.role=cos`), through the account's Omnigent CLI logins: the server in
+`omni.role=cos`), through the account's Omnigent CLI logins; a question about a repo's worktree
+goes instead to that repo's project manager (`omni.role=pm`, `omni.repos` naming the repo), the
+chief of staff when none is live. The server in
 `~/.omnigent/config.yaml` first, then every other server the account is logged in to. It
 posts in four cases, each question or finding once (`~/.local/state/agent-hygiene/asked`),
 at most 30 per message:

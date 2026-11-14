@@ -10,7 +10,7 @@ python3 scripts/omnigent_telemetry.py [--days N] [--server URL] [--json] [--html
 ```
 
 `scripts/omnigent_telemetry.py` is relative to this skill's folder. `scripts/__pycache__` is a file, not a folder, so running it leaves no bytecode in an installed copy. The window is the last
-`N` UTC days, today included (default 7), counted as `GET /v1/usage` counts its 7 and 30.
+`N` UTC days, today included (default 7), counted as `GET /v1/usage` counts its 7 and 30; the request carries `?days=N`, so the server builds only that window, and waits up to 180 s for it.
 Outside an Omnigent session on a machine with several logins,
 `--server URL` names the server the API sections are read from; without it they are left out
 with the reason. It exits 0 whenever it prints a report. `--json` prints the report as data; `--html PATH`

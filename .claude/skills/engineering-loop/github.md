@@ -60,7 +60,7 @@ it by hand, `--dry-run` first, only to resync between setups. Its docstring says
 
 ## Assignee
 
-The calls behind issues.md, Assignee. `uv run <this skill's folder>/scripts/approvals.py check build <pr>` reads
+The calls behind issues.md, Assignee. `uv run <this skill's folder>/scripts/approvals.py check build <pr>` (a number no PR has is read as the issue, like `--issue`) reads
 who added `approved:spec` (the approver) from the issue's timeline, refuses an issue
 assigned to anyone else, and, once every build proof holds, assigns the approver where no
 one is and the PR its issue's assignees. Before assigning it comments `Assigned: @<login>`
@@ -109,6 +109,13 @@ field holds it, since it takes one value per item, in its options' order, where 
 several labels; the gate never reads it. `uv run <this skill's folder>/scripts/board.py column <issue>` prints the later of the
 loop column the issue's board column shows and the one its labels give, so an issue with `approved:spec` reads
 `Ready` even when its move failed or the repo has no board. Both take and print the loop's names.
+The board's `Risk` single-select field (`Low`, `Medium`, `High`) holds a PR's risk beside its `risk:high`
+label, one value where labels could show two. `check merge` sets it, adding the PR to the board: `High` beside
+the label, else the verifier's `Risk:` word, so whoever makes the risk call sets it; a field already at `High`
+adds the label, with a comment naming the field, and a lower one never takes the label off. The label stays the
+merge check's only input, since a workflow's token can't read a board a personal account owns, so a board it
+can't read or set (no board, no `project` scope) is a line in its output, never a failure.
+`board.py field <issue or PR> <field> <option>` sets any single-select field by name the same way.
 
 A board with other column names, or one column for several loop columns, maps them in the
 project's `docs/agents/issue-tracker.md` settings under an optional `board`, one
