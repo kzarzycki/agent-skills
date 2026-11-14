@@ -20,7 +20,9 @@ design, wireframes included for a UI, and delegate the rest.
    text that ends your turn `USER NEEDED`, never through a tool that waits for the answer
    (Claude Code's AskUserQuestion, Codex's requestUserInput), since an open question holds
    every message to your session, your children's reports and the supervisor's notices
-   included, until the owner replies; otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
+   included, until the owner replies. Omnigent's `sys_ask_user_question` is the way to ask
+   without stopping: it posts a card and returns at once, so keep working, and act on the
+   answer when it arrives as a message (`[answer to <question id>]`); otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
    answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
    `--by owner` records their word and removes the label. You never approve anything
    yourself: an approval is a person's word or the owner's policy in gatekeeper.md. An issue

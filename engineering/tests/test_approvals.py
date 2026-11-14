@@ -31,6 +31,12 @@ SPEC = importlib.util.spec_from_file_location("approvals", SCRIPTS / "approvals.
 assert SPEC and SPEC.loader
 approvals = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(approvals)
+# board.py reads names from approvals.py beside it, as when run
+sys.path.insert(0, str(SCRIPTS))
+BOARD_SPEC = importlib.util.spec_from_file_location("board", SCRIPTS / "board.py")
+assert BOARD_SPEC and BOARD_SPEC.loader
+board = importlib.util.module_from_spec(BOARD_SPEC)
+BOARD_SPEC.loader.exec_module(board)
 
 PROJECT = Path(__file__).resolve().parent / "fixtures" / "loop-project"
 TRACKER = (PROJECT / "docs" / "agents" / "issue-tracker.md").read_text()
@@ -193,6 +199,48 @@ def added(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, str, bool]]:
         approvals, "label", lambda number, name, add: calls.append((number, name, add))
     )
     return calls
+
+
+@pytest.fixture(autouse=True)
+def board_risks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The repo's board as board.py reads and sets it over gh, instead of GitHub: a `Risk` field whose option for
+    each PR on the board is in `values`, every option set in `set` (which leaves `values`, so a test that checks
+    a PR twice reads the board it set up), no linked board once `linked` is False, and `refused` the stderr each gh
+    call fails with."""
+    state: dict[str, Any] = {"values": {}, "set": [], "linked": True, "refused": None}
+    items: dict[str, int] = {}
+
+    def graphql(query: str, **values: Any) -> Any:
+        if state["refused"]:
+            raise subprocess.CalledProcessError(1, "gh", stderr=state["refused"])
+        if query == board.LOOKUP:
+            number, said = values["issue"], state["values"].get(values["issue"])
+            on = (
+                []
+                if said is None
+                else [{"project": {"id": "P"}, "fieldValueByName": {"name": said}}]
+            )
+            field = {
+                "id": "F",
+                "options": [{"id": f"o-{o}", "name": o} for o in ("Low", "Medium", "High")],
+            }
+            boards = [{"id": "P", "field": field}] if state["linked"] else []
+            return {
+                "repository": {
+                    "issueOrPullRequest": {"id": f"N{number}", "projectItems": {"nodes": on}},
+                    "projectsV2": {"nodes": boards},
+                }
+            }
+        if query == board.ADD:
+            items[f"I-{values['issue']}"] = int(values["issue"][1:])
+            return {"addProjectV2ItemById": {"item": {"id": f"I-{values['issue']}"}}}
+        assert query == board.SET, query
+        state["set"].append((items[values["item"]], values["option"].removeprefix("o-")))
+        return {}
+
+    monkeypatch.setattr(board, "_graphql", graphql)
+    monkeypatch.setattr(approvals, "board", lambda: board)
+    return state
 
 
 @pytest.fixture(autouse=True)
