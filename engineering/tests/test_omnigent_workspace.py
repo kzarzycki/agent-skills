@@ -12,6 +12,7 @@ from test_omnigent_agent import (  # noqa: F401  (the fixtures apply here by nam
     no_sleep,
     omnigent_agent,
     this_repo,
+    trusted_folders,
 )
 
 WORKER = "engineering/skills/engineering-loop/worker.md"

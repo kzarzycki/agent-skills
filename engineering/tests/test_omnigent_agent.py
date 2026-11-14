@@ -274,6 +274,15 @@ class FakeOmnigent:
 REAL_TRIAGE = omnigent_agent.triage
 
 
+REAL_TRUSTED = omnigent_agent.folder_trusted
+
+
+@pytest.fixture(autouse=True)
+def trusted_folders(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every folder trusted, so a cloud start never reads the host's Claude config (#980)."""
+    monkeypatch.setattr(omnigent_agent, "folder_trusted", lambda *_a, **_k: True)
+
+
 @pytest.fixture(autouse=True)
 def this_repo(monkeypatch: pytest.MonkeyPatch) -> None:
     """The checkout's GitHub repository, so a `--pr` start labels its worker without `gh`."""
