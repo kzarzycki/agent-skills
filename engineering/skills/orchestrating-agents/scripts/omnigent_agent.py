@@ -284,6 +284,11 @@ RST_LITERAL = re.compile(r"(?<!`)``(?=[^\s`])[^`\n]*(?<=[^\s`])``(?!`)")
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
 # Both nudges open with NO_REPORT, so OWN_LINES finds either however the rest is worded.
 NO_REPORT = "Your turn ended without the report."
+# What a cloud session's nudge says in place of "poll a run you started detached": that run died.
+CLOUD_RUN_NUDGE = (
+    "A run you started in the background did not outlive your turn (the VM may not): it was lost, so"
+    " restart it, do not wait on it, and keep this turn open, polling it, until it finishes,"
+)
 NUDGE = NO_REPORT + " Poll any long run you started detached, then write the report to {report}."
 # A cloud worker's report: a comment on the PR its last message links (wait --pr).
 COMMENT_URL = re.compile(
@@ -295,13 +300,12 @@ UNPOSTED = "UNPOSTED REPORT"
 # its first line, however formatted: the brief quotes it in backticks, so `x` or **x** too
 UNPOSTED_LINE = re.compile(rf"[\W_]*{UNPOSTED}[\W_]*?(\n|$)")
 PR_NUDGE = (
-    NO_REPORT + " Poll any long run you started detached, then post the"
+    NO_REPORT + " " + CLOUD_RUN_NUDGE + " then post the"
     " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
 )
 # PR_NUDGE for a worker held from posting (pr_preamble), which never posts
 HELD_NUDGE = (
-    NO_REPORT
-    + " Poll any long run you started detached, then reply with the line `{unposted}` and the report as"
+    NO_REPORT + " " + CLOUD_RUN_NUDGE + " then reply with the line `{unposted}` and the report as"
     " your brief says, without posting it."
 )
 # The claude-cloud bridge's two failures that are no fault of the child (#510): its bootstrap
@@ -323,6 +327,15 @@ REVIVED = "Your session was restarted and may have lost its context."
 LEAD_NUDGE = (
     "Supervisor: your turn ended with no ending and no named wait. Carry on to your next step, and"
     " end your turn with DONE, STILL WORKING naming what you wait on, or USER NEEDED."
+    ' For example: "STILL WORKING: waiting on the verifier".'
+)
+# LEAD_NUDGE for a cloud lead (#1002): its own background run died with its turn, so a STILL WORKING
+# naming it waits on nothing.
+LEAD_NUDGE_CLOUD = (
+    "Supervisor: your turn ended with no ending and no named wait. If it ended on your own background"
+    " run, that run was lost with the turn (the VM may not outlive it): restart it, do not wait on it,"
+    " and keep the turn open, polling it, until it finishes. Then end your turn with DONE, STILL"
+    " WORKING naming what you wait on (never your own background run), or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
 )
 # A timed wait's time passed with no progress since: nothing else wakes an idle lead at its time.
@@ -561,6 +574,14 @@ FAR_READS = 3  # live sessions on another host tried for its load and memory, ne
 # The detach the role files prescribe (verifier.md, A long or locked run is detached): Perl's
 # setsid, since macOS has no setsid command.
 DETACH = "perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV'"
+# The brief's detach sentence, which holds on a host and not in a cloud VM (#1002): a follow-up turn
+# keeps the conversation, not the machine, so a run detached in one turn dies when it ends.
+DETACH_LINE = "A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role."
+CLOUD_RUN_LINE = (
+    "A run must finish inside the turn that started it, since the VM may not outlive the turn:"
+    " start it with the harness's own background support if needed, poll it, and never end a turn"
+    " while it runs. A `STILL WORKING` that names only your own background run is not a valid ending."
+)
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
@@ -647,7 +668,7 @@ CLOUD_REPLIES = {
     ),
 }
 CLOUD_NUDGE = (
-    NO_REPORT + " Poll any long run you started detached, then reply with the full report as your"
+    NO_REPORT + " " + CLOUD_RUN_NUDGE + " then reply with the full report as your"
     f" brief says, its first line `{CLOUD_REPORT_LINE}` (a lead's: its ending line), or with a first"
     f" line `{CLOUD_QUESTION_LINE}` and your question: your files stay in the cloud VM, which the"
     " host never reads."
@@ -657,11 +678,12 @@ CLOUD_LEAD_ENDING = re.compile(r"[\s*_#>-]*(DONE|USER NEEDED|STILL WORKING|PARKE
 
 
 def cloud_preamble(preamble: str, pr: int | None) -> str:
-    """``preamble`` for an ``acp:claude-cloud`` session: ``CLOUD_NOTE`` before its closing blank
-    line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
+    preamble = preamble.replace(DETACH_LINE, CLOUD_RUN_LINE)
     return preamble.removesuffix("\n") + CLOUD_NOTE + "\n"
 
 
@@ -4419,6 +4441,15 @@ def ending_of(text: str) -> str | None:
     return "USER NEEDED" if "USER NEEDED" in endings else next(iter(endings), None)
 
 
+# A cloud lead's ``STILL WORKING`` naming only its own background run (#1002): that run died with the
+# turn, so it waits on nothing. "my gate" or "the nohup'd test", not "the verifier's gate".
+OWN_RUN = re.compile(
+    r"STILL WORKING\b[^\n]*?\b(?:(?:my|our|own)\b[^\n.]*?\b(?:gate|run|job|process|tests?|build)s?"
+    r"|background|detached|nohup)",
+    re.IGNORECASE,
+)
+
+
 def wait_of(text: str, at: float | None = None) -> str:
     """What a lead's message says it waits on: ``parked``, the wait its ``STILL WORKING`` names
     (``until <UTC time>`` for a timed one, ``TIMED`` says which, ``at`` being when the message was
@@ -4957,7 +4988,12 @@ def supervise_registry(
             "kind": kind,
             "line": line,
             "last": last,
-            "wait": lead.get("wait"),
+            "wait": "unknown"
+            if lead.get("wait") not in ("parked", None)
+            and last
+            and OWN_RUN.search(last)
+            and cloud_session(og, info)
+            else lead.get("wait"),
             "repeat": key == lead.get("last_event"),
             "question": bool(pending) and len(questions_of(info)) == len(pending),
             "nudged": lead.get("nudged_at") is not None
@@ -5012,7 +5048,8 @@ def supervise_registry(
         elif action in ("nudge", "wake"):  # one of either per progress chain
             lead.update(nudges=lead.get("nudges", 0) + 1, nudged_at=lead.get("progress_at"))
             text = LEAD_WAKE.format(time=lead["wait"].removeprefix("until "))
-            act_on(eid, [(sid, action, LEAD_NUDGE if action == "nudge" else text)])
+            nudge = LEAD_NUDGE_CLOUD if cloud_session(og, info) else LEAD_NUDGE
+            act_on(eid, [(sid, action, nudge if action == "nudge" else text)])
         elif action == "revive":
             if kind == "failed":  # its one revive after a failure; a lost runner is no failure
                 lead["revives"] = lead.get("revives", 0) + 1
