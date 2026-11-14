@@ -25,6 +25,22 @@ def test_a_script_the_tests_run_writes_no_bytecode_beside_it(tmp_path: Path) -> 
     assert not (tmp_path / "__pycache__").exists()
 
 
+def test_a_run_started_without_the_variable_still_writes_no_bytecode() -> None:
+    """The test above, in a run whose environment lacks PYTHONDONTWRITEBYTECODE, as a gate or a host starts one."""
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}
+    test = f"{Path(__file__).relative_to(REPOSITORY)}::test_a_script_the_tests_run_writes_no_bytecode_beside_it"
+    run = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test],
+        cwd=REPOSITORY,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
 def test_the_approvals_stubs_stay_out_of_other_modules(request: pytest.FixtureRequest) -> None:
     assert "board_risks" not in request.fixturenames
 
