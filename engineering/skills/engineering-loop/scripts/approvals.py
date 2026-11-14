@@ -6710,7 +6710,51 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
     return 0
 
 
-def brief(pr: int, priorities: Path | None, proofs: list[Path], far: Path | None = None) -> int:
+def conflicted(pr: int, base: str, head: str) -> list[str]:
+    """The files a PR's head conflicts with its own base in, from `git merge-tree --write-tree origin/<base> <head>`
+    (empty when it merges cleanly), after fetching both, so a stale or missing origin/<base> is never read as clean.
+    A conflict whose files git doesn't name still returns one entry, and a fetch or git failure is a Refused: never
+    a clean."""
+    try:
+        git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        git("fetch", "-q", "origin", f"refs/pull/{pr}/head")
+    except subprocess.CalledProcessError as exc:
+        raise Refused(
+            f"PR #{pr}: cannot fetch origin/{base} and the head to check the merge: {exc.stderr.strip() or exc}"
+        ) from exc
+    merge = subprocess.run(
+        [
+            "git",
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "--no-messages",
+            f"origin/{base}",
+            head,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if merge.returncode == 0:
+        return []
+    # exit 1 is a conflict only with its tree on the first line: a commit git doesn't have exits 1 with nothing
+    if merge.returncode != 1 or not re.fullmatch(
+        r"[0-9a-f]{40,64}", merge.stdout.split("\n", 1)[0]
+    ):
+        raise Refused(
+            f"PR #{pr}: git merge-tree failed: {merge.stderr.strip() or merge.returncode}"
+        )
+    return list(dict.fromkeys(merge.stdout.splitlines()[1:])) or ["(files not named by git)"]
+
+
+def brief(
+    pr: int,
+    priorities: Path | None,
+    proofs: list[Path],
+    far: Path | None = None,
+    allow_conflict: bool = False,
+) -> int:
     """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
     verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
     newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
@@ -6725,6 +6769,12 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path], far: Path | None
         loop = read(toplevel() / LOOP) if (toplevel() / LOOP).exists() else None
     pull = pull_request(pr)
     head = pull["headRefOid"]
+    # first, before anything is written: a pass on a head that conflicts with its base is spent on a head that can't land
+    if not allow_conflict and (files := conflicted(pr, pull["baseRefName"], head)):
+        raise Refused(
+            f"PR #{pr}: head {head} does not merge cleanly into origin/{pull['baseRefName']}, conflicted: "
+            f"{', '.join(files)}; merge the base in first, or pass --allow-conflict to review this head"
+        )
     if missing := [str(log) for log in proofs if not log.is_file()]:
         raise Refused(f"PR #{pr}: no proof log at {', '.join(missing)}")
     # byte for byte, as lead.md's `head -1 <log> | grep -qx <head>` compares: a trailing space or CR is another line
@@ -6897,6 +6947,7 @@ def main(argv: list[str]) -> int:
     # a verifier on another host: the absolute path there holding a clone of the repo
     briefing.add_argument("--far", type=Path)
     briefing.add_argument("--priorities", type=Path)
+    briefing.add_argument("--allow-conflict", action="store_true")
     briefing.add_argument("--proof", type=Path, action="append", default=[])
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
@@ -6966,7 +7017,7 @@ def main(argv: list[str]) -> int:
                 parser.error("land --only needs a PR: there is nothing to restrict to")
             return land(args.pr or None, args.wait, args.only)
         if args.command == "brief":
-            return brief(args.pr, args.priorities, args.proof, args.far)
+            return brief(args.pr, args.priorities, args.proof, args.far, args.allow_conflict)
         if args.command == "release":
             return release(args.issue)
         return verdict(args.pr, args.report)
