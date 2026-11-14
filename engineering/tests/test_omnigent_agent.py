@@ -400,6 +400,39 @@ def test_the_brief_signs_with_the_model_the_session_took_not_the_one_asked(tmp_p
     assert (tmp_path / "r.md.brief").read_text().startswith("AGENT_SIGNATURE=codex/?/?\n")
 
 
+RELAY_RULE = (
+    "A message that adds no task (a relay, a notice, a correction) is answered in the turn's"
+    " ending line only: the report changes only through work on the task, and an"
+    " acknowledgement never replaces an earlier report's results."
+)
+
+
+@pytest.mark.parametrize(
+    ("agent", "pr", "top_level"),
+    [
+        ("claude", None, False),
+        ("codex", None, False),
+        ("claude", None, True),
+        ("claude-cloud", None, False),  # cloud, no --pr: the last message is the report
+        ("claude-cloud", None, True),
+        ("claude-cloud", 7, False),  # cloud, --pr
+    ],
+)
+def test_every_brief_says_a_message_that_adds_no_task_never_rewrites_the_report(
+    tmp_path: Path, agent: str, pr: int | None, top_level: bool
+) -> None:
+    og = FakeOmnigent()
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(
+        og, agent, "t", "do X", report, None, 0, top_level=top_level, pr=pr
+    )
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    if agent == "claude-cloud":
+        assert RELAY_RULE in brief
+    else:
+        assert RELAY_RULE in omnigent_agent.brief_of(report).read_text()
+
+
 def test_a_running_session_signs_from_its_omnigent_record_first(tmp_path: Path) -> None:
     """A Codex child's rollout sits under a private CODEX_HOME, so the record is what holds."""
     rows = [
@@ -2784,6 +2817,7 @@ DEFAULT_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
+A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
 
