@@ -3846,18 +3846,115 @@ def one_repo() -> None:
 
 
 def project() -> tuple[str | None, str | None]:
-    """The checkout's docs/agents/issue-tracker.md and its policy, None for one it lacks: a repo without the files has
-    no rules, and its issues no label shape. The policy is gatekeeper.md's (a Policy), else loop.md's `## Settings`
-    block, read with a deprecation line; a project with both is refused, since two sources of the bar would drift.
-    Settings off their schema are refused here, before any proof is printed or any PR touched."""
+    """The base's docs/agents/issue-tracker.md and its policy, None for one it lacks: a repo without the files has no
+    rules, and its issues no label shape. Each file is read from `origin/<base>` (policy_base), the ref `land` builds
+    its merge on, so a PR can't loosen its own gate and a checkout behind its base can't hold an old one; a copy in the
+    working tree that differs gets one stderr line naming the file and both commits, and the base's is used. Without
+    that ref (no origin) the working tree's are read, with one stderr line saying so. The policy is gatekeeper.md's (a
+    Policy), else loop.md's `## Settings` block, read with a deprecation line; a project with both is refused, since
+    two sources of the bar would drift. Settings off their schema are refused here, before any proof is printed or any
+    PR touched."""
     root = toplevel()
-    tracker, loop, policy = (
-        read(root / path) if (root / path).exists() else None for path in (TRACKER, LOOP, POLICY)
-    )
+    tracker, loop, policy = (policy_file(root, path) for path in (TRACKER, LOOP, POLICY))
     loop = chosen(loop, policy)
     if tracker is not None:
         tracker_settings(tracker)
     return tracker, loop
+
+
+def policy_file(root: Path, path: Path) -> str | None:
+    """`path` as project() reads it: from `origin/<base>` (policy_base), None where the base lacks it, printing
+    `differs` once when the working tree's copy is another; from the working tree, printing `unbased` once, when there
+    is no such ref."""
+    found = policy_base(str(root))
+    held = read(root / path) if (root / path).exists() else None
+    if found is None:
+        unbased(str(root))
+        return held
+    ref, tip = found
+    shown = subprocess.run(
+        ["git", "-C", str(root), "show", f"{tip}:./{path.as_posix()}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    based = shown.stdout if shown.returncode == 0 else None
+    if held != based:
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        differs(path.as_posix(), head or "no commit", ref, tip)
+    return based
+
+
+def policy_base(root: str) -> tuple[str, str] | None:
+    """The ref the policy is read from in the checkout at `root`, `origin/<base>` for its default branch
+    (default_base), and that ref's commit now, since `land` fetches it during a run; None without such a ref."""
+    base = default_base(root)
+    if base is None:
+        return None
+    tip = subprocess.run(
+        [
+            "git",
+            "-C",
+            root,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"refs/remotes/origin/{base}^{{commit}}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return (f"origin/{base}", tip) if tip else None
+
+
+@functools.cache
+def default_base(root: str) -> str | None:
+    """The default branch of the checkout at `root`, as base_branch finds it (origin/HEAD, else what `origin` says its
+    HEAD is), None when neither answers. Once per run, since project() is read many times and asking origin is a
+    network call."""
+
+    def ask(*args: str) -> str:
+        done = subprocess.run(
+            ["git", "-C", root, *args], capture_output=True, text=True, check=False
+        )
+        return done.stdout.strip() if done.returncode == 0 else ""
+
+    if base := ask("symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/"):
+        return base
+    for line in ask("ls-remote", "--symref", "origin", "HEAD").splitlines():
+        if line.startswith("ref: refs/heads/"):
+            return line.split("\t")[0].removeprefix("ref: refs/heads/")
+    return None
+
+
+@functools.cache
+def unbased(root: str) -> None:
+    """One line per run and checkout, however often the policy is read; none for a directory that is no checkout (a
+    test's, since toplevel() refuses one), which has no base to fall back from."""
+    inside = subprocess.run(
+        ["git", "-C", root, "rev-parse", "--is-inside-work-tree"], capture_output=True, check=False
+    )
+    if inside.returncode:
+        return
+    print(
+        "approvals.py: no origin/<base> ref, so the policy is read from the working tree",
+        file=sys.stderr,
+    )
+
+
+@functools.cache
+def differs(path: str, head: str, ref: str, tip: str) -> None:
+    """One line per run, file and pair of commits, however often the policy is read."""
+    print(
+        f"approvals.py: {path} in the working tree (at {head}) differs from {ref}'s (at {tip}): using {ref}'s",
+        file=sys.stderr,
+    )
 
 
 def chosen(loop: str | None, policy: str | None) -> str | None:
@@ -3877,8 +3974,8 @@ def chosen(loop: str | None, policy: str | None) -> str | None:
 
 
 def base_policy(base: str, checkout: str | None) -> str | None:
-    """The policy on `origin/<base>` after a fetch of it, chosen from its files as project() chooses the checkout's,
-    since a branch's own edit of the policy is not the one the owner approved; `checkout`, the running checkout's, when
+    """The policy on `origin/<base>` after a fetch of it, chosen from its files as project() chooses the default
+    branch's, since a branch's own edit of the policy is not the one the owner approved; `checkout`, project()'s, when
     that ref holds neither file (or no fetch ever made it), today's rule. A failed fetch reads the ref as last fetched."""
     ref = f"refs/remotes/origin/{base}"
     root = toplevel()
@@ -5339,7 +5436,8 @@ WHOLE = "gate"
 
 def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
     """The gate's steps, in order, each `name`, `command` (as gate() reads one, with `passed`), `words`, `sets` and
-    `where` (`any`, or `host`: never run in a cloud session): loop.md's `gate_steps`, else the one `gate` command as
+    `where` (`any`, or `host`: never run in a cloud session): the base's policy's `gate_steps` (project(), so a PR's own
+    edit of its gate is not the one it is gated by), else the one `gate` command as
     the step WHOLE, `any`, flagged `legacy`, which records, publishes and prints as the one gate always did (a plan
     from `gate_steps` is stepped whatever its names or length: its steps are not `legacy`). Each step's pass is recorded and reused by itself, keyed by its tree and command (recorded),
     so a step that passed on a tree anywhere is not run again; a project without `gate_steps` keeps one record. A

@@ -3464,6 +3464,9 @@ def lands(
     times the file says, leaving `leftover.txt`; `runs()` counts its runs. `land(*argv)` runs it: (exit, lines)."""
     # a landed PR's worker sessions are Omnigent's, which no land here may reach (test_approvals_keep_pr_worker.py)
     monkeypatch.setattr(approvals, "archive_workers", lambda _number: None)
+    # its tests rewrite the policy in the work tree after opening PRs, so it is read there, as in a checkout without
+    # origin (test_approvals_policy_base.py tests the read from origin/<base>)
+    monkeypatch.setattr(approvals, "policy_base", lambda _root: None)
     origin, work = tmp_path / "origin.git", tmp_path / "work"
     git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     (origin / "hooks" / "pre-receive").write_text(NO_REWRITE)
@@ -4895,6 +4898,8 @@ def signing(landing: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     git("config", "user.email", "lander@example.com")
     git("remote", "add", "origin", REPO)
     git("config", f"url.{remote.as_uri()}.insteadOf", REPO)
+    loop = tmp_path / "docs" / "agents" / "loop.md"
+    loop.write_text(add(loop.read_text(), "land", SIGNED_LAND))
     git("add", "docs")
     git("commit", "-qm", "base")
     git("push", "-q", "origin", "main")
@@ -4909,8 +4914,6 @@ def signing(landing: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     git("config", "gpg.format", "ssh")
     git("config", "user.signingkey", str(key))
     (tmp_path / "signers").write_text(f"lander@example.com {key.with_suffix('.pub').read_text()}")
-    loop = tmp_path / "docs" / "agents" / "loop.md"
-    loop.write_text(add(loop.read_text(), "land", SIGNED_LAND))
     head = git("rev-parse", "feature")
     landing["pull"].update(
         headRefOid=head, reviews={"nodes": [verdict_on(head, "0 blocker, 0 major, 0 minor")]}
@@ -5079,6 +5082,8 @@ def test_land_with_the_line_refuses_another_base_and_a_line_it_cannot_read(
     ]
     loop = tmp_path / "docs" / "agents" / "loop.md"
     loop.write_text(loop.read_text().replace("  allowed_signers: signers\n", ""))
+    signing["git"]("commit", "-qam", "no signers")  # the policy is main's (#1047)
+    signing["git"]("push", "-q", "origin", "main")
     assert refused_untouched(landing, signing, capsys) == [
         "loop.md's `land` lacks `allowed_signers`"
     ]
@@ -6646,6 +6651,10 @@ def gate_faked(
     return repo, head, {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
 
 
+# what approvals.py prints once reading the policy in a checkout without origin, as gate_faked's repo is (#1047)
+UNBASED = "approvals.py: no origin/<base> ref, so the policy is read from the working tree\n"
+
+
 def caller(repo: Path, env: dict[str, str], *args: str) -> subprocess.Popen[str]:
     """`local-ci` run as an agent's harness runs it: in a process group of its own, not leading a session."""
     return subprocess.Popen(
@@ -6764,7 +6773,9 @@ def test_a_caller_left_alone_exits_and_prints_as_an_attached_run(
     tmp_path: Path, exit_code: int, code: int, last: str
 ) -> None:
     repo, head, env = gate_faked(tmp_path, exit_code)
-    out, err = caller(repo, env, "--record").communicate(timeout=60)
+    out, err = (
+        text.replace(UNBASED, "") for text in caller(repo, env, "--record").communicate(timeout=60)
+    )
     record = next((repo / ".git" / "approvals" / "local-ci").glob("*.json"), None)
     # a pass then says it isn't published: the repo has no remote
     assert (out.splitlines()[:2], err) == (
@@ -6799,7 +6810,7 @@ def test_a_second_local_ci_on_a_running_head_follows_it(tmp_path: Path) -> None:
         check=False,
     )
     assert status.returncode == 3 and status.stdout.startswith(f"running on {head}")
-    assert first.communicate(timeout=60)[0].startswith("gate done\n")
+    assert first.communicate(timeout=60)[0].replace(UNBASED, "").startswith("gate done\n")
     second.communicate(timeout=60)
     assert (first.returncode, second.returncode) == (0, 0)
     assert (tmp_path / "runs").read_text() == "run\n"  # one gate ran
@@ -6871,7 +6882,7 @@ def test_a_stale_run_on_the_head_is_replaced_by_a_new_one(
     assert status.returncode == 1  # failed, or ended without an exit code: not running (3)
     run = caller(repo, env, "--record")
     out, _ = run.communicate(timeout=30)
-    assert (run.returncode, out.splitlines()[0]) == (0, "gate done")
+    assert (run.returncode, out.replace(UNBASED, "").splitlines()[0]) == (0, "gate done")
     assert (common / f"{head}.exit").read_text() == "0\n"
     assert (tmp_path / "runs").read_text() == "run\n"
 
