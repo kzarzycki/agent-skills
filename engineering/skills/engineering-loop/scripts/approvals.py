@@ -6727,7 +6727,8 @@ def conflicted(pr: int, base: str, head: str) -> list[str]:
     )
     if merge.returncode == 0:
         return []
-    if merge.returncode != 1:
+    # exit 1 is a conflict only with its tree on the first line: a commit git doesn't have exits 1 with nothing
+    if merge.returncode != 1 or not re.fullmatch(r"[0-9a-f]{40,64}", merge.stdout.split("\n", 1)[0]):
         raise Refused(f"PR #{pr}: git merge-tree failed: {merge.stderr.strip() or merge.returncode}")
     return list(dict.fromkeys(merge.stdout.splitlines()[1:])) or ["(files not named by git)"]
 
