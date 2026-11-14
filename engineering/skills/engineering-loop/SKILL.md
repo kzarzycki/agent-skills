@@ -234,6 +234,28 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   leaves untouched, and reverting deletes only it. `setup:github` also syncs the repo's
   labels with `scripts/labels.py` (github.md, Labels).
 
+**Which token the agents use.** What the token can do bounds what a misbehaving agent can undo.
+
+- *In an organization:* a fine-grained token with the organization as resource owner. Repository
+  permissions: Contents, Pull requests, Issues, Commit statuses and Workflows read and write;
+  Metadata and Actions read. Organization permission: Projects read and write (`board.py`
+  writes the board through GraphQL). It gets no Administration, so the rulesets bind the agents.
+  Open question, unproved: `approvals.py check` reads each head's check runs
+  (`commits/<sha>/check-runs` and `check-suites`, plus the `actions/runs` that name them and the
+  commit statuses). GitHub's fine-grained permissions table lists the `actions/runs` and commit
+  status routes (under Actions and Commit statuses, read), but it has no Checks permission and
+  lists neither check-runs nor check-suites. If the token can't read check runs, `check` has no CI result to
+  read and `check merge` can't tell a green head from a missing one, so it holds the merge
+  (it has no fallback to the statuses alone); until someone runs
+  `gh api repos/<owner>/<repo>/commits/<sha>/check-runs` with such a token and records the
+  answer, treat the gap as real.
+- *On a personal account:* a fine-grained token can't reach a repo the account only collaborates
+  on, nor a user-owned Projects board, so the loop needs a classic `repo` token (plus the
+  `project` scope for `board.py`). That token is admin, so rulesets don't bind it; the
+  protection is detection: no-bypass rulesets plus a scheduled `rulesets.py check` (not yet shipped: issue #1041).
+- *Renewal:* the `github-authentication-token-expiration` header of `gh api -i user` shows
+  when a token runs out.
+
 Hooks are git hooks, installed by `mise run setup:dev`; no check runs from a coding agent's
 harness hook. A commit runs the `lint:` tasks on the staged files, and a push runs
 `test:changed` and `check:secrets`. The proofs stay off the push, because a push is
