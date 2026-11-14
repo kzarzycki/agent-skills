@@ -197,6 +197,10 @@ def test_land_decides_under_the_policy_it_fetched_under_the_lock(
     monkeypatch.setattr(
         approvals, "readied", lambda named, *_a: [{**pull, "verdict": "old"} for pull in named]
     )
+    # nothing was readied, so nothing is judged again before the batch
+    monkeypatch.setattr(
+        approvals, "landable", lambda pull, *_a, **_kw: pytest.fail(f"PR #{pull['number']} judged")
+    )
     monkeypatch.setattr(
         approvals,
         "locked",
