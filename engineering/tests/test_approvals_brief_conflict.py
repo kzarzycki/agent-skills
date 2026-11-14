@@ -175,3 +175,32 @@ def test_lead_md_says_what_to_do_on_exit_1() -> None:
     assert "exits 1 naming the conflicted files and writes no brief" in lead
     assert "merge the base in first" in lead
     assert "`--allow-conflict`" in lead
+
+
+def test_a_git_error_in_the_merge_is_not_read_as_clean(
+    repo: dict[str, object], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    found = pull(body="Closes #12.\n")
+    found["headRefOid"], found["baseRefName"] = "f" * 40, "trunk"  # a commit git doesn't have
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: found)
+    assert approvals.main(["brief", "7"]) == 1
+    out = capsys.readouterr().out
+    assert "git merge-tree failed" in out
+    assert "Review PR #7" not in out
+
+
+def test_a_conflict_git_names_no_file_for_still_refuses(
+    repo: dict[str, object], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = subprocess.run
+
+    def bare(cmd: list[str], *a: object, **k: object) -> subprocess.CompletedProcess[str]:
+        if cmd[:2] == ["git", "merge-tree"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="a" * 40 + "\n", stderr="")
+        return real(cmd, *a, **k)  # type: ignore[call-overload,no-any-return]
+
+    monkeypatch.setattr(approvals.subprocess, "run", bare)
+    assert approvals.main(["brief", "7"]) == 1
+    out = capsys.readouterr().out
+    assert "files not named by git" in out
+    assert "Review PR #7" not in out
