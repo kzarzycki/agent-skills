@@ -94,6 +94,13 @@ design, wireframes included for a UI, and delegate the rest.
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
    both are yours (worker.md, Gates and push). Its model: SKILL.md, Models.
+   Before the first worker starts, write the verifier's priority checks once, from the spec and
+   its comments (a later comment can narrow the spec), into `tmp/loop/priorities-<pr>.md`, the
+   file `approvals.py brief <pr> --priorities <file>` takes at step 7. Paste its lines into each
+   worker's brief under "the verifier will check", so the worker runs them on its own head
+   before reporting: a finding the worker could have checked costs a fix round, a full gate and
+   another pass. The worker gets those checks only, never a verdict, review text or the
+   verifier's report, so the verifier stays independent and runs the same checks itself.
    With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker; every step's placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.
@@ -125,7 +132,7 @@ design, wireframes included for a UI, and delegate the rest.
    `tmp/loop/` the proof logs and, on a later pass, the previous report (as the
    `tmp/loop/pr<pr>-v<n>.md` the brief names) and its repros, since a read outside its
    workspace is prompted. Give it the path of `verifier.md`, the base, the reviewed head, the
-   spec number, the priorities for this change, and a report path under `tmp/loop/` in that
+   spec number, the priorities file from step 4 (extended with any a later finding adds), and a report path under `tmp/loop/` in that
    worktree, which the project gitignores. `uv run <this skill's folder>/scripts/approvals.py brief
    <pr> --priorities <file> --proof <log>…`, run from that worktree through that worktree's
    own copy of the skill, since the role path it prints follows the script's copy and only
