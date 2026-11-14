@@ -42,7 +42,8 @@ owner's current record and `approved:spec`, unless loop.md's `spec.auto` covers 
 `plan` skill. Category, component and size names are the loop's fixed set plus docs/agents/issue-tracker.md's
 (`label_names`): a category is `kind:<name>`, a component `area:<name>`, whether the tracker file names it bare or in
 full.
-`check build` also refuses an issue assigned to anyone but its approver (the person who last added `approved:spec`,
+`check build` with a PR also runs `check merge`'s keyword check (below), where the lead hands the PR over, so a wrong
+keyword is fixed before the PR reaches the landing queue. `check build` also refuses an issue assigned to anyone but its approver (the person who last added `approved:spec`,
 or for a spec the policy approves the account running this), since an assignee says whose the issue is; and, with a
 PR, an issue another open PR closes too (a closing keyword, or `Implements` under a `signoff` rule), naming that PR
 and its branch, since each build runs its own verifier, gate and queue. When every build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
@@ -140,8 +141,8 @@ a wait for the owner or a pending required check 3, a red required check 1; with
 3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
 `pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
 (the PR's head) and `LAND_BASE` (that tip) set, so the base's tree holds the check and a PR never changes what judges
-it. A non-zero exit leaves that PR out of this batch, with a comment, once per head, holding the check's output; it is
-not red, so it is neither evicted nor turned back to draft. Then it merges each candidate's head
+it. A non-zero exit leaves that PR out of this batch, printing the check's last lines on every land, with a comment,
+once per head, holding its output; it is not red, so it is neither evicted nor turned back to draft. Then it merges each candidate's head
 (`git merge --no-ff`). A PR that conflicts is skipped, with a comment, once per head, saying it conflicts with the base
 plus the PRs merged before it, so it needs the base merged in.
 4. It gates the result's tree. A pass is reused when the gate command passed on that tree before (reusable, below):
@@ -1218,24 +1219,41 @@ def linked(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None)
     """One line per issue the PR links with the wrong keyword for its sign-off (signoff): `Implements #n` when the
     owner signs the change off after landing, so the merge leaves the issue open for it, and a closing keyword
     otherwise, so nothing waits for a sign-off nobody asked for. `Part of` suits both, since the issue stays open
-    anyway. An issue GitHub links without a body line closes on merge."""
-    kinds, found = links(pull["body"] or ""), []
+    anyway. An issue GitHub links without a body line closes on merge. Each line names the keyword the PR says
+    (worded), the one it needs, and the label, path or spec line that decides it, since a line naming only the
+    keyword to use reads as a description of the PR."""
+    body = pull["body"] or ""
+    kinds, found = links(body), []
     for issue in issues:
         judged = signoff(pull, issue, loop)
         if judged is None or any(label.startswith("wayfinder:") for label in names(issue)):
             continue
         number, kind, (needed, why) = issue["number"], kinds.get(issue["number"], CLOSES), judged
+        says = worded(body, number, kind)
         if needed and kind == CLOSES:
             found.append(
-                f"#{number} waits for the owner's sign-off after landing, since {why}: the PR says"
-                f" `Implements #{number}`, which leaves it open, not a closing keyword"
+                f"#{number}: {says}, but #{number} waits for the owner's sign-off after landing, since {why}:"
+                f" use `Implements #{number}`, which leaves it open"
             )
         elif not needed and kind == IMPLEMENTS:
             found.append(
-                f"#{number} needs no sign-off ({why}): the PR says `Closes #{number}`, since"
+                f"#{number}: {says}, but #{number} needs no sign-off ({why}): use `Closes #{number}`, since"
                 " `Implements` would leave it open for a sign-off nobody asked for"
             )
     return found
+
+
+def worded(body: str, number: int, kind: str) -> str:
+    """What the PR body says links issue #number with `kind` (links), the keyword as written (`Fixes #3`), or that
+    GitHub links it as closing with no body line."""
+    for closes, part, implements, found in CLOSING.findall(QUOTED.sub("", body)):
+        word = closes or part or implements
+        if (
+            int(found) == number
+            and (CLOSES if closes else IMPLEMENTS if implements else PART) == kind
+        ):
+            return f"the PR says `{word.capitalize()} #{number}`"
+    return f"GitHub links #{number} to the PR as closing, with no line in its body"
 
 
 def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
@@ -1903,6 +1921,9 @@ def proofs(
         point == "build" and "number" in pull
     ):  # before the PR exists (unopened) there is nothing to compare
         found += duplicates(pull, loop)
+        # where a lead hands the PR over, so a wrong keyword is fixed before the PR reaches the landing queue
+        if loop is not None:
+            found += linked(pull, issues, loop)
     found += demo_form(pull)
     if point != "merge":
         return found
@@ -4626,7 +4647,8 @@ def pre_landed(
 ) -> bool:
     """Whether loop.md's `pre_land` passes the PR, True without one. It runs in `work` at the base's tip, with
     LAND_HEAD and LAND_BASE set, so the base's tree holds the check that judges a PR, never the PR's own. Non-zero
-    leaves the PR out of this batch with its output said once per head on the PR; it isn't red, so it stays ready."""
+    leaves the PR out of this batch with its output's end printed on every land and said once per head on the PR; it
+    isn't red, so it stays ready."""
     if not (written := settings(loop).get("pre_land")):
         return True
     command, words, sets = command_line(written, "pre_land")
@@ -4655,8 +4677,11 @@ def pre_landed(
     if not ran.returncode:
         return True
     failed.add(pull["number"])
+    # its output's end on every land, not only in the comment, which is once per head: a land again on the same head
+    # would otherwise say only the exit code
     print(
         f"{where}: `{command}` refused it against {base} at {tip}, exiting {ran.returncode}: left out of this batch"
+        + "".join(f"\n  {line}" for line in ran.stdout.rstrip("\n").splitlines()[-LOG_TAIL:])
     )
     if not any(
         note["body"].startswith(PRE_LAND) and f"Head: {head}" in note["body"]
