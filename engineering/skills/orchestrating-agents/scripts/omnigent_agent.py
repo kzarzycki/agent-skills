@@ -50,7 +50,8 @@ exit 0 once it is in the history (or a copy the session has not answered yet alr
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
 a later read failed (delivered, unconfirmed: run it again, it posts no second copy). A question card
-(``sys_ask_user_question``) leaves the session free: a plain relay is delivered beside it, exit 0,
+(``sys_ask_user_question``) leaves the session free: a plain relay (or ``send``, which prints the
+same line before it waits) is delivered beside it, exit 0,
 the line names the card still open, and the message never answers it. Only a question the
 harness blocks on (Claude's AskUserQuestion) holds the message behind it (exit 5); ``relay
 --answer`` gives it as each question's answer instead, exit 0, since its pending inputs wait on
@@ -1712,6 +1713,19 @@ def send(
     return "delivered", posted
 
 
+def still_open(og: Omnigent, sid: str) -> str:
+    """``; its question is still open (relay --answer answers it): <question>`` while ``sid`` has a
+    question open, else ``""``: what a delivered message that did not answer it adds to its line. A
+    failed look changes nothing, since the message is in."""
+    try:
+        asks = questions_of(og.info(sid))
+    except Fail:
+        return ""
+    if not asks:
+        return ""
+    return "; its question is still open (relay --answer answers it): " + "; ".join(asks)
+
+
 def relay(
     og: Omnigent,
     sid: str,
@@ -1782,14 +1796,7 @@ def relay(
         raise Queued(f"session {sid}: queued {why}; {lands}")
     line = f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
     if not answer and not source:
-        try:
-            open_asks = questions_of(og.info(sid))
-        except Fail:  # the message is in: a failed look at the cards changes nothing
-            open_asks = []
-        if open_asks:
-            line += "; its question is still open (relay --answer answers it): " + "; ".join(
-                open_asks
-            )
+        line += still_open(og, sid)
     return line
 
 
@@ -6434,6 +6441,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 )
             if undeleted:
                 raise undeleted
+            if opened := still_open(og, args.session):  # a card blocks nothing: it stays open
+                print(f"session {args.session}: delivered{opened}")
             print(
                 wait(og, args.session, report, args.timeout, args.verdict, since, args.pr, baseline)
             )

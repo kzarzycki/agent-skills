@@ -403,7 +403,7 @@ with no further call. Exit 4: not deliverable, and why (archived, a revive that 
 neither pending nor in the history within `--confirm-seconds`, default 60). Exit 7: `SENT_UNCONFIRMED`, the message was posted and a later read (the poll that confirms it) failed, so it is out and unconfirmed; run the command again, it finds the copy and posts no second one (a failure before the post stays exit 1). A reaped runner is
 revived in place first, as `send` does. A question card (`sys_ask_user_question`)
 leaves the lead free: a plain `relay` is delivered beside it (exit 0), its line names the card
-still open, and the message never answers it. A question the harness blocks on (Claude's
+still open (`send` prints the same line before it waits), and the message never answers it. A question the harness blocks on (Claude's
 AskUserQuestion, Codex's requestUserInput, both marked `ask_user_question` in its pending
 prompts) holds every message until it is answered, so a plain `relay` waits behind it
 (exit 5) and lands once it is answered: a relay that arrives while it is open must not
