@@ -81,7 +81,10 @@ chose.
 choice, set in the environment once. Omnigent applies it as the session's
 `terminal_launch_args` when it launches the terminal, so `info` shows it. A Codex child takes
 none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
-`start` refuses the flag for Codex and ignores the variable.
+`start` refuses the flag for Codex and says on stderr that the variable's mode was not applied.
+A claude-cloud child takes `auto` or `bypassPermissions`, sent as the session create's
+`permission_mode` (the server answers the VM's tool requests itself under bypass), and
+`start` treats any other mode for it as it does a mode for Codex.
 
 **Effort.** `--effort <level>` sets the child's reasoning effort, as its harness names the levels
 (Claude, native or cloud: `low` to `max`). Without it the level comes from `OMNIGENT_EFFORT_<AGENT>`
@@ -142,7 +145,7 @@ session, so the launcher passes none. On another host agy takes the brief as a f
 so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment
 on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since GitHub's
 GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
-and end its turn with only the comment's URL. They refuse `--pr` to an agent whose harness isn't
+and end its turn with only the comment's URL. A cloud session can't create a release or upload any binary through GitHub (creating a release answers HTTP 403, and its GitHub proxy answers HTTP 415 to any body that isn't `application/json`), but it can push branches, so a build output it must hand over goes on a branch or is built where it's used. `run` and `start` refuse `--pr` to an agent whose harness isn't
 `acp:claude-cloud`, naming `claude-cloud`, before any session exists: a native worker given it
 would run its build on this host, where a heavy one starves every other session. A cloud session (harness `acp:claude-cloud`)
 runs in the environment its workspace's untracked `.claude/settings.local.json` names in
@@ -330,7 +333,8 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
   and the message is one line. One that runs a command in the background ends its turn
   "waiting" and never reports; the preamble covers that, and the first turn that ends
   without a report or a question gets one nudge to poll its detached runs and write the
-  report. `wait` fails when a second turn ends without a report, when the child is blocked on an approval prompt (it prints the
+  report (a cloud child's says its background run may not have outlived the turn: check whether
+  it posted its result, restart it only if not, and keep the turn open until it ends, #1002). `wait` fails when a second turn ends without a report, when the child is blocked on an approval prompt (it prints the
   prompt), or after `--timeout` (default 3h), so the lead still wakes.
 
 **Children are your sub-agents.** Run from an Omnigent session, the script creates each
@@ -401,11 +405,13 @@ rerun sends no second one. Exit 5: queued, held until the lead's current step en
 foreground command) or until a person answers the approval prompt it prints; it lands then
 with no further call. Exit 4: not deliverable, and why (archived, a revive that failed, or
 neither pending nor in the history within `--confirm-seconds`, default 60). Exit 7: `SENT_UNCONFIRMED`, the message was posted and a later read (the poll that confirms it) failed, so it is out and unconfirmed; run the command again, it finds the copy and posts no second one (a failure before the post stays exit 1). A reaped runner is
-revived in place first, as `send` does. A lead blocked only on questions (Claude's
+revived in place first, as `send` does. A question card (`sys_ask_user_question`)
+leaves the lead free: a plain `relay` is delivered beside it (exit 0), its line names the card
+still open (`send` prints the same line before it waits), and the message never answers it. A question the harness blocks on (Claude's
 AskUserQuestion, Codex's requestUserInput, both marked `ask_user_question` in its pending
-prompts) holds every message until the question is answered, so a plain `relay` waits behind
-it (exit 5) and lands once the question is answered: a relay that arrives while a question is
-open must not become its answer. `relay --answer` answers each question with the message
+prompts) holds every message until it is answered, so a plain `relay` waits behind it
+(exit 5) and lands once it is answered: a relay that arrives while it is open must not
+become its answer. `relay --answer` answers each question with the message
 instead (exit 0), through Omnigent's resolve route: the turn carries on with it as the
 answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the message up
 to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.

@@ -5,7 +5,9 @@ when a verifier asks for its runs because the host's heavy slot was not free, or
 A run the sandbox refuses). The child returns the logs; the verifier reads them as its own. The undo
 and redo commands are the ones verifier.md, Mutation-check the new tests gives for its
 patches, copied from the verifier's question, since the template would drift from that
-paragraph if it named them itself.
+paragraph if it named them itself. A verifier's question lists every run its pass needs, and the
+brief takes them all: one list, answered together in one heavy-slot hold on one host that can make
+each, not one brief per run.
 
 ```text
 Check out PR #<n> at <head> (`git fetch origin pull/<n>/head && git checkout --detach <head>`)
@@ -14,6 +16,9 @@ review's runs, not a change.
 
 Each log starts with the output of `git rev-parse HEAD` and the command, then its output,
 then a line `exit <n>`, since a log of another commit proves nothing about this one.
+
+Runs, in this order; drop a line the question did not ask for and add one per further run it
+listed (an acceptance line, an instance or device proof, a gate step), each in its own log:
 
 1. Green log: run <gate command>.
 2. Mutation log: for each patch below, <the undo command>, run <tests>, then

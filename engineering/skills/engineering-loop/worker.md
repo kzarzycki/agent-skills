@@ -17,6 +17,10 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    item is built, never to whether: narrowing or dropping an acceptance item or an
    Implementation Decision is a question to the lead in `<report>.question`, and that item
    stops until it is answered, since only the owner changes an approved spec's scope.
+   Read the spec's comments as well as its body, since a later comment can narrow
+   the spec. A brief with "the verifier will check" lists the checks the verifier will run on
+   your head: run each on your own head before you report, and list each one's result in the
+   report, since a check left to the verifier costs a fix round, a full gate and another pass.
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
@@ -85,6 +89,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    headless switch in its `docs/agents/` files.
    Before the report, mutation-check each production change you add: one patch per
    condition, branch or value, written as verifier.md, Mutation-check the new tests, says,
+   committed with its tests first, since mutate.py refuses a tree with uncommitted changes, and
    run with `uv run <this skill's folder>/scripts/mutate.py --test '<tests>' --log <log>
    <patch>…`, which queues on the host gate slot itself (the short lane when the tests pass on the head within
    `short_seconds`: SKILL.md, One heavy gate per host slot), so the test command takes no lock of its own. A survivor

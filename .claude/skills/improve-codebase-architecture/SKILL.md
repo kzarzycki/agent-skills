@@ -17,7 +17,7 @@ ADRs in `docs/adr/` record decisions not to re-litigate.
 
 ## 1. Explore
 
-Deepening pays off in future changes, so weight the parts of the codebase that change. Take the user's direction (a module, subsystem or pain point) if they gave one; otherwise walk back a good stretch of `git log` for the hot spots and look there first, widening the net only if the changes are scattered. Read `GLOSSARY.md` and the area's ADRs before scanning. Hand the walk to a sub-agent when it would flood your context.
+Deepening pays off in future changes, so weight the parts of the codebase that change. Take the user's direction (a module, subsystem or pain point) if they gave one; otherwise walk back a good stretch of `git log` for the hot spots and look there first, widening the net only if the changes are scattered. Read `GLOSSARY.md` and the area's ADRs before scanning. Hand the walk to a sub-agent, started with a fresh context window rather than a fork of yours, when it would flood your context.
 
 Look for friction rather than following a checklist: one concept that needs bouncing between many small modules, interfaces nearly as complex as their implementations, pure functions extracted for testability while the bugs hide in how they are called, coupling that leaks across seams, code that is untested or hard to test through its interface. Apply the deletion test to every suspect; a candidate is one where deleting would concentrate complexity, not just move it.
 

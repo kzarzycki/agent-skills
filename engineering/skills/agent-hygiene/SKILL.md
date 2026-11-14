@@ -55,6 +55,11 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
   - `git status` is clean apart from untracked `*.lock` files (also inside an untracked
     directory that holds nothing else);
   - HEAD is on a remote branch, or is the PR's head (same commit or tree), or in it;
+  - a detached worktree's HEAD is no remote branch's tip (a landing checkout parked at the
+    default branch's tip is live, and a landed PR's head is that tip), and none of its own git
+    dir's `HEAD`, `index`, `logs/HEAD` or `FETCH_HEAD` (a checkout touches the first three,
+    a fetch the last) has changed in 24 hours, a worktree used lately being kept without
+    a question;
   - the worktree isn't locked (`git worktree lock`);
   - no process has its cwd or a file in it (a held lock file included) or names it;
   - its `tmp/` and `.bootstrap-state/` (run reports, ignored or untracked) haven't changed in
@@ -114,7 +119,7 @@ shell), a stale pack and drift.
 The run posts into the chief of staff's Omnigent session (project `Chief of staff`, label
 `omni.role=cos`), through the account's Omnigent CLI logins; a question about a repo's worktree
 goes instead to that repo's project manager (`omni.role=pm`, `omni.repos` naming the repo), the
-chief of staff when none is live. The server in
+chief of staff when none is live, and so does a drift finding whose path is inside that repo's checkout. The server in
 `~/.omnigent/config.yaml` first, then every other server the account is logged in to. It
 posts in four cases, each question or finding once (`~/.local/state/agent-hygiene/asked`),
 at most 30 per message:
@@ -128,7 +133,10 @@ at most 30 per message:
   not fast-forwarded (Self-update).
 - **Drift:** each finding of the checkout's `dotagents doctor`. A dotagents without the
   `doctor` command (exit 2) is itself a finding. A doctor that times out, exits other than
-  0, 1 or 2, or exits 1 with no finding makes the run exit 1.
+  0, 1 or 2, or exits 1 with no finding makes the run exit 1. A finding inside a checkout on its
+  default branch with no changes, no local commits and `origin` ahead is first tried by
+  a fast-forward to origin's default branch (`git merge --ff-only`, not `git pull`, which follows the branch's own upstream) and a second doctor run: one that clears is logged, not told; a dirty,
+  diverged or other-branch checkout is never touched.
 
 ## Self-update
 

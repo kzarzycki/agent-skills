@@ -154,13 +154,14 @@ carry_over_main:
 | `loop` | `cap` | a whole number (The cap) | the default |
 | | `ci` | deprecated, goes in the next release (Approvals and proof); `false` for a project without CI, whose merge proof is then `uv run <this skill's folder>/scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
 | | `gate` | the merge check `local-ci` runs: a command, with any variables it sets in front (Adopting the loop) | `mise run check:all` |
-| | `gate_steps` | the merge check as steps, in place of `gate`: a list of `name`, `command` (parsed as `gate` is) and `where` (`any`, or `host`: never run in a cloud session), each step's pass recorded and reused by itself (Adopting the loop) | the one `gate` command |
+| | `gate_steps` | the merge check as steps, in place of `gate`: a list of `name`, `command` (parsed as `gate` is), `where` (`any`, or `host`: never run in a cloud session) and optionally `paths`, globs of the files the step reads, matched on the full path as `paths` are, so its pass is reused on any tree whose files under them are the same; each step's pass recorded and reused by itself (Adopting the loop) | the one `gate` command; a step without `paths` reads the whole tree |
 | | `local_ci_env` | the environment variables the check reads, cleared for its run unless `gate` sets them (Adopting the loop) | none |
 | | `machine_exit` | the gate's exit that means the machine isn't ready (a locked screen, low disk), such as 78: `land` runs that gate once more on the same tree, and a second one stops the run landing, evicting and posting nothing, and `local-ci` refuses it as a machine fault (`approvals.py`'s docstring) | every non-zero exit is red |
 | | `short_seconds` | a whole number of seconds: a job expected to finish within it takes the host's short lane instead of the heavy slot, and `0` turns the lane off (Rules, One heavy gate per host slot) | `120` |
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
 | | `pre_land` | a check `land` runs for each PR before batching it, parsed as `gate` is, from the base's tree with `LAND_HEAD` and `LAND_BASE` set, such as one refusing a branch forked before a restructuring; non-zero leaves that PR out of the batch with one comment per head holding its output, and it stays ready (`approvals.py`'s docstring says how) | no check |
 | | `head_proof` | `status`, a commit status `land` requires on each head, and `env`, the variables `local-ci --record --head-proof` takes from the caller for that run, both required (Approvals and proof) | the batch gate is the only proof |
+| `mutate` | `inconclusive_exit` | a whole number from 1 to 255: the exit a test command returns for "setup failed, no verdict", which `mutate.py` reports as an inconclusive patch (never killed) and exits 3 for; the project's test command exits with it when its device or build setup fails (verifier.md, Mutation-check the new tests) | `75` |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
 | `risk` | `merge_paths` | globs matched on the PR's files, as `paths` are: a PR touching one merges only on the owner's go on its head (Approvals and proof) | the rule above decides |
@@ -258,9 +259,19 @@ chain of checks is one task, or the steps of `gate_steps`, each a command and wh
 a cloud VM can't run, such as an Apple build). Each step's pass is its own record and branch, named by the tree and
 the step's command, so `local-ci`, `local-ci --record` and `land` run only the steps with no pass on the tree and print
 where each reused one passed: a host runs only the `host` steps of a tree whose other steps a cloud session pushed,
-and a cloud session runs the `any` steps and leaves the `host` ones, which `land` there refuses. Each step that runs
-holds the host gate slot (Rules, One heavy gate per host slot) for its own run only, and every record, a step's or the
-one gate's, carries the seconds it ran and the seconds it waited for the slot. A run on a
+and a cloud session runs the `any` steps and leaves the `host` ones, which `land` there refuses. A step may name
+`paths`, globs of the files it reads (`paths: [ios/**, Package.swift]`); its pass is then keyed on its inputs, its command
+and a digest of the `gate_steps` setting and the mode, object id and path of each file under its paths, so a tree
+that changes none of them (a comment, the agent pack, another PR's files in a batch) reuses the pass from any tree with
+the same inputs, from this clone's records or origin's branches, and the run says `<step>: reused, inputs unchanged
+since <tree>`. A step without `paths` reads the whole tree, as do paths that match no file. A project whose docs no
+step reads gives every step `paths` that leave `docs/**` out. Any change to `gate_steps`, a command or a step's
+`paths`, changes every keyed step's key, so nothing is reused across it: `paths` skips work on purpose, and a wrong
+glob passes a step that never ran on what it reads, so a change to it is high risk. A reused record counts only when
+today's `paths` give its own tree the same key. Each step that runs
+holds the host gate slot (Rules, One heavy gate per host slot) for its own run only, so a land whose host steps all
+reuse never waits on it for them, and every record, a step's or the one gate's, carries the seconds it ran, the
+seconds it waited for the slot, and the host's 1-minute load average and swap in use when it started. A run on a
 checkout with changes records nothing. A project whose check reads environment variables (a
 tier, a scope) names them in gatekeeper.md's `local_ci_env`, and they are cleared for the run, so a
 host's own setting never changes what a pass proves; the tier the merge needs goes in
@@ -389,7 +400,8 @@ gatekeeper.md's policy (Settings) holds:
   `Sign-off: owner` or `Sign-off: none`, and `owner` there asks for it where no rule does.
   The PR links such an issue with `Implements #<n>`, which GitHub does not close, so the
   issue stays open for the sign-off, and every other issue with `Closes #<n>`; `Part of
-  #<n>` suits both. `check merge` refuses the wrong keyword. Without a `signoff` section
+  #<n>` suits both. `check merge` refuses the wrong keyword, and so does `check build` on
+  a PR, so it is fixed before the PR reaches `land`. Without a `signoff` section
   no keyword is checked, and `Implements` is a link like `Part of`.
 
 A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
@@ -439,7 +451,7 @@ until they approve. A spec the owner approved and then edited for wording needs 
 needs nothing. `mise run loop:approvals build` before building and `mise run
 loop:approvals merge` before merging check every proof (`scripts/approvals.py` lists
 them); `merge` exits 3 while it waits for `check` or the owner's go, and 1 when a proof
-is missing. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land [<pr>]` (the
+is missing. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land [<pr>...]` (the
 project's `loop:land` task). It lands every landable PR into the base as one batch, so a base
 that moved costs one gate, not a merge, a gate and a verdict per PR, and no PR lands on a base
 it was never gated on:
@@ -450,7 +462,8 @@ it was never gated on:
   merges and is broken at once; one older than 2 hours (a land that died before them) is broken too.
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
   wait, with the owner's go where the change is high risk and the base's required checks
-  green. `land <pr>` marks that PR ready first, never on a missing proof, since ready starts CI.
+  green. `land <pr>...` marks each named draft ready, before it waits for the lock so the holder's next batch includes it, never on a missing proof, since ready starts CI.
+  Several named PRs land in one batch; one that is no candidate is left out with its reason and the rest land, the exit being the worst of them (1 over 3 over 0).
 - With gatekeeper.md's `head_proof`, a candidate's head also carries a green status of its `status`
   name for its own tree, since the batch gate runs one fixed tier and some changes need
   another (a UI test tier). The lead records it on a clean checkout of the head with the tier
@@ -469,7 +482,7 @@ it was never gated on:
   (back to draft, with its log's tail), and when the first PR is red twice the bare base is
   gated: red there stops the run and evicts nobody, since the fault is on the base.
 
-`land <pr> --only` lands that PR alone and leaves every other PR untouched, for a lead that must not land another lead's work.
+`land <pr>... --only` lands those PRs alone and leaves every other PR untouched, for a lead that must not land another lead's work.
 With `--wait` it is one background command that ends when the batch landed or needs someone
 (exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction). Never run `gh pr
 ready` or `gh pr merge` by hand, because `land` is what refuses a PR whose proof is missing. A repo with
@@ -577,9 +590,12 @@ or the owner's private network.
   workers) has the worker post it and writes it to the report path on the host, so the lead
   reads a file as for any worker. The verdict is the review `approvals.py verdict` posts.
   The verifier names its evidence (screenshots, logs, result bundles) in its report, and the
-  lead posts it with the verdict as assets of a prerelease linked from a PR comment, the way
-  the `demo` skill posts videos, so the worker fixes a failure from its diagnostics without
-  the host.
+  lead attaches its media to the verdict comment with `gh pr comment --attach` (gh 2.99.0 or
+  later, as the `demo` skill does), giving alt text for an image only (`--attach
+  './shot.png#The error state'`), since gh refuses it for a video and `approvals.py` refuses
+  a screenshot posted as a release asset; logs and bundles too large for a comment stay
+  named files in the report. So the worker fixes a failure from its diagnostics without the
+  host.
 - **Control flow is the lead's own.** It starts the worker with `run --pr` (from a
   host without the worker's harness, `start --top-level --host <host> --pr`, then
   `wait --pr`), which keeps the session, and `--no-keep` where it won't be sent to again, follows its turn end, and sends a fix list or a failing log, naming the

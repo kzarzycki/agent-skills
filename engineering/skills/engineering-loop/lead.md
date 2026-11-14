@@ -94,6 +94,14 @@ design, wireframes included for a UI, and delegate the rest.
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
    both are yours (worker.md, Gates and push). Its model: SKILL.md, Models.
+   Before the first worker starts, write the verifier's priority checks once, from the spec and
+   its comments (a later comment can narrow the spec), into `tmp/loop/priorities-<pr>.md`, the
+   file `approvals.py brief <pr> --priorities <file>` takes at step 7. Paste its lines into each
+   worker's brief under "the verifier will check" (text, not a path, so a worker on another
+   machine needs no file), so the worker runs them on its own head
+   before reporting: a finding the worker could have checked costs a fix round, a full gate and
+   another pass. The worker gets those checks only, never a verdict, review text or the
+   verifier's report, so the verifier stays independent and runs the same checks itself.
    With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker; every step's placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.
@@ -117,15 +125,16 @@ design, wireframes included for a UI, and delegate the rest.
    `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
    prints the ones to rerun. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
    instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
-   brief already in that checkout. Where else it runs is SKILL.md, Where heavy steps run.
+   brief and the priorities file already in that checkout (copied there like the logs). Where else it runs is SKILL.md, Where heavy steps run.
    A verifier on a host starts on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
    yours while it reviews and no commit of yours moves the head under review. Copy into its
-   `tmp/loop/` the proof logs and, on a later pass, the previous report (as the
+   `tmp/loop/` the priorities file from step 4 (it exists only in your checkout, and `brief
+   --priorities` runs there), the proof logs and, on a later pass, the previous report (as the
    `tmp/loop/pr<pr>-v<n>.md` the brief names) and its repros, since a read outside its
    workspace is prompted. Give it the path of `verifier.md`, the base, the reviewed head, the
-   spec number, the priorities for this change, and a report path under `tmp/loop/` in that
+   spec number, the priorities (that copy, extended with any a later finding adds), and a report path under `tmp/loop/` in that
    worktree, which the project gitignores. `uv run <this skill's folder>/scripts/approvals.py brief
    <pr> --priorities <file> --proof <log>…`, run from that worktree through that worktree's
    own copy of the skill, since the role path it prints follows the script's copy and only
@@ -143,7 +152,12 @@ design, wireframes included for a UI, and delegate the rest.
    so the verifier finds it and its log there and can drive it. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. A verifier's `<report>.question` asking for a
    proof run (verifier.md, A run the sandbox refuses) is answered by filling `proof-run.md` from it
-   and sending the logs back. Post each finished report with
+   and sending the logs back: a question that lists several runs gets one proof brief with
+   all of them, made in one heavy-slot hold where one host can make them all, since a hold
+   per run waits on the slot each time. The next pass's brief carries the answer under a
+   `## Answer to your question` heading (put it in the `--priorities` file), which is how
+   the verifier script knows a question was answered: a later question without a
+   `New in the answer:` line is refused (exit 1), so the verifier asks once. Post each finished report with
    `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
@@ -197,7 +211,10 @@ design, wireframes included for a UI, and delegate the rest.
      (`Conflicts in the landing batch`): `land` merges every head onto main itself and gates
      the result, so a PR behind main lands without a merge. When you do merge it in, rerun the
      gates and get a verifier pass on the merge (step 7), since `land` merges only a head with
-     a verdict of its own. When main's changes touch no file the PR changes and no merge check
+     a verdict of its own. A head with an earlier head's tree (`git rev-parse <sha>^{tree}`), as
+     after a reword of commit messages only, keeps that head's verdict (unsatisfied or with
+     findings open, it stays so) and go with no new pass, since no file changed: `check merge`
+     and `land` print `verdict on <old> carried: same tree <tree>`. When main's changes touch no file the PR changes and no merge check
      (a `check:` task, a tool it runs, or the lint, type or test configuration), that pass is
      the short delta pass. Where loop.md still has `carry_over_main` (deprecated), no pass is
      needed when `check merge` prints that the merge carries the head's verdict. When every
@@ -242,7 +259,9 @@ design, wireframes included for a UI, and delegate the rest.
      each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what
-     refuses a PR whose proof is missing. A push after it needs `gh pr ready --undo` first; the
+     refuses a PR whose proof is missing: `land` itself marks each draft it names ready, before it
+     waits for the lock, so the batch ahead of you takes it, and several PRs named in one `land`
+     land in one batch. A push after it needs `gh pr ready --undo` first; the
      owner's go carries over only merges of the base whose verdict says `Logic change: none`
      (SKILL.md, Approvals and proof), and after the verdict on the new head `land` runs again.
    - Land every approved PR at once: start `land --wait` on each as soon as its proofs hold,

@@ -255,7 +255,7 @@ def test_a_refused_label_write_still_holds_the_merge_and_the_landing_for_a_board
     assert f"PR #7: could not add `risk:high` ({stderr.strip()}): add it by hand" in out
     assert HELD + "`risk:high` is on PR #7" in out
     landing = judged_pr(judging("low — a flag on two test commands"))
-    assert approvals.landable(landing, TRACKER, VERIFIED, set()) == (approvals.WAITING, False)
+    assert approvals.landable(landing, TRACKER, VERIFIED, set()).exit == (approvals.WAITING, False)
 
 
 FAKE_GH = """#!{python}

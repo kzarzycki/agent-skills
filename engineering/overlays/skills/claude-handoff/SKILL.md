@@ -5,11 +5,13 @@ argument-hint: "What will the next session be used for?"
 disable-model-invocation: true
 ---
 
-Write a handoff summary that lets a fresh agent continue the work, and launch it as a background agent instead of saving it:
+Write a handoff summary that lets a fresh agent continue the work, save it to a file in the OS temporary directory, and launch a background agent with it as the prompt:
 
 ```sh
-claude --bg --name "<descriptive name>" "<handoff summary>"
+claude --bg --name "<descriptive name>" -- "$(cat <summary file>)"
 ```
+
+Pass the summary through the file, not inline, so the shell runs no backticks and expands no `$` in it.
 
 It starts in the current directory and returns immediately. `--name` sets the display name in the job list, session picker and terminal title, so always pass one (`--name "Fix login bug"`). The user manages the agent with `claude agents`.
 

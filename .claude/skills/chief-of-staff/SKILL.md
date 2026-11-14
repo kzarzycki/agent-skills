@@ -55,7 +55,10 @@ its landing order.
   spends your context on work the lead repeats, delays the lead, and anchors it on your
   guess. Add to the issue only a cheap fact the owner left out (a link, an id, which repo or
   host, the one log line they pointed at), never a diagnosis. When the intent itself is
-  unclear, ask the owner in one line instead of finding out yourself.
+  unclear, ask the owner in one line instead of finding out yourself. A case a manager or lead
+  relays is different: before it is filed or built, check its root cause (what went wrong first,
+  and what led to it), since the reporter's proposed fix is a hypothesis, and a fix built on a wrong
+  cause leaves the next failure open.
 - **Brief.** The owner's words verbatim, each quoted with where it was said (this session
   and the time), then only what a lead could not find itself: a project fact or a
   standing decision the owner gave you, and the default you chose where the ask forks. No
@@ -65,7 +68,10 @@ its landing order.
   is only told about, and stops to ask the owner. A pack script the brief names is the copy
   installed in the lead's repo (`.claude/skills/…` or `.agents/skills/…`), else your own
   installed copy, never a developer checkout of the pack: one can sit on any branch, and a
-  stale `approvals.py` there fails every land.
+  stale `approvals.py` there fails every land. State the outcome, scope, limits and the evidence
+  of done, and leave the method to the lead: a command is a starting hint, the lead works through
+  ordinary obstacles itself and comes back only for a decision, a permission or a limit it would
+  have to cross, and you course-correct from your wider context, not by dictating steps.
 - **Start.** `python3 <script> start --top-level <claude|codex> <title> <brief-file>
   <report> --role <role-file>`, with the report under your `tmp/loop/` and the
   role the ask needs (an engineering ask: engineering-loop's `lead.md`, by absolute path),
@@ -92,7 +98,9 @@ its landing order.
   Without `--console` it posts `Supervisor: <line>` for every piece of news instead (the
   table below reads those too). A lead that waits on another is started with `start --top-level
   --after <session>`: the supervisor tells it that lead's `DONE` itself, so you send it no line of
-  yours. A subscription wakes you with a full
+  yours. A project manager is started with `start --top-level --leads <its leads registry>`
+  (`<repo>-leads.registry` beside yours), so its `STILL WORKING` on its leads raises no deadline
+  while every one of them is running. A subscription wakes you with a full
   context on every turn end, and most of those change nothing, so it is the fallback:
   `start --top-level` without a registry subscribes you to the lead it starts, and Omnigent posts
   `[System: session <title> (<id>) ended its turn (completed|cancelled|failed). Read it with
@@ -120,6 +128,10 @@ its landing order.
   its area, matched to an Omnigent project name ignoring case and punctuation, or a unique
   prefix of one (`voice` for `Voice note`), else a group of its own; with neither it goes under
   "Other". Only 🔴 and 🟡 bullets show, and the red list is grouped the same way.
+  With project managers (a `projects/<repo>/board.md` beside the board, its leads in
+  `<repo>-leads.registry` beside the registry), the page reads every node: a manager's bullets
+  join its project after the root's, and its supervisor's leads and events show too. A manager's
+  supervisor, run with `--decisions` its own board, also reads the root board's standing decisions.
   The supervisor's recent events sit folded at the bottom. Run it as a systemd user unit beside
   the supervisor, with the same `PATH` (it runs `claude` for the small model), tailnet-only:
   `--host` the machine's tailnet address (`tailscale ip -4`), or, where your user is the
@@ -137,7 +149,7 @@ its landing order.
   average per core and available memory, in one call on that host with `python3 <script> capacity`
   (exit 0 with room, 1 over; `start` and `run` wait for room themselves). Over it,
   start nothing there: tell each lead on it to finish its current step, land a PR that is
-  one landing away, write its state and end its turn `PARKED` with the next step. It then
+  one landing away, write its state and end its turn `PARKED` with the next step. Send that as one `relay` whose text starts `Park: `, since the supervisor takes a `PARKED` ending as parked only after such a message. It then
   runs at most one child and only focused tests. Resume the leads one at a time once
   the host has room again, because sessions on an overloaded host time out and fail and lose
   their work.
@@ -149,13 +161,13 @@ its landing order.
 ## What a lead's turn ending means
 
 A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEEDED`, and
-with `PARKED` when you told it to park (Starting a lead, Host load). A `USER NEEDED` line wins over
+with `PARKED` only after your `Park: ` message (Host load); a `PARKED` with none before it is a lead that parked itself, usually on a wait for the owner, and the supervisor posts it to you as an `act` event to read, not as parked. Every lead's brief carries this contract. A `USER NEEDED` line wins over
 an earlier `DONE` or `PARKED` line: an ask after a `DONE` is the ending, since it still needs its answer.
 
 Under `--console` the supervisor already did the routine part: it sends the stall nudge (once per
 progress chain) and the revive (once per lead) itself, as a `relay` whose text is `Supervisor:
 your turn ended with no ending and no named wait. Carry on to your next step, and end your turn
-with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED.` (`LEAD_NUDGE`). For a
+with DONE, STILL WORKING naming what you wait on, or USER NEEDED.` (`LEAD_NUDGE`). For a
 timed wait (`until <UTC time>`) still quiet once its time has passed, it sends the wake instead,
 `Supervisor: the time your STILL WORKING named, <time>, has passed. …` (`LEAD_WAKE`), from the
 same budget, since nothing else wakes an idle lead at its time. When a lead's history shows
@@ -169,7 +181,7 @@ post that reaches you has already been through that, so the rows below that say 
 | Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Send each lead that waits on this one, and was started without `start --after` (or under a supervisor without `--console`), a line of yours naming its result, the merge or that it ended without one, since nothing else wakes it; a lead started with `--after` is told by the supervisor, and a second line of yours would wake it twice. Then archive the lead once its report says it cleaned up (`reap <session>` with the registry, which drops its line first, so the supervisor posts no `archived` for it). |
 | Turn ended, `USER NEEDED` | When a standing decision delegates that kind of question and the answer is reversible, decide it as Authority says: `relay` your answer quoting the standing decision it rests on, and report it to the owner in one line. Otherwise put its question to the owner in one line, linked to the lead's session, and never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
 | Turn ended, `STILL WORKING`, with something pending | Send nothing, since the state file records what it waits on (Handover, Follow): its own worker, verifier or CI wakes it, another lead's merge reaches it through that lead's `DONE`, and a timed wait (`until <UTC time>`) raises no deadline before its time, then gets the supervisor's wake (`--console`, see above) or, without it, a `relay` from you once its time has passed. Tell the owner only when the turn changes the task, in one line naming the block or the new scope: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
-| Turn ended, `PARKED` | Send nothing (the state file records it as parked, and its last message holds the next step): it is no stall and spends no nudge. Once the host has room, `relay` it a line to resume, one lead at a time. |
+| Turn ended, `PARKED` after your `Park: ` message | Send nothing (the state file records it as parked, and its last message holds the next step): it is no stall and spends no nudge. Once the host has room, `relay` it a line to resume, one lead at a time. |
 | Turn ended, `STILL WORKING` with nothing pending (its message names no wait), no ending, or cancelled | A stall: send it one nudge to carry on to its next step (under `--console` the supervisor sent it: see above). A second stall without progress goes to the owner. |
 | Blocked on a prompt | Tell the owner which session waits and on what. Once they approve it (or decline it), run `python3 <script> approve <session>` (`--decline`), which answers each approval prompt pending; their word is the approval, never yours. |
 | Failed, or gave up | Revive it in place (`relay` a nudge, which revives a reaped runner) once; under `--console` the supervisor did, so a post for a failure is the second one. If it fails again, give the owner the error line. |
@@ -203,6 +215,7 @@ the foreground and never poll the lead afterwards:
 | 0 | Delivered, or already in the lead's history unanswered (a rerun sends no second copy) | Tell the owner it went |
 | 5 | Queued: the lead holds it until its current step ends, or until the approval prompt it names is answered; the line says which | Tell the owner it lands when that clears; for a prompt, which session waits and on what |
 | 4 | Not deliverable: archived, a failed revive, or lost; the line says which | Tell the owner, and start a new lead when the ask still stands |
+| 7 | Posted, not confirmed: a read after the post failed | Tell the owner it went but is unconfirmed; run the same relay again, it posts no second copy |
 
 A lead blocked only on a question (its own ask of the owner) holds every message behind it
 until it is answered, so relay the owner's answer to it with `relay --answer`, which gives the
@@ -264,7 +277,12 @@ it quoted.
   that waits for the answer (Claude Code's AskUserQuestion, Codex's requestUserInput): it holds
   your turn open, and Omnigent delivers new input only when a turn ends, so every relay,
   supervisor event and idle compaction waits behind the question until the owner replies,
-  often hours later. Their reply arrives as your next message.
+  often hours later. Their reply arrives as your next message. Omnigent's
+  `sys_ask_user_question` is the way to ask without stopping: it posts a card and returns at
+  once, so keep working, and act on the answer when it arrives as a message
+  (`[answer to <question id>]`).
+- A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge go on a head): a question
+  alone holds nothing, since `land` batches every PR that is ready.
 
 ## Handover
 
@@ -273,8 +291,10 @@ another, never a fork of yours, since every turn of a fork re-reads the whole tr
 it copied. Your successor knows only what your handover file says, so that file is the
 whole of your state. Its path is the project's instructions' (a board in a home of your own),
 else `tmp/loop/chief-of-staff.md` in the checkout you run in. A board in a git repo with a
-remote is committed and pushed after every rewrite, and pulled before a takeover reads it, so
-a successor on any host reads the current one:
+remote is pulled before a takeover reads it, and committed and pushed once, at the end of a turn
+that changed it (several edits, one commit), and right away when a lead starts or finishes. A
+successor reads it only between turns, so a sync per edit costs a full-context tool call and
+buys nothing, but a lead missing from the board is one a successor never finds:
 
 - **Shape.** One page (about 4 KB), overwritten in place, with these sections:
   - Owner contact: your Omnigent session id (the one `start` subscribes as, `own_id` in the
