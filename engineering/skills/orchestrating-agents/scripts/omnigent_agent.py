@@ -4478,6 +4478,8 @@ OWN_RUN_WORDS = frozenset(
         "build",
         "log",
         "process",
+        "test",
+        "tests",
     )
 )
 WAIT_OBJECT = re.compile(
