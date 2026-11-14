@@ -389,7 +389,8 @@ gatekeeper.md's policy (Settings) holds:
   `Sign-off: owner` or `Sign-off: none`, and `owner` there asks for it where no rule does.
   The PR links such an issue with `Implements #<n>`, which GitHub does not close, so the
   issue stays open for the sign-off, and every other issue with `Closes #<n>`; `Part of
-  #<n>` suits both. `check merge` refuses the wrong keyword. Without a `signoff` section
+  #<n>` suits both. `check merge` refuses the wrong keyword, and so does `check build` on
+  a PR, so it is fixed before the PR reaches `land`. Without a `signoff` section
   no keyword is checked, and `Implements` is a link like `Part of`.
 
 A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
