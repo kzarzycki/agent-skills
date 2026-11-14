@@ -369,7 +369,8 @@ def checkouts(dev):
 
 
 def git(path, *args, timeout=120):
-    return sh(['git', '-C', str(path), *args], timeout)
+    # --no-optional-locks: a `status` must not refresh the index, or each round would renew the git-state clock that keeps a worktree
+    return sh(['git', '--no-optional-locks', '-C', str(path), *args], timeout)
 
 
 def github(root):
@@ -401,6 +402,8 @@ def worktrees(run, found, dev, procs, asks):
             if pr:
                 prs[Path(w['worktree'])] = f'{repo}#{pr[0]["number"]} merged', pr[0]
         elif 'detached' in w and Path(w['worktree']).is_dir():  # a verifier's checkout at a PR's head: a squash leaves it on no branch
+            if (git(root, 'branch', '-r', '--points-at', w['HEAD']) or '').strip():
+                continue  # at a remote branch's tip (a landing checkout at the default branch): live, and a landed PR's head is that tip
             pulls = json.loads(sh(['gh', 'api', f'repos/{repo}/commits/{w["HEAD"]}/pulls']) or '[]')
             if pr := next((p for p in pulls if p['state'] == 'closed' and p['head']['sha'] == w['HEAD']), None):
                 prs[Path(w['worktree'])] = f'{repo}#{pr["number"]} closed', {'number': pr['number'], 'headRefOid': w['HEAD']}
@@ -418,6 +421,9 @@ def worktrees(run, found, dev, procs, asks):
             what, pr = f'in {outer}, {prs[outer][0]}', prs[outer][1]
         # In use, holding another checkout or with a fresh tmp/: settles by itself, so kept without a question.
         busy = in_use(path, procs)
+        # Read before `git status`, which may rewrite the index. A fetch touches FETCH_HEAD; a checkout, HEAD, index and logs/HEAD.
+        gitdir = Path(path, (git(path, 'rev-parse', '--git-dir') or '.git').strip())
+        active = sorted(n for n in GIT_ACTIVITY if (gitdir / n).exists() and changed(gitdir / n) > time.time() - 86400)
         # SwiftPM's dependency clones under .build/checkouts/ come back with `swift package resolve`
         nested = any(p != path and p.is_relative_to(path) and p.exists()
                      and '/.build/checkouts/' not in f'/{p.relative_to(path).as_posix()}/' for p in found)
@@ -456,13 +462,15 @@ def worktrees(run, found, dev, procs, asks):
             why.append('HEAD is on no remote branch and is not the PR head')
         if fresh:
             why.append(f'its {"/, ".join(fresh)}/ changed in the last 24 h')
+        if active:
+            why.append(f'its git state changed in the last 24 h ({", ".join(active)})')
         if 'locked' in w:  # `git worktree remove` refuses it; a lock may be for good, so it is asked about
             why.append(f'locked: {w["locked"] or "no reason given"}')
         if busy:
             why.append(busy)
         if why := '; '.join(why):
             run.say(f'skip worktree {path} ({what}): {why}')
-            if not (busy or nested or fresh):
+            if not (busy or nested or fresh or active):
                 asks.append(f'worktree {path} ({what}): {why}')
                 ROUTES[asks[-1]] = repo
         elif run.dry:
@@ -503,6 +511,7 @@ DISPOSABLE = {'node_modules', '.venv', 'venv', '__pycache__', '.pytest_cache', '
               'coverage', '.coverage', 'coverage.xml', '.testmondata', 'apm_modules', '.DS_Store', '.build',
               '.terraform', 'test-results', 'playwright-report', 'snapshot_failures'}  # `terraform init` rebuilds it; a local terraform.tfstate sits beside it, not in it
 ROUTES = {}  # a question about a repo's worktree -> that repo (owner/name), whose manager is asked
+GIT_ACTIVITY = ('HEAD', 'index', 'logs/HEAD', 'FETCH_HEAD')  # what a checkout, reset or fetch touches in the worktree's own git dir
 REPORT_DIRS = {'tmp', '.bootstrap-state'}  # run reports: kept while one changed in the last day
 EVIDENCE_DIRS = {'logs', *REPORT_DIRS}  # as directories only: a file named tmp may be anything
 CACHE_TAG = b'Signature: 8a477f597d28d172789f06886806bc55'
