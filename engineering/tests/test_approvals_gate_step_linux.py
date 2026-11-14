@@ -18,6 +18,7 @@ from approvals_harness import (
     graphql_answers,  # noqa: F401
     hub,  # noqa: F401
     others_open,  # noqa: F401
+    pull,
     pushed,  # noqa: F401
     refs,  # noqa: F401
     required,  # noqa: F401
@@ -93,3 +94,15 @@ def test_every_message_for_a_left_linux_step_names_linux_not_a_host(
     assert "`toolchain` runs only on Linux (`where: linux`), where `local-ci` runs it alone" in out
     assert "`where: host`" not in out
     assert approvals.runs_only(["toolchain"]) == "`toolchain` runs only on Linux (`where: linux`)"
+
+
+def test_the_run_refusal_for_a_left_linux_step_names_linux_not_a_host(
+    linux_step: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = approvals.git("rev-parse", "HEAD").strip()
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": head})
+    monkeypatch.setattr(sys, "platform", "darwin")
+    with pytest.raises(approvals.Refused) as refused:
+        approvals.local_ci(7, run=True)
+    assert "`toolchain` runs only on Linux (`where: linux`)" in str(refused.value)
+    assert "`where: host`" not in str(refused.value)
