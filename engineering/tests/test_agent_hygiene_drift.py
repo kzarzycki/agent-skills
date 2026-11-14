@@ -137,8 +137,10 @@ def test_a_finding_goes_to_its_repos_manager_and_one_in_a_repo_without_goes_to_t
 def test_a_clone_that_is_not_behind_is_not_pulled(tmp_path, monkeypatch):
     clones, heads, run, calls, git = world(tmp_path, monkeypatch, ["acme/managed"])
     git(clones["acme/managed"], "pull", "-q", "--ff-only")
+    run.hygiene.DOTAGENTS.write_text(f'#!/bin/sh\necho "stale skill copy: {clones["acme/managed"]}/skills/x"\nexit 1\n')
     out = run()
-    assert "pulled" not in out and "git pull" not in out and calls == [], (out, calls)
+    assert "pulled" not in out and "git pull" not in out, out
+    assert [repo for repo, _ in calls] == ["acme/managed"], calls  # the finding stays, and is routed
 
 
 def test_a_finding_whose_manager_cannot_be_told_goes_to_the_chief_of_staff(tmp_path, monkeypatch):
