@@ -292,12 +292,13 @@ runs it before its report and the verifier in review (verifier.md, Mutation-chec
 docstring has the log format and exit codes).
 
 **Fixing the gate itself.** `land` reads `gate_steps` from the default branch, so a PR that changes them lands under the old
-policy: a PR that drops or moves a step the old policy still runs somewhere it can't pass (a `linux` step on a Mac, a
-`host` step in a cloud session) can't land. The lead records that step's pass on the tree `land` will build, from a
-host where the step runs: a clean checkout of that merge tree (`git fetch origin pull/<n>/merge`, or the queue's
-branch, then `git checkout --detach FETCH_HEAD`), then `approvals.py local-ci --record` there, which runs only the steps with no pass and pushes each
-pass as its record branch. A record is reused by tree and command, so `land` then finds the pass, runs no step again,
-and lands. Record a pass of the step as the old policy writes it: a changed command is another record.
+policy, which still runs the step the PR moves (to `where: linux`, say) on a host where it can't pass. Run from a host where
+the step runs, a clean checkout of the merge tree `land` will build (`git fetch origin pull/<n>/merge`, or the queue's
+branch, then `git checkout --detach FETCH_HEAD`) and `approvals.py local-ci --record` there records and pushes the step's pass
+from the policy that tree holds, so `land` reuses it by tree and command and runs no step again. That holds for a step the
+PR keeps with the same command and no `paths`: `local-ci` plans from the checkout's own policy, so a step the PR drops is not
+in the plan and has no pass to record, and a step with `paths` is keyed on the whole `gate_steps` setting, so a pass recorded
+under the changed one is not the pass the old one asks for. For those, put the case to the owner.
 
 ### Practice
 
