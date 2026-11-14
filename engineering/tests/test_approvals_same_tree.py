@@ -209,7 +209,10 @@ def behind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     git(author, "add", "-A")
     git(author, "commit", "-qm", "unrelated")
     unrelated = git(author, "rev-parse", "HEAD")
-    git(author, "push", "-q", str(origin), f"{missing}:refs/heads/feature", "other")
+    # a tag on the commit asked for, which a fetch would follow without --no-tags, and one on another commit
+    git(author, "tag", "-a", "-m", "on the feature", "v-feature", missing)
+    git(author, "tag", "v-other", unrelated)
+    git(author, "push", "-q", str(origin), f"{missing}:refs/heads/feature", "other", "--tags")
     monkeypatch.chdir(clone)
     monkeypatch.setattr(approvals, "TREE_FETCHED", set())
     return {
@@ -232,6 +235,7 @@ def has(where: str, sha: str) -> bool:
 def test_a_missing_tree_fetches_only_that_commit(behind: dict[str, str]) -> None:
     assert approvals.tree_of(behind["missing"]) == behind["tree"]
     assert not has(behind["clone"], behind["unrelated"])
+    assert git(Path(behind["clone"]), "tag", "-l") == ""
     assert git(Path(behind["clone"]), "branch", "-r").split() == [
         "origin/HEAD",
         "->",
