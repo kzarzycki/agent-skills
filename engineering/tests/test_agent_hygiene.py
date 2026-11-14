@@ -636,7 +636,10 @@ def test_a_worktree_whose_git_state_changed_an_hour_ago_is_kept_with_that_reason
     path, gitdir = worktree("recent", "verified")
     os.utime(gitdir / "logs/HEAD", (time.time() - 3600,) * 2)
     out = run()
-    assert f"skip worktree {path} (o/r#9 closed): its git state changed in the last 24 h (logs/HEAD)\n" in out, out
+    assert (
+        f"skip worktree {path} (o/r#9 closed): its git state changed in the last 24 h (logs/HEAD)\n"
+        in out
+    ), out
     assert "would remove" not in out and "Which may go?" not in out, out
 
 
