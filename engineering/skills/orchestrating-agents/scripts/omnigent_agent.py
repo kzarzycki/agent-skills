@@ -1787,8 +1787,8 @@ def relay(
         except Fail:  # the message is in: a failed look at the cards changes nothing
             open_asks = []
         if open_asks:
-            line += (
-                "; its question is still open (relay --answer answers it): " + "; ".join(open_asks)
+            line += "; its question is still open (relay --answer answers it): " + "; ".join(
+                open_asks
             )
     return line
 
