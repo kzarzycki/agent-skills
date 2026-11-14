@@ -51,8 +51,8 @@ one), 5 while the session holds it (a step, or an approval prompt, in progress),
 delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
 a later read failed (delivered, unconfirmed: run it again, it posts no second copy). An open
 question card (``sys_ask_user_question``: elicitation id ``question_…``, not ``elicit_question_…``) holds
-nothing (``holds_input``): ``relay``, ``broadcast``, ``reap`` and ``watch`` treat the session as free and show
-``card open: <question>``. A session blocked only
+nothing (``holds_input``): ``relay``, ``broadcast`` and ``watch`` treat the session as free and show
+``card open: <question>``; ``reap`` keeps it, since archiving it would end the owner's way back. A session blocked only
 on questions (``ask_user_question``) holds the message behind them too (exit 5); ``relay
 --answer`` gives it as each question's answer instead, exit 0, since its pending inputs wait on
 the answer; an approval prompt it never answers. ``relay --from <name>`` is a notice from a task

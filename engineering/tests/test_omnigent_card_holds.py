@@ -1,5 +1,8 @@
 """omnigent_agent.py: an open question card holds no input; a parked question or approval does (#977)."""
 
+import time
+from pathlib import Path
+
 import pytest
 import test_omnigent_agent as base
 from test_omnigent_agent import no_model, no_sleep  # noqa: F401  (the fixtures apply here by name)
@@ -103,6 +106,73 @@ def test_watch_status_shows_a_card_open_not_blocked() -> None:
     assert og.info("s1")["pending_elicitations"] == [CARD]
 
 
+@pytest.mark.parametrize(("kind", "held"), [("card", False), ("parked", True), ("approval", True)])
+def test_the_supervisors_alive_counts_a_card_session_as_alive_and_a_held_one_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, held: bool
+) -> None:
+    """A manager waiting on a running child: with a card open the child still shows life, so no
+    deadline is raised; with a parked question or an approval prompt it does not."""
+    prompt = {"card": CARD, "parked": PARKED, "approval": APPROVAL}[kind]
+    registry, og = base.manager(
+        tmp_path,
+        f"STILL WORKING: waiting on {base.WORKER}. Report: m.md",
+        **{base.WORKER: {"pending_elicitations": [prompt]}},
+    )
+    base.supervised(og, registry, monkeypatch, 1, notify=base.COS, console=True, fyi="post")
+    assert base.stalls(og) == (
+        [f"Supervisor: m t-m: no progress 60m ({base.WORKER})"] if held else []
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "skipped"), [("card", False), ("parked", True), ("approval", True)]
+)
+def test_broadcast_delivers_to_a_card_session_and_skips_a_held_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    kind: str,
+    skipped: bool,
+) -> None:
+    og = base.BroadcastFake()
+    sid = og.add("asking")
+    og.prompts = [{"card": CARD, "parked": PARKED, "approval": APPROVAL}[kind]]
+    assert base.broadcast(og, tmp_path, monkeypatch, "--include", sid) == 0
+    out = capsys.readouterr().out
+    if skipped:
+        assert out.endswith(": skipped: waiting on a question\n") and og.posts == 0
+    else:
+        assert out.endswith(": delivered\n") and og.posts == 1
+        assert "queued" not in out and "skipped" not in out
+
+
+def stuck_running(prompts: list[dict]) -> base.FakeOmnigent:
+    """One running session ``s`` that wrote nothing for hours, with ``prompts`` pending."""
+    og = base.FakeOmnigent()
+    old = time.time() - 4 * 3600
+    og.info = lambda s: {  # type: ignore[method-assign]
+        "status": "running",
+        "title": s,
+        "pending_elicitations": prompts,
+    }
+    og.items = lambda s: [{"type": "message", "role": "user", "created_at": old}]  # type: ignore[method-assign]
+    return og
+
+
+def test_reap_force_neither_interrupts_nor_archives_a_stuck_running_card_session() -> None:
+    og = stuck_running([CARD])
+    lines, failed = omnigent_agent.reap(og, ["s"], force=True)
+    assert lines == ["s s: kept (card open: Land it?)"] and not failed
+    assert og.interrupted == [] and og.archived == []
+
+
+def test_reap_force_still_interrupts_and_archives_a_stuck_running_session_without_a_card() -> None:
+    og = stuck_running([])
+    lines, _ = omnigent_agent.reap(og, ["s"], force=True)
+    assert og.interrupted == ["s"] and og.archived == ["s"]
+    assert lines[0].startswith("s s: archived (stuck)")
+
+
 def test_observe_names_a_card_open_and_blocks_on_the_held_prompts_only() -> None:
     og = fake(CARD)
     key, line = omnigent_agent.observe(og, "s1", {})
@@ -111,3 +181,5 @@ def test_observe_names_a_card_open_and_blocks_on_the_held_prompts_only() -> None
     key, line = omnigent_agent.observe(og, "s1", {})
     assert key == ("blocked", "elicit_approval_1")
     assert "blocked on a prompt: Claude wants to call Bash" in line
+    key, line = omnigent_agent.observe(fake(PARKED), "s1", {})
+    assert key == ("blocked", "elicit_question_1") and "blocked on a prompt: Which one?" in line
