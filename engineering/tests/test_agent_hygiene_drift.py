@@ -134,7 +134,7 @@ def test_a_diverged_or_other_branch_clone_is_not_pulled(tmp_path, monkeypatch):
     moved = {r: git(c, "rev-parse", "HEAD") for r, c in clones.items()}
     out = run()
     assert {r: git(c, "rev-parse", "HEAD") for r, c in clones.items()} == moved, out
-    assert "pulled" not in out and "git pull" not in out, out  # not even tried
+    assert "pulled" not in out and "git merge" not in out, out  # not even tried
     assert len(calls) == 2, calls
 
 
@@ -180,7 +180,7 @@ def test_a_clone_that_is_not_behind_is_not_pulled(tmp_path, monkeypatch):
         f'#!/bin/sh\necho "stale skill copy: {clones["acme/managed"]}/skills/x"\nexit 1\n'
     )
     out = run()
-    assert "pulled" not in out and "git pull" not in out, out
+    assert "pulled" not in out and "git merge" not in out, out
     assert [repo for repo, _ in calls] == ["acme/managed"], (
         calls
     )  # the finding stays, and is routed
