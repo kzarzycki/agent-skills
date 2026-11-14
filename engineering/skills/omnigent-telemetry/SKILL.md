@@ -21,7 +21,7 @@ offline. The page holds the numbers; a retro's narrative stays the `retro` skill
 
 | Source | Where it answers | Gives |
 |---|---|---|
-| Omnigent API, `GET /v1/usage` | any host logged in to the server (`orchestrating-agents`' `scripts/omnigent_agent.py` does the login and token refresh) | spend today, over 7 and 30 days; each top-level session tree's cost by model |
+| Omnigent API, `GET /v1/usage?days=N` (a server that predates `days` ignores it) | any host logged in to the server (`orchestrating-agents`' `scripts/omnigent_agent.py` does the login and token refresh) | spend today, over 7 and 30 days; each top-level session tree's cost by model |
 | Server Postgres, `docker exec <container> psql` (default `omnigent-postgres-1`) | the server host only | daily cost, tokens by model, each tree's sub-agents, nested Codex sub-agents, compactions and forked items, live subscriptions, scheduled-task runs, all flags |
 | Codex rollouts, `~/.omnigent/codex-native/*/codex-home/sessions/` | each host that ran Codex | the newest rate-limit snapshot, per window (5h, weekly) |
 
