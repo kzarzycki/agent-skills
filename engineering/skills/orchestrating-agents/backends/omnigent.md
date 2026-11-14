@@ -333,7 +333,8 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
   and the message is one line. One that runs a command in the background ends its turn
   "waiting" and never reports; the preamble covers that, and the first turn that ends
   without a report or a question gets one nudge to poll its detached runs and write the
-  report. `wait` fails when a second turn ends without a report, when the child is blocked on an approval prompt (it prints the
+  report (a cloud child's says its background run may not have outlived the turn: check whether
+  it posted its result, restart it only if not, and keep the turn open until it ends, #1002). `wait` fails when a second turn ends without a report, when the child is blocked on an approval prompt (it prints the
   prompt), or after `--timeout` (default 3h), so the lead still wakes.
 
 **Children are your sub-agents.** Run from an Omnigent session, the script creates each
