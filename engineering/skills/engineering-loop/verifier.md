@@ -199,7 +199,9 @@ keep these lines exact:
   On a delta of merges of the base alone, add `Logic change: none` when its conflict fixes
   change no behaviour, which carries the owner's go to the head, else `Logic change: <what>`.
   The merge reads the review as covering that commit only, so a push after your review
-  needs its own.
+  needs its own, unless the new head has your commit's tree (`git rev-parse <sha>^{tree}`),
+  as after a reword of commit messages only: every file you reviewed is the same, so your
+  verdict, its findings and `Risk:` line included, and the owner's go hold for it.
 
 Before replying, run `uv run <this skill's folder>/scripts/approvals.py report <report path>` and fix the
 report until it exits 0: it reads the report as `verdict` does, without GitHub, so a report

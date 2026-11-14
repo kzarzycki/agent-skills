@@ -2054,8 +2054,8 @@ def reviewed(
     verdicts: list[tuple[str, int, dict[str, str]]] | str | None = None,
 ) -> list[str]:
     """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
-    since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried,
-    which prints a line either way where loop.md opts in), or on its commit the highest pass (a mixed PR's two
+    since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried: on
+    the same tree, or where loop.md opts in, which prints a line either way), or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
     blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
     needs none (exempt). `verdicts` is passes()'s, when the caller has read it."""
@@ -2529,7 +2529,10 @@ def carried(
     first-parent line down to `verified` is a merge whose second parent is on the base (an ancestor of its tip), whose
     tree is git merge-tree's of its parents, and where merged() finds the base's changes disjoint from the PR's and
     neither side's touching an except glob. So a PR commit after `verified` (new, edited or rebased) carries nothing.
-    A string names why it carries nothing; None without the setting, which then reads no git at all."""
+    A head with `verified`'s tree (same_tree) carries it with or without the setting, by one same_tree_line(). A
+    string names why it carries nothing; None without the setting and with another tree."""
+    if tree := same_tree(pull["headRefOid"], verified):
+        return verified, [same_tree_line(verified, tree)]
     guard = settings(loop).get("carry_over_main")
     if guard is None:
         return None
@@ -2549,6 +2552,19 @@ def carried(
             return f"{commit}'s tree is not git merge-tree's of its parents: the merge resolved or added something"
         lines.insert(0, carry_line(commit, first, second, found[1], base))
     return verified, lines
+
+
+def same_tree(head: str, old: str) -> str | None:
+    """The tree `head` and `old` both hold (tree_of), else None: a head whose tree is an earlier head's keeps that
+    head's verdict (carried) and go (carried_go), since every file reviewed and approved there is byte-for-byte the
+    same, as after a reword of commit messages only. A tree neither the clone nor origin has is None."""
+    mine = tree_of(head)
+    return mine if mine is not None and mine == tree_of(old) else None
+
+
+def same_tree_line(old: str, tree: str) -> str:
+    """The line check merge and land print when the head carries `old`'s verdict on the same tree (same_tree)."""
+    return f"verdict on {old} carried: same tree {tree}"
 
 
 def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] | str:
@@ -2788,10 +2804,11 @@ def owned(pull: dict[str, Any], loop: str | None = None) -> str | None:
 
 def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str | None:
     """(whose, the head it is on) for the go (go_on) covering the PR's head: the go on the head itself, else the go
-    on the head of the PR's newest merge record, when every commit since is a merge of the base (base_merges) and the
-    newest verifier pass on the head is satisfied with no blocker or major open and says `Logic change: none`, since
-    the approver saw that change and a merge adds none to it. Any status on the head decides alone, so a go withdrawn
-    there stays withdrawn. A string names why the older go carries nothing; None: no go to carry."""
+    on the head of the PR's newest merge record, when the head has that head's tree (same_tree), or every commit since
+    is a merge of the base (base_merges) and the newest verifier pass on the head is satisfied with no blocker or major
+    open and says `Logic change: none`, since the approver saw that change and a merge adds none to it. Any status on
+    the head decides alone, so a go withdrawn there stays withdrawn. A string names why the older go carries nothing;
+    None: no go to carry."""
     head = pull["headRefOid"]
     by = go_on(pull, head, loop)
     if by is not None:
@@ -2804,6 +2821,8 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     if not earlier or not (by := go_on(pull, earlier[-1], loop)):
         return None
     old = earlier[-1]
+    if same_tree(head, old):
+        return by, old
     why = unchanged(pull, old.lower())
     return f"the go on {old} carries nothing to {head}: {why}" if why else (by, old)
 
@@ -2873,7 +2892,9 @@ def whose(pull: dict[str, Any], loop: str | None) -> list[str]:
     by, old = found
     head = f"PR #{pull['number']}: the go on {old}"
     line = f"{head} is the delegate's{DELEGATED}" if by == DELEGATE else f"{head} is the owner's"
-    if old != pull["headRefOid"]:
+    if old != pull["headRefOid"] and (tree := same_tree(pull["headRefOid"], old)):
+        line += f", carried to {pull['headRefOid']}: same tree {tree}"
+    elif old != pull["headRefOid"]:
         line += (
             f", carried to {pull['headRefOid']}: every commit since is a merge of {pull['baseRefName']}, and the"
             f" verifier's pass on it says `{LOGIC}: none`"
@@ -5570,12 +5591,39 @@ def described(tree: str, commit: str, command: str) -> str:
     )
 
 
+# how long tree_of waits for one commit's fetch, so a check never hangs on the network
+TREE_FETCH_SECONDS = 60
+# each (checkout, commit) tree_of already asked origin for in this run, so a missing one costs one fetch, not one per call
+TREE_FETCHED: set[tuple[str, str]] = set()
+
+
 def tree_of(commit: str) -> str | None:
-    """The tree `commit` holds, fetching `origin` once when the clone lacks it; None when neither has it."""
+    """The tree `commit` holds, else None. A commit the clone lacks is fetched from `origin` by itself (GitHub serves
+    any commit reachable from a branch or a PR), once per run and within TREE_FETCH_SECONDS, since a bare fetch brings
+    every branch and may wait on the network for ever; a failed or timed-out fetch is None."""
     with contextlib.suppress(subprocess.CalledProcessError):
         return git("rev-parse", f"{commit}^{{tree}}").strip()
+    asked = (os.getcwd(), commit)
+    if asked in TREE_FETCHED:
+        return None
+    TREE_FETCHED.add(asked)
+    fetch = ["git", *SIGNING, "fetch", "--quiet", "--no-tags", "origin", commit]
+    try:
+        # its own process group with no pipes, so a timeout kills the transport (ssh, a credential helper) too
+        run = subprocess.Popen(
+            fetch, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+        )
+    except OSError:
+        return None
+    try:
+        if run.wait(timeout=TREE_FETCH_SECONDS):
+            return None
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(run.pid, signal.SIGKILL)
+        run.wait()
+        return None
     with contextlib.suppress(subprocess.CalledProcessError):
-        git("fetch", "--quiet", "origin")
         return git("rev-parse", f"{commit}^{{tree}}").strip()
     return None
 
