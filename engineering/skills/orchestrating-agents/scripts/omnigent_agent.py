@@ -1670,8 +1670,16 @@ def holds_input(e: dict) -> bool:
 
 
 def _asks(e: dict) -> str:
+    """Name elicitation ``e`` by its id and its question's header, else by the first 80 characters
+    of its text: a card's full text (thousands of characters) never reaches a caller's output."""
     p = e.get("params") or {}
-    return str(p.get("content_preview") or p.get("message") or e)
+    ask = p.get("ask_user_question")
+    qs = ask.get("questions") if isinstance(ask, dict) else None
+    header = str(qs[0].get("header") or "") if qs and isinstance(qs[0], dict) else ""
+    text = str(p.get("content_preview") or p.get("message") or e)
+    what = f"“{header}”" if header else text[:80] + ("…" if len(text) > 80 else "")
+    eid = e.get("elicitation_id")
+    return f"{eid}: {what}" if eid else what
 
 
 def prompts_of(info: dict) -> list[str]:
@@ -1947,7 +1955,7 @@ def relay(
                 " relay, never after one"
             )
             lands = f"this message stays queued and lands once the question is answered ({how})"
-        raise Queued(f"session {sid}: queued {why}; {lands}")
+        raise Queued(f"session {sid}: queued {why}\n{lands}")
     line = f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
     if not answer and not source:
         line += still_open(og, sid)

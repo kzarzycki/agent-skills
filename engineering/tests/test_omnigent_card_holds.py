@@ -48,9 +48,12 @@ def test_holds_input_by_kind() -> None:
 
 def test_prompts_and_questions_ignore_a_card() -> None:
     info = {"pending_elicitations": [CARD, CARD_ANSWERABLE, PARKED, APPROVAL]}
-    assert omnigent_agent.prompts_of(info) == ["Which one?", "Claude wants to call Bash"]
-    assert omnigent_agent.questions_of(info) == ["Which one?"]
-    assert omnigent_agent.cards_of(info) == ["Land it?", "Pick"]
+    assert omnigent_agent.prompts_of(info) == [
+        "elicit_question_1: Which one?",
+        "elicit_approval_1: Claude wants to call Bash",
+    ]
+    assert omnigent_agent.questions_of(info) == ["elicit_question_1: Which one?"]
+    assert omnigent_agent.cards_of(info) == ["question_476b: Land it?", "question_9: Pick"]
 
 
 def test_relay_delivers_past_a_card_but_queues_behind_a_parked_question() -> None:
@@ -91,7 +94,7 @@ def test_reap_keeps_a_session_with_an_open_card_and_a_parked_question_alike(forc
     og.children = lambda p: list(states)  # type: ignore[attr-defined]
     lines, _ = omnigent_agent.reap(og, [], parent="p", force=force)
     assert og.archived == ["free"]
-    assert lines[0] == "card card: kept (card open: Land it?)"
+    assert lines[0] == "card card: kept (card open: question_476b: Land it?)"
     assert lines[1] == "parked parked: kept (blocked on a prompt)"
 
 
@@ -162,7 +165,7 @@ def stuck_running(prompts: list[dict]) -> base.FakeOmnigent:
 def test_reap_force_neither_interrupts_nor_archives_a_stuck_running_card_session() -> None:
     og = stuck_running([CARD])
     lines, failed = omnigent_agent.reap(og, ["s"], force=True)
-    assert lines == ["s s: kept (card open: Land it?)"] and not failed
+    assert lines == ["s s: kept (card open: question_476b: Land it?)"] and not failed
     assert og.interrupted == [] and og.archived == []
 
 
@@ -176,10 +179,37 @@ def test_reap_force_still_interrupts_and_archives_a_stuck_running_session_withou
 def test_observe_names_a_card_open_and_blocks_on_the_held_prompts_only() -> None:
     og = fake(CARD)
     key, line = omnigent_agent.observe(og, "s1", {})
-    assert key[0] != "blocked" and "card open: Land it?" in line and "blocked" not in line
+    assert (
+        key[0] != "blocked"
+        and "card open: question_476b: Land it?" in line
+        and "blocked" not in line
+    )
     og = fake(CARD, APPROVAL)
     key, line = omnigent_agent.observe(og, "s1", {})
     assert key == ("blocked", "elicit_approval_1")
-    assert "blocked on a prompt: Claude wants to call Bash" in line
+    assert "blocked on a prompt: elicit_approval_1: Claude wants to call Bash" in line
     key, line = omnigent_agent.observe(fake(PARKED), "s1", {})
-    assert key == ("blocked", "elicit_question_1") and "blocked on a prompt: Which one?" in line
+    assert (
+        key == ("blocked", "elicit_question_1")
+        and "blocked on a prompt: elicit_question_1: Which one?" in line
+    )
+
+
+LONG = "Which one? " * 400
+
+
+@pytest.mark.parametrize(
+    ("questions", "label"),
+    [([], LONG[:80] + "…"), ([{"header": "Pick one", "question": LONG}], "“Pick one”")],
+)
+def test_relay_queued_behind_a_long_question_names_its_id_not_its_text(
+    questions: list, label: str
+) -> None:
+    long = {
+        "elicitation_id": "elicit_question_long",
+        "params": {"message": LONG, "ask_user_question": {"questions": questions}},
+    }
+    with pytest.raises(omnigent_agent.Queued) as err:
+        omnigent_agent.relay(fake(long, hold=10**6), "s1", "hi", 0)
+    line = str(err.value).splitlines()[0]
+    assert len(line) < 200 and "elicit_question_long" in line and label in line

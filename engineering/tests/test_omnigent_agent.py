@@ -4329,7 +4329,7 @@ def test_watch_reports_a_prompt_at_once_with_the_tool_call() -> None:
     }
     og = Roster(a=[{"status": "running", "pending_elicitations": [prompt]}])
     assert omnigent_agent.watch(og, ["a"], timeout=0) == [
-        "a t-a: blocked on a prompt: Bash(rm x)\nlast message: (none)"
+        "a t-a: blocked on a prompt: e1: Bash(rm x)\nlast message: (none)"
     ]
 
 
@@ -4411,7 +4411,7 @@ def test_watch_wakes_when_a_running_session_gains_a_prompt() -> None:
     prompt = {"elicitation_id": "e2", "params": {"message": "Claude wants to call **Bash**"}}
     og = Roster(a=[{"status": "running"}, {"status": "running", "pending_elicitations": [prompt]}])
     assert omnigent_agent.watch(og, ["a"], timeout=5) == [
-        "a t-a: blocked on a prompt: Claude wants to call **Bash**\nlast message: (none)"
+        "a t-a: blocked on a prompt: e2: Claude wants to call **Bash**\nlast message: (none)"
     ]
 
 
@@ -5170,7 +5170,7 @@ def test_a_prompt_still_pending_after_the_confirm_wait_is_posted_to_the_owner_on
     supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
     assert before == [0, 0, 0, 1]
     [post] = posted(og)
-    assert "[owner] a t-a: blocked on a prompt: Bash(ls) (an approval prompt" in post
+    assert "[owner] a t-a: blocked on a prompt: e1: Bash(ls) (an approval prompt" in post
 
 
 def test_a_new_prompt_id_restarts_the_confirm_wait(
@@ -6371,7 +6371,7 @@ def test_relay_to_a_session_in_a_long_step_returns_queued_and_a_rerun_sends_no_s
     og = FakeOmnigent(hold=10**6)  # a foreground command that outlasts the call
     sid = og.create("claude", "lead")
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
-    assert "queued until the session's current step ends; it lands then" in capsys.readouterr().err
+    assert "queued until the session's current step ends\nit lands then" in capsys.readouterr().err
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
     assert og.posts == 1
 
@@ -6464,7 +6464,7 @@ def test_relay_beside_an_open_question_card_delivers_and_names_it_without_answer
     assert relay(og, sid, tmp_path, monkeypatch) == 0
     assert capsys.readouterr().out.strip() == (
         f"session {sid}: delivered; its question is still open (relay --answer answers it):"
-        " Which base?"
+        " q1: Which base?"
     )
     assert og.resolved == []
     assert og.posts == 1
@@ -6515,7 +6515,7 @@ def test_send_beside_an_open_question_card_delivers_and_names_it_without_answeri
     assert omnigent_agent.main(["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]) == 0
     assert (
         f"session {sid}: delivered; its question is still open (relay --answer answers it):"
-        " Which base?"
+        " q1: Which base?"
     ) in capsys.readouterr().out
     assert og.resolved == []
     assert og.posts == 1
@@ -6579,8 +6579,8 @@ def test_relay_never_answers_an_approval_prompt_and_says_what_holds_it(
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
     assert og.resolved == []
     assert capsys.readouterr().err.strip() == (
-        f"session {sid}: queued behind an approval prompt (`approve` answers it): Bash(rm -rf build)"
-        f" and a question: {QUESTION['params']['content_preview']}; {LANDS_AFTER_A_QUESTION}"
+        f"session {sid}: queued behind an approval prompt (`approve` answers it): e2: Bash(rm -rf build)"
+        f" and a question: e1: {QUESTION['params']['content_preview']}\n{LANDS_AFTER_A_QUESTION}"
     )
 
 
@@ -6600,8 +6600,8 @@ def test_relay_behind_only_a_question_names_relay_answer_for_next_time_not_appro
     og.prompts = [QUESTION]
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
     assert capsys.readouterr().err.strip() == (
-        f"session {sid}: queued behind a question: {QUESTION['params']['content_preview']};"
-        f" {LANDS_AFTER_A_QUESTION}"
+        f"session {sid}: queued behind a question: e1: {QUESTION['params']['content_preview']}\n"
+        f"{LANDS_AFTER_A_QUESTION}"
     )
     assert [omnigent_agent.text_of(p) for p in og.info(sid)["pending_inputs"]] == [
         f"{omnigent_agent.RELAYED.format(who='cos')}\ngo"
@@ -6618,8 +6618,8 @@ def test_relay_from_a_task_behind_a_question_says_only_the_owner_answers_it(
         omnigent_agent.QUEUED
     )
     assert capsys.readouterr().err.strip() == (
-        f"session {sid}: queued behind a question: {QUESTION['params']['content_preview']};"
-        " this message stays queued and lands once the question is answered"
+        f"session {sid}: queued behind a question: e1: {QUESTION['params']['content_preview']}\n"
+        "this message stays queued and lands once the question is answered"
         " (only the owner's own relay answers a question)"
     )
 
@@ -6633,7 +6633,7 @@ def test_approve_resolves_each_approval_prompt_never_a_question(
     og.prompts = [QUESTION, APPROVAL]
     assert omnigent_agent.main(["approve", sid]) == 0
     assert og.resolved == [(sid, "e2", "accept", None)]
-    assert capsys.readouterr().out == f"session {sid}: accepted Bash(rm -rf build)\n"
+    assert capsys.readouterr().out == f"session {sid}: accepted e2: Bash(rm -rf build)\n"
     assert omnigent_agent.main(["approve", sid]) == 1  # only the question is left
     assert "no approval prompt pending" in capsys.readouterr().err
     og.prompts = [APPROVAL, {**APPROVAL, "elicitation_id": "e3"}]
@@ -6641,8 +6641,8 @@ def test_approve_resolves_each_approval_prompt_never_a_question(
     assert omnigent_agent.main(["approve", sid, "--decline"]) == 1  # e3 still answered
     assert og.resolved[-1] == (sid, "e3", "decline", None)
     out = capsys.readouterr().out
-    assert "not answered: Bash(rm -rf build): POST resolve e2: HTTP 404" in out
-    assert f"session {sid}: declined Bash(rm -rf build)" in out
+    assert "not answered: e2: Bash(rm -rf build): POST resolve e2: HTTP 404" in out
+    assert f"session {sid}: declined e3: Bash(rm -rf build)" in out
 
 
 def test_approve_with_only_a_question_pending_names_it_and_relay_answer(
@@ -6656,7 +6656,7 @@ def test_approve_with_only_a_question_pending_names_it_and_relay_answer(
     assert og.resolved == []
     err = capsys.readouterr().err
     assert "only a question (`relay --answer` answers it): " in err
-    assert QUESTION["params"]["content_preview"] in err
+    assert "e1: " + QUESTION["params"]["content_preview"] in err
 
 
 def test_relay_to_an_archived_session_is_not_deliverable(
@@ -6842,7 +6842,7 @@ def test_broadcast_reports_a_held_message_queued_and_skips_a_pending_prompt_unan
     sid = og.add("busy")
     assert broadcast(og, tmp_path, monkeypatch, "--include", sid) == 0
     assert capsys.readouterr().out.endswith(
-        ": queued until the session's current step ends; it lands then\n"
+        ": queued until the session's current step ends\nit lands then\n"
     )
     for prompts in ([QUESTION], [APPROVAL], [QUESTION, APPROVAL]):
         asked = BroadcastFake()
@@ -8637,7 +8637,7 @@ def test_a_crash_right_after_a_terminal_line_is_dropped_keeps_its_owner_event(
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # the restart
     [post] = posted(og)
     assert post.startswith("Supervisor [owner] b-")
-    assert "[owner] a t-a: blocked on a prompt: Bash(rm example)" in post
+    assert "[owner] a t-a: blocked on a prompt: e1: Bash(rm example)" in post
 
 
 def test_an_older_identical_message_does_not_close_an_open_intent(
@@ -11499,7 +11499,7 @@ def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_
     supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
     assert states[:3] == ["running"] * 3  # the card alone blocks nothing
     routed = [(e["kind"], e["action"], e["line"]) for e in events_of(registry)]
-    assert routed[0] == ("asked", "record", "a: asked its user: Which base?")
+    assert routed[0] == ("asked", "record", "a: asked its user: q1: Which base?")
     assert (events_of(registry)[0]["settled"], "Inbox" in events_of(registry)[0]["why"]) == (
         "rule",
         True,
