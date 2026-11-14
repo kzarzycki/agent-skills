@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import importlib.util
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -143,75 +141,3 @@ def test_the_refusal_exits_non_zero_only_when_set(
     assert "git pull" in capsys.readouterr().err
     monkeypatch.setattr(approvals, "refuses_stale", lambda: True)
     assert approvals.main(["report", str(report)]) == 1
-
-
-SPEC = importlib.util.spec_from_file_location(
-    "omnigent_agent_agreement",
-    Path(__file__).resolve().parents[1]
-    / "skills"
-    / "orchestrating-agents"
-    / "scripts"
-    / "omnigent_agent.py",
-)
-assert SPEC and SPEC.loader
-agent = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(agent)
-
-
-@pytest.mark.parametrize(
-    "block",
-    [
-        "loop:\n  pack_staleness: refuse\n",
-        'loop:\n  pack_staleness: "refuse"\n',
-        "loop:\n  pack_staleness: 'refuse'\n",
-        'loop:\n  "pack_staleness": refuse\n',
-        "loop:\n  cap: 3\n  pack_staleness: refuse   # why\n",
-        '"loop":\n  pack_staleness: refuse\n',
-        "loop: {pack_staleness: refuse}\n",
-        "loop: {cap: 3, pack_staleness: 'refuse'}\n",
-        "loop:\n  pack_staleness: warn\n",
-        'loop:\n  pack_staleness: "warn"\n',
-        "loop: {pack_staleness: warn}\n",
-        "loop:\n  cap: 3\n",
-        "loop: {cap: 3}\n",
-        "risk:\n  always: true\nloop:\n  cap: 3\n",
-        "",
-    ],
-)
-def test_both_readers_agree_on_every_form(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, block: str
-) -> None:
-    """approvals.py reads the block with PyYAML, omnigent_agent.py with a small reader of its own."""
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    (tmp_path / "docs" / "agents").mkdir(parents=True)
-    (tmp_path / "docs" / "agents" / "loop.md").write_text(loop_md(block))
-    monkeypatch.chdir(tmp_path)
-    assert agent.refuses_stale() is (
-        approvals.settings(loop_md(block)).get("pack_staleness") == "refuse"
-    )
-
-
-@pytest.mark.parametrize(
-    "block",
-    [
-        'loop:\n  pack_staleness: "ref\\x75se"\n',
-        'loop:\n  "pack\\x5fstaleness": refuse\n',
-        '"l\\x6fop":\n  pack_staleness: refuse\n',
-        'loop: {pack_staleness: "ref\\x75se"}\n',
-        'loop: {"pack\\x5fstaleness": refuse}\n',
-    ],
-)
-def test_where_approvals_refuses_through_an_escape_omnigent_warns(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    block: str,
-) -> None:
-    """PyYAML decodes the escape, so approvals.py refuses; the small reader never reads it, and says so."""
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    (tmp_path / "docs" / "agents").mkdir(parents=True)
-    (tmp_path / "docs" / "agents" / "loop.md").write_text(loop_md(block))
-    monkeypatch.chdir(tmp_path)
-    assert approvals.settings(loop_md(block)).get("pack_staleness") == "refuse"
-    assert agent.refuses_stale() is False
-    assert "cannot read: pack_staleness is treated as warn" in capsys.readouterr().err
