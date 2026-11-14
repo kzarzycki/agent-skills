@@ -4882,7 +4882,7 @@ def supervise_registry(
         said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
         last = text_of(said[-1]).strip() if said else ""
         key = re.sub(r"quiet \d+s", "quiet", line)  # the same quiet spell is a repeat
-        pending = [e for e in info.get("pending_elicitations") or [] if holds_input(e)]
+        pending = info.get("pending_elicitations") or []
         found = standing(decisions) if decisions else ""
         retrying, now = lead.get("retrying") or {}, time.time()
         event = {
