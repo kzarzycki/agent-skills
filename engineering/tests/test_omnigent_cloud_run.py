@@ -28,7 +28,7 @@ def test_a_cloud_brief_carries_the_in_turn_rule_and_not_the_detach_line(
     )
     brief = omnigent_agent.text_of(og.sessions[sid][1])
     assert IN_TURN in brief and "never ending the turn while the run lives" in brief
-    assert "loop on `omnigent_agent.py wait-for --log <log> --pid <pid>`" in brief
+    assert "loop on `omnigent_agent.py wait-for --log <log> --pid <pid> --budget 480`" in brief
     assert "`still running` (exit 6)" in brief and "never with a plain `sleep`" in brief
     assert "Monitor" not in brief and "in the foreground" not in brief
     assert "`STILL WORKING` that names only your own background run is not a valid ending" in brief
@@ -72,3 +72,27 @@ def test_the_supervisor_nudge_of_a_cloud_lead_names_the_restart(tmp_path, monkey
     )
     assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_NUDGE_CLOUD]
     assert "restart it" in omnigent_agent.LEAD_NUDGE_CLOUD
+
+
+@pytest.mark.parametrize(
+    ("ending", "own"),
+    [
+        ("STILL WORKING: waiting on my gate. Report: r.md", True),
+        ("STILL WORKING: waiting on my background run. Report: r.md", True),
+        ("STILL WORKING: waiting on the verifier background session. Report: r.md", False),
+        ("STILL WORKING: waiting on the verifier and my background gate. Report: r.md", False),
+        ("STILL WORKING: waiting on the verifier. Report: r.md", False),
+    ],
+)
+def test_only_a_wait_naming_nothing_but_its_own_run_counts_as_lost(ending: str, own: bool) -> None:
+    assert omnigent_agent.own_run_only(ending) is own
+
+
+def test_wait_for_prints_the_last_log_lines_with_still_running(tmp_path, capsys) -> None:
+    log = tmp_path / "gate.log"
+    log.write_text("run 7\nlock x\nlocked\nstep 1\nstep 2\nstep 3\nstep 4\n")
+    argv = ["wait-for", "--log", str(log), "--pid", "7", "--budget", "0.05"]
+    (tmp_path / "7").write_text("7\n")
+    argv[argv.index("7")] = str(tmp_path / "7")
+    assert omnigent_agent.main(argv) == omnigent_agent.LIMIT
+    assert capsys.readouterr().out == "still running\nstep 2\nstep 3\nstep 4\n"

@@ -580,7 +580,7 @@ DETACH_LINE = "A long run follows engineering-loop's verifier.md, A long or lock
 CLOUD_RUN_LINE = (
     "A run must finish inside the turn that started it, since the VM may not outlive the turn, and a"
     " foreground call there is cut short: start it detached as verifier.md's recipe says (its log,"
-    " pid and exit in files), then loop on `omnigent_agent.py wait-for --log <log> --pid <pid>` in the"
+    " pid and exit in files), then loop on `omnigent_agent.py wait-for --log <log> --pid <pid> --budget 480` in the"
     " same turn, calling it again each time it prints `still running` (exit 6), never ending the turn"
     " while the run lives and never with a plain `sleep`, which the harness blocks."
     " A `STILL WORKING` that names only your own background run is not a valid ending."
@@ -3282,6 +3282,17 @@ def lock_text(log: Path, run: str | None) -> str | None:
     return None if lock is None else f"waiting on the gate lock (held by {lock_holder(lock)})"
 
 
+PROGRESS_LINES = 3  # the log lines wait-for prints with ``still running``
+LOG_MARKERS = re.compile(r"(run \d+|lock .*|locked)")  # the detached recipe's own lines
+
+
+def log_progress(log: Path, run: str | None) -> list[str]:
+    """The last ``PROGRESS_LINES`` lines of the run's log that are its command's output, not the
+    detached recipe's markers, so a ``still running`` shows how far the run has got."""
+    lines = [x for x in run_lines(log, run) or [] if not LOG_MARKERS.fullmatch(x.strip())]
+    return lines[-PROGRESS_LINES:]
+
+
 def log_outcome(log: Path, code: int, run: str | None = None) -> str:
     """``exit <n>``, then on green the last line before it (the gate's summary), on red its last
     ``LOG_TAIL`` lines, all from ``run_lines(log, run)``."""
@@ -4445,12 +4456,23 @@ def ending_of(text: str) -> str | None:
 
 
 # A cloud lead's ``STILL WORKING`` naming only its own background run (#1002): that run died with the
-# turn, so it waits on nothing. "my gate" or "the nohup'd test", not "the verifier's gate".
+# turn, so it waits on nothing. "my gate" or "my background run", not "the verifier background
+# session"; a message that also names another wait (``OTHER_WAIT``) keeps that wait's route.
 OWN_RUN = re.compile(
     r"STILL WORKING\b[^\n]*?\b(?:(?:my|our|own)\b[^\n.]*?\b(?:gate|run|job|process|tests?|build)s?"
-    r"|background|detached|nohup)",
+    r"|(?:background|detached)\s+(?:gate|run|job|process|tests?|build)s?|nohup)",
     re.IGNORECASE,
 )
+OTHER_WAIT = re.compile(
+    r"\b(?:verifier|worker|lead|merge|reviewer|CI|checks?|session|PR|pull request)\b|[0-9a-f]{32}|#\d+",
+    re.IGNORECASE,
+)
+
+
+def own_run_only(text: str) -> bool:
+    """Whether ``text``'s ``STILL WORKING`` line names the lead's own background run and no other wait."""
+    m = OWN_RUN.search(text)
+    return bool(m and not OTHER_WAIT.search(text[text.find("STILL WORKING") :].split("\n", 1)[0]))
 
 
 def wait_of(text: str, at: float | None = None) -> str:
@@ -4994,7 +5016,7 @@ def supervise_registry(
             "wait": "unknown"
             if lead.get("wait") not in ("parked", None)
             and last
-            and OWN_RUN.search(last)
+            and own_run_only(last)
             and cloud_session(og, info)
             else lead.get("wait"),
             "repeat": key == lead.get("last_event"),
@@ -6453,7 +6475,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             ended = wait_for(args.log, args.pid, args.pr, args.until, args.budget)
             if ended is None:
                 waiting = args.log and lock_text(args.log, run_of(args.pid) if args.pid else None)
-                print(waiting or "still running")
+                progress = (
+                    []
+                    if waiting or not args.log
+                    else log_progress(args.log, run_of(args.pid) if args.pid else None)
+                )
+                print("\n".join([waiting or "still running", *progress]))
                 return LIMIT
             code, outcome = ended
             print(outcome)
