@@ -3314,6 +3314,9 @@ def rest_notes(number: int) -> dict[str, Any]:
     nodes = [
         {
             "id": found["node_id"],
+            # what session_links() names a comment by and edits it at; REST gives no right to edit it
+            "databaseId": found.get("id"),
+            "url": found.get("html_url"),
             "author": actor(found.get("user")),
             "body": found.get("body") or "",
             "createdAt": found["created_at"],
@@ -3467,9 +3470,27 @@ def rest_checks(head: str) -> dict[str, Any]:
 def rest_threads(number: int) -> dict[str, Any]:
     """A PR's review threads, whether each is resolved, from the review-thread route a cloud session's GitHub proxy
     serves (GitHub's own REST has none). Where it is missing, as on a host whose GraphQL refused for another reason,
-    the error raises: unresolved threads are never read as none."""
+    the error raises: unresolved threads are never read as none. Each thread's comments, which that route names by id
+    alone, come from the PR's review comments, with no right to edit them (session_links())."""
     threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
-    nodes = [{"isResolved": bool(thread.get("resolved"))} for thread in threads]
+    listed = {found["id"]: found for found in rest_pages(f"pulls/{number}/comments?per_page=100")}
+    nodes = [
+        {
+            "isResolved": bool(thread.get("resolved")),
+            "comments": {
+                "nodes": [
+                    {
+                        "body": found.get("body") or "",
+                        "databaseId": found["id"],
+                        "url": found.get("html_url"),
+                    }
+                    for found in (listed.get(each) for each in thread.get("comment_ids") or [])
+                    if found is not None
+                ]
+            },
+        }
+        for thread in threads
+    ]
     return {"totalCount": len(nodes), "nodes": nodes}
 
 
@@ -3486,6 +3507,8 @@ def rest_pull(pr: int) -> dict[str, Any]:
             "state": review["state"],
             "body": review.get("body") or "",
             "commit": {"oid": review.get("commit_id") or ""},
+            "databaseId": review.get("id"),
+            "url": review.get("html_url"),
         }
         for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
     ]

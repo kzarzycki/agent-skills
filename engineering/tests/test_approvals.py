@@ -10330,6 +10330,7 @@ def cloud_routes(spec: str = "the spec", record_of: str | None = None) -> dict[s
         ],
         "issues/7/comments?per_page=100": [],
         "pulls/7/ccr/review_threads": [{"resolved": True, "comment_ids": [1]}],
+        "pulls/7/comments?per_page=100": [],
         "pulls/7/commits?per_page=100": [
             {
                 "author": user("loop"),

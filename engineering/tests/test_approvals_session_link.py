@@ -10,11 +10,13 @@ from typing import Any
 import pytest
 from approvals_harness import (
     LOOP,
+    Cloud,
     added,  # noqa: F401
     approvals,
     assigned,  # noqa: F401
     attached,  # noqa: F401
     board_risks,  # noqa: F401
+    cloud,  # noqa: F401
     graphql_answers,  # noqa: F401
     hub,  # noqa: F401
     lands,  # noqa: F401
@@ -24,6 +26,7 @@ from approvals_harness import (
     pushed,  # noqa: F401
     refs,  # noqa: F401
     required,  # noqa: F401
+    rest_comment,
 )
 
 LINK = "https://claude.ai/code/session_01AbCdEf"
@@ -195,3 +198,29 @@ def test_land_edits_a_review_summary_carrying_the_link_and_check_merge_names_one
             " it by hand before the PR lands, since its page is public"
         )
     ]
+
+
+def test_over_rest_every_linked_text_is_named_by_its_url_and_none_is_edited(
+    cloud: Cloud, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Where GraphQL is refused, REST still reads each text's id and link, and a review thread's comments by the ids
+    its route names; with no right to edit any read there, land edits none and check merge names each one."""
+    pages = cloud.routes
+    pages["repos/{owner}/{repo}/issues/7/comments?per_page=100"] = [
+        rest_comment(f"Pass.\n\n{LINK}", id=41, html_url="https://example.com/c41")
+    ]
+    pages["repos/{owner}/{repo}/pulls/7/comments?per_page=100"] = [
+        {"id": 1, "body": f"Rename this.\n\n{FOOTER}", "html_url": "https://example.com/r1"}
+    ]
+    pages["repos/{owner}/{repo}/pulls/7/reviews?per_page=100"][0].update(
+        id=51, html_url="https://example.com/v51", body=f"Verifier.\n\n{FOOTER}"
+    )
+    pr = approvals.pull_request(7)
+    approvals.unlink_pull(pr)
+    assert cloud.writes == []
+    assert approvals.stranded(pr) == (
+        "PR #7: a session link stays in the comment https://example.com/c41, the review https://example.com/v51,"
+        " the comment https://example.com/r1, which this account can't edit: remove it by hand before the PR lands,"
+        " since its page is public"
+    )
+    capsys.readouterr()
