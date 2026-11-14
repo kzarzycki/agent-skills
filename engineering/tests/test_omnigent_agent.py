@@ -11360,6 +11360,7 @@ def test_a_wait_on_the_session_the_supervisor_notifies_is_acted_on_and_names_it(
         ("waiting on the PM", "A", "{A} acts"),  # B, started by A, names no session
         ("waiting on {A}", None, "{A} and {B} acts"),  # B names A by id; neither started the other
         ("waiting on {A}", "B", "{B} acts"),
+        ("waiting on {A}", "B's registry", "{B} acts"),  # B's leads= registry lists A
     ],
 )
 def test_two_quiet_sessions_waiting_on_each_other_raise_a_mutual_wait_naming_who_acts(
@@ -11376,6 +11377,11 @@ def test_two_quiet_sessions_waiting_on_each_other_raise_a_mutual_wait_naming_who
     og.snaps[b] = {**quiet, **({"parent_session_id": a} if b_parent == "A" else {})}
     if b_parent == "B":
         og.snaps[a]["parent_session_id"] = b
+    if b_parent == "B's registry":  # the reverse of A's registry listing B: B owns A
+        own = tmp_path / "b.registry"
+        own.write_text(f"{a}={tmp_path / 'a.md'}\tfollow\n")
+        with registry.open("a") as f:
+            f.write(f"{b}={tmp_path / 'b.md'}\tleads={own}\n")
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     lines = [t.split("\n")[0] for _, t in og.inbox if t.startswith(f"Supervisor: {a}")]
     assert lines == [f"Supervisor: {a} t-{a}: mutual wait: {a} ↔ {b}; " + who.format(A=a, B=b)]

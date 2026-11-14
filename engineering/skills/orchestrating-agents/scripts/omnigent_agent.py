@@ -5604,10 +5604,19 @@ def supervise_registry(
         # a session its STILL WORKING line names that shows life is progress, one that is archived,
         # unknown or unread is quiet
         quiet_named, mutual = [], ""
-        try:  # the sessions its own registry started, as its children are
-            started = registered(Path(lead["leads"]))[0] if lead.get("leads") else {}
-        except Exception:  # noqa: BLE001 - unread: only its children count as started by it
-            started = {}
+
+        def owns(parent: str, child: str, child_info: dict) -> bool:
+            """Whether ``parent`` started ``child``: its parent id, or ``parent``'s own ``leads=``
+            registry listing it. Asked both ways, so neither side of a mutual wait is favoured."""
+            if child_info.get("parent_session_id") == parent:
+                return True
+            try:  # the sessions its own registry started, as its children are
+                # its registry line, not its state: a session not yet tracked this poll counts too
+                path = (registered(registry)[0].get(parent) or ("",) * 7)[6]
+                return bool(path) and child in registered(Path(path))[0]
+            except Exception:  # noqa: BLE001 - unread: only its children count as started by it
+                return False
+
         for other in lead.get("named") or []:
             try:
                 info = og.info(other)
@@ -5625,12 +5634,10 @@ def supervise_registry(
             log(("named", other), None)
             if not mutual and not over["ending"] and over["wait"] != "unknown":
                 # it waits on this lead, or on no session, and this lead started it: a mutual wait
-                mine, theirs = (
-                    info.get("parent_session_id") == sid or other in started,
-                    og.info(sid).get("parent_session_id"),
-                )
+                mine = owns(sid, other, info)
                 if sid in over["named"] or (mine and not over["named"]):
-                    who = sid if mine else other if theirs == other else f"{sid} and {other}"
+                    theirs = not mine and owns(other, sid, og.info(sid))
+                    who = sid if mine else other if theirs else f"{sid} and {other}"
                     mutual = f"mutual wait: {sid} ↔ {other}; {who} acts"
             if over["ending"] and over["state"] == "idle":  # news for its waiter, once per turn
                 at = datetime.fromtimestamp(over["turn_at"], timezone.utc).strftime("%H:%MZ")
