@@ -92,7 +92,7 @@ def test_the_merge_gate_holds_a_matching_pr_under_both_keys() -> None:
     assert held({**pull(), "headRefName": "other"}, BOTH) == "squash"
 
 
-def test_a_land_section_with_only_the_key_signs_nothing_and_one_signing_key_alone_is_refused() -> None:
+def test_the_key_alone_signs_nothing_and_one_signing_key_alone_is_refused() -> None:
     assert approvals.signed(SYNC) is None
     with pytest.raises(approvals.Refused, match="lacks `allowed_signers`"):
         approvals.settings(loop_md("land:\n  signed_squash_to: main\n"))
