@@ -22,6 +22,7 @@ from approvals_harness import (
     gatekeeper_md,
     git_in,
     graphql_answers,  # noqa: F401
+    heavy_by_run,
     hub,  # noqa: F401
     others_open,  # noqa: F401
     pull,
@@ -116,7 +117,7 @@ def test_gate_steps_are_read_from_the_policy_and_a_malformed_one_is_refused(
         f"{name}: {command}" for name, command in steps["commands"].items()
     )
     bad = {
-        "where: cloud": "must be one of any, host, not 'cloud'",
+        "where: cloud": "must be one of any, host, linux, not 'cloud'",
         "where: any\n    - name: a\n      command: echo\n      where: any": "names the name 'a' twice",
     }
     for tail, said in bad.items():
@@ -275,6 +276,7 @@ def test_a_step_run_under_a_held_slot_takes_none_and_tells_its_command(
     fcntl.flock(held, fcntl.LOCK_EX)
     monkeypatch.setenv(approvals.SLOT_HELD, slot)
     monkeypatch.setattr(approvals.subprocess, "run", run)
+    monkeypatch.setattr(approvals, "run_heavy", heavy_by_run)
     step = threading.Thread(
         target=approvals.ran_step, args=(approvals.gate_plan()[0],), daemon=True
     )
@@ -346,6 +348,7 @@ def test_a_step_run_takes_the_slot_and_tells_its_command_it_is_held(
         return subprocess.CompletedProcess(words, 0)
 
     monkeypatch.setattr(approvals.subprocess, "run", run)
+    monkeypatch.setattr(approvals, "run_heavy", heavy_by_run)
     assert approvals.ran_step(approvals.gate_plan()[0]) == (0, 0, 0)
     assert seen[0][approvals.SLOT_HELD] == approvals.slot_path()
 

@@ -17,6 +17,10 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    item is built, never to whether: narrowing or dropping an acceptance item or an
    Implementation Decision is a question to the lead in `<report>.question`, and that item
    stops until it is answered, since only the owner changes an approved spec's scope.
+   Read the spec's comments as well as its body, since a later comment can narrow
+   the spec. A brief with "the verifier will check" lists the checks the verifier will run on
+   your head: run each on your own head before you report, and list each one's result in the
+   report, since a check left to the verifier costs a fix round, a full gate and another pass.
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
@@ -27,10 +31,10 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    the run it came from (a CI run's id, else the time the gate started), since that run and
    the head are what make it one occurrence.
    When your brief opens with a `LOOP_HEAVY_LOCK=<path>` line, run each gate or full test run
-   under that lock, around the project's own heavy wrapper, since your lead may run another
+   under that lock, around the host's heavy wrapper (SKILL.md, One heavy gate per host slot), since your lead may run another
    worker beside you and the host's slot counts every caller: `perl -MFcntl=:flock -e '$^F =
    1023; open(F, ">>", shift) or die "$!\n"; flock(F, LOCK_EX) or die "$!\n"; exec @ARGV'
-   <path> mise run check` (perl, since macOS has no `flock`).
+   <path> uv run <this skill's folder>/scripts/approvals.py heavy mise run check` (perl, since macOS has no `flock`).
    Once it exits 0, commit and push with `git push -u origin <branch>` as
    its own command, since a pre-tool hook may scan the whole command text. Commit and push
    after each step whose gates are green, not only at the end, so a worker killed mid-task

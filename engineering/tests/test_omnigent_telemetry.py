@@ -182,7 +182,7 @@ def test_server_names_the_omnigent_the_usage_is_read_from(monkeypatch, capsys) -
         def __init__(self, named: str = "") -> None:
             servers.append(named)
 
-        def call(self, method: str, path: str) -> dict:
+        def call(self, method: str, path: str, **_: object) -> dict:
             return {"sessions": []}
 
     def no_db(*_: object) -> None:
@@ -193,3 +193,24 @@ def test_server_names_the_omnigent_the_usage_is_read_from(monkeypatch, capsys) -
     monkeypatch.setattr(telemetry, "codex_rate_limits", lambda: None)
     assert telemetry.main(["--server", "https://work.example", "--json"]) == 0
     assert servers == ["https://work.example"]
+
+
+def test_the_usage_request_carries_the_window_and_a_long_timeout(monkeypatch, capsys) -> None:
+    calls: list[tuple[str, str, object]] = []
+
+    class Recorded:
+        def __init__(self, named: str = "") -> None:
+            pass
+
+        def call(self, method: str, path: str, **kw: object) -> dict:
+            calls.append((method, path, kw.get("timeout")))
+            return {"sessions": []}
+
+    def no_db(*_: object) -> None:
+        raise telemetry.Fail("no database")
+
+    monkeypatch.setattr(telemetry, "Omnigent", Recorded)
+    monkeypatch.setattr(telemetry, "fetch_db", no_db)
+    monkeypatch.setattr(telemetry, "codex_rate_limits", lambda: None)
+    assert telemetry.main(["--days", "3", "--json"]) == 0
+    assert calls == [("GET", "/v1/usage?days=3", 180.0)]
