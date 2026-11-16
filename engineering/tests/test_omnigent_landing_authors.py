@@ -12,10 +12,14 @@ OLD, NEW = base.OLD, base.NEW
 
 
 def github(
-    monkeypatch: pytest.MonkeyPatch, head: list[str], authors: dict[str, str | None]
+    monkeypatch: pytest.MonkeyPatch,
+    head: list[str],
+    authors: dict[str, str | None],
+    me: str | None = "me",
 ) -> list[tuple[str, ...]]:
-    """``gh`` faked: this runs as ``me``; the comparison lists ``authors``' PRs, each opened by its
-    login (None: its read fails). Each call is recorded."""
+    """``gh`` faked: this runs as ``me`` (None: the login read fails); the comparison lists
+    ``authors``' PRs, each opened by its login (None: its read fails), or one direct push when
+    there are none. Each call is recorded."""
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 0)
     calls: list[tuple[str, ...]] = []
 
@@ -24,9 +28,11 @@ def github(
         if args[1] == "repos/o/r/commits/HEAD":
             return head[0] + "\n"
         if args[1] == "user":
-            return "me\n"
+            if me is None:
+                raise omnigent_agent.Fail("gh api: HTTP 401")
+            return me + "\n"
         if args[1] == f"repos/o/r/compare/{OLD}...{NEW}":
-            return "".join(f"Change (#{n})\n" for n in authors)
+            return "".join(f"Change (#{n})\n" for n in authors) or "Fix a typo on main\n"
         if args[1].startswith("repos/o/r/pulls/"):
             login = authors[args[1].rsplit("/", 1)[1]]
             if login is None:
@@ -84,3 +90,23 @@ def test_an_author_not_read_still_raises_the_landing_naming_why(
     assert (
         "#846 (author not read: gh api: HTTP 502)" in event["line"] and "#843" not in event["line"]
     )
+
+
+def test_a_direct_push_naming_no_pr_stores_the_new_head_and_raises_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, head = base.following(tmp_path), [OLD]
+    github(monkeypatch, head, {})
+    moved(base.Lead(base.told("brief", 60)), registry, monkeypatch, head)
+    assert base.landed(registry) == []
+    assert base.state_of(registry)["heads"] == {"o/r": NEW}
+
+
+def test_the_login_not_read_still_raises_the_landing_naming_every_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, head = base.following(tmp_path), [OLD]
+    github(monkeypatch, head, {"843": "release-bot[bot]", "844": "me"}, me=None)
+    moved(base.Lead(base.told("brief", 60)), registry, monkeypatch, head)
+    (event,) = base.landed(registry)
+    assert event["line"].endswith("#843, #844 (authors not read: gh api: HTTP 401)")
