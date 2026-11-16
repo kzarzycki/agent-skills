@@ -46,7 +46,10 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    its gate, since the lead starts the next verifier on that head while the gate runs: once
    `test:changed` and the mutation check (Report) pass, commit and push, start the gate
    detached on the pushed head (below), and report its log and pid in place of its exit code,
-   never waiting on it. When the brief names the last green head (the newest head whose gate
+   never waiting on it. When the brief says the verifier reviews in your worktree (lead.md step 7,
+   Shared worktree), run no gate there beside the pass: run the changed tests and the
+   mutation check, push and stop, since the verifier's mutation patches edit that tree;
+   `land` and CI gate the head. When the brief names the last green head (the newest head whose gate
    passed) and `git merge-base --is-ancestor <it> HEAD` exits 0, put `GATE_BASE=<it>` (or the
    variable loop.md's `Gate base:` line names) in front of `mise run check`, so a check that
    reads it selects only what changed since that head; with `ci: false` run the check that way,

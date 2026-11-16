@@ -137,7 +137,16 @@ design, wireframes included for a UI, and delegate the rest.
    A verifier on a host starts on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
-   yours while it reviews and no commit of yours moves the head under review. Copy into its
+   yours while it reviews and no commit of yours moves the head under review.
+   **Shared worktree.** The verifier reviews in the worker's worktree instead, saving a
+   checkout, a dependency install and a fixture clone, when all hold: its HEAD is the pushed
+   head under review (`git rev-parse HEAD`); `git status --porcelain` is empty; an instance,
+   if the spec needs one, was built from that head with its data reset by the project's seed
+   step (loop.md § Proof on a branch); and the worker's session is stopped (no turn running),
+   since a turn could move the tree under review. Otherwise it gets its own detached worktree
+   as above. In a shared worktree a fix round's worker runs no gate beside the pass (worker.md,
+   Gates and push), since the verifier's mutation patches edit that tree; `land` and CI gate
+   the head. Copy into its
    `tmp/loop/` the priorities file from step 4 (it exists only in your checkout, and `brief
    --priorities` runs there), the proof logs and, on a later pass, the previous report (as the
    `tmp/loop/pr<pr>-v<n>.md` the brief names) and its repros, since a read outside its
@@ -200,7 +209,9 @@ design, wireframes included for a UI, and delegate the rest.
    `WONT_FIX`, replying with its triage and the issue it waits in, and each rejected one
    `INVALID`, with the one-line why; then push. Each later pass gets a fresh verifier, started the same way in a
    worktree at the new head, plus the previous report's copy and head; reviving the old one re-reads its whole earlier
-   review every turn. Start it as soon as the fixer reports the pushed head, with the fix's gate
+   review every turn. With loop.md's `Verifier session: reuse` (SKILL.md, What the project states), keep the
+   verifier's session across passes instead: `send` it the next pass's brief (`approvals.py brief`, as above)
+   rather than starting one, and close it once the PR lands. Start it as soon as the fixer reports the pushed head, with the fix's gate
    still running, and wait on that gate yourself (`wait-for --log <log> --pid <pid>`): `land`
    needs a satisfied verdict and a green gate on the same head, so neither check weakens, and a
    red gate's failure joins that verdict's findings in the next fix round. A finding that doesn't make the PR wrong or unmergeable, a note on a
