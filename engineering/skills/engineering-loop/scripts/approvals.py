@@ -191,6 +191,10 @@ meanwhile; a base push refused puts the PR's branch back on its head. It is no c
 repository (its branch isn't ours to push), targets a base other than the section's, has auto-merge or the merge queue
 on (GitHub would sign that squash), or when `origin` isn't the PR's repo, the checkout signs nothing or the signers file
 is missing. Without the section nothing changes.
+`land.merge_commit_heads` (a list of fnmatch patterns over head branch names, such as `sync/*`) lands a PR whose head
+matches with `gh pr merge --merge --match-head-commit`, a merge commit that keeps the head's ancestry (an upstream-sync
+PR needs it), instead of the squash above; every other PR lands as before. `land` prints each PR's method, and a
+match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form.
 `where: host | cloud | both` (default `host`) says where `land` runs: it refuses elsewhere, exit 1, before reading any
 PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`; its checkout signs with the session's own
 key, shared across that service's users, so there `land` refuses without the section (GitHub's merge is GraphQL, which
@@ -204,6 +208,7 @@ there, it goes to origin as a ref. There REST alone answers, and it says neither
 whether classic branch protection requires one, so a PR is a candidate there only with `merge_queue: false` in the
 section, the project's word that its base requires none (`required_checks` still refuses a ruleset that does); a draft is refused, and an evicted PR stays
 ready, each said, since GitHub changes a draft only over GraphQL. Off a cloud session only `where` is new.
+`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip.
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
 printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
@@ -640,9 +645,16 @@ def label_names(tracker: str) -> dict[str, set[str]]:
 class Table(dict):
     """A settings section whose every key is required but those `optional` names, such as `land`."""
 
-    def __init__(self, *args: Any, optional: tuple[str, ...] = (), **kinds: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        optional: tuple[str, ...] = (),
+        together: tuple[str, ...] = (),
+        **kinds: Any,
+    ) -> None:
         super().__init__(*args, **kinds)
         self.optional = frozenset(optional)
+        self.together = together  # optional keys that are all set or all unset
 
 
 class Choice(tuple):
@@ -661,7 +673,7 @@ class Rows(Table):
 # where `land` may run (loop.md's `land.where`): a host, a cloud session (CLOUD), or either
 PLACES = ("host", "cloud", "both")
 # where a gate step may run (loop.md's `gate_steps`): any machine, or only a host, never a cloud session (CLOUD)
-STEP_PLACES = ("any", "host")
+STEP_PLACES = ("any", "host", "linux")
 # loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
 # A list holds strings; `bot.<login>` is a section per bot.
 STAGES = ("intent", "spec", "plan", "build", "review", "land")
@@ -704,7 +716,16 @@ SCHEMA: dict[str, dict[str, Any]] = {
         where=Choice(PLACES),
         signing_key_env=str,
         merge_queue=bool,
-        optional=("where", "signing_key_env", "merge_queue"),
+        merge_commit_heads=list,
+        together=("signed_squash_to", "allowed_signers"),
+        optional=(
+            "signed_squash_to",
+            "allowed_signers",
+            "where",
+            "signing_key_env",
+            "merge_queue",
+            "merge_commit_heads",
+        ),
     ),
     "carry_over_main": Table({"except": list}),
 }
@@ -838,7 +859,13 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
                 f"{file}'s {where} is empty"
             )  # a name's description may be empty, a path may not
     if isinstance(schema, Table) and (
-        missing := [key for key in schema if key not in section and key not in schema.optional]
+        missing := [
+            key
+            for key in schema
+            if key not in section
+            and (key not in schema.optional or any(other in section for other in schema.together))
+            and (key in schema.together or key not in schema.optional)
+        ]
     ):
         raise Refused(f"{file}'s `{name}` lacks `{'`, `'.join(missing)}`")
     return section
@@ -2210,8 +2237,26 @@ def placed(loop: str | None) -> Any:
 
 def signed(loop: str | None) -> tuple[str, Path] | None:
     """loop.md's `land` section as (branch, signers), None without one."""
-    land = settings(loop).get("land")
-    return (land["signed_squash_to"], Path(land["allowed_signers"]).expanduser()) if land else None
+    land = settings(loop).get("land") or {}
+    if "signed_squash_to" not in land:
+        return None
+    return (land["signed_squash_to"], Path(land["allowed_signers"]).expanduser())
+
+
+def merge_method(pull: dict[str, Any], loop: str | None) -> str:
+    """How land merges the PR: `merge` (a merge commit, which keeps the head's ancestry) when its head branch matches
+    a pattern of loop.md's `land.merge_commit_heads`, else `squash`. A match with `land.signed_squash_to` set is
+    Refused, since a signed squash has no merge-commit form."""
+    patterns = (settings(loop).get("land") or {}).get("merge_commit_heads", [])
+    head = pull["headRefName"]
+    if not any(fnmatch.fnmatchcase(head, pattern) for pattern in patterns):
+        return "squash"
+    if signed(loop):
+        raise Refused(
+            f"PR #{pull['number']}'s head `{head}` matches `land.merge_commit_heads`, but `land.signed_squash_to` is"
+            " set, and a signed squash has no merge-commit form: unset one of the two keys"
+        )
+    return "merge"
 
 
 def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
@@ -4026,6 +4071,9 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
     if point == "merge" and (why := outside(pull, loop)):
         print(why)
         return 0
+    if point == "merge":
+        base = pull["baseRefName"]
+        judge_with_base(base, fetch=True)
     found, issues = gated(point, pull, tracker, loop)
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
@@ -4162,6 +4210,7 @@ def landing_here(
             return (1 if worst else WAITING), True
         # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        judge_with_base(base)
         return batched(named, base, tracker, loop, only, held, worst)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
@@ -4184,6 +4233,91 @@ def landing_here(
         signal.pthread_sigmask(signal.SIG_SETMASK, mask)
         if waiting:
             sys.exit(128 + min(waiting))
+
+
+def base_drift(base: str) -> list[str]:
+    """The running approvals.py and the three policy files (tracker, loop.md, gatekeeper.md) whose text here differs from
+    `origin/<base>`'s, as repo paths, since a PR's own edit of the code or rules that judge it must not judge it. Reads
+    the ref as fetched (a land has just fetched it); a script inside the checkout that the base lacks (a PR adds or moves it) differs; only one
+    installed outside the checkout, or a ref that is missing, has nothing to compare and counts as equal."""
+    root = toplevel()
+    ref = f"refs/remotes/origin/{base}"
+    if subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", "-q", ref],
+        capture_output=True,
+        check=False,
+    ).returncode:
+        return []
+    paths = [TRACKER, LOOP, POLICY]
+    try:
+        paths.insert(0, Path(__file__).resolve().relative_to(root.resolve()))
+    except ValueError:
+        pass
+    differ = []
+    for path in paths:
+        shown = subprocess.run(
+            ["git", "-C", str(root), "show", f"{ref}:{path.as_posix()}"],
+            capture_output=True,
+            check=False,
+        )
+        theirs = shown.stdout if shown.returncode == 0 else None
+        try:
+            ours = (root / path).read_bytes()
+        except OSError:
+            ours = None
+        if ours != theirs:
+            differ.append(path.as_posix())
+    return differ
+
+
+def judge_with_base(base: str, fetch: bool = False) -> None:
+    """Refuse, naming the files, when the code or policy running here is not `origin/<base>`'s, so the caller runs from
+    the base's code; under GITHUB_ACTIONS (a workflow that checks out the PR) also when HEAD is not the base's tip."""
+    if fetch:  # a land has fetched it already
+        fetched_base = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(toplevel()),
+                "fetch",
+                "-q",
+                "origin",
+                f"+refs/heads/{base}:refs/remotes/origin/{base}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if fetched_base.returncode:
+            raise Refused(
+                f"could not fetch origin/{base} ({' '.join(fetched_base.stderr.split()) or 'no reason given'}):"
+                " a stale ref would judge by another tip's files"
+            )
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        tip = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(toplevel()),
+                "rev-parse",
+                "--verify",
+                "-q",
+                f"refs/remotes/origin/{base}^{{commit}}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        if tip and tip != git("rev-parse", "HEAD").strip():
+            raise Refused(
+                f"the checked-out commit is not origin/{base}'s tip ({tip[:12]}): a workflow that checks out the PR judges"
+                " it by its own rules; check out the base"
+            )
+    if differ := base_drift(base):
+        raise Refused(
+            f"{', '.join(differ)} differ{'s' * (len(differ) == 1)} from origin/{base}'s: a PR's own copy would judge it;"
+            f" run from the base's code (a checkout of origin/{base})"
+        )
 
 
 def stopped(signum: int, _frame: Any) -> None:
@@ -4366,6 +4500,10 @@ def proof_gaps(
     """What keeps the PR from landing before CI is asked about, as lines to print (none: it holds every proof, and a
     draft may be marked ready, since ready starts CI), with the issues its spec links."""
     where, local = f"PR #{pull['number']}", signed(loop)
+    try:
+        merge_method(pull, loop)
+    except Refused as exc:
+        return [str(exc)], None
     if pull["isCrossRepository"]:
         return [
             f"{where} comes from another repository: land merges only branches of this one"
@@ -4967,19 +5105,22 @@ def merges(
     for pull, tree, gated, how in landed:
         where, head = f"PR #{pull['number']}", pull["headRefOid"]
         try:
+            method = merge_method(pull, loop)
             if local:
                 tip = signed_squash(pull, local[1], (tip, tree))
+                print(f"{where} lands as a {method}")
                 print(f"{where} landed in {base} as {tip}, signed by a key in {local[1]}")
             else:
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
-                body = land_body(pull)
+                body = land_body(pull) if method == "squash" else None
+                print(f"{where} lands as a {method}")
                 try:
                     gh(
                         "pr",
                         "merge",
                         str(pull["number"]),
-                        "--squash",
+                        f"--{method}",
                         *(("--body", body) if body is not None else ()),
                         "--match-head-commit",
                         head,
@@ -5413,8 +5554,22 @@ def inputs_key(tree: str, step: dict[str, Any]) -> str | None:
 
 
 def here(step: dict[str, Any]) -> bool:
-    """Whether `step` may run here: a `host` step never runs in a cloud session (in_cloud)."""
+    """Whether `step` may run here: a `host` step never runs in a cloud session (in_cloud), a `linux` step only
+    where `sys.platform` is Linux (a Linux host or a cloud session), never on macOS."""
+    if step["where"] == "linux":
+        return sys.platform.startswith("linux")
     return step["where"] != "host" or not in_cloud()
+
+
+def runs_only(left: list[str]) -> str:
+    """`left` steps by the place their `where` limits them to: `a, b runs only on a host (`where: host`)`, one clause per `where`."""
+    wheres = {step["name"]: step["where"] for step in gate_plan()}
+    places = {"host": "a host", "linux": "Linux"}
+    clauses = []
+    for where in dict.fromkeys(wheres.get(name, "host") for name in left):
+        names = ", ".join(f"`{name}`" for name in left if wheres.get(name, "host") == where)
+        clauses.append(f"{names} runs only on {places.get(where, where)} (`where: {where}`)")
+    return "; ".join(clauses)
 
 
 def command_line(
@@ -5791,7 +5946,7 @@ def run_steps(
             continue
         if not here(step):
             say(
-                f"{step['name']}: no pass on tree {tree}, and it runs only on a host (`where: host`)"
+                f"{step['name']}: no pass on tree {tree}, and it runs only where `where: {step['where']}` allows"
             )
             done["left"].append(step["name"])
             continue
@@ -6542,9 +6697,12 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
             return
         print(f"published on {head} as the commit status `{context}`")
         return
-    # with `gate_steps`, each step's record is pushed by itself, one already in origin left as it is
+    # with `gate_steps`, each step's record is pushed by itself; one already in origin, read back from it
+    # (record_ref), is left as it is, since pushing it again only fails and would say origin lacks it
     for one in record.get("steps", [record]):
-        if "steps" in record and one.get("published"):
+        if one.get("published"):
+            name = one.get("ref") or RECORD_BRANCH.format(record_name(one["tree"], one["command"]))
+            print(f"already in origin as the record branch {name}, so it is not pushed again")
             continue
         try:
             ref = push_record(one | {"time": one.get("time") or now()})
@@ -6671,8 +6829,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
             print(f"{CHECKED} on {head}: recorded in {where}")
         if left := record.get("left"):
             print(
-                f"{head} has no pass on the whole gate yet: {', '.join(f'`{name}`' for name in left)} runs only on a"
-                " host (`where: host`), where `local-ci` runs it alone"
+                f"{head} has no pass on the whole gate yet: {runs_only(left)}, where `local-ci` runs it alone"
             )
             # each step by itself, so the `gate` status shows a step's pass, never the whole gate's
             for one in record["steps"]:
@@ -6693,8 +6850,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
         source = ""
         if left := record.get("left"):
             raise Refused(
-                f"no pass on the whole gate for {head}: {', '.join(f'`{name}`' for name in left)} runs only on a host"
-                " (`where: host`); the steps that passed here are recorded"
+                f"no pass on the whole gate for {head}: {runs_only(left)}; the steps that passed here are recorded"
             )
     else:
         raise Refused(no_pass(head, why))

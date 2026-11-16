@@ -154,7 +154,7 @@ carry_over_main:
 | `loop` | `cap` | a whole number (The cap) | the default |
 | | `ci` | deprecated, goes in the next release (Approvals and proof); `false` for a project without CI, whose merge proof is then `uv run <this skill's folder>/scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
 | | `gate` | the merge check `local-ci` runs: a command, with any variables it sets in front (Adopting the loop) | `mise run check:all` |
-| | `gate_steps` | the merge check as steps, in place of `gate`: a list of `name`, `command` (parsed as `gate` is), `where` (`any`, or `host`: never run in a cloud session) and optionally `paths`, globs of the files the step reads, matched on the full path as `paths` are, so its pass is reused on any tree whose files under them are the same; each step's pass recorded and reused by itself (Adopting the loop) | the one `gate` command; a step without `paths` reads the whole tree |
+| | `gate_steps` | the merge check as steps, in place of `gate`: a list of `name`, `command` (parsed as `gate` is), `where` (`any`; `host`: never run in a cloud session; or `linux`: only where `sys.platform` is Linux, a Linux host or a cloud session, never macOS) and optionally `paths`, globs of the files the step reads, matched on the full path as `paths` are, so its pass is reused on any tree whose files under them are the same; each step's pass recorded and reused by itself (Adopting the loop) | the one `gate` command; a step without `paths` reads the whole tree |
 | | `local_ci_env` | the environment variables the check reads, cleared for its run unless `gate` sets them (Adopting the loop) | none |
 | | `machine_exit` | the gate's exit that means the machine isn't ready (a locked screen, low disk), such as 78: `land` runs that gate once more on the same tree, and a second one stops the run landing, evicting and posting nothing, and `local-ci` refuses it as a machine fault (`approvals.py`'s docstring) | every non-zero exit is red |
 | | `short_seconds` | a whole number of seconds: a job expected to finish within it takes the host's short lane instead of the heavy slot, and `0` turns the lane off (Rules, One heavy gate per host slot) | `120` |
@@ -166,7 +166,7 @@ carry_over_main:
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
 | `risk` | `merge_paths` | globs matched on the PR's files, as `paths` are: a PR touching one merges only on the owner's go on its head (Approvals and proof) | the rule above decides |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
-| `land` | `signed_squash_to`, `allowed_signers`, both required; `where` (`host`, `cloud` or `both`), `signing_key_env` and `merge_queue` | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub; `where` is where `land` may run, and in a cloud session it signs with the key in the variable `signing_key_env` names, which must be in the allowed signers, never the session's own, and lands a PR there only with `merge_queue: false`, since REST can't say whether the base requires a merge queue (`approvals.py`'s docstring says how) | GitHub merges, on a host only |
+| `land` | `signed_squash_to` and `allowed_signers`, set together or not at all; `where` (`host`, `cloud` or `both`), `signing_key_env`, `merge_queue` and `merge_commit_heads` (a list of fnmatch patterns over head branch names, such as `sync/*`) | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub; `where` is where `land` may run, and in a cloud session it signs with the key in the variable `signing_key_env` names, which must be in the allowed signers, never the session's own, and lands a PR there only with `merge_queue: false`, since REST can't say whether the base requires a merge queue (`approvals.py`'s docstring says how) | GitHub merges, on a host only; a PR whose head matches `merge_commit_heads` lands with `gh pr merge --merge --match-head-commit`, keeping the head's ancestry (an upstream-sync PR needs it), and every other PR is squashed as before; `land` prints each PR's method, and a match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form |
 | `carry_over_main` | `except`, a list of globs, required | deprecated, goes in the next release (Approvals and proof); the project's merge-check configuration (lint, type, test and gate config, lockfiles): clean merges of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
 
 issue-tracker.md holds its label and board facts in a block of the same form under its own
@@ -234,6 +234,28 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   leaves untouched, and reverting deletes only it. `setup:github` also syncs the repo's
   labels with `scripts/labels.py` (github.md, Labels).
 
+**Which token the agents use.** What the token can do bounds what a misbehaving agent can undo.
+
+- *In an organization:* a fine-grained token with the organization as resource owner. Repository
+  permissions: Contents, Pull requests, Issues, Commit statuses and Workflows read and write;
+  Metadata and Actions read. Organization permission: Projects read and write (`board.py`
+  writes the board through GraphQL). It gets no Administration, so the rulesets bind the agents.
+  Open question, unproved: `approvals.py check` reads each head's check runs
+  (`commits/<sha>/check-runs` and `check-suites`, plus the `actions/runs` that name them and the
+  commit statuses). GitHub's fine-grained permissions table lists the `actions/runs` and commit
+  status routes (under Actions and Commit statuses, read), but it has no Checks permission and
+  lists neither check-runs nor check-suites. If the token can't read check runs, `check` has no CI result to
+  read and `check merge` can't tell a green head from a missing one, so it holds the merge
+  (it has no fallback to the statuses alone); until someone runs
+  `gh api repos/<owner>/<repo>/commits/<sha>/check-runs` with such a token and records the
+  answer, treat the gap as real.
+- *On a personal account:* a fine-grained token can't reach a repo the account only collaborates
+  on, nor a user-owned Projects board, so the loop needs a classic `repo` token (plus the
+  `project` scope for `board.py`). That token is admin, so rulesets don't bind it; the
+  protection is detection: no-bypass rulesets plus a scheduled `rulesets.py check` (not yet shipped: issue #1041).
+- *Renewal:* the `github-authentication-token-expiration` header of `gh api -i user` shows
+  when a token runs out.
+
 Hooks are git hooks, installed by `mise run setup:dev`; no check runs from a coding agent's
 harness hook. A commit runs the `lint:` tasks on the staged files, and a push runs
 `test:changed` and `check:secrets`. The proofs stay off the push, because a push is
@@ -256,7 +278,7 @@ reader write on the head, where the token allows, only shows the pass on the PR,
 anyone who can write a status may type one. `land` deletes a record branch once its tree has landed, or once it is a
 day old and its tree is no open PR's head. `gate` is one command with no shell operator, so a
 chain of checks is one task, or the steps of `gate_steps`, each a command and where it runs (`any`, or `host` for one
-a cloud VM can't run, such as an Apple build). Each step's pass is its own record and branch, named by the tree and
+a cloud VM can't run, such as an Apple build, or `linux` for one a Mac can't). Each step's pass is its own record and branch, named by the tree and
 the step's command, so `local-ci`, `local-ci --record` and `land` run only the steps with no pass on the tree and print
 where each reused one passed: a host runs only the `host` steps of a tree whose other steps a cloud session pushed,
 and a cloud session runs the `any` steps and leaves the `host` ones, which `land` there refuses. A step may name
@@ -291,6 +313,15 @@ asked, and screenshots it (worker.md, Report; its docstring has the flags). `scr
 each mutation patch alone, runs the tests and restores the tree, writing a log stamped with the head: the worker
 runs it before its report and the verifier in review (verifier.md, Mutation-check the new tests; its
 docstring has the log format and exit codes).
+
+**Fixing the gate itself.** `land` reads `gate_steps` from the default branch, so a PR that changes them lands under the old
+policy, which still runs the step the PR moves (to `where: linux`, say) on a host where it can't pass. Run from a host where
+the step runs, a clean checkout of the merge tree `land` will build (`git fetch origin pull/<n>/merge`, or the queue's
+branch, then `git checkout --detach FETCH_HEAD`) and `approvals.py local-ci --record` there records and pushes the step's pass
+from the policy that tree holds, so `land` reuses it by tree and command and runs no step again. That holds for a step the
+PR keeps with the same command and no `paths`: `local-ci` plans from the checkout's own policy, so a step the PR drops is not
+in the plan and has no pass to record, and a step with `paths` is keyed on the whole `gate_steps` setting, so a pass recorded
+under the changed one is not the pass the old one asks for. For those, put the case to the owner.
 
 ### Practice
 

@@ -612,8 +612,9 @@ PR_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This is your brief.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
 Your checkout is a clone of the branch checked out in the workspace this session started from, which need not be PR #{pr}'s branch; `git fetch origin pull/{pr}/head` gets the PR's.
+Read issues and PRs through REST too, since GraphQL answers 403 here: `gh api repos/{{owner}}/{{repo}}/issues/<n>` and `.../pulls/<n>`, never `gh issue view` or `gh pr view`.
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
-Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
+Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (`gh pr comment` goes through GraphQL too). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 A file under `tmp/loop/` that your report names (a repro, a log) goes in that comment too, since your files never reach the lead's host: a line `<!-- file: tmp/loop/<name> -->`, then the file in a fenced block (a fence longer than any it holds). A comment holds at most 65,536 characters: a file that would pass that goes as its last lines that fit, marked `<!-- file: tmp/loop/<name> (last lines) -->`.
 Demo: for a user-visible change, state in the report the command you ran and its output (or the demo skill's recording); otherwise say `Demo: none`, since a reviewer judges a visible change without checking out the branch.
@@ -1670,8 +1671,16 @@ def holds_input(e: dict) -> bool:
 
 
 def _asks(e: dict) -> str:
+    """Name elicitation ``e`` by its id and its question's header, else by the first 80 characters
+    of its text: a card's full text (thousands of characters) never reaches a caller's output."""
     p = e.get("params") or {}
-    return str(p.get("content_preview") or p.get("message") or e)
+    ask = p.get("ask_user_question")
+    qs = ask.get("questions") if isinstance(ask, dict) else None
+    header = str(qs[0].get("header") or "") if qs and isinstance(qs[0], dict) else ""
+    text = str(p.get("content_preview") or p.get("message") or e)
+    what = f"“{header}”" if header else text[:80] + ("…" if len(text) > 80 else "")
+    eid = e.get("elicitation_id")
+    return f"{eid}: {what}" if eid else what
 
 
 def prompts_of(info: dict) -> list[str]:
@@ -1947,7 +1956,7 @@ def relay(
                 " relay, never after one"
             )
             lands = f"this message stays queued and lands once the question is answered ({how})"
-        raise Queued(f"session {sid}: queued {why}; {lands}")
+        raise Queued(f"session {sid}: queued {why}\n{lands}")
     line = f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
     if not answer and not source:
         line += still_open(og, sid)
@@ -2498,6 +2507,46 @@ def move_head(workspace: Path, pr: int) -> None:
         )
         if done.returncode:
             raise Fail(f"git {cmd[0]} for {branch} in {workspace}: {done.stderr.strip()[-300:]}")
+
+
+def pr_head(pr: int, cwd: Path) -> str:
+    """The head commit of PR ``pr``, read through ``gh`` run in ``cwd``."""
+    out = subprocess.run(
+        ["gh", "pr", "view", str(pr), "--json", "headRefOid", "-q", ".headRefOid"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if out.returncode or not out.stdout.strip():
+        raise Fail(f"PR {pr}: no head commit read ({out.stderr.strip()[-200:]})")
+    return out.stdout.strip()
+
+
+def check_out_head(workspace: Path, pr: int) -> None:
+    """Put ``workspace`` (a checkout on this host) at PR ``pr``'s head commit before a verifier's first turn,
+    or refuse: a verifier that starts at the base reviews nothing the PR changed. A checkout already
+    there is left alone; one with tracked changes is refused rather than moved under them."""
+    git = ["git", "-C", str(workspace)]
+
+    def run(*cmd: str) -> str:
+        done = subprocess.run([*git, *cmd], capture_output=True, text=True, check=False)
+        if done.returncode:
+            raise Fail(f"git {cmd[0]} for PR {pr} in {workspace}: {done.stderr.strip()[-300:]}")
+        return done.stdout.strip()
+
+    head = pr_head(pr, workspace)
+    if run("rev-parse", "HEAD") == head:
+        return
+    if run("status", "--porcelain", "--untracked-files=no"):
+        raise Fail(
+            f"{workspace} is not at PR {pr}'s head {head[:12]} and has tracked changes: use a"
+            " clean worktree for the verifier"
+        )
+    run("fetch", "-q", "origin", f"pull/{pr}/head")
+    if run("rev-parse", "FETCH_HEAD") != head:
+        raise Fail(f"PR {pr}'s head moved while it was fetched; start the verifier again")
+    run("checkout", "-q", "--detach", head)
 
 
 def pr_branch(pr: int, workspace: Path) -> str:
@@ -6855,9 +6904,31 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         verifier = args.cmd in ("run", "start") and reviews(args.role)
         if verifier and args.verifier_route != "codex":
             apply_route(args)
+        verifies = args.pr if verifier else None
         if verifier and args.pr and og.harness(args.agent) != CLOUD_HARNESS:
             args.pr = None
         cloud = os.environ.get("CLAUDE_CODE_REMOTE") == "true"
+        if (
+            args.cmd in ("run", "start")
+            and cloud
+            and not args.host
+            and not args.top_level
+            and og.harness(args.agent) != CLOUD_HARNESS
+        ):
+            # Omnigent runs a child on its parent's runner, the bridge's host: where that runs says
+            # nothing about where heavy work should go
+            raise Fail(
+                "a child started from a cloud session runs on the runner's host, never"
+                " there by default. "
+                + (
+                    "A verifier runs in this VM: `cloud_verifier.py verify --pr N --brief FILE`"
+                    " (engineering-loop, Cloud worker); or pass --top-level --host <name> for"
+                    " a host loop.md's Placement line lists"
+                    if verifier
+                    else "Pass --top-level --host <name> to run it on a host, or start a"
+                    " claude-cloud agent to run it in its own VM"
+                )
+            )
         if args.cmd == "start" and args.top_level and not args.host and cloud:
             args.host = cloud_default_host(og, placement_hosts(os.getcwd()))
         if verifier and args.host:
@@ -6992,6 +7063,18 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 move_head(workspace, args.pr)
         elif not remote:
             refuse_pinned_checkout(args.agent, workspace)
+            if verifies:
+                check_out_head(workspace, verifies)
+        elif verifies and not args.pr and args.cmd != "send":
+            # nothing here can run git on that host, so the brief must pin the commit its verifier
+            # checks out: a brief that names no head leaves the first turn to start at the base
+            head = pr_head(verifies, Path.cwd())
+            if head[:12] not in brief:
+                raise Fail(
+                    f"--pr {verifies}: the brief names no checkout of the PR's head {head[:12]}: a"
+                    " verifier on another host starts at that clone's base without it"
+                    " (`approvals.py brief --far` writes it)"
+                )
         elif args.pr and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             print(
                 f"--pr {args.pr}: the launch dir is on another host, so its HEAD is not moved here:"
