@@ -60,9 +60,8 @@ PR's author, the account running this or an account that can write to the repo p
 public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
 commit after a verdict needs one of its own; on a high-risk change (below), that pass came from the default tier, not
-one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md) or a fallback family, since a lower
-tier's review is enough only for a change it rates low, unless the policy's `risk.lower_tier_until` date is today or
-later in UTC, which lifts that one refusal and prints a line saying so; no unresolved
+one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md), since a lower tier's review is enough
+only for a change it rates low (a fallback verifier's family, `agy`, `gemini` or `same-family`, is no tier); no unresolved
 review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
 author posted one, that embeds its videos and screenshots as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
@@ -449,7 +448,6 @@ import tempfile
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
-from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple, TypeVar
 
@@ -503,11 +501,6 @@ PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
 # a tier below the default a `Verifier model:` line names, a word of its own after the signature in the review's
 # family (`codex/terra-6.1/med mid`, verifier.md): a model id holding the word (`sol-mid-preview`) names no tier
 LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
-# a fallback verifier, run when Codex refuses (a Gemini pass through agy, `agy/<model>/<effort>`, or a same-family one):
-# a family naming one counts as a lower tier, so a high-risk change never lands on it (loop.md, Verifier route)
-FALLBACK_FAMILY = re.compile(
-    r"(?<![^\s,/])(agy|gemini[\w.-]*|same-family)(?![^\s,/])", re.IGNORECASE
-)
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
@@ -712,14 +705,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "mutate": {"inconclusive_exit": int},
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
-    "risk": {
-        "always": bool,
-        "labels": list,
-        "paths": list,
-        "verifier": bool,
-        "merge_paths": list,
-        "lower_tier_until": date,
-    },
+    "risk": {"always": bool, "labels": list, "paths": list, "verifier": bool, "merge_paths": list},
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
@@ -749,13 +735,7 @@ TRACKED: dict[str, Any] = dict.fromkeys(
 # the settings block: a docs/agents/ file's first fenced `yaml` block, under its `## Settings` (gatekeeper.md: `## Policy`)
 # heading
 SETTINGS = re.compile(r"^```yaml[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE)
-KINDS = {
-    bool: "true or false",
-    int: "a whole number",
-    list: "a list of strings",
-    str: "a string",
-    date: "a date, YYYY-MM-DD, unquoted",
-}
+KINDS = {bool: "true or false", int: "a whole number", list: "a list of strings", str: "a string"}
 
 
 class Policy(str):
@@ -1988,13 +1968,10 @@ def proofs(
         found += (unreviewed := reviewed(where, pull, loop, verdicts))
         # only on a verdict that would land, and tier first, since risk() reads the reviews again
         if not unreviewed and (tier := lower(verdicts)) and (why := risk(pull, issues, loop)):
-            said = f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier})"
-            override = lowered(loop)
-            if override and override[1]:
-                print(f"{said}: it lands under `risk.lower_tier_until: {override[0]}`")
-            else:
-                lapsed = f" (`risk.lower_tier_until: {override[0]}` has passed)" if override else ""
-                found.append(f"{said}: a default-tier verifier pass on the head first{lapsed}")
+            found.append(
+                f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier}): a"
+                " default-tier verifier pass on the head first"
+            )
     threads = pull["reviewThreads"]
     if (threads.get("totalCount") or 0) > len(threads["nodes"]):
         found.append(
@@ -2048,7 +2025,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
 def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
     """The tier below the default (LOWER_TIER) the newest verifier pass names in its heading's family, the newest
     commit's highest pass (a mixed PR's two verifiers share one), or None; a fallback family (`agy`, `gemini`,
-    `same-family`) counts as one: a heading naming no tier reads as the default, so verdicts written before tiers were named keep landing. `verdicts` is passes()'s."""
+    `same-family`) names no tier and counts as the default, as does a heading naming none, so verdicts written before tiers were named keep landing. `verdicts` is passes()'s."""
     if isinstance(verdicts, str) or not verdicts:
         return None
     head = verdicts[-1][0]
@@ -2058,22 +2035,9 @@ def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
         found[1]
         for number, lines in on_head
         if number == last
-        and (found := LOWER_TIER.search(lines["Family"]) or FALLBACK_FAMILY.search(lines["Family"]))
+        and (found := LOWER_TIER.search(lines["Family"]))
     ]
     return tiers[0].lower() if tiers else None
-
-
-def today() -> date:
-    """Today in UTC, the day lowered() compares with."""
-    return datetime.now(timezone.utc).date()
-
-
-def lowered(loop: str | None) -> tuple[date, bool] | None:
-    """The policy's `risk.lower_tier_until` and whether it is live, None without one: through that day in UTC,
-    inclusive, a lower-tier or fallback verdict (lower) lands a high-risk change, and from the next day on the date
-    lifts nothing, so a forgotten setting never keeps the bar low."""
-    until = settings(loop).get("risk", {}).get("lower_tier_until")
-    return None if until is None else (until, today() <= until)
 
 
 def counts(lines: dict[str, str]) -> tuple[int, int] | None:
