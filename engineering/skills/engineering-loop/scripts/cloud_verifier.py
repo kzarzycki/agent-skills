@@ -18,7 +18,13 @@ On a host with no worker VM (route 1b), a Codex Cloud thread driven with the hos
 `thread` starts a thread, checks out the PR's head in its VM, sends the brief as a turn and writes the report (read
 back from the thread's checkout, else its final message; one without a `SATISFIED:` line is not written) at the
 brief's `- Report:` path. Exit 0 report written, 1 no report, 3 the verifier stopped on a question (written at `<report>.question`), 2 route 1b unusable (the endpoint is undocumented):
-use route 2 or the host verifier. No token is printed or sent to the VM.
+use route 2 or the host verifier. No token is sent to the VM.
+
+No command prints a secret's value: each one (`$CODEX_AUTH_JSON` and the tokens it decodes to, the host's and the seed
+home's login tokens, the Claude Code token, the thread route's token) is registered where it is read, and everything
+on stdout and stderr, a traceback and the verifier's own output included, is printed with any run of 8 or more of a
+secret's characters as `[secret]`. A refused seed is described by length, hash and days left
+(`CODEX_AUTH_JSON: 2412 chars, sha256 3f2a9c1e`), which is enough to tell a missing, stale or refused one apart.
 
 `login` runs `codex login --device-auth` with CODEX_HOME at the seed home (`$CODEX_CLOUD_HOME`, else
 `~/.codex-cloud`), a login of its own for when the host's cannot be used.
@@ -73,6 +79,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
+import io
 import json
 import os
 import re
@@ -83,7 +91,9 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -102,6 +112,83 @@ CLAUDE_API = os.environ.get("CLAUDE_CLOUD_API_BASE", "https://api.anthropic.com"
 
 class Refused(Exception):
     """A precondition is missing; the message says what to do."""
+
+
+class Redactor:
+    """The secrets this run has read, and a text with every run of `MIN` or more of their characters masked."""
+
+    MIN = 8
+
+    def __init__(self) -> None:
+        self.secrets: set[str] = set()
+        self.grams: set[str] = set()
+
+    def add(self, *values: object) -> None:
+        for value in values:
+            if isinstance(value, str) and len(value) >= self.MIN and value not in self.secrets:
+                self.secrets.add(value)
+                self.grams.update(value[i : i + self.MIN] for i in range(len(value) - self.MIN + 1))
+
+    def login(self, auth: object) -> None:
+        """Every token of a Codex login."""
+        tokens = auth.get("tokens") if isinstance(auth, dict) else None
+        self.add(*(tokens.values() if isinstance(tokens, dict) else ()))
+
+    def seed(self, value: str) -> None:
+        """The seeded variable and the tokens it decodes to, whatever state it is in."""
+        self.add(value)
+        try:
+            self.login(json.loads(base64.b64decode(value)))
+        except ValueError:
+            pass
+
+    def __call__(self, text: str) -> str:
+        out, i, n = [], 0, self.MIN
+        while i < len(text):
+            if text[i : i + n] in self.grams:
+                end = i + n
+                while end < len(text) and any(text[i : end + 1] in s for s in self.secrets):
+                    end += 1
+                out.append("[secret]")
+                i = end
+            else:
+                out.append(text[i])
+                i += 1
+        return "".join(out)
+
+
+REDACT = Redactor()
+
+
+class Redacting(io.TextIOBase):
+    """A stream that holds output to the end of each line and writes it redacted, so a secret split over two writes
+    is still caught."""
+
+    def __init__(self, stream) -> None:
+        self.stream, self.held = stream, ""
+
+    def write(self, s: str) -> int:
+        *lines, self.held = (self.held + s).split("\n")
+        if lines:
+            self.stream.write("".join(REDACT(line) + "\n" for line in lines))
+        return len(s)
+
+    def flush(self) -> None:  # a partial line stays held: it may end in half a secret
+        self.stream.flush()
+
+    def end(self) -> None:
+        if self.held:
+            self.stream.write(REDACT(self.held))
+            self.held = ""
+        self.stream.flush()
+
+    def __getattr__(self, name: str):
+        return getattr(self.stream, name)
+
+
+def describe(name: str, value: str) -> str:
+    """A secret as the person debugging it can check it without seeing it."""
+    return f"{name}: {len(value)} chars, sha256 {hashlib.sha256(value.encode()).hexdigest()[:8]}"
 
 
 def seed_home() -> Path:
@@ -175,6 +262,7 @@ def refreshed(
             code = None
         code = code.get("code") if isinstance(code, dict) else code
         raise Refused(f"the refresh of {who} was refused (HTTP {e.code}, {code}): {fix}")
+    REDACT.add(*new.values())
     tokens = {**auth["tokens"], **{k: v for k, v in new.items() if k in auth["tokens"] and v}}
     return {
         **auth,
@@ -203,6 +291,7 @@ def claude_headers() -> dict:
     if not raw:
         raise Refused("no Claude Code login on this host: run `claude auth login`")
     oauth = json.loads(raw)["claudeAiOauth"]
+    REDACT.add(oauth.get("accessToken"), oauth.get("refreshToken"))
     if oauth.get("expiresAt", 0) / 1000 < time.time() + 60:
         raise Refused(
             "the Claude Code login's token has expired: run `claude` once to refresh it, then seed again"
@@ -251,6 +340,7 @@ def host_login() -> tuple[dict | None, str]:
         return None, f"no host login at {path}"
     try:
         auth = json.loads(path.read_text())
+        REDACT.login(auth)
         expires_at(auth["tokens"]["access_token"])
     except (ValueError, KeyError, IndexError, TypeError):
         return None, f"the host login at {path} is not a ChatGPT login with an access token"
@@ -263,6 +353,7 @@ def seed_login(min_days: float) -> dict:
     if not path.exists():
         raise Refused(f"no seed login at {path}: run `cloud_verifier.py login`")
     auth = json.loads(path.read_text())
+    REDACT.login(auth)
     if not (auth.get("tokens") or {}).get("refresh_token"):
         raise Refused(
             f"{path} is not a ChatGPT login with a refresh token: run `cloud_verifier.py login`"
@@ -335,10 +426,9 @@ def store(env: str, auth: dict, headers: dict) -> None:
     url = f"{CLAUDE_API}/v1/environment_providers/{env}"
     current = post_json(url, None, headers)
     config = current["config"]
-    config["environment"] = {
-        **(config.get("environment") or {}),
-        VAR: base64.b64encode(json.dumps(reader_copy(auth)).encode()).decode(),
-    }
+    copy = base64.b64encode(json.dumps(reader_copy(auth)).encode()).decode()
+    REDACT.add(copy)
+    config["environment"] = {**(config.get("environment") or {}), VAR: copy}
     net = config.setdefault("network_config", {})
     net["allowed_hosts"] = sorted(set(net.get("allowed_hosts") or []) | set(HOSTS))
     post_json(
@@ -363,13 +453,24 @@ def ensure_codex() -> None:
         raise Refused(
             f"Codex is not logged in and ${VAR} is not set: run `cloud_verifier.py seed` on the host, then start a new session"
         )
+    REDACT.seed(seeded)
+    try:
+        left = (
+            f"its access token has {days_left(json.loads(base64.b64decode(seeded))):.1f} days left"
+        )
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        raise Refused(
+            f"${VAR} is not a base64 ChatGPT login ({describe(VAR, seeded)}): seed again on the host"
+        ) from None
     home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     auth = home / "auth.json"
     auth.touch(mode=0o600)
     auth.write_bytes(base64.b64decode(seeded))
     if run("codex", "login", "status", check=False).returncode:
-        raise Refused(f"Codex does not accept the login in ${VAR}: seed again on the host")
+        raise Refused(
+            f"Codex does not accept the login in ${VAR} ({describe(VAR, seeded)}; {left}): seed again on the host"
+        )
 
 
 def report_path(brief: str) -> Path | None:
@@ -479,7 +580,34 @@ def linked_report(final: str, root: Path) -> tuple[str, str] | None:
 
 
 def codex_exec(cmd: list[str], brief: str) -> int:
-    return subprocess.run(cmd, input=brief, text=True, check=False).returncode
+    """Run Codex without the seeded variable (it reads the auth.json `verify` wrote), its output relayed line by line
+    through this process's redacted stdout, so a verifier can neither read the variable nor print a token."""
+    env = {k: v for k, v in os.environ.items() if k != VAR}
+    with subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        env=env,
+    ) as child:
+        assert child.stdin and child.stdout
+
+        def feed() -> None:  # beside the relay, so neither pipe fills while the other waits
+            try:
+                child.stdin.write(brief)
+                child.stdin.close()
+            except OSError:  # Codex exited before reading it all: its exit says so
+                pass
+
+        writer = threading.Thread(target=feed, daemon=True)
+        writer.start()
+        for line in child.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        writer.join()
+        return child.wait()
 
 
 def needs_a_look(why: str, what: str) -> None:
@@ -608,11 +736,6 @@ def post(pr: int, body: str) -> str:
 
 WS_URL = os.environ.get("CODEX_CLOUD_WS", "wss://codex-cloud-backend.chatgpt.com/")
 USAGE_URL = os.environ.get("CODEX_CLOUD_USAGE", "https://chatgpt.com/backend-api/wham/usage")
-
-
-SECRET: list[
-    str
-] = []  # the access token in use: an endpoint error that echoes it must not reach the output
 
 
 class Unusable(Refused):
@@ -748,7 +871,6 @@ def host_token() -> str:
         raise Unusable(f"route 1b needs the host's own Codex login: {why}")
     if expires_at(auth["tokens"]["access_token"]) < time.time() + 600:
         raise Unusable("the host's Codex login has run out: run `codex login` on the host")
-    SECRET.append(auth["tokens"]["access_token"])
     return auth["tokens"]["access_token"]
 
 
@@ -948,6 +1070,23 @@ def thread_verify(
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one command with stdout and stderr redacted: a secret's value never reaches the output, even in a
+    traceback, which is printed here (exit 1, as Python gives an uncaught one) rather than raised past the writer."""
+    REDACT.seed(os.environ.get(VAR, ""))
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = wrapped = Redacting(out), Redacting(err)
+    try:
+        return command(argv)
+    except Exception:  # noqa: BLE001 - printed in full below, only through the redactor
+        traceback.print_exc()
+        return 1
+    finally:
+        for stream in wrapped:
+            stream.end()
+        sys.stdout, sys.stderr = out, err
+
+
+def command(argv: list[str] | None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("login", help="device login into the seed home (host, once)")
@@ -1031,8 +1170,6 @@ def main(argv: list[str] | None = None) -> int:
         if not args.command.startswith("thread") and not isinstance(e, Refused):
             raise
         why = f"{e}" if isinstance(e, Refused) else f"unexpected answer from the endpoint: {e!r}"
-        for secret in SECRET:
-            why = why.replace(secret, "***")
         print(
             f"cloud_verifier: {why} (use route 2 or the host verifier)"
             if args.command.startswith("thread")
