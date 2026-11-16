@@ -24,6 +24,21 @@
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop `Claude-Session:` lines from it
 
+gatekeeper.py is the gatekeeper; approvals.py, its name before #614, runs it for one release line, every verb above
+unchanged. Its own names for three of them, and one verb more:
+
+    uv run scripts/gatekeeper.py record approval <spec|plan|merge> <n> --by ...  # `approve`, the same arguments
+    uv run scripts/gatekeeper.py record verdict <pr> <report>   # `verdict`
+    uv run scripts/gatekeeper.py record checks [<pr>] [--record|--run|--status <head>|--head-proof]  # `local-ci`
+    uv run scripts/gatekeeper.py report --json <report>   # the report's facts as JSON: verifier, head, verdict, ...
+
+The policy reaches the tracker, the forge and the evidence only through their ports (PORTS), each run by the adapter
+the policy's `adapters` section names for it (`tracker`, `forge`, `evidence`), `github` for one it doesn't:
+github_adapter.py, through `gh`, with its GraphQL reads falling back to REST where GitHub refuses GraphQL, and every
+posted body checked against the deny list first. A name no adapter has is refused, naming it. The gate's own commit
+status counts under `loop:approvals`, the name the project template's workflow posts, and under `gatekeeper` for one
+release line: `check merge` and `land` wait for neither.
+
 At start every verb warns on stderr, once, when this script's checkout is behind its upstream's last fetched tip (no
 fetch) and the script differs there: the count and `git pull`. loop.md's `pack_staleness: refuse` under `loop` makes
 it a refusal (exit 1).
@@ -447,7 +462,8 @@ import time
 from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, NamedTuple, TypeVar
+from types import ModuleType
+from typing import Any, NamedTuple
 
 try:
     import yaml
@@ -488,8 +504,6 @@ LOGIC = "Logic change"
 LABELLED = f"from their `{MERGE_LABEL}` label"
 # a change's consequences, not its urgency (that is the tracker's priority): set by a person or at triage, or by the gate
 RISK_LABEL = "risk:high"
-# the collaborator permissions that can write; GitHub's `permission` field reads `maintain` as `write`
-WRITE = {"admin", "maintain", "write"}
 # a follow-up an agent raised: SKILL.md § Triage puts this line on every issue an agent files
 FOUND_WHILE = re.compile(r"^[ \t>*-]*Found while[ \t]+#\d+", re.MULTILINE | re.IGNORECASE)
 # check merge's exit while it waits for `check` or the owner; argparse's usage error is 2
@@ -507,28 +521,8 @@ FALLBACK_FAMILY = re.compile(
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
-NOTE = "id author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
-SPECCED = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
-ASSIGNEES = "assignees(first: 10) { nodes { login } }"
-# who added `approved:spec` (approver) and who was assigned when (release); ponytail: the newest 100 such events
-EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT]) { nodes { __typename
-  ... on LabeledEvent { createdAt actor { __typename login } label { name } }
-  ... on AssignedEvent { createdAt assignee { ... on User { login } ... on Bot { login } } } } }"""
-# an issue with its author and its native parent (an epic), which spec_policy() reads, its assignees and events
-ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
-  files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
-  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
-  reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
-  authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
-  timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
-    ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
-  commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
-    __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ workflow {{ name }} }} }} }}
-    ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
-  closingIssuesReferences(first: 50) {{ nodes {{ repository {{ nameWithOwner }} {ISSUE} }} }}"""
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
 # leaves unfinished, and `Implements` for one the owner signs off after landing (`signoff`). ponytail: same-repo `#n`
 # only, add owner/repo#n and issue URLs when a PR here uses one.
@@ -576,8 +570,10 @@ CHANGED = {
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 # a finished check run or a set status that is not green: it turns green only when run again, never by waiting
 RED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"}
-# the commit status the project's approvals workflow posts
-APPROVALS = "loop:approvals"
+# the commit status the project's approvals workflow posts: check merge's own output, under its name before #614 and,
+# for one release line, also under the gatekeeper's; the gate accepts either and waits for neither (OWN)
+APPROVALS, GATEKEEPER = "loop:approvals", "gatekeeper"
+OWN = {APPROVALS, GATEKEEPER}
 # a URL in a `## Demo` comment; gh's --attach embeds a video or image as a bare user-attachments one, which plays inline
 URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
 ATTACHMENT = "https://github.com/user-attachments/"
@@ -728,6 +724,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
         ),
     ),
     "carry_over_main": Table({"except": list}),
+    # each port's adapter by name (ADAPTERS), `github` for a port not named
+    "adapters": Table(
+        tracker=str, forge=str, evidence=str, optional=("tracker", "forge", "evidence")
+    ),
 }
 # docs/agents/issue-tracker.md's settings: in each section every key is a name, its value a description or a new name
 TRACKED: dict[str, Any] = dict.fromkeys(
@@ -905,6 +905,9 @@ def settings(loop: str | None) -> dict[str, Any]:
             data[name] = typed(section, SCHEMA[name], name, file)
             if name == "carry_over_main":
                 deprecated(name)
+            for port_name, adapter in data[name].items() if name == "adapters" else ():
+                if adapter not in ADAPTERS:
+                    raise Refused(unknown_adapter(file, port_name, adapter))
         else:
             raise Refused(f"{file} has an unknown settings section `{name}`")
     return data
@@ -1188,37 +1191,6 @@ def default(pull: dict[str, Any]) -> bool:
     return pull["baseRefName"] == pull["baseRepository"]["defaultBranchRef"]["name"]
 
 
-def merged_high(branch: str) -> list[int]:
-    """The merged PRs into `branch` that carry `risk:high` (flag() adds it to each high-risk PR that lands)."""
-    # ponytail: one page of 100 through GraphQL; page when a feature branch takes more high-risk PRs than that
-    found = fast(
-        lambda: gh(
-            "pr",
-            "list",
-            "--base",
-            branch,
-            "--state",
-            "merged",
-            "--label",
-            RISK_LABEL,
-            "--limit",
-            "100",
-            "--json",
-            "number",
-            "--jq",
-            ".[].number",
-        ),
-        # REST: every closed PR into the branch, the merged ones carrying the label
-        lambda: "\n".join(
-            str(pull["number"])
-            for pull in rest_pages(f"pulls?state=closed&base={branch}&per_page=100")
-            if pull.get("merged_at")
-            and RISK_LABEL in {label["name"] for label in pull.get("labels") or []}
-        ),
-    )
-    return [int(number) for number in found.split()]
-
-
 def signoff(
     pull: dict[str, Any], issue: dict[str, Any], loop: str | None
 ) -> tuple[bool, str] | None:
@@ -1340,10 +1312,14 @@ def raise_risk(pull: dict[str, Any], why: str, loop: str | None, mark: bool = Fa
     return found
 
 
+# approvals.py's module when it loaded this one, by path and out of sys.modules: the module its importers read
+IMPORTER: ModuleType | None = None
+
+
 def board() -> Any:
     """board.py beside this script, loaded on first use, since it imports this module: it reads this same one."""
     if "board" not in sys.modules:
-        if here := sys.modules.get(__name__):
+        if here := sys.modules.get(__name__) or IMPORTER:
             sys.modules.setdefault("approvals", here)
         spec = importlib.util.spec_from_file_location("board", Path(__file__).with_name("board.py"))
         assert spec and spec.loader
@@ -1356,8 +1332,9 @@ def board() -> Any:
 def board_risk(number: int) -> tuple[dict[str, Any] | None, str]:
     """The board's lookup of the PR's `Risk` field (board.py) and the field's option, '' when unset or off the board;
     or None and why the board can't be read: no linked board or field, no `project` token scope, or an API error.
-    A workflow's default token can't read a board a personal account owns, so the label alone decides there."""
-    if _rest_only:
+    A workflow's default token can't read a board a personal account owns, so the label alone decides there. The
+    board is GitHub's project board, which board.py reads over GraphQL itself, outside the ports."""
+    if github._rest_only:
         return None, "GitHub refuses GraphQL here"
     try:
         found = board().lookup(number, BOARD_RISK)
@@ -1785,44 +1762,6 @@ def closed(pull: dict[str, Any], repo: str, loop: str | None) -> set[int]:
 
 # how many open PRs duplicates() reads, in one call; a list that long may have left one out
 OPEN_LIMIT = 1000
-
-
-def open_pulls() -> list[dict[str, Any]]:
-    """The repo's open PRs, up to OPEN_LIMIT, each with its number, branch, base, whether it is a draft, body and closing references (each naming its
-    issue's repo as `nameWithOwner`, as the PR query does), in one call."""
-    found = fast(
-        lambda: json.loads(
-            gh(
-                "pr",
-                "list",
-                "--state",
-                "open",
-                "--limit",
-                str(OPEN_LIMIT),
-                "--json",
-                "number,headRefName,baseRefName,isDraft,body,closingIssuesReferences",
-            )
-        ),
-        # REST has no closing references: closed() reads each body's lines, as it does for the PR checked
-        lambda: [
-            {
-                "number": other["number"],
-                "headRefName": other["head"]["ref"],
-                "baseRefName": other["base"]["ref"],
-                "isDraft": bool(other.get("draft")),
-                "body": other.get("body") or "",
-                "closingIssuesReferences": [],
-            }
-            for other in rest_pages("pulls?state=open&per_page=100")[:OPEN_LIMIT]
-        ],
-    )
-    for other in found:
-        nodes = other["closingIssuesReferences"]
-        for issue in nodes:
-            where = issue["repository"]
-            issue["repository"] = {"nameWithOwner": f"{where['owner']['login']}/{where['name']}"}
-        other["closingIssuesReferences"] = {"nodes": nodes}
-    return found
 
 
 def duplicates(pull: dict[str, Any], loop: str | None) -> list[str]:
@@ -2420,7 +2359,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     else:
         if required is None:
             # the approvals status is check merge's own output: waiting for it never ends
-            required = required_checks(pull["baseRefName"]) - {APPROVALS} or None
+            required = required_checks(pull["baseRefName"]) - OWN or None
         found = ci(where, pull, required)
     return found
 
@@ -3270,469 +3209,14 @@ def denied(text: str) -> None:
                 )
 
 
-def texts(data: str) -> list[str]:
-    """The text GitHub will publish from a post's `data`: every string a JSON payload holds, decoded (a review's body
-    and its inline comments), else the data itself (a comment's body)."""
-    try:
-        found: list[Any] = [json.loads(data)]
-    except ValueError:
-        return [data]
-    strings = []
-    while found:
-        value = found.pop()
-        if isinstance(value, str):
-            strings.append(value)
-        elif isinstance(value, dict | list):
-            found.extend(value.values() if isinstance(value, dict) else value)
-    return strings
-
-
-def gh(*args: str, data: str | None = None) -> str:
-    if data is not None:  # every comment and review approvals.py posts goes as `data`
-        for text in texts(data):
-            denied(text)
-    return subprocess.run(
-        ["gh", *args], input=data, check=True, capture_output=True, text=True
-    ).stdout
-
-
-def _graphql(query: str, **fields: object) -> Any:
-    args = [arg for key, value in fields.items() for arg in ("-F", f"{key}={value}")]
-    # gh fills {owner} and {repo} from the current checkout
-    out = gh(
-        "api", "graphql", "-f", f"query={query}", "-F", "owner={owner}", "-F", "name={repo}", *args
-    )
-    return json.loads(out)["data"]["repository"]
-
-
-def _repository(fields: str) -> str:
-    return f"query($owner: String!, $name: String!, $n: Int!) {{ repository(owner: $owner, name: $name) {{ {fields} }} }}"
-
-
-# how GitHub, or a cloud session's proxy in front of it, refuses GraphQL: `gh` ends its error with it
-FORBIDDEN = "HTTP 403"
-# set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again
-_rest_only = False
-Answer = TypeVar("Answer")
-
-
-def fast(graphql: Callable[[], Answer], rest: Callable[[], Answer]) -> Answer:
-    """GraphQL's answer, the fast path, or REST's where GitHub refuses GraphQL with a 403, as a cloud session's proxy
-    does. REST reads the same fields call by call, in the same shape. After one refusal the run reads REST alone, so a
-    run there makes one refused GraphQL call at most. Any other error raises."""
-    global _rest_only
-    if not _rest_only:
-        try:
-            return graphql()
-        except subprocess.CalledProcessError as exc:
-            if FORBIDDEN not in (exc.stderr or ""):
-                raise
-            _rest_only = True
-    return rest()
-
-
-def rest(path: str) -> Any:
-    return json.loads(gh("api", path))
-
-
-def rest_pages(path: str, items: str = ".[]") -> list[Any]:
-    """Every item of a paged REST list, `items` picking them out of each page."""
-    out = gh("api", "--paginate", f"repos/{{owner}}/{{repo}}/{path}", "--jq", items)
-    return [json.loads(line) for line in out.splitlines()]
-
-
-def actor(user: dict[str, Any] | None) -> dict[str, Any] | None:
-    """A REST user as GraphQL names it: its login without the `[bot]` REST adds, and its type."""
-    if not user:
-        return None
-    return {"login": user["login"].removesuffix("[bot]"), "__typename": user.get("type") or "User"}
-
-
-def rest_notes(number: int) -> dict[str, Any]:
-    """An issue's or PR's comments from REST, every page, as GraphQL's `comments` reads them. REST has no edit time,
-    so a note has no `lastEditedAt` (versions() then reads its text alone), only `updatedAt`, which every edit moves;
-    nor can this account's right to minimize be read, so approve() minimizes nothing it read here."""
-    nodes = [
-        {
-            "id": found["node_id"],
-            "author": actor(found.get("user")),
-            "body": found.get("body") or "",
-            "createdAt": found["created_at"],
-            "updatedAt": found["updated_at"],
-            "isMinimized": bool(found.get("minimized")),
-            "viewerCanMinimize": False,
-        }
-        for found in rest_pages(f"issues/{number}/comments?per_page=100")
-    ]
-    return {"totalCount": len(nodes), "nodes": nodes}
-
-
-# REST timeline events as GraphQL's timelineItems types them
-TIMELINE = {
-    "labeled": "LabeledEvent",
-    "assigned": "AssignedEvent",
-    "ready_for_review": "ReadyForReviewEvent",
-}
-
-
-def rest_timeline(number: int) -> dict[str, Any]:
-    """An issue's or PR's label, assign and ready events from REST's timeline, every page."""
-    nodes = []
-    for event in rest_pages(f"issues/{number}/timeline?per_page=100"):
-        if (kind := TIMELINE.get(event.get("event"))) is None:
-            continue
-        found: dict[str, Any] = {"__typename": kind, "createdAt": event.get("created_at")}
-        if kind == "LabeledEvent":
-            found |= {"actor": actor(event.get("actor")), "label": event.get("label")}
-        if kind == "AssignedEvent":
-            found["assignee"] = actor(event.get("assignee"))
-        nodes.append(found)
-    return {"nodes": nodes}
-
-
-def rest_specced(found: dict[str, Any]) -> dict[str, Any]:
-    """The SPECCED fields of a REST issue: its body and labels, and its comments read too. No `lastEditedAt`: REST has
-    no edit time, so the spec's text names its version (versions)."""
-    return {
-        "number": found["number"],
-        "body": found.get("body") or "",
-        "createdAt": found["created_at"],
-        "updatedAt": found["updated_at"],
-        "labels": {"nodes": [{"name": label["name"]} for label in found.get("labels") or []]},
-        "comments": rest_notes(found["number"]),
-    }
-
-
-def rest_issue(number: int) -> dict[str, Any] | None:
-    """Issue #number as ISSUE reads it, from REST; None for a pull request, as GraphQL's `... on Issue` gives."""
-    found = rest(f"repos/{{owner}}/{{repo}}/issues/{number}")
-    if "pull_request" in found:
-        return None
-    try:
-        parent = rest_specced(rest(f"repos/{{owner}}/{{repo}}/issues/{number}/parent"))
-    except subprocess.CalledProcessError as exc:
-        if "HTTP 404" not in (exc.stderr or ""):
-            raise
-        parent = None
-    return rest_specced(found) | {
-        "author": actor(found.get("user")),
-        "parent": parent,
-        "assignees": {"nodes": [actor(user) for user in found.get("assignees") or []]},
-        "timelineItems": rest_timeline(number),
-    }
-
-
-# REST's file status as GraphQL's changeType
-CHANGE_TYPES = {"added": "ADDED", "removed": "DELETED", "renamed": "RENAMED", "copied": "COPIED"}
-# a trailer naming a commit's co-author, which GraphQL resolves to an account and REST does not
-CO_AUTHOR = re.compile(r"^co-authored-by:", re.IGNORECASE | re.MULTILINE)
-
-
-def rest_authored(number: int, total: int) -> dict[str, Any]:
-    """A PR's commits as `authored` reads them, from REST: each commit's author and committer account. A co-author
-    trailer, which only GraphQL resolves to an account, counts as an author not read, so exempt() exempts nothing."""
-    nodes = []
-    for found in rest_pages(f"pulls/{number}/commits?per_page=100"):
-        authors = [{"user": actor(found.get("author"))}]
-        committer = actor(found.get("committer"))
-        # GitHub's web-flow commits for a bot or the API: GraphQL gives that committer no account
-        if committer and committer["login"] == "web-flow":
-            committer = None
-        co = len(CO_AUTHOR.findall((found.get("commit") or {}).get("message") or ""))
-        nodes.append(
-            {
-                "commit": {
-                    "authors": {"totalCount": 1 + co, "nodes": authors},
-                    "committer": {"user": committer},
-                }
-            }
-        )
-    return {"totalCount": total, "nodes": nodes}
-
-
-def rest_latest(reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Each reviewer's newest review that approves, requests changes or was dismissed: a comment-only review
-    leaves a reviewer's request for changes standing, as GitHub's review decision reads it."""
-    latest: dict[str, dict[str, Any]] = {}
-    for review in reviews:
-        if review["state"] in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
-            latest[(review.get("author") or {}).get("login") or ""] = review
-    return list(latest.values())
-
-
-def rest_checks(head: str) -> dict[str, Any]:
-    """The head's checks as `statusCheckRollup` reads them, from REST: every check run (each rerun too), named by its
-    workflow, and each status context's newest state."""
-    runs = rest_pages(f"commits/{head}/check-runs?filter=all&per_page=100", ".check_runs[]")
-    suites = {
-        suite["id"]: suite
-        for suite in rest_pages(f"commits/{head}/check-suites?per_page=100", ".check_suites[]")
-    }
-    flows = {
-        run["check_suite_id"]: run["name"]
-        for run in rest_pages(f"actions/runs?head_sha={head}&per_page=100", ".workflow_runs[]")
-    }
-    nodes: list[dict[str, Any]] = []
-    for run in runs:
-        suite = (run.get("check_suite") or {}).get("id")
-        flow = flows.get(suite)
-        nodes.append(
-            {
-                "__typename": "CheckRun",
-                "name": run["name"],
-                "status": (run.get("status") or "").upper(),
-                "conclusion": (run.get("conclusion") or "").upper() or None,
-                "startedAt": run.get("started_at"),
-                "completedAt": run.get("completed_at"),
-                "checkSuite": {
-                    "status": ((suites.get(suite) or {}).get("status") or "").upper(),
-                    "workflowRun": {"workflow": {"name": flow}} if flow else None,
-                },
-            }
-        )
-    combined = rest(f"repos/{{owner}}/{{repo}}/commits/{head}/status?per_page=100")
-    for status in combined.get("statuses") or []:
-        nodes.append(
-            {
-                "__typename": "StatusContext",
-                "context": status["context"],
-                "state": status["state"].upper(),
-                "createdAt": status.get("created_at"),
-                "targetUrl": status.get("target_url"),
-            }
-        )
-    total = len(nodes) - len(combined.get("statuses") or []) + combined.get("total_count", 0)
-    return {"contexts": {"totalCount": total, "nodes": nodes}}
-
-
-def rest_threads(number: int) -> dict[str, Any]:
-    """A PR's review threads, whether each is resolved, from the review-thread route a cloud session's GitHub proxy
-    serves (GitHub's own REST has none). Where it is missing, as on a host whose GraphQL refused for another reason,
-    the error raises: unresolved threads are never read as none."""
-    threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
-    nodes = [{"isResolved": bool(thread.get("resolved"))} for thread in threads]
-    return {"totalCount": len(nodes), "nodes": nodes}
-
-
-def rest_pull(pr: int) -> dict[str, Any]:
-    """PR #pr as PULL reads it, from REST, call by call. `closingIssuesReferences` is empty, since REST has no such
-    link: the PR's issues are its body's `Closes`, `Part of` and `Implements` lines (closing_issues). Whether it is in
-    a merge queue can't be read: `isInMergeQueue` is None, which unsignable() refuses unless a cloud session's loop.md
-    says `merge_queue: false`."""
-    found = rest(f"repos/{{owner}}/{{repo}}/pulls/{pr}")
-    base, head = found["base"], found["head"]
-    reviews = [
-        {
-            "author": actor(review.get("user")),
-            "state": review["state"],
-            "body": review.get("body") or "",
-            "commit": {"oid": review.get("commit_id") or ""},
-        }
-        for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
-    ]
-    files = [
-        {"path": file["filename"], "changeType": CHANGE_TYPES.get(file["status"], "MODIFIED")}
-        for file in pr_changes(pr)
-    ]
-    state = "MERGED" if found.get("merged") else found["state"].upper()
-    return {
-        "id": found["node_id"],
-        "number": found["number"],
-        "title": found["title"],
-        "isCrossRepository": (head.get("repo") or {}).get("full_name") != base["repo"]["full_name"],
-        "author": actor(found.get("user")),
-        "assignees": {"nodes": [actor(user) for user in found.get("assignees") or []]},
-        "state": state,
-        "isDraft": bool(found.get("draft")),
-        # REST's true or false, or null while GitHub computes it, as GraphQL's MergeableState reads them
-        "mergeable": {True: "MERGEABLE", False: "CONFLICTING"}.get(
-            found.get("mergeable"), "UNKNOWN"
-        ),
-        "autoMergeRequest": {"enabledAt": None} if found.get("auto_merge") else None,
-        "isInMergeQueue": None,
-        "body": found.get("body") or "",
-        "baseRefName": base["ref"],
-        # the base branch's tip now, as GraphQL's baseRefOid is; REST's base.sha is the tip when the PR last synced
-        "baseRefOid": rest(f"repos/{{owner}}/{{repo}}/branches/{base['ref']}")["commit"]["sha"],
-        "headRefName": head["ref"],
-        "headRefOid": head["sha"],
-        "baseRepository": {
-            "nameWithOwner": base["repo"]["full_name"],
-            "defaultBranchRef": {"name": base["repo"]["default_branch"]},
-        },
-        "labels": {"nodes": [{"name": label["name"]} for label in found.get("labels") or []]},
-        "comments": rest_notes(pr),
-        "files": {"totalCount": found.get("changed_files") or len(files), "nodes": files},
-        "latestReviews": {"nodes": rest_latest(reviews)},
-        "reviews": {"totalCount": len(reviews), "nodes": reviews},
-        "reviewThreads": rest_threads(pr),
-        "authored": rest_authored(pr, found.get("commits") or 0),
-        "timelineItems": rest_timeline(pr),
-        "commits": {"nodes": [{"commit": {"statusCheckRollup": rest_checks(head["sha"])}}]},
-        "closingIssuesReferences": {"nodes": []},
-    }
-
-
-def pull_request(pr: int) -> dict[str, Any]:
-    return fast(
-        lambda: _graphql(_repository(f"pullRequest(number: $n) {{ {PULL} }}"), n=pr)["pullRequest"],
-        lambda: rest_pull(pr),
-    )
-
-
-def pr_changes(number: int) -> list[dict[str, Any]]:
-    """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000."""
-    out = gh(
-        "api",
-        "--paginate",
-        f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100",
-        "--jq",
-        ".[]",
-    )
-    return [json.loads(line) for line in out.splitlines()]
-
-
-def merged_pull(number: int) -> dict[str, Any] | None:
-    """PR #number as GitHub's REST API returns it, when it was merged; None for an open or closed PR, or an issue."""
-    try:
-        found: dict[str, Any] = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/pulls/{number}"))
-    except subprocess.CalledProcessError as exc:
-        if "Not Found" in exc.stderr:
-            return None
-        raise
-    return found if found.get("merged") else None
-
-
-def merge_base(base: str, head: str) -> str:
-    """The commit GitHub diffs a PR's head against: where it branched from its base."""
-    return gh(
-        "api", f"repos/{{owner}}/{{repo}}/compare/{base}...{head}", "--jq", ".merge_base_commit.sha"
-    ).strip()
-
-
-# GitHub's answer to a rules read on a private repo of a free plan
-PLAN_LIMIT = "Upgrade to GitHub Pro"
-
-
-def required_checks(base: str) -> set[str]:
-    """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's. A private
-    repo on GitHub's free plan has no rulesets: that 403 reads as none, and any other error raises. A base whose rules
-    require GitHub's merge queue is refused: GitHub would merge each PR later, on a tree land never gated."""
-    try:
-        rulesets = gh(
-            "api",
-            "--paginate",
-            f"repos/{{owner}}/{{repo}}/rules/branches/{base}",
-            "--jq",
-            '.[] | if .type == "merge_queue" then ":merge_queue"'
-            ' elif .type == "required_status_checks" then .parameters.required_status_checks[].context else empty end',
-        )
-    except subprocess.CalledProcessError as error:
-        if "(HTTP 403)" not in (error.stderr or "") or PLAN_LIMIT not in error.stderr:
-            raise
-        print(
-            f"GitHub enforces no rules on {base} here (its plan has none): land's proofs are the only gate"
-        )
-        rulesets = ""
-    if ":merge_queue" in rulesets.split():
-        raise Refused(
-            f"{base}'s rules require GitHub's merge queue, which would merge each PR later on a tree land never gated:"
-            " drop it from the ruleset (SKILL.md, Adopting the loop)"
-        )
-    protection = gh(
-        "api",
-        f"repos/{{owner}}/{{repo}}/branches/{base}",
-        "--jq",
-        ".protection.required_status_checks.contexts // [] | .[]",
-    )
-    return set((rulesets + protection).split())
-
-
-def tree(sha: str) -> dict[str, tuple[str, str]] | None:
-    """The (mode, blob SHA) of every path in commit `sha`'s tree, from GitHub's trees API; None when GitHub truncates it.
-    ponytail: one recursive read, up to GitHub's 100,000 entries; read each touched directory when a repo outgrows it."""
-    found = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/git/trees/{sha}?recursive=1"))
-    if found["truncated"]:
-        return None
-    return {
-        entry["path"]: (entry["mode"], entry["sha"])
-        for entry in found["tree"]
-        if entry["type"] != "tree"
-    }
-
-
-def head_pushed(pull: dict[str, Any]) -> str | None:
-    """When the head commit was last pushed to the PR's branch, from GitHub's repository activity (pushes, force
-    pushes, the branch's creation); None when it lists none. ponytail: the newest 100 activities of a same-repo branch;
-    page further, or read a fork's, when a PR here needs it."""
-    out = gh(
-        "api",
-        f"repos/{{owner}}/{{repo}}/activity?ref=refs/heads/{pull['headRefName']}&per_page=100",
-        "--jq",
-        f'[.[] | select(.after == "{pull["headRefOid"]}") | .timestamp] | first // ""',
-    ).strip()
-    return out or None
-
-
-def issue_node(number: int) -> dict[str, Any]:
-    def rest_read() -> dict[str, Any]:
-        found = rest_issue(number)
-        if found is None:
-            raise Refused(f"#{number} is a pull request, not an issue")
-        return found
-
-    node: dict[str, Any] = fast(
-        lambda: _graphql(_repository(f"issue(number: $n) {{ {ISSUE} }}"), n=number)["issue"],
-        rest_read,
-    )
-    return node
-
-
 def closing_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
     """GitHub's closing references plus every `#n` after a closing keyword, `Part of` or `Implements` in the body: GitHub sometimes
     never links a closing line, and has no API to set the link."""
     issues: list[dict[str, Any]] = pull["closingIssuesReferences"]["nodes"]
     unlinked = sorted(set(named(pull["body"] or "")) - {issue["number"] for issue in issues})
-    if unlinked:  # a `#n` that is a pull request comes back empty and is dropped
-        aliases = " ".join(
-            f"i{n}: issueOrPullRequest(number: {n}) {{ ... on Issue {{ {ISSUE} }} }}"
-            for n in unlinked
-        )
-        found = fast(
-            lambda: list(
-                _graphql(
-                    f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {aliases} }} }}"
-                ).values()
-            ),
-            lambda: [rest_issue(n) for n in unlinked],
-        )
-        issues = issues + [issue for issue in found if issue]
+    if unlinked:  # a `#n` that is a pull request is left out
+        issues = issues + issues_of(unlinked)
     return issues
-
-
-def label(number: int, name: str, add: bool) -> None:
-    """Add (GitHub creates a missing label) or remove a label on an issue or PR; removing an absent one is fine."""
-    path = f"repos/{{owner}}/{{repo}}/issues/{number}/labels"
-    if add:
-        gh("api", path, "-f", f"labels[]={name}", "--silent")
-        return
-    try:
-        gh("api", "-X", "DELETE", f"{path}/{name}", "--silent")
-    except subprocess.CalledProcessError as exc:
-        if "Label does not exist" not in exc.stderr:
-            raise
-
-
-def assign(number: int, login: str, add: bool) -> None:
-    """Add or remove an assignee of an issue or PR; GitHub ignores an absent one."""
-    gh(
-        "api",
-        *(() if add else ("-X", "DELETE")),
-        f"repos/{{owner}}/{{repo}}/issues/{number}/assignees",
-        "-f",
-        f"assignees[]={login}",
-        "--silent",
-    )
 
 
 def public(text: str) -> str:
@@ -3753,88 +3237,155 @@ def public(text: str) -> str:
     return re.sub(r"pytest-of-[^/\s]+", "pytest-of-<user>", text)
 
 
-def comment(number: int, body: str) -> None:
-    gh(
-        "api",
-        f"repos/{{owner}}/{{repo}}/issues/{number}/comments",
-        "-F",
-        "body=@-",
-        "--silent",
-        data=public(body),
-    )
-
-
-def minimize(comment_id: str) -> None:
-    """Collapse a comment on GitHub as outdated; it stays readable, and the gate still reads it."""
-    gh(
-        "api",
-        "graphql",
-        "-f",
-        "query=mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { clientMutationId } }",
-        "-f",
-        f"id={comment_id}",
-        "--silent",
-    )
-
-
-def viewer() -> str | None:
-    """The login of the account `gh` runs as; None for a token `GET /user` refuses, such as a workflow's installation
-    token (`github.token`), where the PR's author and the repo's writers are the ones trusted (passes)."""
-    try:
-        return gh("api", "user", "--jq", ".login").strip()
-    except subprocess.CalledProcessError:
-        return None
-
-
-def writer(login: str) -> bool:
-    """Whether `login` can write to the repo, by GitHub's collaborator permission; an account GitHub refuses to look
-    up can't. ponytail: a bot's GraphQL login lacks the `bot` REST needs, so a bot author fails closed; add the
-    suffix when a project's bot opens sub-issues."""
-    try:
-        permission = gh(
-            "api",
-            f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission",
-            "--jq",
-            ".permission",
-        )
-    except subprocess.CalledProcessError as exc:
-        # a cloud session's proxy refuses this path; the repo's own permissions answer it for the account running this
-        # alone, and anyone else still can't, so a stranger never counts as a writer
-        if FORBIDDEN not in (exc.stderr or "") or login != viewer():
-            return False
-        try:
-            mine = rest("repos/{owner}/{repo}").get("permissions") or {}
-        except subprocess.CalledProcessError:
-            return False
-        return bool(mine.get("push") or mine.get("maintain") or mine.get("admin"))
-    return permission.strip() in WRITE
-
-
-def current_pr() -> int | None:
-    def graphql() -> int | None:
-        try:
-            return int(gh("pr", "view", "--json", "number", "--jq", ".number"))
-        except subprocess.CalledProcessError as exc:
-            if "no pull requests found" in exc.stderr:
-                return None
-            raise
-
-    def rest_read() -> int | None:
-        # the open PR whose head is this branch of origin's repo, as `gh pr view` finds it
-        branch = git("rev-parse", "--abbrev-ref", "HEAD").strip()
-        owner = rest("repos/{owner}/{repo}")["owner"]["login"]
-        found = rest_pages(f"pulls?state=open&head={owner}:{branch}&per_page=100")
-        return int(found[0]["number"]) if found else None
-
-    return fast(graphql, rest_read)
-
-
 class Refused(Exception):
     """A reason to stop with exit 1, printed as is."""
 
 
 class MachineFault(Refused):
     """The gate exited with loop.md's `machine_exit` twice on one tree in `land`: the machine isn't ready."""
+
+
+# Ports: the policy reaches the tracker, the forge and the evidence only through these operations, each a function of
+# an adapter's `tracker`, `forge` or `evidence` (github_adapter.py's are the reference). An item is an issue or a PR by
+# number; reads return nodes shaped as github_adapter.py's ISSUE and PULL queries read them, and a failed call raises
+# subprocess.CalledProcessError with the tool's reason as its stderr. An approval record, a verdict's review and a
+# check pass's comment are notes on the item the node's `comments` and `reviews` hold; a pass is also a record branch
+# on origin, which is git (publish), and a commit status (evidence).
+# ponytail: GitHub's node shapes are the data model; give the ports their own when a second adapter needs them.
+PORTS = {
+    # issue_node(n) (an issue, Refused for a PR), issues(numbers) (the issues among them), comment(n, body),
+    # label(n, name, add), assign(n, login, add)
+    "tracker": ("issue_node", "issues", "comment", "label", "assign"),
+    "forge": (
+        "pull_request",  # (pr) -> the PR node, with its reviews, threads, checks, comments and closing issues
+        "current_pr",  # () -> the checkout's branch's open PR number, or None
+        "pr_changes",  # (pr) -> each file the PR changes, with its patch
+        "merged_pull",  # (pr) -> the merged PR with its head and merge commit, or None
+        "merge_base",  # (base, head) -> the commit the PR's diff starts from
+        "diff_lines",  # (base, head) -> per file, the lines a review at head can comment on
+        "tree",  # (sha) -> {path: (mode, blob)} of the commit, or None when too large
+        "head_pushed",  # (pull) -> when the head was pushed to the PR's branch, or None
+        "merged_labelled",  # (branch, name) -> the merged PRs into branch carrying the label
+        "open_pulls",  # (limit) -> up to limit open PRs, each with its number, branches, draft, body and closing issues
+        "open_heads",  # () -> the head commit of every open PR
+        "required_checks",  # (base) -> the checks the base requires; Refused where its rules need a merge queue
+        "default_branch",  # () -> the repository's default branch
+        "squash_message",  # () -> what a squash's body holds: COMMIT_MESSAGES, PR_BODY or BLANK
+        "pull_commits",  # (pr) -> the PR's commits, each with its message and author
+        "viewer",  # () -> the account running this, or None when the forge won't say
+        "writer",  # (login) -> whether the account can write to the repo
+        "github_repo",  # (remote URL) -> the `owner/repo` it names on this forge, lowercased, or None
+        "one_repo",  # () -> Refused when the checkout can't tell which repo its calls reach
+        "ready",  # (pr, undo=False) -> marks a draft ready, or a ready PR a draft
+        "merge",  # (pr, method, body, head) -> merges pinned to head, `body` None for the forge's default
+    ),
+    # a commit's statuses, newest first, each with its context, state, description, creator and creation time
+    # (statuses(sha)); one set (post_status(sha, context, description, state="success")); a verdict posted as a review
+    # on its commit (post_review(pr, review)); an outdated note collapsed (minimize(id))
+    "evidence": ("statuses", "post_status", "post_review", "minimize"),
+}
+
+
+def sibling(name: str) -> ModuleType:
+    """The adapter module `<name>.py` beside this file, loaded by path, so two copies of the gatekeeper in one process
+    (a project's and an installed one) each load their own; then given this file's Refused, public and denied, so a
+    refusal it raises exits 1 and every text it posts is masked and checked as the gatekeeper's own."""
+    spec = importlib.util.spec_from_file_location(
+        f"{__name__}_{name}", Path(__file__).with_name(f"{name}.py")
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.Refused, module.public, module.denied = Refused, public, denied
+    return module
+
+
+github = sibling("github_adapter")
+# the adapters a policy's `adapters` section may name, by name; another team's adapter is added here
+ADAPTERS: dict[str, Any] = {"github": github}
+# each port's adapter while main() runs, read from the policy at the first call (port); GitHub's outside main()
+using: dict[str, Any] | None = None
+
+
+def adapters(policy: str | None) -> dict[str, Any]:
+    """Each port's adapter, by the policy's `adapters` names (`github` for one it doesn't name); a name no adapter
+    has is refused, naming it (settings() refuses it first), and so is an adapter lacking an operation of its port."""
+    named = settings(policy).get("adapters", {})
+    chosen = {}
+    for name, operations in PORTS.items():
+        adapter = named.get(name, "github")
+        if adapter not in ADAPTERS:
+            raise Refused(unknown_adapter(source(policy), name, adapter))
+        chosen[name] = getattr(ADAPTERS[adapter], name, None)
+        if missing := [op for op in operations if not hasattr(chosen[name], op)]:
+            raise Refused(f"the {adapter} adapter's {name} port lacks {', '.join(missing)}")
+    return chosen
+
+
+def unknown_adapter(file: str, port_name: str, adapter: Any) -> str:
+    return (
+        f"{file}'s `adapters.{port_name}` names {adapter!r}, which no adapter implements:"
+        f" {', '.join(sorted(ADAPTERS))}"
+    )
+
+
+def port(name: str) -> Any:
+    """Port `name`'s adapter: GitHub's outside main(); in it, the policy's, read once at the first call."""
+    global using
+    if not running:
+        return getattr(github, name)
+    if using is None:
+        # outside a checkout there is no policy, and the adapter says why it can't run
+        try:
+            toplevel()
+        except Refused:
+            using = adapters(None)
+        else:
+            using = adapters(project()[1])
+    return using[name]
+
+
+# whether main() runs, so a port reads the policy's `adapters`; a test calling a function alone gets GitHub's
+running = False
+
+
+def through(name: str, operation: str) -> Callable[..., Any]:
+    """`operation` of port `name`, called on the adapter in use at the call."""
+    return lambda *args, **kwargs: getattr(port(name), operation)(*args, **kwargs)
+
+
+issue_node, issues_of = through("tracker", "issue_node"), through("tracker", "issues")
+label, assign = through("tracker", "label"), through("tracker", "assign")
+pull_request, current_pr = through("forge", "pull_request"), through("forge", "current_pr")
+pr_changes, merged_pull = through("forge", "pr_changes"), through("forge", "merged_pull")
+merge_base, diff_lines = through("forge", "merge_base"), through("forge", "diff_lines")
+tree, head_pushed = through("forge", "tree"), through("forge", "head_pushed")
+required_checks, default_branch = (
+    through("forge", "required_checks"),
+    through("forge", "default_branch"),
+)
+squash_message, pull_commits = through("forge", "squash_message"), through("forge", "pull_commits")
+viewer, writer = through("forge", "viewer"), through("forge", "writer")
+github_repo, one_repo = through("forge", "github_repo"), through("forge", "one_repo")
+open_heads = through("forge", "open_heads")
+statuses, post_status = through("evidence", "statuses"), through("evidence", "post_status")
+post_review, minimize = through("evidence", "post_review"), through("evidence", "minimize")
+
+
+comment = through("tracker", "comment")
+
+
+def merged_high(branch: str) -> list[int]:
+    """The merged PRs into `branch` that carry `risk:high` (flag() adds it to each high-risk PR that lands)."""
+    found: list[int] = port("forge").merged_labelled(branch, RISK_LABEL)
+    return found
+
+
+def open_pulls() -> list[dict[str, Any]]:
+    """The repo's open PRs, up to OPEN_LIMIT, each with its number, branch, base, whether it is a draft, body and
+    closing references (each naming its issue's repo as `nameWithOwner`, as the PR query does), in one call."""
+    found: list[dict[str, Any]] = port("forge").open_pulls(OPEN_LIMIT)
+    return found
 
 
 def read(path: Path) -> str:
@@ -3850,44 +3401,6 @@ def toplevel() -> Path:
         return Path(git("rev-parse", "--show-toplevel").strip())
     except subprocess.CalledProcessError as exc:
         raise Refused("not in a git checkout: run from the repo's checkout") from exc
-
-
-# a remote URL's host and `owner/repo`: `scheme://[user@]host[:port]/owner/repo` or scp-like `[user@]host:owner/repo`,
-# its path maybe led by extra slashes as gh allows, matched once trailing slashes and `.git` are cut (post_demo.sh
-# parses it the same way)
-REMOTE_URL = re.compile(
-    r"(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]*@)?([^/:]+)(?::\d+)?[:/]/*([^/]+/[^/]+)", re.IGNORECASE
-)
-
-
-def github_repo(url: str) -> str | None:
-    """The `owner/repo` a GitHub remote URL names, lowercased; None for another host."""
-    found = REMOTE_URL.fullmatch(re.sub(r"(?:\.git)?/*$", "", url.rstrip("/")))
-    return found[2].lower() if found and found[1].lower() == "github.com" else None
-
-
-def one_repo() -> None:
-    """Refuse a checkout whose remotes name several GitHub repos while none is gh's default (`gh repo set-default`,
-    kept as `remote.<name>.gh-resolved`): gh then reads `{owner}/{repo}` and every `gh pr` as `upstream`, and a
-    review or label lands on a repo nobody chose. Outside a checkout it passes, and gh says why it can't run."""
-    remotes = subprocess.run(["git", "remote", "-v"], capture_output=True, text=True, check=False)
-    repos = sorted(
-        {
-            repo
-            for line in remotes.stdout.splitlines()
-            if len(fields := line.split()) > 1 and (repo := github_repo(fields[1]))
-        }
-    )
-    chosen = subprocess.run(
-        ["git", "config", "--get-regexp", r"^remote\..*\.gh-resolved$"],
-        capture_output=True,
-        check=False,
-    )
-    if len(repos) > 1 and chosen.returncode:
-        raise Refused(
-            f"this checkout's remotes name {', '.join(repos)} and gh has no default among them, so gh would pick one"
-            " itself: run `gh repo set-default <owner>/<repo>` once, naming the repo the PRs live in"
-        )
 
 
 def project() -> tuple[str | None, str | None]:
@@ -4184,16 +3697,7 @@ def landing_here(
             named.append(pull)
     if numbers and not named:
         return worst, False
-    base = (
-        named[0]["baseRefName"]
-        if named
-        else fast(
-            lambda: gh(
-                "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"
-            ).strip(),
-            lambda: rest("repos/{owner}/{repo}")["default_branch"],
-        )
-    )
+    base = named[0]["baseRefName"] if named else default_branch()
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
     named = readied(named, base, tracker, loop)
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
@@ -4236,7 +3740,7 @@ def landing_here(
 
 
 def base_drift(base: str) -> list[str]:
-    """The running approvals.py and the three policy files (tracker, loop.md, gatekeeper.md) whose text here differs from
+    """The running gatekeeper.py and github_adapter.py and the three policy files (tracker, loop.md, gatekeeper.md) whose text here differs from
     `origin/<base>`'s, as repo paths, since a PR's own edit of the code or rules that judge it must not judge it. Reads
     the ref as fetched (a land has just fetched it); a script inside the checkout that the base lacks (a PR adds or moves it) differs; only one
     installed outside the checkout, or a ref that is missing, has nothing to compare and counts as equal."""
@@ -4249,10 +3753,12 @@ def base_drift(base: str) -> list[str]:
     ).returncode:
         return []
     paths = [TRACKER, LOOP, POLICY]
-    try:
-        paths.insert(0, Path(__file__).resolve().relative_to(root.resolve()))
-    except ValueError:
-        pass
+    # the gatekeeper and its GitHub adapter, the code that judges
+    for running_file in reversed((__file__, github.__file__ or "")):
+        try:
+            paths.insert(0, Path(running_file).resolve().relative_to(root.resolve()))
+        except ValueError:
+            pass
     differ = []
     for path in paths:
         shown = subprocess.run(
@@ -4531,7 +4037,7 @@ def mark_ready(pull: dict[str, Any], required: set[str]) -> tuple[int, bool] | N
     None when its required checks (if any) need no wait; else the exit its start of CI means."""
     where = f"PR #{pull['number']}"
     # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
-    gh("pr", "ready", str(pull["number"]))
+    port("forge").ready(pull["number"])
     print(f"{where} is ready now")
     if required:
         print(f"{where}: CI starts on ready, so its required checks are pending")
@@ -4562,7 +4068,7 @@ def readied(
     drafts = [pull for pull in named if pull["isDraft"]]
     if not drafts:
         return named
-    required = required_checks(base) - {APPROVALS}
+    required = required_checks(base) - OWN
     found: dict[int, dict[str, Any]] = {}
     for pull in drafts:
         verdict = landable(pull, tracker, loop, required, named=True)
@@ -4657,7 +4163,7 @@ def batched(
     the result's tree once (or reuse a pass on it), move the lock to name the last PR to land (repointed), and merge each
     through GitHub in that order; a red batch lands one PR at a time."""
     # `loop:approvals` is check merge's own status, on the proofs land reads itself
-    required = required_checks(base) - {APPROVALS}
+    required = required_checks(base) - OWN
     waits: dict[int, tuple[int, bool]] = {}
     candidates = []
     listed = {
@@ -4981,7 +4487,7 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
             f"{where} stays ready, since a cloud session can't make it a draft: make it one on GitHub"
         )
     else:
-        gh("pr", "ready", "--undo", str(number))
+        port("forge").ready(number, undo=True)
     comment(
         number,
         f"{EVICTED}\nHead: {head}\n\n`{gate()[0]}` failed twice on it merged alone onto {base} at {green}: fix it,"
@@ -5047,23 +4553,14 @@ def land_body(pull: dict[str, Any]) -> str | None:
     COMMIT_MESSAGES, squash_body() less those lines; PR_BODY, the PR's body less them; BLANK, None, since GitHub
     writes no body. ponytail: under PR_BODY GitHub's own co-author lines, if it adds any, are not added here, as no
     squash on this repo shows that setting."""
-    setting = json.loads(gh("api", "repos/{owner}/{repo}"))["squash_merge_commit_message"]
+    setting = squash_message()
     if setting == "BLANK":
         return None
     if setting == "PR_BODY":
         text = pull.get("body") or ""
     else:
         number = pull["number"]
-        commits = [
-            json.loads(line)
-            for line in gh(
-                "api",
-                "--paginate",
-                f"repos/{{owner}}/{{repo}}/pulls/{number}/commits?per_page=100",
-                "--jq",
-                ".[]",
-            ).splitlines()
-        ]
+        commits = pull_commits(number)
         # ponytail: REST lists a PR's first 250 commits
         text = squash_body(commits, (pull.get("author") or {}).get("login"))
     # GitHub writes no body for this PR either, so there is nothing to override
@@ -5116,15 +4613,7 @@ def merges(
                 body = land_body(pull) if method == "squash" else None
                 print(f"{where} lands as a {method}")
                 try:
-                    gh(
-                        "pr",
-                        "merge",
-                        str(pull["number"]),
-                        f"--{method}",
-                        *(("--body", body) if body is not None else ()),
-                        "--match-head-commit",
-                        head,
-                    )
+                    port("forge").merge(pull["number"], method, body, head)
                 except subprocess.CalledProcessError as exc:
                     merge = merged_anyway(pull["number"], head, exc)
                     print(
@@ -5301,40 +4790,6 @@ def findings(text: str, report: Path) -> list[tuple[str, str, str, str, str, str
     return [(*finding[:5], "\n".join(finding[5]).strip()) for finding in found]
 
 
-def diff_lines(base: str, head: str) -> dict[str, list[int]]:
-    """The lines a review at `head` can comment on, per file: the new side of GitHub's diff of base...head (added and
-    context lines). ponytail: one compare, up to the 300 files it lists."""
-    out = gh(
-        "api",
-        f"repos/{{owner}}/{{repo}}/compare/{base}...{head}",
-        "--jq",
-        ".files[] | {filename, patch}",
-    )
-    found: dict[str, list[int]] = {}
-    for entry in (json.loads(line) for line in out.splitlines()):
-        lines, number = found.setdefault(entry["filename"], []), 0
-        for line in (entry.get("patch") or "").split("\n"):
-            hunk = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", line)
-            if hunk:
-                number = int(hunk.group(1))
-            elif line[:1] in (" ", "+"):
-                lines.append(number)
-                number += 1
-    return found
-
-
-def post_review(pr: int, review: dict[str, Any]) -> None:
-    gh(
-        "api",
-        f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews",
-        "--input",
-        "-",
-        "--silent",
-        # unescaped, so public() finds a non-ASCII home as GitHub will decode it
-        data=public(json.dumps(review, ensure_ascii=False)),
-    )
-
-
 def parse_report(
     report: Path,
 ) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str], str]:
@@ -5410,6 +4865,40 @@ def report_check(report: Path) -> int:
     """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying."""
     parse_report(report)
     print(f"{report} reads as a verdict")
+    return 0
+
+
+def report_facts(report: Path) -> dict[str, Any]:
+    """A verifier report's facts, as `verdict` reads them (parse_report, which refuses an unfinished one): the
+    verifier's family, pass and qualifier, the head it reviewed, the tally, whether it is satisfied, the risk and its
+    reason, the `Logic change:` line, and each finding, so a flow engine never parses the prose."""
+    heading, head, found, closing, qualifier = parse_report(report)
+    family, number = PASS.fullmatch(heading).groups()  # type: ignore[union-attr]
+    counted = COUNTED.fullmatch(closing[0])
+    assert counted  # parse_report refused a report without one
+    risk = re.match(r"Risk:[ \t]*(\S+)[ \t]*[—–-]*[ \t]*(.*)", closing[2])
+    assert risk  # the same
+    logic = [line.partition(":")[2].strip() for line in closing[3:]]
+    return {
+        "verifier": {"family": family, "pass": int(number), "qualifier": qualifier},
+        "head": head,
+        "verdict": dict(
+            zip(("blocker", "major", "minor"), map(int, counted.groups()), strict=True)
+        ),
+        "satisfied": closing[1].lower().split()[1:2] == ["yes"],
+        "risk": {"level": risk[1].lower(), "reason": risk[2].strip()},
+        "logic_change": logic[0] if logic else None,
+        "findings": [
+            dict(zip(("id", "severity", "path", "line", "title", "body"), finding, strict=True))
+            for finding in found
+        ],
+    }
+
+
+def report_json(report: Path) -> int:
+    """`report --json`: the report's facts (report_facts) as one JSON object; an unfinished report is refused as
+    `report` refuses it, with its reason and exit 1."""
+    print(json.dumps(report_facts(report), indent=2))
     return 0
 
 
@@ -6506,10 +5995,7 @@ def drop_records(heads: list[str]) -> None:
     branches go, since the unknown tree may be one an old record holds."""
     landed = {held for head in heads if (held := tree_of(head))}
     try:
-        # whole objects, since rest_pages decodes each line as JSON and a bare SHA is none
-        open_trees: set[str | None] | None = {
-            tree_of(pull["head"]["sha"]) for pull in rest_pages("pulls?state=open&per_page=100")
-        }
+        open_trees: set[str | None] | None = {tree_of(head) for head in open_heads()}
     except (subprocess.CalledProcessError, OSError, ValueError):
         open_trees = None
     if open_trees is not None and None in open_trees:
@@ -6573,7 +6059,7 @@ def head_proof(loop: str | None) -> dict[str, Any] | None:
     ):
         raise Refused(f"loop.md's `head_proof.env` names {bad[0]!r}, which is no variable name")
     # a context this script or the approvals workflow posts would let a plain gate pass or a go prove the head
-    if proof and proof["status"] in {PUBLISHED, OWNER_GO, APPROVALS}:
+    if proof and proof["status"] in {PUBLISHED, OWNER_GO, *OWN}:
         raise Refused(
             f"loop.md's `head_proof.status` is {proof['status']!r}, a status the loop already posts for another proof"
         )
@@ -6662,13 +6148,6 @@ def pushed_commands(held: str) -> set[str]:
     return found
 
 
-def statuses(head: str) -> list[dict[str, Any]]:
-    """The commit statuses on `head`, newest first; ponytail: the first 100, which a head reaches only by hand."""
-    out = gh("api", f"repos/{{owner}}/{{repo}}/commits/{head}/statuses?per_page=100")
-    found: list[dict[str, Any]] = json.loads(out)
-    return found
-
-
 def shown(head: str, record: dict[str, Any]) -> str | None:
     """Write the `gate` status for `record` on `head`, which the PR page shows and nothing reads; refused or
     unreachable: why, which is no error, since the record branch is the pass."""
@@ -6717,20 +6196,6 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
 
 def now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def post_status(head: str, context: str, description: str, state: str = "success") -> None:
-    gh(
-        "api",
-        f"repos/{{owner}}/{{repo}}/statuses/{head}",
-        "-f",
-        f"state={state}",
-        "-f",
-        f"context={context}",
-        "-f",
-        f"description={description}",
-        "--silent",
-    )
 
 
 def reused(record: dict[str, Any]) -> str:
@@ -7003,6 +6468,19 @@ def refuses_stale() -> bool:
         return False
 
 
+# `record <kind>`: the verb each kind was before #614, which the code below names
+RECORDS = {"approval": "approve", "verdict": "verdict", "checks": "local-ci"}
+# today's verbs, kept for one release line (approvals.py's), and the gatekeeper's words for each
+ALIASES = {verb: ["record", kind] for kind, verb in RECORDS.items()}
+
+
+def aliased(argv: list[str]) -> list[str]:
+    """`argv` with a verb of before #614 (ALIASES) as the gatekeeper names it; any other argv as it is."""
+    if argv and argv[0] in ALIASES:
+        return [*ALIASES[argv[0]], *argv[1:]]
+    return argv
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -7019,7 +6497,9 @@ def main(argv: list[str]) -> int:
     batching.add_argument("--batch", required=True)
     batching.add_argument("--exit", type=int, required=True)
     batching.add_argument("--log", type=Path, required=True)
-    approving = commands.add_parser("approve")
+    # `record`: the evidence the gate reads, written: an approval, a verdict, a check pass
+    records = commands.add_parser("record").add_subparsers(dest="kind", required=True)
+    approving = records.add_parser("approval")
     approving.add_argument("point", choices=(*POINTS, "merge"))
     approving.add_argument("number", type=int)
     # an agent never approves: a record is a person's word, and the owner's policy in loop.md covers the rest; a
@@ -7030,12 +6510,13 @@ def main(argv: list[str]) -> int:
     approving.add_argument("--withdraw", action="store_true")
     delegating = commands.add_parser("delegate")
     delegating.add_argument("pr", type=int)
-    posting = commands.add_parser("verdict")
+    posting = records.add_parser("verdict")
     posting.add_argument("pr", type=int)
     posting.add_argument("report", type=Path)
     reading = commands.add_parser("report")
     reading.add_argument("report", type=Path)
-    recording = commands.add_parser("local-ci")
+    reading.add_argument("--json", action="store_true")
+    recording = records.add_parser("checks")
     recording.add_argument("pr", type=int, nargs="?")
     recording.add_argument("--record", action="store_true")
     recording.add_argument("--run", action="store_true")
@@ -7055,74 +6536,13 @@ def main(argv: list[str]) -> int:
     releasing.add_argument("issue", type=int)
     hooking = commands.add_parser("commit-msg")
     hooking.add_argument("message", type=Path)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(aliased(argv))
+    if args.command == "record":  # each kind runs as the verb it was before #614
+        args.command = RECORDS[args.kind]
+    global running, using
+    running, using = True, None
     try:
-        if stale := pack_behind(__file__):
-            print(stale, file=sys.stderr)
-            if refuses_stale():
-                return 1
-        if args.command == "report":  # reads a local file only, so no remote needs choosing
-            return report_check(args.report)
-        if args.command == "commit-msg":  # the same: git hands the hook its message file
-            return commit_msg(args.message)
-        one_repo()
-        if args.command == "check":
-            if args.point == "queue" and (args.pr is None or args.head is None):
-                raise Refused(
-                    "check queue takes a PR number and --head <sha>, the head the queue would merge"
-                )
-            if args.point != "queue" and args.head is not None:
-                raise Refused("--head goes with check queue only")
-            if args.issue is not None and (args.point != "build" or args.pr is not None):
-                raise Refused("--issue goes with check build and no PR number")
-            if args.point == "queue":
-                deprecated("check queue")
-            return check(args.point, args.pr, args.head, args.issue)
-        if args.command == "batch":
-            deprecated("batch")
-            return batch(args.pr, args.merge, args.batch, args.exit, args.log)
-        if args.command == "approve":
-            if args.point != "merge" and (args.head or args.withdraw):
-                raise Refused("--head and --withdraw belong to `approve merge`")
-            if args.point == "merge" and not args.head:
-                raise Refused("approve merge needs --head <sha>: the head the approver was shown")
-            if args.point != "merge" and args.by != "owner":
-                raise Refused(
-                    f"approve {args.point} is the owner's: only a merge's go may be the delegate's"
-                )
-            return (
-                go(args.number, args.head, args.by, args.withdraw)
-                if args.point == "merge"
-                else approve(args.point, args.number)
-            )
-        if args.command == "delegate":
-            return delegate(args.pr)
-        if args.command == "local-ci":
-            if args.status is not None:
-                if args.pr is not None or args.record:
-                    raise Refused("local-ci --status takes a head alone")
-                return local_ci_status(args.status)
-            if args.run and args.pr is None:
-                raise Refused("local-ci --run goes with a PR: --record already runs the gate")
-            if (args.pr is None) != args.record:
-                raise Refused(
-                    "local-ci takes a PR number, or --record to record a run on HEAD before one exists"
-                )
-            proof = None
-            if args.head_proof and (proof := head_proof(project()[1])) is None:
-                raise Refused("loop.md sets no `head_proof`: --head-proof has no status to publish")
-            if args.head_proof and not args.record:
-                raise Refused("--head-proof goes with --record: the head proof is the checkout's")
-            return local_ci(args.pr, proof, args.run) if leads_its_session() else detach(argv)
-        if args.command == "land":
-            if args.only and not args.pr:
-                parser.error("land --only needs a PR: there is nothing to restrict to")
-            return land(args.pr or None, args.wait, args.only)
-        if args.command == "brief":
-            return brief(args.pr, args.priorities, args.proof, args.far)
-        if args.command == "release":
-            return release(args.issue)
-        return verdict(args.pr, args.report)
+        return dispatch(args, argv, parser)
     except Refused as exc:
         print(exc)
         return 1
@@ -7130,14 +6550,91 @@ def main(argv: list[str]) -> int:
         # gh's reason, e.g. a closing line that names a number with no issue
         print(exc.stderr.strip() or exc)
         return 1
+    finally:
+        running, using = False, None
 
 
-if __name__ == "__main__":
+def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.ArgumentParser) -> int:
+    """The verb `args` names; a refusal raises."""
+    if stale := pack_behind(__file__):
+        print(stale, file=sys.stderr)
+        if refuses_stale():
+            return 1
+    if args.command == "report":  # reads a local file only, so no remote needs choosing
+        return report_json(args.report) if args.json else report_check(args.report)
+    if args.command == "commit-msg":  # the same: git hands the hook its message file
+        return commit_msg(args.message)
+    one_repo()
+    if args.command == "check":
+        if args.point == "queue" and (args.pr is None or args.head is None):
+            raise Refused(
+                "check queue takes a PR number and --head <sha>, the head the queue would merge"
+            )
+        if args.point != "queue" and args.head is not None:
+            raise Refused("--head goes with check queue only")
+        if args.issue is not None and (args.point != "build" or args.pr is not None):
+            raise Refused("--issue goes with check build and no PR number")
+        if args.point == "queue":
+            deprecated("check queue")
+        return check(args.point, args.pr, args.head, args.issue)
+    if args.command == "batch":
+        deprecated("batch")
+        return batch(args.pr, args.merge, args.batch, args.exit, args.log)
+    if args.command == "approve":
+        if args.point != "merge" and (args.head or args.withdraw):
+            raise Refused("--head and --withdraw belong to `approve merge`")
+        if args.point == "merge" and not args.head:
+            raise Refused("approve merge needs --head <sha>: the head the approver was shown")
+        if args.point != "merge" and args.by != "owner":
+            raise Refused(
+                f"approve {args.point} is the owner's: only a merge's go may be the delegate's"
+            )
+        return (
+            go(args.number, args.head, args.by, args.withdraw)
+            if args.point == "merge"
+            else approve(args.point, args.number)
+        )
+    if args.command == "delegate":
+        return delegate(args.pr)
+    if args.command == "local-ci":
+        if args.status is not None:
+            if args.pr is not None or args.record:
+                raise Refused("local-ci --status takes a head alone")
+            return local_ci_status(args.status)
+        if args.run and args.pr is None:
+            raise Refused("local-ci --run goes with a PR: --record already runs the gate")
+        if (args.pr is None) != args.record:
+            raise Refused(
+                "local-ci takes a PR number, or --record to record a run on HEAD before one exists"
+            )
+        proof = None
+        if args.head_proof and (proof := head_proof(project()[1])) is None:
+            raise Refused("loop.md sets no `head_proof`: --head-proof has no status to publish")
+        if args.head_proof and not args.record:
+            raise Refused("--head-proof goes with --record: the head proof is the checkout's")
+        return local_ci(args.pr, proof, args.run) if leads_its_session() else detach(argv)
+    if args.command == "land":
+        if args.only and not args.pr:
+            parser.error("land --only needs a PR: there is nothing to restrict to")
+        return land(args.pr or None, args.wait, args.only)
+    if args.command == "brief":
+        return brief(args.pr, args.priorities, args.proof, args.far)
+    if args.command == "release":
+        return release(args.issue)
+    return verdict(args.pr, args.report)
+
+
+def cli(argv: list[str]) -> int:
+    """The command line's run: main(), after leaving this script's own environment, recording a detached run's end."""
     leave_own_environment()  # before any command it starts
     detached = os.environ.pop(
         DETACHED, None
     )  # set by detach() for the run it starts, and for no process under it
-    code = main(sys.argv[1:])
+    code = main(argv)
     if detached:
         finished(detached, code, RAN.get("command"))
-    sys.exit(code)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(cli(sys.argv[1:]))
