@@ -11537,9 +11537,16 @@ def test_the_same_owner_item_at_a_later_turn_end_is_posted_as_info(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first, second = owner_posts_for(tmp_path, monkeypatch, ["Bash(ls)", "Bash(ls)"])
-    assert "[owner] a t-a: blocked on a prompt: Bash(ls)" in first
+    assert "[owner] a t-a: blocked on a prompt: e0: Bash(ls)" in first
     assert second.startswith("Supervisor [info] b-")
-    assert "[info] a t-a: blocked on a prompt: Bash(ls)" in second
+    assert "[info] a t-a: blocked on a prompt: e1: Bash(ls)" in second
+
+
+def test_an_owner_item_ignores_the_elicitation_id_a_re_raised_prompt_gets() -> None:
+    line = "a t-a: blocked on a prompt: {}: Bash(ls)"
+    assert omnigent_agent.owner_item(line.format("e0")) == omnigent_agent.owner_item(
+        line.format("e1")
+    )
 
 
 def test_a_changed_owner_item_is_posted_as_owner(
@@ -11547,8 +11554,8 @@ def test_a_changed_owner_item_is_posted_as_owner(
 ) -> None:
     first, second = owner_posts_for(tmp_path, monkeypatch, ["Bash(ls)", "Bash(rm x)"])
     assert second.startswith("Supervisor [owner] b-")
-    assert "[owner] a t-a: blocked on a prompt: Bash(rm x)" in second
-    assert "[owner] a t-a: blocked on a prompt: Bash(ls)" in first
+    assert "[owner] a t-a: blocked on a prompt: e1: Bash(rm x)" in second
+    assert "[owner] a t-a: blocked on a prompt: e0: Bash(ls)" in first
 
 
 def test_a_new_session_s_first_owner_item_is_posted_as_owner(

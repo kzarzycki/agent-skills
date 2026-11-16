@@ -3853,10 +3853,13 @@ def observe(
 def owner_item(line: str) -> str:
     """What the owner acts on in an event ``line``, which keys an owner item as raised: a
     prompt's text, a turn end's last message, else the line. Never the header (session, title,
-    queued inputs, open card), which changes while the request stands."""
+    queued inputs, open card), which changes while the request stands. A prompt's elicitation id
+    is dropped: it changes when a prompt is re-raised, and the owner acts on the text."""
     first, _, rest = line.partition("\n")
-    if (at := first.find(": blocked on a prompt: ")) >= 0:
-        return first[at + 2 :]
+    marker = ": blocked on a prompt: "
+    if (at := first.find(marker)) >= 0:
+        head, text = first[at + 2 :].split(": ", 1)
+        return f"{head}: " + re.sub(r"(^|; )[^\s:;]+: ", r"\1", text)
     if re.search(r": turn ended(, quiet \d+s)?$", first) and rest:
         return rest
     return line
