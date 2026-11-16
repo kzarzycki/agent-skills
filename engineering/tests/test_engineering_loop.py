@@ -150,6 +150,11 @@ def test_placement_is_stated_once_and_the_role_files_point_to_it() -> None:
         ), role
     lead = " ".join((LOOP / "lead.md").read_text().split())
     assert "each heavy run that did not go to the cloud with where it went and why" in lead
+    assert (
+        "Every heavy run, a worker's or your own (a suite to sort failures, a build, an e2e run),"
+        " goes where SKILL.md, Where heavy steps run says, which also gives your own run's recipe"
+        in lead
+    )
 
 
 def test_the_verifier_waits_in_few_long_calls_and_reruns_repros_together() -> None:
