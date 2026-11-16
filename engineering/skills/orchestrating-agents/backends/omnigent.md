@@ -238,6 +238,17 @@ when it ends; unset, nothing is sent. `run`, `send` and `wait`, which can wait h
 take the same `--notify`: once they end, however they end, `$LOOP_NOTIFY` gets one line, `exit <code>:`
 and the report path, or the failure's first line.
 
+**One wake per child.** Omnigent wakes a session when a child's turn ends in two cases: the child is
+a sub-agent of that session (always, and no field turns it off), or that session subscribes to it
+(`start --top-level` subscribes the root of its starter's tree). `$LOOP_NOTIFY` names the session
+that ran the command, so a `run`, `send` or `wait` with `--notify` skips its line only when that
+very session is the one Omnigent tells and the command ends on the child's own turn end (exit 0,
+report in); it says `not telling $LOOP_NOTIFY` on stderr. Every other ending (a timeout, a send
+that never lands, a crash, a signal) sends the line, since Omnigent says nothing of it, and so does
+a child that tells another session (a sub-agent of your primary session while you are its own
+sub-agent, a subscription held by your root). Without `--notify` the command's exit is a second
+wake beside Omnigent's notice. Don't poll or `watch` a child for the wake you were not given.
+
 **Waiting on a condition.** `python3 scripts/omnigent_agent.py wait-until --every <s> --limit
 <s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so
 each sleep stays short of any tool timeout, and exits 0 once it exits 0, or 6 once `--limit`

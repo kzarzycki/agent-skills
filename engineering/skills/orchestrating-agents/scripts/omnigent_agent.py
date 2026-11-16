@@ -38,7 +38,7 @@ workspace it started from and that a foreground command stops at 10 minutes; ``w
 so the report is a file here as for any child; ``send --pr N`` takes only a comment created after
 the report there, and reaches a session whose workspace is on another host. A lead launches it as one background command, so its
 exit is the wake; ``run``, ``send`` and ``wait`` take ``--notify`` as ``wait-for`` does, running
-``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. ``send`` answers that question in the same session, also mid-turn, then waits the
+``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. Omnigent already wakes this session for a child that is its sub-agent or one it subscribes to: when that child ends its turn with the report in, the line is skipped and said on stderr, so a child wakes its lead once (#1086). ``send`` answers that question in the same session, also mid-turn, then waits the
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
@@ -6645,11 +6645,41 @@ def main(argv: list[str] | None = None) -> int:
         # an uncaught exception is an ending too: exit 1, as Python gives, and its first line
         if "report" in ended:
             ended.setdefault("failure", (str(e).splitlines() or [type(e).__name__])[0])
-            notify(f"exit {1 if isinstance(e, Exception) else 130}: {ended['failure']}")
+            tell(ended, f"exit {1 if isinstance(e, Exception) else 130}: {ended['failure']}", False)
         raise
     if "report" in ended:
-        notify(f"exit {code}: {ended.get('failure') or ended['report']}")
+        turn_end = code == 0 and "failure" not in ended  # the report is in: the child's turn ended
+        tell(ended, f"exit {code}: {ended.get('failure') or ended['report']}", turn_end)
     return code
+
+
+def tell(ended: dict[str, str], text: str, turn_end: bool) -> None:
+    """``notify``, unless this ending is the child's own turn end and Omnigent already wakes this
+    session for the child (``cover``): a second line would start a second turn. Any other ending (a
+    timeout, an undelivered send, a crash) is no turn end, so Omnigent says nothing of it."""
+    if turn_end and ended.get("covered"):
+        print(
+            f"not telling $LOOP_NOTIFY: Omnigent tells this session when {ended['covered']} ends",
+            file=sys.stderr,
+        )
+        return
+    notify(text)
+
+
+def cover(og: Omnigent, sid: str, ended: dict[str, str]) -> None:
+    """Mark ``sid`` covered in ``ended`` when Omnigent tells this very session (the one
+    ``$LOOP_NOTIFY`` names) when the child's turn ends: it is the child's parent, or subscribes to
+    it. A failed lookup marks nothing, so the line is sent."""
+    if "report" not in ended or not (me := own_id()):
+        return
+    try:
+        if og.info(sid).get("parent_session_id") == me or any(
+            str(s.get("session_id")) == sid
+            for s in og.call("GET", f"/v1/sessions/{me}/subscriptions").get("data", [])
+        ):
+            ended["covered"] = sid
+    except Fail:
+        pass
 
 
 def command(argv: list[str] | None, ended: dict[str, str]) -> int:
@@ -7227,6 +7257,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 )
             supervise(og, owed, args.silent_seconds, args.timeout)  # it prints each line
             return 0
+        if args.cmd in ("send", "wait"):
+            cover(og, args.session, ended)
         if args.cmd == "wait":
             # a path on the session's host, which this one neither resolves nor reads (as start's)
             far = not args.pr and elsewhere(og, og.info(args.session))
@@ -7500,6 +7532,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             return sid
 
         sid = launch()
+        cover(og, sid, ended)
         if args.cmd == "run":
             print(
                 wait(og, sid, report, args.timeout, verifier, launched, args.pr, baseline, launch)
