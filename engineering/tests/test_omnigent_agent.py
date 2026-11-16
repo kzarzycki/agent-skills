@@ -3331,7 +3331,7 @@ def test_with_a_deny_list_a_cloud_worker_replies_with_its_report_and_the_host_ch
     sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
     brief = omnigent_agent.text_of(og.sessions[sid][1])
     assert "which you don't post: reply with the line `UNPOSTED REPORT`" in brief
-    assert "gh api" not in brief and "comment's URL" not in brief
+    assert "/comments" not in brief and "comment's URL" not in brief
     assert (
         "<!-- file: tmp/loop/<name> -->" in brief
     )  # its files still travel in the report it replies with
@@ -4329,7 +4329,7 @@ def test_watch_reports_a_prompt_at_once_with_the_tool_call() -> None:
     }
     og = Roster(a=[{"status": "running", "pending_elicitations": [prompt]}])
     assert omnigent_agent.watch(og, ["a"], timeout=0) == [
-        "a t-a: blocked on a prompt: Bash(rm x)\nlast message: (none)"
+        "a t-a: blocked on a prompt: e1: Bash(rm x)\nlast message: (none)"
     ]
 
 
@@ -4411,7 +4411,7 @@ def test_watch_wakes_when_a_running_session_gains_a_prompt() -> None:
     prompt = {"elicitation_id": "e2", "params": {"message": "Claude wants to call **Bash**"}}
     og = Roster(a=[{"status": "running"}, {"status": "running", "pending_elicitations": [prompt]}])
     assert omnigent_agent.watch(og, ["a"], timeout=5) == [
-        "a t-a: blocked on a prompt: Claude wants to call **Bash**\nlast message: (none)"
+        "a t-a: blocked on a prompt: e2: Claude wants to call **Bash**\nlast message: (none)"
     ]
 
 
@@ -5170,7 +5170,7 @@ def test_a_prompt_still_pending_after_the_confirm_wait_is_posted_to_the_owner_on
     supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
     assert before == [0, 0, 0, 1]
     [post] = posted(og)
-    assert "[owner] a t-a: blocked on a prompt: Bash(ls) (an approval prompt" in post
+    assert "[owner] a t-a: blocked on a prompt: e1: Bash(ls) (an approval prompt" in post
 
 
 def test_a_new_prompt_id_restarts_the_confirm_wait(
@@ -6371,7 +6371,7 @@ def test_relay_to_a_session_in_a_long_step_returns_queued_and_a_rerun_sends_no_s
     og = FakeOmnigent(hold=10**6)  # a foreground command that outlasts the call
     sid = og.create("claude", "lead")
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
-    assert "queued until the session's current step ends; it lands then" in capsys.readouterr().err
+    assert "queued until the session's current step ends\nit lands then" in capsys.readouterr().err
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
     assert og.posts == 1
 
@@ -6464,7 +6464,7 @@ def test_relay_beside_an_open_question_card_delivers_and_names_it_without_answer
     assert relay(og, sid, tmp_path, monkeypatch) == 0
     assert capsys.readouterr().out.strip() == (
         f"session {sid}: delivered; its question is still open (relay --answer answers it):"
-        " Which base?"
+        " q1: Which base?"
     )
     assert og.resolved == []
     assert og.posts == 1
@@ -6515,7 +6515,7 @@ def test_send_beside_an_open_question_card_delivers_and_names_it_without_answeri
     assert omnigent_agent.main(["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]) == 0
     assert (
         f"session {sid}: delivered; its question is still open (relay --answer answers it):"
-        " Which base?"
+        " q1: Which base?"
     ) in capsys.readouterr().out
     assert og.resolved == []
     assert og.posts == 1
@@ -6579,8 +6579,8 @@ def test_relay_never_answers_an_approval_prompt_and_says_what_holds_it(
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
     assert og.resolved == []
     assert capsys.readouterr().err.strip() == (
-        f"session {sid}: queued behind an approval prompt (`approve` answers it): Bash(rm -rf build)"
-        f" and a question: {QUESTION['params']['content_preview']}; {LANDS_AFTER_A_QUESTION}"
+        f"session {sid}: queued behind an approval prompt (`approve` answers it): e2: Bash(rm -rf build)"
+        f" and a question: e1: {QUESTION['params']['content_preview']}\n{LANDS_AFTER_A_QUESTION}"
     )
 
 
@@ -6600,8 +6600,8 @@ def test_relay_behind_only_a_question_names_relay_answer_for_next_time_not_appro
     og.prompts = [QUESTION]
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
     assert capsys.readouterr().err.strip() == (
-        f"session {sid}: queued behind a question: {QUESTION['params']['content_preview']};"
-        f" {LANDS_AFTER_A_QUESTION}"
+        f"session {sid}: queued behind a question: e1: {QUESTION['params']['content_preview']}\n"
+        f"{LANDS_AFTER_A_QUESTION}"
     )
     assert [omnigent_agent.text_of(p) for p in og.info(sid)["pending_inputs"]] == [
         f"{omnigent_agent.RELAYED.format(who='cos')}\ngo"
@@ -6618,8 +6618,8 @@ def test_relay_from_a_task_behind_a_question_says_only_the_owner_answers_it(
         omnigent_agent.QUEUED
     )
     assert capsys.readouterr().err.strip() == (
-        f"session {sid}: queued behind a question: {QUESTION['params']['content_preview']};"
-        " this message stays queued and lands once the question is answered"
+        f"session {sid}: queued behind a question: e1: {QUESTION['params']['content_preview']}\n"
+        "this message stays queued and lands once the question is answered"
         " (only the owner's own relay answers a question)"
     )
 
@@ -6633,7 +6633,7 @@ def test_approve_resolves_each_approval_prompt_never_a_question(
     og.prompts = [QUESTION, APPROVAL]
     assert omnigent_agent.main(["approve", sid]) == 0
     assert og.resolved == [(sid, "e2", "accept", None)]
-    assert capsys.readouterr().out == f"session {sid}: accepted Bash(rm -rf build)\n"
+    assert capsys.readouterr().out == f"session {sid}: accepted e2: Bash(rm -rf build)\n"
     assert omnigent_agent.main(["approve", sid]) == 1  # only the question is left
     assert "no approval prompt pending" in capsys.readouterr().err
     og.prompts = [APPROVAL, {**APPROVAL, "elicitation_id": "e3"}]
@@ -6641,8 +6641,8 @@ def test_approve_resolves_each_approval_prompt_never_a_question(
     assert omnigent_agent.main(["approve", sid, "--decline"]) == 1  # e3 still answered
     assert og.resolved[-1] == (sid, "e3", "decline", None)
     out = capsys.readouterr().out
-    assert "not answered: Bash(rm -rf build): POST resolve e2: HTTP 404" in out
-    assert f"session {sid}: declined Bash(rm -rf build)" in out
+    assert "not answered: e2: Bash(rm -rf build): POST resolve e2: HTTP 404" in out
+    assert f"session {sid}: declined e3: Bash(rm -rf build)" in out
 
 
 def test_approve_with_only_a_question_pending_names_it_and_relay_answer(
@@ -6656,7 +6656,7 @@ def test_approve_with_only_a_question_pending_names_it_and_relay_answer(
     assert og.resolved == []
     err = capsys.readouterr().err
     assert "only a question (`relay --answer` answers it): " in err
-    assert QUESTION["params"]["content_preview"] in err
+    assert "e1: " + QUESTION["params"]["content_preview"] in err
 
 
 def test_relay_to_an_archived_session_is_not_deliverable(
@@ -6842,7 +6842,7 @@ def test_broadcast_reports_a_held_message_queued_and_skips_a_pending_prompt_unan
     sid = og.add("busy")
     assert broadcast(og, tmp_path, monkeypatch, "--include", sid) == 0
     assert capsys.readouterr().out.endswith(
-        ": queued until the session's current step ends; it lands then\n"
+        ": queued until the session's current step ends\nit lands then\n"
     )
     for prompts in ([QUESTION], [APPROVAL], [QUESTION, APPROVAL]):
         asked = BroadcastFake()
@@ -7482,9 +7482,9 @@ def test_a_quiet_waiter_whose_named_sessions_all_run_raises_no_deadline(
         ("waiting on my leads", {"y": {"status": "idle", "updated_at": None}}, "lead"),
         (f"waiting on {WORKER}", {WORKER: {"status": "idle", "updated_at": 1.0}}, WORKER),
         (f"waiting on {LEAD}", {LEAD: {"status": "idle", "updated_at": 1.0}}, LEAD),
-        (f"waiting on {OTHER}", {}, OTHER),
+        (f"waiting on {OTHER}", {OTHER: {"status": "idle", "updated_at": 1.0}}, OTHER),
         ("waiting on the chief of staff for a host", {}, "chief"),
-        (f"waiting on {COS} for a host", {}, COS),
+        (f"waiting on {COS} for a host", {COS: {"status": "idle", "updated_at": 1.0}}, COS),
         ("waiting on the owner's pick", {}, "owner's"),
     ],
 )
@@ -7499,7 +7499,9 @@ def test_a_quiet_waiter_on_a_session_not_moving_or_outside_its_follow_set_raises
 def test_a_quiet_waiter_on_the_chief_of_staff_raises_its_deadline_though_it_subscribes_to_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    registry, og = manager(tmp_path, f"STILL WORKING: waiting on {COS} for a host. Report: m.md")
+    quiet = {"status": "idle", "updated_at": 1.0}  # a notified session that shows life is progress
+    wait = f"STILL WORKING: waiting on {COS} for a host. Report: m.md"
+    registry, og = manager(tmp_path, wait, **{COS: quiet})
     og.kin_of["m"] = [WORKER, COS]
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({COS})"]
@@ -7508,7 +7510,10 @@ def test_a_quiet_waiter_on_the_chief_of_staff_raises_its_deadline_though_it_subs
 def test_a_quiet_waiter_on_a_session_id_when_its_children_are_unread_raises_its_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    registry, og = manager(tmp_path, f"STILL WORKING: waiting on {WORKER}. Report: m.md")
+    gone = {"status": "idle", "updated_at": 1.0}  # a named session that shows life is progress
+    registry, og = manager(
+        tmp_path, f"STILL WORKING: waiting on {WORKER}. Report: m.md", **{WORKER: gone}
+    )
     og.kin_of["m"] = omnigent_agent.Fail("GET /v1/sessions/m/child_sessions: HTTP 503")
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({WORKER})"]
@@ -8632,7 +8637,7 @@ def test_a_crash_right_after_a_terminal_line_is_dropped_keeps_its_owner_event(
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # the restart
     [post] = posted(og)
     assert post.startswith("Supervisor [owner] b-")
-    assert "[owner] a t-a: blocked on a prompt: Bash(rm example)" in post
+    assert "[owner] a t-a: blocked on a prompt: e1: Bash(rm example)" in post
 
 
 def test_an_older_identical_message_does_not_close_an_open_intent(
@@ -9747,6 +9752,14 @@ def test_the_cloud_preamble_forbids_a_question_tool_a_page_and_a_session_link() 
     assert "never call an interactive question tool, since its prompt waits on someone" in preamble
     assert "Never publish a page or artifact, since it waits on a permission nobody" in preamble
     assert "co-author line only, with no session link, since the commit reaches a" in preamble
+
+
+def test_the_cloud_preamble_reads_issues_and_prs_through_rest() -> None:
+    """GraphQL answers 403 in a cloud VM, so `gh issue view` and `gh pr view` fail there (#1011)."""
+    preamble = omnigent_agent.PR_PREAMBLE
+    assert "Read issues and PRs through REST too, since GraphQL answers 403 here" in preamble
+    assert "`gh api repos/{{owner}}/{{repo}}/issues/<n>` and `.../pulls/<n>`" in preamble
+    assert "never `gh issue view` or `gh pr view`" in preamble
 
 
 class CloudFake(FakeOmnigent):
@@ -11052,6 +11065,9 @@ class FarVerifierHost(FarFiles, FakeOmnigent):
         super().land(sid, text)
 
 
+PR7_HEAD = "0123456789abcdef0123456789abcdef01234567"
+
+
 def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) -> FarVerifierHost:
     og = FarVerifierHost()
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
@@ -11060,8 +11076,13 @@ def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) ->
     (tmp_path / "docs" / "agents").mkdir(parents=True)
     (tmp_path / "docs/agents/loop.md").write_text(f"# Loop\n\n{hosts}")
     (tmp_path / "b.md").write_text(
-        "Review PR #7 as the verifier; first `git worktree add --detach`"
+        f"Review PR #7 as the verifier; first `git worktree add --detach tree {PR7_HEAD}`"
     )
+    gh = tmp_path.parent / f"{tmp_path.name}-ghbin"
+    gh.mkdir()
+    (gh / "gh").write_text(f"#!/bin/sh\necho {PR7_HEAD}\n")
+    (gh / "gh").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{gh}{os.pathsep}{os.environ['PATH']}")
     (tmp_path / "gate.log").write_text("abc\nok\n")
     return og
 
@@ -11143,6 +11164,7 @@ def test_a_lead_names_a_host_by_its_id_and_a_file_needs_another_host(
 ) -> None:
     """The line lists names; a host given by its id is checked by its name. --file is refused for
     a session here, which reads its own worktree."""
+    monkeypatch.setattr(omnigent_agent, "check_out_head", lambda *a: None)  # no remote here
     og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: here\n")
     argv = [*VERIFY_FAR]
     argv[argv.index("mac")] = "h"
@@ -11191,6 +11213,7 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
 ) -> None:
     """A far verifier works in a worktree of its own under the clone, so a lead holding the clone
     does not stop it; a worker there, or a verifier on this host, is still refused."""
+    monkeypatch.setattr(omnigent_agent, "check_out_head", lambda *a: None)  # no remote here
     og = far_verifier(tmp_path, monkeypatch, "")
     og.others = [
         {
@@ -11476,7 +11499,7 @@ def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_
     supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
     assert states[:3] == ["running"] * 3  # the card alone blocks nothing
     routed = [(e["kind"], e["action"], e["line"]) for e in events_of(registry)]
-    assert routed[0] == ("asked", "record", "a: asked its user: Which base?")
+    assert routed[0] == ("asked", "record", "a: asked its user: q1: Which base?")
     assert (events_of(registry)[0]["settled"], "Inbox" in events_of(registry)[0]["why"]) == (
         "rule",
         True,
@@ -11484,6 +11507,237 @@ def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_
     assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
     assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
     assert not any("Which base?" in p for p in posted(og))
+
+
+# --- a child never falls back to the runner's host, and a host verifier runs at the PR's head (#917) ---
+
+
+def test_a_cloud_verifier_start_without_host_sends_no_create_and_names_the_in_vm_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    og = far_verifier(tmp_path, monkeypatch, "")
+    verifier = [
+        "start",
+        "claude",
+        "v",
+        "b.md",
+        str(tmp_path / "tmp/r.md"),
+        "--confirm-seconds",
+        "0",
+    ]
+    verifier += ["--pr", "7", "--role", "roles/verifier.md"]
+    assert omnigent_agent.main(verifier) == 1
+    err = capsys.readouterr().err
+    assert "cloud_verifier.py verify" in err and "--host" in err and og.sessions == {}
+    # any other child is refused too, naming both routes; an explicit --host start still works
+    worker = ["start", "claude", "w", "b.md", str(tmp_path / "tmp/r2.md"), "--confirm-seconds", "0"]
+    assert omnigent_agent.main(worker) == 1
+    err = capsys.readouterr().err
+    assert "--host" in err and "claude-cloud" in err and og.sessions == {}
+    assert omnigent_agent.main([*VERIFY_FAR]) == 0 and len(og.sessions) == 1
+
+
+def test_a_verifier_on_a_host_for_a_pr_starts_at_the_prs_head_never_the_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+
+    def run(*cmd: str) -> str:
+        done = subprocess.run(
+            [*git, *cmd], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+        return done.stdout.strip()
+
+    run("add", "-A")
+    run("commit", "-q", "-m", "base")
+    base = run("rev-parse", "HEAD")
+    (tmp_path / "change.txt").write_text("pr\n")
+    run("add", "-A")
+    run("commit", "-q", "-m", "pr")
+    head = run("rev-parse", "HEAD")
+    run("checkout", "-q", "--detach", base)
+    # origin is this repo, whose pull/7/head names the PR's commit
+    run("update-ref", "refs/pull/7/head", head)
+    run("remote", "add", "origin", str(tmp_path))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(f"#!/bin/sh\necho {head}\n")
+    (bin_dir / "gh").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    argv = ["start", "claude", "v", "b.md", str(tmp_path / "tmp/r.md"), "--confirm-seconds", "0"]
+    argv += ["--pr", "7", "--role", "roles/verifier.md", "--workspace", str(tmp_path)]
+    assert omnigent_agent.main(argv) == 0 and len(og.sessions) == 1
+    assert run("rev-parse", "HEAD") == head
+    # a checkout with tracked changes is refused, never moved under them
+    run("checkout", "-q", "--detach", base)
+    (tmp_path / "b.md").write_text("edited\n")
+    again = [*argv]
+    again[5 - 1] = str(tmp_path / "tmp/r3.md")
+    assert omnigent_agent.main(again) == 1
+    assert run("rev-parse", "HEAD") == base
+
+
+def test_a_verifier_on_another_host_for_a_pr_needs_a_brief_that_pins_the_prs_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing here runs git on that host, so a brief that names no checkout of the head is refused
+    before any session exists; one that names it starts."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    (tmp_path / "b.md").write_text("Review PR #7 as the verifier")
+    assert omnigent_agent.main([*VERIFY_FAR]) == 1
+    assert PR7_HEAD[:12] in capsys.readouterr().err and og.sessions == {}
+    (tmp_path / "b.md").write_text(f"Review PR #7: `git worktree add --detach tree {PR7_HEAD}`")
+    assert omnigent_agent.main([*VERIFY_FAR]) == 0 and len(og.sessions) == 1
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_a_quiet_waiter_is_not_stalled_while_a_session_its_line_names_progresses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quiet: bool
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    snaps = {OTHER: gone, LEAD: gone} if quiet else {LEAD: gone}  # OTHER, running, progressed
+    wait = f"STILL WORKING: waiting on [one](http://h/s/{OTHER}) and {LEAD}. Report: m.md"
+    registry, og = manager(tmp_path, wait, **snaps)
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    if quiet:
+        assert stalls(og) == ["Supervisor: m t-m: no progress 60m (unknown)"]
+        assert f"quiet: {OTHER}, {LEAD}" in og.inbox[-1][1]
+    else:
+        assert stalls(og) == [] and deadlines(registry) == []
+
+
+def test_a_named_session_that_ended_is_news_to_its_waiter_again_after_the_waiters_next_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    done = {"status": "idle", "updated_at": time.time() - 1300}
+    wait = f"STILL WORKING: waiting on {OTHER}. Report: m.md"
+    registry, og = manager(tmp_path, wait, **{OTHER: done})
+    og.histories[OTHER] = [ending("DONE: all merged. Report: o.md", 1300)]
+    news = lambda: [  # told to the waiter, m, not only posted to the chief of staff
+        t
+        for s, t in og.inbox
+        if s == "m" and t.startswith("Supervisor: m t-m:") and "ended DONE" in t
+    ]
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert len(news()) == 1  # once, not once per poll
+    assert re.fullmatch(
+        rf"Supervisor: m t-m: {OTHER} ended DONE at \d\d:\d\dZ; your wait still names it", news()[0]
+    )
+    og.histories["m"].append(ending(wait, 0))  # its next turn names it again
+    skewed(monkeypatch)[0] = 4000.0
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert len(news()) == 2
+
+
+@pytest.mark.parametrize(
+    "wait", ["waiting on the PM", "waiting on [the pm](http://h/s/{P}) now", "waiting on {P}"]
+)
+def test_a_wait_on_the_session_the_supervisor_notifies_is_acted_on_and_names_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait: str
+) -> None:
+    pm = "9" * 32
+    registry = following(tmp_path)
+    og = Lead(told("brief", 600), ending(f"STILL WORKING: {wait.format(P=pm)}. Report: a.md", 400))
+    og.snap = {"status": "idle"}
+    offset = skewed(monkeypatch)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, 400.0 * poll),
+        notify=pm,
+        console=True,
+    )
+    acts = [t for s, t in og.inbox if s == pm and "[act]" in t]
+    assert acts and f"waits on its supervisor, session {pm}" in acts[0]
+
+
+@pytest.mark.parametrize(
+    ("b_wait", "b_parent", "who"),
+    [
+        ("waiting on the PM", "A", "{A} acts"),  # B, started by A, names no session
+        ("waiting on {A}", None, "{A} and {B} acts"),  # B names A by id; neither started the other
+        ("waiting on {A}", "B", "{B} acts"),
+        ("waiting on {A}", "B's registry", "{B} acts"),  # B's leads= registry lists A
+    ],
+)
+def test_two_quiet_sessions_waiting_on_each_other_raise_a_mutual_wait_naming_who_acts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, b_wait: str, b_parent: str | None, who: str
+) -> None:
+    a, b = "a" * 32, "b" * 32
+    registry = follows(tmp_path, a)
+    og = Leads(
+        **{a: [told("brief", 4000), ending(f"STILL WORKING: waiting on {b}. Report: a.md", 3600)]}
+    )
+    og.histories[b] = [ending(f"STILL WORKING: {b_wait.format(A=a)}. Report: b.md", 3600)]
+    quiet = {"status": "idle", "updated_at": time.time() - 3600}
+    og.snaps[a] = {"status": "running", **quiet}
+    og.snaps[b] = {**quiet, **({"parent_session_id": a} if b_parent == "A" else {})}
+    if b_parent == "B":
+        og.snaps[a]["parent_session_id"] = b
+    if b_parent == "B's registry":  # the reverse of A's registry listing B: B owns A
+        own = tmp_path / "b.registry"
+        own.write_text(f"{a}={tmp_path / 'a.md'}\tfollow\n")
+        with registry.open("a") as f:
+            f.write(f"{b}={tmp_path / 'b.md'}\tleads={own}\n")
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    lines = [t.split("\n")[0] for _, t in og.inbox if t.startswith(f"Supervisor: {a}")]
+    assert lines == [f"Supervisor: {a} t-{a}: mutual wait: {a} ↔ {b}; " + who.format(A=a, B=b)]
+
+
+def test_a_named_session_that_shows_life_is_progress_also_when_it_is_the_notified_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, f"STILL WORKING: waiting on {COS}. Report: m.md")
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [] and deadlines(registry) == []
+
+
+def test_a_lead_whose_last_message_is_a_report_path_counts_the_sessions_its_report_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, f"{tmp_path / 'm.md'}")  # OTHER runs: it progressed
+    og.files[str(tmp_path / "m.md")] = f"STILL WORKING: waiting on {OTHER}.\n"
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [] and deadlines(registry) == []
+
+
+def test_a_lead_started_by_the_manager_s_registry_that_waits_on_the_pm_is_a_mutual_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    quiet = {"status": "idle", "updated_at": time.time() - 3600}  # top level: no parent id
+    registry, og = manager(
+        tmp_path, f"STILL WORKING: waiting on {LEAD}. Report: m.md", **{LEAD: quiet}
+    )
+    og.histories[LEAD] = [ending("STILL WORKING: waiting on the PM. Report: e.md", 3600)]
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    lines = [t.split("\n")[0] for _, t in og.inbox if t.startswith("Supervisor: m t-m:")]
+    assert lines == [f"Supervisor: m t-m: mutual wait: m ↔ {LEAD}; m acts"]
+
+
+def test_an_ended_lead_whose_report_waits_on_the_pm_s_gate_is_acted_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pm, report = "9" * 32, str(tmp_path / "a.md")
+    registry = following(tmp_path)
+    og = Lead(told("brief", 600), ending(report, 400))
+    og.files[report] = "STILL WORKING: waiting on the PM's gate and verifier for #1\n"
+    og.snap = {"status": "idle"}
+    offset = skewed(monkeypatch)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, 400.0 * poll),
+        notify=pm,
+        console=True,
+    )
+    acts = [t for s, t in og.inbox if s == pm and "[act]" in t]
+    assert acts and f"waits on its supervisor, session {pm}" in acts[0]
 
 
 def test_call_allows_each_request_the_timeout_it_is_given_else_thirty_seconds(
