@@ -2847,17 +2847,16 @@ def start(
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
 
-    inherited = ""
-    if not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
-        # Neither flag nor variable: a Claude child takes its Claude starter's own mode, resolved
-        # here once for the guards below and for ``create``.
+    if agent == "claude" and not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
+        # Neither flag nor variable: a Claude child takes its Claude starter's own mode, and only
+        # a Claude child, since another harness keeps its own explicit opt-in (the agy --role guard).
         inherited, from_sid = starter_mode(og)
         if inherited:
             print(
                 f"permission mode {inherited} inherited from this session ({from_sid})",
                 file=sys.stderr,
             )
-            permission_mode = inherited if applied(inherited) else None
+            permission_mode = inherited
     if permission_mode and not applied(permission_mode):
         raise Fail(
             f"--permission-mode is for claude sessions ({BYPASS} for antigravity, and"
@@ -2869,9 +2868,10 @@ def start(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
         )
-    # The flag was refused above, so a mode here came from the environment: the session starts in
-    # its harness's default stance, which a run counting on the mode is told (#987).
-    mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE") or inherited
+    # The flag was refused above, so a mode not applied here came from the environment (an inherited
+    # one is a Claude child's, always applied): the session starts in its harness's default stance,
+    # which a run counting on the mode is told (#987).
+    mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
     if mode and not applied(mode):
         print(
             f"{agent} takes no permission mode: {mode} was not applied; its session starts in"

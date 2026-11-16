@@ -11792,10 +11792,11 @@ def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
 
     class Starter(FakeOmnigent):
         launch: ClassVar[list[str]] = []
+        harness_of_starter = "claude-native"
 
         def info(self, sid: str) -> dict:
             if sid == "starter":
-                return {"harness": "claude-native", "terminal_launch_args": self.launch}
+                return {"harness": self.harness_of_starter, "terminal_launch_args": self.launch}
             return super().info(sid)
 
         def create(self, agent: str, title: str, model: str | None = None, *rest: object) -> str:
@@ -11805,10 +11806,34 @@ def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
     monkeypatch.setenv("OMNIGENT_SESSION_ID", "starter")
     monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
     og = Starter()
-    Starter.launch = ["--permission-mode", "bypassPermissions"]
-    omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
-    assert modes == ["bypassPermissions"]
-    assert "bypassPermissions inherited" in capsys.readouterr().err
-    Starter.launch = []  # a starter with no mode leaves the harness default
-    omnigent_agent.start(og, "claude", "t2", "do X", tmp_path / "r.md", None, 0)
-    assert modes[-1] is None
+    og.harnesses = {"agy": "antigravity-native", "claude-cloud": omnigent_agent.CLOUD_HARNESS}
+    bypass = ["--permission-mode", "bypassPermissions"]
+    n = 0
+
+    def child(agent: str, starter: list[str], **kw: object) -> tuple[str | None, str]:
+        nonlocal n
+        n += 1
+        Starter.launch = starter
+        omnigent_agent.start(og, agent, f"t{n}", "do X", tmp_path / "r.md", None, 0, **kw)
+        return modes[-1], capsys.readouterr().err
+
+    mode, err = child("claude", bypass)
+    assert mode == "bypassPermissions" and "bypassPermissions inherited" in err
+    assert child("claude", []) == (None, "")  # a starter with no mode: the harness default
+    Starter.harness_of_starter = "codex-native"
+    assert child("claude", bypass) == (None, "")  # only a Claude starter lends its mode
+    Starter.harness_of_starter = "claude-native"
+    mode, err = child("claude", bypass, permission_mode="plan")  # the flag wins
+    assert mode == "plan" and "inherited" not in err
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "acceptEdits")  # so does the variable
+    mode, err = child("claude", bypass)
+    assert mode is None and "inherited" not in err  # create reads the variable itself
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE")
+    # Another harness's child never inherits: Codex takes no mode, claude-cloud and agy keep
+    # their own opt-in.
+    assert child("codex", bypass) == (None, "")
+    mode, err = child("claude-cloud", bypass)
+    assert mode is None and "inherited" not in err and "not applied" not in err
+    with pytest.raises(omnigent_agent.Fail, match="a --role child blocks unattended"):
+        Starter.launch = bypass
+        omnigent_agent.start(og, "agy", "t-agy", "x", tmp_path / "r.md", "worker.md", 0)
