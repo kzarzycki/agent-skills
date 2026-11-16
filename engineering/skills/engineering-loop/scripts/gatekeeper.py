@@ -3549,6 +3549,11 @@ def policy_file(root: Path, path: Path, base: str | None = None) -> str | None:
     found = policy_base(str(root), base)
     held = read(root / path) if (root / path).exists() else None
     if found is None:
+        if not working_tree(root):  # no files to fall back to: empty policy would judge by defaults
+            raise Refused(
+                f"{root} has no working tree and no origin/{base or default_base(str(root))} ref, so there is no"
+                " policy to read: fetch that base, or run where the files are checked out"
+            )
         unbased(str(root))
         return held
     ref, tip = found

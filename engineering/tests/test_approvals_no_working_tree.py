@@ -301,3 +301,36 @@ def test_the_default_branch_is_asked_of_origin_where_the_clone_recorded_none(
     assert not (bare / ".git" / "refs" / "remotes" / "origin" / "HEAD").exists()
     approvals.policy_ref.cache_clear()
     assert approvals.policy_ref(bare) == "refs/remotes/origin/trunk"
+
+
+def push_base(launch: dict[str, Any], name: str) -> None:
+    """A stacked PR's base branch, created on origin after the launch clone was made, with a rule of its own."""
+    work = launch["work"]
+    git_in(work, "switch", "-q", "--detach", "origin/main")
+    (work / LOOP).write_text((work / LOOP).read_text() + f"\n<!-- {name}'s own rule -->\n")
+    git_in(work, "commit", "-qam", f"{name} rules")
+    git_in(work, "push", "-q", "origin", f"HEAD:refs/heads/{name}")
+
+
+def test_a_base_pushed_since_the_clone_is_refused_not_judged_by_empty_policy(
+    launch: dict[str, Any],
+) -> None:
+    """With no working tree there are no files to fall back to: the unfetched base's policy is not read as none."""
+    push_base(launch, "stack")
+    with pytest.raises(approvals.Refused, match="no origin/stack ref"):
+        approvals.project(base="stack")
+    git_in(launch["here"], "fetch", "-q", "origin", "+refs/heads/stack:refs/remotes/origin/stack")
+    assert "stack's own rule" in (approvals.project(base="stack")[1] or "")
+    untouched(launch["here"])
+
+
+def test_land_into_an_unfetched_base_whose_fetch_fails_is_refused_not_judged_by_defaults(
+    launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """origin has no such branch, so land's own fetch of the base fails and project() has no ref to read."""
+    pull = launch["open"](7, {"7.txt": "7\n"}) and launch["pulls"][7]
+    monkeypatch.setattr(approvals, "land_base", lambda _pr: ([pull], "stack", 0))
+    with pytest.raises(approvals.Refused, match="no origin/stack ref"):
+        approvals.landing(7)
+    assert launch["merged"]() == []
+    untouched(launch["here"])
