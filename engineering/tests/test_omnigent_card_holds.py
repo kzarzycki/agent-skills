@@ -27,6 +27,13 @@ CARD_ANSWERABLE = {
 }
 
 
+@pytest.fixture(autouse=True)
+def queued_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    # a held message queues once it has been pending QUEUED_SECONDS of the clock; `hold` counts polls, which a fast host
+    # drains within those seconds, so the held message would land instead of queueing
+    monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
+
+
 def fake(*prompts: dict, hold: int = 0) -> base.FakeOmnigent:
     og = base.FakeOmnigent(hold=hold)
     og.sessions["s1"] = []

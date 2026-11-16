@@ -5756,6 +5756,8 @@ def checkout(
     monkeypatch.setattr(approvals.subprocess, "run", run)
     monkeypatch.setattr(approvals, "run_heavy", heavy_by_run)
     monkeypatch.setattr(approvals, "one_repo", lambda: None)  # the faked run serves the check alone
+    # the host's load and swap are read by `sysctl` on macOS, which the faked run cannot answer; no test here reads them
+    monkeypatch.setattr(approvals, "host_load", lambda: {"load_1m": None, "swap_used_mb": None})
     monkeypatch.setattr(approvals, "project", lambda: (None, state["loop"]))
     return state
 
