@@ -243,3 +243,16 @@ def test_a_group_that_answers_eperm_once_signalled_counts_as_gone(
     monkeypatch.setattr(omnigent_agent.os, "killpg", killpg)
     omnigent_agent.kill_group(4242)
     assert sent == [signal.SIGTERM, 0]
+
+
+def test_wait_for_without_stall_uses_the_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recipes never pass --stall, so the default is the behaviour: a silent run is killed under it."""
+    monkeypatch.setattr(omnigent_agent, "WAIT_FOR_STALL", 1.0)
+    log, pidfile, pid = detach(tmp_path, "echo hello; sleep 60")
+    wait_for_text(log, "hello")
+    argv = ["wait-for", "--log", str(log), "--pid", str(pidfile), "--budget", "60"]
+    assert omnigent_agent.main(argv) == 1
+    assert capsys.readouterr().out.startswith(f"stalled: no output in {log} for ")
+    assert gone(pid)

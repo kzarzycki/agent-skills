@@ -5653,11 +5653,31 @@ def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int,
     return step.returncode, output
 
 
+# how often a run queued on a host gate slot says it still waits: wait-for kills a run whose log is silent for 300 s
+SLOT_SAY_SECONDS = 60.0
+
+
+def flock_saying(fd: int, said: Callable[[], None]) -> None:
+    """Take fd's exclusive flock. A wait calls `said` when it begins and again every SLOT_SAY_SECONDS, so a log that
+    shows the wait never goes silent long enough for wait-for's stall check to read the queue as a hang."""
+    next_say = None
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            now = time.monotonic()
+            if next_say is None or now >= next_say:
+                said()
+                next_say = now + SLOT_SAY_SECONDS
+            time.sleep(0.1)
+
+
 @contextlib.contextmanager
 def heavy_slot(name: str, out: Any = None) -> Any:
     """Hold the host gate slot, an exclusive flock on slot_path(), for one gate step: (its path, the whole seconds
     waited for it). A run already under a holder of that path (SLOT_HELD) takes none and waits 0, since it would wait
-    on its own parent. A wait is said once, as `local-ci: <step>: waiting for the host gate slot`."""
+    on its own parent. A wait is said as `local-ci: <step>: waiting for the host gate slot`, again every SLOT_SAY_SECONDS."""
     path, began = slot_path(), time.monotonic()
     if os.environ.get(SLOT_HELD) == path:
         yield path, 0
@@ -5665,15 +5685,14 @@ def heavy_slot(name: str, out: Any = None) -> Any:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print(
+        flock_saying(
+            fd,
+            lambda: print(
                 f"local-ci: {name}: waiting for the host gate slot",
                 file=out or sys.stderr,
                 flush=True,
-            )
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            ),
+        )
         yield path, round(time.monotonic() - began)
     finally:
         os.close(fd)
