@@ -649,7 +649,8 @@ alive while it declares a live background task. A named session that shows no li
 read, a registry or children not read, and a wait no session answers (the owner, `CI` with no
 session titled so) leave the deadline as above. Each deadline is one event per
 lead and `progress_at`, so new progress starts a new chain. A lead whose registry line has the
-`direct` field (`omnigent_agent.py direct <session>`, `--off` clears it), one the owner drives in
+`direct` field (`start --top-level --direct` writes it at launch, `omnigent_agent.py direct <session>`
+later, `--off` clears it), one the owner drives in
 its own session, has no deadline at all: its quiet ends and `USER NEEDED` are recorded, not
 routed, since the owner reads them there, and the `no event in <n>s` log line leaves it out; its
 `DONE`, failures and prompts route as any lead's.
