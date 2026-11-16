@@ -3073,6 +3073,14 @@ def start(
                     held_of(report).parent.mkdir(parents=True, exist_ok=True)
                     held_of(report).write_text(json.dumps({"sid": sid, "brief": digest}))
                 return sid, survivors
+        except Interrupted:  # the brief may be in: archiving would lose the child's work
+            print(sid)
+            print(
+                f"interrupted while confirming delivery: session {sid} may hold the brief;"
+                f" check `status {sid}` before starting another",
+                file=sys.stderr,
+            )
+            raise
         except Fail as e:
             abandon(sid)
             raise failed(f"start failed: {sid}: {e}") from e
