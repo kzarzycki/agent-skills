@@ -26,7 +26,7 @@ leaves no mutation in the tree. The test command runs with PYTHONDONTWRITEBYTECO
 same second as its source would hide the next same-sized patch of that file.
 
 Each test run takes a host gate slot (SKILL.md, One heavy gate per host slot): the heavy slot, an exclusive flock on
-`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock` (the file a project's gate takes), or the short lane,
+`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock` (the first free one of the host's `GATE_SLOTS`, as a project's gate takes), or the short lane,
 `gate.short.lock` beside it, which waits only for another short job. Before any patch, the test command runs once on
 the unmutated head in the short lane, timed: when it passes within the policy's `short_seconds` (default 120), every
 patch runs in the short lane too, and otherwise, or when it fails, each takes the heavy slot. `short_seconds: 0` runs
@@ -108,8 +108,9 @@ def on_signal(signum: int, _frame: object) -> None:
     raise Interrupted(signum)
 
 
-# the host's two gate slots (SKILL.md, One heavy gate per host slot): the heavy one, and the short lane
-HEAVY, SHORT = "gate.1.lock", "gate.short.lock"
+# the host's gate slots (SKILL.md, One heavy gate per host slot): the heavy ones, which approvals.py's take_slot picks
+# from, and the short lane
+SHORT = "gate.short.lock"
 # the policy's `short_seconds` when it sets none
 SHORT_SECONDS = 120
 SLOT_HELD = "LOOP_GATE_SLOT_HELD"
@@ -118,10 +119,9 @@ SLOT_HELD = "LOOP_GATE_SLOT_HELD"
 INCONCLUSIVE_EXIT = 75
 
 
-def slot_path(name: str = HEAVY) -> str:
-    """A host gate slot's lock file, the one SKILL.md and the project's gate wrapper name."""
-    cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.environ.get("HOME", "~"), ".cache")
-    return os.path.join(cache, "engineering-loop", name)
+def slot_path(name: str = SHORT) -> str:
+    """The short lane's lock file (a heavy slot is approvals.take_slot's to pick)."""
+    return approvals().slot_file(name)
 
 
 def approvals() -> Any:
@@ -180,8 +180,8 @@ def digest(paths: list[str], head: bool = False) -> str:
     return whole.hexdigest()
 
 
-def take_slot(path: str, waiting: Callable[[], None]) -> int | None:
-    """Hold the slot's exclusive flock and return its fd (closing it frees the lock, as does the process dying);
+def take_short(path: str, waiting: Callable[[], None]) -> int | None:
+    """Hold the short lane's exclusive flock and return its fd (closing it frees the lock, as does the process dying);
     None when this run already runs under a holder of that same path. `waiting` is called when the wait begins and
     again every approvals.SLOT_SAY_SECONDS."""
     if os.environ.get(SLOT_HELD) == path:
@@ -200,8 +200,12 @@ def run_test(
     command: str, slot: str, waiting: Callable[[], None] = lambda: None
 ) -> tuple[int, str, float]:
     """The test command's exit code, output and seconds (the wait for the slot not counted), run under the gate slot
-    whose lock file is `slot`; on a signal its whole process group is stopped first."""
-    fd = take_slot(slot, waiting)
+    whose lock file is `slot`, the short lane's, else the first free heavy slot (approvals.take_slot); on a signal its
+    whole process group is stopped first."""
+    if slot == slot_path(SHORT):
+        fd = take_short(slot, waiting)
+    else:
+        fd, slot = approvals().take_slot(waiting)
     try:
         began = time.monotonic()
         code, output = run_command(command, slot)
@@ -218,10 +222,10 @@ def lane(
     short lane when the test command passes on the unmutated head, in the short lane, within `limit` seconds. With
     `built` a head run is needed whatever the lane, since its outputs are what each patch's are compared to: one that
     would run none runs once in the heavy slot."""
-    heavy = slot_path(HEAVY)
+    heavy = approvals().slot_path()
     # its holder is this run's parent: a short-lane run would hand its children a variable that no longer names the
     # heavy slot, and a heavy wrapper under them would wait on that parent
-    if os.environ.get(SLOT_HELD) == heavy:
+    if approvals().held_slot() is not None:
         why = "heavy: run under a holder of the heavy slot"
         return heavy, why, run_test(command, heavy, waiting)[1] if built else None
     if limit <= 0:

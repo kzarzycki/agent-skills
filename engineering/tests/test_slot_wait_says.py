@@ -37,21 +37,25 @@ def held_for(path: Path, seconds: float) -> None:
     threading.Timer(seconds, os.close, (fd,)).start()
 
 
+@pytest.mark.parametrize("land", [False, True], ids=["polling-gate", "land-blocking-in-the-kernel"])
 def test_heavy_slot_repeats_its_waiting_line_while_it_waits(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, land: bool
 ) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("GATE_SLOTS", "1")
     monkeypatch.delenv(approvals.SLOT_HELD, raising=False)
     monkeypatch.setattr(approvals, "SLOT_SAY_SECONDS", 0.3)
     held_for(Path(approvals.slot_path()), 1.5)
     out = io.StringIO()
-    with approvals.heavy_slot("gate", out):
+    with approvals.heavy_slot("gate", out, land=land):
         pass
     assert out.getvalue().count("local-ci: gate: waiting for the host gate slot") >= 3
 
 
 def test_a_free_slot_says_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv(approvals.SLOT_HELD, raising=False)
     out = io.StringIO()
     with approvals.heavy_slot("gate", out):
@@ -59,15 +63,15 @@ def test_a_free_slot_says_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert out.getvalue() == ""
 
 
-def test_mutate_take_slot_repeats_its_waiting_call(
+def test_mutate_take_short_repeats_its_waiting_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutate_module: Any
 ) -> None:
     monkeypatch.delenv(mutate_module.SLOT_HELD, raising=False)
     monkeypatch.setattr(mutate_module.approvals(), "SLOT_SAY_SECONDS", 0.3)
-    slot = tmp_path / "gate.lock"
+    slot = tmp_path / "short.lock"
     held_for(slot, 1.5)
     said: list[int] = []
-    fd = mutate_module.take_slot(str(slot), lambda: said.append(1))
+    fd = mutate_module.take_short(str(slot), lambda: said.append(1))
     assert fd is not None
     os.close(fd)
     assert len(said) >= 3
@@ -167,7 +171,7 @@ def test_a_batch_gate_says_it_is_gating_while_its_steps_run(
     """The batch gate writes to its own log, so land's stdout hears from it only through `saying`."""
     heard = Heard("Tree t: gating, log")
 
-    def run_steps(*args: Any) -> dict[str, Any]:
+    def run_steps(*args: Any, **kwargs: Any) -> dict[str, Any]:
         assert heard.thrice.wait(30)
         return {"code": 0, "left": [], "ran": ["gate"], "step": None, "changed": ""}
 
