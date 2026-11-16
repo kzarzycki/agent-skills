@@ -150,12 +150,12 @@ and end its turn with only the comment's URL. A cloud session can't create a rel
 `acp:claude-cloud`, naming `claude-cloud`, before any session exists: a native worker given it
 would run its build on this host, where a heavy one starves every other session. A cloud session (harness `acp:claude-cloud`)
 runs in the environment its workspace's untracked `.claude/settings.local.json` names in
-`remote.defaultEnvironmentId`, so before creating one on this host `start` and `run` copy a
-worktree's missing pin from its main checkout (keeping the file's other settings) and refuse
-when neither has one. They refuse a local agent in a main checkout whose own file names the pin, naming
+`remote.defaultEnvironmentId`, so before creating one on this host `start` and `run` pin it
+(keeping the file's other settings) as Cloud environments, below, says, and refuse when no
+environment resolves. They refuse a local agent in a main checkout whose own file names the pin, naming
 `claude-cloud` and a worktree as the routes: that checkout is where cloud sessions launch from,
 and a local agent working there switches its branch under every later start. A worktree's copied
-pin is its own, so a local agent there is accepted. A launch dir needs no checked-out files: nothing on the cloud path reads them (the bridge checks for a git repo, the CLI bundles it and reads the pin and the folder trust). `launch-dir <remote> <branch> <env-id> <path>` makes one with the pin and a `tmp/loop/`, a few dozen MB instead of a full checkout: run inside a checkout of the same repository (a remote with the same host, in any case, and the same path, in the same case) it is a `git worktree add --no-checkout` of that checkout (on a branch of its own, `launch/<folder>`), which inherits the checkout's folder trust (Claude Code keys a worktree's trust on the main worktree git lists first, which for a `--separate-git-dir` checkout is the git dir, not the checkout), since Claude Code trusts by path and a separate clone, even inside a trusted folder, is untrusted; anywhere else it is a blobless `--no-checkout` clone with HEAD on the branch. It prints whether the new folder is trusted. `--trust` also writes the folder-trust entry in the user's Claude config, which is the user's call and never done otherwise. `start` for a `claude-cloud` agent refuses an untrusted launch dir before any session exists, naming the folder and the two ways out (re-run `launch-dir` from a trusted checkout, or `launch-dir --trust` as the user's decision), since the bridge fails with "has not trusted" only after the session is created. `pin_environment` accepts such a clone with its own pin and refuses one without, naming the helper. `start --pr <n>` on a `claude-cloud` agent points the launch dir's HEAD at the PR's branch (fetching it) without checking files out, and leaves a directory with a working tree alone. It fetches the PR's own ref (`refs/pull/<n>/head`, so a fork's branch works), reads the PR from the launch dir's repository, and runs git where the launch dir is: a `start` for a workspace on another host leaves its HEAD to that host's own `start`.
+pin is its own, so a local agent there is accepted. A launch dir needs no checked-out files: nothing on the cloud path reads them (the bridge checks for a git repo, the CLI bundles it and reads the pin and the folder trust). `launch-dir <remote> <branch> [<env-id>] <path>` makes one with the pin (an id given, else the one Cloud environments resolves) and a `tmp/loop/`, a few dozen MB instead of a full checkout: run inside a checkout of the same repository (a remote with the same host, in any case, and the same path, in the same case) it is a `git worktree add --no-checkout` of that checkout (on a branch of its own, `launch/<folder>`), which inherits the checkout's folder trust (Claude Code keys a worktree's trust on the main worktree git lists first, which for a `--separate-git-dir` checkout is the git dir, not the checkout), since Claude Code trusts by path and a separate clone, even inside a trusted folder, is untrusted; anywhere else it is a blobless `--no-checkout` clone with HEAD on the branch. It prints whether the new folder is trusted. `--trust` also writes the folder-trust entry in the user's Claude config, which is the user's call and never done otherwise. `start` for a `claude-cloud` agent refuses an untrusted launch dir before any session exists, naming the folder and the two ways out (re-run `launch-dir` from a trusted checkout, or `launch-dir --trust` as the user's decision), since the bridge fails with "has not trusted" only after the session is created. `pin_environment` accepts such a clone with its own pin, and one without when an environment resolves; else it refuses, naming the helper. `start --pr <n>` on a `claude-cloud` agent points the launch dir's HEAD at the PR's branch (fetching it) without checking files out, and leaves a directory with a working tree alone. It fetches the PR's own ref (`refs/pull/<n>/head`, so a fork's branch works), reads the PR from the launch dir's repository, and runs git where the launch dir is: a `start` for a workspace on another host leaves its HEAD to that host's own `start`.
 `wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
 report path, so whatever reads the report reads a file as for any child. The worker pushes
@@ -202,6 +202,27 @@ never to write under `.git/`, since a write there waits on a permission prompt n
 cloud answers, and that `tmp/loop/` is scratch, never committed: a fresh clone lacks the host's
 `.git/info/exclude`, so the project's own `.gitignore` names `tmp/loop/`, and a session that
 sees its report untracked has nothing to "fix".
+
+**Cloud environments.** Which claude.ai environment a cloud session runs in is the project's
+loop.md line `Cloud worker: <agent>, gate <task>, env <name>`; an environment id belongs to one
+claude.ai account, so loop.md names it and each host resolves the name. No `Cloud worker:` line
+means `claude-cloud` with the policy's gate, `Cloud worker: none` (a reason may follow) means host
+workers, and a line keeps the meaning it had; `env <name>` is optional. A cloud `start` resolves
+the line's `env` on this host's Claude Code login (`GET /v1/environment_providers`) and pins its
+id, replacing another pin; with no `env` it keeps the workspace's pin, else copies its main
+checkout's, else pins the environment named after the repository (its `origin` remote), else the
+account's `Default`. `launch-dir` given no id resolves the same way from the branch's committed
+loop.md and the remote's name, and takes back what it made when nothing resolves. A name with no
+environment is refused before any session exists, naming `cloud-env`. `cloud-env <checkout>` makes
+that environment (the line's `env`, else the repository's name) with the checkout's committed
+`.claude/cloud-setup.sh` as its setup script, or, when it exists, replaces only its setup script
+(`POST /v1/environment_providers/<id>` with the config it read and `config.init_script` changed,
+no `kind`), so its variables, a seeded login among them, stay as they are. It sends no secret,
+and the login's token goes into request headers only, never an argument list, a log or the
+output, which masks the environment's variables in a refusal the server echoes. Run it once on a
+host whose login has no environment for the project, and again after the setup script changes.
+The client is `scripts/claude_environments.py`, which engineering-loop's `cloud_verifier.py seed`
+also uses.
 
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`

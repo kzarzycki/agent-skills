@@ -3,7 +3,8 @@
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep|--no-keep] [--notify]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
-    python3 scripts/omnigent_agent.py launch-dir <remote> <branch> <env-id> <path> [--trust]
+    python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust]
+    python3 scripts/omnigent_agent.py cloud-env <checkout>
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--notify]
@@ -169,6 +170,19 @@ command or a heavy-slot wait) is stuck: ``status`` and ``watch`` report it once 
 ``reap --force`` stops its turn and archives it, printing its workspace to check with ``git status`` (a dead mutation run can
 leave its patch applied); a running session with recent activity stays kept.
 
+Cloud environments (``claude_environments.py`` beside this file, on the host's Claude Code login, whose token goes
+into a request header only, never an argument list, a log or the output). The project's loop.md line ``Cloud worker:
+<agent>, gate <task>[, env <name>]`` names its cloud agent and environment; no line means ``claude-cloud`` with the
+policy's gate, and ``Cloud worker: none`` means host workers (``cloud_worker``). A cloud ``start`` and a
+``launch-dir`` given no id pin the environment the line's ``env`` names, resolved to its id on this login
+(``GET /v1/environment_providers``), so loop.md holds no account-specific id; with no ``env``, a ``start`` keeps a
+pin already there (the workspace's, else its main checkout's), and otherwise both take the environment named after
+the repository, else the account's ``Default``. A name the login has no environment for is refused, naming
+``cloud-env``. ``cloud-env <checkout>`` makes that environment (the line's ``env``, else the repository's name) from
+the checkout's committed ``.claude/cloud-setup.sh``, or replaces the setup script of the one already there
+(``POST /v1/environment_providers/<id>``, ``config.init_script``, no ``kind``), leaving its variables as they are; it
+sends no secret and prints none.
+
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
 for good), ``POST /v1/sessions/{id}/events`` with a ``message`` event, and
@@ -212,6 +226,7 @@ import errno
 import fcntl
 import hashlib
 import http.client
+import importlib.util
 import json
 import os
 import plistlib
@@ -230,7 +245,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, NoReturn
+from typing import Any, Callable, NamedTuple, NoReturn
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -2571,29 +2586,147 @@ def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
         )
 
 
+def _load_environments() -> Any:
+    """``claude_environments.py`` beside this file, loaded by path under a name of this module's, so a project's
+    copy and an installed one each load their own."""
+    path = Path(__file__).resolve().with_name("claude_environments.py")
+    spec = importlib.util.spec_from_file_location(f"{__name__}_claude_environments", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+ENVS = _load_environments()
+SETUP_SCRIPT = (
+    ".claude/cloud-setup.sh"  # the committed setup script `cloud-env` makes an environment from
+)
+
+
+class CloudWorker(NamedTuple):
+    """loop.md's ``Cloud worker:`` line: the cloud agent, its gate task (``""``: the policy's ``gate``) and the
+    claude.ai environment's name (``""``: none named)."""
+
+    agent: str
+    gate: str
+    env: str
+
+
+def cloud_worker(loop: str) -> CloudWorker | None:
+    """The cloud worker a project's loop.md text names, None for host workers. No line means ``claude-cloud`` with
+    the policy's gate; ``Cloud worker: none`` (a reason may follow) means host workers; a line keeps the meaning
+    it had, ``<agent>, gate <task>``, and may add ``env <name>``. A clause it doesn't know is left alone."""
+    found = re.search(r"^Cloud worker:[ \t]*(.*?)[ \t]*$", loop, re.MULTILINE)
+    if not found:
+        return CloudWorker("claude-cloud", "", "")
+    value = found.group(1)
+    if re.match(r"none\b", value, re.IGNORECASE):
+        return None
+    agent, *clauses = [c.strip() for c in value.split(",")]
+    said = dict(c.split(None, 1) for c in clauses if len(c.split(None, 1)) == 2)
+    return CloudWorker(agent or "claude-cloud", said.get("gate", ""), said.get("env", ""))
+
+
+def committed(root: Path, ref: str, path: str | Path) -> str | None:
+    """``path`` as commit ``ref`` of the repository at ``root`` holds it, None when it holds none: a launch dir has
+    no files checked out, and a setup script counts only as committed."""
+    done = subprocess.run(
+        ["git", "-C", str(root), "show", f"{ref}:{Path(path).as_posix()}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return done.stdout if done.returncode == 0 else None
+
+
+def project_loop(workspace: Path) -> str:
+    """The project's loop.md at ``workspace``'s checkout: its file, else its committed text (a launch dir)."""
+    root = checkout_root(str(workspace))
+    if not root:
+        return ""
+    try:
+        return (Path(root) / LOOP_FILE).read_text()
+    except FileNotFoundError:
+        return committed(Path(root), "HEAD", LOOP_FILE) or ""
+
+
+def url_repo_name(url: str) -> str:
+    """The repository's name in a remote URL, its last path segment."""
+    return repo_id(url).rsplit("/", 1)[-1]
+
+
+def origin_name(workspace: Path) -> str:
+    """The name of ``workspace``'s repository, from its ``origin`` remote (else its first), else ``""``."""
+    for args in (["remote", "get-url", "origin"], ["config", "--get-regexp", r"^remote\..*\.url$"]):
+        out = subprocess.run(
+            ["git", "-C", str(workspace), *args], capture_output=True, text=True, check=False
+        ).stdout.split()
+        if out:
+            return url_repo_name(out[-1] if args[0] == "remote" else out[1])
+    return ""
+
+
+def cloud_environments() -> list[dict]:
+    """The environments of this host's claude login."""
+    try:
+        return ENVS.environments(ENVS.headers())
+    except ENVS.Refused as e:
+        raise Fail(f"cloud environments: {e}") from None
+
+
+def resolve_environment(env: str, repo: str) -> tuple[str, str]:
+    """The id and name of the environment named ``env``, else ``repo``, else ``Default``, on this host's claude
+    login; one not there is a ``Fail`` naming ``cloud-env``."""
+    try:
+        hit = ENVS.pick(cloud_environments(), env, repo)
+    except ENVS.Refused as e:
+        raise Fail(str(e)) from None
+    return str(hit["environment_id"]), str(hit.get("name", ""))
+
+
+def write_pin(workspace: Path, own: dict, env: str) -> None:
+    remote = own.get("remote") if isinstance(own.get("remote"), dict) else {}
+    own["remote"] = {**remote, "defaultEnvironmentId": env}
+    (workspace / SETTINGS).parent.mkdir(parents=True, exist_ok=True)
+    (workspace / SETTINGS).write_text(json.dumps(own, indent=2) + "\n")
+
+
 def pin_environment(workspace: Path) -> None:
     """Make sure a cloud session started in ``workspace`` gets the repo's claude.ai environment: it
     takes ``remote.defaultEnvironmentId`` from the workspace's untracked settings file, which a new
-    worktree lacks, and without it lands in the account's default environment. A worktree missing
-    the pin takes its main checkout's; with neither, fail before any session exists."""
+    worktree lacks, and without it lands in the account's default environment. The environment the
+    project's ``Cloud worker:`` line names (``env <name>``) is resolved on this host's claude login
+    and pinned, replacing another pin. With no name, a pin already there stays; a worktree missing
+    one takes its main checkout's; with neither, the environment named after the repository, else
+    the account's ``Default``, is pinned. With none of them, fail before any session exists."""
     own = own_settings(workspace)
+    line = cloud_worker(project_loop(workspace))
+    named = line.env if line else ""
+    if named:
+        env, name = resolve_environment(named, "")
+        if environment_pin(own) != env:
+            write_pin(workspace, own, env)
+            print(f"pinned {workspace / SETTINGS} to environment {name} ({env})", file=sys.stderr)
+        return
     if environment_pin(own):
         return
     main = main_worktree(workspace)  # no checkout: no main to copy from
     if main and (env := environment_pin(own_settings(main))):
-        remote = own.get("remote") if isinstance(own.get("remote"), dict) else {}
-        own["remote"] = {**remote, "defaultEnvironmentId": env}
-        (workspace / SETTINGS).parent.mkdir(exist_ok=True)
-        (workspace / SETTINGS).write_text(json.dumps(own, indent=2) + "\n")
+        write_pin(workspace, own, env)
         print(f"pinned {workspace / SETTINGS} to {main}'s environment {env}", file=sys.stderr)
         return
-    raise Fail(
-        f"{workspace / SETTINGS} names no remote.defaultEnvironmentId"
-        + (f", nor does {main / SETTINGS}" if main else "")
-        + ": the cloud session would land in the account's default environment; pin the"
-        ' environment there ({"remote": {"defaultEnvironmentId": "<id>"}})'
-        + ("" if main else "; make a launch dir with `launch-dir` (no files checked out)")
-    )
+    try:
+        env, name = resolve_environment("", origin_name(workspace))
+    except Fail as e:
+        raise Fail(
+            f"{workspace / SETTINGS} names no remote.defaultEnvironmentId"
+            + (f", nor does {main / SETTINGS}" if main else "")
+            + f", and {e}; or pin one there"
+            ' ({"remote": {"defaultEnvironmentId": "<id>"}})'
+            + ("" if main else "; make a launch dir with `launch-dir` (no files checked out)")
+        ) from None
+    write_pin(workspace, own, env)
+    print(f"pinned {workspace / SETTINGS} to environment {name} ({env})", file=sys.stderr)
 
 
 def main_worktree(path: Path) -> Path | None:
@@ -2686,7 +2819,7 @@ def same_repo_checkout(remote: str, here: Path) -> tuple[Path, str] | None:
 def launch_dir(
     remote: str,
     branch: str,
-    env: str,
+    env: str | None,
     path: Path,
     trust: bool = False,
     config: Path | None = None,
@@ -2700,7 +2833,10 @@ def launch_dir(
     Code does not trust. It holds the pin (``remote.defaultEnvironmentId``) and the ``tmp/loop/``
     that briefs and reports use. The folder-trust entry in the user's Claude config (``config``,
     default ``~/.claude.json``) is written only with ``trust``: trust is the user's decision, never
-    this script's. It prints whether the folder is trusted."""
+    this script's. With no ``env`` id it pins the environment the branch's loop.md ``Cloud worker:`` line
+    names (``env <name>``), else the one named after the repository, else the account's ``Default``,
+    resolved on this host's claude login; a name with no environment there removes what was made and
+    fails, naming ``cloud-env``. It prints whether the folder is trusted."""
     if path.exists() and any(path.iterdir()):
         raise Fail(f"{path} is not empty")
     source = same_repo_checkout(remote, here or Path.cwd())
@@ -2723,6 +2859,14 @@ def launch_dir(
         if done.returncode:
             what = "clone" if not source else "fetch" if cmd[3] == "fetch" else "worktree add"
             raise Fail(f"git {what} {remote} ({branch}): {done.stderr.strip()[-300:]}")
+    named = ""
+    if not env:
+        try:
+            line = cloud_worker(committed(path, "HEAD", LOOP_FILE) or "")
+            env, named = resolve_environment(line.env if line else "", url_repo_name(remote))
+        except Fail:
+            unmake_launch_dir(path, source[0] if source else None)
+            raise
     (path / SETTINGS).parent.mkdir(parents=True, exist_ok=True)
     (path / SETTINGS).write_text(
         json.dumps({"remote": {"defaultEnvironmentId": env}}, indent=2) + "\n"
@@ -2737,7 +2881,7 @@ def launch_dir(
         config.write_text(json.dumps(data, indent=2) + "\n")
     trusted = folder_trusted(path, config)
     print(
-        f"launch dir {path}: {branch}, environment {env}"
+        f"launch dir {path}: {branch}, environment {f'{named} ({env})' if named else env}"
         + (f", worktree of {source[0]}" if source else ", clone")
         + (
             ", trusted"
@@ -2746,6 +2890,64 @@ def launch_dir(
             " checkout of the repository, or pass --trust as the user's decision"
         )
     )
+
+
+def unmake_launch_dir(path: Path, main: Path | None) -> None:
+    """Take back a launch dir ``launch_dir`` made and could not pin: a worktree of ``main`` with its
+    ``launch/<name>`` branch, else a clone."""
+    if main:
+        for cmd in (
+            ["worktree", "remove", "--force", str(path)],
+            ["branch", "-D", f"launch/{path.name}"],
+        ):
+            subprocess.run(["git", "-C", str(main), *cmd], capture_output=True, check=False)
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def cloud_env(checkout: Path) -> str:
+    """Make the claude.ai environment ``checkout``'s cloud sessions run in, or replace its setup script,
+    from the checkout's committed ``.claude/cloud-setup.sh``; the line it prints says which. The name is
+    the ``Cloud worker:`` line's ``env``, else the repository's. A new one has no variables; an update
+    sends the config it read with only ``init_script`` changed, so the variables there (a seeded login)
+    stay, and none of their values is printed. The login's token goes into request headers only."""
+    root = checkout_root(str(checkout))
+    if not root:
+        raise Fail(f"cloud-env: {checkout} is not inside a checkout")
+    head = subprocess.run(
+        ["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    script = committed(Path(root), "HEAD", SETUP_SCRIPT) if head else None
+    if script is None:
+        raise Fail(
+            f"cloud-env: {root} has no {SETUP_SCRIPT} committed at HEAD: commit the setup script"
+            " the environment should run, since only a committed one is sent"
+        )
+    line = cloud_worker(committed(Path(root), "HEAD", LOOP_FILE) or "")
+    name = (line.env if line else "") or origin_name(Path(root))
+    if not name:
+        raise Fail(
+            f"cloud-env: {root} has no remote to name the environment after: add env <name> to loop.md's Cloud worker line"
+        )
+    try:
+        auth = ENVS.headers()
+        found = ENVS.named(ENVS.environments(auth), name)
+        if found is None:
+            made = ENVS.create(
+                auth, name, script, f"Cloud sessions of {name}, set up by {SETUP_SCRIPT}"
+            )
+            return (
+                f"created cloud environment {name} ({made.get('environment_id', '?')}) from"
+                f" {SETUP_SCRIPT} at {head[:12]}"
+            )
+        env = str(found["environment_id"])
+        current = ENVS.read(auth, env)
+        config = dict(current.get("config") or {})
+        if config.get("init_script") == script:
+            return f"cloud environment {name} ({env}): its setup script is {SETUP_SCRIPT} at {head[:12]} already"
+        ENVS.update(auth, env, current, {**config, "init_script": script})
+    except ENVS.Refused as e:
+        raise Fail(f"cloud-env {name}: {e}") from None
+    return f"updated cloud environment {name} ({env}): setup script {SETUP_SCRIPT} at {head[:12]}"
 
 
 def move_head(workspace: Path, pr: int) -> None:
@@ -6960,11 +7162,22 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     )
     p.add_argument("remote")
     p.add_argument("branch")
-    p.add_argument("env", help="the claude.ai environment id to pin")
+    p.add_argument(
+        "env",
+        nargs="?",
+        help="the claude.ai environment id to pin; default: the one loop.md's Cloud worker line"
+        " names (env <name>), else the repository's, else Default, on this host's claude login",
+    )
     p.add_argument("path", type=Path)
     p.add_argument(
         "--trust", action="store_true", help="also write the folder-trust entry (the user's call)"
     )
+    p = sub.add_parser(
+        "cloud-env",
+        description="make the project's claude.ai environment, or replace its setup script, from the"
+        " checkout's committed .claude/cloud-setup.sh",
+    )
+    p.add_argument("checkout", type=Path)
     p = sub.add_parser(
         "capacity", description="exit 0 when this host, or --host, has room for another session"
     )
@@ -7267,6 +7480,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             return code
         if args.cmd == "launch-dir":
             launch_dir(args.remote, args.branch, args.env, args.path, args.trust)
+            return 0
+        if args.cmd == "cloud-env":
+            print(cloud_env(args.checkout))
             return 0
         if args.cmd == "capacity" and not args.host:
             ok, line = capacity()
