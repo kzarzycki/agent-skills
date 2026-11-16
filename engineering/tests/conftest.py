@@ -47,3 +47,12 @@ def _no_user_git_config(
     empty.touch()
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+@pytest.fixture(autouse=True)
+def _brief_head_merges(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """approvals.py's brief checks the PR's head merges into its base with git: its other tests have no such repo, so
+    the check reads clean there. test_approvals_brief_conflict.py runs the real one."""
+    module = request.module
+    if module.__name__ != "test_approvals_brief_conflict" and hasattr(module, "approvals"):
+        monkeypatch.setattr(module.approvals, "conflicted", lambda _pr, _base, _head: [])
