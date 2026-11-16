@@ -101,24 +101,59 @@ def test_a_lead_on_another_host_gets_the_autocompact_its_loop_md_there_names() -
 
 @pytest.mark.parametrize(
     "files",
-    [{**CHECKOUT}, {}, {f"{REPO}/src/x": ""}],
-    ids=[
-        "checkout without loop.md reads as no line",
-        "no such workspace",
-        "outside a checkout reads as no line",
+    [
+        {**CHECKOUT},
+        {f"{REPO}/.git/HEAD": ""},
+        {**CHECKOUT, LOOP: None},
+        {f"{REPO}/src/x": "", "/docs/agents/loop.md": "Lead autocompact: 150k\n"},
     ],
+    ids=["no loop.md", "no docs/agents", "loop.md gone before the read", "outside a checkout"],
 )
-def test_a_remote_read_that_finds_nothing(files: dict[str, str | None]) -> None:
+def test_a_remote_checkout_with_no_loop_md_reads_as_no_line(files: dict[str, str | None]) -> None:
     og = Server(files)
-    if files:
-        og.create("claude", "t", top_level=True, workspace=REPO, host_id=OTHER)
-        assert "terminal_launch_args" not in og.bodies[0]
-        return
+    og.create("claude", "t", top_level=True, workspace=REPO, host_id=OTHER)
+    assert "terminal_launch_args" not in og.bodies[0]
+
+
+def test_a_workspace_absent_on_the_host_fails_the_start_naming_both() -> None:
+    og = Server({})
     with pytest.raises(omnigent_agent.Fail) as e:
         lead(og)
     assert "far-name" in str(e.value)
     assert REPO in str(e.value)
     assert og.bodies == []
+
+
+class Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("agent", "host", "top_level", "role", "reads"),
+    [
+        ("claude", OTHER, True, None, 1),
+        ("claude", OTHER, False, "/x/worker.md", 1),
+        ("claude", OTHER, False, "/x/lead.md", 0),  # a role that keeps every tool
+        ("claude", OTHER, False, None, 0),
+        ("claude", "h", True, None, 0),  # this machine, named
+        ("codex", OTHER, True, None, 0),
+    ],
+)
+def test_a_start_reads_the_remote_loop_md_once_and_only_when_a_claude_session_needs_it(
+    agent: str, host: str, top_level: bool, role: str | None, reads: int
+) -> None:
+    og = Server({**CHECKOUT, LOOP: "Lead autocompact: 150k\n"})
+
+    def create(*args: object, **kwargs: object) -> str:
+        raise Stop
+
+    og.create = create  # type: ignore[method-assign]
+    with pytest.raises(Stop):
+        omnigent_agent.start(
+            og, agent, "t", "do X", Path("r.md"), role, 0,
+            top_level=top_level, workspace=REPO, host_id=host, subscribe=False,
+        )  # fmt: skip
+    assert [c for c in og.calls if c == ("READ", LOOP)] == [("READ", LOOP)] * reads
 
 
 @pytest.mark.parametrize("why", ["live", "unreadable", "listing"])
