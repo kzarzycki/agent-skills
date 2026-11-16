@@ -641,6 +641,19 @@ or the owner's private network.
   else as a fresh `run --pr`. Nothing in
   the cloud calls the host, through MCP or otherwise, since such a tool can drop mid-run and
   stall the work, and nothing new watches the PR.
+- **Wait on the signal, not the turn.** A cloud worker's gate and verifier post their own
+  end on the PR, so wait on that rather than on the worker's turn, which may end before its run
+  does: orchestrating-agents' `omnigent_agent.py wait-for --pr <n> --until gate` settles when
+  the PR's current head has a pass (the record branch `local-ci --record` pushes, or a green
+  `gate` status; exit 1 on the `gate` failure status a failed `--record` run writes), and
+  `--until verdict` when a comment or review naming the head on its `Head:` line holds a
+  `SATISFIED:` line (exit 1 for `no`, or for a `## Verifier question` posted after the head's
+  commit), printing the URL it read. Both read REST only, so they run from a launch dir with no
+  working tree. The newest gate signal wins, so a failure after a recorded pass is exit 1, and
+  `--since <ISO time>` ignores signals older than a run restarted on the same head. Exit 6 is the
+  budget: call it again. Where the failure status cannot be written (a cloud VM's proxy refuses
+  status writes), a failed run reads as exit 6 until the budget; with `gate_steps`, exit 0 is one
+  step's pass, and `local-ci <pr>` says whether the whole gate has one.
 - **Proof.** The worker proves what the VM runs. The full gate's host-only parts (emulator,
   simulator and device tests), the instance, the acceptance examples and the evidence are
   the lead's and the verifier's, on the host. A failure there costs a round trip (relay,

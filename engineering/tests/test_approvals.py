@@ -5806,7 +5806,8 @@ def test_record_writes_only_a_passing_check_on_a_clean_unchanged_tree(
     checkout.update(change)
     assert approvals.main(["local-ci", "--record"]) == 1
     assert not (checkout["common"] / "approvals").exists()
-    assert hub == {}
+    # a failed run writes its failure status (test_approvals_failed_gate.py), never a pass
+    assert not [s for found in hub.values() for s in found if s["state"] == "success"]
     checkout.update({"status": "", "exit": 0, "after": None})
     assert approvals.main(["local-ci", "--record"]) == 0
     assert record_at().exists()

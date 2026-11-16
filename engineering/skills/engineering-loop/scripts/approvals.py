@@ -6048,13 +6048,16 @@ def run_local_ci(
     if step is not None:
         command = step["command"]
         nothing = "nothing recorded" if step["legacy"] else f"nothing recorded for `{step['name']}`"
-        if code == settings(project()[1]).get("machine_exit"):
+        machine = code == settings(project()[1]).get("machine_exit")
+        # the lead's `wait-for --until gate` reads the run's end off the head (failed), said after the refusal
+        told = f"\n{failed(before[0], tree, command, code, machine)}" if code else ""
+        if machine:
             raise Refused(
                 f"{command} hit a machine fault (exit {code}, loop.md's `machine_exit`): {nothing}; fix the machine,"
-                " then run it again"
+                f" then run it again{told}"
             )
         if code:
-            raise Refused(f"{command} exited {code}: {nothing}")
+            raise Refused(f"{command} exited {code}: {nothing}{told}")
         raise Refused(
             f"{command} changed the checkout, so it did not run on the head as pushed:\n{done['changed']}"
         )
@@ -6829,6 +6832,19 @@ def shown(head: str, record: dict[str, Any]) -> str | None:
     except (subprocess.CalledProcessError, OSError) as exc:
         return (getattr(exc, "stderr", None) or str(exc)).strip()
     return None
+
+
+def failed(head: str, tree: str, command: str, code: int, machine: bool) -> str:
+    """Write a failed run's `gate` status on `head`, `failure` (`error` for a machine fault, which says nothing of the
+    change), so a lead waiting on the head (orchestrating-agents' `wait-for --until gate`) learns the run ended without a
+    pass; returns the line saying so, or, refused or unreachable, why, which is no error, as a pass's is (shown)."""
+    line = f"Failed: {command} exited {code} on tree {tree[:12]} at {head[:12]}"[:DESCRIBED]
+    try:
+        post_status(head, PUBLISHED, line, "error" if machine else "failure")
+    except (subprocess.CalledProcessError, OSError) as exc:
+        why = (getattr(exc, "stderr", None) or str(exc)).strip()
+        return f"the `gate` failure status, which tells a waiting lead the run failed, was not written: {why}"
+    return f"wrote the `gate` {'error' if machine else 'failure'} status on {head}"
 
 
 def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = None) -> None:
