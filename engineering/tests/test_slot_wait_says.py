@@ -10,7 +10,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -134,14 +133,28 @@ def test_land_wait_repeats_an_unchanged_state_every_say_interval(
     assert 3 <= said <= 7  # about once per 0.2 s over 1 s, not once per 0.02 s poll
 
 
-def test_saying_repeats_its_line_while_the_block_runs(
-    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(approvals, "SLOT_SAY_SECONDS", 0.1)
+class Heard(io.StringIO):
+    """A stand-in for the process's own stdout that sets `thrice` once `line` has been written three times: a test
+    waits on it instead of sleeping, so a loaded host only makes it slower, never red."""
+
+    def __init__(self, line: str) -> None:
+        super().__init__()
+        self.line, self.thrice = line, threading.Event()
+
+    def write(self, text: str) -> int:
+        written = super().write(text)
+        if self.getvalue().count(self.line) >= 3:
+            self.thrice.set()
+        return written
+
+
+def test_saying_repeats_its_line_while_the_block_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    heard = Heard("Tree t: gating, log l")
+    monkeypatch.setattr(sys, "__stdout__", heard)
+    monkeypatch.setattr(approvals, "SLOT_SAY_SECONDS", 0.05)
     # land --wait captures sys.stdout until landing returns: the line goes to the process's own stdout
     with contextlib.redirect_stdout(io.StringIO()), approvals.saying("Tree t: gating, log l"):
-        time.sleep(0.55)
-    assert capfd.readouterr().out.count("Tree t: gating, log l") >= 3
+        assert heard.thrice.wait(30)
 
 
 def test_the_say_interval_is_well_under_the_stall_default() -> None:
@@ -149,15 +162,17 @@ def test_the_say_interval_is_well_under_the_stall_default() -> None:
 
 
 def test_a_batch_gate_says_it_is_gating_while_its_steps_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The batch gate writes to its own log, so land's stdout hears from it only through `saying`."""
+    heard = Heard("Tree t: gating, log")
 
     def run_steps(*args: Any) -> dict[str, Any]:
-        time.sleep(0.55)
+        assert heard.thrice.wait(30)
         return {"code": 0, "left": [], "ran": ["gate"], "step": None, "changed": ""}
 
-    monkeypatch.setattr(approvals, "SLOT_SAY_SECONDS", 0.1)
+    monkeypatch.setattr(sys, "__stdout__", heard)
+    monkeypatch.setattr(approvals, "SLOT_SAY_SECONDS", 0.05)
     monkeypatch.setattr(approvals, "run_in", lambda work, *args: "t")
     monkeypatch.setattr(approvals, "gate", lambda: ("mise run check",))
     monkeypatch.setattr(approvals, "project", lambda: (None, None))
@@ -166,4 +181,3 @@ def test_a_batch_gate_says_it_is_gating_while_its_steps_run(
     work = tmp_path / "work"
     work.mkdir()
     assert approvals.gate_batch(work, []) == ("t", "run")
-    assert capfd.readouterr().out.count("Tree t: gating, log") >= 3
