@@ -9,7 +9,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +77,7 @@ def test_mutate_echoes_each_log_line_to_stdout(tmp_path: Path) -> None:
     repo.mkdir()
     (repo / "calc.py").write_text("x = 1\n")
     (repo / ".gitignore").write_text("tmp/\n")
-    run = lambda *a: subprocess.run(a, cwd=repo, check=True, capture_output=True, text=True)  # noqa: E731
+    run = lambda *a: subprocess.run(a, cwd=repo, check=True, capture_output=True, text=True)
     run("git", "init", "-q")
     run("git", "add", ".")
     run("git", "-c", "user.name=t", "-c", "user.email=t@e.com", "commit", "-qm", "c")
@@ -90,7 +89,7 @@ def test_mutate_echoes_each_log_line_to_stdout(tmp_path: Path) -> None:
     done = subprocess.run(
         [sys.executable, str(SCRIPTS / "mutate.py"), "--test", "grep -q 'x = 1' calc.py",
          "--log", str(repo / "tmp" / "log"), str(patch)],
-        cwd=repo, capture_output=True, text=True, timeout=60,
+        cwd=repo, capture_output=True, text=True, timeout=60, check=False,
         env={**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")},
     )  # fmt: skip
     assert done.returncode == 0, done.stderr
