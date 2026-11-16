@@ -585,14 +585,17 @@ at once; each once per occurrence; and `archived`, which is the
 only event that drops the line, so a relay needs no re-arm. Each is posted once per message.
 A restart posts an end it finds again.
 
-The supervisor also watches the default branch of each repo a followed lead's workspace is a
-checkout of, since a lead that lands a PR between two turn ends, or writes the landing under a
+The supervisor also watches the default branch of each repo the workspace of a followed lead not
+marked `direct` is a checkout of (a direct lead's owner reads its landings in its session), since a lead that lands a PR between two turn ends, or writes the landing under a
 `STILL WORKING` wait, tells no one, and a step owed after a landing (a restart, a rebuild, a board
 update) then waits. It reads each lead's origin once through the file API (`.git/config`, or a
 worktree's common dir), so on any host, and the head with `gh api repos/<owner>/<name>/commits/HEAD`
 at most once a minute per repo. A head that moved raises one `landed` event per repo and new head,
-on the repo's first lead in the registry: `<owner>/<name>: its default branch moved to <sha>; merged
-since <old sha>: #12, #13` (the `(#N)` ending each commit's subject, or a `Merge pull request #N`).
+on the repo's first such lead in the registry: `<owner>/<name>: its default branch moved to <sha>; merged
+since <old sha>: #12, #13` (the `(#N)` ending each commit's subject, or a `Merge pull request #N`), naming
+only the PRs the GitHub login the supervisor runs as opened, the one leads open theirs with. A move with
+none (a release bot's bump, a teammate's merge, a commit naming no PR) only stores the head; a PR whose
+author can't be read counts, named so, since a missed landing costs more than one extra post.
 The first head seen for a repo is only stored, so a start reports no old merge; with `--console` it
 is kept in the state (`heads`), so a restart reports a landing made while it was down, and only
 that one. A workspace outside a checkout is not watched; a failed read is logged once and tried
@@ -656,7 +659,7 @@ routed, since the owner reads them there, and the `no event in <n>s` log line le
 
 | Event | Settled by | What happens |
 |---|---|---|
-| `landed`: the default branch of a repo the followed leads work in moved | rule | act, one per repo and new head, naming the new sha and the PRs merged since |
+| `landed`: the default branch of a repo the followed, non-direct leads work in moved with a PR of theirs | rule | act, one per repo and new head, naming the new sha and the PRs merged since |
 | `archived` | rule | its line and state entry dropped; no post |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
