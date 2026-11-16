@@ -792,6 +792,16 @@ or the owner's private network.
   line, so a job wrongly declared short shows in its log; `short_seconds: 0` turns the lane off and every job
   takes the heavy slot. `mutate.py` measures rather than declares: it runs the tests once on the unmutated head
   in the short lane and keeps the patches there only when that run passed within `short_seconds`.
+  The slot limits how many heavy steps run at once; the heavy wrapper limits what each takes. A host turns it on with
+  one line in `${XDG_CONFIG_HOME:-~/.config}/engineering-loop/host`, a `heavy_wrapper = <prefix>` line (`key = value` lines, so later host settings share the file), a command prefix (`systemd-run --user
+  --scope --quiet --slice=loop-heavy.slice -p CPUQuota=400% -p MemoryMax=6G --`), and every heavy step then runs under
+  it: each gate step of `local-ci` and `land`, the `pre_land` check, `mutate.py`'s test runs, and any command run as
+  `uv run <this skill's folder>/scripts/approvals.py heavy <cmd>`. Without the file every step runs as before; a prefix
+  that can't run (its command not on `PATH`, or `<prefix> true` failing) prints one line and runs the step unwrapped,
+  so the gate never fails for it, and a wrapped step carries `LOOP_HEAVY_WRAPPED=1`, so a heavy call under it adds no
+  scope of its own. Limits given on the scope cap each step alone; `systemctl --user set-property loop-heavy.slice
+  CPUQuota=… MemoryMax=…` caps all of them together. A database server's backend runs in the server's own cgroup,
+  so wrapping its client caps only the client.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts

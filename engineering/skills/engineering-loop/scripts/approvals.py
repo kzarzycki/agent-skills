@@ -23,6 +23,7 @@
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
+    uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
 
 At start every verb warns on stderr, once, when this script's checkout is behind its upstream's last fetched tip (no
 fetch) and the script differs there: the count and `git pull`. loop.md's `pack_staleness: refuse` under `loop` makes
@@ -446,6 +447,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -5085,15 +5087,17 @@ def pre_landed(
     if not fetched(head):
         return True
     try:
-        ran = subprocess.run(
+        ran = subprocess.CompletedProcess(
             words,
-            cwd=work,
-            env=os.environ | sets | {"LAND_HEAD": head, "LAND_BASE": tip},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            check=False,
+            *run_heavy(
+                words,
+                cwd=work,
+                env=os.environ | sets | {"LAND_HEAD": head, "LAND_BASE": tip},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors="replace",
+            ),
         )
     except OSError as exc:
         raise Refused(f"loop.md's `pre_land` {command!r} can't run: {exc}") from None
@@ -5954,6 +5958,21 @@ def ran_gate(
     return 0
 
 
+def heavy(words: list[str]) -> int:
+    """`heavy <command> [args...]`: run one command as a heavy step (run_heavy), for the role files' shell recipes, and
+    exit with its exit code (128 plus the signal that ended it); 127 for a command that can't start, as a shell says."""
+    if words[:1] == ["--"]:
+        words = words[1:]
+    if not words:
+        raise Refused("heavy takes the command to run: `approvals.py heavy <command> [args...]`")
+    try:
+        code = run_heavy(words)[0]
+    except OSError as exc:
+        print(f"heavy: {words[0]} can't run: {exc}", file=sys.stderr)
+        return 127
+    return 128 - code if code < 0 else code
+
+
 def ran_step(
     step: dict[str, Any],
     cwd: Path | None = None,
@@ -5971,9 +5990,7 @@ def ran_step(
             load.update(host_load())
         began = time.monotonic()
         try:
-            code = subprocess.run(
-                step["words"], check=False, env=gate_env(step) | {SLOT_HELD: slot}, **where
-            ).returncode
+            code = run_heavy(step["words"], env=gate_env(step) | {SLOT_HELD: slot}, **where)[0]
         except OSError as exc:
             what = "gate" if step["legacy"] else f"gate step `{step['name']}`"
             raise Refused(f"loop.md's {what} {step['command']!r} can't run: {exc}") from None
@@ -6124,10 +6141,150 @@ def take_slot(
             os.close(mark)
 
 
+# the heavy wrapper (SKILL.md, One heavy gate per host slot): a command prefix a host sets in a file outside every repo,
+# which every heavy step runs under; a wrapped step carries the variable, so a heavy call under it adds no second one
+HEAVY_WRAPPED = "LOOP_HEAVY_WRAPPED"
+# how long `<prefix> true` may take before the wrapper counts as unavailable
+HEAVY_PROBE_SECONDS = 30
+# each prefix probed in this process: why it can't run, or None where it can, so its probe and line come once
+heavy_probed: dict[tuple[str, ...], str | None] = {}
+
+
+def host_config_path() -> str:
+    """The host config file (`key = value` lines), beside the gate slot's lock under the config home, not the cache."""
+    config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.environ.get("HOME", "~"), ".config"
+    )
+    return os.path.join(config, "engineering-loop", "host")
+
+
+def host_config() -> dict[str, str]:
+    """The host config's `key = value` lines (blank lines and `#` comments skipped; the first line of a key wins), or
+    nothing where the file is absent."""
+    try:
+        with open(host_config_path(), encoding="utf-8", errors="replace") as text:
+            pairs = [s.partition("=") for s in map(str.strip, text) if s and not s.startswith("#")]
+    except OSError:
+        return {}
+    config: dict[str, str] = {}
+    for key, _, value in pairs:
+        config.setdefault(key.strip(), value.strip())
+    return config
+
+
+def heavy_prefix(env: Any = None) -> list[str]:
+    """The heavy wrapper's words: the value of the host config's first `heavy_wrapper = <prefix>` line (blank lines,
+    `#` comments and other keys are skipped), split like a shell command; none without the file or such a line, under a wrapped step (HEAVY_WRAPPED in `env`,
+    else this process's), or where the prefix can't run, which says so on stderr once per process and runs the step unwrapped, since the
+    gate must never fail because of the wrapper."""
+    if (os.environ if env is None else env).get(HEAVY_WRAPPED) == "1":
+        return []
+    line = host_config().get("heavy_wrapper", "")
+    if not line:
+        return []
+    try:
+        words = shlex.split(line)
+    except ValueError as exc:
+        words, why = [line], f"its line can't be split ({exc})"
+        heavy_probed.setdefault(tuple(words), why)
+    key = tuple(words)
+    if key not in heavy_probed:
+        heavy_probed[key] = heavy_unusable(words)
+        if heavy_probed[key]:
+            print(
+                f"heavy wrapper unavailable: {heavy_probed[key]}; running unwrapped",
+                file=sys.stderr,
+                flush=True,
+            )
+    return [] if heavy_probed[key] else words
+
+
+def heavy_unusable(words: list[str]) -> str | None:
+    """Why the prefix `words` can't run a step: its command is not on PATH, or `<prefix> true` fails or outlasts
+    HEAVY_PROBE_SECONDS (a bad property makes systemd-run exit before it runs anything); None when it can."""
+    if not words or not shutil.which(words[0]):
+        return f"`{words[0] if words else ''}` is not on PATH"
+    try:
+        probe = subprocess.Popen(
+            [*words, "true"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return f"`{shlex.join(words)} true` can't run: {exc}"
+    try:
+        code = probe.wait(timeout=HEAVY_PROBE_SECONDS)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(probe.pid, signal.SIGKILL)
+        probe.wait()
+        return f"`{shlex.join(words)} true` took over {HEAVY_PROBE_SECONDS} s"
+    return f"`{shlex.join(words)} true` exited {code}" if code else None
+
+
+def heavy_argv(words: Sequence[str], env: Any = None) -> list[str]:
+    """A heavy step's argv: `words` behind the host's heavy wrapper (heavy_prefix), or `words` unchanged."""
+    return [*heavy_prefix(env), *words]
+
+
+def stop_exit(signum: int, _frame: Any) -> None:
+    """A stop that nothing handled ends the run as the default would, but as an exception, so run_heavy kills the
+    step's group first. Further stops are ignored, since `uv run` forwards the same signal again and a second exit
+    would cut that kill short."""
+    for sig in STOPS:
+        signal.signal(sig, signal.SIG_IGN)
+    sys.exit(128 + signum)
+
+
+@contextlib.contextmanager
+def stops_raise() -> Any:
+    """While a heavy step runs, SIGTERM and SIGHUP still on their default handler raise SystemExit (stop_exit); one
+    ignored (nohup) or handled in Python (land's `stopped`, mutate.py's) is left alone, and each is put back after.
+    Outside the main thread no handler can be set, so none is."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = {}
+    for sig in STOPS:
+        if signal.getsignal(sig) is signal.SIG_DFL:
+            previous[sig] = signal.signal(sig, stop_exit)
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int, Any]:
+    """Run one heavy step (a gate step, a `pre_land` check, a mutate.py test run, `heavy`) under the host's heavy
+    wrapper (heavy_argv), with `popen` as Popen's other arguments: its exit code and what communicate() read from its
+    stdout (None unless piped). It runs in a session of its own, and on any exception or stop while it runs its whole
+    process group is killed before the exception goes on, so neither the step nor what it started outlives a stopped
+    run: a wrapper (systemd-run --scope) puts the step in a group of its own, which a stop of the caller's group would
+    never reach. A wrapped step's environment carries HEAVY_WRAPPED."""
+    prefix = heavy_prefix(env)
+    if prefix:
+        env = {**(os.environ if env is None else env), HEAVY_WRAPPED: "1"}
+    with stops_raise():
+        step = None
+        try:
+            step = subprocess.Popen([*prefix, *words], env=env, start_new_session=True, **popen)
+            output, _ = step.communicate()
+        except BaseException:
+            if step is not None:
+                with contextlib.suppress(OSError):
+                    os.killpg(step.pid, signal.SIGKILL)
+                step.wait()
+            raise
+    return step.returncode, output
+
+
 @contextlib.contextmanager
 def heavy_slot(name: str, out: Any = None, land: bool = False) -> Any:
-    """Hold a host gate slot (take_slot, `land` as it takes it) for one gate step: (its path, the whole seconds waited for it). A wait is said
-    once, as `local-ci: <step>: waiting for the host gate slot`."""
+    """Hold a host gate slot (take_slot, `land` as it takes it) for one gate step: (its path, the whole seconds
+    waited for it). A wait is said once, as `local-ci: <step>: waiting for the host gate slot`."""
     began = time.monotonic()
     fd, path = take_slot(
         lambda: print(
@@ -7594,6 +7751,8 @@ def main(argv: list[str]) -> int:
     releasing.add_argument("issue", type=int)
     hooking = commands.add_parser("commit-msg")
     hooking.add_argument("message", type=Path)
+    wrapping = commands.add_parser("heavy")
+    wrapping.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
     args = parser.parse_args(argv)
     try:
         if stale := pack_behind(__file__):
@@ -7604,6 +7763,10 @@ def main(argv: list[str]) -> int:
             return report_check(args.report)
         if args.command == "commit-msg":  # the same: git hands the hook its message file
             return commit_msg(args.message)
+        if (
+            args.command == "heavy"
+        ):  # a host's command, run in any directory: no repo or project needed
+            return heavy(args.words)
         one_repo()
         if args.command == "check":
             if args.point == "queue" and (args.pr is None or args.head is None):
