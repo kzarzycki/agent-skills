@@ -126,6 +126,10 @@ def check(repos: list[str]) -> int:
             print(f"{repo}: no {DIR}/ on its default branch, skipped")
             continue
         have = {ruleset["name"]: trimmed(ruleset) for ruleset in live(repo)}
+        committed = {want["name"] for want in wanted}
+        for name in sorted(have.keys() - committed):
+            print(f"{repo}: ruleset {name} is not committed")
+            drift = True
         for want in wanted:
             if want["name"] not in have:
                 print(f"{repo}: ruleset {want['name']} is missing")

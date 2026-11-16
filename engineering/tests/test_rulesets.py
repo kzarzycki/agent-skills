@@ -127,6 +127,42 @@ def test_added_bypass_actor(monkeypatch, capsys):
     assert len(lines) == 1 and lines[0].startswith(f"{REPO}: ruleset main: bypass actor added")
 
 
+def test_added_rule(monkeypatch, capsys):
+    more = changed(rules=[*MAIN["rules"], {"type": "required_signatures"}])
+    code, lines = run(monkeypatch, capsys, [MAIN], [more])
+    assert (code, lines) == (1, [f"{REPO}: ruleset main: rule required_signatures added"])
+
+
+def test_removed_bypass_actor(monkeypatch, capsys):
+    actor = {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}
+    code, lines = run(monkeypatch, capsys, [changed(bypass_actors=[actor])], [MAIN])
+    assert code == 1
+    assert len(lines) == 1 and lines[0].startswith(f"{REPO}: ruleset main: bypass actor removed")
+
+
+def test_changed_target(monkeypatch, capsys):
+    code, lines = run(monkeypatch, capsys, [MAIN], [changed(target="tag")])
+    assert (code, lines) == (1, [f"{REPO}: ruleset main: target is tag, expected branch"])
+
+
+def test_enforcement_differs_from_a_committed_non_active_value(monkeypatch, capsys):
+    code, lines = run(monkeypatch, capsys, [changed(enforcement="evaluate")], [MAIN])
+    assert code == 1
+    assert lines == [f"{REPO}: ruleset main: enforcement is active, expected evaluate"]
+
+
+def test_enforcement_evaluate_is_reported_even_when_committed(monkeypatch, capsys):
+    evaluating = changed(enforcement="evaluate")
+    code, lines = run(monkeypatch, capsys, [evaluating], [evaluating])
+    assert code == 1
+    assert lines == [f"{REPO}: ruleset main: enforcement is evaluate, expected evaluate"]
+
+
+def test_live_ruleset_with_no_committed_file(monkeypatch, capsys):
+    code, lines = run(monkeypatch, capsys, [MAIN], [MAIN, changed(name="extra")])
+    assert (code, lines) == (1, [f"{REPO}: ruleset extra is not committed"])
+
+
 def test_each_difference_is_its_own_line(monkeypatch, capsys):
     actor = {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}
     broken = changed(enforcement="disabled", rules=MAIN["rules"][:1], bypass_actors=[actor])
