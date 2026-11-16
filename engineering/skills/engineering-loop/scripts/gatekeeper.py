@@ -157,13 +157,13 @@ a wait for the owner or a pending required check 3, a red required check 1; with
 A named PR missing a required check, or a named draft, that GitHub reports conflicting exits 1 with the fix, `merge
 origin/<base> in` (a draft is not marked ready first), since GitHub runs no workflow on a conflicting PR, so the check
 would never come.
-3. With loop.md's `loop: batch_wait_seconds` set (a whole number, default 0: no wait), and before the worktree below,
+3. With loop.md's `land: batch_wait_seconds` set (a whole number, default 0: no wait), and before the worktree below,
 it waits up to that long while another open PR into the same base is held by nothing but its required checks still
 running (its proofs and any owner go already hold: a red check, a draft, a proof gap or an owner wait never counts),
 polling every POLL seconds; each such PR that turns landable joins the batch and shares its one gate. It stops
 when none is pending or the time is up, so a lone PR gates at once; with PRs named by `--only` it never reads or waits
 on other PRs. It prints the wait and who joined, and the `Landed` comment's `Batch:` line adds `(waited N s, joined:
-...)`. The key sits under `loop`, so a project sets it without the signing keys a `land` section requires.
+...)`. The key is optional in `land`, which asks for signing keys only where `signed_squash_to` is set.
    In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
 `pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
 (the PR's head) and `LAND_BASE` (that tip) set, so the base's tree holds the check and a PR never changes what judges
@@ -395,7 +395,7 @@ running this counts as a writer, by its own permissions on the repo.
 The policy block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
 the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue`, `owner`, `machine_exit`,
-`short_seconds` (mutate.py's), `batch_wait_seconds`, `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`.
+`short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -701,7 +701,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "owner": str,
         "machine_exit": int,
         "short_seconds": int,
-        "batch_wait_seconds": int,
         "pre_land": str,
         "head_proof": Table(status=str, env=list),
         "delegate": Choice(("all", "feature")),
@@ -721,6 +720,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         signing_key_env=str,
         merge_queue=bool,
         merge_commit_heads=list,
+        batch_wait_seconds=int,
         together=("signed_squash_to", "allowed_signers"),
         optional=(
             "signed_squash_to",
@@ -729,6 +729,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "signing_key_env",
             "merge_queue",
             "merge_commit_heads",
+            "batch_wait_seconds",
         ),
     ),
     "carry_over_main": Table({"except": list}),
@@ -906,15 +907,15 @@ def settings(loop: str | None) -> dict[str, Any]:
                 )
         elif name == "loop":
             data.update(typed(section, SCHEMA["loop"], name, file))
-            if data.get("batch_wait_seconds", 0) < 0:
-                raise Refused(
-                    f"{file}'s `loop.batch_wait_seconds` must be a whole number, 0 or more"
-                )
             for key in ("batch_queue", "ci"):
                 if key in section:
                     deprecated(key)
         elif name in SCHEMA:
             data[name] = typed(section, SCHEMA[name], name, file)
+            if data[name].get("batch_wait_seconds", 0) < 0:
+                raise Refused(
+                    f"{file}'s `land.batch_wait_seconds` must be a whole number, 0 or more"
+                )
             if name == "carry_over_main":
                 deprecated(name)
             for port_name, adapter in data[name].items() if name == "adapters" else ():
@@ -4420,7 +4421,11 @@ def batched(
             waits[number] = verdict.exit
             issues[number] = verdict.issues
     waited = ""
-    if candidates and not only and (seconds := settings(loop).get("batch_wait_seconds", 0)):
+    if (
+        candidates
+        and not only
+        and (seconds := settings(loop).get("land", {}).get("batch_wait_seconds", 0))
+    ):
         waited = batch_wait(seconds, pulls, issues, candidates, waits, tracker, loop, required)
     failed: set[int] = set()
     # each PR to land, the tree it lands, the tree gated with it, and how that passed
@@ -4449,6 +4454,17 @@ def batched(
     return (WAITING, True) if any(again for _, again in waits.values()) else (0, False)
 
 
+def check_never_comes(pull: dict[str, Any], required: set[str]) -> bool:
+    """Whether a required check of the PR's head will not come on its own, so waiting for it is pointless: GitHub runs no
+    workflow on a conflicting PR missing one (landable ends a named PR's wait the same way), and a required check whose
+    only run is the draft's skip waits for good where the workflow lacks the `ready_for_review` type (ci()'s line)."""
+    checks, _, drafts = head_checks(pull, required)
+    conflicting = pull.get("mergeable") == "CONFLICTING"
+    return bool(required & drafts) or (
+        conflicting and bool(required - {name for name, _ in checks})
+    )
+
+
 def batch_wait(
     seconds: int,
     pulls: dict[int, dict[str, Any]],
@@ -4460,7 +4476,8 @@ def batch_wait(
     required: set[str],
 ) -> str:
     """Under the lock, before the batch tree: wait up to `seconds` (loop.md's `batch_wait_seconds`) while another PR is
-    held by nothing but its required checks still running (landable's (WAITING, True), no owner wait behind it), so
+    held by nothing but its required checks still running (landable's (WAITING, True), no owner wait behind it, and no
+    check that never comes: check_never_comes), so
     it rides this batch's one gate instead of paying one of its own. Each one that turns landable joins `candidates`
     (oldest first) and leaves `waits`; one that turns red, or asks the owner, is dropped from the wait. Returns the
     text for the Landed comment's `Batch:` line, empty when nothing was waited for."""
@@ -4468,6 +4485,7 @@ def batch_wait(
         number
         for number, exit in waits.items()
         if exit == (WAITING, True)
+        and not check_never_comes(pulls.get(number) or pull_request(number), required)
         and not owner_waits(pulls.get(number) or pull_request(number), issues[number] or [], loop)
     }
     if not near:
@@ -4489,9 +4507,6 @@ def batch_wait(
             ):  # why a PR still waits is no news every poll
                 verdict = landable(pull, tracker, loop, required, number in pulls)
             if verdict.exit is None:
-                if verdict.issues is not None:
-                    for line in flag(pull, verdict.issues, loop):
-                        print(line)
                 candidates.append(pull)
                 waits.pop(number)
                 joined.append(number)
@@ -4499,6 +4514,7 @@ def batch_wait(
                 print(f"PR #{number} turned landable and joins the batch")
             elif not (
                 verdict.exit == (WAITING, True)
+                and not check_never_comes(pull, required)
                 and not owner_waits(pull, verdict.issues or [], loop)
             ):
                 waits[number] = verdict.exit
