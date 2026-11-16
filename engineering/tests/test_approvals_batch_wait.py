@@ -95,7 +95,9 @@ def test_a_pr_whose_checks_turn_green_during_the_wait_joins_the_one_gate(
     assert sum(clock.slept) == 300
     assert any("waits up to 600 s" in line and "#8" in line for line in lines), lines
     assert any("PR #8 turned landable" in line for line in lines), lines
-    assert batch_line(lands, 7) == batch_line(lands, 8) == "Batch: #7, #8 (waited 300 s, joined: #8)"
+    assert (
+        batch_line(lands, 7) == batch_line(lands, 8) == "Batch: #7, #8 (waited 300 s, joined: #8)"
+    )
 
 
 def test_the_wait_ends_at_the_deadline_and_the_pr_that_is_still_pending_stays_out(
@@ -105,7 +107,7 @@ def test_the_wait_ends_at_the_deadline_and_the_pr_that_is_still_pending_stays_ou
     lands["open"](7, {"7.txt": "7\n"})
     lands["open"](8, {"8.txt": "8\n"})
     check(lands, 8, "PENDING")
-    code, lines = lands["land"]()
+    code, _ = lands["land"]()
     assert (code, lands["merged"](), lands["runs"]()) == (approvals.WAITING, ["7"], 1)
     assert sum(clock.slept) == 100
     assert batch_line(lands, 7) == "Batch: #7 (waited 100 s, joined: none)"
@@ -138,7 +140,7 @@ def test_no_pr_held_by_its_checks_alone_gates_at_once(
         check(lands, 8, "FAILURE")
     if other == "owner and pending":
         check(lands, 8, "PENDING")
-    code, _ = lands["land"]()
+    _, _ = lands["land"]()
     assert (lands["merged"](), lands["runs"](), clock.slept) == (["7"], 1, [])
 
 
@@ -181,9 +183,7 @@ def test_only_never_reads_or_waits_on_other_prs(
     lands["open"](8, {"8.txt": "8\n"})
     check(lands, 8, "PENDING")
     read: list[int] = []
-    monkeypatch.setattr(
-        approvals, "pull_request", lambda n: read.append(n) or lands["pulls"][n]
-    )
+    monkeypatch.setattr(approvals, "pull_request", lambda n: read.append(n) or lands["pulls"][n])
     assert lands["land"]("7", "--only")[0] == 0
     assert (set(read), lands["merged"](), clock.slept) == ({7}, ["7"], [])
 
@@ -219,7 +219,9 @@ def test_a_pr_that_asks_the_owner_during_the_wait_ends_it(
     lands["open"](8, {".github/ci.yml": "on: push\n"})
     lands["pulls"][8]["files"] = {"nodes": []}
     check(lands, 8, "PENDING")
-    clock.tick = lambda _now: lands["pulls"][8].update(files={"nodes": [{"path": ".github/ci.yml"}]})
+    clock.tick = lambda _now: lands["pulls"][8].update(
+        files={"nodes": [{"path": ".github/ci.yml"}]}
+    )
     lands["land"]()
     assert (lands["merged"](), len(clock.slept)) == (["7"], 1)
 
@@ -245,9 +247,11 @@ def test_a_verdict_that_is_no_wait_on_checks_is_no_wait_even_with_no_owner_line(
     monkeypatch.setattr(
         approvals,
         "landable",
-        lambda pull, *rest: approvals.Verdict((approvals.WAITING, False))
-        if pull["number"] == 8
-        else judged(pull, *rest),
+        lambda pull, *rest: (
+            approvals.Verdict((approvals.WAITING, False))
+            if pull["number"] == 8
+            else judged(pull, *rest)
+        ),
     )
     lands["land"]()
     assert (lands["merged"](), clock.slept) == (["7"], [])

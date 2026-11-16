@@ -907,7 +907,9 @@ def settings(loop: str | None) -> dict[str, Any]:
         elif name == "loop":
             data.update(typed(section, SCHEMA["loop"], name, file))
             if data.get("batch_wait_seconds", 0) < 0:
-                raise Refused(f"{file}'s `loop.batch_wait_seconds` must be a whole number, 0 or more")
+                raise Refused(
+                    f"{file}'s `loop.batch_wait_seconds` must be a whole number, 0 or more"
+                )
             for key in ("batch_queue", "ci"):
                 if key in section:
                     deprecated(key)
@@ -4482,7 +4484,9 @@ def batch_wait(
         time.sleep(min(POLL, max(0.0, deadline - time.monotonic())))
         for number in sorted(near):
             pull = pull_request(number)
-            with contextlib.redirect_stdout(io.StringIO()):  # why a PR still waits is no news every poll
+            with contextlib.redirect_stdout(
+                io.StringIO()
+            ):  # why a PR still waits is no news every poll
                 verdict = landable(pull, tracker, loop, required, number in pulls)
             if verdict.exit is None:
                 if verdict.issues is not None:
