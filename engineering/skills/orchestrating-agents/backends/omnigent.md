@@ -238,13 +238,14 @@ when it ends; unset, nothing is sent. `run`, `send` and `wait`, which can wait h
 take the same `--notify`: once they end, however they end, `$LOOP_NOTIFY` gets one line, `exit <code>:`
 and the report path, or the failure's first line.
 
-**One wake per child.** A child's end can reach its lead three ways: Omnigent's notice to a
-sub-agent's parent (always sent, no field turns it off), a subscription, and the background wait's
-own exit or `--notify` line. `run --notify` therefore starts its child filed top level but with no
-parent notice and no subscription, and `wait --notify` drops the lead's subscription to its
-child (one `start --top-level` made), so the wait's end is the single wake: do not also poll or
-`watch` that child. A `run`/`wait` without `--notify` leaves Omnigent's notice (or the
-subscription) as the wake, and its exit is the other: expect both there.
+**One wake per child.** Omnigent wakes a lead when a child's turn ends in two cases: the child is a
+sub-agent of the lead's session (always, and no field turns it off), or the lead or its root
+subscribes to it (`start --top-level` does). A `run`, `send` or `wait` with `--notify` checks for
+those and, when one holds, skips its `$LOOP_NOTIFY` line and says `not telling $LOOP_NOTIFY` on
+stderr, so the child wakes you once, by Omnigent's notice. Only a child nothing tells you about
+(top level, unsubscribed, or a failed lookup) gets the line. Without `--notify` the command's own
+exit is a second wake beside Omnigent's notice. Don't poll or `watch` a child for the wake you
+were not given.
 
 **Waiting on a condition.** `python3 scripts/omnigent_agent.py wait-until --every <s> --limit
 <s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so

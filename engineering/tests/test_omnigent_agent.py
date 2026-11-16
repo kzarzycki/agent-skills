@@ -72,7 +72,7 @@ class FakeOmnigent:
         self.others: list[dict] = []  # sessions this script did not create, as the list shows them
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
         self.subscriptions: list[tuple[str, str]] = []
-        self.parent_notices: list[str] = []  # children whose end Omnigent tells their parent
+        self.parents: dict[str, str] = {}  # a sub-agent's parent_session_id, as the server says
         self.roots: dict[str, str] = {}  # a session's root_conversation_id, when not its own
         self.resolved: list[tuple[str, str, str, dict | None]] = []
         self.host_id = "h"  # this host, named "host"
@@ -156,7 +156,6 @@ class FakeOmnigent:
         host_id: str | None = None,
         role: str | None = None,
         effort: str | None = None,
-        unparent: bool = False,
     ) -> str:
         if title in self.taken:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
@@ -164,8 +163,6 @@ class FakeOmnigent:
         sid = f"s{len(self.sessions)}"
         self.overrides[sid] = omnigent_agent.model_for(agent, model)[0]  # as the real body
         self.top_level.append(top_level)
-        if omnigent_agent.parent_id() and not (top_level or unparent):
-            self.parent_notices.append(sid)  # Omnigent tells the parent each time it ends
         self.roles.append(role)
         self.efforts[sid] = effort
         self.workspaces.append(workspace)
@@ -190,9 +187,6 @@ class FakeOmnigent:
         if "subscribe" in self.fail:
             raise omnigent_agent.Fail("POST subscriptions: HTTP 404 Not Found")
         self.subscriptions.append((subscriber, sid))
-
-    def unsubscribe(self, subscriber: str, sid: str) -> None:
-        self.subscriptions.remove((subscriber, sid))
 
     def find(self, title: str, after: float, top_level: bool = False) -> str | None:
         self.top_level.append(top_level)
@@ -251,6 +245,8 @@ class FakeOmnigent:
             info["labels"] = self.labels[sid]
         if sid in self.roots:
             info["root_conversation_id"] = self.roots[sid]
+        if sid in self.parents:
+            info["parent_session_id"] = self.parents[sid]
         if sid in self.archived:
             info["archived"] = True
         if sid[1:].isdigit() and int(sid[1:]) < len(self.workspaces):
@@ -687,45 +683,121 @@ def test_run_notify_tells_loop_notify_once_the_report_is_in(
     assert calls.read_text().splitlines() == [f"exit 0: {repo / 'r.md'}"]
 
 
-def wakes(og: FakeOmnigent, calls: Path) -> int:
-    """How many times the lead is told of the children's end: Omnigent's parent notices, its
-    subscriptions and the wait's own ``$LOOP_NOTIFY`` line."""
-    told = len(calls.read_text().splitlines()) if calls.exists() else 0
-    return len(og.parent_notices) + len(og.subscriptions) + told
+REAL_CREATE = omnigent_agent.Omnigent.create
 
 
-def test_a_child_started_under_a_background_run_wakes_its_lead_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+class Posting(FakeOmnigent):
+    """A fake whose sessions come from the real ``create``: its POST body says who the parent is, and
+    the server's notices follow from that body, as Omnigent's do."""
+
+    def __init__(self, **kw: object) -> None:
+        super().__init__(**kw)  # type: ignore[arg-type]
+        self.bodies: list[dict] = []
+        self.making: tuple[tuple, dict] = ((), {})
+
+    def agent_id(self, agent: str) -> str:
+        return agent
+
+    def home(self, name: str) -> None:
+        return None
+
+    def create(self, *args: object, **kw: object) -> str:
+        self.making = (args, kw)
+        return REAL_CREATE(self, *args, **kw)  # type: ignore[arg-type]
+
+    def call(self, method: str, path: str, body: object = None) -> dict:
+        if (method, path) == ("POST", "/v1/sessions"):
+            assert isinstance(body, dict)
+            self.bodies.append(body)
+            sid = FakeOmnigent.create(self, *self.making[0], **self.making[1])  # type: ignore[arg-type]
+            if parent := body.get("parent_session_id"):
+                self.parents[sid] = str(parent)
+            return {"id": sid}
+        if method == "GET" and path.endswith("/subscriptions"):
+            who = path.split("/")[3]
+            return {"data": [{"session_id": t} for w, t in self.subscriptions if w == who]}
+        return super().call(method, path, body)
+
+    def wakes(self, calls: Path) -> int:
+        """How often the lead is told a child ended: Omnigent's notice to a sub-agent's parent, a
+        subscription's, and the wait's own ``$LOOP_NOTIFY`` line."""
+        told = len(calls.read_text().splitlines()) if calls.exists() else 0
+        return len(self.parents) + len(self.subscriptions) + told
+
+
+def lead_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, og: Posting, *argv: str
+) -> tuple[int, Path]:
     calls = notify_stub(tmp_path, monkeypatch)
     monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
+    monkeypatch.delenv("OMNIGENT_SESSION_ID", raising=False)
+    monkeypatch.delenv("OMNIGENT_TERMINAL_LAUNCH_SESSION_ID", raising=False)
     repo = git_checkout(tmp_path / "w")
     (repo / "b.md").write_text("do X")
-    og = FakeOmnigent(reply="done")
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.chdir(repo)
     info = og.info
     og.info = lambda s: ((repo / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
+    return omnigent_agent.main([*argv]), calls
+
+
+def test_a_sub_agent_under_a_background_run_wakes_its_lead_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = Posting(reply="done")
     argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0", "--notify"]
-    assert omnigent_agent.main(argv) == 0
-    assert wakes(og, calls) == 1
-    assert og.parent_notices == [] and og.subscriptions == []
+    code, calls = lead_run(tmp_path, monkeypatch, og, *argv)
+    assert code == 0
+    assert [b.get("parent_session_id") for b in og.bodies] == ["lead"]  # Omnigent's own notice
+    assert og.wakes(calls) == 1 and not calls.exists()
+    assert "not telling $LOOP_NOTIFY" in capsys.readouterr().err
 
 
-def test_a_wait_notify_drops_the_subscription_its_end_would_repeat(
+def test_a_subscribed_top_level_child_under_a_background_wait_wakes_its_lead_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = Posting()
+    code, calls = lead_run(tmp_path, monkeypatch, og, "start", "claude", "t", "b.md", "r.md")
+    assert code == 0
+    sid = "s0"  # started top-level by a lead's helper, which subscribed its root
+    og.parents.clear()
+    og.subscriptions.append(("lead", sid))
+    og.final = "idle"
+    assert omnigent_agent.main(["wait", sid, "r.md", "--notify"]) == 0
+    assert og.wakes(calls) == 1 and not calls.exists()
+    assert "not telling $LOOP_NOTIFY" in capsys.readouterr().err
+
+
+def test_a_child_its_leads_root_subscribes_to_is_covered_too(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls = notify_stub(tmp_path, monkeypatch)
-    og = FakeOmnigent()
-    sid, repo = notify_session(tmp_path, monkeypatch, og)  # a top-level helper
+    og = Posting()
+    code, calls = lead_run(tmp_path, monkeypatch, og, "start", "claude", "t", "b.md", "r.md")
+    og.parents.clear()
+    og.roots["lead"] = "chief"  # start --top-level subscribes the root of the starter's tree
+    og.subscriptions.append(("chief", "s0"))
+    assert omnigent_agent.main(["wait", "s0", "r.md", "--notify"]) == 0
+    assert og.wakes(calls) == 1 and not calls.exists()
+
+
+def test_a_child_nothing_tells_the_lead_about_still_gets_the_notify_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = Posting()
+    code, calls = lead_run(tmp_path, monkeypatch, og, "start", "claude", "t", "b.md", "r.md")
+    og.parents.clear()  # top level, no subscription: the line is the only wake
+    assert omnigent_agent.main(["wait", "s0", "r.md", "--notify"]) == 0
+    assert og.wakes(calls) == 1 and calls.read_text().startswith("exit 0:")
+
+
+def test_create_files_a_sub_agent_under_the_primary_session_and_a_lead_under_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
-    og.subscribe("lead", sid)  # what start --top-level did
-    (repo / "r.md").write_text("ok")
-    assert omnigent_agent.main(["wait", sid, "r.md", "--notify"]) == 0
-    assert wakes(og, calls) == 1 and og.subscriptions == []
-    og.subscribe("lead", sid)  # without --notify the subscription is the wake
-    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
-    assert og.subscriptions == [("lead", sid)]
+    og = Posting()
+    og.create("claude", "child")
+    og.create("claude", "helper", None, True)
+    assert [b.get("parent_session_id") for b in og.bodies] == ["lead", None]
 
 
 def test_notify_tells_loop_notify_of_an_unexpected_exception_and_reraises_it(
@@ -2495,7 +2567,7 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     titles: list[str] = []
     create = og.create
     og.create = (
-        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None, host_id=None, role=None, effort=None, unparent=False: (
+        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None, host_id=None, role=None, effort=None: (
             titles.append(title) or create(agent, title)
         )
     )  # type: ignore[method-assign]
@@ -4264,7 +4336,7 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     og = FakeOmnigent(reply="done")
     og.listed = ["named", "flag"]
     create = og.create
-    og.create = lambda a, t, m=None, top=False, w=None, p=None, h=None, r=None, e=None, u=False: (
+    og.create = lambda a, t, m=None, top=False, w=None, p=None, h=None, r=None, e=None: (
         models.append(m),
         create(a, t, m),
     )[1]  # type: ignore[method-assign]
