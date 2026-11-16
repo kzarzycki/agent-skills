@@ -200,7 +200,7 @@ def test_a_pid_leading_wait_fors_own_group_is_killed_alone(
 
 def test_a_pid_inside_another_group_is_killed_alone(tmp_path: Path) -> None:
     child, beat = tmp_path / "child", tmp_path / "beat"
-    log, pidfile, leader = detach(
+    log, pidfile, _ = detach(
         tmp_path, f"sleep 60 & echo $! > {child}; while :; do echo beat >> {beat}; sleep 0.1; done"
     )
     for _ in range(100):
