@@ -546,7 +546,7 @@ or several; `check merge`, `check queue` and `land` print one line per merge nam
 first parent and the predicate. Anything else (a PR commit after H, new, edited or rebased,
 a conflict, an evil merge, an overlapping file, a touched except path, a git error) carries
 nothing, and the check prints which condition failed: the head needs its own verifier pass. The gate never carries: H'
-runs its own, as CI does, and under `ci: false` that is `local-ci <pr> --run` on H', since a
+runs its own, as CI does, and under `ci: false` that is `local-ci <pr> --head <H'> --run` on H', since a
 `local-ci` record stands in for CI on one exact tree. This skips a review on purpose, so a
 project opts in by writing the section.
 
