@@ -69,10 +69,13 @@ design, wireframes included for a UI, and delegate the rest.
    that closes the spec (`Implements` where the owner signs it off, SKILL.md, Approvals and
    proof) with the branch's first push, made when you cut it (an empty commit when nothing
    is written yet), since the open PR is the claim another lead's search finds
-   (github.md, Review trail; board: `Build`), and run `uv run <this skill's folder>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
+   (github.md, Review trail; board: `Build`). Its body carries your guess at the run's spend,
+   `Token estimate: ~<N> (<basis>)`, e.g. `~2M, mostly two verifier passes`: the lead, its
+   workers and verifiers together, cache reads included. It is for the owner's information and
+   nothing reads it, so a rough number beats a careful one. Then run `uv run <this skill's folder>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
    that exit it assigns the issue's approver where no one is assigned, and the PR its
    issue's assignee (github.md, Assignee). Keep one scratchpad markdown for the run: the work items and what
-   blocks what, environment facts, gates, the model of each agent, and every worktree and
+   blocks what, environment facts, gates, the model and session id of each agent, and every worktree and
    branch the run creates (step 10 removes them). Agents get its path, never its content.
    The spec is the only issue for the work itself; SKILL.md, Triage places what the PR
    leaves unfixed, and the PR says `Part of` instead of `Closes` when that leaves the spec
@@ -238,7 +241,12 @@ design, wireframes included for a UI, and delegate the rest.
      of <base>: land merges heads itself (lead.md step 8); this pass is avoidable`: a brief
      telling you to merge main after each landing is wrong, so leave the next one unmerged.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
-     `## Evidence`. Where the change is high risk, the merge approval is also the owner's
+     `## Evidence`, keeping the `Token estimate:` line and adding below it the `Tokens spent:` line
+     that `python3 <orchestrating-agents' folder>/scripts/omnigent_agent.py usage <session>...`
+     prints last, naming each child session your notes list (the archived ones are not found
+     otherwise): your session tree's tokens and cost from Omnigent's records, with each session it
+     has no usage for named as uncounted, never guessed. Information only, like the estimate; on
+     another backend, write `Tokens spent: not counted (<backend>)`. Where the change is high risk, the merge approval is also the owner's
      go on the head that lands (SKILL.md, Approvals and proof): `approvals.py approve merge
      <pr> --head <sha> --by owner` naming the head you showed them, when they say it in your
      session; you never give it, and `approved:merge` into the default branch is none. Into a
