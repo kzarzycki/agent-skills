@@ -100,3 +100,36 @@ def test_route_flag_without_the_verifier_role_is_refused_before_a_session(
     monkeypatch.setenv("OMNIGENT_VERIFIER_ROUTE", name)
     assert omnigent_agent.main(["start", "codex", "t", "b.md", "r.md"]) == 0
     assert og.sessions
+
+
+def test_env_route_on_a_verifier_start_routes_to_agy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    og.host = lambda n: {"h": "far"}[n]  # type: ignore[method-assign]
+    og.host_names = {"far": "h"}
+    og.harnesses = {"antigravity-native-ui": "antigravity-native"}
+    og.filesystem = lambda sid, path, method, body=None: None  # type: ignore[attr-defined]
+    agents: list[str] = []
+    create = og.create
+    og.create = lambda agent, *a, **k: (agents.append(agent), create(agent, *a, **k))[1]  # type: ignore[method-assign]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setenv("OMNIGENT_VERIFIER_ROUTE", "gemini")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("review")
+    argv = [
+        "start",
+        "codex",
+        "t",
+        "b.md",
+        "/w/r.md",
+        "--role",
+        "x/verifier.md",
+        "--top-level",
+        "--host",
+        "h",
+        "--workspace",
+        "/w",
+    ]
+    assert omnigent_agent.main(argv) == 0
+    assert agents == ["antigravity-native-ui"]
