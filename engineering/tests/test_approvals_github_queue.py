@@ -818,3 +818,64 @@ def test_a_named_land_that_comments_landed_takes_the_label_off(queue: dict[str, 
     assert queue["land"]("7") == (0, ["PR #7 is merged"])
     assert len(notes_on(queue, 7, approvals.LANDED)) == 1
     assert approvals.QUEUED not in labels_of(queue, 7)
+
+
+def test_a_labelled_pr_merged_outside_the_queue_loses_the_label_on_a_bare_land(
+    queue: dict[str, Any],
+) -> None:
+    """PR 6 was enqueued (labelled), evicted, then merged by hand: no `merged` removal, so no `Landed`, label off."""
+    queue["opened"](6)
+    approvals.label(6, approvals.QUEUED, add=True)
+    queue["remove"](6, approvals.FAILED_CHECKS, group="g1")
+    queue["pulls"][6]["state"] = "MERGED"
+    code, _ = queue["land"]()
+    assert code == 0 and notes_on(queue, 6, approvals.LANDED) == []
+    assert approvals.QUEUED not in labels_of(queue, 6), (
+        "the label stays, so every bare land reads PR 6 again"
+    )
+
+
+def test_a_labelled_pr_that_already_has_landed_loses_the_label(queue: dict[str, Any]) -> None:
+    """PR 6's `Landed` was written by another land that read it merged at once, before its label call."""
+    queue["opened"](6)
+    queue["queue_merge"](6)
+    queue["land"]("6")
+    approvals.label(6, approvals.QUEUED, add=True)  # the racing land's label never came off
+    assert queue["land"]()[0] == 0
+    assert len(notes_on(queue, 6, approvals.LANDED)) == 1
+    assert approvals.QUEUED not in labels_of(queue, 6)
+
+
+def test_land_wait_follows_an_unknown_mergeability_until_github_settles_it(
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`land 8 --wait` after a conflict removal while GitHub reads UNKNOWN: it polls, and enqueues once MERGEABLE."""
+    head = queue["opened"](8)
+    queue["pulls"][8]["mergeable"] = "UNKNOWN"
+    queue["remove"](8, approvals.MERGE_CONFLICT)
+    polls: list[float] = []
+
+    def slept(seconds: float) -> None:
+        polls.append(seconds)
+        queue["pulls"][8]["mergeable"] = "MERGEABLE"
+
+    monkeypatch.setattr(approvals.time, "sleep", slept)
+    monkeypatch.setattr(approvals, "CEILING", 90)
+    code, lines = queue["land"]("8", "--wait")
+    assert polls, f"land --wait stopped at once: exit {code}, {lines}"
+    assert queue["enqueued"] == [(8, head)]
+
+
+def test_land_wait_on_an_unknown_that_never_settles_stops_at_the_ceiling(
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C6's wait is bounded: GitHub never settles the mergeability, so `--wait` ends exit 3 at CEILING."""
+    queue["opened"](8)
+    queue["pulls"][8]["mergeable"] = "UNKNOWN"
+    queue["remove"](8, approvals.MERGE_CONFLICT)
+    clock = [0.0]
+    monkeypatch.setattr(approvals.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(approvals.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    code, lines = queue["land"]("8", "--wait")
+    assert code == approvals.WAITING and lines[-1].startswith("land --wait stopped after 2 hours")
+    assert queue["comments"] == []

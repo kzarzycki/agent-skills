@@ -5621,9 +5621,7 @@ def enqueue(pull: dict[str, Any]) -> tuple[int, bool]:
             f"head={head}",
         )
     except subprocess.CalledProcessError as exc:
-        print(
-            f"{where}: GitHub refused to enqueue it at {head}: {' '.join((exc.stderr or str(exc)).split())}"
-        )
+        print(f"{where}: GitHub refused to enqueue it at {head}: {stderr_of(exc)}")
         return 1, False
     entry = ((json.loads(out or "{}").get("data") or {}).get("enqueuePullRequest") or {}).get(
         "mergeQueueEntry"
