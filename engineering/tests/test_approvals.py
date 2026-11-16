@@ -3093,10 +3093,15 @@ def test_a_review_at_the_cap_holds_on_a_core_finding_or_on_not_being_satisfied(
 
 
 def test_minors_only_at_the_cap_or_core_findings_before_it_need_no_owner() -> None:
-    minors = verdict_on(HEAD, "0 blocker, 0 major, 3 minor", heading=f"Verifier (claude), pass {CAP}")
+    minors = verdict_on(
+        HEAD, "0 blocker, 0 major, 3 minor", heading=f"Verifier (claude), pass {CAP}"
+    )
     assert capped(minors) == []
     early = verdict_on(
-        OLD, "1 blocker, 0 major, 0 minor", satisfied="no", heading=f"Verifier (claude), pass {CAP - 1}"
+        OLD,
+        "1 blocker, 0 major, 0 minor",
+        satisfied="no",
+        heading=f"Verifier (claude), pass {CAP - 1}",
     )
     assert capped(early, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP}")) == []
 
@@ -3107,7 +3112,10 @@ def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() ->
     with pytest.raises(approvals.Refused, match="`loop.cap` must be a whole number"):
         approvals.cap(loop_md("loop:\n  cap: 3 passes\n"))
     major = verdict_on(
-        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading=f"Verifier (claude), pass {CAP - 1}"
+        OLD,
+        "0 blocker, 1 major, 0 minor",
+        satisfied="no",
+        heading=f"Verifier (claude), pass {CAP - 1}",
     )
     later = verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP}")
     assert capped(major, later) == []
@@ -7269,7 +7277,8 @@ def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reporte
         OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading=f"Verifier (claude), pass {CAP}"
     )
     pr = pull(
-        reviews=(at_cap, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")), files=("app.py",)
+        reviews=(at_cap, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")),
+        files=("app.py",),
     )
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
     comments: list[tuple[int, str]] = []
