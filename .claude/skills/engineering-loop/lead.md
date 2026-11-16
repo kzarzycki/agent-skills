@@ -20,7 +20,9 @@ design, wireframes included for a UI, and delegate the rest.
    text that ends your turn `USER NEEDED`, never through a tool that waits for the answer
    (Claude Code's AskUserQuestion, Codex's requestUserInput), since an open question holds
    every message to your session, your children's reports and the supervisor's notices
-   included, until the owner replies; otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
+   included, until the owner replies. Omnigent's `sys_ask_user_question` is the way to ask
+   without stopping: it posts a card and returns at once, so keep working, and act on the
+   answer when it arrives as a message (`[answer to <question id>]`); otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
    answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
    `--by owner` records their word and removes the label. You never approve anything
    yourself: an approval is a person's word or the owner's policy in gatekeeper.md. An issue
@@ -40,7 +42,9 @@ design, wireframes included for a UI, and delegate the rest.
    proof). A spec gatekeeper.md's `spec.auto` list covers (`bug`, a `Found while #n`
    `follow-up`, a `sub-issue` of an approved epic opened by a writer), or `auto: true` covers
    (any spec a writer opened that the risk rule doesn't match, SKILL.md, Approvals and proof, judged on the issue's labels
-   and the paths the spec says it changes), is approved by that policy: it gets no label
+   and the paths the spec says it changes), or its `paths` term covers (a writer's spec whose change stays inside its
+   globs and that the risk rule doesn't match: add `spec:paths`, the claim the gate checks on every file the PR
+   touches), is approved by that policy: it gets no `approved:spec`
    and no record, since the gate reads the policy and an `approved:spec` an agent added
    would read as the owner's; move it to `Ready` on the board and carry on; the owner
    reads it when they like. Any other spec waits for the owner: add `needs-owner`, comment what to approve
@@ -65,7 +69,7 @@ design, wireframes included for a UI, and delegate the rest.
    that closes the spec (`Implements` where the owner signs it off, SKILL.md, Approvals and
    proof) with the branch's first push, made when you cut it (an empty commit when nothing
    is written yet), since the open PR is the claim another lead's search finds
-   (github.md, Review trail; board: `Build`), and run `mise run loop:approvals build <pr>`: build only once it exits 0. On
+   (github.md, Review trail; board: `Build`), and run `uv run <this skill's folder>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
    that exit it assigns the issue's approver where no one is assigned, and the PR its
    issue's assignee (github.md, Assignee). Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model of each agent, and every worktree and
@@ -89,10 +93,8 @@ design, wireframes included for a UI, and delegate the rest.
    with one message: the spec, the item, the PR, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
-   both are yours (worker.md, Gates and push). Its model is the default, or, where the
-   issue matches loop.md's `Worker model:` line, the newest-generation model of the tier it
-   names (SKILL.md, Models).
-   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker):
+   both are yours (worker.md, Gates and push). Its model: SKILL.md, Models.
+   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker; every step's placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
@@ -113,7 +115,10 @@ design, wireframes included for a UI, and delegate the rest.
    proof the spec's acceptance needs whose log names another commit, since the verifier
    counts it as missing and the pass is spent on it:
    `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
-   prints the ones to rerun. Then start the verifier on that pushed
+   prints the ones to rerun. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
+   instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
+   brief already in that checkout. Where else it runs is SKILL.md, Where heavy steps run.
+   A verifier on a host starts on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
    yours while it reviews and no commit of yours moves the head under review. Copy into its
@@ -129,9 +134,7 @@ design, wireframes included for a UI, and delegate the rest.
    and loop.md's `## Verifier brief` (the project's own lines, such as host load rules)
    appended; it refuses a proof log whose first line isn't the head. The report path matters:
    outside its workspace a Codex child's sandbox refuses the write and a Claude Code child is
-   prompted for a read (denied in auto mode), which nobody answers. Its model is the default, or, where the PR matches loop.md's
-   `Verifier model:` line, the newest-generation model of that tier in the verifier's family
-   (SKILL.md, Models), and the brief names that tier so the verdict's `Verifier:` line carries it. A lower-tier
+   prompted for a read (denied in auto mode), which nobody answers. Its model: SKILL.md, Models, in the verifier's family, and the brief names that tier so the verdict's `Verifier:` line carries it. A lower-tier
    verdict that says `Risk: high`, even a satisfied one, calls for a default-tier pass on the head before landing,
    and `check merge` refuses the change until one is posted. Name the family that wrote the diff when the backend takes it
    (Omnigent: `--author`, plus `--same-family` when the verifier shares it), and keep the
@@ -139,13 +142,37 @@ design, wireframes included for a UI, and delegate the rest.
    bring your instance up on that head from the verifier's worktree (loop.md § Proof on a branch),
    so the verifier finds it and its log there and can drive it. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. A verifier's `<report>.question` asking for a
-   proof run (verifier.md, A full heavy slot) is answered by filling `proof-run.md` from it
-   and sending the logs back. Post each finished report with
+   proof run (verifier.md, A run the sandbox refuses) is answered by filling `proof-run.md` from it
+   and sending the logs back: a question that lists several runs gets one proof brief with
+   all of them, made in one heavy-slot hold where one host can make them all, since a hold
+   per run waits on the slot each time. The next pass's brief carries the answer under a
+   `## Answer to your question` heading (put it in the `--priorities` file), which is how
+   the verifier script knows a question was answered: a later question without a
+   `New in the answer:` line is refused (exit 1), so the verifier asks once. Post each finished report with
    `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
    `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. A mixed PR's second
-   verifier, running at the same time, gets its own detached worktree the same way. Triage every finding (SKILL.md) and hand the fixes to a worker,
+   verifier, running at the same time, gets its own detached worktree the same way. A verifier
+   may instead run on another host loop.md's `Placement: hosts:` line lists (SKILL.md, Where heavy steps run), so its tests and
+   mutation runs load that host: a top-level session there (orchestrating-agents' Omnigent
+   backend, Verifiers on another host) whose `--workspace` holds a clone of the repo, briefed by
+   `approvals.py brief <pr> --far <that clone>`, which tells it to fetch the head and make its own
+   worktree; the proof logs and the previous report go there with `start --file`, you make no
+   worktree for it, `wait --verdict` copies its report to your `tmp/loop/`, and a check that
+   host can't run comes back as a proof-run question as above.
+   **Verifier route.** Codex is the default verifier whenever it has quota. When it refuses (the quota error
+   text goes to the owner at once), `--verifier-route gemini|claude` on the same verifier start, or
+   `$OMNIGENT_VERIFIER_ROUTE`, picks the fallback, with the same brief, report format and `verdict` post:
+   `gemini` runs agy's Gemini (experimental) on a `--host` that has agy logged in, in bypass mode, with a model
+   from that host's `agy models` (`gemini-4-hydrogen-medium`; verifier.md's `Verifier:` line names it as
+   `agy/<model>/<effort>`), and the PR body's review line says "verifier ran on Gemini (experimental
+   fallback)"; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
+   author context, `--model` other than the author's (`--author-model`), the report labelled `Verifier: claude,
+   same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
+   of quota)". Either fallback may land a low or medium risk change; `check merge` reads its family as a lower
+   tier and refuses a high-risk one, which waits for Codex or the owner. agy on another host takes the brief
+   as a file there (backends/omnigent.md, Antigravity). Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), naming the last green head (the newest head whose
    gate passed) for the fix round's gate (worker.md, Gates and push). A correctness finding's fix
    covers its class: each sibling the verifier lists under it (verifier.md, Siblings), triaged like
@@ -175,10 +202,17 @@ design, wireframes included for a UI, and delegate the rest.
      (`Conflicts in the landing batch`): `land` merges every head onto main itself and gates
      the result, so a PR behind main lands without a merge. When you do merge it in, rerun the
      gates and get a verifier pass on the merge (step 7), since `land` merges only a head with
-     a verdict of its own. When main's changes touch no file the PR changes and no merge check
+     a verdict of its own. A head with an earlier head's tree (`git rev-parse <sha>^{tree}`), as
+     after a reword of commit messages only, keeps that head's verdict (unsatisfied or with
+     findings open, it stays so) and go with no new pass, since no file changed: `check merge`
+     and `land` print `verdict on <old> carried: same tree <tree>`. When main's changes touch no file the PR changes and no merge check
      (a `check:` task, a tool it runs, or the lint, type or test configuration), that pass is
      the short delta pass. Where loop.md still has `carry_over_main` (deprecated), no pass is
-     needed when `check merge` prints that the merge carries the head's verdict.
+     needed when `check merge` prints that the merge carries the head's verdict. When every
+     commit since the last verdict's head is a merge of main and `land` named none of those
+     heads in a conflict comment, `check merge` and the verifier brief print `unforced merge
+     of <base>: land merges heads itself (lead.md step 8); this pass is avoidable`: a brief
+     telling you to merge main after each landing is wrong, so leave the next one unmerged.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
      `## Evidence`. Where the change is high risk, the merge approval is also the owner's
      go on the head that lands (SKILL.md, Approvals and proof): `approvals.py approve merge
@@ -201,7 +235,8 @@ design, wireframes included for a UI, and delegate the rest.
      on other items meanwhile. It lands every landable PR into main as one gated batch, not
      only yours (SKILL.md, Approvals and proof; `approvals.py`'s docstring has each step), and
      exit 0 means your PR merged, with a `Landed` comment naming the base commit, the tree and
-     the gate. Exit 1 names what stopped your PR, and the fix is yours:
+     the gate, and its kept `--pr` worker sessions finishing in the background (its log is named; `reap --merged
+     --pr <n>` finishes them again). Exit 1 names what stopped your PR, and the fix is yours:
      - a missing proof, with nothing on the PR changed: add the proof;
      - a conflict with main or the PRs merged before it: merge `origin/main` in, as the first
        bullet says;
@@ -211,16 +246,22 @@ design, wireframes included for a UI, and delegate the rest.
        (Rules for every role, Revert first);
      - a merge GitHub refused: as the bullet below says.
      Exit 3 is what `--wait` doesn't clear: the owner's go, or 2 hours of another land's lock
-     or of pending required checks. With gatekeeper.md's `land` section it squashes, signs and pushes
+     (one whose PR already merged is broken at once) or of pending required checks. With gatekeeper.md's `land` section it squashes, signs and pushes
      each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what
-     refuses a PR whose proof is missing. A push after it needs `gh pr ready --undo` first; the
-     owner's go stays on the old head, and after the verdict on the new head `land` runs again.
+     refuses a PR whose proof is missing: `land` itself marks each draft it names ready, before it
+     waits for the lock, so the batch ahead of you takes it, and several PRs named in one `land`
+     land in one batch. A push after it needs `gh pr ready --undo` first; the
+     owner's go carries over only merges of the base whose verdict says `Logic change: none`
+     (SKILL.md, Approvals and proof), and after the verdict on the new head `land` runs again.
    - Land every approved PR at once: start `land --wait` on each as soon as its proofs hold,
      never after another PR's merge. Whichever runs first takes the lock and lands every
      landable PR in one batch; the others wait for the lock and find their PR merged (exit 0)
      or land what is left. Host load is no reason to serialize: one gate covers the batch.
+   - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge
+     go on a head), which the owner's `approve merge --by owner` removes: a question card
+     alone holds nothing, since `land` batches every PR that is ready.
    - A check red after ready: `gh pr ready --undo`, then start a worker in the same worktree
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
      runs `mise run check` and pushes; a fresh verifier (step 7) reviews only the change
@@ -335,7 +376,9 @@ has left no report and will not wake itself: arm such a wait on its process or l
 fires, ask the child for its report.
 Finish a worker or verifier as soon as its report is read or its verdict posted, since an
 idle child keeps its agent process, MCP servers and runner alive. With Omnigent, `run` and
-`wait` already finish the child whose report they return; a report you heard any other way
+`wait` already finish the child whose report they return, except a `--pr` worker, which they keep
+for its fix rounds and which `reap` finishes once its PR is merged or closed (a verdict does not release it), and `land` once it
+merges the PR; a report you heard any other way
 (`send`, `watch`, a `run` that died, a file you read) leaves the child idle, so `reap <id>` it. At each
 wake and before each new start, finish any child whose report you have read and whose turn
 ended over 15 min ago. Only you know a report is in: an idle child still owing one looks

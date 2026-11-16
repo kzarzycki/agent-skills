@@ -14,6 +14,10 @@ item id, at most ``MODEL_HOURLY`` calls an hour. On each request it adds what th
 writes next to its registry (``leads.state.json``: events routed ``owner``; ``leads.events.jsonl``)
 and the handover board's ``## Needs the owner``. It writes nothing anywhere.
 
+A chief of staff with project managers is a tree: beside the board, each ``projects/<repo>/board.md``
+is a manager's, with its leads in ``<repo>-leads.registry`` beside the registry (``tree``). The page
+reads every node; a manager's asks join its project, after the root's.
+
 It binds 127.0.0.1 unless ``--host`` names the machine's tailnet address (``tailscale ip -4``),
 which only tailnet peers reach; where the user is the tailscale operator, ``tailscale serve --bg
 --https=<port> http://127.0.0.1:<port>`` adds HTTPS instead. Never a public address, never Funnel.
@@ -157,6 +161,31 @@ def needs_owner(board: Path | None) -> tuple[list[str], str | None]:
         return [], f"{board.name}: {e}"
     m = re.search(r"^## Needs the owner\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
     return [b[2:].strip() for b in m.group(1).splitlines() if b.startswith("- ")] if m else [], None
+
+
+def tree(registry: Path, board: Path | None) -> list[tuple[str, Path, Path | None]]:
+    """The root node, then each project manager's: (repo, registry, board); the root's repo is ""."""
+    managers = sorted(board.parent.glob("projects/*/board.md")) if board else []
+    return [("", registry, board)] + [
+        (b.parent.name, registry.parent / f"{b.parent.name}-leads.registry", b) for b in managers
+    ]
+
+
+def supervised(registry: Path, root: bool) -> tuple[dict, list[dict], list[str]]:
+    """A node's supervisor state and recent events, and what could not be read. A manager whose
+    registry does not exist yet has no supervisor to read, so it warns of nothing."""
+    if not root and not registry.exists():
+        return {}, [], []
+    state, err = read(registry.with_suffix(".state.json"))
+    recent, err2 = events(registry.with_suffix(".events.jsonl"))
+    return (state if isinstance(state, dict) else {}), recent, [x for x in (err, err2) if x]
+
+
+def leads_of(state: dict) -> dict:
+    leads = state.get("leads")
+    return (
+        {k: v for k, v in leads.items() if isinstance(v, dict)} if isinstance(leads, dict) else {}
+    )
 
 
 def age(at: object, now: float) -> str:
@@ -338,17 +367,24 @@ def render(
     def e(x: object) -> str:
         return html.escape(str(x))
 
-    state, err = read(registry.with_suffix(".state.json"))
-    state = state if isinstance(state, dict) else {}
-    leads = state.get("leads")
-    leads = (
-        {k: v for k, v in leads.items() if isinstance(v, dict)} if isinstance(leads, dict) else {}
-    )
-    attention = state.get("attention")
-    attention = [a for a in attention if isinstance(a, dict)] if isinstance(attention, list) else []
-    recent, err2 = events(registry.with_suffix(".events.jsonl"))
-    asks, err3 = needs_owner(board)
-    errors = [x for x in (snap.get("error"), err, err2, err3, *(snap.get("warnings") or [])) if x]
+    errors = [x for x in (snap.get("error"),) if x]
+    state: dict = {}  # the root's, for its write time and post rate
+    leads: dict = {}
+    attention: list[dict] = []
+    recent: list[dict] = []
+    asks: list[tuple[str, str]] = []  # (repo, bullet), the root's first
+    for repo, reg, brd in tree(registry, board):
+        st, evs, errs = supervised(reg, not repo)
+        state = state if repo else st
+        leads.update(leads_of(st))
+        att = st.get("attention")
+        attention += [a for a in att if isinstance(a, dict)] if isinstance(att, list) else []
+        recent += evs
+        bullets, err = needs_owner(brd)
+        asks += [(repo, b) for b in bullets]
+        errors += [*errs, *([err] if err else [])]
+    recent = sorted(recent, key=lambda ev: -num(ev.get("at")))[:EVENTS]
+    errors += snap.get("warnings") or []
     if snap.get("at") is None and not snap.get("error"):
         errors.append("Reading the Omnigent sessions: the first poll has not finished yet.")
 
@@ -415,19 +451,22 @@ def render(
         names.append(area)
         return area
 
-    for b in asks:
+    for repo, b in asks:
         # the chief of staff's own marker (🔴🟡🟢⚪) opening the bullet says its level
         if m := re.match(r"\s*(" + "|".join(i for i, _ in LEVELS.values()) + r")\ufe0f?\s*", b):
             level, b = next(k for k, (i, _) in LEVELS.items() if i == m.group(1)), b[m.end() :]
         else:
             level = "amber" if LATER.search(b) else "red"
         area = re.match(r"\*\*(\w[^*]*?):\*\*\s*", b)  # its area, bold, after the marker
+        if repo and area and key(area.group(1)) != key(repo):  # a manager's board is its project's:
+            area = None  # another area it names stays in the text
         b = b[area.end() :] if area else b
         named = [sid for sid in rows if sid[:8] in b]
         for sid in named:
             raise_(sid, level, first(b), "board: Needs the owner")
         if not named and level in ("red", "amber"):  # only these have a list to show it in
-            loose.append((level, group(area.group(1)) if area else "Other", b))
+            where = repo or (area.group(1) if area else "")
+            loose.append((level, group(where) if where else "Other", b))
 
     def link(sid: object, text: object = None) -> str:
         sid = str(sid)
@@ -554,13 +593,9 @@ def poll(snap: dict, registry: Path, board: Path | None, server: str = "") -> No
     while True:
         try:
             og = og or OA.Omnigent(server)
-            state, _ = read(registry.with_suffix(".state.json"))
-            leads = state.get("leads") if isinstance(state, dict) else None
-            leads = (
-                {k: v for k, v in leads.items() if isinstance(v, dict)}
-                if isinstance(leads, dict)
-                else {}
-            )
+            leads: dict = {}
+            for repo, reg, _ in tree(registry, board):
+                leads.update(leads_of(supervised(reg, not repo)[0]))
             rows = collect(og, leads, memo, decisions=OA.standing(board) if board else "")
             snap.update(
                 rows=rows,
