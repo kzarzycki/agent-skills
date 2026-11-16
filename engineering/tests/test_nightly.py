@@ -3,6 +3,7 @@ tests of lead.md and SKILL.md are in test_contract.py, which `mise run test-engi
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -84,7 +85,8 @@ if path == "issues":
     listed = [i for i in state["issues"].values() if i.get("state") == fields.get("state", "open")]
     answer(listed[(page - 1) * size: page * size])
 if m := re.fullmatch(r"issues/(\d+)/comments", path):
-    answer(state["comments"].get(m.group(1), []))
+    page, size = int(fields.get("page", 1)), int(fields.get("per_page", 30))
+    answer(state["comments"].get(m.group(1), [])[(page - 1) * size : page * size])
 if m := re.fullmatch(r"issues/(\d+)/parent", path):
     answer(issue(issue(m.group(1))["parent"]))
 if m := re.fullmatch(r"issues/(\d+)", path):
@@ -155,7 +157,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
             "11": {
                 "number": 11,
                 "title": "Add the importer",
-                "body": "Closes #21\n",
+                "body": "Part of #21\nCloses #21\n",
                 "merge_commit_sha": first,
             },
             "12": {
@@ -167,7 +169,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
             "13": {
                 "number": 13,
                 "title": "Fix the exporter",
-                "body": "Fixes #23\n\n`Closes #99` is quoted, not a link.\n",
+                "body": "Fixes #23\nPart of #11, a PR, so no issue\n\n`Closes #99` is quoted, not a link.\n",
                 "merge_commit_sha": third,
             },
         },
@@ -188,6 +190,12 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
                 "html_url": "u22",
             },
             "23": {"number": 23, "title": "Exporter bug", "state": "closed", "html_url": "u23"},
+            "11": {
+                "number": 11,
+                "title": "Add the importer",
+                "state": "closed",
+                "pull_request": {},
+            },
         },
     }
     state_path = tmp_path / "gh-state.json"
@@ -209,7 +217,9 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     }
 
 
-def nightly(project: dict, *args: str, red: str | None = None) -> subprocess.CompletedProcess[str]:
+def nightly(
+    project: dict, *args: str, red: str | None = None, repo: str | None = REPO
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
@@ -221,8 +231,7 @@ def nightly(project: dict, *args: str, red: str | None = None) -> subprocess.Com
             red or project["red"],
             "--run",
             RUN,
-            "--repo",
-            REPO,
+            *(["--repo", repo] if repo else []),
             *args,
         ],
         cwd=project["repo"],
@@ -244,8 +253,13 @@ def posts(project: dict) -> list[list[str]]:
     """Each call that wrote to GitHub."""
     if not project["log"].exists():  # gh was never called
         return []
-    calls = [json.loads(line) for line in project["log"].read_text().splitlines()]
-    return [call for call in calls if "--input" in call]
+    return [call for call in calls(project) if "--input" in call]
+
+
+def calls(project: dict) -> list[list[str]]:
+    if not project["log"].exists():  # gh was never called
+        return []
+    return [json.loads(line) for line in project["log"].read_text().splitlines()]
 
 
 def listed(body: str) -> list[str]:
@@ -279,6 +293,8 @@ def test_a_red_night_opens_one_issue_listing_exactly_the_three_merges_with_their
     assert (
         f"<!-- nightly-red last-green={project['green']} red={project['red']} -->" in issue["body"]
     )
+    # each PR came from its commit's subject, with no commit-to-PR lookup
+    assert not [call for call in calls(project) if "/commits/" in call[1]]
 
 
 def test_run_again_after_a_fourth_merge_it_comments_on_that_issue_with_only_the_new_merge(
@@ -358,7 +374,7 @@ def test_a_deny_list_that_cannot_be_read_refuses_too(project: dict, monkeypatch)
 
 def test_a_term_inside_a_longer_word_is_not_denied(project: dict, monkeypatch) -> None:
     deny = project["tmp"] / "deny.txt"
-    deny.write_text("pars\n")
+    deny.write_text("# a comment line names no term\npars\n")
     monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
 
     assert nightly(project).returncode == 0
@@ -426,3 +442,130 @@ def test_an_unknown_commit_exits_2(project: dict) -> None:
 
     assert result.returncode == 2, result
     assert "no commit" in result.stderr
+
+
+def test_a_fifth_merge_lists_only_what_merged_since_the_newest_red_post(project: dict) -> None:
+    assert nightly(project).returncode == 0
+    fourth = squash(project["repo"], "d.txt", "Speed up the loader", 14)
+    fifth = squash(project["repo"], "e.txt", "Trim the cache", 16)
+    current = state(project)
+    for number, sha in ((14, fourth), (16, fifth)):
+        current["pulls"][str(number)] = {
+            "number": number,
+            "title": f"PR {number}",
+            "body": "",
+            "merge_commit_sha": sha,
+        }
+    project["state"].write_text(json.dumps(current))
+    assert nightly(project, red=fourth).returncode == 0
+
+    assert nightly(project, red=fifth).returncode == 0
+
+    last = state(project)["comments"]["100"][-1]
+    assert listed(last["body"]) == [f"- #16 PR 16 (squash `{fifth[:7]}`): links no issue"]
+
+
+def test_a_red_post_naming_a_commit_off_the_history_is_passed_over(project: dict) -> None:
+    repo = project["repo"]
+    assert nightly(project).returncode == 0
+    git(repo, "checkout", "-q", "--orphan", "rewritten")
+    gone = change(repo, "z.txt", "a commit a force-push left behind")
+    git(repo, "checkout", "-q", "main")
+    fourth = squash(repo, "d.txt", "Speed up the loader", 14)
+    current = state(project)
+    current["pulls"]["14"] = {
+        "number": 14,
+        "title": "PR 14",
+        "body": "",
+        "merge_commit_sha": fourth,
+    }
+    current["comments"]["100"] = [{"body": marker(project["green"], gone)}]
+    project["state"].write_text(json.dumps(current))
+
+    assert nightly(project, red=fourth).returncode == 0
+
+    last = state(project)["comments"]["100"][-1]
+    assert listed(last["body"]) == [f"- #14 PR 14 (squash `{fourth[:7]}`): links no issue"]
+
+
+def test_a_red_commit_that_is_the_last_green_one_lists_none(project: dict) -> None:
+    result = nightly(project, red=project["green"])
+
+    assert result.returncode == 0, result
+    [issue] = created(project)
+    assert listed(issue["body"]) == ["- none: the red commit is the last green one"]
+
+
+def test_a_failed_gh_call_exits_1_and_posts_nothing(project: dict) -> None:
+    current = state(project)
+    del current["pulls"]["13"]
+    project["state"].write_text(json.dumps(current))
+
+    result = nightly(project)
+
+    assert result.returncode == 1, result
+    assert "gh api repos/acme/widgets/pulls/13" in result.stderr
+    assert posts(project) == []
+
+
+def test_without_repo_it_reads_github_repository(project: dict, monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_REPOSITORY", REPO)
+
+    assert nightly(project, repo=None).returncode == 0
+    assert len(created(project)) == 1
+
+
+def test_without_repo_or_github_repository_it_reads_the_origin_remote(project: dict) -> None:
+    git(project["repo"], "remote", "add", "origin", f"git@github.com:{REPO}.git")
+
+    assert nightly(project, repo=None).returncode == 0
+    assert len(created(project)) == 1
+
+
+def test_an_origin_that_is_not_github_exits_2(project: dict) -> None:
+    git(project["repo"], "remote", "add", "origin", "https://example.invalid/acme/widgets.git")
+
+    result = nightly(project, repo=None)
+
+    assert result.returncode == 2, result
+    assert "not a GitHub repository" in result.stderr
+
+
+def marker(green: str, red: str) -> str:
+    return f"<!-- nightly-red last-green={green} red={red} -->"
+
+
+def test_the_open_issue_and_its_newest_red_are_found_past_the_first_page(
+    project: dict, monkeypatch
+) -> None:
+    """In-process with a page of two, so the open issues and the issue's comments each span pages."""
+    spec = importlib.util.spec_from_file_location("nightly_under_test", NIGHTLY)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "PAGE", 2)
+    monkeypatch.chdir(project["repo"])
+    title = f"Nightly red since {project['green'][:7]}"
+    current = state(project)
+    current["issues"]["30"] = {"number": 30, "title": title, "state": "open", "pull_request": {}}
+    current["issues"]["31"] = {"number": 31, "title": "Other", "state": "open"}
+    current["issues"]["32"] = {
+        "number": 32,
+        "title": title,
+        "state": "open",
+        "body": marker(project["green"], project["green"]),
+    }
+    current["comments"]["32"] = [
+        {"body": "a"},
+        {"body": marker(project["green"], project["green"])},
+        {"body": marker(project["green"], project["red"])},
+    ]
+    project["state"].write_text(json.dumps(current))
+    args = ["red", "--last-green", project["green"], "--red", project["red"]]
+
+    assert module.main([*args, "--run", RUN, "--repo", REPO]) == 0
+
+    assert created(project) == []
+    comment = state(project)["comments"]["32"][-1]
+    assert listed(comment["body"]) == [
+        f"- none since `{project['red'][:7]}`, the red commit the last post names"
+    ]

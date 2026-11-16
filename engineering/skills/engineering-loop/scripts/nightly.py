@@ -246,7 +246,7 @@ class GitHub:
 def line(hub: GitHub, sha: str, subject: str, parents: int) -> str:
     """One commit's line: its PR with the issues it links and their epics, or the bare commit."""
     short = sha[:SHORT]
-    found = SQUASHED.search(subject) or (MERGED.match(subject) if parents > 1 else None)
+    found = SQUASHED.search(subject) or MERGED.match(subject)
     number = int(found.group(1)) if found else hub.made(sha)
     if number is None:
         return f"- `{short}` {subject} (no PR: a direct push)"
