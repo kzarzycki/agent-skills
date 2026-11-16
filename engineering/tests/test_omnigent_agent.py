@@ -3445,12 +3445,14 @@ def test_a_cloud_start_with_no_environment_pin_is_refused_before_a_session_exist
     og = FakeOmnigent()
     og.harnesses = {"claude-cloud": "acp:claude-cloud"}
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    # the login holds no environment named after the repository, nor Default
+    monkeypatch.setattr(omnigent_agent, "cloud_environments", list)
     main, tree = checkout_with_worktree(tmp_path, None)
     for workspace in (tree, main):  # a worktree, then a checkout that is no worktree
         monkeypatch.chdir(workspace)
         assert start_cloud(og, workspace) == 1
         err = capsys.readouterr().err
-        assert "default environment" in err and "defaultEnvironmentId" in err
+        assert "defaultEnvironmentId" in err and "'Default'" in err and "cloud-env" in err
         assert not (workspace / ".claude" / "settings.local.json").exists()
     assert og.sessions == {}
 

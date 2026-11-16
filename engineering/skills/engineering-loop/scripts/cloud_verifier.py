@@ -72,7 +72,8 @@ precondition is missing and nothing was touched, 3 a question posted, 4 the chec
 pass did (a posted comment's URL is still printed).
 The carrier session runs it detached and polls, since a foreground command in the VM stops at 10 minutes.
 
-Standard library only, plus `gh`, `git` and `npm` in the VM and `codex` and the Claude Code login on the host.
+Standard library only, plus `gh`, `git` and `npm` in the VM and `codex` and the Claude Code login on the host, read
+through orchestrating-agents' `scripts/claude_environments.py`, the one client of the environment API.
 """
 
 from __future__ import annotations
@@ -80,6 +81,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -107,7 +109,6 @@ HOSTS = ["chatgpt.com", "*.chatgpt.com", "auth.openai.com", "api.openai.com"]
 # seed has to refresh days earlier. If OpenAI changes the call, `seed` exits 2 and `login` starts over.
 REFRESH_URL = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-CLAUDE_API = os.environ.get("CLAUDE_CLOUD_API_BASE", "https://api.anthropic.com")
 
 
 class Refused(Exception):
@@ -271,38 +272,31 @@ def refreshed(
     }
 
 
+def environments_client():
+    """orchestrating-agents' claude.ai environment client (`claude_environments.py`), the one client of that API,
+    loaded by path from the skill beside this one, which the loop's package installs with it."""
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "orchestrating-agents"
+        / "scripts"
+        / "claude_environments.py"
+    )
+    if not path.is_file():
+        raise Refused(f"{path} is missing: install the orchestrating-agents skill beside this one")
+    spec = importlib.util.spec_from_file_location(f"{__name__}_claude_environments", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def claude_headers() -> dict:
     """Headers for Claude's environment API, on the Claude Code login this host already has."""
-    raw = ""
-    if sys.platform == "darwin":
-        user = os.environ.get("USER") or run("id", "-un").stdout.strip()
-        raw = run(
-            "security",
-            "find-generic-password",
-            "-a",
-            user,
-            "-s",
-            "Claude Code-credentials",
-            "-w",
-            check=False,
-        ).stdout
-    if not raw and (path := Path.home() / ".claude" / ".credentials.json").exists():
-        raw = path.read_text()
-    if not raw:
-        raise Refused("no Claude Code login on this host: run `claude auth login`")
-    oauth = json.loads(raw)["claudeAiOauth"]
-    REDACT.add(oauth.get("accessToken"), oauth.get("refreshToken"))
-    if oauth.get("expiresAt", 0) / 1000 < time.time() + 60:
-        raise Refused(
-            "the Claude Code login's token has expired: run `claude` once to refresh it, then seed again"
-        )
-    org = json.loads(run("claude", "auth", "status", "--json").stdout)["orgId"]
-    return {
-        "Authorization": f"Bearer {oauth['accessToken']}",
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": "ccr-byoc-2025-07-29",
-        "x-organization-uuid": org,
-    }
+    client = environments_client()
+    try:
+        return client.headers(run=lambda *cmd, **kw: run(*cmd, **kw), secret=REDACT.add)
+    except client.Refused as e:
+        raise Refused(str(e)) from None
 
 
 def pinned_environment() -> str:
@@ -423,7 +417,7 @@ def seed(
 
 def store(env: str, auth: dict, headers: dict) -> None:
     """Put the login's reader copy and OpenAI's hosts into one cloud environment."""
-    url = f"{CLAUDE_API}/v1/environment_providers/{env}"
+    url = f"{environments_client().base()}/v1/environment_providers/{env}"
     current = post_json(url, None, headers)
     config = current["config"]
     copy = base64.b64encode(json.dumps(reader_copy(auth)).encode()).decode()
