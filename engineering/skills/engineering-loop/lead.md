@@ -36,7 +36,10 @@ design, wireframes included for a UI, and delegate the rest.
    cannot invoke it, and its template keeps every section, one line each for a small
    change. Choose the test seams yourself and state them, with the acceptance examples for
    step 9 and the reference each one checks against, in the order of loop.md § Acceptance
-   references. Where gatekeeper.md has a `signoff` rule, end the spec with a line `Sign-off:
+   references. Each Before merge line ends with the check that runs it (a test name, or
+   `acceptance/<issue>/<file>`: SKILL.md, Acceptance checks), or starts with `Manual:` and
+   names the evidence it needs, for a judgment no command can run ("the page reads clearly"),
+   so the worker knows which checks to write and the verifier which to run. Where gatekeeper.md has a `signoff` rule, end the spec with a line `Sign-off:
    owner` or `Sign-off: none`: `owner` where a rule matches or the change needs a person to
    try it in use. Add the size label, then check who approves it (SKILL.md, Approvals and
    proof). A spec gatekeeper.md's `spec.auto` list covers (`bug`, a `Found while #n`
@@ -111,7 +114,9 @@ design, wireframes included for a UI, and delegate the rest.
 6. **Prove** before review: a worker drives the real thing on the PR branch the way
    loop.md § Proof on a branch says, runs the spec's acceptance examples there as far as a worktree can, and
    reports; you read the report. Each proof log names the commit it ran on (worker.md,
-   Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
+   Report), so the verifier can tie it to the head it reviews. The acceptance proof is the
+   acceptance command's log on the head (SKILL.md, Acceptance checks), plus the evidence each
+   `Manual:` line names. Green gates are necessary, not sufficient.
 7. **Verify** (board: `Verify`). A worker report or fix-round gate log naming a test that passed only on its
    retry is yours to record on its `Flaky:` issue, and at the third occurrence to start
    the skip PR from main (SKILL.md, Flaky tests). Commit and push; under `ci: false`, then post the pass with `approvals.py local-ci <pr> --head <the pushed sha>`, since GitHub can still show the previous head for a moment after a push and a bare `local-ci <pr>` would post on it: `--head` waits about 30 s for the push, refuses naming both heads, and its one output line names the head it posted on. Before a verifier starts,
