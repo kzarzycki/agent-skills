@@ -7977,6 +7977,8 @@ def batched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     stray = git("rev-parse", "HEAD")
     git("push", "-q", "origin", f"{evil}:refs/heads/evil", f"{stray}:refs/heads/stray")
     monkeypatch.chdir(checker)
+    # batch reads the PR's base for its policy; the PR merges onto main here
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {"baseRefName": "main"})
     return {
         "head": head,
         "merge": merge,
