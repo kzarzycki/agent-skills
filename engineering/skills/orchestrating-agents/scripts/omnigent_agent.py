@@ -3998,12 +3998,7 @@ def bring_home(og: Omnigent, sid: str, report: Path, keep: bool = False) -> Path
     ``keep`` returns the copy as written, else resolved. A host that cannot be read is named
     with the path left there (``offline``)."""
     home = Path("tmp/loop") / report.name if report.is_absolute() else report
-    try:
-        text = og.read_file(sid, str(report))
-    except Gone:
-        raise
-    except Fail as e:
-        raise offline(og, sid, report) from e
+    text = file_text(og, sid, report, far=True)
     home.parent.mkdir(parents=True, exist_ok=True)
     if home.is_symlink():
         home.unlink()  # else the write lands wherever it points

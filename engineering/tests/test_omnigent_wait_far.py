@@ -124,6 +124,24 @@ def test_a_host_that_goes_offline_on_a_later_poll_is_named_with_the_remote_path(
     assert reads["n"] > 2
 
 
+def test_a_file_read_that_fails_after_the_listing_answered_names_the_remote_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The listing (its mtime) and the file are two requests: the host can drop between them."""
+    og, sid = far(monkeypatch, tmp_path)
+    og.files[REMOTE] = "DONE: ok\n"
+
+    def read_file(self: Far, s: str, path: str) -> str:
+        self.down = True  # the listing answered; the host went away before the read
+        raise omnigent_agent.Fail("GET filesystem: HTTP 502 Bad Gateway")
+
+    monkeypatch.setattr(Far, "read_file", read_file)
+    assert omnigent_agent.main(["wait", sid, REMOTE, "--keep"]) == 1
+    err = capsys.readouterr().err
+    assert "host is offline" in err and REMOTE in err and "HTTP 502" not in err
+    assert not Path("tmp/loop/r.md").exists()
+
+
 @pytest.mark.parametrize("name", ["r.md", "r.md.question"])
 def test_a_local_copy_is_never_written_through_a_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
