@@ -3856,9 +3856,9 @@ def refuse_stale_workspace(
     what it sees. No such line, or a brief that makes its own worktree (``--far``'s ``- Worktree:``
     line), starts as before. A workspace on another host is read through a live session there, and
     a head that can't be read is said to be skipped, never passed silently."""
-    if not (m := re.search(r"^- Reviewed head: ([0-9a-f]{7,40})\s*$", brief, re.M)):
+    if not (m := re.search(r"^- Reviewed head: ([0-9a-f]{7,40})\s*$", brief, re.MULTILINE)):
         return
-    if re.search(r"^- Worktree: ", brief, re.M):
+    if re.search(r"^- Worktree: ", brief, re.MULTILINE):
         return
     want = m[1]
     if remote:

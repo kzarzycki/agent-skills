@@ -92,14 +92,26 @@ def test_verifier_start_refuses_a_workspace_not_at_the_briefs_reviewed_head(
     shas = []
     for _ in range(2):
         subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "c"], check=True)
-        shas.append(subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip())
+        shas.append(
+            subprocess.run(
+                [*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+            ).stdout.strip()
+        )
     og = FakeOmnigent()
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.chdir(tmp_path)
 
     def start(line: str, name: str) -> int:
         (tmp_path / "b.md").write_text(f"Review it.\n{line}\n")
-        argv = ["start", "codex", name, "b.md", str(tmp_path / f"{name}.md"), "--role", "verifier.md"]
+        argv = [
+            "start",
+            "codex",
+            name,
+            "b.md",
+            str(tmp_path / f"{name}.md"),
+            "--role",
+            "verifier.md",
+        ]
         return omnigent_agent.main(argv)
 
     assert start(f"- Reviewed head: {shas[0]}", "stale") == 1
