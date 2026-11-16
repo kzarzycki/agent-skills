@@ -2,7 +2,7 @@
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep|--no-keep] [--notify]
-    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> <env-id> <path> [--trust]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
@@ -123,7 +123,8 @@ settled), appends each event to ``<registry stem>.events.jsonl``, labels each se
 ``DONE``, ``USER NEEDED`` or ``PARKED`` is told to the waiter, again after each of its turns; a deadline whose named sessions are all quiet and one of which waits on the lead, or was started by it (its parent or its ``leads=`` registry) and names no session, reads ``mutual wait``; a lead whose ``STILL WORKING`` names a
 time raises it once that time has passed, which the supervisor settles by waking the lead, and
 none for a lead marked ``direct``,
-which the owner drives in its own session: ``direct <session> [--off]`` sets the mark); and it routes each event instead of posting it: the supervisor settles the routine ones
+which the owner drives in its own session: ``start --top-level --direct`` sets the mark at launch,
+``direct <session> [--off]`` later); and it routes each event instead of posting it: the supervisor settles the routine ones
 itself (no post, a nudge, a revive, telling the leads registered ``after=`` it of a lead's
 ``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
 what its rules can't settle, and posts what needs the notified session or the owner as
@@ -4469,7 +4470,8 @@ def entry(line: str) -> tuple[str, Path, list[Path], bool, bool, str, bool, str]
     write for one), whether it is a lead followed (a ``follow`` field, which ``start
     --top-level`` writes), whose report ``follow`` never reads, and the lead it waits on (an
     ``after=<session>`` field, which ``start --top-level --after`` writes), else empty, and
-    whether the owner drives it directly (a ``direct`` field, which the ``direct`` command writes),
+    whether the owner drives it directly (a ``direct`` field, which ``start --top-level --direct``
+    and the ``direct`` command write),
     and a manager's own leads registry (a ``leads=<file>`` field, which ``start --top-level
     --leads`` writes), else empty."""
     head, *fields = line.split("\t")
@@ -4531,9 +4533,11 @@ def arm(
     after: str = "",
     far: bool = False,
     leads: str = "",
+    direct: bool = False,
 ) -> None:
     """Replace ``sid``'s line in the registry with ``sid=report``, ``briefs`` and, with ``verdict``,
-    ``followed``, ``after`` or ``leads``, that field (``leads`` kept from the line it had), or with
+    ``followed``, ``after``, ``leads`` or ``direct``, that field (``leads`` and ``direct`` kept from
+    the line it had), or with
     ``report`` None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
     goes after the brief files the line had, else after the one ``start`` wrote (``far``: the
     session runs on another host, and ``start`` wrote none)."""
@@ -4548,11 +4552,11 @@ def arm(
         if not report:
             return rest
         files = briefs or []
-        try:  # the owner's mark outlives a re-arm: no caller of arm sets it
-            direct = bool(mine) and entry(mine[-1])[6]
+        try:  # the owner's mark outlives a re-arm that doesn't set it
+            had_direct = bool(mine) and entry(mine[-1])[6]
             had_leads = entry(mine[-1])[7] if mine else ""
         except Fail:
-            direct, had_leads = False, ""
+            had_direct, had_leads = False, ""
         if then:
             try:
                 had = entry(mine[-1])[2] if mine else []
@@ -4562,7 +4566,7 @@ def arm(
         flag = [VERDICT_FIELD] * verdict + [FOLLOW_FIELD] * followed
         flag += [AFTER_FIELD + after] if after else []
         flag += [LEADS_FIELD + (leads or had_leads)] if leads or had_leads else []
-        flag += [DIRECT_FIELD] * direct
+        flag += [DIRECT_FIELD] * (direct or had_direct)
         return rest + ["\t".join([f"{sid}={report}", *map(str, files), *flag])]
 
     edit_registry(path, edit)
@@ -4600,6 +4604,7 @@ def arm_quietly(
     after: str = "",
     far: bool = False,
     leads: str = "",
+    direct: bool = False,
 ) -> None:
     """``arm`` for a command with its own wait: a failure is a warning, since that wait still
     covers the session."""
@@ -4616,6 +4621,7 @@ def arm_quietly(
                 after=after,
                 far=far,
                 leads=leads,
+                direct=direct,
             )
         except OSError as e:
             print(
@@ -6564,6 +6570,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             help="with --top-level and a registry, the registry of the project manager's own leads:"
             " the supervisor --console raises no deadline on its wait on its leads while every lead in it shows life",
         )
+        p.add_argument(
+            "--direct",
+            action="store_true",
+            help="with --top-level and a registry, mark the lead as driven by the owner in its own"
+            " session at launch, as the direct command does afterwards",
+        )
     p = sub.add_parser("send")
     p.add_argument("session")
     p.add_argument("brief", help="the answer or follow-up: a file, or the text itself")
@@ -6848,6 +6860,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         if getattr(args, "leads", None) and not (args.top_level and registry):
             raise Fail(
                 "--leads needs --top-level and a registry: it marks the manager's registry line"
+            )
+        if getattr(args, "direct", False) and not (args.top_level and registry):
+            raise Fail(
+                "--direct needs --top-level and a registry: it marks the lead's registry line"
             )
         if args.cmd == "direct":
             if not registry:
@@ -7268,6 +7284,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     followed=args.top_level,
                     after=args.after or "",
                     leads=str(args.leads.resolve()) if args.leads else "",
+                    direct=args.direct,
                 )
             print(sid, flush=True)
             return sid
