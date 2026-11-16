@@ -6050,7 +6050,10 @@ def slot_path(number: int = 1) -> str:
 def held_slot() -> str | None:
     """The heavy slot this process already runs under (SLOT_HELD names its lock file), else None."""
     held = os.environ.get(SLOT_HELD)
-    return held if held in [slot_path(number) for number in range(1, gate_slots() + 1)] else None
+    # any slot of the host's directory, whatever this process's own GATE_SLOTS: its parent may have counted more
+    if held and os.path.dirname(held) == os.path.dirname(slot_path()):
+        return held if re.fullmatch(r"gate\.\d+\.lock", os.path.basename(held)) else None
+    return None
 
 
 def land_waiting() -> bool:
@@ -6406,8 +6409,12 @@ def stored(record: dict[str, Any]) -> None:
     where = recorded(record["tree"], record["command"])
     where.parent.mkdir(parents=True, exist_ok=True)
     partial = where.with_name(f"{where.name}.{os.getpid()}.partial")
-    partial.write_text(json.dumps(record, indent=2) + "\n")
-    os.replace(partial, where)
+    try:
+        partial.write_text(json.dumps(record, indent=2) + "\n")
+        os.replace(partial, where)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
 
 
 def origin_of(record: dict[str, Any]) -> str:

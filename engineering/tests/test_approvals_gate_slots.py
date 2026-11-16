@@ -6,9 +6,12 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shlex
+import subprocess
 import sys
 import threading
 import time
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -246,3 +249,140 @@ def test_a_lands_batch_gate_runs_its_steps_as_a_land(
     monkeypatch.setattr(approvals, "step_pass", lambda *_a, **_k: None)
     approvals.run_steps(steps["head"], steps["tree"], lambda: "", steps["repo"], land=True)
     assert lands and all(lands)
+
+
+def test_a_run_under_any_numbered_slot_holds_it_whatever_its_own_slot_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wrapper may set `GATE_SLOTS=1` under a parent that took slot 3 with the default count (SKILL.md), and a slot
+    of the host's directory is held whichever number it has; a lock outside the slots is not."""
+    monkeypatch.setenv("GATE_SLOTS", "1")
+    for held in (approvals.slot_path(3), approvals.slot_path(12)):
+        monkeypatch.setenv(approvals.SLOT_HELD, held)
+        assert approvals.held_slot() == held
+    for other in (
+        approvals.slot_file("gate.short.lock"),
+        approvals.slot_file("gate.land.lock"),
+        approvals.slot_file("gate.x.lock"),
+        os.path.join("elsewhere", "gate.1.lock"),
+    ):
+        monkeypatch.setenv(approvals.SLOT_HELD, other)
+        assert approvals.held_slot() is None
+
+
+def test_a_lands_step_takes_its_slot_as_a_land_and_a_pr_gates_does_not(
+    steps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ran_step hands `land` to heavy_slot, which hands it to take_slot: nothing else puts a real land's step ahead of
+    a PR gate."""
+    seen: list[bool] = []
+
+    def take_slot(waiting: Callable[[], None] = lambda: None, land: bool = False) -> Any:
+        seen.append(land)
+        return None, approvals.slot_path()
+
+    monkeypatch.setattr(approvals, "take_slot", take_slot)
+    monkeypatch.setattr(
+        approvals.subprocess, "run", lambda words, **_kw: subprocess.CompletedProcess(words, 0)
+    )
+    step = approvals.gate_plan()[0]
+    approvals.ran_step(step, land=True)
+    approvals.ran_step(step)
+    assert seen == [True, False]
+
+
+def test_mutate_under_a_holder_of_the_second_slot_stays_in_it(repo: Path, tmp_path: Path) -> None:
+    """A holder of slot 2 is a holder of the heavy slot whatever slot `mutate.py` would take: it runs no head run, and
+    hands its tests the holder's slot, not the short lane's, which a heavy wrapper under them would wait on."""
+    policy(repo, 120)
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    record = tmp_path / "slots"
+    held = approvals.slot_path(2)
+    result = mutate(
+        repo,
+        killed,
+        test=recording(record),
+        env={"GATE_SLOTS": "2", approvals.SLOT_HELD: held},
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert log(repo)[2] == "heavy: run under a holder of the heavy slot"
+    assert slots(record) == [held]
+
+
+def test_a_failed_record_write_leaves_no_partial_file_and_the_old_record_whole(
+    steps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = {"tree": steps["tree"], "command": "gate", "exit": 0}
+    approvals.stored(record)
+    where = approvals.recorded(record["tree"], record["command"])
+
+    def replace(*_args: Any) -> None:
+        raise OSError(27, "File too large")
+
+    monkeypatch.setattr(approvals.os, "replace", replace)
+    with pytest.raises(OSError):
+        approvals.stored({**record, "seconds": 2})
+    assert [f.name for f in where.parent.iterdir()] == [where.name]
+    assert "seconds" not in json.loads(where.read_text())
+
+
+def test_this_repos_test_wrapper_takes_no_second_slot_under_any_numbered_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`mise run test` runs pytest behind a wrapper; under a gate that took slot 2 it takes no slot, so it never
+    waits on the gate.1.lock that another gate holds (#1138)."""
+    monkeypatch.setenv("GATE_SLOTS", "2")
+    first = hold(1)
+    try:
+        began = time.monotonic()
+        wrapped(tmp_path, "true", {approvals.SLOT_HELD: approvals.slot_path(2)})
+        assert time.monotonic() - began < 2.0
+    finally:
+        first()
+
+
+def test_this_repos_test_wrapper_gives_a_freed_slot_to_a_waiting_land_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wrapper polls as a PR gate does: a blocking flock would wake the moment the slot frees and beat a land that
+    waited longer."""
+    monkeypatch.setenv("GATE_SLOTS", "1")
+    hold(1, 1.5)
+    seen = tmp_path / "order"
+
+    def land() -> None:
+        fd, _ = approvals.take_slot(land=True)
+        with seen.open("a") as order:
+            order.write("land\n")
+        time.sleep(0.6)
+        assert fd is not None
+        os.close(fd)
+
+    waiting = threading.Thread(target=land)
+    waiting.start()
+    time.sleep(0.5)
+    wrapped(tmp_path, f"echo wrapper >> {seen}", {})
+    waiting.join(20)
+    assert not waiting.is_alive()
+    assert seen.read_text() == "land\nwrapper\n"
+
+
+def wrapped(tmp_path: Path, command: str, env: dict[str, str]) -> None:
+    """Run `command` behind this repo's `mise run test` wrapper (its first segment, with `command` for pytest)."""
+    root = Path(__file__).resolve().parents[2]
+    run = tomllib.loads((root / "mise.toml").read_text())["tasks"]["test"]["run"]
+    wrapper = run.split(" pytest -q -m ", 1)[0].replace(
+        "uv run python", shlex.quote(sys.executable), 1
+    )
+    done = subprocess.run(
+        f"{wrapper} sh -c {shlex.quote(command)}",
+        shell=True,
+        cwd=root,
+        env={**os.environ, **env},
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 0, done.stderr

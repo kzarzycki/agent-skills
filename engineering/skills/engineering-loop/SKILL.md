@@ -779,7 +779,10 @@ or the owner's private network.
   `test:changed` while iterating and the lint parts stay outside the slot. `approvals.py`'s
   `local-ci` and `land` take a slot's lock around each gate step they run and set
   `LOOP_GATE_SLOT_HELD` to its path, as `mutate.py` does (both through one function, `approvals.take_slot`), so a wrapper under them that finds
-  the variable naming its lock takes none, since it would wait on its own parent.
+  the variable naming any `gate.<n>.lock` takes none, since it would wait on its own parent. A wrapper takes its slot
+  through `approvals.take_slot`, or polls as it does, never a blocking `flock`, which wakes the moment a slot frees and
+  beats a waiting land; a wrapper outside this skill that blocks (the template's `scripts/gate-slot` until it polls)
+  can still beat a land.
   Beside it runs a short lane, a lock on `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.short.lock`, which
   a job expected to finish within the policy's `short_seconds` (Settings, default 120) takes instead of the
   heavy one, so a two-minute job waits only for another short job, never behind a long gate: at most one heavy
