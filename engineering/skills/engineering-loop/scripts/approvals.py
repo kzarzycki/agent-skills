@@ -4650,7 +4650,8 @@ def landable(
     checks green on its head; a signed squash possible where loop.md asks for one), or a draft that holds all that and is
     ready to mark, or why not, said once on stdout. The PR is judged as `flag` leaves it (a `risk:high` the gate added
     that `unflag` would take off no longer holds it); `land` writes the label and the ready mark itself. The `named` PR
-    missing a required check, or a draft, that GitHub reports conflicting ends the wait, since no workflow runs on it."""
+    with a required check missing, red or pending, or a draft, that GitHub reports conflicting prints its CI lines and
+    the fix (merge the base in) and ends the wait: no workflow runs on it, so the check never turns green."""
     where = f"PR #{pull['number']}"
     lines, issues = proof_gaps(pull, tracker, loop)
     if lines:
@@ -4658,13 +4659,17 @@ def landable(
             print(line)
         return Verdict((1, False))
     pull = flagged_as(pull, issues, loop)
-    # GitHub runs no workflow on a conflicting PR, so a required check it lacks never comes, nor do a draft's once
-    # it is ready: before the draft is marked ready, since that would start nothing
+    # GitHub runs no workflow on a conflicting PR, so a required check it lacks or has red or pending from before it
+    # conflicted never turns green, nor do a draft's once it is ready: before the draft is marked ready, since that
+    # would start nothing
     if (
         named
         and required
         and pull.get("mergeable") == "CONFLICTING"
-        and (pull["isDraft"] or required - {name for name, _ in head_checks(pull, required)[0]})
+        and (
+            pull["isDraft"]
+            or required - {name for name, state in head_checks(pull, required)[0] if state in GREEN}
+        )
     ):
         for line in ci(where, pull, required):
             print(line)
