@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from approvals_harness import approvals, git_in
+from approvals_harness import approvals, git_in, lands  # noqa: F401
 
 LOOP = "docs/agents/loop.md"
 REAL = approvals.judge_with_base  # the shared fixtures replace it per test
