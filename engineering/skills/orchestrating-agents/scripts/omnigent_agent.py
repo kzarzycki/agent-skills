@@ -7039,7 +7039,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     f"--verifier-route {args.verifier_route} applies to a verifier start only:"
                     " pass --role <skills>/engineering-loop/verifier.md"
                 )
-            args.verifier_route = args.verifier_route or os.environ.get("OMNIGENT_VERIFIER_ROUTE", "codex")
+            args.verifier_route = args.verifier_route or os.environ.get(
+                "OMNIGENT_VERIFIER_ROUTE", "codex"
+            )
         if verifier and args.verifier_route != "codex":
             apply_route(args)
         verifies = args.pr if verifier else None
