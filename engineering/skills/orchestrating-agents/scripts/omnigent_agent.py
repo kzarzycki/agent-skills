@@ -8,7 +8,7 @@
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
-    python3 scripts/omnigent_agent.py relay <session> <message-file>
+    python3 scripts/omnigent_agent.py relay <session> <message-file>   (send, relay: [--expires MINUTES])
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
     python3 scripts/omnigent_agent.py owner-said <session> <quote-file>
@@ -45,6 +45,8 @@ once the runner is online; exit 4 only when that revive fails, naming its reply.
 ``send`` exits 7 when the message was posted and a later read (the poll that confirms it) failed:
 it is out, delivery unconfirmed, and running ``send`` again is safe, since it finds the earlier
 copy before it posts; a failure before the post stays exit 1.
+``send`` and ``relay`` take ``--expires <minutes>`` (default 30, 0 = never): the message carries its expiry and
+sender, so one still queued after its sender is gone is dropped and never lands out of context.
 ``relay`` posts a message that owes no report (an owner's words for a lead) and returns at once:
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
@@ -911,6 +913,9 @@ def error_body(e: HTTPError) -> str:
     return f": {' '.join(text.split())}" if text else ""
 
 
+EXPIRES_MINUTES = 30
+
+
 class Omnigent:
     def __init__(self, named: str = "") -> None:
         text = CONFIG.read_text()
@@ -1238,18 +1243,18 @@ class Omnigent:
         body = {"action": action, **({"content": content} if content else {})}
         self.call("POST", f"/v1/sessions/{sid}/elicitations/{eid}/resolve", body)
 
+    expires = EXPIRES_MINUTES  # minutes a message stays deliverable; 0 = no expiry
+
     def send(self, sid: str, text: str) -> None:
-        self.call(
-            "POST",
-            f"/v1/sessions/{sid}/events",
-            {
-                "type": "message",
-                "data": {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": text}],
-                },
-            },
-        )
+        """Post ``text`` as a user message. It expires ``self.expires`` minutes on (0: never) and
+        names the calling session as its sender, so a message queued behind a busy turn is dropped,
+        and its sender told, once that sender is gone, instead of landing out of context."""
+        data: dict = {"role": "user", "content": [{"type": "input_text", "text": text}]}
+        if self.expires:
+            data["expires_at"] = int(time.time() + self.expires * 60)
+        if sender := own_id():
+            data["sender_session_id"] = sender
+        self.call("POST", f"/v1/sessions/{sid}/events", {"type": "message", "data": data})
 
     def items(self, sid: str) -> list[dict]:
         page = self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc")
@@ -6321,6 +6326,12 @@ def main(argv: list[str] | None = None) -> int:
     return code
 
 
+EXPIRES_HELP = (
+    f"minutes the message stays deliverable (default {EXPIRES_MINUTES}; 0 = never): a message queued"
+    " behind a busy turn is dropped once it expires, and never lands out of context after its sender is gone"
+)
+
+
 def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -6427,6 +6438,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("brief", help="the answer or follow-up: a file, or the text itself")
     p.add_argument("report", type=Path)
     p.add_argument("--confirm-seconds", type=float, default=60.0)
+    p.add_argument("--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP)
     p = sub.add_parser("relay")
     p.add_argument("session")
     p.add_argument("message", help="the message, a file or the text itself; it owes no report")
@@ -6445,6 +6457,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         " session waiting on a question holds the message behind it (exit 5)",
     )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
+    p.add_argument("--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP)
     p = sub.add_parser("broadcast", description="relay one message file to many sessions at once")
     p.add_argument("message", help="the message, a file or the text itself; it owes no report")
     p.add_argument(
@@ -6756,6 +6769,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             print(line)
             return 0 if ok else 1
         og = Omnigent(args.server) if args.server else Omnigent()
+        if args.cmd in ("send", "relay"):
+            og.expires = args.expires
         if args.cmd == "capacity":
             target = og.host(args.host)
             name = host_name(og, target)
