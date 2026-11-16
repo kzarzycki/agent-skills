@@ -244,7 +244,7 @@ no `land.signing_key_env`, since GitHub signs: REST answers every step (auto-mer
 is its timeline's queue events, GitHub's `gh-readonly-queue/<base>/pr-<n>-<sha>` ref and the repo's `merge_group`
 runs), and since REST names no removal's reason, each is read from its group's commit: `merged` when GitHub reports
 the PR merged or that commit is in the base, `failed_checks` when a check the base requires failed on it,
-`merge_conflict` when GitHub reports the PR conflicting, else none, which counts for nothing.
+`merge_conflict` when GitHub reports the PR conflicting or is still working that out, else none, which counts for nothing.
 With loop.md's `land` section (`signed_squash_to: <branch>`, `allowed_signers: <path>`), for a repo that trusts only
 commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the batch is the same, but each
 PR lands as a squash made in this checkout instead: one commit holding the tree it lands, on the base's tip the
