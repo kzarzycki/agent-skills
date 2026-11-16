@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,27 @@ def test_behind_with_the_script_changed_warns(clone: tuple[Path, Path]) -> None:
     fetched(origin, work)
     line = approvals.pack_behind(work / SCRIPT)
     assert line is not None and "1 commit(s) changed this script" in line and "git pull" in line
+
+
+def test_upstream_changing_only_gatekeeper_py_makes_an_approvals_py_caller_stale(
+    clone: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """approvals.py runs gatekeeper.py's source, so a change upstream to only the gatekeeper leaves the caller stale."""
+    origin, work = clone
+    scripts = Path(approvals.__file__).parent
+    for source in scripts.glob("*.py"):  # the gatekeeper loads its adapter and board from beside it
+        commit(origin, f"scripts/{source.name}", source.read_text())
+    git_in(work, "pull", "-q")
+    commit(origin, "scripts/gatekeeper.py", (scripts / "gatekeeper.py").read_text() + "\n# v2\n")
+    fetched(origin, work)
+    spec = importlib.util.spec_from_file_location("approvals_by_path", work / "scripts/approvals.py")
+    assert spec and spec.loader
+    shim = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shim)
+    shim.refuses_stale = lambda: True
+    assert shim.pack_behind(work / "scripts/approvals.py") is None
+    assert shim.main(["report", "nonexistent.md"]) == 1
+    assert "gatekeeper.py: this checkout is behind" in capsys.readouterr().err
 
 
 def test_behind_with_the_script_unchanged_is_silent(clone: tuple[Path, Path]) -> None:

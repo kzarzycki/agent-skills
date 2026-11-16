@@ -3930,6 +3930,11 @@ def landing_here(
             sys.exit(128 + min(waiting))
 
 
+# the script files running here: this one, and the gatekeeper beside it when this is the approvals.py shim that runs
+# the gatekeeper's source (the same file, once, when the gatekeeper runs directly)
+RUNNING = tuple(dict.fromkeys((__file__, str(Path(__file__).with_name("gatekeeper.py")))))
+
+
 def base_drift(base: str) -> list[str]:
     """The running gatekeeper.py and github_adapter.py and the three policy files (tracker, loop.md, gatekeeper.md) whose text here differs from
     `origin/<base>`'s, as repo paths, since a PR's own edit of the code or rules that judge it must not judge it. Reads
@@ -3945,11 +3950,7 @@ def base_drift(base: str) -> list[str]:
         return []
     paths = [TRACKER, LOOP, POLICY]
     # the gatekeeper and its GitHub adapter, the code that judges
-    for running_file in reversed(
-        dict.fromkeys(
-            (__file__, str(Path(__file__).with_name("gatekeeper.py")), github.__file__ or "")
-        )
-    ):
+    for running_file in reversed(dict.fromkeys((*RUNNING, github.__file__ or ""))):
         try:
             paths.insert(0, Path(running_file).resolve().relative_to(root.resolve()))
         except ValueError:
@@ -7140,7 +7141,7 @@ def main(argv: list[str]) -> int:
 
 def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.ArgumentParser) -> int:
     """The verb `args` names; a refusal raises."""
-    if stale := pack_behind(__file__) or pack_behind(Path(__file__).with_name("gatekeeper.py")):
+    if stale := next(filter(None, map(pack_behind, RUNNING)), None):
         print(stale, file=sys.stderr)
         if refuses_stale():
             return 1
