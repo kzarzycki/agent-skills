@@ -307,3 +307,23 @@ def test_a_conflicting_pr_whose_check_is_there_and_pending_is_still_waited_for(
     check(lands, 8, "PENDING")
     lands["land"]()
     assert sum(clock.slept) == 600
+
+
+def test_a_pr_not_reported_conflicting_and_missing_its_check_is_still_waited_for(
+    lands: dict[str, Any], clock: Clock
+) -> None:
+    policy(lands, "land:\n  batch_wait_seconds: 600")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    lands["pulls"][8]["mergeable"] = "MERGEABLE"
+    lands["pulls"][8]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"][
+        "nodes"
+    ] = []
+    lands["land"]()
+    assert sum(clock.slept) == 600
+
+
+def test_a_wait_of_zero_is_no_refusal() -> None:
+    assert approvals.settings(loop_md("land:\n  batch_wait_seconds: 0\n")) == {
+        "land": {"batch_wait_seconds": 0}
+    }
