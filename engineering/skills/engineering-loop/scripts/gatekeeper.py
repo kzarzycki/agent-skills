@@ -5467,10 +5467,12 @@ def affected_tests() -> int:
         try:
             env[variable] = git("merge-base", f"origin/{base}", "HEAD").strip()
         except subprocess.CalledProcessError as exc:
-            raise Refused(f"no merge base of origin/{base} and HEAD: fetch origin/{base} deeper") from exc
+            raise Refused(
+                f"no merge base of origin/{base} and HEAD: fetch origin/{base} deeper"
+            ) from exc
     print(f"affected-tests: {shlex.join(words)}", file=sys.stderr, flush=True)
     try:
-        return subprocess.run(words, cwd=root, env=env | sets).returncode
+        return subprocess.run(words, cwd=root, env=env | sets, check=False).returncode
     except OSError as exc:
         raise Refused(f"`{words[0]}` can't run: {exc}") from None
 
