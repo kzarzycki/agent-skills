@@ -10,7 +10,7 @@
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
-    uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR as one gated batch; exit 0, 1 or 3
+    uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
     uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
     uv run scripts/approvals.py approve merge <pr> --head <sha> --by <owner|delegate> [--withdraw]  # a go on that head
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
@@ -106,7 +106,11 @@ workflow posts success and its author merges it their usual way; `land` never ta
 prints the same line and exits 1, so the loop never merges it. Risk rules and `risk:high` hold no such PR. `check build` is
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land [<pr>... [--only]]` is the one way an agent merges. It lands every landable PR into one base, the first named PR's or else the
-repository's default branch, as one batch:
+repository's default branch, through one of two merge queues, picked by the base's rules (`required_checks`): the GitHub
+merge queue where they carry a `merge_queue` rule, else the local merge queue. Both take the same candidates (step 2) and
+differ in where the gate runs (GitHub's `merge_group` CI, or this host), when they run (continuously on GitHub, or within
+one `land` call) and how a red group is isolated (GitHub's per-entry groups, or the local one-at-a-time fallback, step
+6). One `land` runs one of them, never a mix. The local merge queue lands its candidates as one batch:
 1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
 pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
 tip says the state: each lock commit holds the empty tree, its title says `landing lock: held` or `landing lock: free`
@@ -162,7 +166,8 @@ comments on GitHub where it can edit them (`check merge` names any it can't): un
 body GitHub builds from the commits (one: its message after the subject, its co-author lines moved to the end;
 several: each message as a `* ` item, then `---------` and their co-authors), under the PR-description default the
 PR's body, and under the blank default none. A merge GitHub refuses, or leaves unmerged
-(a base requiring a merge queue only queues it, to merge later on a tree no gate saw), stops there: that PR and those
+(a merge queue the base's rules don't name, such as classic branch protection's, only queues it, to merge later on a
+tree no gate saw), stops there: that PR and those
 after it wait for the next land. Then it fetches and compares the base's tree with the gated tree. Equal: the pass is
 published (below) on the new tip. It then deletes the record branches no head needs: those of the trees it landed, and
 those over a day old whose tree is no open PR's head (a head replaced or never landed; the day spares a record pushed
@@ -183,6 +188,31 @@ Exit 0 when the named PR merged, or with no PR named when nothing landable faile
 eviction, a merge GitHub refused or a red base; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
 `land --wait` runs it again every 30 seconds while it waits on the lock or on CI, printing each new state once, for up
 to 2 hours, then exits 3; a wait for the owner ends it at once, since only the owner clears it.
+The GitHub merge queue takes no landing lock (GitHub orders the entries, and two lands enqueueing one PR change
+nothing), builds no local batch, runs no local gate, publishes no pass and deletes no record branch. Once it has fetched
+the base (the base-drift refusal below), each of step 2's candidates, oldest PR first, goes in with GraphQL
+`enqueuePullRequest`, `expectedHeadOid` the head the proofs judged, and GitHub drops an entry whose head moves, so no
+proof outlives a push. A PR already queued is left alone, unless its entry has waited 10 minutes in `AWAITING_CHECKS`
+with no check suite on its commit (GitHub lost its `merge_group` event): then it is dequeued and enqueued again. Else
+the queue's last removal of the head decides: the PR's `RemovedFromMergeQueueEvent`s since its head was pushed and since
+it last went ready, so a PR evicted and marked ready again counts anew. `merged`: it waits, since GitHub reports the
+merge a moment after the removal. `merge_conflict`, or a PR GitHub reports conflicting: step 3's conflict comment,
+once per head, and not enqueued (exit 1). `failed_checks`: first the checks the base requires are read on its tip; one
+red there stops the land (exit 1, `<base> itself is red`), counting nothing and evicting nobody. Else the head's first
+such removal gets a `Red in the merge queue` comment naming the check that failed on the queue's commit, its run and
+its failed job log's last 30 lines, and is enqueued again; its second turns the PR back to draft with the same, as
+step 6 evicts (`Evicted from the merge queue`, exit 1). Any other removal (`checks_timed_out`, `manual`) counts for
+nothing, and the PR is enqueued again. The count lives in GitHub's timeline, so any land applies it and `land` keeps no
+state. A named PR enqueued or queued exits 3, naming its queue position and head; a bare `land` exits 0 once its
+candidates are in. `land --wait` polls the entry as above until the PR merges, then exits 0; the first land that reads
+a PR the queue merged comments `Landed` on it, `Base:` its merge commit, `Tree:` that commit's tree and `Gate: merge
+queue` with the links of the runs on that commit (the queue's `merge_group` CI), and finishes its worker sessions as
+step 5 does. The queue merges with its own `merge_method` and writes the squash message from the repo's squash
+default, which `land` neither sets nor overrides: session link lines stay out of commits through the `commit-msg`
+hook, and the PR's body and comments lose theirs before it is enqueued, as in step 5. A head matching
+`land.merge_commit_heads` is refused unless the queue's method is `MERGE`, since the queue merges every entry one way;
+`land.signed_squash_to` is refused, since GitHub signs the queue's commit; and so is a cloud session, since
+`enqueuePullRequest` is GraphQL, which its proxy refuses.
 With loop.md's `land` section (`signed_squash_to: <branch>`, `allowed_signers: <path>`), for a repo that trusts only
 commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the batch is the same, but each
 PR lands as a squash made in this checkout instead: one commit holding the tree it lands, on the base's tip the
@@ -209,7 +239,8 @@ user.signingkey=<file> -c gpg.ssh.program=ssh-keygen`, over the session's key an
 signed and verified with it. The batch's pass is published as below: GitHub refusing the status
 there, it goes to origin as a ref. There REST alone answers, and it says neither whether a PR is in a merge queue nor
 whether classic branch protection requires one, so a PR is a candidate there only with `merge_queue: false` in the
-section, the project's word that its base requires none (`required_checks` still refuses a ruleset that does); a draft is refused, and an evicted PR stays
+section, the project's word that its base requires none (a ruleset that does picks the GitHub merge queue, which a
+cloud session refuses); a draft is refused, and an evicted PR stays
 ready, each said, since GitHub changes a draft only over GraphQL. Off a cloud session only `where` is new.
 `land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip.
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
@@ -531,6 +562,9 @@ PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSI
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
+  mergeQueueEntry {{ state position enqueuedAt headCommit {{ checkSuites {{ totalCount }} }} }}
+  removals: timelineItems(last: 50, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {{ nodes {{
+    ... on RemovedFromMergeQueueEvent {{ reason createdAt beforeCommit {{ oid }} }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ workflow {{ name }} }} }} }}
     ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
@@ -3672,17 +3706,24 @@ def merge_base(base: str, head: str) -> str:
 PLAN_LIMIT = "Upgrade to GitHub Pro"
 
 
-def required_checks(base: str) -> set[str]:
-    """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's. A private
-    repo on GitHub's free plan has no rulesets: that 403 reads as none, and any other error raises. A base whose rules
-    require GitHub's merge queue is refused: GitHub would merge each PR later, on a tree land never gated."""
+class Required(set):
+    """The checks a base requires (required_checks), and `queue`: the merge method (`MERGE`, `SQUASH` or `REBASE`) of
+    the GitHub merge queue its rules require, None without one, which picks land's local merge queue."""
+
+    queue: str | None = None
+
+
+def required_checks(base: str) -> Required:
+    """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's, with the
+    merge method of a `merge_queue` rule as `queue`, which picks land's GitHub merge queue. A private repo on GitHub's
+    free plan has no rulesets: that 403 reads as none, and any other error raises."""
     try:
         rulesets = gh(
             "api",
             "--paginate",
             f"repos/{{owner}}/{{repo}}/rules/branches/{base}",
             "--jq",
-            '.[] | if .type == "merge_queue" then ":merge_queue"'
+            '.[] | if .type == "merge_queue" then ":merge_queue:" + (.parameters.merge_method // "MERGE")'
             ' elif .type == "required_status_checks" then .parameters.required_status_checks[].context else empty end',
         )
     except subprocess.CalledProcessError as error:
@@ -3692,18 +3733,17 @@ def required_checks(base: str) -> set[str]:
             f"GitHub enforces no rules on {base} here (its plan has none): land's proofs are the only gate"
         )
         rulesets = ""
-    if ":merge_queue" in rulesets.split():
-        raise Refused(
-            f"{base}'s rules require GitHub's merge queue, which would merge each PR later on a tree land never gated:"
-            " drop it from the ruleset (SKILL.md, Adopting the loop)"
-        )
     protection = gh(
         "api",
         f"repos/{{owner}}/{{repo}}/branches/{base}",
         "--jq",
         ".protection.required_status_checks.contexts // [] | .[]",
     )
-    return set((rulesets + protection).split())
+    queue = [word for word in rulesets.split() if word.startswith(":merge_queue")]
+    found = Required(set((rulesets + protection).split()) - set(queue))
+    if queue:
+        found.queue = queue[0].rpartition(":")[2] or "MERGE"
+    return found
 
 
 def tree(sha: str) -> dict[str, tuple[str, str]] | None:
@@ -4209,9 +4249,10 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
 
 
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
-    """Land every landable PR into the base (the first named PR's, else the default branch) as one gated batch, under
-    the landing lock, where loop.md lets land run (placed) (`only`: the named PRs alone); the exit, and whether a wait
-    would end it (lock, CI on a head), so land --wait runs it again."""
+    """Land every landable PR into the base (the first named PR's, else the default branch) through its merge queue,
+    the GitHub merge queue where its rules require one, else the local merge queue, where loop.md lets land run (placed)
+    (`only`: the named PRs alone); the exit, and whether a wait would end it (lock, CI on a head, a queue entry), so
+    land --wait runs it again."""
     tracker, loop = project()
     with placed(loop):
         return landing_here(pr, tracker, loop, only)
@@ -4227,6 +4268,7 @@ def landing_here(
         pull = pull_request(number)
         if pull["state"] == "MERGED":
             print(f"PR #{number} is merged")
+            queue_landed(pull)
         elif pull["state"] != "OPEN":
             if len(numbers) == 1:
                 raise Refused(f"PR #{number} is closed: nothing to land")
@@ -4252,8 +4294,14 @@ def landing_here(
             lambda: rest("repos/{owner}/{repo}")["default_branch"],
         )
     )
+    # the base's rules pick the merge queue: GitHub's where they require one, else the local one, never a mix of the two;
+    # `loop:approvals` is check merge's own status, on the proofs land reads itself
+    rules = required_checks(base)
+    required = rules - {APPROVALS}
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
-    named = readied(named, base, tracker, loop)
+    named = readied(named, required, tracker, loop)
+    if method := getattr(rules, "queue", None):
+        return github_queue(named, base, tracker, loop, required, method, only, worst)
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
     stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
     # every lock commit pushed, each before its push; taken stays None while the last one's push may have reached origin
@@ -4269,7 +4317,7 @@ def landing_here(
         # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
         judge_with_base(base)
-        return batched(named, base, tracker, loop, only, held, worst)
+        return local_queue(named, base, tracker, loop, required, only, held, worst)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
@@ -4609,7 +4657,7 @@ class Verdict(NamedTuple):
 
 def readied(
     named: list[dict[str, Any]],
-    base: str,
+    required: set[str],
     tracker: str | None,
     loop: str | None,
 ) -> list[dict[str, Any]]:
@@ -4620,7 +4668,6 @@ def readied(
     drafts = [pull for pull in named if pull["isDraft"]]
     if not drafts:
         return named
-    required = required_checks(base) - {APPROVALS}
     found: dict[int, dict[str, Any]] = {}
     for pull in drafts:
         verdict = landable(pull, tracker, loop, required, named=True)
@@ -4702,20 +4749,17 @@ def landable(
     return Verdict(None, issues=issues)
 
 
-def batched(
+def candidates_of(
     named: list[dict[str, Any]],
     base: str,
     tracker: str | None,
     loop: str | None,
-    only: bool = False,
-    held: list[str] | None = None,
-    worst: int = 0,
-) -> tuple[int, bool]:
-    """Under the lock (`held`, its commits): merge every candidate's head onto `base` locally, oldest PR first, gate
-    the result's tree once (or reuse a pass on it), move the lock to name the last PR to land (repointed), and merge each
-    through GitHub in that order; a red batch lands one PR at a time."""
-    # `loop:approvals` is check merge's own status, on the proofs land reads itself
-    required = required_checks(base) - {APPROVALS}
+    required: set[str],
+    only: bool,
+) -> tuple[list[dict[str, Any]], dict[int, tuple[int, bool]]]:
+    """Both merge queues' candidates, oldest PR first: every open PR into `base` that is no draft, and the named ones
+    (`only`: those alone), each judged by `landable` (its risk flagged once its proofs hold); with the exit each other
+    one means for a named PR."""
     waits: dict[int, tuple[int, bool]] = {}
     candidates = []
     listed = {
@@ -4737,6 +4781,41 @@ def batched(
             candidates.append(pull)
         else:
             waits[number] = verdict.exit
+    return candidates, waits
+
+
+def outcome(
+    named: list[dict[str, Any]],
+    exits: dict[int, tuple[int, bool]],
+    worst: int,
+    failed: set[int],
+) -> tuple[int, bool]:
+    """A land's exit, and whether a wait would change it: with PRs named the worst of theirs (`exits`, else 1), 1 over 3
+    over 0; with none 1 when one `failed`, else 3 while a wait would clear one of `exits`, else 0."""
+    if named:
+        found = [exits.get(pull["number"], (1, False)) for pull in named]
+        code = max((c for c, _ in found), key=lambda c: {1: 2, WAITING: 1}.get(c, 0), default=0)
+        code = 1 if worst else code
+        return code, code == WAITING and any(again for c, again in found if c == WAITING)
+    if failed:
+        return 1, False
+    return (WAITING, True) if any(again for _, again in exits.values()) else (0, False)
+
+
+def local_queue(
+    named: list[dict[str, Any]],
+    base: str,
+    tracker: str | None,
+    loop: str | None,
+    required: set[str],
+    only: bool = False,
+    held: list[str] | None = None,
+    worst: int = 0,
+) -> tuple[int, bool]:
+    """The local merge queue, under the lock (`held`, its commits): merge every candidate's head onto `base` locally,
+    oldest PR first, gate the result's tree once on this host (or reuse a pass on it), move the lock to name the last PR
+    to land (repointed), and merge each through GitHub in that order; a red batch lands one PR at a time."""
+    candidates, waits = candidates_of(named, base, tracker, loop, required, only)
     failed: set[int] = set()
     # each PR to land, the tree it lands, the tree gated with it, and how that passed
     landed: list[tuple[dict[str, Any], str, str, str]] = []
@@ -4749,19 +4828,9 @@ def batched(
                 repointed(base, held, landed[-1][0]["number"])
             if landed:
                 merges(landed, base, tip, work, loop, failed)
-    if named:
-        # each named PR's exit: its wait's, else 0 when it merged, else 1; the worst of them, 1 over 3 over 0
-        done = {pull["number"] for pull, *_ in landed} - failed
-        exits = [
-            waits[p["number"]] if p["number"] in waits else (0 if p["number"] in done else 1, False)
-            for p in named
-        ]
-        code = max((c for c, _ in exits), key=lambda c: {1: 2, WAITING: 1}.get(c, 0), default=0)
-        code = 1 if worst else code
-        return code, code == WAITING and any(again for c, again in exits if c == WAITING)
-    if failed:
-        return 1, False
-    return (WAITING, True) if any(again for _, again in waits.values()) else (0, False)
+    # each named PR's exit: its wait's, else 0 when it merged, else 1
+    done = {pull["number"] for pull, *_ in landed} - failed
+    return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
 
 
 @contextlib.contextmanager
@@ -4873,6 +4942,14 @@ def merged_onto(
     failed.add(pull["number"])
     ahead = f" plus {', '.join(f'#{n}' for n in before)} merged before it" if before else ""
     print(f"{where} conflicts with {base}{ahead}: skipped")
+    conflict_note(pull, base, ahead)
+    return False
+
+
+def conflict_note(pull: dict[str, Any], base: str, ahead: str = "") -> None:
+    """Say on the PR, once per head, that it conflicts with `base` (`ahead`: and the PRs merged before it), so it needs
+    the base merged in: both merge queues' comment."""
+    head = pull["headRefOid"]
     if not any(
         note["body"].startswith(CONFLICTS) and f"Head: {head}" in note["body"]
         for note in notes(pull)
@@ -4882,7 +4959,6 @@ def merged_onto(
             f"{CONFLICTS}\nHead: {head}\n\nIt conflicts with {base}{ahead}: merge origin/{base} in, rerun the gates,"
             " get a verdict on the merge (lead.md step 8), then land again.\n",
         )
-    return False
 
 
 def pre_landed(
@@ -5025,14 +5101,29 @@ def landed_pass(tip: str, tree: str) -> dict[str, Any]:
 
 
 def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
-    """Take a PR red alone, twice, out of the batch: back to draft, so the next land leaves it out until `land <pr>`
-    marks it ready again, and a comment holding its gate log's last LOG_TAIL lines."""
-    where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
-    print(f"{where} is red alone on {base} at {green}, twice: evicted")
+    """Take a PR red alone, twice, out of the local merge queue's batch (evicted), with its gate log's last lines."""
     try:
         tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
     except OSError:
         tail = []
+    evicted(
+        pull,
+        EVICTED,
+        f"is red alone on {base} at {green}, twice",
+        f"`{gate()[0]}` failed twice on it merged alone onto {base} at {green}",
+        tail,
+        "The gate's last lines",
+    )
+
+
+def evicted(
+    pull: dict[str, Any], title: str, said: str, why: str, tail: list[str], what: str
+) -> None:
+    """Take a PR red twice out of either merge queue: back to draft, so the next land leaves it out until `land <pr>`
+    marks it ready again, and a comment headed `title` saying `why` it failed, holding `tail`, the last LOG_TAIL lines
+    of the log `what` names."""
+    where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
+    print(f"{where} {said}: evicted")
     # GitHub turns a PR back to draft only over GraphQL, which a cloud session's proxy refuses
     if in_cloud():
         print(
@@ -5042,11 +5133,263 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
         gh("pr", "ready", "--undo", str(number))
     comment(
         number,
-        f"{EVICTED}\nHead: {head}\n\n`{gate()[0]}` failed twice on it merged alone onto {base} at {green}: fix it,"
-        f" then `land {number}` marks it ready again.\n\n<details><summary>The gate's last lines</summary>\n\n````\n"
-        + "\n".join(tail)
-        + "\n````\n</details>\n",
+        f"{title}\nHead: {head}\n\n{why}: fix it, then `land {number}` marks it ready again.\n\n<details><summary>"
+        f"{what}</summary>\n\n````\n" + "\n".join(tail) + "\n````\n</details>\n",
     )
+
+
+# the GitHub merge queue's calls: enqueue pinned to the head the proofs judged, dequeue a stuck entry
+ENQUEUE = (
+    "mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head})"
+    " { mergeQueueEntry { position } } }"
+)
+DEQUEUE = "mutation($id: ID!) { dequeuePullRequest(input: {id: $id}) { clientMutationId } }"
+# how long an entry may wait for checks with no check suite on its commit: GitHub lost the merge_group event (#404)
+STUCK = 10 * 60
+# RemovedFromMergeQueueEvent.reason, a String in GitHub's schema: these values are read off real removals, beside
+# `checks_timed_out` and `manual`, which count for nothing
+FAILED_CHECKS, MERGE_CONFLICT, QUEUE_MERGED = "failed_checks", "merge_conflict", "merged"
+QUEUE_RED = "Red in the merge queue"
+QUEUE_EVICTED = "Evicted from the merge queue"
+LANDED = "Landed"
+
+
+def github_queue(
+    named: list[dict[str, Any]],
+    base: str,
+    tracker: str | None,
+    loop: str | None,
+    required: set[str],
+    method: str,
+    only: bool = False,
+    worst: int = 0,
+) -> tuple[int, bool]:
+    """The GitHub merge queue, which `base`'s rules require (merging with `method`): no landing lock, local batch or
+    local gate, since GitHub's queue orders the entries, gates each group with its `merge_group` CI run and isolates a
+    red one. Every candidate (candidates_of), oldest PR first, goes in pinned to its head (queue_step). A named PR in
+    the queue waits (exit 3) until it merges; a bare land is done once its candidates are in."""
+    if in_cloud():
+        raise Refused(
+            f"{base}'s rules require GitHub's merge queue, and a cloud session can't enqueue: enqueuePullRequest is"
+            " GraphQL, which its proxy refuses. Land on a host"
+        )
+    if signed(loop):
+        raise Refused(
+            f"{base}'s rules require GitHub's merge queue, which merges with GitHub's signature, but loop.md's"
+            " `land.signed_squash_to` asks for this checkout's: unset it, or drop the queue from the ruleset"
+        )
+    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+    judge_with_base(base)
+    candidates, exits = candidates_of(named, base, tracker, loop, required, only)
+    numbers, failed = {pull["number"] for pull in named}, set()
+    for pull in candidates:
+        code, again = queue_step(pull, base, method, loop, required)
+        if code == 1:
+            failed.add(pull["number"])
+        if pull["number"] in numbers or code != WAITING:
+            exits[pull["number"]] = (code, again)
+    return outcome(named, exits, worst, failed)
+
+
+def queue_step(
+    pull: dict[str, Any], base: str, method: str, loop: str | None, required: set[str]
+) -> tuple[int, bool]:
+    """One candidate in the GitHub merge queue, and the exit it means for a named PR. In the queue: left alone, or,
+    stuck (stuck), dequeued and enqueued again. Out of it, by the queue's last removal of its head (queue_removals):
+    merged, waited on; a conflict (or one GitHub reports), commented once per head and not enqueued; a red group, after
+    a check that `base`'s tip is green (main_red), commented once and enqueued again, or evicted on the second red of
+    the head; any other removal, or none, enqueued."""
+    where, head = f"PR #{pull['number']}", pull["headRefOid"]
+    # the queue merges every entry its one way
+    if merge_method(pull, loop) == "merge" and method != "MERGE":
+        print(
+            f"{where}'s head `{pull['headRefName']}` matches `land.merge_commit_heads`, but {base}'s merge queue"
+            f" merges every entry with {method}, not a merge commit: set the queue's merge method to MERGE"
+        )
+        return 1, False
+    if entry := pull.get("mergeQueueEntry"):
+        if not stuck(entry):
+            print(f"{where} is in the merge queue at {head}, position {entry.get('position')}")
+            return WAITING, True
+        gh("api", "graphql", "-f", f"query={DEQUEUE}", "-f", f"id={pull['id']}")
+        print(
+            f"{where}: its merge-queue entry waited {STUCK // 60} minutes for checks GitHub never started:"
+            " dequeued, to enqueue it again"
+        )
+        return enqueue(pull)
+    removals = queue_removals(pull)
+    reason = removals[-1].get("reason") if removals else None
+    # GitHub takes a PR out of the queue a moment before it reports the merge
+    if reason == QUEUE_MERGED:
+        print(f"{where} left the merge queue merged at {head}")
+        return WAITING, True
+    if reason == MERGE_CONFLICT or pull.get("mergeable") == "CONFLICTING":
+        print(f"{where} conflicts with {base}: merge `origin/{base}` in")
+        conflict_note(pull, base)
+        return 1, False
+    if reason == FAILED_CHECKS:
+        main_red(base, required)
+        group = (removals[-1].get("beforeCommit") or {}).get("oid") or "unknown"
+        name, run, tail = failing_check(group, required)
+        why = f"`{name}` failed on the merge queue's commit {group} (run {run})"
+        if sum(removal.get("reason") == FAILED_CHECKS for removal in removals) > 1:
+            evicted(
+                pull,
+                QUEUE_EVICTED,
+                f"is red in the merge queue twice at {head}",
+                why + ", its second red on this head",
+                tail,
+                "The failed job's last lines",
+            )
+            return 1, False
+        print(
+            f"{where} is red in the merge queue at {head} ({name}): once more, in case it was a flake"
+        )
+        if not any(
+            note["body"].startswith(QUEUE_RED) and f"Group: {group}" in note["body"]
+            for note in notes(pull)
+        ):
+            comment(
+                pull["number"],
+                f"{QUEUE_RED}\nHead: {head}\nGroup: {group}\n\n{why}: enqueued once more, in case it was a flake."
+                f" A second red on this head turns it back to draft.\n\n<details><summary>The failed job's last"
+                " lines</summary>\n\n````\n" + "\n".join(tail) + "\n````\n</details>\n",
+            )
+    return enqueue(pull)
+
+
+def stuck(entry: dict[str, Any]) -> bool:
+    """Whether a merge-queue entry has waited STUCK seconds for checks with no check suite on its commit."""
+    if entry.get("state") != "AWAITING_CHECKS" or not entry.get("enqueuedAt"):
+        return False
+    suites = ((entry.get("headCommit") or {}).get("checkSuites") or {}).get("totalCount") or 0
+    queued = datetime.fromisoformat(entry["enqueuedAt"].replace("Z", "+00:00")).timestamp()
+    return not suites and time.time() - queued >= STUCK
+
+
+def queue_removals(pull: dict[str, Any]) -> list[dict[str, Any]]:
+    """The merge queue's removals of the PR's current head, oldest first: those after its push, since GitHub drops an
+    entry whose head moves, and after it last went ready, so a PR evicted and marked ready again starts its count anew.
+    ponytail: a head whose push GitHub's activity no longer lists counts each removal since it last went ready; read
+    the head commit's date if a long-lived head ever needs it."""
+    ready = [
+        event.get("createdAt") or ""
+        for event in pull["timelineItems"]["nodes"]
+        if event.get("__typename") == "ReadyForReviewEvent"
+    ]
+    since = max([head_pushed(pull) or "", *ready])
+    return [
+        removal
+        for removal in (pull.get("removals") or {}).get("nodes") or []
+        if removal and (removal.get("createdAt") or "") > since
+    ]
+
+
+def enqueue(pull: dict[str, Any]) -> tuple[int, bool]:
+    """Put the PR in the GitHub merge queue pinned to the head the proofs judged, its session link lines dropped first
+    (unlink_pull): exit 3 while it waits there, 1 when GitHub refuses."""
+    where, head = f"PR #{pull['number']}", pull["headRefOid"]
+    unlink_pull(pull)
+    try:
+        out = gh(
+            "api",
+            "graphql",
+            "-f",
+            f"query={ENQUEUE}",
+            "-f",
+            f"id={pull['id']}",
+            "-f",
+            f"head={head}",
+        )
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"{where}: GitHub refused to enqueue it at {head}: {' '.join((exc.stderr or str(exc)).split())}"
+        )
+        return 1, False
+    entry = ((json.loads(out or "{}").get("data") or {}).get("enqueuePullRequest") or {}).get(
+        "mergeQueueEntry"
+    )
+    print(f"{where} enqueued at {head}, position {(entry or {}).get('position')}")
+    return WAITING, True
+
+
+def commit_checks(ref: str) -> dict[str, dict[str, Any]]:
+    """The newest run of each check on commit (or branch) `ref`, by name: its conclusion as GraphQL spells it, link and
+    id, which for an Actions job is the job's. ponytail: check runs only, one per name; read status contexts and
+    workflow names when a queue's required check is a status or one name runs in two workflows."""
+    runs = rest_pages(f"commits/{ref}/check-runs?filter=latest&per_page=100", ".check_runs[]")
+    return {
+        run["name"]: {
+            "conclusion": (run.get("conclusion") or "").upper(),
+            "url": run.get("html_url") or "",
+            "id": run.get("id"),
+        }
+        for run in runs
+    }
+
+
+def run_link(url: str) -> str:
+    """An Actions job's link as its run's."""
+    return re.sub(r"/job/\d+$", "", url)
+
+
+def main_red(base: str, required: set[str]) -> None:
+    """Refuse while a check `base` requires (every check, where it requires none) is red on its tip: every queue entry
+    would fail on it, so no removal counts as red and nobody is evicted until it is fixed."""
+    red = sorted(
+        name
+        for name, run in commit_checks(base).items()
+        if (not required or name in required) and run["conclusion"] in RED
+    )
+    if red:
+        raise Refused(
+            f"{base} itself is red ({', '.join(f'`{name}`' for name in red)} on its tip): no merge-queue removal counts"
+            " as red and nobody is evicted until it is fixed"
+        )
+
+
+def failing_check(group: str, required: set[str]) -> tuple[str, str, list[str]]:
+    """The check that failed on the merge queue's commit `group` (a required one first), its run's link, and its failed
+    job log's last LOG_TAIL lines (none where GitHub has no log)."""
+    checks = commit_checks(group)
+    red = sorted(name for name, run in checks.items() if run["conclusion"] in RED)
+    name = next((name for name in red if name in required), red[0] if red else None)
+    if name is None:
+        return "a required check", "not found", []
+    try:
+        log = gh("api", f"repos/{{owner}}/{{repo}}/actions/jobs/{checks[name]['id']}/logs")
+    except subprocess.CalledProcessError:
+        log = ""
+    return name, run_link(checks[name]["url"]), log.splitlines()[-LOG_TAIL:]
+
+
+def queue_landed(pull: dict[str, Any]) -> None:
+    """A PR the GitHub merge queue merged gets its `Landed` comment, from the first land that reads it merged: `Base:`
+    its merge commit, `Tree:` that commit's tree, `Gate: merge queue` with the links of the runs on it, the queue's
+    `merge_group` CI; and its worker sessions finished. Nothing for a PR it did not merge, or one already commented."""
+    merged = [
+        removal
+        for removal in (pull.get("removals") or {}).get("nodes") or []
+        if removal and removal.get("reason") == QUEUE_MERGED
+    ]
+    if not merged or any(note["body"].startswith(f"{LANDED}\n") for note in notes(pull)):
+        return
+    commit = (merged[-1].get("beforeCommit") or {}).get("oid")
+    tree = gh(
+        "api", f"repos/{{owner}}/{{repo}}/commits/{commit}", "--jq", ".commit.tree.sha"
+    ).strip()
+    runs = sorted(
+        {
+            run_link(run["url"])
+            for run in commit_checks(commit).values()
+            if "/actions/runs/" in run["url"]
+        }
+    )
+    comment(
+        pull["number"],
+        f"{LANDED}\nBase: {commit}\nTree: {tree}\nGate: merge queue, {', '.join(runs) or 'no run on the commit'}\n",
+    )
+    archive_workers(pull["number"])
 
 
 # a cloud session's link, which its harness adds to every commit message as a `Claude-Session:` line and to every PR
@@ -5283,7 +5626,8 @@ def merges(
                         f"{where}: the merge call failed, but the PR is merged at {head} as {merge}"
                     )
                 else:
-                    # a base requiring a merge queue only queues it, to merge later on a tree this batch never gated
+                    # a merge queue the base's rules don't name (classic branch protection's) only queues it, to
+                    # merge later on a tree this batch never gated
                     if (state := pull_request(pull["number"])["state"]) != "MERGED":
                         raise Refused(f"GitHub left it {state}, not merged")
                     print(f"{where} merged at {head}")

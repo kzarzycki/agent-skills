@@ -3413,13 +3413,6 @@ def test_any_other_rules_error_fails(
         approvals.required_checks("main")
 
 
-def test_a_base_whose_rules_require_a_merge_queue_is_refused(landing: dict[str, Any]) -> None:
-    """GitHub's queue would merge a PR later, on a merge-group tree land never gated."""
-    landing.update(rulesets=["check", ":merge_queue"])
-    with pytest.raises(approvals.Refused, match="require GitHub's merge queue"):
-        approvals.required_checks("main")
-
-
 def test_the_required_checks_are_the_rulesets_and_the_branch_protections(
     landing: dict[str, Any],
 ) -> None:
