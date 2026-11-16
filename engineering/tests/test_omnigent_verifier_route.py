@@ -81,3 +81,22 @@ def test_agy_on_another_host_reads_its_brief_from_a_file_there(
     sent = [omnigent_agent.text_of(i) for i in og.sessions["s0"] if i.get("role") == "user"]
     assert sent == ["Work on t: read /there/r.md.brief and do what it says."], sent
     assert "review the head" in written["/there/r.md.brief"]
+
+
+@pytest.mark.parametrize("name", ["gemini", "claude"])
+def test_route_flag_without_the_verifier_role_is_refused_before_a_session(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("review")
+    argv = ["start", "codex", "t", "b.md", "r.md", "--verifier-route", name, "--host", "h"]
+    assert omnigent_agent.main(argv) == 1
+    err = capsys.readouterr().err
+    assert "--role" in err and "verifier.md" in err
+    assert not og.sessions
+    # the variable alone is a host-wide default, not a request: a non-verifier start ignores it
+    monkeypatch.setenv("OMNIGENT_VERIFIER_ROUTE", name)
+    assert omnigent_agent.main(["start", "codex", "t", "b.md", "r.md"]) == 0
+    assert og.sessions
