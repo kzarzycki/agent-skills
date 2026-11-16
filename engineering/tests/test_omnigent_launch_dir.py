@@ -358,3 +358,25 @@ def test_launch_dir_clone_is_the_way_out_of_a_shadowing_pin(
     omnigent_agent.launch_dir(f"file://{bare}", "main", "env_B", dest, here=main, clone=True)
     assert omnigent_agent.main_worktree(dest) is None
     omnigent_agent.pin_environment(dest)  # a clone's own pin is the one that applies
+
+
+def test_launch_dir_and_start_read_the_same_pin_in_a_separate_git_dir_checkout(
+    tmp_path: Path, bare: Path, real_trust: Path
+) -> None:
+    main, _ = separate_checkout(bare, tmp_path)
+    pin(main, "env_A")  # the checkout root's pin, which the worktree's start does not read
+    dest = tmp_path / "b"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", "env_B", dest, here=main)
+    omnigent_agent.pin_environment(dest)  # the two agree: both accept
+
+
+def test_launch_dir_clone_flag_reaches_the_command(
+    tmp_path: Path, bare: Path, real_trust: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = checkout(bare, tmp_path / "main")
+    pin(main, "env_A")
+    monkeypatch.chdir(main)
+    dest = tmp_path / "b"
+    argv = ["launch-dir", f"file://{bare}", "main", "env_B", str(dest), "--clone"]
+    assert omnigent_agent.main(argv) == 0
+    assert omnigent_agent.main_worktree(dest) is None
