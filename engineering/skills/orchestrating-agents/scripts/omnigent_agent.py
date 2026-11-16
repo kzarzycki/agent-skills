@@ -38,7 +38,7 @@ workspace it started from and that a foreground command stops at 10 minutes; ``w
 so the report is a file here as for any child; ``send --pr N`` takes only a comment created after
 the report there, and reaches a session whose workspace is on another host. A lead launches it as one background command, so its
 exit is the wake; ``run``, ``send`` and ``wait`` take ``--notify`` as ``wait-for`` does, running
-``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. ``send`` answers that question in the same session, also mid-turn, then waits the
+``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. ``run --notify`` starts its child with no parent notice, and ``wait --notify`` drops the lead's subscription to it, so that line is the one wake (#1086). ``send`` answers that question in the same session, also mid-turn, then waits the
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
@@ -1152,6 +1152,7 @@ class Omnigent:
         host_id: str | None = None,
         role: str | None = None,
         effort: str | None = None,
+        unparent: bool = False,
     ) -> str:
         body: dict[str, object] = {
             "agent_id": self.agent_id(agent),
@@ -1164,8 +1165,9 @@ class Omnigent:
             body["project_id"] = str(project["id"])
         # A sub-agent of the runner's primary session (the lead, also when a child runs
         # this): hidden from the owner's sidebar and unread badge, and gone with it. Top level
-        # with ``top_level`` or when not run from an Omnigent session.
-        if (parent := parent_id()) and not top_level:
+        # with ``top_level`` or when not run from an Omnigent session; ``unparent`` files it so but
+        # leaves it a child's session otherwise: its end then tells no parent.
+        if (parent := parent_id()) and not (top_level or unparent):
             body["parent_session_id"] = parent
         elif not project:
             # top level lands in the owner's sidebar, so an unfiled one is worth a word
@@ -1225,6 +1227,10 @@ class Omnigent:
     def subscribe(self, subscriber: str, sid: str) -> None:
         """Have Omnigent tell ``subscriber`` each time ``sid`` ends a turn or waits on a prompt."""
         self.call("POST", f"/v1/sessions/{subscriber}/subscriptions", {"session_id": sid})
+
+    def unsubscribe(self, subscriber: str, sid: str) -> None:
+        """Stop Omnigent telling ``subscriber`` about ``sid``."""
+        self.call("DELETE", f"/v1/sessions/{subscriber}/subscriptions/{sid}")
 
     def retry(self, sid: str) -> dict:
         return self.call(
@@ -2803,6 +2809,7 @@ def start(
     subscriber: str = "",
     pr: int | None = None,
     files: list[Path] | None = None,
+    unparent: bool = False,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
@@ -3001,6 +3008,7 @@ def start(
                         host_id,
                         role,
                         effort,
+                        unparent,
                     ),
                     None,
                 )
@@ -3079,6 +3087,17 @@ def start(
         reasons.append(f"{sid}: brief not in history after {confirm_seconds:.0f}s")
         abandon(sid)
     raise failed("start failed: " + "; ".join(reasons))
+
+
+def wake_once(og: Omnigent, sid: str) -> None:
+    """Drop the subscription the root of this session's tree holds on ``sid`` (``start
+    --top-level`` made it), since a ``wait --notify`` on it tells that lead when it ends. A sub-agent's
+    parent notice is not a subscription and stays; ``run --notify`` starts its child unparented."""
+    try:
+        if me := own_id():
+            og.unsubscribe(og.info(me).get("root_conversation_id") or me, sid)
+    except Fail:  # none held, or a server without subscriptions: nothing to drop
+        pass
 
 
 def holder(og: Omnigent, title: str, digest: str, report: Path) -> str | None:
@@ -7013,6 +7032,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # a path on the session's host, which this one neither resolves nor reads (as start's)
             far = not args.pr and elsewhere(og, og.info(args.session))
             report = args.report if far else args.report.resolve()
+            if args.notify:  # the wait's end is the wake: a subscription would be a second one
+                wake_once(og, args.session)
             try:
                 got = wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr)
             except Asked as asked:
@@ -7253,6 +7274,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 subscriber=lead,
                 pr=args.pr,
                 files=args.file,
+                # --notify makes the run's end the lead's one wake: no parent notice on top of it
+                unparent=bool(args.cmd == "run" and args.notify),
             )
             survivors.extend(abandoned)
             # a supervisor reads the report file, which for --pr only wait writes: it would revive

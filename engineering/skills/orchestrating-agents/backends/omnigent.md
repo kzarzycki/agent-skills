@@ -238,6 +238,14 @@ when it ends; unset, nothing is sent. `run`, `send` and `wait`, which can wait h
 take the same `--notify`: once they end, however they end, `$LOOP_NOTIFY` gets one line, `exit <code>:`
 and the report path, or the failure's first line.
 
+**One wake per child.** A child's end can reach its lead three ways: Omnigent's notice to a
+sub-agent's parent (always sent, no field turns it off), a subscription, and the background wait's
+own exit or `--notify` line. `run --notify` therefore starts its child filed top level but with no
+parent notice and no subscription, and `wait --notify` drops the lead's subscription to its
+child (one `start --top-level` made), so the wait's end is the single wake: do not also poll or
+`watch` that child. A `run`/`wait` without `--notify` leaves Omnigent's notice (or the
+subscription) as the wake, and its exit is the other: expect both there.
+
 **Waiting on a condition.** `python3 scripts/omnigent_agent.py wait-until --every <s> --limit
 <s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so
 each sleep stays short of any tool timeout, and exits 0 once it exits 0, or 6 once `--limit`
