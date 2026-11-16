@@ -775,7 +775,12 @@ or the owner's private network.
   since `<N>` gates load the host at once and a larger share each would oversubscribe it.
   A land's gate step holds the landing lock while it waits, which stops every other land, so it takes a freed slot
   ahead of a waiting PR gate: a waiting land holds a shared lock on `gate.land.lock`, and a PR gate that finds it
-  takes no slot until no land waits.
+  takes no slot until no land waits. A project's own wrapper takes the same care: it skips its lock when
+  `LOOP_GATE_SLOT_HELD` names any `gate.<n>.lock` of that directory, not only `gate.1.lock`, since a gate under slot 2
+  would otherwise hold two; one that waits in a plain blocking `flock` is woken by the kernel ahead of a polling
+  gate, so a project that wants a land to go first has its wrapper take its slot the way `approvals.take_slot` does
+  (this repo's `tools/gate_slot.py`). With one slot a land blocks in the kernel too, so it competes evenly with a
+  wrapper's `flock`.
   `test:changed` while iterating and the lint parts stay outside the slot. `approvals.py`'s
   `local-ci` and `land` take a slot's lock around each gate step they run and set
   `LOOP_GATE_SLOT_HELD` to its path, as `mutate.py` does (both through one function, `approvals.take_slot`), so a wrapper under them that finds

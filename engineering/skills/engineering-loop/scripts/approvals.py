@@ -6048,9 +6048,12 @@ def slot_path(number: int = 1) -> str:
 
 
 def held_slot() -> str | None:
-    """The heavy slot this process already runs under (SLOT_HELD names its lock file), else None."""
-    held = os.environ.get(SLOT_HELD)
-    return held if held in [slot_path(number) for number in range(1, gate_slots() + 1)] else None
+    """The heavy slot this process already runs under (SLOT_HELD names its lock file), else None: any `gate.<n>.lock`
+    of the slot directory, whatever `GATE_SLOTS` this process reads, since its parent may have taken a slot under
+    another count."""
+    held = os.environ.get(SLOT_HELD) or ""
+    same = os.path.dirname(held) == os.path.dirname(slot_path())
+    return held if same and re.fullmatch(r"gate\.\d+\.lock", os.path.basename(held)) else None
 
 
 def land_waiting() -> bool:
@@ -6084,6 +6087,20 @@ def take_slot(
         fcntl.flock(mark, fcntl.LOCK_SH)
     said = False
     try:
+        if land and gate_slots() == 1:
+            # one slot: block in the kernel, as a gate wrapper's own flock does, so a land competes evenly with a
+            # wrapper waiter instead of losing every race to it by polling; PR gates poll and yield to the mark
+            fd = os.open(slot_path(), os.O_WRONLY | os.O_CREAT, 0o644)
+            try:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    waiting()
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+            except BaseException:
+                os.close(fd)
+                raise
+            return fd, slot_path()
         while True:
             if land or not land_waiting():
                 for number in range(1, gate_slots() + 1):
@@ -6406,8 +6423,12 @@ def stored(record: dict[str, Any]) -> None:
     where = recorded(record["tree"], record["command"])
     where.parent.mkdir(parents=True, exist_ok=True)
     partial = where.with_name(f"{where.name}.{os.getpid()}.partial")
-    partial.write_text(json.dumps(record, indent=2) + "\n")
-    os.replace(partial, where)
+    try:
+        partial.write_text(json.dumps(record, indent=2) + "\n")
+        os.replace(partial, where)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
 
 
 def origin_of(record: dict[str, Any]) -> str:
