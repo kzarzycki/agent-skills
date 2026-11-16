@@ -540,8 +540,9 @@ The GitHub merge queue takes no lock and runs no local gate: `land` enqueues eac
 oldest first, pinned to the head its proofs judged, and GitHub orders, groups, gates and merges
 them. An entry the queue removes for a red check gets a comment with that check's log tail and
 goes in once more; a second red on the same head turns it back to draft. A red main counts
-nothing and evicts nobody, nor does a red group built on a red main commit, a conflict gets
-the local queue's conflict comment while GitHub still reports one, and a lost `merge_group`
+nothing and evicts nobody, nor does a red group built on a main commit where a required check
+failed, a conflict gets the local queue's conflict comment while GitHub still reports one (and
+waits while GitHub works it out), and a lost `merge_group`
 event costs a dequeue and an enqueue after 10 minutes. `approvals.py`'s docstring has each rule.
 
 `land <pr>... --only` lands those PRs alone and leaves every other PR untouched, for a lead that must not land another lead's work.
