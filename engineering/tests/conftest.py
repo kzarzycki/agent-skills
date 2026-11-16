@@ -40,7 +40,7 @@ def _own_gate_slot(
 
 @pytest.fixture(autouse=True)
 def _no_heavy_wrapper(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Heavy steps run unwrapped, as under a wrapped run, so a host's own heavy wrapper file never wraps a test's
+    """Heavy steps run unwrapped, as under a wrapped run, so a host's own `heavy_wrapper` setting never wraps a test's
     step; test_approvals_heavy_wrapper.py clears it and fakes the host's config home."""
     monkeypatch.setenv("LOOP_HEAVY_WRAPPED", "1")
 

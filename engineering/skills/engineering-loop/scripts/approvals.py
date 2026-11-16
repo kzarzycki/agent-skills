@@ -5718,32 +5718,44 @@ HEAVY_PROBE_SECONDS = 30
 heavy_probed: dict[tuple[str, ...], str | None] = {}
 
 
-def heavy_wrapper_path() -> str:
-    """The host's heavy wrapper file, beside the gate slot's lock under the config home rather than the cache."""
+def host_config_path() -> str:
+    """The loop's host config, beside the gate slot's lock but under the config home rather than the cache."""
     config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
         os.environ.get("HOME", "~"), ".config"
     )
-    return os.path.join(config, "engineering-loop", "heavy-wrapper")
+    return os.path.join(config, "engineering-loop", "host")
+
+
+def host_config() -> dict[str, str]:
+    """The host config's settings (host_config_path): one `key = value` per line, blank lines, `#` comments and a line
+    without `=` skipped, a later line for a key over an earlier one; empty without the file. A key the reader doesn't
+    know is ignored, so later host settings join the same file."""
+    try:
+        with open(host_config_path(), encoding="utf-8", errors="replace") as text:
+            lines = [line.strip() for line in text]
+    except OSError:
+        return {}
+    settings = {}
+    for line in lines:
+        key, sep, value = line.partition("=")
+        if sep and not line.startswith("#") and key.strip():
+            settings[key.strip()] = value.strip()
+    return settings
 
 
 def heavy_prefix(env: Any = None) -> list[str]:
-    """The heavy wrapper's words: the file's first line that is not blank or a `#` comment, split like a shell
-    command; none without the file or such a line, under a wrapped step (HEAVY_WRAPPED in `env`, else this process's),
-    or where the prefix can't run, which says so on stderr once per process and runs the step unwrapped, since the
-    gate must never fail because of the wrapper."""
+    """The heavy wrapper's words: the host config's `heavy_wrapper`, split like a shell command; none without it,
+    under a wrapped step (HEAVY_WRAPPED in `env`, else this process's), or where the prefix can't run, which says so
+    on stderr once per process and runs the step unwrapped, since the gate must never fail because of the wrapper."""
     if (os.environ if env is None else env).get(HEAVY_WRAPPED) == "1":
         return []
-    try:
-        with open(heavy_wrapper_path(), encoding="utf-8", errors="replace") as text:
-            line = next((s for s in map(str.strip, text) if s and not s.startswith("#")), "")
-    except OSError:
-        return []
+    line = host_config().get("heavy_wrapper", "")
     if not line:
         return []
     try:
         words = shlex.split(line)
     except ValueError as exc:
-        words, why = [line], f"its line can't be split ({exc})"
+        words, why = [line], f"its `heavy_wrapper` can't be split ({exc})"
         heavy_probed.setdefault(tuple(words), why)
     key = tuple(words)
     if key not in heavy_probed:

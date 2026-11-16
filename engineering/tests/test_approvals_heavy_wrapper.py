@@ -82,8 +82,8 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def configure(host: Path, text: str) -> Path:
-    """The host's wrapper file holding `text`."""
-    path = host / ".config" / "engineering-loop" / "heavy-wrapper"
+    """The host config holding `text`, as `key = value` lines."""
+    path = host / ".config" / "engineering-loop" / "host"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     return path
@@ -109,8 +109,20 @@ def wrapped(tmp_path: Path, probes: bool = False) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("text", [None, "", "\n  \n", "# off for now\n\n   # still off\n"])
-def test_without_a_wrapper_line_a_heavy_step_keeps_its_argv(host: Path, text: str | None) -> None:
+@pytest.mark.parametrize(
+    "text",
+    [
+        None,
+        "",
+        "\n  \n",
+        "# heavy_wrapper = sh -c\n\n   # still off\n",
+        "gate_slots = 2\nheavy_wrapper =\nother_setting = systemd-run --user --scope --\n",
+        "systemd-run --user --scope --\n",
+    ],
+)
+def test_without_a_heavy_wrapper_key_a_heavy_step_keeps_its_argv(
+    host: Path, text: str | None
+) -> None:
     if text is not None:
         configure(host, text)
     assert approvals.heavy_argv(["mise", "run", "check"]) == ["mise", "run", "check"]
@@ -120,19 +132,26 @@ def test_xdg_config_home_names_where_the_wrapper_file_is(
     tmp_path: Path, host: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     script = wrapper(tmp_path)
-    configure(host, f"{script} --ignored-home\n")
+    configure(host, f"heavy_wrapper = {script} --ignored-home\n")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert approvals.heavy_argv(["true"]) == ["true"]
     (tmp_path / "xdg" / "engineering-loop").mkdir(parents=True)
-    (tmp_path / "xdg" / "engineering-loop" / "heavy-wrapper").write_text(f"{script} --p='A B'\n")
+    (tmp_path / "xdg" / "engineering-loop" / "host").write_text(
+        f"heavy_wrapper={script} --p='A B'\n"
+    )
     assert approvals.heavy_argv(["true"]) == [str(script), "--p=A B", "true"]
 
 
-def test_the_first_line_that_is_not_blank_or_a_comment_is_the_prefix(
+def test_the_heavy_wrapper_key_is_the_prefix_among_other_keys_and_comments(
     tmp_path: Path, host: Path
 ) -> None:
     script = wrapper(tmp_path)
-    configure(host, f"# the host's limits\n\n{script} --slice='loop heavy' --\n{script} second\n")
+    configure(
+        host,
+        "# the host's limits\n\nunknown_key = 1\nnot a setting\n"
+        f"heavy_wrapper = {script} first\n  heavy_wrapper  =  {script} --slice='loop heavy' --  \n",
+    )
+    assert approvals.host_config()["unknown_key"] == "1"
     assert approvals.heavy_argv(["make", "test"]) == [
         str(script),
         "--slice=loop heavy",
@@ -150,7 +169,7 @@ def test_a_gate_step_runs_under_the_wrapper_marked_wrapped_with_its_own_exit(
     tmp_path: Path, host: Path
 ) -> None:
     script = wrapper(tmp_path)
-    configure(host, f"{script} --limit\n")
+    configure(host, f"heavy_wrapper = {script} --limit\n")
     seen = tmp_path / "seen"
     words = ["sh", "-c", f'echo "$LOOP_HEAVY_WRAPPED" > {seen}; exit 7']
     with (tmp_path / "out.log").open("w") as out:
@@ -169,7 +188,7 @@ def test_without_the_wrapper_a_gate_step_runs_as_before(tmp_path: Path, host: Pa
 def test_a_wrapped_run_adds_no_second_prefix(
     tmp_path: Path, host: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    configure(host, f"{wrapper(tmp_path)}\n")
+    configure(host, f"heavy_wrapper = {wrapper(tmp_path)}\n")
     monkeypatch.setenv(approvals.HEAVY_WRAPPED, "1")
     assert approvals.heavy_argv(["true"]) == ["true"]
     assert approvals.run_heavy(["true"])[0] == 0
@@ -180,7 +199,7 @@ def test_a_wrapped_run_adds_no_second_prefix(
 def test_the_pre_land_check_runs_under_the_wrapper(
     tmp_path: Path, host: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    configure(host, f"{wrapper(tmp_path)}\n")
+    configure(host, f"heavy_wrapper = {wrapper(tmp_path)}\n")
     monkeypatch.setattr(
         approvals, "settings", lambda _loop: {"pre_land": "sh -c 'echo refused; exit 4'"}
     )
@@ -213,7 +232,7 @@ def test_a_mutate_test_run_goes_through_the_wrapper(tmp_path: Path, host: Path) 
     command = "echo ran; exit 3"
     assert mutate.run_command(command, "slot") == (3, "ran\n")
     assert wrapped(tmp_path) == []
-    configure(host, f"{wrapper(tmp_path)} --scope\n")
+    configure(host, f"heavy_wrapper = {wrapper(tmp_path)} --scope\n")
     mutate.approvals().heavy_probed.clear()
     assert mutate.run_command(command, "slot") == (3, "ran\n")
     assert wrapped(tmp_path) == [f"--scope /bin/sh -c {command}"]
@@ -248,7 +267,7 @@ def test_a_wrapper_that_cant_run_says_so_once_and_the_step_runs_unwrapped(
     tmp_path: Path, host: Path, capsys: pytest.CaptureFixture[str], line: str, why: str
 ) -> None:
     failing = wrapper(tmp_path, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$WRAP_LOG"\nexit 1\n')
-    configure(host, line.format(failing=failing) + "\n")
+    configure(host, "heavy_wrapper = " + line.format(failing=failing) + "\n")
     assert approvals.run_heavy(["sh", "-c", "exit 5"])[0] == 5
     assert approvals.run_heavy(["sh", "-c", "exit 6"])[0] == 6
     err = capsys.readouterr().err.splitlines()
@@ -261,7 +280,7 @@ def test_a_wrapper_that_cant_run_says_so_once_and_the_step_runs_unwrapped(
 def test_a_probe_that_hangs_counts_as_a_failing_one(
     tmp_path: Path, host: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    configure(host, f"{wrapper(tmp_path, HANGS)}\n")
+    configure(host, f"heavy_wrapper = {wrapper(tmp_path, HANGS)}\n")
     monkeypatch.setattr(approvals, "HEAVY_PROBE_SECONDS", 0.5)
     began = time.monotonic()
     assert approvals.run_heavy(["sh", "-c", "exit 2"])[0] == 2
@@ -341,7 +360,7 @@ def stop_run(argv: list[str], pids: Path, sig: signal.Signals) -> tuple[int, int
 def test_a_stop_reaches_a_step_the_wrapper_forked(
     tmp_path: Path, host: Path, sig: signal.Signals, mode: str
 ) -> None:
-    configure(host, f"{wrapper(tmp_path, FORKS)}\n")
+    configure(host, f"heavy_wrapper = {wrapper(tmp_path, FORKS)}\n")
     pids = tmp_path / "pids"
     code, pgid = stop_run(
         [sys.executable, "-c", RUNNER, str(SCRIPTS), mode, "sh", "-c", SLEEPER, "sh", str(pids)],
@@ -382,7 +401,7 @@ def heavy_command(*words: str) -> list[str]:
 def test_the_heavy_command_runs_outside_any_repo_with_the_commands_exit(
     tmp_path: Path, host: Path
 ) -> None:
-    configure(host, f"{wrapper(tmp_path)} --scope\n")
+    configure(host, f"heavy_wrapper = {wrapper(tmp_path)} --scope\n")
     ran = subprocess.run(
         heavy_command("sh", "-c", "echo $LOOP_HEAVY_WRAPPED; exit 9"),
         cwd=tmp_path,
@@ -395,7 +414,7 @@ def test_the_heavy_command_runs_outside_any_repo_with_the_commands_exit(
 
 
 def test_the_heavy_command_forwards_a_stop(tmp_path: Path, host: Path) -> None:
-    configure(host, f"{wrapper(tmp_path, FORKS)}\n")
+    configure(host, f"heavy_wrapper = {wrapper(tmp_path, FORKS)}\n")
     pids = tmp_path / "pids"
     code, pgid = stop_run(heavy_command("sh", "-c", SLEEPER, "sh", str(pids)), pids, signal.SIGTERM)
     assert code == 128 + signal.SIGTERM
@@ -405,7 +424,7 @@ def test_the_heavy_command_forwards_a_stop(tmp_path: Path, host: Path) -> None:
 def test_an_exception_while_a_step_runs_kills_its_group(
     tmp_path: Path, host: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    configure(host, f"{wrapper(tmp_path, FORKS)}\n")
+    configure(host, f"heavy_wrapper = {wrapper(tmp_path, FORKS)}\n")
     pids = tmp_path / "pids"
     real = subprocess.Popen.communicate
 
