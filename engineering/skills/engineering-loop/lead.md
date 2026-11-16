@@ -222,6 +222,7 @@ design, wireframes included for a UI, and delegate the rest.
      heads in a conflict comment, `check merge` and the verifier brief print `unforced merge
      of <base>: land merges heads itself (lead.md step 8); this pass is avoidable`: a brief
      telling you to merge main after each landing is wrong, so leave the next one unmerged.
+   - A landing is told to the lead that owns the PR, by `land`'s exit and its `Landed` comment, and to nobody else: don't relay it to other leads. Each wake re-reads that lead's whole context, and a lead that needs the new base reads it when it next fetches.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
      `## Evidence`. Where the change is high risk, the merge approval is also the owner's
      go on the head that lands (SKILL.md, Approvals and proof): `approvals.py approve merge
