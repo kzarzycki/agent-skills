@@ -61,13 +61,13 @@ def queue(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, A
     mutation's (PR, head); `checks` the check runs by commit or branch, `logs` the job logs by id, `built` the commit of
     main each group was built on (`m0`, which has no checks, by default). `remove(n, reason, at, group)` has the queue
     drop PR #n; `merge(n)` has it merge #n, its runs on the merge commit."""
-    rules = approvals.Required({"qualify"})
+    rules = approvals.github.Required({"qualify"})
     rules.queue = "SQUASH"
     state = lands
     state.update(rules=rules, enqueued=[], dequeued=[], checks={}, logs={}, built={}, listed=[])
     pulls = state["pulls"]
     monkeypatch.setattr(approvals, "required_checks", lambda _base: state["rules"])
-    fake = approvals.gh
+    fake = approvals.github.gh
 
     def numbered(node: str) -> int:
         return int(node.removeprefix("PR_"))
@@ -76,11 +76,11 @@ def queue(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, A
         if args[:2] == ("api", "graphql"):
             fields = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-f")
             number = numbered(fields["id"])
-            if fields["query"] == approvals.DEQUEUE:
+            if fields["query"] == approvals.github.DEQUEUE:
                 state["dequeued"].append(number)
                 pulls[number]["mergeQueueEntry"] = None
                 return "{}"
-            assert fields["query"] == approvals.ENQUEUE, fields["query"]
+            assert fields["query"] == approvals.github.ENQUEUE, fields["query"]
             if state.get("refuse") or fields["head"] != pulls[number]["headRefOid"]:
                 raise subprocess.CalledProcessError(1, "gh", stderr="gh: head moved")
             state["enqueued"].append((number, fields["head"]))
@@ -102,12 +102,11 @@ def queue(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, A
             if state.get("unlisted"):
                 raise subprocess.CalledProcessError(1, "gh", stderr="gh: timed out")
             wanted = args[args.index("--label") + 1]
-            return json.dumps(
-                [
-                    {"number": n}
-                    for n, pr in pulls.items()
-                    if pr["state"] == "MERGED" and wanted in labels_of(state, n)
-                ]
+            assert args[args.index("--jq") + 1] == ".[].number"
+            return "".join(
+                f"{n}\n"
+                for n, pr in pulls.items()
+                if pr["state"] == "MERGED" and wanted in labels_of(state, n)
             )
         if args[0] == "api" and args[1].endswith("/logs"):
             return "\n".join(state["logs"][int(args[1].split("/")[-2])]) + "\n"
@@ -165,7 +164,7 @@ def queue(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, A
             [{"name": name}] if add else []
         )
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     monkeypatch.setattr(approvals, "label", label)
     state.update(opened=opened, remove=remove, queue_merge=merge)
     return state
@@ -459,7 +458,7 @@ def test_required_checks_reports_the_merge_queue_and_its_method(
     def gh(*args: str, **_kw: Any) -> str:
         return answers["rules" if args[1] == "--paginate" else "protection"]
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     monkeypatch.setattr(approvals, "required_checks", REAL_REQUIRED)
     found = approvals.required_checks("main")
     assert (found, found.queue) == ({"qualify", "lint"}, "SQUASH")
@@ -763,19 +762,19 @@ def test_a_failed_trail_of_one_merged_pr_keeps_its_label_and_never_fails_the_bar
     queue["opened"](6)
     merge = queue["queue_merge"](6)
     seven = queue["opened"](7)
-    fake = approvals.gh
+    fake = approvals.github.gh
 
     def gh(*args: str, **kw: Any) -> str:
         if args[0] == "api" and args[1].endswith(f"/commits/{merge}"):
             raise subprocess.CalledProcessError(1, "gh", stderr="gh: Bad Gateway (HTTP 502)")
         return fake(*args, **kw)
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     code, lines = queue["land"]()
     assert code == 0, lines
     assert "PR #6: land could not write its `Landed` comment: gh: Bad Gateway (HTTP 502)" in lines
     assert queue["enqueued"] == [(7, seven)] and approvals.QUEUED in labels_of(queue, 6)
-    monkeypatch.setattr(approvals, "gh", fake)
+    monkeypatch.setattr(approvals.github, "gh", fake)
     assert queue["land"]()[0] == 0
     assert len(notes_on(queue, 6, approvals.LANDED)) == 1
     assert approvals.QUEUED not in labels_of(queue, 6)
