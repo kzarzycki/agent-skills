@@ -24,9 +24,15 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
-2. **Gates and push.** Run `mise run test:changed` while iterating and `mise run check`
-   before each push, or after it on a fix round (below) (with `ci: false`, `approvals.py local-ci --record` on the committed
-   head, SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
+2. **Gates and push.** Run `mise run test:changed` while iterating and `uv run <this skill's
+   folder>/scripts/approvals.py push-gate` before each push, or after it on a fix round (below):
+   it runs loop.md's `Affected tests: <command> <base>` line, the project's lint and the tests
+   its change affects against that base, and without the line `mise run check`, as before, so
+   a push runs the whole test tier only where the project names no selector. It is not the
+   gate of record and records nothing: that is CI's PR run on the head, and the merge queue
+   runs every part once. With `ci: false`, the gate of record is `approvals.py local-ci --record`
+   on the committed head you push for review (SKILL.md, Adopting the loop), in place of
+   `push-gate`, since the merge check needs that pass on the head. A test that passed only on its retry, or failed in a
    file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report with
    the run it came from (a CI run's id, else the time the gate started), since that run and
    the head are what make it one occurrence.
@@ -34,7 +40,8 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    under that lock, around the host's heavy wrapper (SKILL.md, One heavy gate per host slot), since your lead may run another
    worker beside you and the host's slot counts every caller: `perl -MFcntl=:flock -e '$^F =
    1023; open(F, ">>", shift) or die "$!\n"; flock(F, LOCK_EX) or die "$!\n"; exec @ARGV'
-   <path> uv run <this skill's folder>/scripts/approvals.py heavy mise run check` (perl, since macOS has no `flock`).
+   <path> uv run <this skill's folder>/scripts/approvals.py push-gate` (perl, since macOS has no `flock`;
+   `push-gate` runs under the heavy wrapper itself).
    Once it exits 0, commit and push with `git push -u origin <branch>` as
    its own command, since a pre-tool hook may scan the whole command text. Commit and push
    after each step whose gates are green, not only at the end, so a worker killed mid-task
@@ -44,15 +51,15 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    detached on the pushed head (below), and report its log and pid in place of its exit code,
    never waiting on it. When the brief names the last green head (the newest head whose gate
    passed) and `git merge-base --is-ancestor <it> HEAD` exits 0, put `GATE_BASE=<it>` (or the
-   variable loop.md's `Gate base:` line names) in front of `mise run check`, so a check that
+   variable loop.md's `Gate base:` line names) in front of `push-gate`, so a check that
    reads it selects only what changed since that head; with `ci: false` run the check that way,
-   never `local-ci --record`, which clears the variable. The head that lands keeps the full selection, since `land`, CI
-   and `local-ci` never set it. The lead merges your branch and opens the PR: a
+   never `local-ci --record`, which clears the variable. The tree that lands keeps the full run, since the merge queue,
+   `land` and `local-ci` never set it. The lead merges your branch and opens the PR: a
    brief that asks for a PR means push the branch and report it. A spec or plan the brief
    asks for goes in a file under `tmp/loop/`, and you report its path: the lead
    posts it, since the spec lives on the issue. Your job ends at the push, and once the head is handed to the queue or for approval the branch is frozen: PR events (review comments, checks) are read-only to you, and a follow-up goes in a new PR. Don't wait for
    CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
-   the worktree you are given, then `mise run check` and push the same way. A command that
+   the worktree you are given, then `push-gate` and push the same way. A command that
    may outlast one tool call (a gate, a held lock, a queue) starts detached (verifier.md, A long or locked run is detached),
    with its log, pid and exit code in files, and is waited on with orchestrating-agents'
    `scripts/omnigent_agent.py wait-for --log <log> --pid <pid>` (a PR's checks: `wait-for --pr

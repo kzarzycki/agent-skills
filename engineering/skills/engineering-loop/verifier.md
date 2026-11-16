@@ -158,8 +158,14 @@ yourself, keeping standards and spec as separate axes.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is
   the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
-- **Gates and repros:** you may run `mise run check`. Run a gate as the bare command
-  (`mise run check`), with no wrapper, redirect or detach around it, and keep it running with
+- **Gates and repros:** read the head's gate of record, never rerun it, since each head's
+  tests run once: CI's PR run on the head (orchestrating-agents' `omnigent_agent.py wait-for
+  --pr <n>` waits on its checks), or with `ci: false` its `local-ci` pass (`wait-for --pr <n>
+  --until gate`). A red one is a finding naming the head and the failing check; one not yet run
+  on the head (a CI that skips drafts) is said in the report, since the merge check refuses a
+  head without it either way. Run the PR's own
+  tests (those its diff adds or changes) and its acceptance checks. Run each as the bare
+  command, with no wrapper, redirect or detach around it, and keep it running with
   your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain
   command, so a wrapped one asks for approval, and on a reviewed sandbox each ask is a paid
   model call. Then write its proof log from what it printed: the head's SHA, the command, its

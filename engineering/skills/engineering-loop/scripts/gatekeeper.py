@@ -24,6 +24,13 @@
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
+    uv run scripts/approvals.py push-gate                  # the worker's gate before a push: loop.md's `Affected tests:` line, else `mise run check`
+
+`push-gate` runs loop.md's line `Affected tests: <command> <base>` as written (variables in front, no shell, as `gate`
+is read), read from the base's copy as the policy is, under the host's heavy wrapper; its last word is the ref the
+project's selector compares HEAD with. In a shallow clone an `origin/<branch>` base is fetched and deepened first, as
+`local-ci` does, and a base naming no commit is refused. Without the line it runs `mise run check`. It records nothing:
+CI's PR run, or `local-ci` with `ci: false`, is a head's gate of record.
 
 gatekeeper.py is the gatekeeper; approvals.py, its name before #614, runs it for one release line, every verb above
 unchanged. Its own names for three of them, and one verb more:
@@ -5432,12 +5439,66 @@ def heavy(words: list[str]) -> int:
         words = words[1:]
     if not words:
         raise Refused("heavy takes the command to run: `approvals.py heavy <command> [args...]`")
+    return heavy_exit("heavy", words)
+
+
+def heavy_exit(verb: str, words: Sequence[str], env: Any = None) -> int:
+    """Run `words` as a heavy step (run_heavy) for `verb`: its exit code, 128 plus the signal that ended it, or 127
+    for a command that can't start, as a shell says."""
     try:
-        code = run_heavy(words)[0]
+        code = run_heavy(words, env)[0]
     except OSError as exc:
-        print(f"heavy: {words[0]} can't run: {exc}", file=sys.stderr)
+        print(f"{verb}: {words[0]} can't run: {exc}", file=sys.stderr)
         return 127
     return 128 - code if code < 0 else code
+
+
+# loop.md's line naming the push's gate, `Affected tests: <command> <base>` (push_gate), and the check run without it
+AFFECTED = "Affected tests"
+PUSH_CHECK = ["mise", "run", "check"]
+
+
+def loop_line(text: str | None, key: str) -> str:
+    """The value of loop.md's line `<key>: <value>`, else empty: the parser of orchestrating-agents' project_line,
+    copied since skills install separately and neither may import the other."""
+    found = re.search(rf"^{re.escape(key)}:[ \t]*(\S.*?)[ \t]*$", text or "", re.MULTILINE)
+    return found.group(1) if found else ""
+
+
+def push_gate() -> int:
+    """`push-gate`: the worker's gate before a push, run as a heavy step (heavy_exit), exiting with its exit code.
+    With loop.md's `Affected tests: <command> <base>` line (the base's copy, as project() reads it, so a branch can't
+    pick its own gate), the line as written, its last word the ref its selector compares HEAD with; in a shallow clone
+    an `origin/<branch>` base is fetched and deepened first (deepened), and a base naming no commit is refused, since a
+    selector against a missing base would pick nothing or everything. Without the line, `mise run check`, as before."""
+    line = loop_line(policy_file(toplevel(), LOOP), AFFECTED)
+    if not line:
+        print(
+            f"push-gate: loop.md has no `{AFFECTED}:` line: {shlex.join(PUSH_CHECK)}",
+            file=sys.stderr,
+        )
+        return heavy_exit("push-gate", PUSH_CHECK)
+    command, words, sets = command_line(line, AFFECTED)
+    if len(words) < 2:
+        raise Refused(
+            f"loop.md's `{AFFECTED}` is {line!r}: a command and the base it selects against,"
+            f" `{AFFECTED}: <command> <base>`"
+        )
+    base = words[-1]
+    if base.startswith("origin/"):
+        deepened(None, base.removeprefix("origin/"))
+    found = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
+        capture_output=True,
+        check=False,
+    )
+    if found.returncode:
+        raise Refused(
+            f"loop.md's `{AFFECTED}` selects against {base}, which names no commit here: fetch it, then run"
+            " push-gate again"
+        )
+    print(f"push-gate: {command}", file=sys.stderr)
+    return heavy_exit("push-gate", words, {**os.environ, **sets})
 
 
 def ran_step(
@@ -5779,15 +5840,15 @@ DEEPEN_STEPS = 3
 DEEPEN_BY = 50
 
 
-def deepened(pr: int | None) -> None:
-    """In a shallow clone, fetch the base (base_branch) into `refs/remotes/origin/<base>` and deepen until `git
-    merge-base origin/<base> HEAD` answers (`--deepen 50` up to DEEPEN_STEPS times, then `--unshallow`), so a gate
-    step that diffs against the merge base gets a ref; each step's outcome is a line on stderr. A full clone runs
+def deepened(pr: int | None, branch: str | None = None) -> None:
+    """In a shallow clone, fetch the base (`branch`, else base_branch) into `refs/remotes/origin/<base>` and deepen
+    until `git merge-base origin/<base> HEAD` answers (`--deepen 50` up to DEEPEN_STEPS times, then `--unshallow`), so
+    a gate step that diffs against the merge base gets a ref; each step's outcome is a line on stderr. A full clone runs
     nothing, and no tracked file changes, so the tree a pass records is the same."""
     if git("rev-parse", "--is-shallow-repository").strip() != "true":
         return
     # a `local-ci <pr>` resolved its base already (policy_from)
-    base = POLICY_BASE.get() or base_branch(pr)
+    base = branch or POLICY_BASE.get() or base_branch(pr)
     if base is None:
         print(
             "local-ci: shallow clone, but no base branch is known: not deepening", file=sys.stderr
@@ -7116,6 +7177,7 @@ def main(argv: list[str]) -> int:
     hooking.add_argument("message", type=Path)
     wrapping = commands.add_parser("heavy")
     wrapping.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
+    commands.add_parser("push-gate")
     args = parser.parse_args(aliased(argv))
     if args.command == "record":  # each kind runs as the verb it was before #614
         args.command = RECORDS[args.kind]
@@ -7146,6 +7208,10 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return commit_msg(args.message)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
         return heavy(args.words)
+    if (
+        args.command == "push-gate"
+    ):  # reads the checkout's git and loop.md only, so no remote needs choosing
+        return push_gate()
     one_repo()
     if args.command == "check":
         if args.point == "queue" and (args.pr is None or args.head is None):
