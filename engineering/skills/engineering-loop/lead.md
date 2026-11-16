@@ -69,10 +69,13 @@ design, wireframes included for a UI, and delegate the rest.
    that closes the spec (`Implements` where the owner signs it off, SKILL.md, Approvals and
    proof) with the branch's first push, made when you cut it (an empty commit when nothing
    is written yet), since the open PR is the claim another lead's search finds
-   (github.md, Review trail; board: `Build`), and run `uv run <this skill's folder>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
+   (github.md, Review trail; board: `Build`). Its body carries your guess at the run's spend,
+   `Token estimate: ~<N> (<basis>)`, e.g. `~2M, mostly two verifier passes`: the lead, its
+   workers and verifiers together, cache reads included. It is for the owner's information and
+   nothing reads it, so a rough number beats a careful one. Then run `uv run <this skill's folder>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
    that exit it assigns the issue's approver where no one is assigned, and the PR its
    issue's assignee (github.md, Assignee). Keep one scratchpad markdown for the run: the work items and what
-   blocks what, environment facts, gates, the model of each agent, and every worktree and
+   blocks what, environment facts, gates, the model and session id of each agent, and every worktree and
    branch the run creates (step 10 removes them). Agents get its path, never its content.
    The spec is the only issue for the work itself; SKILL.md, Triage places what the PR
    leaves unfixed, and the PR says `Part of` instead of `Closes` when that leaves the spec
@@ -102,7 +105,7 @@ design, wireframes included for a UI, and delegate the rest.
    before reporting: a finding the worker could have checked costs a fix round, a full gate and
    another pass. The worker gets those checks only, never a verdict, review text or the
    verifier's report, so the verifier stays independent and runs the same checks itself.
-   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker; every step's placement is SKILL.md, Where heavy steps run):
+   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; every step's placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
@@ -179,23 +182,8 @@ design, wireframes included for a UI, and delegate the rest.
    fallback)"; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
    author context, `--model` other than the author's (`--author-model`), the report labelled `Verifier: claude,
    same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
-   of quota)". Either fallback may land a low or medium risk change; `check merge` reads its family as a lower
-   tier and refuses a high-risk one, which waits for Codex or the owner, unless the owner has turned on the
-   policy's `risk.lower_tier_until: <date>` (SKILL.md, Settings): through that UTC day `check merge` lands it on the
-   fallback's satisfied verdict and prints a line naming the setting; every other proof and the go still hold, and
-   the day after, the date lifts nothing and the refusal says so. Such a PR keeps `risk:high` and its review
-   heading, so a default-tier review afterwards finds it. This lists each merged one whose newest verdict came
-   from a lower tier or a fallback, since the day the setting was turned on:
-
-   ```sh
-   gh pr list --state merged --label risk:high --search 'merged:>=<YYYY-MM-DD>' --limit 200 \
-     --json number,title,reviews --jq '.[]
-       | select([.reviews[].body | select(test("^Verifier \\("))] | last // ""
-         | test("^Verifier \\([^)]*\\b(agy|gemini[\\w.-]*|same-family|mid|small)\\b"))
-       | "#\(.number) \(.title)"'
-   ```
-
-   agy on another host takes the brief
+   of quota)". A satisfied fallback verdict lands a change of any risk the way a Codex one does: `check merge` reads
+   its family as no tier, and refuses only a `mid` or `small` Codex tier on a high-risk change. agy on another host takes the brief
    as a file there (backends/omnigent.md, Antigravity). Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), naming the last green head (the newest head whose
    gate passed) for the fix round's gate (worker.md, Gates and push). A correctness finding's fix
@@ -238,7 +226,14 @@ design, wireframes included for a UI, and delegate the rest.
      of <base>: land merges heads itself (lead.md step 8); this pass is avoidable`: a brief
      telling you to merge main after each landing is wrong, so leave the next one unmerged.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
-     `## Evidence`. Where the change is high risk, the merge approval is also the owner's
+     `## Evidence`, keeping the `Token estimate:` line and adding below it the `Tokens spent:` line
+     that `python3 <orchestrating-agents' folder>/scripts/omnigent_agent.py usage <session>...`
+     prints last, naming each top-level session your notes list (a verifier on another host, a
+     worker started outside your tree), since your session's record totals only its own tree,
+     children included. A
+     session Omnigent has no usage for is named as uncounted rather than guessed, since a guess
+     would read as a measurement. Information only, like the estimate; on another backend, write
+     `Tokens spent: not counted (<backend>)`. Where the change is high risk, the merge approval is also the owner's
      go on the head that lands (SKILL.md, Approvals and proof): `approvals.py approve merge
      <pr> --head <sha> --by owner` naming the head you showed them, when they say it in your
      session; you never give it, and `approved:merge` into the default branch is none. Into a
@@ -372,6 +367,11 @@ inbox notice, so watch your children as your backend's file in orchestrating-age
 and for a child that still owes its report a detached `supervise --registry` that `run` and
 `send` arm). Supervise with a process the host runs, not an in-session background command or
 session cron, which die with your session and lose every wake they owed.
+A child under a background `run --notify`, `send --notify` or `wait --notify` wakes you once when
+it ends its turn with its report in: by Omnigent's notice when the child is your own sub-agent or you
+subscribe to it, else by the command's `--notify` line, which also reports every other ending (a
+timeout, a failure) (orchestrating-agents' backends/omnigent.md, One wake per child). Don't poll or
+`watch` it for the other. Without `--notify`, expect Omnigent's notice and the command's exit both.
 Your own long runs (a gate, a land, a live check) start detached the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, since Claude Code's low-memory reaper stops
 in-session background shells. Start each with `LOOP_NOTIFY` naming your session (orchestrating-agents'
@@ -397,7 +397,14 @@ alive before saying so, since a restart kills your background runs. A child stil
 no turn item a few minutes after its start never got its brief: treat it as dead.
 A child that ends its turn saying it waits (for a build, a gate, CI) rather than reporting
 has left no report and will not wake itself: arm such a wait on its process or log, and when it
-fires, ask the child for its report.
+fires, ask the child for its report. A worker's gate or verifier run is waited on by what
+it posts on the PR, `wait-for --pr <n> --until gate` or `--until verdict` (orchestrating-agents'
+backends/omnigent.md, Waiting on a run or a PR), never by the worker's turn ending, since the run
+can outlast the turn or die with its machine; one that settles on nothing by the run's usual
+length is restarted, and the wait on the restart passes `--since <its start time>`, so the old
+run's failure or question does not answer it. Where the failure status cannot be written (a proxy
+that refuses status writes), a failed run reads as exit 6 until the budget; with
+`gate_steps`, exit 0 is one step's pass, and `local-ci <pr>` says whether the whole gate has one.
 Finish a worker or verifier as soon as its report is read or its verdict posted, since an
 idle child keeps its agent process, MCP servers and runner alive. With Omnigent, `run` and
 `wait` already finish the child whose report they return, except a `--pr` worker, which they keep

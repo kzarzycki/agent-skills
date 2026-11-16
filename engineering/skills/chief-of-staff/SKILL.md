@@ -100,7 +100,9 @@ its landing order.
   --after <session>`: the supervisor tells it that lead's `DONE` itself, so you send it no line of
   yours. A project manager is started with `start --top-level --leads <its leads registry>`
   (`<repo>-leads.registry` beside yours), so its `STILL WORKING` on its leads raises no deadline
-  while every one of them is running. A subscription wakes you with a full
+  while every one of them is running. A lead the owner will drive in its own session (a
+  discussion, an ask they take over) is started with `start --top-level --direct` (Adopted
+  sessions). A subscription wakes you with a full
   context on every turn end, and most of those change nothing, so it is the fallback:
   `start --top-level` without a registry subscribes you to the lead it starts, and Omnigent posts
   `[System: session <title> (<id>) ended its turn (completed|cancelled|failed). Read it with
@@ -141,8 +143,10 @@ its landing order.
 - **Adopted sessions.** A session the owner hands you that they started themselves is a lead
   from then on: subscribe to it as above or add its line to the registry (`<session>=<report>`, a tab, `follow`), and answer its reversible
   questions under the owner's standing decisions (Authority). A lead the owner works with in
-  its own session (they talk to it there, not through you) you mark with `python3 <script>
-  direct <session>` (`--off` clears it): the supervisor still tells you its `DONE`, failures
+  its own session (they talk to it there, not through you) is marked at launch with `start
+  --top-level --direct`, since a mark added afterwards is easy to forget and until then its quiet
+  ends and questions come to you; one you adopt or mark later gets `python3 <script> direct
+  <session>` (`--off` clears it). Either way the supervisor still tells you its `DONE`, failures
   and approval prompts, but raises no deadline, sends no nudge and leaves its quiet ends and
   questions to the owner, who reads them there.
 - **Host load.** Before starting or resuming sessions on a host, check its capacity: load
