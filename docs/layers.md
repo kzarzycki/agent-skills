@@ -42,7 +42,7 @@ skills:
   chief-of-staff: {layer: 4}
   overnight-run: {layer: 4}   # the chief of staff's procedure for an unattended run
   engineering-loop: {layer: 3}
-  # layer 2 has no skill yet: the gatekeeper is engineering-loop's approvals.py until #614 and #615
+  # layer 2 has no skill yet: the gatekeeper is engineering-loop's gatekeeper.py (approvals.py its former name) until #615
   agent-hygiene: {layer: 1}
   ask-matt: {layer: 1}
   audit-third-party-software: {layer: 1}
@@ -108,7 +108,7 @@ exceptions:
 |---|---|---|
 | `chief-of-staff` | 4 | `chief-of-staff`, the cos-console mod |
 | `loop` | 3 | `engineering-loop` with its lead, worker and verifier roles (the skill keeps its name, so every `AGENTS.md` line and brief naming it keeps working) |
-| `gatekeeper` | 2 | the gatekeeper CLI, today engineering-loop's `approvals.py` |
+| `gatekeeper` | 2 | the gatekeeper CLI, today engineering-loop's `gatekeeper.py` with its `github_adapter.py` (and `approvals.py`, its former name, for one release line) |
 | `engineering` | 1 | every craft skill above at layer 1 under `engineering/`, `orchestrating-agents` with its native backend, a new `browsing` skill |
 | `omnigent` | 0 | `omnigent-agents` (the runner backend and its driver), `operating-omnigent`, `omnigent-telemetry` |
 | `github` | 0 | `github.md`, `board.py`, `labels.py`, `github-project-board-setup` |
