@@ -68,7 +68,9 @@ def test_upstream_changing_only_gatekeeper_py_makes_an_approvals_py_caller_stale
     git_in(work, "pull", "-q")
     commit(origin, "scripts/gatekeeper.py", (scripts / "gatekeeper.py").read_text() + "\n# v2\n")
     fetched(origin, work)
-    spec = importlib.util.spec_from_file_location("approvals_by_path", work / "scripts/approvals.py")
+    spec = importlib.util.spec_from_file_location(
+        "approvals_by_path", work / "scripts/approvals.py"
+    )
     assert spec and spec.loader
     shim = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(shim)
