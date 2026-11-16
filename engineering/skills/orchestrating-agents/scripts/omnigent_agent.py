@@ -3592,11 +3592,11 @@ def pr_outcome(pr: int, until: str, timeout: float) -> tuple[int, str] | None:
 
 def kill_group(pid: int) -> None:
     """SIGTERM ``pid``'s process group (the detached recipe's ``setsid`` makes the pid its leader;
-    any other pid gets the signal alone, never the group of a process that does not lead it), then SIGKILL after
+    any other pid gets the signal alone, never this process's own group), then SIGKILL after
     ``KILL_GRACE`` seconds if it is still there."""
     try:
         group = os.getpgid(pid)
-        lone = group != pid
+        lone = group != pid or group == os.getpgrp()
         send = (lambda sig: os.kill(pid, sig)) if lone else (lambda sig: os.killpg(group, sig))
         send(signal.SIGTERM)
         deadline = time.monotonic() + KILL_GRACE

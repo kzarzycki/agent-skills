@@ -185,3 +185,14 @@ def test_a_pid_that_leads_no_group_is_killed_alone(tmp_path: Path) -> None:
     argv = ["wait-for", "--log", str(log), "--pid", str(pidfile), "--stall", "1", "--budget", "30"]
     assert omnigent_agent.main(argv) == 1
     assert run.wait() == -15  # SIGTERM to the pid; this test process lives on
+
+
+def test_a_pid_leading_wait_fors_own_group_is_killed_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log, pidfile, pid = detach(tmp_path, "echo hello; sleep 60")
+    wait_for_text(log, "hello")
+    monkeypatch.setattr(os, "getpgrp", lambda: pid)  # as if wait-for ran in the run's group
+    argv = ["wait-for", "--log", str(log), "--pid", str(pidfile), "--stall", "1", "--budget", "60"]
+    assert omnigent_agent.main(argv) == 1
+    os.killpg(pid, 0)  # the group's other member, `sleep`, is still there
