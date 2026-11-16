@@ -349,9 +349,11 @@ def test_a_seed_that_is_no_login_is_refused_by_length_and_hash_alone(
 def test_a_background_descendant_of_codex_does_not_hold_verify_up(
     world, vm, tmp_path, capfd
 ) -> None:
-    argv, seen = vm
+    argv, _ = vm
     codex = tmp_path / "bin" / "codex"
-    text = codex.read_text().replace("cat >/dev/null\n", "cat >/dev/null\nsleep 30 &\necho trailing line\n")
+    text = codex.read_text().replace(
+        "cat >/dev/null\n", "cat >/dev/null\nsleep 30 &\necho trailing line\n"
+    )
     codex.write_text(text)
     started = time.monotonic()
     assert cv.main(argv) == 0
