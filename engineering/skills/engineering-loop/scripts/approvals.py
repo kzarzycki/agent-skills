@@ -67,8 +67,8 @@ author posted one, that embeds its videos and screenshots as user-attachments (`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
 `ci: false` in loop.md, a `local-ci` pass on the head's tree under today's gate command, read as `local-ci` reads
-it below, instead; its comment is the trace, never the proof), and, while the change is high risk, for the owner's
-go on that head: the newest commit status `owner` on the head commit by the account running this or a writer is
+it below, instead; its comment is the trace, never the proof), and, while the change's level asks a go of its merge
+(below), for the owner's go on that head: the newest commit status `owner` on the head commit by the account running this or a writer is
 green, and the PR holds the owner's record (`Approved by the owner.`, then `Approved: merge`, `By: owner`,
 `Head: <sha>`) naming that head. `approve merge <pr> --head <sha> --by owner` posts both on the owner's word, the
 record's every word the script writes, refusing a head other than the one named, which is the one the owner was
@@ -80,14 +80,22 @@ delegate's go on <sha>, under the owner's delegation`) and the record `Approved 
 refused unless loop.md's `delegate: all` under `loop` (default `feature`) lets the delegate's go cover that branch
 too, and a delegate's status there counts only while it does, so removing the setting withdraws those goes on open
 PRs; into a feature branch it counts either way. `check merge` and `land` print whose go, the owner's or the
-delegate's, a high-risk head has. Into the default branch these are the only go: a
+delegate's, a head whose level asks a go has. Into the default branch these are the only go: a
 label is anyone's with triage rights, the delegated approver's included, so `approved:merge` there is no go, nor is
-an `owner` status an older gate wrote from the label (marked as from it). On a change that is not high risk the
-label means nothing. High risk is `risk:high` on the
-PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, a path `risk.merge_paths` names
-(below), or a review at the cap or later not satisfied or
-with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
-failure to add it and carrying on. On a PR into a feature branch (any base but the repository's default branch)
+an `owner` status an older gate wrote from the label (marked as from it). On a change whose level asks no go the
+label means nothing. Risk is a rating, and the policy's `levels` say what each level asks (rating, levels): `high` is
+`risk:high` on the PR or an issue it names, a risk rule matching (below), or a review at the cap or later not
+satisfied or with a blocker or major open (`cap`, SKILL.md § The cap); `critical` a path `risk.critical_paths` names
+(below); `low` anything else. Each level asks `policy` or `owner` of the spec and `gates`, `go` (a person's go on the
+head, as above) or `owner` (the owner's own go on the head, into any branch, no delegate's go nor label counting) of
+the merge; the merge takes the strictest any of its terms asks. The defaults are `low` {policy, gates}, `high`
+{policy, go}, or under `spec.auto: true` {owner, gates}, and `critical` {policy, owner}. A term the spec's hold never
+reads (the label, a revert, the `verifier` term, the cap) rates the change only after its spec was approved, and asks
+`go` where its level asks `owner` of the spec and `gates` of the merge, since the owner never saw that rating.
+`check merge` and `land` print the level and the merge action on stderr (`PR #7: risk: high (<why>); merge: go`). When
+the gate rates a change high or critical, `check merge` and `land` add `risk:high` to the PR, reporting a failure to
+add it and carrying on, except for a term the spec's hold answered at a level on {owner, gates}, which the label, read
+back as a raise after the spec, would turn into a go. On a PR into a feature branch (any base but the repository's default branch)
 `approved:merge` added after the head was pushed is a go too, the push time being GitHub's repository activity for
 the head branch; a label added before the push is no go, and the approvals workflow removes it on `synchronize`. There
 the label may be the delegated approver's: `delegate <pr>` adds it, then a record (`Approved: merge`,
@@ -372,16 +380,19 @@ running this counts as a writer, by its own permissions on the repo.
 The policy block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
 the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue`, `owner`, `machine_exit`,
-`short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`.
+`short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`; `levels` holds `low`,
+`high` and `critical`, each with `spec` and `merge` (above).
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
 account GitHub's collaborator permission gives admin, maintain or write. A high-risk one is still built; its merge
-waits for the owner. `spec.auto: true` approves every spec the same
-way, epics included, except one the risk rule matches on the labels of the issue and the PR and the PR's files (at
-`check build` the files pushed so far), or one opened by an account without write access: those need the owner's
-record and label, and `check` says why. Under `spec.auto: true` the risk rule holds the spec instead of the merge, since
-the owner approved the change before it was built; `risk:high` and the cap still hold the merge. The list may also
+waits for what its level asks. `spec.auto: true` approves every spec the same
+way, epics included, except one opened by an account without write access, or one rated before the build at a level
+whose `spec` is `owner` (by default `high` there: the risk rule on the labels of the issue and the PR and the PR's
+files, at `check build` the files pushed so far): those need the owner's record and label, and `check` says why. A
+level asking `owner` of the spec holds a spec a `spec.auto` kind covers too. Under `spec.auto: true` the risk rule
+holds the spec instead of the merge by default, since the owner approved the change before it was built; `risk:high`,
+the `verifier` term and the cap still hold the merge. The list may also
 hold a `paths` term (`- paths: [mise.toml, docs/agents/**]`), globs as a rule's `paths` are: it approves by policy the
 spec of an issue labelled `spec:paths`, which the lead adds to declare that the change stays inside them, since the
 gate can't tell that from the spec alone and the setting alone would approve every spec until its merge. `check build`
@@ -391,12 +402,14 @@ as its new one, so a rename across the boundary either way voids it; GitHub give
 name; neither carries `risk:high` nor the risk rule holds (its `verifier` term too, once a review is read); and the
 issue's author can write to the repo. Otherwise the owner approves the spec, and `check` names why, the files outside
 the globs included. The label without the term approves nothing. Without `auto`, or
-with `false` or an empty list, the owner approves every spec, and the gates are the merge approval of a change that is not high risk.
+with `false` or an empty list, the owner approves every spec, and the gates are the merge approval of a change whose level
+asks `gates` of the merge.
 
 A rule (`risk`, `plan`, `signoff`) is a section of terms, any one of which matches: `always: true`; `labels`,
 label names matched exactly on the PR and its issues; `paths`, globs matched on the PR's files; and in `risk` alone
-`verifier: true`. `risk.merge_paths`, globs matched on the PR's files as `paths` are, is no term of the rule: a PR
-touching one is high risk whatever its labels, `spec.auto` and the verifier's `Risk:` line say, and only the owner's go
+`verifier: true`. `risk.critical_paths` (deprecated name `merge_paths`, read with a `deprecated:` line; both set is
+refused), globs matched on the PR's files as `paths` are, is no term of the rule: a PR touching one rates `critical`
+whatever its labels, `spec.auto` and the verifier's `Risk:` line say, and by default only the owner's go
 on its head lets it merge, into any branch, so `check merge`, `check queue` and `land` wait for it, `approve merge
 --by delegate` and `delegate` refuse it, and the label is no go; files it can't read hold. A list holds strings. The gate reads the keys, never the words of a rule, so a path or
 label can never read as a term. A glob matches every path the PR touches on either side of the change: a
@@ -448,7 +461,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple, TypeVar
 
@@ -679,6 +692,14 @@ STEP_PLACES = ("any", "host", "linux")
 STAGES = ("intent", "spec", "plan", "build", "review", "land")
 # the specs `spec.auto` may name: an issue that is a bug, a follow-up an agent raised, a sub-issue of an approved epic
 SPEC_KINDS = ("bug", "follow-up", "sub-issue")
+# the levels the risk rating gives a change, lowest first (gatekeeper.md's `levels`: what each asks of the spec and
+# the merge); `low` is every change nothing raises
+LEVELS = ("low", "high", "critical")
+# what a level asks of the spec: `policy`, spec.auto decides; `owner`, the owner's record and `approved:spec`
+SPEC_ACTIONS = ("policy", "owner")
+# what a level asks of the merge, weakest first: the gates alone; a person's go on the head (the owner's, or the
+# delegate's where delegation allows); the owner's own go on the head
+MERGE_ACTIONS = ("gates", "go", "owner")
 SCHEMA: dict[str, dict[str, Any]] = {
     "loop": {
         "cap": int,
@@ -706,7 +727,17 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "mutate": {"inconclusive_exit": int},
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
-    "risk": {"always": bool, "labels": list, "paths": list, "verifier": bool, "merge_paths": list},
+    "risk": {
+        "always": bool,
+        "labels": list,
+        "paths": list,
+        "verifier": bool,
+        "critical_paths": list,
+        "merge_paths": list,
+    },
+    "levels": {
+        level: {"spec": Choice(SPEC_ACTIONS), "merge": Choice(MERGE_ACTIONS)} for level in LEVELS
+    },
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
@@ -905,6 +936,14 @@ def settings(loop: str | None) -> dict[str, Any]:
             data[name] = typed(section, SCHEMA[name], name, file)
             if name == "carry_over_main":
                 deprecated(name)
+            if name == "risk" and "merge_paths" in section:
+                # two sources of one list would drift, so the old name is read only alone
+                if "critical_paths" in section:
+                    raise Refused(
+                        f"{file}'s `risk` sets both `critical_paths` and `merge_paths`, its deprecated name:"
+                        " keep `critical_paths`"
+                    )
+                deprecated("risk.merge_paths", "name its globs `risk.critical_paths`")
         else:
             raise Refused(f"{file} has an unknown settings section `{name}`")
     return data
@@ -913,15 +952,12 @@ def settings(loop: str | None) -> dict[str, Any]:
 DEPRECATED: set[str] = set()
 
 
-def deprecated(name: str) -> None:
-    """Say once per run, on stderr, that a command or setting goes in the next release: a project's own queue keeps
-    working until it adopts the batch `land`."""
+def deprecated(name: str, instead: str = "land batches every landable PR (#650)") -> None:
+    """Say once per run, on stderr, that a command or setting goes in the next release, and what replaces it: a
+    project's own queue keeps working until it adopts the batch `land`."""
     if name not in DEPRECATED:
         DEPRECATED.add(name)
-        print(
-            f"deprecated: {name} goes in the next release; land batches every landable PR (#650)",
-            file=sys.stderr,
-        )
+        print(f"deprecated: {name} goes in the next release; {instead}", file=sys.stderr)
 
 
 def tracker_settings(tracker: str) -> dict[str, dict[str, str]]:
@@ -1094,21 +1130,171 @@ def ruled(
     return None
 
 
-def owners_only(pull: dict[str, Any], loop: str | None) -> str | None:
-    """Why only the owner's go on the head lets the PR merge, or None: it touches a path loop.md's `risk.merge_paths`
-    names, whatever its labels, `spec.auto` and the verifier's `Risk:` line say, since the owner keeps the last look
-    at those paths. Files the gate can't read hold, as a risk rule's `paths` do."""
-    globs = settings(loop).get("risk", {}).get("merge_paths", [])
+def critical_globs(loop: str | None) -> tuple[str, list[str]]:
+    """The key naming the critical paths, `critical_paths` or its deprecated name `merge_paths` (settings() refuses
+    both), and its globs."""
+    terms = settings(loop).get("risk", {})
+    key = "merge_paths" if "merge_paths" in terms else "critical_paths"
+    return key, terms.get(key, [])
+
+
+def critical(pull: dict[str, Any], loop: str | None) -> str | None:
+    """Why the change rates `critical`, or None: it touches a path `risk.critical_paths` names, whatever its labels,
+    `spec.auto` and the verifier's `Risk:` line say. Files the gate can't read hold, as a risk rule's `paths` do."""
+    key, globs = critical_globs(loop)
     if not globs:
         return None
+    sole = levels(loop)["critical"]["merge"] == "owner"
     files = touched(pull)
     if files is None:
-        return "the gate can't read every file the PR changes, so `risk.merge_paths` holds until the owner judges them"
+        who = "the owner judges" if sole else "a person judges"
+        return (
+            f"the gate can't read every file the PR changes, so `risk.{key}` holds until {who} them"
+        )
     for glob in globs:
         for path in files:
             if fnmatch.fnmatch(path, glob):
-                return f"it touches `{path}`, which `risk.merge_paths` names (`{glob}`), so only the owner approves its merge"
+                why = f"it touches `{path}`, which `risk.{key}` names (`{glob}`)"
+                return why + ", so only the owner approves its merge" if sole else why
     return None
+
+
+def levels(loop: str | None) -> dict[str, dict[str, str]]:
+    """What each level (LEVELS) asks of the spec (SPEC_ACTIONS) and the merge (MERGE_ACTIONS): gatekeeper.md's
+    `levels`, each key it leaves out at its default, which is the rule before levels existed: `low` {policy, gates};
+    `high` {policy, go}, or under `spec.auto: true` {owner, gates}, since there the owner approved the change before it
+    was built; `critical` {policy, owner}."""
+    high = (
+        {"spec": "owner", "merge": "gates"}
+        if spec_auto(loop)
+        else {"spec": "policy", "merge": "go"}
+    )
+    table = {
+        "low": {"spec": "policy", "merge": "gates"},
+        "high": high,
+        "critical": {"spec": "policy", "merge": "owner"},
+    }
+    for level, actions in settings(loop).get("levels", {}).items():
+        table[level] = {**table[level], **actions}
+    return table
+
+
+def terms(
+    pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None
+) -> Iterator[tuple[str, bool, str]]:
+    """The risk terms that hold on the change, in the order the gate quotes them, each as (level, after, why): `high`
+    for `risk:high` on the PR or an issue it names (or, for a feature branch's merge to the default branch, on a PR
+    merged into it), an exact revert of a high-risk change, a risk rule's `always`, `labels` or `paths` (ruled) on the
+    labels of the PR and its issues and its files, its `verifier` term on the verifier's `Risk:` line (judged), and a
+    review at the cap not satisfied or with a blocker or major open (capped); `critical` for a path
+    `risk.critical_paths` names (critical). `after` marks a term the spec's own hold never reads (spec_owned), the
+    label, the revert, the verifier and the cap, so it rates the change only after its spec was approved. Lazy, so a
+    caller that needs the first term reads no more. An exact revert's issues (gated's `named`) count as its issues."""
+    issues = issues + pull.get("named", [])
+    marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
+        f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
+    ]
+    if not marked and default(pull) and not pull["isCrossRepository"]:
+        # a feature branch's merge to the default branch carries every high-risk PR that landed in it
+        marked = [
+            f"#{n}, merged into {pull['headRefName']}" for n in merged_high(pull["headRefName"])
+        ]
+    if marked:
+        yield "high", True, f"`{RISK_LABEL}` is on {', '.join(marked)}"
+    if why := pull.get("reverted"):
+        yield "high", True, why
+    if why := critical(pull, loop):
+        yield "critical", False, why
+    labels = names(pull).union(*(names(issue) for issue in issues))
+    if why := ruled(labels, touched(pull), loop):
+        yield "high", False, why
+    if settings(loop).get("risk", {}).get("verifier") and (why := judged(pull, loop)):
+        # spec_hold() read the paths and labels before the build; the verdict comes after it
+        if spec_auto(loop):
+            yield "high", True, f"it matches a risk rule's `verifier` term: {why}"
+        else:
+            yield "high", True, f"it matches a risk rule (verifier): {why}"
+    limit = cap(loop)
+    if capped(pull, limit):
+        yield (
+            "high",
+            True,
+            (
+                f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open,"
+                " so the owner decides"
+            ),
+        )
+
+
+def merge_for(level: str, after: bool, table: dict[str, dict[str, str]]) -> str:
+    """What a term at `level` asks of the merge (levels' `table`): the level's `merge`, but `go` for a term read only
+    after the spec was approved (`after`) where the level's `spec` is `owner` and its `merge` is `gates`, since the
+    owner's spec approval, which stood in for the go, never saw that rating."""
+    merge = table[level]["merge"]
+    if after and merge == "gates" and table[level]["spec"] == "owner":
+        return "go"
+    return merge
+
+
+class Rated(NamedTuple):
+    """The change's rating and the merge action it gets (rating): `level`, the highest it rates, and `why`, the first
+    term at that level (None for `low`); `merge`, the strictest action any of its terms asks, `low`'s when none holds,
+    with `source`, the level of the first term that asks it, and `because`, that term's why."""
+
+    level: str
+    why: str | None
+    merge: str
+    source: str
+    because: str
+
+    def line(self, pull: dict[str, Any]) -> str:
+        """The line `check merge` and `land` print: the level, why, and the action they applied."""
+        rated = f"{self.level} ({self.why})" if self.why else self.level
+        return f"PR #{pull['number']}: risk: {rated}; merge: {self.merge}"
+
+
+def rating(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> Rated:
+    """The change's level (terms) and what its merge needs (merge_for), the strictest any term asks; a change no term
+    raises is `low` and takes `levels.low.merge`."""
+    table = levels(loop)
+    found = list(terms(pull, issues, loop))
+    if not found:
+        merge = table["low"]["merge"]
+        because = "nothing rates it above low"
+        if merge == "owner":
+            because += ", and `levels.low.merge` is `owner`"
+        return Rated("low", None, merge, "low", because)
+    level = max((term[0] for term in found), key=LEVELS.index)
+    why = next(term[2] for term in found if term[0] == level)
+    asked = [(merge_for(lvl, after, table), lvl, because) for lvl, after, because in found]
+    merge = max((ask[0] for ask in asked), key=MERGE_ACTIONS.index)
+    _, source, because = next(ask for ask in asked if ask[0] == merge)
+    if merge == "owner" and source != "critical":
+        because += f", and `levels.{source}.merge` is `owner`"
+    return Rated(level, why, merge, source, because)
+
+
+def owners_only(
+    pull: dict[str, Any], loop: str | None, issues: list[dict[str, Any]] | None = None
+) -> str | None:
+    """Why only the owner's own go on the head lets the PR merge, into any branch, or None: its rating asks
+    `owner` of the merge (rating). Where only `critical` may ask it, as by default, the paths alone decide, so no
+    issue is read; otherwise the PR's issues are read when the caller has none (rated_issues)."""
+    table = levels(loop)
+    if all(table[level]["merge"] != "owner" for level in ("low", "high")):
+        return critical(pull, loop) if table["critical"]["merge"] == "owner" else None
+    found = rating(pull, rated_issues(pull) if issues is None else issues, loop)
+    return found.because if found.merge == "owner" else None
+
+
+def rated_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
+    """The issues the PR's rating reads, as gated() finds them, for a command that judges the merge without gating
+    it (approve merge, delegate); an exact revert's go to `named` and its original's risk to `reverted`."""
+    revert, _ = reverts(pull)
+    if revert:
+        pull["named"], pull["reverted"] = closing_issues(pull), reverted(revert)
+        return []
+    return closing_issues(pull)
 
 
 def head_passes(
@@ -1148,38 +1334,15 @@ def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
 
 
 def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
-    """Why the change is high risk, or None: `risk:high` on the PR or an issue it names; a risk rule (ruled) on the
-    labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under
-    `spec.auto: true`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
-    was built, while its `verifier` term still holds the merge; a path `risk.merge_paths` names (owners_only), under
-    `spec.auto` too; or a review at the cap was not satisfied or left a
-    blocker or major open (capped). An exact revert's issues (gated's `named`) count as its issues here."""
-    issues = issues + pull.get("named", [])
-    marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
-        f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
-    ]
-    if not marked and default(pull) and not pull["isCrossRepository"]:
-        # a feature branch's merge to the default branch carries every high-risk PR that landed in it
-        marked = [
-            f"#{n}, merged into {pull['headRefName']}" for n in merged_high(pull["headRefName"])
-        ]
-    if marked:
-        return f"`{RISK_LABEL}` is on {', '.join(marked)}"
-    if why := pull.get("reverted"):
-        return why
-    if why := owners_only(pull, loop):
-        return why
-    if not spec_auto(loop):
-        labels = names(pull).union(*(names(issue) for issue in issues))
-        if why := ruled(labels, touched(pull), loop, judged(pull, loop)):
+    """Why the change rates `high` or `critical` (terms), as the gate shows it with `risk:high` (flag) and as the
+    verifier's tier rule reads it, or None: the first term but one the spec's own hold answered, a term read before the
+    spec (`after` false) at a level whose `spec` is `owner` and `merge` is `gates`, since there the owner approved the
+    change before it was built, and the label, read back as a term after the spec, would ask for a go that approval
+    already made needless. By default that is a risk rule's `labels`, `paths` and `always` under `spec.auto: true`."""
+    table = levels(loop)
+    for level, after, why in terms(pull, issues, loop):
+        if merge_for(level, after, table) == merge_for(level, True, table):
             return why
-    elif settings(loop).get("risk", {}).get("verifier"):
-        # spec_hold() read the paths and labels before the build; the verdict comes after it, so it holds the merge
-        if why := judged(pull, loop):
-            return f"it matches a risk rule's `verifier` term: {why}"
-    limit = cap(loop)
-    if capped(pull, limit):
-        return f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open, so the owner decides"
     return None
 
 
@@ -1667,12 +1830,30 @@ def spec_policy(issue: dict[str, Any], kinds: set[str]) -> bool:
     return bool(login) and writer(login)
 
 
+def spec_owned(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str | None:
+    """Why the spec's rating leaves it to the owner whatever `spec.auto` says, or None: a level whose `spec` is `owner`
+    (levels) that the terms read before the build give it, a risk rule (ruled) on the labels of the issue and the PR
+    and the files pushed so far for `high`, `risk.critical_paths` (critical) for `critical`, or `low` when neither
+    holds, so a file the spec didn't foresee still reaches the owner. Only a level that asks it is judged. By default
+    that is `high` under `spec.auto: true`."""
+    table = levels(loop)
+    if table["high"]["spec"] == "owner" and (
+        why := ruled(names(issue) | names(pull), touched(pull), loop)
+    ):
+        return why
+    if table["critical"]["spec"] == "owner" and (why := critical(pull, loop)):
+        return why
+    if table["low"]["spec"] != "owner":
+        return None
+    raised = ruled(names(issue) | names(pull), touched(pull), loop) or critical(pull, loop)
+    return None if raised else "nothing rates it above low, and `levels.low.spec` is `owner`"
+
+
 def spec_hold(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str | None:
-    """Why `spec.auto: true` leaves the issue's spec to the owner, or None when the policy approves it: a risk rule (ruled)
-    on the labels of the issue and the PR and the files pushed so far, so a file the spec didn't foresee still reaches
-    the owner; or an author without write access, since anyone who can open an issue would otherwise have their own
-    spec approved."""
-    if why := ruled(names(issue) | names(pull), touched(pull), loop):
+    """Why `spec.auto: true` leaves the issue's spec to the owner, or None when the policy approves it: its rating
+    (spec_owned), by default a risk rule on the labels of the issue and the PR and the files pushed so far; or an
+    author without write access, since anyone who can open an issue would otherwise have their own spec approved."""
+    if why := spec_owned(pull, issue, loop):
         return why
     login = (issue.get("author") or {}).get("login")
     if not (login and writer(login)):
@@ -1713,9 +1894,18 @@ def scoped(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str
 
 def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
     """A line per issue whose spec `spec.auto: true` leaves to the owner (spec_hold), approved or not, so a gate run says
-    why that spec needed them and its merge waits for no `approved:merge`."""
+    why that spec needed them and its merge waits for no `approved:merge`; without it, per issue a kind `spec.auto`
+    names would cover but whose rating leaves to the owner (spec_owned)."""
     if not spec_auto(loop):
-        return []
+        kinds = spec_kinds(loop)
+        return [
+            f"#{issue['number']}: its spec is the owner's to approve, though `spec.auto` names its kind, since {why}"
+            for issue in issues
+            if kinds
+            and not any(label.startswith("wayfinder:") for label in names(issue))
+            and (why := spec_owned(pull, issue, loop))
+            and spec_policy(issue, kinds)
+        ]
     return [
         f"#{issue['number']}: its spec is the owner's to approve under `spec.auto: true`, since {why}"
         for issue in issues
@@ -1932,7 +2122,12 @@ def proofs(
             if READY not in labels:
                 found.append(f"{where} lacks the `{READY}` label")
             continue
-        covered = every and spec_hold(pull, issue, loop) is None or spec_policy(issue, kinds)
+        covered = (
+            every
+            and spec_hold(pull, issue, loop) is None
+            or spec_policy(issue, kinds)
+            and spec_owned(pull, issue, loop) is None
+        )
         if not covered and SCOPED in labels:
             why = scoped(pull, issue, loop)
             covered = why is None
@@ -2794,17 +2989,19 @@ def owner_waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """A line while the change is high risk (risk) and no go is on the head (owned): the owner's, or with
-    `loop.delegate: all` the delegate's. Into the default branch only such a head-pinned go counts, since a delegate
-    acting through the owner's account adds a label no differently from the owner; into a feature branch the `approved:merge` label, added after the head's push, counts too, the
-    owner's or the delegate's (delegate). `pushed(pull)` is when the head was pushed (default: GitHub's repository
-    activity). A path `risk.merge_paths` names (owners_only) takes the owner's own go on the head, into any branch.
+    """A line while the change's rating asks a go of its merge (rating: `go` or `owner`) and no go is on the head
+    (owned): the owner's, or with `loop.delegate: all` the delegate's. Into the default branch only such a head-pinned
+    go counts, since a delegate acting through the owner's account adds a label no differently from the owner; into a
+    feature branch the `approved:merge` label, added after the head's push, counts too, the owner's or the delegate's
+    (delegate). `pushed(pull)` is when the head was pushed (default: GitHub's repository activity). A rating that asks
+    `owner`, by default a path `risk.critical_paths` names, takes the owner's own go on the head, into any branch.
     """
     where, found = f"PR #{pull['number']}", []
-    why = risk(pull, issues, loop)
-    if why is None:
+    rated = rating(pull, issues, loop)
+    if rated.merge == "gates":
         return found
-    carry, sole = carried_go(pull, loop), owners_only(pull, loop)
+    why = rated.because
+    carry, sole = carried_go(pull, loop), why if rated.merge == "owner" else None
     by = carry[0] if isinstance(carry, tuple) else None
     if by == "owner" or by and not sole:
         return found
@@ -2823,15 +3020,15 @@ def owner_waits(
         return [
             (
                 f"{where} waits for the owner's go on its head ({command}; into {pull['baseRefName']} `{MERGE_LABEL}`"
-                f" is no go), since it is high risk: {why}"
+                f" is no go), since it is {rated.source} risk: {why}"
             ),
             *stale,
         ]
     if MERGE_LABEL not in names(pull):
         return [
             (
-                f"{where} waits for the owner's go on its head ({command}, or `{MERGE_LABEL}`), since it is high"
-                f" risk: {why}"
+                f"{where} waits for the owner's go on its head ({command}, or `{MERGE_LABEL}`), since it is"
+                f" {rated.source} risk: {why}"
             ),
             *stale,
         ]
@@ -2970,7 +3167,8 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
     refused, since the approver saw the one they were asked about. The delegate's go into the default branch is
     refused unless `delegate` is `all` in the policy on `origin/<base>` (base_policy), since without it only the owner's
     go covers that branch and a branch's own edit is not the owner's, and on a PR
-    touching a path `risk.merge_paths` names (owners_only) into any branch, since that merge is the owner's alone."""
+    whose rating asks the owner's own go of its merge (owners_only; by default a path `risk.critical_paths` names) into
+    any branch, since that merge is the owner's alone."""
     pull = pull_request(number)
     if pull["state"] != "OPEN":
         raise Refused(f"PR #{number} is {pull['state'].lower()}: nothing to approve")
@@ -4240,9 +4438,13 @@ def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
     waiting = waits(pull, issues, loop) if point == "merge" else []
+    rated = rating(pull, issues, loop) if point == "merge" else None
+    if rated is not None:
+        # on stderr, so the lines a workflow or a lead reads as the gate's answer stay what holds the merge
+        print(rated.line(pull), file=sys.stderr)
     used = (
         whose(pull, loop)
-        if point == "merge" and not found and not waiting and risk(pull, issues, loop)
+        if rated is not None and not found and not waiting and rated.merge != "gates"
         else []
     )
     # advice, so it prints whatever else holds the merge and changes no exit code
@@ -4873,11 +5075,13 @@ def landable(
         wait = (1, False) if red or any(line.endswith(PAGED) for line in lines) else (WAITING, True)
         return Verdict(wait, issues=issues)
     # after CI, so the owner is never asked about a head CI could still reject
+    rated = rating(pull, issues, loop)
+    print(rated.line(pull), file=sys.stderr)
     if owner := owner_waits(pull, issues, loop):
         for line in owner:
             print(line)
         return Verdict((WAITING, False), issues=issues)  # the owner is asked, not polled
-    if risk(pull, issues, loop):
+    if rated.merge != "gates":
         for line in whose(pull, loop):
             print(line)
     return Verdict(None, issues=issues)
@@ -5569,8 +5773,8 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
 def delegate(number: int) -> int:
     """The delegated approver's `approved:merge` on a PR into a feature branch, under the owner's standing rule: the
     label, then the record that names it the delegate's. Into the default branch, where a label is no go, it is
-    refused: there the go is pinned to a head (go). So is a PR touching a path `risk.merge_paths` names, whose merge
-    only the owner's go on the head allows (owners_only)."""
+    refused: there the go is pinned to a head (go). So is a PR whose rating asks the owner's own go on the head
+    (owners_only; by default a path `risk.critical_paths` names)."""
     pull = pull_request(number)
     with policy_from(pull["baseRefName"]):
         loop = project()[1]

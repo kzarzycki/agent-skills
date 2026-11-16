@@ -86,7 +86,7 @@ run it with `uv run`. They need Python 3.9 or later. Every key is optional:
 ```yaml
 spec:
   # specs approved by policy, with no owner record; any other waits for the owner.
-  # `auto: true` approves every spec, and the risk rule then holds the spec, not the merge
+  # `auto: true` approves every spec, and by default the risk rule then holds the spec, not the merge
   auto:
     - bug
     - follow-up
@@ -126,8 +126,19 @@ risk:
   paths:
     - .github/**
     - CODEOWNERS
-  merge_paths:   # the owner's own go on the head, whatever the labels and the verifier say
+  critical_paths:   # the `critical` level, whatever the labels and the verifier say; was merge_paths
     - src/orders/**
+
+levels:   # what each level asks; the values shown are the defaults
+  low:
+    spec: policy
+    merge: gates
+  high:   # under `spec.auto: true` {spec: owner, merge: gates}
+    spec: policy
+    merge: go
+  critical:
+    spec: policy
+    merge: owner
 
 plan:
   labels:
@@ -177,7 +188,8 @@ carry_over_main:
 | `mutate` | `inconclusive_exit` | a whole number from 1 to 255: the exit a test command returns for "setup failed, no verdict", which `mutate.py` reports as an inconclusive patch (never killed) and exits 3 for; the project's test command exits with it when its device or build setup fails (verifier.md, Mutation-check the new tests) | `75` |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
-| `risk` | `merge_paths` | globs matched on the PR's files, as `paths` are: a PR touching one merges only on the owner's go on its head (Approvals and proof) | the rule above decides |
+| `risk` | `critical_paths` | globs matched on the PR's files, as `paths` are: a PR touching one rates `critical` (Approvals and proof); `merge_paths` is its deprecated name, read with a `deprecated:` line, and both set is refused | nothing rates `critical` |
+| `levels` | `low`, `high`, `critical`, each with `spec` (`policy` or `owner`) and `merge` (`gates`, `go` or `owner`) | what a change rated at that level needs (Approvals and proof); a key left out keeps its default | `low` {policy, gates}; `high` {policy, go}, or under `spec.auto: true` {owner, gates}; `critical` {policy, owner} |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
 | `land` | `signed_squash_to` and `allowed_signers`, set together or not at all; `where` (`host`, `cloud` or `both`), `signing_key_env`, `merge_queue` and `merge_commit_heads` (a list of fnmatch patterns over head branch names, such as `sync/*`) | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub; `where` is where `land` may run, and in a cloud session it signs with the key in the variable `signing_key_env` names, which must be in the allowed signers, never the session's own, and lands a PR there only with `merge_queue: false`, since REST can't say whether the base requires a merge queue (`approvals.py`'s docstring says how) | GitHub merges, on a host only; a PR whose head matches `merge_commit_heads` lands with `gh pr merge --merge --match-head-commit`, keeping the head's ancestry (an upstream-sync PR needs it), and every other PR is squashed as before; `land` prints each PR's method, and a match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form |
 | `carry_over_main` | `except`, a list of globs, required | deprecated, goes in the next release (Approvals and proof); the project's merge-check configuration (lint, type, test and gate config, lockfiles): clean merges of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
@@ -396,15 +408,16 @@ gatekeeper.md's policy (Settings) holds:
   critical ones: a spec the `risk` rule matches, or one opened by an account without write
   access, since anyone who can open an issue would otherwise approve their own, waits for
   the owner's record and `approved:spec`. The risk rule then holds the spec instead of the
-  merge: the owner decides while the change is still cheap, and its merge is automatic
-  like any other. `approvals.py` judges the rule on the labels of the issue and the PR
+  merge (the default `high` level there is `{spec: owner, merge: gates}`, below): the owner
+  decides while the change is still cheap, and its merge is automatic like any other. `approvals.py` judges the rule on the labels of the issue and the PR
   and the PR's files, at `check build` the files pushed so far, so a file the spec didn't
   foresee still reaches the owner before the merge. `auto: true` moves the rule rather than
   a key of its own, since with every spec approved by policy the spec is the one point the
   owner sees a risky change before it is built, and holding the merge as well would ask
   them twice.
-- The gates are the merge approval of a change that is not high risk.
-- `risk` says what is high risk here, and any one of its terms matching holds: `labels`,
+- The gates are the merge approval of a change whose level asks `gates` of the merge (by
+  default a `low` one).
+- `risk` is the rating: it says what rates `high` here, and any one of its terms matching holds: `labels`,
   matched exactly on the PR and its issues as GitHub names them (`size:L` and `size:XL`
   for large or larger, `area:billing`, `kind:bug`); `paths`, globs matched on the PR's
   files; `always: true`; and `verifier: true`. `approvals.py` reads the keys, never the
@@ -421,15 +434,37 @@ gatekeeper.md's policy (Settings) holds:
   for that term comes off when a later pass says `Risk: low`; one added again after it
   stays. loop.md § Risk criteria adds the project's own criteria in words, which the
   verifier reads.
-- `risk.merge_paths`, globs matched on the PR's files as `paths` are, names the paths whose
-  merge the owner always approves, such as the code that places orders or moves money. A PR
-  touching one is high risk whatever its labels, `spec.auto` and the verifier's `Risk:` line
-  say, and only the owner's go on its head (`approve merge <pr> --head <sha> --by owner`)
-  lets it merge, into any branch: `check merge`, `check queue` and `land` wait for it, a new
-  push needs a new go, `approve merge --by delegate` and `delegate` refuse it, and
-  `approved:merge` is no go, since a rule that depends on someone remembering a label is no
-  rule. It is a list of its own beside `paths`, so a project keeps a wide list holding the
-  spec under `auto: true` and a short one holding every merge. Paths it can't judge hold.
+- `risk.critical_paths`, globs matched on the PR's files as `paths` are, names the paths
+  that rate `critical`, such as the code that places orders or moves money, whatever the
+  PR's labels, `spec.auto` and the verifier's `Risk:` line say. By default only the owner's
+  go on its head (`approve merge <pr> --head <sha> --by owner`) lets such a PR merge, into
+  any branch: `check merge`, `check queue` and `land` wait for it, a new push needs a new
+  go, `approve merge --by delegate` and `delegate` refuse it, and `approved:merge` is no go,
+  since a rule that depends on someone remembering a label is no rule. It is a list of its
+  own beside `paths`, so a project keeps a wide list holding the spec under `auto: true` and
+  a short one holding every merge. Paths it can't judge hold. `merge_paths`, its old name,
+  is deprecated for one release: read as `critical_paths` with one `deprecated:` line, and
+  refused beside it, since two sources of one list would drift.
+- `levels` says what each level of the rating needs, so a project changes the rule without
+  changing the rating: `low` (everything the rating doesn't raise), `high` and `critical`,
+  each with `spec`, `policy` (`spec.auto` decides) or `owner` (a spec rated at that level
+  before the build waits for the owner's record and `approved:spec`, whatever `spec.auto`
+  says), and `merge`, `gates` (the gates are the merge approval), `go` (a person's go on
+  the head: the owner's, or the delegate's where `loop.delegate` and the feature-branch rule
+  below allow) or `owner` (the owner's own go on the head, into any branch, as above). A key
+  left out keeps its default, which reproduces the rule before `levels`: `low` `{spec:
+  policy, merge: gates}`, `high` `{spec: policy, merge: go}`, or under `spec.auto: true`
+  `{spec: owner, merge: gates}`, and `critical` `{spec: policy, merge: owner}`. A change
+  rated by several terms takes the strictest `merge` any of them asks. A term the spec's
+  hold never reads (`risk:high`, an exact revert of a high-risk change, the `verifier` term,
+  the cap) rates the change only after its spec was approved: it takes its level's `merge`,
+  or `go` where that level's `spec` is `owner` and its `merge` is `gates`, since the owner
+  never saw that rating. `high: {merge: gates}` lands high risk on the gates in a low-stakes
+  repo, and the rating still shows as `risk:high`; `low: {merge: go}` holds every merge for
+  a go. The verifier's tier rule stays tied to the rating: a `high` or `critical` change
+  needs a default-tier verdict whatever its `merge` says. `check merge` and `land` print the
+  level and the action they applied on stderr (`PR #7: risk: high (it matches a risk rule
+  (path `.github/**`)); merge: go`).
 - `plan` asks for the owner's approval of a matching plan.
 - `bot.<login>`, such as `bot.dependabot[bot]` with `paths` `uv.lock` and
   `pyproject.toml`: a PR that bot opens needs no verifier review when every commit is the
@@ -452,10 +487,12 @@ gatekeeper.md's policy (Settings) holds:
   a PR, so it is fixed before the PR reaches `land`. Without a `signoff` section
   no keyword is checked, and `Implements` is a link like `Part of`.
 
-A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
-matches (unless under `spec.auto: true`, where it held the spec, but for its `verifier` term), or the cap was reached with a blocker or major open (The cap). A high-risk spec
-covered by policy is still built and PR'd; its merge waits for the owner's go on its
-head, asked for once `check` is green there: `uv run <this skill's folder>/scripts/approvals.py
+A change rates `high` when `risk:high` is on the PR or an issue it closes, a risk rule
+matches, or the cap was reached with a blocker or major open (The cap), and `critical`
+when it touches `risk.critical_paths`. A high-risk spec covered by policy is still built
+and PR'd; where its level asks a go (by default `high`, but for a rule that held its spec
+under `spec.auto: true`, and `critical`), its merge waits for the owner's go on its head,
+asked for once `check` is green there: `uv run <this skill's folder>/scripts/approvals.py
 approve merge <pr> --head <sha> --by owner`, naming the head you showed them and run in
 the session where the owner said it, posts a commit status `owner` on that one commit and a
 record naming it, and refuses a head that moved since; the script writes every word, so
@@ -471,7 +508,7 @@ a base with no policy file leaves the default branch's), and there a delegate's 
 key (`feature`) the owner's go alone covers the default branch. A status covers one commit, so
 it never covers code the approver did not see; it carries to a head whose commits since are
 only merges of the base, once the verifier's pass there says `Logic change: none`. Into the default branch these are the only go:
-anyone with triage rights can add a label, so `approved:merge` there is no go. On a change that is not high risk
+anyone with triage rights can add a label, so `approved:merge` there is no go. On a change whose level asks no go
 `approved:merge` means nothing. On a PR into a feature branch (any base but the default
 branch) the label added after the head's push is a go too, and it may be the delegated
 approver's, where loop.md names one: once the gate is green and a satisfied verdict from the
@@ -479,7 +516,9 @@ verifier's top model covers the head, it runs `approvals.py delegate <pr>`, whic
 label and a record naming it the delegate's. So dependent work can go on landing behind a
 high-risk change. `delegate` refuses a PR into the default branch, and the branch's own
 merge to the default branch is high risk while any PR merged into the branch carries
-`risk:high`: the stream gets one go, as a whole, the owner's or, with `loop.delegate: all`, the delegate's. When the gate infers high risk, it adds `risk:high` to the PR. Otherwise
+`risk:high`: the stream gets one go, as a whole, the owner's or, with `loop.delegate: all`, the delegate's. When the gate rates a change `high` or `critical`, it adds `risk:high` to the PR, except
+for a rule that held the spec at a level on `{spec: owner, merge: gates}`, since the label,
+read back as a rating after the spec, would ask for a go. Where the level asks `gates`,
 the merge approval is the gates themselves: every verifier review on the newest pass's
 commit satisfied with no blocker or major open, that commit covering the head that lands,
 every review thread resolved, no review requesting changes, and the base's required checks
@@ -509,7 +548,7 @@ it was never gated on:
   merges, so a lock whose PR is merged and in the base was left by a land that died after its
   merges and is broken at once; one older than 2 hours (a land that died before them) is broken too.
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
-  wait, with the owner's go where the change is high risk and the base's required checks
+  wait, with the owner's go where the change's risk level asks one and the base's required checks
   green. `land <pr>...` marks each named draft ready, before it waits for the lock so the holder's next batch includes it, never on a missing proof, since ready starts CI.
   Several named PRs land in one batch; one that is no candidate is left out with its reason and the rest land, the exit being the worst of them (1 over 3 over 0).
 - With gatekeeper.md's `head_proof`, a candidate's head also carries a green status of its `status`
@@ -911,7 +950,7 @@ or the owner's private network.
   the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr> --wait`,
   which marks it ready and lands it with every other landable PR in one gated batch. The PR merges only when the newest
   verdict covers the head that lands, the required checks are green there, and, where the
-  change is high risk (Approvals and proof), the owner's go is on that head.
+  change's risk level asks a go (Approvals and proof), the owner's go is on that head.
   The verdict's commit is the head itself: any commit after it, a merge of main included,
   needs a verifier pass first, and a triage or comment is no verdict.
 
