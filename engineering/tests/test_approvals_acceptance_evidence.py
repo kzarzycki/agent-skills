@@ -266,3 +266,15 @@ def test_skill_states_the_verifier_session_setting() -> None:
     skill = flat("SKILL.md")
     assert "`Verifier session: reuse | fresh`" in skill
     assert "independent of the author but not fresh" in skill
+
+
+def test_a_far_brief_names_the_fallback_runner_in_the_verifier_s_worktree(
+    briefing: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A verifier on another host runs the worktree's own copy of the runner, as it reads its own role file."""
+    monkeypatch.setattr(approvals, "toplevel", lambda: SCRIPTS.parents[3])
+    assert approvals.main(["brief", "7", "--far", "/there/repo"]) == 0
+    tree = "/there/repo/tmp/loop/pr7-v1-tree"
+    assert acceptance_lines(capsys) == [
+        f"- Acceptance tests: uv run {tree}/engineering/skills/engineering-loop/scripts/acceptance.py 12"
+    ]
