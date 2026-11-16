@@ -181,8 +181,7 @@ keep these lines exact:
   `Verifier: claude, same-family, pass 2 (merge of main)`.
   A Gemini pass through agy gives its signature, `Verifier: agy/gemini-4-hydrogen-medium/?, pass 1`, and a
   same-family one on the Codex fallback `Verifier: claude, same-family, pass 1 (Codex out of quota)`: `check
-  merge` reads either as a fallback and refuses it for a high-risk change, unless the policy's
-  `risk.lower_tier_until` is live (SKILL.md, Settings).
+  merge` reads either as a fallback and refuses it for a high-risk change.
 - Sections: the Review skill's (code-review's Standards and Spec), then Correctness.
 - Per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, the
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR

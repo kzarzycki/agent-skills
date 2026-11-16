@@ -115,7 +115,6 @@ risk:
     - CODEOWNERS
   merge_paths:   # the owner's own go on the head, whatever the labels and the verifier say
     - src/orders/**
-  lower_tier_until: 2026-11-20   # a lower-tier or fallback verdict lands a high-risk PR through this UTC day
 
 plan:
   labels:
@@ -166,7 +165,6 @@ carry_over_main:
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
 | `risk` | `merge_paths` | globs matched on the PR's files, as `paths` are: a PR touching one merges only on the owner's go on its head (Approvals and proof) | the rule above decides |
-| | `lower_tier_until` | a date, `YYYY-MM-DD` unquoted so YAML reads a date: through that day in UTC, inclusive, `check merge` lands a high-risk PR on a lower-tier or fallback verdict, printing a line that names the setting, and from the next day the date lifts nothing and the refusal says it has passed; the PR still needs every other proof and its go (lead.md, Verifier route) | a high-risk PR needs a default-tier verdict |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
 | `land` | `signed_squash_to` and `allowed_signers`, set together or not at all; `where` (`host`, `cloud` or `both`), `signing_key_env`, `merge_queue` and `merge_commit_heads` (a list of fnmatch patterns over head branch names, such as `sync/*`) | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub; `where` is where `land` may run, and in a cloud session it signs with the key in the variable `signing_key_env` names, which must be in the allowed signers, never the session's own, and lands a PR there only with `merge_queue: false`, since REST can't say whether the base requires a merge queue (`approvals.py`'s docstring says how) | GitHub merges, on a host only; a PR whose head matches `merge_commit_heads` lands with `gh pr merge --merge --match-head-commit`, keeping the head's ancestry (an upstream-sync PR needs it), and every other PR is squashed as before; `land` prints each PR's method, and a match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form |
 | `carry_over_main` | `except`, a list of globs, required | deprecated, goes in the next release (Approvals and proof); the project's merge-check configuration (lint, type, test and gate config, lockfiles): clean merges of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
@@ -755,7 +753,7 @@ or the owner's private network.
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
   either), since it misses different things; otherwise, as for a user with one family installed, a fresh
-  session of the same family is the normal path. When Codex refuses, lead.md's Verifier route names the two fallbacks, Gemini through agy and then a same-family Claude, each labelled and neither landing a high-risk change unless the policy's `risk.lower_tier_until` is live. The PR body names which ran
+  session of the same family is the normal path. When Codex refuses, lead.md's Verifier route names the two fallbacks, Gemini through agy and then a same-family Claude, each labelled and neither landing a high-risk change. The PR body names which ran
   (`verifier: same family` for the latter). A PR with code from both families gets a
   verifier for each family's changes where both are available, integration edits
   included; each writes its own report, and the cap counts rounds they share. The family
@@ -858,8 +856,7 @@ or the owner's private network.
   verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
   `Risk: high` takes the PR out of the condition, so the PR needs a default-tier verdict on
   its head before it lands, even when the lower-tier verdict is satisfied; `check merge`
-  reads the tier from the verdict's `Verifier:` line (verifier.md) and refuses until then, unless the policy's
-  `risk.lower_tier_until` is live (Settings). It applies within the verifier's own family: it lowers the tier, never the family, which
+  reads the tier from the verdict's `Verifier:` line (verifier.md) and refuses until then. It applies within the verifier's own family: it lowers the tier, never the family, which
   stays the other one from the author's (Independent verification). The tier is `frontier`, `top`, `mid` or `small` (Claude's Fable, Opus, Sonnet, Haiku;
   Codex's Astra, Sol, Terra, Luna; each family names its own), so one line holds for every family
   and outlives a release. `frontier` costs several times `top`: use it only when the job needs it. Resolve the tier

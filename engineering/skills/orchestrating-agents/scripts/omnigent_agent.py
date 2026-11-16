@@ -6516,8 +6516,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             help="which verifier a verifier start runs (default: $OMNIGENT_VERIFIER_ROUTE, else codex): codex is the"
             " agent as named; gemini replaces it with agy's Gemini (experimental, needs --host on a host with agy"
             " logged in); claude with a fresh Claude session of another model than --author-model (same-family)."
-            " The two fallbacks are for a Codex refusal, never for a high-risk change unless the project's policy"
-            " allows it until a date",
+            " The two fallbacks are for a Codex refusal, never for a high-risk change",
         )
         p.add_argument(
             "--author-model",
