@@ -1,6 +1,7 @@
 """omnigent_agent.py wait-for kills a live run whose log stops growing (#1123)."""
 
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -54,7 +55,7 @@ def gone(pgid: int) -> bool:
     for _ in range(60):  # init reaps the killed group
         try:
             os.killpg(pgid, 0)
-        except ProcessLookupError:
+        except ProcessLookupError, PermissionError:  # macOS: EPERM for a group of zombies only
             return True
         time.sleep(0.1)
     return False
@@ -224,3 +225,21 @@ def test_a_pid_inside_another_group_is_killed_alone(tmp_path: Path) -> None:
     seen = beat.stat().st_size
     time.sleep(0.5)
     assert beat.stat().st_size > seen  # the leader still runs: only the pid was signalled
+
+
+def test_a_group_that_answers_eperm_once_signalled_counts_as_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS answers EPERM, not ESRCH, for a group left with only zombies: kill_group stops there
+    instead of raising out of wait-for."""
+    sent: list[int] = []
+
+    def killpg(group: int, sig: int) -> None:
+        sent.append(sig)
+        if sig != signal.SIGTERM:
+            raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(omnigent_agent.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(omnigent_agent.os, "killpg", killpg)
+    omnigent_agent.kill_group(4242)
+    assert sent == [signal.SIGTERM, 0]

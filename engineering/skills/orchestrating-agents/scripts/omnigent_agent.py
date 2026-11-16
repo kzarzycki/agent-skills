@@ -205,6 +205,7 @@ own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists i
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import errno
 import fcntl
@@ -3749,13 +3750,15 @@ def kill_group(pid: int) -> None:
         lone = group != pid or group == os.getpgrp()
         send = (lambda sig: os.kill(pid, sig)) if lone else (lambda sig: os.killpg(group, sig))
         send(signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    # once signalled, macOS answers EPERM, not ESRCH, for a group left with only zombies: it is gone
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         deadline = time.monotonic() + KILL_GRACE
         while time.monotonic() < deadline:
             time.sleep(0.1)
             send(0)
         send(signal.SIGKILL)
-    except ProcessLookupError:
-        pass
 
 
 def pr_rest(path: str, end: float, pages: bool = False) -> Any:
