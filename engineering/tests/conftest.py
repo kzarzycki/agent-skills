@@ -39,6 +39,13 @@ def _own_gate_slot(
 
 
 @pytest.fixture(autouse=True)
+def _no_heavy_wrapper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Heavy steps run unwrapped, as under a wrapped run, so a host's own heavy wrapper file never wraps a test's
+    step; test_approvals_heavy_wrapper.py clears it and fakes the host's config home."""
+    monkeypatch.setenv("LOOP_HEAVY_WRAPPED", "1")
+
+
+@pytest.fixture(autouse=True)
 def _no_user_git_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
@@ -47,3 +54,12 @@ def _no_user_git_config(
     empty.touch()
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+@pytest.fixture(autouse=True)
+def _brief_head_merges(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """approvals.py's brief checks the PR's head merges into its base with git: its other tests have no such repo, so
+    the check reads clean there. test_approvals_brief_conflict.py runs the real one."""
+    module = request.module
+    if module.__name__ != "test_approvals_brief_conflict" and hasattr(module, "approvals"):
+        monkeypatch.setattr(module.approvals, "conflicted", lambda _pr, _base, _head: [])
