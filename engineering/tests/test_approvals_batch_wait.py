@@ -35,6 +35,7 @@ class Clock:
         return self.now
 
     def sleep(self, seconds: float) -> None:
+        assert sum(self.slept) < 10_000, "the wait never ends"
         self.slept.append(seconds)
         self.now += seconds
         self.tick(self.now)
@@ -196,3 +197,57 @@ def test_a_setting_that_is_no_non_negative_whole_number_is_refused_naming_the_ke
 def test_the_setting_alone_asks_for_no_signing_keys() -> None:
     loop = loop_md("loop:\n  batch_wait_seconds: 600\n")
     assert approvals.settings(loop) == {"batch_wait_seconds": 600}
+
+
+def test_a_pr_joins_in_number_order_whatever_order_its_checks_finish_in(
+    lands: dict[str, Any], clock: Clock
+) -> None:
+    policy(lands, "  batch_wait_seconds: 600")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](6, {"6.txt": "6\n"})
+    check(lands, 6, "PENDING")
+    clock.tick = lambda _now: check(lands, 6, "SUCCESS")
+    assert lands["land"]()[0] == 0
+    assert batch_line(lands, 7) == "Batch: #6, #7 (waited 30 s, joined: #6)"
+
+
+def test_a_pr_that_asks_the_owner_during_the_wait_ends_it(
+    lands: dict[str, Any], clock: Clock
+) -> None:
+    policy(lands, "  batch_wait_seconds: 600")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {".github/ci.yml": "on: push\n"})
+    lands["pulls"][8]["files"] = {"nodes": []}
+    check(lands, 8, "PENDING")
+    clock.tick = lambda _now: lands["pulls"][8].update(files={"nodes": [{"path": ".github/ci.yml"}]})
+    lands["land"]()
+    assert (lands["merged"](), len(clock.slept)) == (["7"], 1)
+
+
+def test_only_waits_for_no_named_pr_either(lands: dict[str, Any], clock: Clock) -> None:
+    policy(lands, "  batch_wait_seconds: 600")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    check(lands, 8, "PENDING")
+    code, _ = lands["land"]("7", "8", "--only")
+    assert (code, lands["merged"](), clock.slept) == (approvals.WAITING, ["7"], [])
+
+
+def test_a_verdict_that_is_no_wait_on_checks_is_no_wait_even_with_no_owner_line(
+    lands: dict[str, Any], clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The (WAITING, False) of landable is the owner's wait: land waits only on its (WAITING, True)."""
+    policy(lands, "  batch_wait_seconds: 600")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    judged = approvals.landable
+    monkeypatch.setattr(approvals, "owner_waits", lambda *_a: [])
+    monkeypatch.setattr(
+        approvals,
+        "landable",
+        lambda pull, *rest: approvals.Verdict((approvals.WAITING, False))
+        if pull["number"] == 8
+        else judged(pull, *rest),
+    )
+    lands["land"]()
+    assert (lands["merged"](), clock.slept) == (["7"], [])
