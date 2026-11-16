@@ -928,6 +928,7 @@ class Omnigent:
             )
         self.base, self.host_id = base.rstrip("/"), host.group(1)
         self._token = ""
+        self.loop_texts: dict[tuple[str, str], str] = {}  # loop_text's reads, once each
 
     def token(self) -> str:
         code = f"from omnigent.cli_auth import refresh_stored_token as r, load_token as l; print(r({self.base!r}) or l({self.base!r}) or '')"
@@ -1187,9 +1188,9 @@ class Omnigent:
         if agent == "claude":
             args = ["--permission-mode", mode] if mode else []
             if role and (stem := Path(role).stem) in LEAN_ROLES:
-                args += lean_args(str(body["workspace"]), stem)
+                args += lean_args(str(body["workspace"]), stem, self, host_id)
             if top_level:
-                args += autocompact_args(str(body["workspace"]))
+                args += autocompact_args(str(body["workspace"]), self, host_id)
             if args:
                 body["terminal_launch_args"] = args
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
@@ -1442,14 +1443,62 @@ def read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def project_line(workspace: str, key: str) -> str:
+def loop_text(workspace: str, og: Omnigent | None = None, host_id: str | None = None) -> str:
+    """The text of the project's ``docs/agents/loop.md`` on the host the session will run on, else
+    empty: no loop.md in a checkout there, or a local workspace outside a checkout. A host other
+    than this one (``host_id`` with ``og``) is read through Omnigent's file API, the one reader
+    every ``project_line`` caller shares, once per ``og`` and workspace, since no session exists
+    on it yet. A host that can't be read, or a workspace absent there, is a ``Fail`` naming the
+    host and the path: an empty answer would drop the project's settings without a word."""
+    if not (og and host_id and host_id != og.host_id):
+        root = checkout_root(workspace)
+        try:
+            return (Path(root) / LOOP_FILE).read_text() if root else ""
+        except FileNotFoundError:
+            return ""
+    path = f"{workspace.rstrip('/')}/{LOOP_FILE.as_posix()}"
+    read = og.__dict__.setdefault("loop_texts", {})  # a stub that skipped __init__ has none
+    if (host_id, path) not in read:
+        read[host_id, path] = far_loop_text(og, host_id, workspace, path)
+    return read[host_id, path]
+
+
+def far_loop_text(og: Omnigent, host_id: str, workspace: str, path: str) -> str:
+    """``path`` read on host ``host_id`` through a live session there (the server reads no
+    host-level file, see ``far_capacity``), newest first; empty when ``workspace`` exists there
+    with no loop.md. A ``Fail`` naming the host and the path when nothing there can read it."""
+    name = host_name(og, host_id)
+    where = f"{path} on host {name}"
+    why = "no live session there to read it through"
+    for s in sorted(
+        live_sessions(og, host_id),
+        key=lambda s: float(s.get("updated_at") or s.get("created_at") or 0),
+        reverse=True,
+    )[:FAR_READS]:
+        sid = str(s["id"])
+        try:
+            return og.read_file(sid, path)
+        except Gone:
+            try:  # a missing loop.md is a project outside the loop; a missing checkout is a mistake
+                og.read_file(sid, workspace)
+            except Gone as e:
+                raise Fail(f"{where}: workspace not found there") from e
+            except Fail as e:
+                why = f"read failed: {e}"
+                continue
+            return ""
+        except Fail as e:
+            why = f"read failed: {e}"
+    raise Fail(f"cannot read loop.md at {where}: {why}")
+
+
+def project_line(
+    workspace: str, key: str, og: Omnigent | None = None, host_id: str | None = None
+) -> str:
     """The value of the line ``<key>: <value>`` in the project's ``docs/agents/loop.md`` at the root
-    of ``workspace``'s checkout, else empty: none there, or a workspace outside a checkout."""
-    root = checkout_root(workspace)
-    try:
-        text = (Path(root) / LOOP_FILE).read_text() if root else ""
-    except FileNotFoundError:
-        return ""
+    of ``workspace``'s checkout on the host the session will run on (``loop_text``), else empty:
+    none there, or a workspace outside a checkout."""
+    text = loop_text(workspace, og, host_id)
     found = re.search(rf"^{re.escape(key)}:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)
     return found.group(1) if found else ""
 
@@ -1483,12 +1532,14 @@ def cloud_default_host(og: Omnigent, named: list[str]) -> str:
     raise Fail(f"no host loop.md's Placement line names is online: {', '.join(named)}; pass --host")
 
 
-def lean_args(workspace: str, role: str) -> list[str]:
+def lean_args(
+    workspace: str, role: str, og: Omnigent | None = None, host_id: str | None = None
+) -> list[str]:
     """The launch args of a lean Claude ``role`` child (``LEAN_TOOLS``), plus what the project's
     ``<Role> tools:`` line names beyond them: a tool, or an MCP server configured for the checkout
     (the user's, the project's ``.mcp.json`` or the checkout's local one), which goes in its own
     ``--mcp-config`` beside Omnigent's. ``full`` there is no args: every configured tool and server."""
-    named = project_line(workspace, f"{role.capitalize()} tools")
+    named = project_line(workspace, f"{role.capitalize()} tools", og, host_id)
     if named == "full":
         return []
     root = checkout_root(workspace)
@@ -1506,14 +1557,16 @@ def lean_args(workspace: str, role: str) -> list[str]:
     return args + (["--mcp-config", json.dumps({"mcpServers": servers})] if servers else [])
 
 
-def autocompact_args(workspace: str) -> list[str]:
+def autocompact_args(
+    workspace: str, og: Omnigent | None = None, host_id: str | None = None
+) -> list[str]:
     """``--autocompact <size>`` for a top-level Claude session when the project's ``Lead
     autocompact:`` line names a size, so the lead compacts there instead of at the user's window;
     else none. A size Claude Code refuses fails here, since the CLI would exit before the lead
     starts. ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` in the user's Claude settings outranks the flag, so
     its presence is reported: set that window as ``autoCompactWindow``. This process's own
     environment is not read, since the lead's comes from the Omnigent runner, not from its caller."""
-    size = project_line(workspace, "Lead autocompact")
+    size = project_line(workspace, "Lead autocompact", og, host_id)
     if not size:
         return []
     # Claude Code's spellings: 150000, 150k, 0.15M, and a bare number up to 1000 as thousands
@@ -2981,6 +3034,8 @@ def start(
 
     # Omnigent refuses a sibling with a title an earlier child holds, archived or not, abandoned
     # here or left by an earlier run: each refusal and each abandon moves to the next <title>-r<n>.
+    if agent == "claude" and host_id:  # a loop.md it can't read fails here, before a create
+        loop_text(workspace or os.getcwd(), og, host_id)  # whose failure `find` would mistake for a timeout
     n = 0
     for _ in range(attempts):
         # ponytail: whole seconds of the server's clock against this host's; a skewed server
