@@ -781,6 +781,9 @@ or the owner's private network.
   gate, so a project that wants a land to go first has its wrapper take its slot the way `approvals.take_slot` does
   (this repo's `tools/gate_slot.py`). With one slot a land blocks in the kernel too, so it competes evenly with a
   wrapper's `flock`.
+  The cost of polling is that a gate waiting in a plain `flock` on the same file is woken by the kernel ahead of a
+  `local-ci` or `mutate.py` run that polls, so on a host shared with a project whose wrapper blocks that way, its
+  runs go first; a project that minds has its wrapper take its slot as `take_slot` does.
   `test:changed` while iterating and the lint parts stay outside the slot. `approvals.py`'s
   `local-ci` and `land` take a slot's lock around each gate step they run and set
   `LOOP_GATE_SLOT_HELD` to its path, as `mutate.py` does (both through one function, `approvals.take_slot`), so a wrapper under them that finds

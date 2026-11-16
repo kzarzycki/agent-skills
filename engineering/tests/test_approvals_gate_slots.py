@@ -195,13 +195,16 @@ def test_mutate_takes_a_free_slot_when_the_first_is_held(repo: Path, tmp_path: P
     assert clean(repo)
 
 
+@pytest.mark.parametrize("slots", ["1", "2"])
 def test_a_waiting_land_takes_the_next_free_slot_ahead_of_a_waiting_pr_gate(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, slots: str
 ) -> None:
     """A land holds the landing lock while its gate waits, so it takes a freed slot first though the PR gate waited
-    longer. The slot frees between two polls of the PR gate, so a plain race would give it to the PR gate."""
-    monkeypatch.setenv("GATE_SLOTS", "1")
-    hold(1, 1.52)
+    longer. With one slot the land blocks in the kernel; with several it polls, and the slots free between two polls
+    of the PR gate, so a plain race would give the PR gate the first."""
+    monkeypatch.setenv("GATE_SLOTS", slots)
+    for number in range(1, int(slots) + 1):
+        hold(number, 1.52)
     order: list[str] = []
 
     def gate(name: str, land: bool) -> None:
@@ -211,14 +214,28 @@ def test_a_waiting_land_takes_the_next_free_slot_ahead_of_a_waiting_pr_gate(
         assert fd is not None
         os.close(fd)
 
-    pr = threading.Thread(target=gate, args=("pr", False))
-    land = threading.Thread(target=gate, args=("land", True))
+    pr = threading.Thread(target=gate, args=("pr", False), daemon=True)
+    land = threading.Thread(target=gate, args=("land", True), daemon=True)
     pr.start()
     time.sleep(0.5)
     land.start()
     for thread in (pr, land):
         thread.join(20)
     assert order == ["land", "pr"]
+
+
+def test_a_land_takes_a_free_slot_at_once_on_several_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A land yields to no one, its own mark included: with every slot free it holds one without waiting."""
+    monkeypatch.setenv("GATE_SLOTS", "2")
+    got: list[str] = []
+    waited: list[bool] = []
+    thread = threading.Thread(
+        target=lambda: got.append(approvals.take_slot(lambda: waited.append(True), land=True)[1]),
+        daemon=True,
+    )
+    thread.start()
+    thread.join(5)
+    assert got == [approvals.slot_path(1)] and not waited
 
 
 def test_a_lands_batch_gate_runs_its_steps_as_a_land(
@@ -302,13 +319,25 @@ def test_this_repos_gate_wrapper_takes_no_slot_under_any_gate_slot(
     wrapper = Path(__file__).resolve().parents[2] / "tools" / "gate_slot.py"
     hold(1, 30.0)
     env = {**os.environ, "GATE_SLOTS": "2"}
-    show = [sys.executable, "-c", "import os; print(os.environ['LOOP_GATE_SLOT_HELD'])"]
+    # prints the slot it is told it runs under, and whether that lock is still held (a try at it fails) by the wrapper
+    probe = (
+        "import fcntl, os\n"
+        "path = os.environ['LOOP_GATE_SLOT_HELD']\n"
+        "fd = os.open(path, os.O_WRONLY)\n"
+        "try:\n"
+        "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "    print(path, 'free')\n"
+        "except BlockingIOError:\n"
+        "    print(path, 'held')\n"
+    )
+    show = [sys.executable, "-c", probe]
     bare = subprocess.run(
         [sys.executable, str(wrapper), *show],
         env={k: v for k, v in env.items() if k != approvals.SLOT_HELD},
         capture_output=True, text=True, timeout=10, check=False,
     )  # fmt: skip
-    assert bare.stdout.strip() == approvals.slot_path(2) and "waiting" not in bare.stderr
+    # the lock survives the exec: pytest under it holds the slot, not just the variable naming it
+    assert bare.stdout.split() == [approvals.slot_path(2), "held"] and "waiting" not in bare.stderr
     # every slot held, one of them by this run's parent: a second slot would wait for good
     hold(2, 30.0)
     held = subprocess.run(
@@ -316,7 +345,7 @@ def test_this_repos_gate_wrapper_takes_no_slot_under_any_gate_slot(
         env={**env, approvals.SLOT_HELD: approvals.slot_path(2)},
         capture_output=True, text=True, timeout=10, check=False,
     )  # fmt: skip
-    assert held.stdout.strip() == approvals.slot_path(2) and "waiting" not in held.stderr
+    assert held.stdout.split()[0] == approvals.slot_path(2) and "waiting" not in held.stderr
 
 
 def test_a_lands_gate_step_reaches_take_slot_as_a_land(monkeypatch: pytest.MonkeyPatch) -> None:
