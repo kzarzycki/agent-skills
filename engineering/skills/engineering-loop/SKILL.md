@@ -702,6 +702,8 @@ or the owner's private network.
 - **Verifier in the worker's VM.** With `Placement: same machine` (or the old `Cloud verifier: worker session`), the verifier of a
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host.
+  A Codex-written PR gets Claude there (`verify --harness claude`), as does a Claude-written one when Codex can't
+  run (same-family, named so in the verdict); it runs on the session's own Claude login, so `seed` stays Codex-only.
   `scripts/cloud_verifier.py` does it, and its docstring has each command. On the host, `login` once, then
   `seed` before starting the worker: it stores a copy without the refresh token in the cloud environment,
   of the host's own Codex login when that has a day left, else of a login of its own that it keeps fresh, so no VM
