@@ -500,3 +500,36 @@ def test_a_command_without_the_gates_issues_rates_an_exact_revert_by_what_it_rev
     assert approvals.owners_only(plain, loop, [issue(3, "risk:high")]) == (
         "`risk:high` is on #3, and `levels.high.merge` is `owner`"
     )
+
+
+@pytest.mark.parametrize("term", ["revert", "cap"])
+def test_under_spec_auto_a_revert_or_the_cap_rates_after_the_spec_and_asks_a_go(
+    term: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither an exact revert of a high-risk change nor the cap is read by the spec's hold, so under the default
+    `high` of `spec.auto: true` ({owner, gates}) each asks a go."""
+    pr = pull(reviews=(judging("low — fine"),), files=("app.py",))
+    if term == "revert":
+        pr["reverted"] = "`risk:high` is on #1, which it reverts"
+    else:
+        monkeypatch.setattr(approvals, "capped", lambda _pull, _limit: True)
+    rated = approvals.rating(pr, [], loop_md("spec:\n  auto: true\n"))
+    assert (rated.level, rated.merge) == ("high", "go")
+
+
+def test_a_critical_path_asking_only_a_go_lets_a_delegate_give_it() -> None:
+    loop = loop_md("risk:\n  critical_paths:\n    - app.py\nlevels:\n  critical:\n    merge: go\n")
+    pr = pull(reviews=(judging("low — fine"),), files=("app.py",))
+    assert approvals.owners_only(pr, loop) is None
+    assert approvals.rating(pr, [], loop).merge == "go"
+
+
+def test_into_a_feature_branch_the_wait_names_the_level_that_asks_the_go() -> None:
+    pr = pull(reviews=(judging("low — fine"),), files=("app.py",))
+    pr["baseRefName"] = "stream"
+    assert approvals.owner_waits(pr, [], loop_md("levels:\n  low:\n    merge: go\n")) == [
+        (
+            f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`, or"
+            " `approved:merge`), since it is low risk: nothing rates it above low"
+        )
+    ]
