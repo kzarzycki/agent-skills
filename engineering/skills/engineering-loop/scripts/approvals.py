@@ -3905,7 +3905,7 @@ def policy_ref(root: Path) -> str | None:
     """Where the policy files are read: None in a clone with a working tree, whose files they are (judge_with_base
     refuses a land or merge check where they differ from the base's); in one without, origin's default branch's
     remote-tracking ref, fetched once per run, since its files are the ones main holds and the host needs no checkout.
-    A failed fetch reads the ref as last fetched; with no such ref there is no policy to read, which is refused."""
+    A failed fetch is refused, since the ref as last fetched may hold an older policy than main's now."""
     if working_tree(root):
         return None
 
@@ -3929,11 +3929,10 @@ def policy_ref(root: Path) -> str | None:
             " run where the files are checked out"
         )
     ref = f"refs/remotes/origin/{name}"
-    run("fetch", "-q", "origin", f"+refs/heads/{name}:{ref}")
-    if run("rev-parse", "--verify", "-q", ref).returncode:
+    if run("fetch", "-q", "origin", f"+refs/heads/{name}:{ref}").returncode:
         raise Refused(
-            f"{root} has no working tree and no origin/{name} to read the policy from: fetch it, or run where the"
-            " files are checked out"
+            f"{root} has no working tree and origin/{name} could not be fetched, so the policy would be the last"
+            " fetched one: retry, or run where the files are checked out"
         )
     return ref
 

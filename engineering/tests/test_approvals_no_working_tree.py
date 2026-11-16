@@ -194,3 +194,106 @@ def test_land_with_a_pre_land_check_and_no_working_tree_refuses(
     assert any("`pre_land`" in line and "no working tree" in line for line in lines), lines
     assert launch["merged"]() == []
     untouched(launch["here"])
+
+
+def push_policy_change(launch: dict[str, Any], text: str) -> None:
+    """A rule added on origin's main after the launch clone was made, which the clone holds nowhere until it fetches."""
+    work = launch["work"]
+    git_in(work, "switch", "-q", "--detach", "origin/main")
+    (work / LOOP).write_text((work / LOOP).read_text() + f"\n{text}\n")
+    git_in(work, "commit", "-qam", "change the policy")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+
+def test_the_policy_is_origins_now_not_the_clones_last_fetched_copy(
+    launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    push_policy_change(launch, "<!-- changed after the clone -->")
+    monkeypatch.chdir(launch["here"])
+    approvals.policy_ref.cache_clear()
+    assert "changed after the clone" in (approvals.project()[1] or "")
+    assert (
+        "changed after the clone" in approvals.policy_bytes(launch["here"], Path(LOOP)).decode()
+    )  # base_drift and check merge read it through here
+    untouched(launch["here"])
+
+
+def test_land_judges_by_the_policy_pushed_since_the_clone(
+    launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch["open"](7, {"7.txt": "7\n"})
+    push_policy_change(launch, "<!-- pre_land added -->")
+    monkeypatch.chdir(launch["here"])
+    approvals.policy_ref.cache_clear()
+    real = approvals.settings
+    monkeypatch.setattr(
+        approvals,
+        "settings",
+        lambda text: (
+            real(text) | ({"pre_land": "true"} if "pre_land added" in (text or "") else {})
+        ),
+    )
+    code, lines = launch["land"]("7")
+    assert code == 1 and launch["merged"]() == []
+    assert any("`pre_land`" in line and "no working tree" in line for line in lines), lines
+
+
+def test_a_failed_fetch_is_refused_not_read_as_the_last_fetched_ref(
+    launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git_in(launch["here"], "remote", "set-url", "origin", str(launch["here"] / "gone"))
+    approvals.policy_ref.cache_clear()
+    with pytest.raises(approvals.Refused, match="could not be fetched"):
+        approvals.project()
+
+
+def test_a_partial_land_publishes_a_pass_recorded_on_the_tree_and_runs_no_gate(
+    launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch["open"](7, {"7.txt": "7\n"})
+    launch["open"](8, {"8.txt": "8\n"})
+    passed(launch, monkeypatch, {"7.txt": "7\n", "8.txt": "8\n"})
+    fake = approvals.gh
+
+    def refuses_8(*args: str, **kwargs: Any) -> str:
+        if args[:3] == ("pr", "merge", "8"):
+            raise approvals.subprocess.CalledProcessError(1, "gh", stderr="refused")
+        return fake(*args, **kwargs)
+
+    monkeypatch.setattr(approvals, "gh", refuses_8)
+    # a pass on the tree main is left with after #7 alone, recorded where the files are
+    work = launch["work"]
+    monkeypatch.chdir(work)
+    git_in(work, "switch", "-q", "--detach", "origin/main")
+    (work / "7.txt").write_text("7\n")
+    git_in(work, "add", "7.txt")
+    git_in(work, "commit", "-qm", "main after #7")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    monkeypatch.chdir(launch["here"])
+    published: list[str] = []
+    real_publish = approvals.publish
+    monkeypatch.setattr(
+        approvals, "publish", lambda *a, **k: published.append(a[0]) or real_publish(*a, **k)
+    )
+    runs = launch["runs"]()
+    code, lines = launch["land"]()
+    assert code == 1, lines
+    assert launch["merged"]() == ["7"] and launch["runs"]() == runs
+    assert any("reused" in line for line in lines), lines
+    assert published, lines
+
+
+def test_the_default_branch_is_asked_of_origin_where_the_clone_recorded_none(
+    tmp_path: Path, launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Origin's default branch is not `main` here, and the clone has no refs/remotes/origin/HEAD."""
+    work = launch["work"]
+    git_in(work, "switch", "-q", "--detach", "origin/main")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/trunk")
+    git_in(launch["origin"], "symbolic-ref", "HEAD", "refs/heads/trunk")
+    bare = tmp_path / "bare"
+    git_in(tmp_path, "clone", "-q", "--no-checkout", str(launch["origin"]), str(bare))
+    git_in(bare, "remote", "set-head", "origin", "-d")
+    assert not (bare / ".git" / "refs" / "remotes" / "origin" / "HEAD").exists()
+    approvals.policy_ref.cache_clear()
+    assert approvals.policy_ref(bare) == "refs/remotes/origin/trunk"
