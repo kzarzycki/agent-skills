@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import importlib.util
 import io
@@ -9,11 +10,13 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 from approvals_harness import approvals
+from test_omnigent_agent import omnigent_agent
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "engineering-loop" / "scripts"
 
@@ -134,10 +137,6 @@ def test_land_wait_repeats_an_unchanged_state_every_say_interval(
 def test_saying_repeats_its_line_while_the_block_runs(
     monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    import time
-
-    import contextlib
-
     monkeypatch.setattr(approvals, "SLOT_SAY_SECONDS", 0.1)
     # land --wait captures sys.stdout until landing returns: the line goes to the process's own stdout
     with contextlib.redirect_stdout(io.StringIO()), approvals.saying("Tree t: gating, log l"):
@@ -146,8 +145,6 @@ def test_saying_repeats_its_line_while_the_block_runs(
 
 
 def test_the_say_interval_is_well_under_the_stall_default() -> None:
-    from test_omnigent_agent import omnigent_agent
-
     assert approvals.SLOT_SAY_SECONDS == 60 and omnigent_agent.WAIT_FOR_STALL == 300
 
 
@@ -155,7 +152,6 @@ def test_a_batch_gate_says_it_is_gating_while_its_steps_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
     """The batch gate writes to its own log, so land's stdout hears from it only through `saying`."""
-    import time
 
     def run_steps(*args: Any) -> dict[str, Any]:
         time.sleep(0.55)
