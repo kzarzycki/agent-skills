@@ -142,6 +142,7 @@ def test_no_loop_file_names_the_owners_instance() -> None:
 def test_the_verifier_counts_only_before_merge_lines() -> None:
     text = " ".join((PACKAGE / "skills" / "engineering-loop" / "verifier.md").read_text().split())
     assert "mark each Before merge line run" in text
+    assert "run the spec's Before merge list on it" in text
     assert "List each After merge line under an `After merge:` line in the report" in text
     assert "never counted as run or not run" in text
 
