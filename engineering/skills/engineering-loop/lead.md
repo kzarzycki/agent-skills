@@ -114,7 +114,7 @@ design, wireframes included for a UI, and delegate the rest.
    Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
 7. **Verify** (board: `Verify`). A worker report or fix-round gate log naming a test that passed only on its
    retry is yours to record on its `Flaky:` issue, and at the third occurrence to start
-   the skip PR from main (SKILL.md, Flaky tests). Commit and push. Before a verifier starts,
+   the skip PR from main (SKILL.md, Flaky tests). Commit and push; under `ci: false`, then post the pass with `approvals.py local-ci <pr> --head <the pushed sha>`, since GitHub can still show the previous head for a moment after a push and a bare `local-ci <pr>` would post on it: `--head` waits about 30 s for the push, refuses naming both heads, and its one output line names the head it posted on. Before a verifier starts,
    each deviation on the worker report's `Spec deviations:` line is fixed, or taken to the
    owner as a scope change (SKILL.md, Approvals and proof: rewrite the issue, then
    `needs-owner`), since a verifier pass on a narrowed spec only finds what the report
@@ -141,7 +141,7 @@ design, wireframes included for a UI, and delegate the rest.
    that one stays inside the verifier's workspace, prints that brief with every fact but the
    priorities read from the PR, the previous report and its head from pass 2,
    and loop.md's `## Verifier brief` (the project's own lines, such as host load rules)
-   appended; it refuses a proof log whose first line isn't the head. The report path matters:
+   appended; it refuses a proof log whose first line isn't the head. It first checks that the head merges cleanly into the PR's own base (`git merge-tree --write-tree origin/<base> <head>`, after fetching both): a head that conflicts exits 1 naming the conflicted files and writes no brief, since CI doesn't run and `land` skips it, so merge the base in first, and one pass covers the fix and the merge; `--allow-conflict` writes the brief anyway, for a pass meant to review the conflicting head. The report path matters:
    outside its workspace a Codex child's sandbox refuses the write and a Claude Code child is
    prompted for a read (denied in auto mode), which nobody answers. Its model: SKILL.md, Models, in the verifier's family, and the brief names that tier so the verdict's `Verifier:` line carries it. A lower-tier
    verdict that says `Risk: high`, even a satisfied one, calls for a default-tier pass on the head before landing,
