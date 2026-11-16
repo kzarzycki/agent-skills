@@ -199,8 +199,10 @@ def test_a_pid_leading_wait_fors_own_group_is_killed_alone(
 
 
 def test_a_pid_inside_another_group_is_killed_alone(tmp_path: Path) -> None:
-    child = tmp_path / "child"
-    log, pidfile, leader = detach(tmp_path, f"sleep 60 & echo $! > {child}; sleep 60")
+    child, beat = tmp_path / "child", tmp_path / "beat"
+    log, pidfile, leader = detach(
+        tmp_path, f"sleep 60 & echo $! > {child}; while :; do echo beat >> {beat}; sleep 0.1; done"
+    )
     for _ in range(100):
         if child.exists() and child.read_text().strip():
             break
@@ -209,4 +211,6 @@ def test_a_pid_inside_another_group_is_killed_alone(tmp_path: Path) -> None:
     age(log, 100)
     argv = ["wait-for", "--log", str(log), "--pid", str(pidfile), "--stall", "1", "--budget", "60"]
     assert omnigent_agent.main(argv) == 1
-    os.killpg(leader, 0)  # the leader and the rest of the group live on
+    seen = beat.stat().st_size
+    time.sleep(0.5)
+    assert beat.stat().st_size > seen  # the leader still runs: only the pid was signalled
