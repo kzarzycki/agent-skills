@@ -122,3 +122,59 @@ def test_verifier_start_refuses_a_workspace_not_at_the_briefs_reviewed_head(
     og.archived.extend(og.sessions)
     og.sessions.clear()
     assert start("no head line", "none") == 0
+    # a --far brief makes its own worktree, so the launch workspace is at another commit by design
+    og.sessions.clear()
+    assert start(f"- Reviewed head: {shas[0]}\n- Worktree: first, in /x, run git", "far") == 0
+    # a workspace that is no checkout is never a silent pass: one line says the check was skipped
+    plain = tmp_path.parent / f"{tmp_path.name}-plain"  # outside the repo made above
+    plain.mkdir()
+    og.sessions.clear()
+    capsys.readouterr()
+    (tmp_path / "b.md").write_text(f"- Reviewed head: {shas[0]}\n")
+    argv = ["start", "codex", "plain", "b.md", str(plain / "r.md"), "--role", "verifier.md"]
+    assert omnigent_agent.main([*argv, "--workspace", str(plain)]) == 0
+    assert "HEAD not read" in capsys.readouterr().err
+
+
+def test_a_start_with_a_pr_whose_head_moved_asks_for_a_new_brief(tmp_path: Path) -> None:
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "c"], check=True)
+    brief = "- Reviewed head: " + "a" * 40
+    with pytest.raises(
+        omnigent_agent.Fail, match=r"brief for the current head \(`approvals.py brief 7`"
+    ):
+        omnigent_agent.refuse_stale_workspace(FakeOmnigent(), brief, tmp_path, False, "h", 7)
+
+
+def test_verifier_start_reads_a_remote_workspace_head_through_a_session_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old, new = "a" * 40, "b" * 40
+    og = FakeOmnigent()
+    og.host = lambda n: {"kris": "far"}[n]  # type: ignore[method-assign]
+    og.host_names = {"far": "kris"}
+    # a worktree: .git names its gitdir, whose HEAD is a branch held by the common dir
+    og.procs["far"] = {
+        "/there/.git": "gitdir: /clone/.git/worktrees/w\n",
+        "/clone/.git/worktrees/w/HEAD": "ref: refs/heads/x\n",
+        "/clone/.git/worktrees/w/commondir": "../..\n",
+        "/clone/.git/refs/heads/x": new + "\n",
+    }
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+
+    def start(head: str, name: str) -> int:
+        (tmp_path / "b.md").write_text(f"- Reviewed head: {head}\n")
+        argv = ["start", "codex", name, "b.md", "/there/r.md", "--role", "verifier.md"]
+        return omnigent_agent.main(
+            [*argv, "--top-level", "--host", "kris", "--workspace", "/there"]
+        )
+
+    assert start(old, "no-session") == 0  # no live session there: skipped, said once
+    assert capsys.readouterr().err.count("HEAD not read") == 1
+    og.sessions.clear()
+    og.others = [{"id": "x", "host_id": "far", "status": "idle"}]
+    assert start(old, "stale") == 1
+    assert "bbbbbbbbbbbb" in capsys.readouterr().err and og.sessions == {}
+    assert start(new, "same") == 0

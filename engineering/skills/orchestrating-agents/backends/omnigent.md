@@ -397,7 +397,7 @@ there and copies it to `tmp/loop/<name>` here, printing that path for `approvals
 the check that a child left no tracked change is skipped, with a line saying so, since the file
 API runs no git and the verifier's worktree is its own.
 
-A verifier `start` (`--role verifier.md`) whose brief has a `- Reviewed head: <sha>` line refuses, before any session exists, a `--workspace` whose HEAD is another commit, naming both and `git -C <ws> checkout --detach <sha>`. On another host the HEAD is read through a live session there's file API; if it can't be read, one stderr line says the check was skipped. A brief with no such line, or a `--far` brief (it makes its own worktree), starts as before.
+A verifier `start` (`--role verifier.md`) whose brief has a `- Reviewed head: <sha>` line refuses, before any session exists, a `--workspace` whose HEAD is another commit, naming both and `git -C <ws> checkout --detach <sha>`. On another host the HEAD is read through the file API of a live session on that host; a HEAD that can't be read there or here (no live session, not a checkout) prints one stderr line saying the check was skipped, never a silent pass. With `--pr` the workspace was already moved to the PR's current head, so a mismatch asks for a new brief (`approvals.py brief <pr>`) instead. A brief with no such line, or a `--far` brief (it makes its own worktree), starts as before.
 
 **Relaying to a lead.** `python3 scripts/omnigent_agent.py relay <session> <message-file>`
 posts a message that owes no report, such as the owner's words for a top-level lead, and

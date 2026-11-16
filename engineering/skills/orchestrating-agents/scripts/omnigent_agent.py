@@ -3849,7 +3849,7 @@ def workspace_head(og: Omnigent, sid: str, workspace: str) -> str:
 
 
 def refuse_stale_workspace(
-    og: Omnigent, brief: str, workspace: Path, remote: bool, host_id: str
+    og: Omnigent, brief: str, workspace: Path, remote: bool, host_id: str, pr: int | None = None
 ) -> None:
     """A verifier's brief names the head it reviews (``- Reviewed head: <sha>``): refuse, before any
     session exists, a ``workspace`` whose HEAD is another commit, since the verifier would review
@@ -3860,18 +3860,13 @@ def refuse_stale_workspace(
         return
     if re.search(r"^- Worktree: ", brief, re.MULTILINE):
         return
-    want = m[1]
+    want, have, why = m[1], "", ""
     if remote:
         try:
             sid = next(str(s["id"]) for s in live_sessions(og, host_id))
             have = workspace_head(og, sid, str(workspace))
         except (StopIteration, Fail) as e:
-            print(
-                f"workspace {workspace}: HEAD not read on its host ({e or 'no live session there'}),"
-                " so the brief's Reviewed head is not checked against it",
-                file=sys.stderr,
-            )
-            return
+            why = str(e) or "no live session there"
     else:
         done = subprocess.run(
             ["git", "-C", str(workspace), "rev-parse", "HEAD"],
@@ -3879,12 +3874,25 @@ def refuse_stale_workspace(
             text=True,
             check=False,
         )
-        have = done.stdout.strip()
-    if not have.startswith(want) and not want.startswith(have):
+        have = done.stdout.strip() if done.returncode == 0 else ""
+        why = done.stderr.strip()[-200:] or "git rev-parse HEAD failed"
+    if not re.fullmatch(r"[0-9a-f]{40}", have):  # never a pass by reading nothing
+        print(
+            f"workspace {workspace}: HEAD not read ({why or 'no commit'}), so the brief's"
+            " Reviewed head is not checked against it",
+            file=sys.stderr,
+        )
+        return
+    if not have.startswith(want):
+        # a --pr start moved the workspace to the PR's current head: that is what moved past the brief
+        fix = (
+            f"the PR has moved past it: write a new brief for the current head (`approvals.py brief {pr}`)"
+            if pr
+            else f"put it there first (`git -C {workspace} checkout --detach {want}`, or a fresh"
+            f" `git worktree add --detach <dir> {want}`)"
+        )
         raise Fail(
-            f"workspace {workspace} is at {have[:12] or 'no commit'}, not the brief's Reviewed head"
-            f" {want[:12]}: put it there first (`git -C {workspace} checkout --detach {want}`, or a"
-            " fresh `git worktree add --detach <dir> " + want + "`)"
+            f"workspace {workspace} is at {have[:12]}, not the brief's Reviewed head {want[:12]}: {fix}"
         )
 
 
@@ -7393,7 +7401,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 file=sys.stderr,
             )
         if verifier:
-            refuse_stale_workspace(og, brief, workspace, remote, host)
+            refuse_stale_workspace(og, brief, workspace, remote, host, args.pr)
         if here:  # a remote lead's report is written on its host, never read here
             report.parent.mkdir(parents=True, exist_ok=True)
         # what the child's tree held before it ran: wait fails only on a change it made
