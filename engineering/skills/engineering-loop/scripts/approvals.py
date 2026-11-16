@@ -191,6 +191,10 @@ meanwhile; a base push refused puts the PR's branch back on its head. It is no c
 repository (its branch isn't ours to push), targets a base other than the section's, has auto-merge or the merge queue
 on (GitHub would sign that squash), or when `origin` isn't the PR's repo, the checkout signs nothing or the signers file
 is missing. Without the section nothing changes.
+`land.merge_commit_heads` (a list of fnmatch patterns over head branch names, such as `sync/*`) lands a PR whose head
+matches with `gh pr merge --merge --match-head-commit`, a merge commit that keeps the head's ancestry (an upstream-sync
+PR needs it), instead of the squash above; every other PR lands as before. `land` prints each PR's method, and a
+match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form.
 `where: host | cloud | both` (default `host`) says where `land` runs: it refuses elsewhere, exit 1, before reading any
 PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`; its checkout signs with the session's own
 key, shared across that service's users, so there `land` refuses without the section (GitHub's merge is GraphQL, which
@@ -5104,6 +5108,7 @@ def merges(
             method = merge_method(pull, loop)
             if local:
                 tip = signed_squash(pull, local[1], (tip, tree))
+                print(f"{where} lands as a {method}")
                 print(f"{where} landed in {base} as {tip}, signed by a key in {local[1]}")
             else:
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
