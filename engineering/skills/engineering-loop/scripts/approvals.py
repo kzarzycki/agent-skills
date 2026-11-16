@@ -191,6 +191,10 @@ meanwhile; a base push refused puts the PR's branch back on its head. It is no c
 repository (its branch isn't ours to push), targets a base other than the section's, has auto-merge or the merge queue
 on (GitHub would sign that squash), or when `origin` isn't the PR's repo, the checkout signs nothing or the signers file
 is missing. Without the section nothing changes.
+`land.merge_commit_heads` (a list of fnmatch patterns over head branch names, such as `sync/*`) lands a PR whose head
+matches with `gh pr merge --merge --match-head-commit`, a merge commit that keeps the head's ancestry (an upstream-sync
+PR needs it), instead of the squash above; every other PR lands as before. `land` prints each PR's method, and a
+match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form.
 `where: host | cloud | both` (default `host`) says where `land` runs: it refuses elsewhere, exit 1, before reading any
 PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`; its checkout signs with the session's own
 key, shared across that service's users, so there `land` refuses without the section (GitHub's merge is GraphQL, which
@@ -641,9 +645,16 @@ def label_names(tracker: str) -> dict[str, set[str]]:
 class Table(dict):
     """A settings section whose every key is required but those `optional` names, such as `land`."""
 
-    def __init__(self, *args: Any, optional: tuple[str, ...] = (), **kinds: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        optional: tuple[str, ...] = (),
+        together: tuple[str, ...] = (),
+        **kinds: Any,
+    ) -> None:
         super().__init__(*args, **kinds)
         self.optional = frozenset(optional)
+        self.together = together  # optional keys that are all set or all unset
 
 
 class Choice(tuple):
@@ -705,7 +716,16 @@ SCHEMA: dict[str, dict[str, Any]] = {
         where=Choice(PLACES),
         signing_key_env=str,
         merge_queue=bool,
-        optional=("where", "signing_key_env", "merge_queue"),
+        merge_commit_heads=list,
+        together=("signed_squash_to", "allowed_signers"),
+        optional=(
+            "signed_squash_to",
+            "allowed_signers",
+            "where",
+            "signing_key_env",
+            "merge_queue",
+            "merge_commit_heads",
+        ),
     ),
     "carry_over_main": Table({"except": list}),
 }
@@ -839,7 +859,13 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
                 f"{file}'s {where} is empty"
             )  # a name's description may be empty, a path may not
     if isinstance(schema, Table) and (
-        missing := [key for key in schema if key not in section and key not in schema.optional]
+        missing := [
+            key
+            for key in schema
+            if key not in section
+            and (key not in schema.optional or any(other in section for other in schema.together))
+            and (key in schema.together or key not in schema.optional)
+        ]
     ):
         raise Refused(f"{file}'s `{name}` lacks `{'`, `'.join(missing)}`")
     return section
@@ -2211,8 +2237,26 @@ def placed(loop: str | None) -> Any:
 
 def signed(loop: str | None) -> tuple[str, Path] | None:
     """loop.md's `land` section as (branch, signers), None without one."""
-    land = settings(loop).get("land")
-    return (land["signed_squash_to"], Path(land["allowed_signers"]).expanduser()) if land else None
+    land = settings(loop).get("land") or {}
+    if "signed_squash_to" not in land:
+        return None
+    return (land["signed_squash_to"], Path(land["allowed_signers"]).expanduser())
+
+
+def merge_method(pull: dict[str, Any], loop: str | None) -> str:
+    """How land merges the PR: `merge` (a merge commit, which keeps the head's ancestry) when its head branch matches
+    a pattern of loop.md's `land.merge_commit_heads`, else `squash`. A match with `land.signed_squash_to` set is
+    Refused, since a signed squash has no merge-commit form."""
+    patterns = (settings(loop).get("land") or {}).get("merge_commit_heads", [])
+    head = pull["headRefName"]
+    if not any(fnmatch.fnmatchcase(head, pattern) for pattern in patterns):
+        return "squash"
+    if signed(loop):
+        raise Refused(
+            f"PR #{pull['number']}'s head `{head}` matches `land.merge_commit_heads`, but `land.signed_squash_to` is"
+            " set, and a signed squash has no merge-commit form: unset one of the two keys"
+        )
+    return "merge"
 
 
 def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
@@ -4456,6 +4500,10 @@ def proof_gaps(
     """What keeps the PR from landing before CI is asked about, as lines to print (none: it holds every proof, and a
     draft may be marked ready, since ready starts CI), with the issues its spec links."""
     where, local = f"PR #{pull['number']}", signed(loop)
+    try:
+        merge_method(pull, loop)
+    except Refused as exc:
+        return [str(exc)], None
     if pull["isCrossRepository"]:
         return [
             f"{where} comes from another repository: land merges only branches of this one"
@@ -5057,19 +5105,22 @@ def merges(
     for pull, tree, gated, how in landed:
         where, head = f"PR #{pull['number']}", pull["headRefOid"]
         try:
+            method = merge_method(pull, loop)
             if local:
                 tip = signed_squash(pull, local[1], (tip, tree))
+                print(f"{where} lands as a {method}")
                 print(f"{where} landed in {base} as {tip}, signed by a key in {local[1]}")
             else:
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
-                body = land_body(pull)
+                body = land_body(pull) if method == "squash" else None
+                print(f"{where} lands as a {method}")
                 try:
                     gh(
                         "pr",
                         "merge",
                         str(pull["number"]),
-                        "--squash",
+                        f"--{method}",
                         *(("--body", body) if body is not None else ()),
                         "--match-head-commit",
                         head,
