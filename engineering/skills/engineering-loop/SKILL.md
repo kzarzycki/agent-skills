@@ -699,7 +699,8 @@ or the owner's private network.
   place, the way the Codex CLI does it, in one atomic replace of the host's `auth.json`; a refused refresh exits 2
   and names `codex login`. `--env` repeats, to seed every environment in one run. To keep them fresh without the
   owner, run `seed` every 2 days as an Omnigent scheduled task on the host that holds the login, on a small model,
-  keeping the run (`sys_session_keep`) when it exits non-zero. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
+  keeping the run (`sys_session_keep`) when it exits non-zero. The script never prints a secret's value, in its own output, a
+  traceback or the verifier's, and a refused seed is described by its length, hash and days left, which is how to check one. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
   PR's head, runs Codex on the brief and posts the report as a PR comment. The worker's session only carries
   the pass: the lead sends it the brief `approvals.py brief` prints, with `send --pr`, asking it to save the
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
