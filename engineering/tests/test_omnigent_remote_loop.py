@@ -122,10 +122,11 @@ def test_an_unreadable_remote_loop_md_fails_the_start_before_any_session(
     files: dict[str, str | Exception],
 ) -> None:
     og = remote(monkeypatch, tmp_path, files)
+    og.titles["s9"] = "t"  # an earlier session of that title: `find` would brief it as "made anyway"
     assert omnigent_agent.main(argv()) == 1
     err = capsys.readouterr().err
     assert "other" in err and LOOP in err
-    assert og.bodies == [] and og.sessions == {}
+    assert og.bodies == [] and og.sessions == {} and og.posts == 0 and "made anyway" not in err
 
 
 def test_a_host_with_no_live_session_to_read_through_fails_naming_host_and_path(
