@@ -44,7 +44,7 @@ output under `== head ==` and each patch's test output under a `== <patch> ==` h
 run, so a stopped run keeps what it finished. Exit 0 when every patch was killed, 1 when one survived (the log names it),
 else 3 when one was inconclusive, 2 when it refuses, a patch doesn't apply, or the tree can't be restored (stderr names the paths). The log goes outside the
 checkout or to an ignored path, never a tracked file or a patch, since writing it would destroy that file. Standard
-library and git, and approvals.py, beside it, to read the policy (so PyYAML).
+library and git, and approvals.py, beside it, to read the policy and run each test command under the host's heavy wrapper (so PyYAML).
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 
 class Interrupted(Exception):
@@ -114,16 +114,22 @@ def slot_path(name: str = HEAVY) -> str:
     return os.path.join(cache, "engineering-loop", name)
 
 
+def approvals() -> Any:
+    """approvals.py beside this script, which holds the policy's reader and the heavy-step runner."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import approvals as loaded
+
+    return loaded
+
+
 def policy() -> tuple[int, int]:
     """The policy's `short_seconds` (SKILL.md, Settings, SHORT_SECONDS without it) and `mutate.inconclusive_exit`
     (INCONCLUSIVE_EXIT without it); a policy off its schema is refused, as approvals.py refuses it, and so is a
     reserved exit outside 1..255, which no command can return or which would read a pass as a setup failure."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import approvals
-
+    loaded = approvals()
     try:
-        settings = approvals.settings(approvals.project()[1])
-    except approvals.Refused as refusal:
+        settings = loaded.settings(loaded.project()[1])
+    except loaded.Refused as refusal:
         raise Refused(str(refusal)) from refusal
     reserved = settings.get("mutate", {}).get("inconclusive_exit", INCONCLUSIVE_EXIT)
     if not 1 <= reserved <= 255:
@@ -223,26 +229,18 @@ def lane(
 
 
 def run_command(command: str, slot: str) -> tuple[int, str]:
-    # its own session, so stopping it reaches every process the shell started
-    proc = subprocess.Popen(
-        command,
-        shell=True,
+    # a heavy step (approvals.run_heavy): the shell's argv as shell=True builds it, under the host's heavy wrapper, in a
+    # session of its own, so stopping it (Interrupted) reaches every process the shell started
+    return approvals().run_heavy(
+        ["/bin/sh", "-c", command],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         # a test may print bytes that aren't UTF-8; strict decoding would raise with the patch still applied
         encoding="utf-8",
         errors="replace",
-        start_new_session=True,
         # a .pyc written in the same second as its source hides the next same-sized patch of it
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", SLOT_HELD: slot},
     )
-    try:
-        output, _ = proc.communicate()
-    except Interrupted:
-        os.killpg(proc.pid, signal.SIGKILL)
-        proc.wait()
-        raise
-    return proc.returncode, output
 
 
 def restore(top: Path, patch: Path) -> None:
