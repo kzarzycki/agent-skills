@@ -2473,6 +2473,21 @@ def test_outside_a_session_the_server_is_named_or_the_one_login_never_config_yam
     assert omnigent_agent.Omnigent("https://a.example").base == "https://a.example"
 
 
+def test_a_prefixed_host_id_in_config_is_held_bare_so_this_host_s_sessions_are_local(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("host:\n  host_id: host_ab12\n")
+    monkeypatch.setattr(omnigent_agent, "CONFIG", config)
+    monkeypatch.setenv("RUNNER_SERVER_URL", "https://work.example")
+    og = omnigent_agent.Omnigent()
+    assert og.host_id == "ab12"  # the server's form (#1133)
+    assert not omnigent_agent.elsewhere(og, {"host_id": "ab12"})
+    assert omnigent_agent.elsewhere(og, {"host_id": "cd34"})
+    config.write_text("host:\n  host_id: ab12\n")
+    assert omnigent_agent.Omnigent().host_id == "ab12"  # a bare one stays as it is
+
+
 def test_a_session_acts_on_its_own_server_over_the_config_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

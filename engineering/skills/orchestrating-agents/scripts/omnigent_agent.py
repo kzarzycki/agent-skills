@@ -926,7 +926,9 @@ class Omnigent:
                 f"which Omnigent server? Not inside a session, no --server, and {AUTH_TOKENS}"
                 " holds not exactly one login: pass --server <url>"
             )
-        self.base, self.host_id = base.rstrip("/"), host.group(1)
+        # the server names hosts bare (sessions, GET /v1/hosts) and accepts either form on its
+        # routes, while config.yaml may write `host_<id>`: hold the bare one, so every == holds
+        self.base, self.host_id = base.rstrip("/"), host.group(1).removeprefix("host_")
         self._token = ""
 
     def token(self) -> str:
