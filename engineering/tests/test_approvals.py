@@ -31,6 +31,14 @@ SPEC = importlib.util.spec_from_file_location("approvals", SCRIPTS / "approvals.
 assert SPEC and SPEC.loader
 approvals = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(approvals)
+
+
+def heavy_by_run(words: Any, env: Any = None, **popen: Any) -> tuple[int, Any]:
+    """approvals.run_heavy through `approvals.subprocess.run`, so a test that fakes that run fakes a gate step too."""
+    done = approvals.subprocess.run(list(words), check=False, env=env, **popen)
+    return done.returncode, getattr(done, "stdout", None)
+
+
 # board.py reads names from approvals.py beside it, as when run
 sys.path.insert(0, str(SCRIPTS))
 BOARD_SPEC = importlib.util.spec_from_file_location("board", SCRIPTS / "board.py")
@@ -5735,6 +5743,7 @@ def checkout(
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pull())
     monkeypatch.setattr(approvals, "git", git)
     monkeypatch.setattr(approvals.subprocess, "run", run)
+    monkeypatch.setattr(approvals, "run_heavy", heavy_by_run)
     monkeypatch.setattr(approvals, "one_repo", lambda: None)  # the faked run serves the check alone
     monkeypatch.setattr(approvals, "project", lambda: (None, state["loop"]))
     return state
@@ -6145,6 +6154,7 @@ def test_a_gate_whose_command_is_not_there_is_refused_naming_it(
         raise FileNotFoundError(2, "No such file or directory", "misee")
 
     monkeypatch.setattr(approvals.subprocess, "run", missing)
+    monkeypatch.setattr(approvals, "run_heavy", heavy_by_run)
     assert approvals.main(["local-ci", "--record"]) == 1
     assert "can't run: [Errno 2] No such file or directory: 'misee'" in capsys.readouterr().out
     assert not (checkout["common"] / "approvals").exists()

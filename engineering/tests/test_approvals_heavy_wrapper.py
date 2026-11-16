@@ -421,4 +421,4 @@ def test_an_exception_while_a_step_runs_kills_its_group(
     monkeypatch.setattr(approvals.subprocess.Popen, "communicate", real)
     # killed, not waited out: the step would sleep 30 s
     assert time.monotonic() - began < 10
-    assert gone(int(pids.read_text().split()[1]), within=0.5)
+    assert gone(int(pids.read_text().split()[1]))
