@@ -5641,7 +5641,9 @@ def test_the_progress_deadline_ignores_heartbeats_as_stuck_does(
     beat = {"id": "hb", "type": "heartbeat", "created_at": time.time()}
     og = Lead(told("brief", 3000), ending("STILL WORKING: on it", 1300), beat)
     og.snap = {"status": "running"}
-    supervised(og, registry, monkeypatch, 1, lambda poll: None, notify="cos", console=True, fyi="post")
+    supervised(
+        og, registry, monkeypatch, 1, lambda poll: None, notify="cos", console=True, fyi="post"
+    )
     assert [p.split("\n")[0] for p in fyis(og)] == ["Supervisor: a t-a: no progress 22m (unknown)"]
 
 
