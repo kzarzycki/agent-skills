@@ -243,10 +243,11 @@ design, wireframes included for a UI, and delegate the rest.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
      `## Evidence`, keeping the `Token estimate:` line and adding below it the `Tokens spent:` line
      that `python3 <orchestrating-agents' folder>/scripts/omnigent_agent.py usage <session>...`
-     prints last, naming each child session your notes list (the archived ones are not found
-     otherwise): your session tree's tokens and cost from Omnigent's records, with each session it
-     has no usage for named as uncounted, never guessed. Information only, like the estimate; on
-     another backend, write `Tokens spent: not counted (<backend>)`. Where the change is high risk, the merge approval is also the owner's
+     prints last, naming each top-level session your notes list (a verifier on another host, a
+     cloud worker), since your session's record totals only its own tree, children included. A
+     session Omnigent has no usage for is named as uncounted rather than guessed, since a guess
+     would read as a measurement. Information only, like the estimate; on another backend, write
+     `Tokens spent: not counted (<backend>)`. Where the change is high risk, the merge approval is also the owner's
      go on the head that lands (SKILL.md, Approvals and proof): `approvals.py approve merge
      <pr> --head <sha> --by owner` naming the head you showed them, when they say it in your
      session; you never give it, and `approved:merge` into the default branch is none. Into a

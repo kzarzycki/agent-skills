@@ -1571,44 +1571,41 @@ def tokens_text(n: int) -> str:
     return f"{n / 1e6:.1f}M" if n >= 100_000 else f"{n / 1e3:.0f}k"
 
 
-def spent(og: Omnigent, sids: list[str]) -> list[str]:
-    """``usage``'s lines: one per session of ``sids`` and their live children (``child_sessions``
-    lists no archived one, so the caller names those), each read once from its record's
-    ``usage_by_model`` and ``total_cost_usd``, then the PR body's ``Tokens spent:`` line. Tokens
-    count every class, cache reads included. A session with no usage recorded (a cloud session
-    Omnigent can't count) or none read is ``uncounted`` and adds nothing to the total."""
-    seen, queue = [], list(sids)
-    while queue:
-        sid = queue.pop(0)
-        if sid in seen:
-            continue
-        seen.append(sid)
-        try:
-            queue += og.children(sid)
-        except Fail:  # its own record still counts
-            pass
-    lines, tokens, cost, uncounted = [], 0, 0.0, []
-    for sid in seen:
+def usage_lines(og: Omnigent, sids: list[str]) -> list[str]:
+    """``usage``'s lines: one per session of ``sids``, read from its record, whose
+    ``usage_by_model`` and ``total_cost_usd`` already total its whole spawn tree (its children,
+    archived ones included), then the PR body's ``Tokens spent:`` line. So a lead names only
+    itself and the top-level sessions it started (a verifier on another host, a cloud worker),
+    which are trees of their own; a named session inside another named one's tree is skipped, not
+    counted twice. Tokens count every class, cache reads included. A session with no usage
+    recorded (a cloud session Omnigent can't count) or not read is ``uncounted`` and adds
+    nothing to the total."""
+    named = list(dict.fromkeys(sids))
+    lines, tokens, cost, uncounted, counted = [], 0, 0.0, [], 0
+    for sid in named:
         try:
             info = og.info(sid)
         except Fail as e:
             lines.append(f"{sid}: uncounted (not read: {e})")
             uncounted.append(sid)
             continue
+        root = info.get("root_conversation_id") or sid
+        title = f" {info['title']}" if info.get("title") else ""
+        if root != sid and root in named:
+            lines.append(f"{sid}{title}: in {root}'s tree, counted there")
+            continue
         models = (info.get("usage_by_model") or {}).values()
         n = sum(int(m.get("total_tokens") or 0) for m in models)
         usd = float(info.get("total_cost_usd") or sum(m.get("total_cost_usd") or 0 for m in models))
-        title = f" {info['title']}" if info.get("title") else ""
         if not (n or usd):
             lines.append(f"{sid}{title}: uncounted (no usage recorded)")
             uncounted.append(sid)
             continue
-        tokens, cost = tokens + n, cost + usd
+        tokens, cost, counted = tokens + n, cost + usd, counted + 1
         lines.append(f"{sid}{title}: {tokens_text(n)} tokens, ${usd:.2f}")
-    counted = len(seen) - len(uncounted)
-    rest = f"; uncounted: {', '.join(uncounted)}" if uncounted else ""
-    sessions = f"{counted} session{'s' * (counted != 1)}"
-    lines.append(f"Tokens spent: {tokens_text(tokens)}, ${cost:.2f} ({sessions}{rest})")
+    not_counted = f"; uncounted: {', '.join(uncounted)}" if uncounted else ""
+    trees = f"{counted} session tree{'s' * (counted != 1)}"
+    lines.append(f"Tokens spent: {tokens_text(tokens)}, ${cost:.2f} ({trees}{not_counted})")
     return lines
 
 
@@ -6695,10 +6692,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("sessions", nargs="+")
     p = sub.add_parser(
         "usage",
-        description="tokens and cost of the session this runs in, each one named and their live"
-        " children, and the PR body's Tokens spent: line",
+        description="tokens and cost of the session tree this runs in and of each session named,"
+        " and the PR body's Tokens spent: line",
     )
-    p.add_argument("sessions", nargs="*", help="sessions to add, such as archived children")
+    p.add_argument(
+        "sessions", nargs="*", help="top-level sessions to add, such as a verifier on another host"
+    )
     p = sub.add_parser("report", description="print a file of a session's workspace or host")
     p.add_argument("session")
     p.add_argument("path", nargs="?", help="default: the report in the session's registry line")
@@ -6965,7 +6964,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             sids = [s for s in [own_id(), *map(og.session_id, args.sessions)] if s]
             if not sids:
                 raise Fail("usage names no session outside an Omnigent session")
-            print("\n".join(spent(og, sids)))
+            print("\n".join(usage_lines(og, sids)))
             return 0
         if args.cmd == "report" and not args.path:
             line = registry and registered(registry)[0].get(sid)
