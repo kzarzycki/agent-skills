@@ -17,12 +17,12 @@
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
-    uv run scripts/approvals.py local-ci <pr> [--run]      # with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
+    uv run scripts/approvals.py local-ci <pr> [--head <sha>] [--run]  # --head: the commit just pushed, refused if GitHub's head stays another; with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
     uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
-    uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop `Claude-Session:` lines from it
+    uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
 
 At start every verb warns on stderr, once, when this script's checkout is behind its upstream's last fetched tip (no
 fetch) and the script differs there: the count and `git pull`. loop.md's `pack_staleness: refuse` under `loop` makes
@@ -60,8 +60,9 @@ PR's author, the account running this or an account that can write to the repo p
 public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
 commit after a verdict needs one of its own; on a high-risk change (below), that pass came from the default tier, not
-one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md), since a lower tier's review is enough
-only for a change it rates low; no unresolved
+one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md) or a fallback family, since a lower
+tier's review is enough only for a change it rates low, unless the policy's `risk.lower_tier_until` date is today or
+later in UTC, which lifts that one refusal and prints a line saying so; no unresolved
 review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
 author posted one, that embeds its videos and screenshots as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
@@ -154,8 +155,10 @@ date with the base runs no gate. GitHub's required checks never stand in for it,
 command's. Otherwise it runs the gate there as `local-ci` does (below), its log under the git common dir, and records
 the pass by tree; a gate that leaves the worktree changed is red, since it no longer ran on the batch as merged.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
---match-head-commit`), with the body the repo's squash default would write less every `Claude-Session:` line, since a
-cloud session's harness adds its link to each commit and the PR may be public: under the commit-messages default the
+--match-head-commit`), with the body the repo's squash default would write less every session link line (a
+`Claude-Session:` line, or a line that is only a claude.ai session link), since a cloud session's harness adds its link
+to each commit, PR body and comment and the PR may be public, first dropping those lines from the PR's own body and
+comments on GitHub where it can edit them (`check merge` names any it can't): under the commit-messages default the
 body GitHub builds from the commits (one: its message after the subject, its co-author lines moved to the end;
 several: each message as a `* ` item, then `---------` and their co-authors), under the PR-description default the
 PR's body, and under the blank default none. A merge GitHub refuses, or leaves unmerged
@@ -446,6 +449,7 @@ import tempfile
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple, TypeVar
 
@@ -510,6 +514,8 @@ CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
 NOTE = "id author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
 SPECCED = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
 ASSIGNEES = "assignees(first: 10) { nodes { login } }"
+# what land needs to edit a PR's comment, and check merge to name one it can't (session_links)
+EDITABLE = "databaseId url viewerCanUpdate"
 # who added `approved:spec` (approver) and who was assigned when (release); ponytail: the newest 100 such events
 EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT]) { nodes { __typename
   ... on LabeledEvent { createdAt actor { __typename login } label { name } }
@@ -518,10 +524,10 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
-  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
-  reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
+  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
+  reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
@@ -706,7 +712,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "mutate": {"inconclusive_exit": int},
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
-    "risk": {"always": bool, "labels": list, "paths": list, "verifier": bool, "merge_paths": list},
+    "risk": {
+        "always": bool,
+        "labels": list,
+        "paths": list,
+        "verifier": bool,
+        "merge_paths": list,
+        "lower_tier_until": date,
+    },
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
@@ -736,7 +749,13 @@ TRACKED: dict[str, Any] = dict.fromkeys(
 # the settings block: a docs/agents/ file's first fenced `yaml` block, under its `## Settings` (gatekeeper.md: `## Policy`)
 # heading
 SETTINGS = re.compile(r"^```yaml[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE)
-KINDS = {bool: "true or false", int: "a whole number", list: "a list of strings", str: "a string"}
+KINDS = {
+    bool: "true or false",
+    int: "a whole number",
+    list: "a list of strings",
+    str: "a string",
+    date: "a date, YYYY-MM-DD, unquoted",
+}
 
 
 class Policy(str):
@@ -1969,10 +1988,13 @@ def proofs(
         found += (unreviewed := reviewed(where, pull, loop, verdicts))
         # only on a verdict that would land, and tier first, since risk() reads the reviews again
         if not unreviewed and (tier := lower(verdicts)) and (why := risk(pull, issues, loop)):
-            found.append(
-                f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier}): a"
-                " default-tier verifier pass on the head first"
-            )
+            said = f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier})"
+            override = lowered(loop)
+            if override and override[1]:
+                print(f"{said}: it lands under `risk.lower_tier_until: {override[0]}`")
+            else:
+                lapsed = f" (`risk.lower_tier_until: {override[0]}` has passed)" if override else ""
+                found.append(f"{said}: a default-tier verifier pass on the head first{lapsed}")
     threads = pull["reviewThreads"]
     if (threads.get("totalCount") or 0) > len(threads["nodes"]):
         found.append(
@@ -2039,6 +2061,19 @@ def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
         and (found := LOWER_TIER.search(lines["Family"]) or FALLBACK_FAMILY.search(lines["Family"]))
     ]
     return tiers[0].lower() if tiers else None
+
+
+def today() -> date:
+    """Today in UTC, the day lowered() compares with."""
+    return datetime.now(timezone.utc).date()
+
+
+def lowered(loop: str | None) -> tuple[date, bool] | None:
+    """The policy's `risk.lower_tier_until` and whether it is live, None without one: through that day in UTC,
+    inclusive, a lower-tier or fallback verdict (lower) lands a high-risk change, and from the next day on the date
+    lifts nothing, so a forgotten setting never keeps the bar low."""
+    until = settings(loop).get("risk", {}).get("lower_tier_until")
+    return None if until is None else (until, today() <= until)
 
 
 def counts(lines: dict[str, str]) -> tuple[int, int] | None:
@@ -3355,6 +3390,9 @@ def rest_notes(number: int) -> dict[str, Any]:
     nodes = [
         {
             "id": found["node_id"],
+            # what session_links() names a comment by and edits it at; REST gives no right to edit it
+            "databaseId": found.get("id"),
+            "url": found.get("html_url"),
             "author": actor(found.get("user")),
             "body": found.get("body") or "",
             "createdAt": found["created_at"],
@@ -3508,9 +3546,27 @@ def rest_checks(head: str) -> dict[str, Any]:
 def rest_threads(number: int) -> dict[str, Any]:
     """A PR's review threads, whether each is resolved, from the review-thread route a cloud session's GitHub proxy
     serves (GitHub's own REST has none). Where it is missing, as on a host whose GraphQL refused for another reason,
-    the error raises: unresolved threads are never read as none."""
+    the error raises: unresolved threads are never read as none. Each thread's comments, which that route names by id
+    alone, come from the PR's review comments, with no right to edit them (session_links())."""
     threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
-    nodes = [{"isResolved": bool(thread.get("resolved"))} for thread in threads]
+    listed = {found["id"]: found for found in rest_pages(f"pulls/{number}/comments?per_page=100")}
+    nodes = [
+        {
+            "isResolved": bool(thread.get("resolved")),
+            "comments": {
+                "nodes": [
+                    {
+                        "body": found.get("body") or "",
+                        "databaseId": found["id"],
+                        "url": found.get("html_url"),
+                    }
+                    for found in (listed.get(each) for each in thread.get("comment_ids") or [])
+                    if found is not None
+                ]
+            },
+        }
+        for thread in threads
+    ]
     return {"totalCount": len(nodes), "nodes": nodes}
 
 
@@ -3527,6 +3583,8 @@ def rest_pull(pr: int) -> dict[str, Any]:
             "state": review["state"],
             "body": review.get("body") or "",
             "commit": {"oid": review.get("commit_id") or ""},
+            "databaseId": review.get("id"),
+            "url": review.get("html_url"),
         }
         for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
     ]
@@ -4086,7 +4144,7 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
     # advice, so it prints whatever else holds the merge and changes no exit code
     advice = (
         [f"PR #{pull['number']}: {said}"] if point == "merge" and (said := unforced(pull)) else []
-    )
+    ) + ([left] if point == "merge" and (left := stranded(pull)) else [])
     for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
         print(line)
     return 1 if found else WAITING if waiting else 0
@@ -4991,8 +5049,14 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
     )
 
 
-# a cloud session's link, which its harness adds to every commit message; land drops it from the squash body
-SESSION_LINE = re.compile(r"^Claude-Session:.*(?:\n|$)", re.MULTILINE)
+# a cloud session's link, which its harness adds to every commit message as a `Claude-Session:` line and to every PR
+# body as a bare link line, optionally in <...>, and to every body and comment its proxy writes as a `_Generated by
+# [Claude Code](<link>)_` footer; land drops each from the squash body, the PR body and the PR's comments
+SESSION_LINE = re.compile(
+    r"^(?:Claude-Session:.*|(?:<https://claude\.ai/code/session_[^\s<>]*>|https://claude\.ai/code/session_[^\s<>]*"
+    r"|_Generated by \[Claude Code\]\(https://claude\.ai/code/session_[^\s()]*\)_)[ \t\r]*)(?:\n|$)",
+    re.MULTILINE,
+)
 CO_AUTHOR = re.compile(r"^Co-authored-by:[ \t]*(.*?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
 
 
@@ -5021,7 +5085,7 @@ def squash_body(commits: list[dict[str, Any]], author: str | None) -> str:
 
 
 def unlinked(text: str) -> str:
-    """text less every `Claude-Session:` line, the blank lines around each removed one folded into one (none when
+    """text less every session link line (SESSION_LINE), the blank lines around each removed one folded into one (none when
     it sat between two text lines); blank lines elsewhere (a PR body's code block) stay as written."""
     marked = "\n".join("\0" if SESSION_LINE.match(line) else line for line in text.split("\n"))
 
@@ -5032,7 +5096,7 @@ def unlinked(text: str) -> str:
 
 
 def commit_msg(message: Path) -> int:
-    """The commit-msg hook: the message file less every `Claude-Session:` line, as unlinked() folds them for land, so a
+    """The commit-msg hook: the message file less every session link line, as unlinked() folds them for land, so a
     cloud session's branch commits carry no link either, since a public repo publishes them; a message with none is
     left as written."""
     text = message.read_text()
@@ -5041,9 +5105,96 @@ def commit_msg(message: Path) -> int:
     return 0
 
 
+def session_links(pull: dict[str, Any]) -> list[tuple[str, str, str, str, bool]]:
+    """Each text of pull that carries a session link line, as (what names it, the REST method and path that edit it,
+    its text, whether this account can edit it, by GitHub's `viewerCanUpdate`): the PR's body, each conversation
+    comment, each review's summary and each review thread's comment, since a public repo's PR page publishes them all.
+    A text read without that right (REST, when GraphQL is refused) counts as one it can't edit. ponytail: the newest
+    100 comments and reviews, and the first 50 comments of each of the first 100 threads."""
+    number, repo = pull["number"], "repos/{owner}/{repo}"
+
+    def named(word: str, found: dict[str, Any]) -> str:
+        if found.get("url"):
+            return f"the {word} {found['url']}"
+        if found.get("databaseId"):
+            return f"{word} {found['databaseId']} on PR #{number}"
+        return f"a {word} on PR #{number}"
+
+    texts = [
+        (
+            "its body",
+            "PATCH",
+            f"{repo}/pulls/{number}",
+            pull.get("body") or "",
+            pull.get("viewerCanUpdate"),
+        )
+    ]
+    texts += [
+        (
+            named("comment", note),
+            "PATCH",
+            f"{repo}/issues/comments/{note.get('databaseId')}",
+            note.get("body") or "",
+            note.get("viewerCanUpdate"),
+        )
+        for note in (pull.get("comments") or {}).get("nodes") or []
+    ]
+    texts += [
+        (
+            named("review", review),
+            "PUT",
+            f"{repo}/pulls/{number}/reviews/{review.get('databaseId')}",
+            review.get("body") or "",
+            review.get("viewerCanUpdate"),
+        )
+        for review in (pull.get("reviews") or {}).get("nodes") or []
+    ]
+    texts += [
+        (
+            named("comment", note),
+            "PATCH",
+            f"{repo}/pulls/comments/{note.get('databaseId')}",
+            note.get("body") or "",
+            note.get("viewerCanUpdate"),
+        )
+        for thread in (pull.get("reviewThreads") or {}).get("nodes") or []
+        for note in (thread.get("comments") or {}).get("nodes") or []
+    ]
+    return [
+        (what, method, path, text, bool(can))
+        for what, method, path, text, can in texts
+        if SESSION_LINE.search(text)
+    ]
+
+
+def unlink_pull(pull: dict[str, Any]) -> None:
+    """Before land merges pull: each text session_links() finds that this account can edit gets one edit holding it
+    less its session link lines, as unlinked() folds them, its other lines kept; a text with none gets no edit, and
+    one it can't edit is left to check merge, which names it. One line says what it edited."""
+    edited = []
+    for what, method, path, text, can in session_links(pull):
+        if can:
+            gh("api", "-X", method, path, "-f", f"body={unlinked(text)}")
+            edited.append(what)
+    if edited:
+        print(f"PR #{pull['number']}: dropped the session link from {', '.join(edited)}")
+
+
+def stranded(pull: dict[str, Any]) -> str | None:
+    """The line check merge prints when a text of pull still carries a session link this account can't edit (a comment
+    by another account, say), so a person removes it before the PR lands; None when there is none."""
+    left = [what for what, *_, can in session_links(pull) if not can]
+    if not left:
+        return None
+    return (
+        f"PR #{pull['number']}: a session link stays in {', '.join(left)}, which this account can't edit: remove it"
+        " by hand before the PR lands, since its page is public"
+    )
+
+
 def land_body(pull: dict[str, Any]) -> str | None:
     """The `--body` land passes to GitHub's squash of pull, whatever the repo's squash default would put a
-    `Claude-Session:` line in, or None to leave GitHub's default. The repo's `squash_merge_commit_message` picks it:
+    session link line in, or None to leave GitHub's default. The repo's `squash_merge_commit_message` picks it:
     COMMIT_MESSAGES, squash_body() less those lines; PR_BODY, the PR's body less them; BLANK, None, since GitHub
     writes no body. ponytail: under PR_BODY GitHub's own co-author lines, if it adds any, are not added here, as no
     squash on this repo shows that setting."""
@@ -5105,6 +5256,7 @@ def merges(
     for pull, tree, gated, how in landed:
         where, head = f"PR #{pull['number']}", pull["headRefOid"]
         try:
+            unlink_pull(pull)
             method = merge_method(pull, loop)
             if local:
                 tip = signed_squash(pull, local[1], (tip, tree))
@@ -6814,7 +6966,34 @@ def no_pass(head: str, why: list[str] | tuple[str, ...] = ()) -> str:
     return "\n".join(lines)
 
 
-def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = False) -> int:
+# `local-ci <pr> --head`: how many times the PR's head is read, and the seconds between reads (about 30 s in all)
+HEAD_READS, HEAD_WAIT = 4, 10
+
+
+def settled_head(pr: int, want: str | None) -> str:
+    """The PR's head from GitHub. With `want` (the commit just pushed, in full), GitHub may still answer the previous
+    head for a moment after a push, so a different head is read again, HEAD_READS times in all, HEAD_WAIT seconds apart;
+    one still different is refused, naming both, before anything is read or posted on it. `want` is compared whole,
+    never as a prefix, so a short or non-hex one is refused."""
+    if want is not None and not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", want):
+        raise Refused(
+            f"--head {want}: the whole commit hash (40 hex digits), not a prefix or a ref"
+        )
+    for read in range(HEAD_READS):
+        head = pull_request(pr)["headRefOid"]
+        if want is None or head.lower() == want.lower():
+            return head
+        if read < HEAD_READS - 1:
+            time.sleep(HEAD_WAIT)
+    raise Refused(
+        f"PR #{pr}'s head on GitHub is {head}, not {want} after {HEAD_READS} reads over"
+        f" {(HEAD_READS - 1) * HEAD_WAIT} s: nothing posted; run it again once GitHub shows the push"
+    )
+
+
+def local_ci(
+    pr: int | None, proof: dict[str, Any] | None = None, run: bool = False, want: str | None = None
+) -> int:
     """With a PR: post a pass on its head, from a recorded pass on its tree; with `run`, from a run now when there is
     none, and without it refuse then (no_pass). Without a PR: on a
     clean checkout, reuse or run and record a pass on HEAD, for `local-ci <pr>` to reuse; on one with changes, run the
@@ -6822,7 +7001,8 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
     `head_proof` (`--head-proof`, no PR), the gate takes its `env` names from this process (gate), and the pass is
     published as the head proof instead. With `gate_steps`, a step with a pass on the tree is reused and only the
     others run; in a cloud session a `host` step is left for a host, said, and the steps that passed are published,
-    but no head proof, nor a pass for a PR, since the gate as a whole has none."""
+    but no head proof, nor a pass for a PR, since the gate as a whole has none. With a PR it prints one line naming the
+    head it posted on; `want` (`--head <sha>`) is the head the caller just pushed (settled_head)."""
     if pr is None:
         passed = proof["env"] if proof else ()
         # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
@@ -6857,7 +7037,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
         elif not record.get("published"):
             publish(head, record)
         return 0
-    head = pull_request(pr)["headRefOid"]
+    head = settled_head(pr, want)
     why: list[str] = []
     if record := reusable(head, why=why):
         source = f"{reused(record)}\n"
@@ -6876,10 +7056,55 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
         pr,
         f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
     )
+    print(f"{CHECKED} on {head}: posted on PR #{pr}")
     return 0
 
 
-def brief(pr: int, priorities: Path | None, proofs: list[Path], far: Path | None = None) -> int:
+def conflicted(pr: int, base: str, head: str) -> list[str]:
+    """The files a PR's head conflicts with its own base in, from `git merge-tree --write-tree origin/<base> <head>`
+    (empty when it merges cleanly), after fetching both, so a stale or missing origin/<base> is never read as clean.
+    A conflict whose files git doesn't name still returns one entry, and a fetch or git failure is a Refused: never
+    a clean."""
+    try:
+        git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        git("fetch", "-q", "origin", f"refs/pull/{pr}/head")
+    except subprocess.CalledProcessError as exc:
+        raise Refused(
+            f"PR #{pr}: cannot fetch origin/{base} and the head to check the merge: {exc.stderr.strip() or exc}"
+        ) from exc
+    merge = subprocess.run(
+        [
+            "git",
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "--no-messages",
+            f"origin/{base}",
+            head,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if merge.returncode == 0:
+        return []
+    # exit 1 is a conflict only with its tree on the first line: a commit git doesn't have exits 1 with nothing
+    if merge.returncode != 1 or not re.fullmatch(
+        r"[0-9a-f]{40,64}", merge.stdout.split("\n", 1)[0]
+    ):
+        raise Refused(
+            f"PR #{pr}: git merge-tree failed: {merge.stderr.strip() or merge.returncode}"
+        )
+    return list(dict.fromkeys(merge.stdout.splitlines()[1:])) or ["(files not named by git)"]
+
+
+def brief(
+    pr: int,
+    priorities: Path | None,
+    proofs: list[Path],
+    far: Path | None = None,
+    allow_conflict: bool = False,
+) -> int:
     """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
     verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
     newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
@@ -6894,6 +7119,12 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path], far: Path | None
         loop = read(toplevel() / LOOP) if (toplevel() / LOOP).exists() else None
     pull = pull_request(pr)
     head = pull["headRefOid"]
+    # first, before anything is written: a pass on a head that conflicts with its base is spent on a head that can't land
+    if not allow_conflict and (files := conflicted(pr, pull["baseRefName"], head)):
+        raise Refused(
+            f"PR #{pr}: head {head} does not merge cleanly into origin/{pull['baseRefName']}, conflicted: "
+            f"{', '.join(files)}; merge the base in first, or pass --allow-conflict to review this head"
+        )
     if missing := [str(log) for log in proofs if not log.is_file()]:
         raise Refused(f"PR #{pr}: no proof log at {', '.join(missing)}")
     # byte for byte, as lead.md's `head -1 <log> | grep -qx <head>` compares: a trailing space or CR is another line
@@ -7057,6 +7288,7 @@ def main(argv: list[str]) -> int:
     recording.add_argument("--run", action="store_true")
     recording.add_argument("--status", metavar="HEAD")
     recording.add_argument("--head-proof", action="store_true")
+    recording.add_argument("--head", metavar="SHA")
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int, nargs="*")
     merging.add_argument("--wait", action="store_true")
@@ -7066,6 +7298,7 @@ def main(argv: list[str]) -> int:
     # a verifier on another host: the absolute path there holding a clone of the repo
     briefing.add_argument("--far", type=Path)
     briefing.add_argument("--priorities", type=Path)
+    briefing.add_argument("--allow-conflict", action="store_true")
     briefing.add_argument("--proof", type=Path, action="append", default=[])
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
@@ -7124,18 +7357,24 @@ def main(argv: list[str]) -> int:
                 raise Refused(
                     "local-ci takes a PR number, or --record to record a run on HEAD before one exists"
                 )
+            if args.head and args.pr is None:
+                raise Refused("local-ci --head goes with a PR: --record gates HEAD itself")
             proof = None
             if args.head_proof and (proof := head_proof(project()[1])) is None:
                 raise Refused("loop.md sets no `head_proof`: --head-proof has no status to publish")
             if args.head_proof and not args.record:
                 raise Refused("--head-proof goes with --record: the head proof is the checkout's")
-            return local_ci(args.pr, proof, args.run) if leads_its_session() else detach(argv)
+            return (
+                local_ci(args.pr, proof, args.run, args.head)
+                if leads_its_session()
+                else detach(argv)
+            )
         if args.command == "land":
             if args.only and not args.pr:
                 parser.error("land --only needs a PR: there is nothing to restrict to")
             return land(args.pr or None, args.wait, args.only)
         if args.command == "brief":
-            return brief(args.pr, args.priorities, args.proof, args.far)
+            return brief(args.pr, args.priorities, args.proof, args.far, args.allow_conflict)
         if args.command == "release":
             return release(args.issue)
         return verdict(args.pr, args.report)
