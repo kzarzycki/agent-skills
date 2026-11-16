@@ -44,6 +44,10 @@ SPECCED = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ nam
 ASSIGNEES = "assignees(first: 10) { nodes { login } }"
 
 
+# what land needs to edit a PR's comment, and check merge to name one it can't (gatekeeper.py's session_links)
+EDITABLE = "databaseId url viewerCanUpdate"
+
+
 # who added `approved:spec` (approver) and who was assigned when (release); ponytail: the newest 100 such events
 EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT]) { nodes { __typename
   ... on LabeledEvent { createdAt actor { __typename login } label { name } }
@@ -54,10 +58,10 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 
 
-PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
-  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
-  reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
+  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
+  reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
@@ -225,6 +229,9 @@ def rest_notes(number: int) -> dict[str, Any]:
     nodes = [
         {
             "id": found["node_id"],
+            # what gatekeeper.py's session_links() names a comment by and edits it at; REST gives no right to edit it
+            "databaseId": found.get("id"),
+            "url": found.get("html_url"),
             "author": actor(found.get("user")),
             "body": found.get("body") or "",
             "createdAt": found["created_at"],
@@ -380,9 +387,27 @@ def rest_checks(head: str) -> dict[str, Any]:
 def rest_threads(number: int) -> dict[str, Any]:
     """A PR's review threads, whether each is resolved, from the review-thread route a cloud session's GitHub proxy
     serves (GitHub's own REST has none). Where it is missing, as on a host whose GraphQL refused for another reason,
-    the error raises: unresolved threads are never read as none."""
+    the error raises: unresolved threads are never read as none. Each thread's comments, which that route names by id
+    alone, come from the PR's review comments, with no right to edit them (session_links())."""
     threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
-    nodes = [{"isResolved": bool(thread.get("resolved"))} for thread in threads]
+    listed = {found["id"]: found for found in rest_pages(f"pulls/{number}/comments?per_page=100")}
+    nodes = [
+        {
+            "isResolved": bool(thread.get("resolved")),
+            "comments": {
+                "nodes": [
+                    {
+                        "body": found.get("body") or "",
+                        "databaseId": found["id"],
+                        "url": found.get("html_url"),
+                    }
+                    for found in (listed.get(each) for each in thread.get("comment_ids") or [])
+                    if found is not None
+                ]
+            },
+        }
+        for thread in threads
+    ]
     return {"totalCount": len(nodes), "nodes": nodes}
 
 
@@ -399,6 +424,8 @@ def rest_pull(pr: int) -> dict[str, Any]:
             "state": review["state"],
             "body": review.get("body") or "",
             "commit": {"oid": review.get("commit_id") or ""},
+            "databaseId": review.get("id"),
+            "url": review.get("html_url"),
         }
         for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
     ]
@@ -822,6 +849,12 @@ def merge(number: int, method: str, body: str | None, head: str) -> None:
     )
 
 
+def edit_text(method: str, path: str, body: str) -> None:
+    """Replace the body of a PR, a comment or a review: `method` (PATCH, or PUT for a review) on the REST `path`
+    (`{owner}` and `{repo}` filled by gh), with `body` as the text."""
+    gh("api", "-X", method, path, "-f", f"body={body}")
+
+
 def open_heads() -> list[str]:
     """The head commit of every open PR. ponytail: REST's pages of 100, every one."""
     # whole objects, since rest_pages decodes each line as JSON and a bare SHA is none
@@ -865,5 +898,6 @@ forge = Port(
     "one_repo",
     "ready",
     "merge",
+    "edit_text",
 )
 evidence = Port("statuses", "post_status", "post_review", "minimize")

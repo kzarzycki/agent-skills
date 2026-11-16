@@ -93,6 +93,7 @@ class Memory:
             "one_repo": lambda: None,
             "ready": lambda n, undo=False: None,
             "merge": lambda n, method, body, head: None,
+            "edit_text": lambda method, path, body: None,
             "statuses": lambda sha: self.statuses.get(sha, []),
             "post_status": lambda sha, context, description, state="success": None,
             "post_review": lambda pr, review: None,
