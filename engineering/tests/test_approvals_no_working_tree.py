@@ -1,0 +1,195 @@
+"""approvals.py from a clone with no working tree reads the policy from origin's default branch, and land computes the
+batch in objects, reusing a recorded pass on its tree or refusing, naming it, with no file checked out (#917)."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+import pytest
+from approvals_harness import (
+    added,  # noqa: F401
+    approvals,
+    assigned,  # noqa: F401
+    attached,  # noqa: F401
+    board_risks,  # noqa: F401
+    git_in,
+    graphql_answers,  # noqa: F401
+    hub,  # noqa: F401
+    lands,  # noqa: F401
+    others_open,  # noqa: F401
+    pushed,  # noqa: F401
+    refs,  # noqa: F401
+    required,  # noqa: F401
+)
+
+LOOP = "docs/agents/loop.md"
+REAL = approvals.judge_with_base  # the shared fixtures replace it per test
+MARK = "<!-- origin's main -->"
+
+
+@pytest.fixture
+def launch(
+    monkeypatch: pytest.MonkeyPatch, lands: dict[str, Any], pushed: None, tmp_path: Path
+) -> dict[str, Any]:
+    """The policy files on origin's main, and a `--no-checkout` clone of origin to run from, as a host keeps to launch
+    cloud sessions; the real base comparison of #926 back, and the script installed outside the clone."""
+    monkeypatch.setattr(approvals, "judge_with_base", REAL)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    work = lands["work"]
+    (work / LOOP).write_text((work / LOOP).read_text() + f"\n{MARK}\n")
+    git_in(work, "add", "-A")
+    git_in(work, "commit", "-qm", "adopt the loop")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(work, "fetch", "-q", "origin")
+    here = tmp_path / "launch"
+    git_in(tmp_path, "clone", "-q", "--no-checkout", str(lands["origin"]), str(here))
+    git_in(here, "config", "user.email", "loop@example.com")
+    git_in(here, "config", "user.name", "loop")
+    monkeypatch.chdir(here)
+    approvals.policy_ref.cache_clear()
+    return lands | {"here": here}
+
+
+def untouched(here: Path) -> None:
+    """Nothing checked out in the clone: no index, no file but git's own, no worktree added."""
+    assert not (here / ".git" / "index").exists()
+    assert sorted(os.listdir(here)) == [".git"]
+    assert len(git_in(here, "worktree", "list", "--porcelain").split("\nworktree ")) == 1
+
+
+def test_a_no_checkout_clone_has_no_working_tree_and_a_checkout_has_one(
+    launch: dict[str, Any], tmp_path: Path
+) -> None:
+    assert not approvals.working_tree(launch["here"])
+    assert approvals.working_tree(launch["work"])
+    fresh = tmp_path / "fresh"
+    git_in(tmp_path, "init", "-q", str(fresh))
+    assert approvals.working_tree(fresh)  # no commit yet: nothing to read from origin either
+
+
+def test_the_policy_is_read_from_origins_default_branch(launch: dict[str, Any]) -> None:
+    tracker, loop = approvals.project()
+    assert tracker is not None and MARK in (loop or "")
+    untouched(launch["here"])
+
+
+def test_check_merge_judges_with_origins_policy_and_finds_no_drift(
+    launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    launch["open"](7, {"7.txt": "7\n"})
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: launch["pulls"][7])
+    monkeypatch.chdir(launch["here"])
+    from_launch = approvals.check("merge", 7), capsys.readouterr().out
+    monkeypatch.chdir(launch["work"])
+    git_in(launch["work"], "switch", "-q", "--detach", "origin/main")
+    assert (approvals.check("merge", 7), capsys.readouterr().out) == from_launch
+    untouched(launch["here"])
+
+
+def test_the_base_comparison_reads_the_policy_as_the_run_does(
+    launch: dict[str, Any],
+) -> None:
+    """Into the default branch, no drift by construction; into another base, its own files still judge."""
+    assert approvals.base_drift("main") == []
+    work = launch["work"]
+    (work / LOOP).write_text((work / LOOP).read_text() + "\na release branch's own rule\n")
+    git_in(work, "commit", "-qam", "release rules")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/release")
+    git_in(
+        launch["here"], "fetch", "-q", "origin", "+refs/heads/release:refs/remotes/origin/release"
+    )
+    assert approvals.base_drift("release") == [LOOP]
+
+
+def test_land_with_no_pass_on_the_batch_tree_refuses_naming_it_and_checks_out_nothing(
+    launch: dict[str, Any],
+) -> None:
+    head = launch["open"](7, {"7.txt": "7\n"})
+    tree = git_in(launch["origin"], "merge-tree", "--write-tree", "main", head).split()[0]
+    code, lines = launch["land"]("7")
+    assert code == 1, lines
+    assert any(f"Tree {tree}" in line and "no recorded pass" in line for line in lines), lines
+    assert launch["merged"]() == [] and launch["runs"]() == 0
+    untouched(launch["here"])
+
+
+def test_land_reuses_a_recorded_pass_on_the_batch_tree_and_runs_no_gate(
+    launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = launch["open"](7, {"7.txt": "7\n"})
+    monkeypatch.chdir(launch["work"])  # a session with the files checked out passes the head
+    git_in(launch["work"], "switch", "-q", "--detach", head)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    runs = launch["runs"]()
+    monkeypatch.chdir(launch["here"])
+    code, lines = launch["land"]("7")
+    assert code == 0, lines
+    assert launch["merged"]() == ["7"]
+    assert launch["runs"]() == runs  # reused, never run here
+    untouched(launch["here"])
+
+
+def passed(launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch, files: dict[str, str]) -> str:
+    """A pass recorded on main with `files` written, from the checkout, as a session with the files would; its tree."""
+    work = launch["work"]
+    monkeypatch.chdir(work)
+    git_in(work, "switch", "-q", "--detach", "origin/main")
+    for name, text in files.items():
+        (work / name).write_text(text)
+    git_in(work, "add", *files)
+    git_in(work, "commit", "-qm", "the batch, as merged")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    monkeypatch.chdir(launch["here"])
+    return git_in(work, "rev-parse", "HEAD^{tree}").strip()
+
+
+def test_a_head_that_conflicts_with_the_batch_is_skipped_and_the_rest_lands(
+    launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch["open"](7, {"same.txt": "7\n"})
+    launch["open"](8, {"same.txt": "8\n"})
+    passed(launch, monkeypatch, {"same.txt": "7\n"})
+    code, lines = launch["land"]()
+    assert code == 1, lines
+    assert any("PR #8 conflicts with main plus #7" in line for line in lines), lines
+    assert launch["merged"]() == ["7"]
+    assert any(n == 8 and body.startswith(approvals.CONFLICTS) for n, body in launch["comments"])
+    untouched(launch["here"])
+
+
+def test_a_batch_github_merges_only_in_part_names_the_tree_left_ungated(
+    launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch["open"](7, {"7.txt": "7\n"})
+    launch["open"](8, {"8.txt": "8\n"})
+    passed(launch, monkeypatch, {"7.txt": "7\n", "8.txt": "8\n"})
+    fake = approvals.gh
+
+    def refuses_8(*args: str, **kwargs: Any) -> str:
+        if args[:3] == ("pr", "merge", "8"):
+            raise approvals.subprocess.CalledProcessError(1, "gh", stderr="refused")
+        return fake(*args, **kwargs)
+
+    monkeypatch.setattr(approvals, "gh", refuses_8)
+    runs = launch["runs"]()
+    code, lines = launch["land"]()
+    tree = git_in(launch["origin"], "rev-parse", "main^{tree}").strip()
+    assert launch["merged"]() == ["7"], lines
+    assert any(f"Tree {tree}: no recorded pass" in line for line in lines), lines
+    assert launch["runs"]() == runs
+    untouched(launch["here"])
+
+
+def test_land_with_a_pre_land_check_and_no_working_tree_refuses(
+    launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch["open"](7, {"7.txt": "7\n"})
+    real = approvals.settings
+    monkeypatch.setattr(approvals, "settings", lambda text: real(text) | {"pre_land": "true"})
+    code, lines = launch["land"]("7")
+    assert code == 1
+    assert any("`pre_land`" in line and "no working tree" in line for line in lines), lines
+    assert launch["merged"]() == []
+    untouched(launch["here"])
