@@ -3562,10 +3562,13 @@ def test_send_pr_delivers_to_a_session_whose_workspace_is_on_another_host(
     assert (tmp_path / "tmp" / "r.md").read_text() == "the fix report"
 
 
-def test_a_start_waits_on_the_host_its_load_lands_on_a_cloud_bridge_s_too(
+def test_a_start_waits_on_the_host_its_load_lands_on_a_cloud_bridge_on_memory_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(omnigent_agent, "capacity", lambda **_: (False, "cpu 2% idle"))
+    def capacity(cpu: bool = True, **_: object) -> tuple[bool, str]:
+        return (False, "cpu 2% idle") if cpu else (True, "cloud start, cpu not judged")
+
+    monkeypatch.setattr(omnigent_agent, "capacity", capacity)
     monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0)
     og = FakeOmnigent()
     og.host_names = {"far": "far"}
@@ -3578,9 +3581,42 @@ def test_a_start_waits_on_the_host_its_load_lands_on_a_cloud_bridge_s_too(
         omnigent_agent.start(
             og, "claude", "u", "do Y", tmp_path / "u.md", None, 0, top_level=True, host_id="h"
         )
-    og.harnesses = {"claude-cloud": "acp:claude-cloud"}  # its bridge runs here, in a VM beyond
-    with pytest.raises(omnigent_agent.Fail, match="host over capacity for 0s: cpu 2% idle"):
-        omnigent_agent.start(og, "claude-cloud", "c", "do Z", tmp_path / "c.md", None, 0)
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}  # its bridge runs here, its work in a VM
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "c", "do Z", tmp_path / "c.md", None, 0)
+    assert sid in og.sessions  # a busy CPU holds no cloud start back (#868)
+    monkeypatch.setattr(omnigent_agent, "capacity", lambda **_: (False, "200 MB available"))
+    with pytest.raises(omnigent_agent.Fail, match="host over capacity for 0s: 200 MB available"):
+        omnigent_agent.start(og, "claude-cloud", "m", "do W", tmp_path / "m.md", None, 0)
+
+
+def test_a_cloud_start_is_judged_on_memory_alone_here_and_on_another_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.undo()  # the real capacity check, on a faked host
+    monkeypatch.setattr(omnigent_agent, "cpu_idle", lambda: 1.0)
+    monkeypatch.setattr(omnigent_agent, "available_mb", lambda: 4000.0)
+    assert omnigent_agent.capacity()[0] is False  # a local start waits on 1% idle
+    assert omnigent_agent.capacity(max_load=40, cpu=False) == (
+        True,
+        "cloud start, cpu not judged, 4000 MB available (min 1536)",
+    )
+    monkeypatch.setattr(omnigent_agent, "available_mb", lambda: 1000.0)
+    assert omnigent_agent.capacity(cpu=False)[0] is False  # memory still refuses
+    og = FakeOmnigent()
+    og.others = [{"id": "x1", "host_id": "far", "status": "idle", "updated_at": 1}]
+    read: list[str] = []
+
+    def read_file(sid: str, path: str) -> str:
+        read.append(path)
+        return {"/proc/meminfo": mem(4000), "/proc/loadavg": "99.0 1 1"}[path]
+
+    og.read_file = read_file  # type: ignore[method-assign]
+    assert omnigent_agent.far_capacity(og, "far", 1536, 5, cpu=False) == (
+        True,
+        "cloud start, cpu not judged, 4000 MB available (min 1536)",
+    )
+    assert read == ["/proc/meminfo"]  # no load read for a cloud start
+    assert omnigent_agent.far_capacity(og, "far", 1536, 5)[0] is False  # a local one: load 99
 
 
 def far_host(
