@@ -293,7 +293,7 @@ def trusted_folders(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def this_repo(monkeypatch: pytest.MonkeyPatch) -> None:
     """The checkout's GitHub repository, so a `--pr` start labels its worker without `gh`."""
-    monkeypatch.setattr(omnigent_agent, "repo_slug", lambda: "o/r")
+    monkeypatch.setattr(omnigent_agent, "repo_slug", lambda cwd=None: "o/r")
 
 
 @pytest.fixture(autouse=True)

@@ -244,3 +244,46 @@ def test_reap_merged_takes_neither_an_unlabelled_nor_an_archived_session(
     )
     lines, _ = omnigent_agent.reap(og, [], merged=True)
     assert og.archived == [gone, live] and [line.split()[0] for line in lines] == [live]
+
+
+def where(monkeypatch: pytest.MonkeyPatch, checkouts: dict[Path, str]) -> None:
+    """gh faked: ``repo view`` names the repository of the checkout it runs in, and fails elsewhere."""
+
+    def fake(*args: str, cwd: Path | None = None) -> str:
+        if args[:2] == ("repo", "view") and (cwd or Path.cwd()) in checkouts:
+            return checkouts[cwd or Path.cwd()] + "\n"
+        raise omnigent_agent.Fail("gh repo view: fatal: not a git repository")
+
+    monkeypatch.setattr(omnigent_agent, "gh", fake)
+
+
+def test_a_named_repository_labels_the_worker_from_outside_a_checkout(
+    og: base.FakeOmnigent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    where(monkeypatch, {})
+    sid, _ = omnigent_agent.start(
+        og, "claude-cloud", "t", "do X", tmp_path / "r", None, 0, pr=omnigent_agent.pr_ref("a/b#7")
+    )
+    assert og.labels[sid] == {"omni.pr": "a/b#7"}
+
+
+def test_a_bare_pr_takes_its_repository_from_a_checkout_workspace(
+    og: base.FakeOmnigent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".git").mkdir(parents=True)
+    where(monkeypatch, {ws: "c/d"})
+    sid, _ = omnigent_agent.start(
+        og, "claude-cloud", "t", "do X", tmp_path / "r", None, 0, workspace=str(ws), pr=7
+    )
+    assert og.labels[sid] == {"omni.pr": "c/d#7"}
+
+
+def test_an_unresolvable_repository_is_refused_before_any_session_exists(
+    og: base.FakeOmnigent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    where(monkeypatch, {})
+    with pytest.raises(omnigent_agent.Fail, match=r"--pr owner/repo#7"):
+        omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r", None, 0, pr=7)
+    assert not og.created
+    assert not og.archived
