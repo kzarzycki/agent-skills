@@ -133,3 +133,9 @@ def test_env_route_on_a_verifier_start_routes_to_agy(
     ]
     assert omnigent_agent.main(argv) == 0
     assert agents == ["antigravity-native-ui"]
+
+
+def test_a_start_here_sees_a_host_with_room() -> None:
+    """This module imports none of test_omnigent_agent's fixtures: a gate's own load once made its starts wait 600 s
+    on the real check and fail."""
+    assert omnigent_agent.capacity() == (True, "")
