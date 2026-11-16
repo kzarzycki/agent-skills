@@ -6438,7 +6438,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("brief", help="the answer or follow-up: a file, or the text itself")
     p.add_argument("report", type=Path)
     p.add_argument("--confirm-seconds", type=float, default=60.0)
-    p.add_argument("--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP)
+    p.add_argument(
+        "--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP
+    )
     p = sub.add_parser("relay")
     p.add_argument("session")
     p.add_argument("message", help="the message, a file or the text itself; it owes no report")
@@ -6457,7 +6459,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         " session waiting on a question holds the message behind it (exit 5)",
     )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
-    p.add_argument("--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP)
+    p.add_argument(
+        "--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP
+    )
     p = sub.add_parser("broadcast", description="relay one message file to many sessions at once")
     p.add_argument("message", help="the message, a file or the text itself; it owes no report")
     p.add_argument(
