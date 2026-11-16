@@ -126,6 +126,9 @@ class FakeOmnigent:
             raise omnigent_agent.Gone(f"{path}: not found")
         return proc[path]
 
+    def loop_text(self, workspace: str, host_id: str | None) -> str:  # no loop.md on another host
+        return ""
+
     def host_of(self, sid: str) -> str:
         return next((str(o.get("host_id")) for o in self.others if o.get("id") == sid), "")
 
@@ -6946,6 +6949,7 @@ def test_a_lead_on_another_host_gets_its_host_and_the_brief_inline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bodies = create_bodies(monkeypatch)
+    monkeypatch.setattr(omnigent_agent.Omnigent, "loop_text", lambda self, ws, host: "")
     omnigent_agent.Omnigent().create("claude", "t", top_level=True, host_id="m1")
     assert bodies[-1]["host_id"] == "m1"
     og = FakeOmnigent()
