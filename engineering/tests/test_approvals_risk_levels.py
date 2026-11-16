@@ -533,3 +533,29 @@ def test_into_a_feature_branch_the_wait_names_the_level_that_asks_the_go() -> No
             " `approved:merge`), since it is low risk: nothing rates it above low"
         )
     ]
+
+
+def test_the_gate_raises_no_label_that_would_ask_more_than_the_level_it_shows(
+    gating: Gate, capsys: pytest.CaptureFixture[str], added: list[tuple[int, str, bool]]
+) -> None:
+    """`critical: {merge: gates}` beside the default `high` ({policy, go}): the gate adds no `risk:high`, which read back
+    as a `high` rating would wait for a go the policy never asked of a critical change."""
+    state, _ = gating
+    policy(
+        "risk:\n  verifier: true\n  critical_paths:\n    - app.py\nlevels:\n  critical:\n    merge: gates\n"
+    )
+    state["pull"] = judged_pr(judging("low — fine"))
+    code, out, err = check_merge(capsys)
+    assert (code, out, added) == (0, [], [])
+    assert (
+        "PR #7: risk: critical (it touches `app.py`, which `risk.critical_paths` names (`app.py`)); merge: gates"
+        in err
+    )
+    # where `high` asks no more than the gates, the label shows the rating
+    policy(
+        "risk:\n  verifier: true\n  critical_paths:\n    - app.py\nlevels:\n  high:\n    merge: gates\n"
+        "  critical:\n    merge: gates\n"
+    )
+    state["pull"] = judged_pr(judging("low — fine"))
+    assert check_merge(capsys)[0] == 0
+    assert (7, "risk:high", True) in added

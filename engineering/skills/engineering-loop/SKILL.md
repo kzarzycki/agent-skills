@@ -517,8 +517,10 @@ label and a record naming it the delegate's. So dependent work can go on landing
 high-risk change. `delegate` refuses a PR into the default branch, and the branch's own
 merge to the default branch is high risk while any PR merged into the branch carries
 `risk:high`: the stream gets one go, as a whole, the owner's or, with `loop.delegate: all`, the delegate's. When the gate rates a change `high` or `critical`, it adds `risk:high` to the PR, except
-for a rule that held the spec at a level on `{spec: owner, merge: gates}`, since the label,
-read back as a rating after the spec, would ask for a go. Where the level asks `gates`,
+for a term the label, read back as a `high` rating after the spec, would ask more of: a
+rule that held the spec at a level on `{spec: owner, merge: gates}` (the default under
+`spec.auto: true`), or a level whose `merge` is lighter than that rating's, such as
+`critical: {merge: gates}` beside the default `high`. Where the level asks `gates`,
 the merge approval is the gates themselves: every verifier review on the newest pass's
 commit satisfied with no blocker or major open, that commit covering the head that lands,
 every review thread resolved, no review requesting changes, and the base's required checks

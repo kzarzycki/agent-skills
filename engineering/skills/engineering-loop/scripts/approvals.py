@@ -94,8 +94,8 @@ reads (the label, a revert, the `verifier` term, the cap) rates the change only 
 `go` where its level asks `owner` of the spec and `gates` of the merge, since the owner never saw that rating.
 `check merge` and `land` print the level and the merge action on stderr (`PR #7: risk: high (<why>); merge: go`). When
 the gate rates a change high or critical, `check merge` and `land` add `risk:high` to the PR, reporting a failure to
-add it and carrying on, except for a term the spec's hold answered at a level on {owner, gates}, which the label, read
-back as a raise after the spec, would turn into a go. On a PR into a feature branch (any base but the repository's default branch)
+add it and carrying on, except for a term the label, read back as a `high` rating after the spec, would ask more of:
+by default a rule that held the spec under `spec.auto: true`, whose level is {owner, gates}. On a PR into a feature branch (any base but the repository's default branch)
 `approved:merge` added after the head was pushed is a go too, the push time being GitHub's repository activity for
 the head branch; a label added before the push is no go, and the approvals workflow removes it on `synchronize`. There
 the label may be the delegated approver's: `delegate <pr>` adds it, then a record (`Approved: merge`,
@@ -1346,6 +1346,19 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     return None
 
 
+def raises(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
+    """Why flag() adds `risk:high`, or None: the first term (terms) that asks of the merge (merge_for) no less than
+    the label itself, read back as a `high` term after the spec, would, since the gate's own label must never ask more
+    than the level it shows: not a rule that held the spec at a level on {owner, gates}, nor a `critical` level on
+    `gates` beside a `high` one on `go`. By default that is every term risk() shows."""
+    table = levels(loop)
+    label = MERGE_ACTIONS.index(merge_for("high", True, table))
+    for level, after, why in terms(pull, issues, loop):
+        if MERGE_ACTIONS.index(merge_for(level, after, table)) >= label:
+            return why
+    return None
+
+
 def default(pull: dict[str, Any]) -> bool:
     """Whether the PR's base is its repository's default branch; any other base is a feature branch."""
     return pull["baseRefName"] == pull["baseRepository"]["defaultBranchRef"]["name"]
@@ -1461,7 +1474,7 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     shown = board_risk(pull["number"])
     if RISK_LABEL in names(pull):
         return unflag(pull, issues, loop) + boarded(pull, loop, shown)
-    if (why := risk(pull, issues, loop)) is not None:
+    if (why := raises(pull, issues, loop)) is not None:
         return raise_risk(pull, why, loop) + boarded(pull, loop, shown, high=True)
     if shown[1] != "High":
         return boarded(pull, loop, shown)
