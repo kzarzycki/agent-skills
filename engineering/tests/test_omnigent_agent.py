@@ -9553,7 +9553,7 @@ def test_a_lead_the_owner_drives_directly_gets_no_deadline_and_no_nudge(
     assert state_of(registry)["leads"]["a"]["direct"] is True
 
 
-def test_a_direct_lead_still_reports_done_and_records_a_quiet_end() -> None:
+def test_a_direct_lead_s_done_tells_its_waiters_and_a_quiet_end_is_recorded() -> None:
     def route(last: str) -> tuple[str, str, str]:
         event = {"kind": "ended", "last": last, "direct": True, "decisions": True}
         return omnigent_agent.route(event, lambda: pytest.fail("no small model for it"))
@@ -9569,8 +9569,8 @@ def test_a_direct_lead_s_question_and_quiet_report_stay_with_the_owner() -> None
     no_model = lambda: pytest.fail("no model call")
     question = {"kind": "blocked", "question": True, "direct": True}
     assert omnigent_agent.route(question, no_model)[1] == "record"
-    prompt = {"kind": "blocked", "direct": True}
-    assert omnigent_agent.route(prompt, no_model)[1] == "owner"
+    prompt = {"kind": "blocked", "direct": True}  # the owner sees it in its session (#1163)
+    assert omnigent_agent.route(prompt, no_model)[1] == "record"
     quiet = {"kind": "ended", "direct": True, "last": "/tmp/f.md", "head": "Here is what I found."}
     assert omnigent_agent.route(quiet, no_model)[1] == "record"
     done = {"kind": "ended", "direct": True, "last": "/tmp/f.md", "head": "DONE: shipped"}
