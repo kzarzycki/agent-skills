@@ -515,6 +515,24 @@ def test_start_abandons_deaf_session_and_retries(tmp_path: Path) -> None:
     assert og.archived == ["s0"]
 
 
+def test_an_interrupt_while_confirming_a_found_session_keeps_it_and_prints_its_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    og.fail.add("create")
+
+    def interrupted(*_a: object) -> bool:
+        raise omnigent_agent.Interrupted(15)
+
+    monkeypatch.setattr(omnigent_agent, "delivered", interrupted)
+    with pytest.raises(omnigent_agent.Interrupted):
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    out = capsys.readouterr()
+    assert og.archived == []
+    assert out.out.strip() == "s0"
+    assert "status s0" in out.err
+
+
 def test_start_fails_after_two_deaf_sessions(tmp_path: Path) -> None:
     with pytest.raises(
         omnigent_agent.Fail, match="s0: brief not in history.*s1: brief not in history"
