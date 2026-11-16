@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -81,3 +82,31 @@ def test_agy_on_another_host_reads_its_brief_from_a_file_there(
     sent = [omnigent_agent.text_of(i) for i in og.sessions["s0"] if i.get("role") == "user"]
     assert sent == ["Work on t: read /there/r.md.brief and do what it says."], sent
     assert "review the head" in written["/there/r.md.brief"]
+
+
+def test_verifier_start_refuses_a_workspace_not_at_the_briefs_reviewed_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    shas = []
+    for _ in range(2):
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "c"], check=True)
+        shas.append(subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip())
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+
+    def start(line: str, name: str) -> int:
+        (tmp_path / "b.md").write_text(f"Review it.\n{line}\n")
+        argv = ["start", "codex", name, "b.md", str(tmp_path / f"{name}.md"), "--role", "verifier.md"]
+        return omnigent_agent.main(argv)
+
+    assert start(f"- Reviewed head: {shas[0]}", "stale") == 1
+    err = capsys.readouterr().err
+    assert shas[0][:12] in err and shas[1][:12] in err and "checkout --detach" in err
+    assert og.sessions == {}
+    assert start(f"- Reviewed head: {shas[1]}", "same") == 0
+    og.archived.extend(og.sessions)
+    og.sessions.clear()
+    assert start("no head line", "none") == 0
