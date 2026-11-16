@@ -22,6 +22,7 @@ from approvals_harness import (
     issue,
     judged_pr,
     judging,
+    lands,  # noqa: F401
     loop_md,
     note,
     others_open,  # noqa: F401
@@ -468,3 +469,34 @@ def test_land_prints_the_rating_and_the_action_it_applied(
     assert lands["merged"]() == ["7"]
     assert "PR #7: risk: high (it matches a risk rule (path `.github/**`)); merge: gates" in err
     assert head and not any("waits for the owner's go" in line for line in out.splitlines())
+
+
+def test_a_command_without_the_gates_issues_rates_an_exact_revert_by_what_it_reverts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`approve merge` and `delegate` read the PR's issues themselves where a level other than `critical` asks the
+    owner's own go: an exact revert's issues and its original's risk, as `check merge` reads them."""
+    named = issue(3, "kind:bug")
+    monkeypatch.setattr(approvals, "closing_issues", lambda _pull: [named])
+    monkeypatch.setattr(
+        approvals, "reverted", lambda n: f"`risk:high` is on #{n}, which it reverts"
+    )
+    loop = loop_md("levels:\n  high:\n    merge: owner\n")
+    monkeypatch.setattr(approvals, "reverts", lambda _pull: (1, []))
+    revert = pull(reviews=(judging("low — fine"),), files=("app.py",))
+    assert approvals.rated_issues(revert) == []
+    assert (revert["named"], revert["reverted"]) == (
+        [named],
+        "`risk:high` is on #1, which it reverts",
+    )
+    assert approvals.owners_only(revert, loop) == (
+        "`risk:high` is on #1, which it reverts, and `levels.high.merge` is `owner`"
+    )
+    monkeypatch.setattr(approvals, "reverts", lambda _pull: (None, []))
+    plain = pull(reviews=(judging("low — fine"),), files=("app.py",))
+    assert approvals.rated_issues(plain) == [named]
+    assert "named" not in plain
+    assert approvals.owners_only(plain, loop) is None
+    assert approvals.owners_only(plain, loop, [issue(3, "risk:high")]) == (
+        "`risk:high` is on #3, and `levels.high.merge` is `owner`"
+    )
