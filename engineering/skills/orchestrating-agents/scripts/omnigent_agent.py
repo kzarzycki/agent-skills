@@ -2411,8 +2411,7 @@ def pin_environment(workspace: Path) -> None:
     own = own_settings(workspace)
     if environment_pin(own):
         return
-    dirs = git_dirs(workspace)  # no checkout: no main to copy from
-    main = Path(dirs[1]).parent if len(dirs) == 3 and dirs[0] != dirs[1] else None
+    main = main_worktree(workspace)  # no checkout: no main to copy from
     if main and (env := environment_pin(own_settings(main))):
         remote = own.get("remote") if isinstance(own.get("remote"), dict) else {}
         own["remote"] = {**remote, "defaultEnvironmentId": env}
@@ -2429,6 +2428,24 @@ def pin_environment(workspace: Path) -> None:
     )
 
 
+def main_worktree(path: Path) -> Path | None:
+    """The main worktree of the repository ``path`` is a linked worktree of, as git lists it first
+    and as Claude Code keys a worktree's trust; None in a main checkout or outside a checkout. It
+    is the common git dir's parent only when that dir is named ``.git``: after ``clone
+    --separate-git-dir`` (or for a bare repository) git and Claude Code name the git dir itself,
+    since nothing in it records where the checkout is."""
+    dirs = git_dirs(path)
+    if len(dirs) != 3 or dirs[0] == dirs[1]:
+        return None
+    first = subprocess.run(
+        ["git", "-C", str(path), "worktree", "list", "--porcelain", "-z"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.split("\0")[0]
+    return Path(first.removeprefix("worktree ")) if first.startswith("worktree ") else None
+
+
 def claude_config() -> Path:
     """The user's Claude Code config, where folder trust is kept."""
     return Path.home() / ".claude.json"
@@ -2436,8 +2453,8 @@ def claude_config() -> Path:
 
 def folder_trusted(path: Path, config: Path | None = None) -> bool:
     """Whether Claude Code trusts ``path``. It trusts by path, so a separate clone is untrusted even
-    inside a trusted folder, while a linked worktree takes its main checkout's trust. An unreadable
-    config trusts nothing."""
+    inside a trusted folder, while a linked worktree takes its main worktree's trust (``main_worktree``).
+    An unreadable config trusts nothing."""
     try:
         projects = json.loads((config or claude_config()).read_text()).get("projects")
     except (OSError, ValueError, AttributeError):
@@ -2445,9 +2462,8 @@ def folder_trusted(path: Path, config: Path | None = None) -> bool:
     if not isinstance(projects, dict):
         return False
     places = {str(path.resolve())}
-    dirs = git_dirs(path)
-    if len(dirs) == 3 and dirs[0] != dirs[1]:  # a linked worktree
-        places.add(str(Path(dirs[1]).resolve().parent))
+    if main := main_worktree(path):  # a linked worktree
+        places.add(str(main.resolve()))
     return any(
         isinstance(projects.get(p), dict) and projects[p].get("hasTrustDialogAccepted") is True
         for p in places
@@ -2467,10 +2483,12 @@ def refuse_untrusted_launch_dir(workspace: Path) -> None:
 
 
 def repo_id(url: str) -> str:
-    """``url`` reduced to host and path, so the ssh, https and file spellings of a repository match."""
-    u = re.sub(r"^([a-z+]+://)?([^@/]+@)?", "", url.strip().lower())
+    """``url`` reduced to host and path, so the ssh, https and file spellings of a repository match.
+    Only the host is case-blind: a path's case can name another repository."""
+    u = re.sub(r"^([A-Za-z][A-Za-z0-9+.-]*://)?([^@/]+@)?", "", url.strip())
     u = re.sub(r"^([^/:]+):(?!\d+/)", r"\1/", u)  # scp-style host:path
-    return u.rstrip("/").removesuffix(".git")
+    host, slash, path = u.partition("/")
+    return (host.lower() + slash + path).rstrip("/").removesuffix(".git")
 
 
 def same_repo_checkout(remote: str, here: Path) -> tuple[Path, str] | None:

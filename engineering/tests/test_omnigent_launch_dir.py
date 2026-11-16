@@ -201,3 +201,110 @@ def test_start_pr_moves_a_worktree_launch_dirs_own_branch_not_the_checkouts(
     assert git("rev-parse", "HEAD", cwd=dest) == git("rev-parse", "origin/pr/7", cwd=dest)
     assert git("rev-parse", "main", cwd=main) == git("rev-parse", "origin/main", cwd=main)
     assert git("symbolic-ref", "--short", "HEAD", cwd=main) == "main"
+
+
+@pytest.mark.parametrize(
+    ("ours", "theirs", "same"),
+    [
+        ("https://example.com/Team/Repo.git", "https://example.com/team/repo.git", False),
+        ("https://EXAMPLE.com/Team/Repo.git/", "git@example.com:Team/Repo", True),
+        ("ssh://git@example.com:22/Team/Repo.git", "https://Example.COM/Team/Repo", False),
+    ],
+)
+def test_the_same_repo_match_is_case_blind_in_the_host_only(
+    ours: str, theirs: str, same: bool
+) -> None:
+    # a port keeps the host apart (the third case); the path's case is the repository's own
+    assert (omnigent_agent.repo_id(ours) == omnigent_agent.repo_id(theirs)) is same
+
+
+def test_a_checkout_whose_remote_differs_only_in_path_case_is_not_the_same_repo(
+    tmp_path: Path,
+) -> None:
+    here = tmp_path / "here"
+    git("init", "-q", str(here), cwd=tmp_path)
+    git("remote", "add", "origin", "https://example.com/Team/Repo.git", cwd=here)
+    assert omnigent_agent.same_repo_checkout("https://example.com/team/repo.git", here) is None
+    found = omnigent_agent.same_repo_checkout("https://example.com/Team/Repo", here)
+    assert found == (here.resolve(), "origin")
+
+
+def separate_checkout(bare: Path, tmp_path: Path) -> tuple[Path, Path]:
+    """A checkout whose git dir lives apart from it (``clone --separate-git-dir``), and that git dir."""
+    gitdir = tmp_path / "gitdirs" / "repo.git"
+    gitdir.parent.mkdir()
+    main = checkout(bare, tmp_path / "main", f"--separate-git-dir={gitdir}")
+    return main, gitdir
+
+
+def trusting(config: Path, *folders: Path) -> None:
+    config.write_text(
+        json.dumps(
+            {"projects": {str(f.resolve()): {"hasTrustDialogAccepted": True} for f in folders}}
+        )
+    )
+
+
+def test_a_worktree_takes_the_trust_of_the_main_worktree_git_names(
+    tmp_path: Path, bare: Path, real_trust: Path
+) -> None:
+    # after --separate-git-dir that is the git dir itself, which is where Claude Code reads it
+    main, gitdir = separate_checkout(bare, tmp_path)
+    dest = tmp_path / "launch"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", "env_1", dest, here=main)
+    assert omnigent_agent.main_worktree(dest) == gitdir.resolve()
+    trusting(real_trust, gitdir)
+    assert omnigent_agent.folder_trusted(dest)
+
+
+def test_a_trusted_folder_that_only_holds_the_git_dir_gives_no_trust(
+    tmp_path: Path, bare: Path, real_trust: Path
+) -> None:
+    main, gitdir = separate_checkout(bare, tmp_path)
+    trusting(real_trust, gitdir.parent)
+    dest = tmp_path / "launch"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", "env_1", dest, here=main)
+    assert not omnigent_agent.folder_trusted(dest)
+
+
+def test_a_worktree_of_a_worktree_takes_the_main_checkouts_trust(
+    tmp_path: Path, bare: Path, real_trust: Path
+) -> None:
+    main = checkout(bare, tmp_path / "main")
+    side = tmp_path / "side"
+    git("worktree", "add", "-q", "-b", "side", str(side), cwd=main)
+    trusting(real_trust, main)
+    dest = tmp_path / "launch"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", "env_1", dest, here=side)
+    assert omnigent_agent.main_worktree(dest) == main.resolve()
+    assert omnigent_agent.folder_trusted(dest)
+
+
+@pytest.mark.parametrize("elsewhere", [False, True], ids=["branch-only", "checked-out-elsewhere"])
+def test_start_pr_leaves_the_pr_branch_and_any_checkout_of_it_alone(
+    tmp_path: Path, bare: Path, monkeypatch: pytest.MonkeyPatch, elsewhere: bool
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "pr_branch", lambda pr, workspace: "pr-branch")
+    # the PR's head is ahead of the branch the checkout holds, so moving that branch shows
+    tree = git("rev-parse", "pr-branch^{tree}", cwd=bare)
+    who = ("-c", "user.name=t", "-c", "user.email=t@example.com")
+    ahead = git(*who, "commit-tree", tree, "-p", "pr-branch", "-m", "three", cwd=bare)
+    git("update-ref", "refs/pull/7/head", ahead, cwd=bare)
+    main = checkout(bare, tmp_path / "main")
+    other = tmp_path / "other"
+    if elsewhere:
+        git("worktree", "add", "-q", str(other), "pr-branch", cwd=main)
+    else:
+        git("branch", "-q", "pr-branch", "origin/pr-branch", cwd=main)
+    held = git("rev-parse", "refs/heads/pr-branch", cwd=main)
+    dest = tmp_path / "launch"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", "env_1", dest, here=main)
+    omnigent_agent.move_head(dest, 7)
+    assert git("rev-parse", "HEAD", cwd=dest) == ahead
+    assert git("symbolic-ref", "HEAD", cwd=dest) == "refs/heads/launch/launch"
+    assert git("rev-parse", "refs/heads/pr-branch", cwd=main) == held
+    assert git("symbolic-ref", "--short", "HEAD", cwd=main) == "main"
+    if elsewhere:
+        assert git("symbolic-ref", "--short", "HEAD", cwd=other) == "pr-branch"
+        assert git("rev-parse", "HEAD", cwd=other) == held
+        assert git("status", "--porcelain", cwd=other) == ""
