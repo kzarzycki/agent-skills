@@ -45,7 +45,7 @@ once the runner is online; exit 4 only when that revive fails, naming its reply.
 ``send`` exits 7 when the message was posted and a later read (the poll that confirms it) failed:
 it is out, delivery unconfirmed, and running ``send`` again is safe, since it finds the earlier
 copy before it posts; a failure before the post stays exit 1.
-``send`` and ``relay`` take ``--expires <minutes>`` (default 30, 0 = never): the message carries its expiry and
+``send`` and ``relay`` take ``--expires <minutes>`` (default 30, 0 = never): only these two tag a message; it carries its expiry and
 sender, so one still queued after its sender is gone is dropped and never lands out of context.
 ``relay`` posts a message that owes no report (an owner's words for a lead) and returns at once:
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
@@ -1243,17 +1243,20 @@ class Omnigent:
         body = {"action": action, **({"content": content} if content else {})}
         self.call("POST", f"/v1/sessions/{sid}/elicitations/{eid}/resolve", body)
 
-    expires = EXPIRES_MINUTES  # minutes a message stays deliverable; 0 = no expiry
+    expires: float | None = (
+        None  # None: untagged; the send and relay commands set it (0 = no expiry)
+    )
 
     def send(self, sid: str, text: str) -> None:
-        """Post ``text`` as a user message. It expires ``self.expires`` minutes on (0: never) and
-        names the calling session as its sender, so a message queued behind a busy turn is dropped,
+        """Post ``text`` as a user message. Untagged unless ``self.expires`` is set (the send and
+        relay commands do): then it names the calling session as its sender, and expires
+        ``self.expires`` minutes on (0: never), so a message queued behind a busy turn is dropped,
         and its sender told, once that sender is gone, instead of landing out of context."""
         data: dict = {"role": "user", "content": [{"type": "input_text", "text": text}]}
+        if self.expires is not None and (sender := own_id()):
+            data["sender_session_id"] = sender
         if self.expires:
             data["expires_at"] = int(time.time() + self.expires * 60)
-        if sender := own_id():
-            data["sender_session_id"] = sender
         self.call("POST", f"/v1/sessions/{sid}/events", {"type": "message", "data": data})
 
     def items(self, sid: str) -> list[dict]:
