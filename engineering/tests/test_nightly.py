@@ -79,7 +79,13 @@ if method == "POST" and (m := re.fullmatch(r"issues/(\d+)/comments", path)):
 if m := re.fullmatch(r"pulls/(\d+)", path):
     answer(state["pulls"][m.group(1)])
 if m := re.fullmatch(r"commits/([0-9a-f]+)/pulls", path):
-    answer([p for p in state["pulls"].values() if p.get("merge_commit_sha") == m.group(1)])
+    answer(
+        [
+            p
+            for p in state["pulls"].values()
+            if m.group(1) == p.get("merge_commit_sha") or m.group(1) in p.get("contains", [])
+        ]
+    )
 if path == "issues":
     page, size = int(fields.get("page", 1)), int(fields.get("per_page", 30))
     listed = [i for i in state["issues"].values() if i.get("state") == fields.get("state", "open")]
@@ -391,6 +397,10 @@ def test_dry_run_prints_the_body_and_posts_nothing(project: dict) -> None:
 
 def test_a_direct_push_is_listed_as_a_commit_with_no_pr(project: dict) -> None:
     direct = change(project["repo"], "e.txt", "hotfix the config")
+    current = state(project)
+    # GitHub also answers with an open PR whose branch holds the commit; it did not merge it
+    current["pulls"]["17"] = {"number": 17, "title": "Later work", "body": "", "contains": [direct]}
+    project["state"].write_text(json.dumps(current))
 
     result = nightly(project, red=direct)
 
