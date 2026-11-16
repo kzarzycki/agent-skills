@@ -124,13 +124,13 @@ def test_xdg_config_home_names_where_the_wrapper_file_is(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert approvals.heavy_argv(["true"]) == ["true"]
     (tmp_path / "xdg" / "engineering-loop").mkdir(parents=True)
-    (tmp_path / "xdg" / "engineering-loop" / "host").write_text(f"heavy_wrapper = {script} --p='A B'\n")
+    (tmp_path / "xdg" / "engineering-loop" / "host").write_text(
+        f"heavy_wrapper = {script} --p='A B'\n"
+    )
     assert approvals.heavy_argv(["true"]) == [str(script), "--p=A B", "true"]
 
 
-def test_the_first_heavy_wrapper_line_is_the_prefix(
-    tmp_path: Path, host: Path
-) -> None:
+def test_the_first_heavy_wrapper_line_is_the_prefix(tmp_path: Path, host: Path) -> None:
     script = wrapper(tmp_path)
     configure(host, f"{script} --slice='loop heavy' --\nheavy_wrapper = {script} second\n")
     assert approvals.heavy_argv(["make", "test"]) == [
