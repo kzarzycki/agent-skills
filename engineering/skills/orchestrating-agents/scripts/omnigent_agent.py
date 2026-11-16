@@ -6626,7 +6626,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--verifier-route",
             choices=VERIFIER_ROUTES,
-            default=os.environ.get("OMNIGENT_VERIFIER_ROUTE", "codex"),
+            default=None,
             help="which verifier a verifier start runs (default: $OMNIGENT_VERIFIER_ROUTE, else codex): codex is the"
             " agent as named; gemini replaces it with agy's Gemini (experimental, needs --host on a host with agy"
             " logged in); claude with a fresh Claude session of another model than --author-model (same-family)."
@@ -7175,6 +7175,15 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
         # writes its report file as any child does (on another host, there, read back by wait).
         verifier = args.cmd in ("run", "start") and reviews(args.role)
+        if args.cmd in ("run", "start"):
+            if args.verifier_route not in (None, "codex") and not verifier:
+                raise Fail(
+                    f"--verifier-route {args.verifier_route} applies to a verifier start only:"
+                    " pass --role <skills>/engineering-loop/verifier.md"
+                )
+            args.verifier_route = args.verifier_route or os.environ.get(
+                "OMNIGENT_VERIFIER_ROUTE", "codex"
+            )
         if verifier and args.verifier_route != "codex":
             apply_route(args)
         verifies = args.pr if verifier else None
