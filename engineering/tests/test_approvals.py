@@ -3101,8 +3101,8 @@ def test_minors_only_at_the_cap_or_core_findings_before_it_need_no_owner() -> No
 
 
 def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() -> None:
-    assert approvals.cap(None) == approvals.cap(BARE) == 5  # SKILL.md § The cap
-    assert approvals.cap(loop_md("loop:\n  cap: 3\n")) == 3
+    assert approvals.cap(None) == approvals.cap(BARE) == 3  # SKILL.md § The cap
+    assert approvals.cap(loop_md("loop:\n  cap: 4\n")) == 4
     with pytest.raises(approvals.Refused, match="`loop.cap` must be a whole number"):
         approvals.cap(loop_md("loop:\n  cap: 3 passes\n"))
     major = verdict_on(
