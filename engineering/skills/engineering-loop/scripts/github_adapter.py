@@ -489,7 +489,8 @@ GROUP_RED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE"}
 def rest_queue(found: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
     """The PR's `mergeQueueEntry` and `removals` as PULL reads them, from REST, which has neither: `found`, its REST
     pull, and `events`, its timeline. The entry: awaiting checks on its group's commit while GitHub's readonly ref for
-    it (`gh-readonly-queue/<base>/pr-<n>-<sha>`) exists, else queued while the timeline's newest queue event is an add.
+    it (`gh-readonly-queue/<base>/pr-<n>-<sha>`) exists, else queued while the timeline's newest queue event is an add;
+    none, and no removal, for a PR whose timeline has no queue event.
     A `removed_from_merge_queue` event names no reason, so each gets GraphQL's from what REST reads on its group (the
     commit of the newest `merge_group` run on such a ref since the PR's add before it): `merged`, the last one, when
     GitHub reports the PR merged or the group's commit is in the base (GitHub takes it out a moment before it reports
@@ -500,6 +501,8 @@ def rest_queue(found: dict[str, Any], events: list[dict[str, Any]]) -> dict[str,
     prefix = f"gh-readonly-queue/{base}/pr-{number}-"
     queue = [event for event in events if event.get("event") in (QUEUE_ADDED, QUEUE_REMOVED)]
     entry = None
+    if not queue:  # never in a merge queue: no ref, no group
+        return {"mergeQueueEntry": entry, "removals": {"nodes": []}}
     if refs := [] if merged else rest_pages(f"git/matching-refs/heads/{prefix}"):
         group = refs[-1]["object"]["sha"]
         made = rest(f"repos/{{owner}}/{{repo}}/commits/{group}")["commit"]["committer"]["date"]
