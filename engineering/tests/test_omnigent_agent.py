@@ -3415,10 +3415,11 @@ def test_a_cloud_start_from_a_worktree_takes_its_main_checkout_s_environment_pin
     settings = tree / ".claude" / "settings.local.json"
     assert json.loads(settings.read_text()) == {"remote": {"defaultEnvironmentId": "env_a"}}
     assert "env_a" in capsys.readouterr().err and len(og.sessions) == 1
-    # a worktree already pinned keeps its own pin
+    # a worktree pinned to another environment is refused: its main checkout's pin would apply
     settings.write_text(json.dumps({"remote": {"defaultEnvironmentId": "env_b"}}))
-    assert start_cloud(og, tree, title="t2") == 0
-    assert json.loads(settings.read_text()) == {"remote": {"defaultEnvironmentId": "env_b"}}
+    assert start_cloud(og, tree, title="t2") == 1
+    err = capsys.readouterr().err
+    assert "env_b" in err and "env_a" in err and len(og.sessions) == 1
 
 
 def test_a_worktree_s_other_settings_stay_when_it_gains_the_pin(

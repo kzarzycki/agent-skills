@@ -333,3 +333,28 @@ def test_a_worktree_pin_its_main_checkouts_pin_shadows_is_refused_naming_both(
         omnigent_agent.pin_environment(dest)
     (main / ".claude" / "settings.local.json").unlink()
     omnigent_agent.pin_environment(dest)  # an unpinned checkout leaves the worktree's own pin
+
+
+def test_launch_dir_run_from_a_linked_worktree_reads_the_main_checkouts_pin(
+    tmp_path: Path, bare: Path, real_trust: Path
+) -> None:
+    main = checkout(bare, tmp_path / "main")
+    pin(main, "env_A")
+    tree = tmp_path / "tree"
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "-q", "-b", "w", str(tree)], check=True
+    )
+    with pytest.raises(omnigent_agent.Fail, match="env_B.*env_A"):
+        omnigent_agent.launch_dir(f"file://{bare}", "main", "env_B", tmp_path / "b", here=tree)
+    assert not (tmp_path / "b").exists()
+
+
+def test_launch_dir_clone_is_the_way_out_of_a_shadowing_pin(
+    tmp_path: Path, bare: Path, real_trust: Path
+) -> None:
+    main = checkout(bare, tmp_path / "main")
+    pin(main, "env_A")
+    dest = tmp_path / "b"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", "env_B", dest, here=main, clone=True)
+    assert omnigent_agent.main_worktree(dest) is None
+    omnigent_agent.pin_environment(dest)  # a clone's own pin is the one that applies
