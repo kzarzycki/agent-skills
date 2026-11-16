@@ -25,6 +25,7 @@ from approvals_harness import (
     attached,  # noqa: F401
     board_risks,  # noqa: F401
     gatekeeper_md,
+    git_in,
     graphql_answers,  # noqa: F401
     hub,  # noqa: F401
     note,
@@ -301,3 +302,44 @@ def test_approvals_py_imported_is_the_gatekeeper(tmp_path: Path) -> None:
         check=False,
     )
     assert (run.returncode, run.stdout, run.stderr) == (0, "ok\n", "")
+
+
+def test_base_drift_names_the_running_github_adapter_when_it_differs_from_the_bases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The adapter judges a PR as the gatekeeper does, so a PR's own copy of it is refused as one of the gatekeeper is."""
+    adapter = tmp_path / "scripts" / "github_adapter.py"
+    adapter.parent.mkdir()
+    adapter.write_text(Path(approvals.github.__file__).read_text())
+    git_in(tmp_path, "init", "-q")
+    git_in(tmp_path, "add", "-A")
+    git_in(tmp_path, "-c", "user.name=t", "-c", "user.email=t@invalid", "commit", "-qm", "base")
+    git_in(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    monkeypatch.setattr(approvals, "toplevel", lambda: tmp_path)
+    monkeypatch.setattr(approvals.github, "__file__", str(adapter))
+    assert approvals.base_drift("main") == []
+    adapter.write_text(adapter.read_text() + "\n# a PR's own edit\n")
+    assert approvals.base_drift("main") == ["scripts/github_adapter.py"]
+
+
+@pytest.mark.parametrize("refused", [False, True], ids=["graphql", "rest"])
+def test_the_default_branch_is_read_over_graphql_or_rest(
+    monkeypatch: pytest.MonkeyPatch, refused: bool
+) -> None:
+    """`land` with no PR named lands into the repository's default branch, read over REST where GraphQL is refused."""
+    monkeypatch.setattr(approvals.github, "_rest_only", refused)
+    answers = {
+        ("repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"): "trunk\n",
+        ("api", "repos/{owner}/{repo}"): json.dumps({"default_branch": "trunk"}),
+    }
+    monkeypatch.setattr(approvals.github, "gh", lambda *args, data=None: answers[args])
+    assert approvals.default_branch() == "trunk"
+
+
+def test_open_pulls_asks_the_forge_for_up_to_open_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`check build` compares a PR with up to OPEN_LIMIT open PRs, and says when the list may have left one out."""
+    monkeypatch.setattr(approvals, "open_pulls", FACADES["open_pulls"])
+    asked: list[int] = []
+    monkeypatch.setattr(approvals.github, "open_pulls", lambda limit: asked.append(limit) or [])
+    assert approvals.open_pulls() == []
+    assert asked == [approvals.OPEN_LIMIT]
