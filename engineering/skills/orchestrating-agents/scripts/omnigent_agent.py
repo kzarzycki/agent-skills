@@ -9,7 +9,7 @@
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
-    python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
+    python3 scripts/omnigent_agent.py broadcast <message-file> [--stop | --decisions FILE] [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
     python3 scripts/omnigent_agent.py owner-said <session> <quote-file>
     python3 scripts/omnigent_agent.py status <session>...
@@ -65,7 +65,9 @@ even with ``--answer``; a plain relay sent as a message opens with ``[relayed by
 item, time, author) and the message, and 1 when it is only in a message an agent or Omnigent posted
 (a brief, a supervisor post, a relay) or nowhere: a lead checks a relayed owner decision with it.
 ``broadcast``
-relays one message to every followed lead in the registry (``--registry``, else
+posts only a stop order (``--stop``), which cannot wait for a lead's next turn; any other message
+is added to ``--decisions FILE`` and posted to no session, since each live post wakes every lead
+to re-read its whole context. It relays one message to every followed lead in the registry (``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``), ``--include``'s sessions and, with ``--active-hours N``, every
 top-level session of the caller's updated within N hours, all at once: never this session, an archived one or
 one in an automations project, nor one with a question or approval prompt pending, which a
@@ -5352,6 +5354,23 @@ def standing(path: Path | None) -> str:
     return own
 
 
+def add_standing(path: Path, text: str) -> None:
+    """Add ``text`` as a bullet to the ``## Standing decisions`` section of ``path``, the section
+    ``standing`` reads, creating the file or the section when absent."""
+    bullet = "- " + " ".join(text.split())
+    try:
+        old = path.read_text() if path.exists() else ""
+        m = re.search(r"^## Standing decisions\b.*?\n(.*?)(?=^## |\Z)", old, re.M | re.S)
+        if m:
+            body = m.group(1).rstrip("\n")
+            new = old[: m.start(1)] + (body + "\n" if body else "") + bullet + "\n\n" + old[m.end(1) :].lstrip("\n")
+        else:
+            new = (old.rstrip("\n") + "\n\n" if old.strip() else "") + f"## Standing decisions\n{bullet}\n"
+        path.write_text(new)
+    except OSError as e:
+        raise Fail(f"{path}: {reason(e)}") from e
+
+
 def status_line(lead: dict, turn: bool = True) -> str:
     """A lead's ``status.line`` label: its state in one short line, under 200 characters, since
     Omnigent cuts a label value to its first 256 without an error. Without ``turn`` a lead not
@@ -6952,6 +6971,17 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     )
     p.add_argument("--host", action="append", default=[], metavar="NAME", help="only this host")
     p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
+    p.add_argument(
+        "--stop",
+        action="store_true",
+        help="a stop order: post it to the sessions now (default: only add it to --decisions)",
+    )
+    p.add_argument(
+        "--decisions",
+        type=Path,
+        metavar="FILE",
+        help="the standing-decisions file a message without --stop is added to",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser(
         "launch-dir",
@@ -7336,6 +7366,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             return 0
         if args.cmd == "broadcast":
             text = text_or_file(args.message)[0]
+            if not args.stop and not args.dry_run:
+                if not args.decisions:
+                    raise Fail("broadcast posts only a stop order: give --stop, or --decisions FILE")
+                add_standing(args.decisions, text)
+                print(f"added to {args.decisions}; posted to no session")
+                return 0
             targets, unsent = broadcast_targets(
                 og, registry, args.active_hours, args.include, args.project, args.host, args.exclude
             )
