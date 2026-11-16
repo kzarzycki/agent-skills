@@ -2273,14 +2273,21 @@ def cpu_idle() -> float | None:
         return None
 
 
-def capacity(min_mb: float | None = None, max_load: float | None = None) -> tuple[bool, str]:
+def capacity(
+    min_mb: float | None = None, max_load: float | None = None, cpu: bool = True
+) -> tuple[bool, str]:
     """Whether this host has room for another session, and a line saying what it carries. CPU is
     judged by idle share, not the load average, which on macOS also counts threads waiting on I/O
     and memory and so overstates CPU use several times over; load per core decides only when idle
     cannot be measured. A host row's ``max_load`` (absolute) also refuses, and ``min_mb`` replaces
-    the default memory line (``host_limits``)."""
+    the default memory line (``host_limits``). ``cpu=False`` judges memory alone: a cloud start
+    adds only its bridge here, and its work runs in the VM (#868)."""
     min_mb = MIN_AVAILABLE_MB if min_mb is None else min_mb
-    idle, mb = cpu_idle(), available_mb()
+    mb = available_mb()
+    if not cpu:
+        memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
+        return mb is None or mb >= min_mb, f"cloud start, cpu not judged, {memory} (min {min_mb:g})"
+    idle = cpu_idle()
     parts, room = [], True
     if idle is not None:
         parts.append(f"cpu {idle:.0f}% idle (min {MIN_CPU_IDLE:g})")
@@ -2336,12 +2343,13 @@ def live_sessions(og: Omnigent, host_id: str) -> list[dict]:
 
 
 def far_capacity(
-    og: Omnigent, host_id: str, min_mb: float, max_load: float | None
+    og: Omnigent, host_id: str, min_mb: float, max_load: float | None, cpu: bool = True
 ) -> tuple[bool | None, str]:
     """``capacity`` for another host, read through a live session there: its ``/proc/meminfo``
     (``MemAvailable``) and ``/proc/loadavg`` (the 1-minute load), judged by ``max_load`` when its
-    row names one, else per core over its ``/proc/stat``'s ``cpuN`` lines. None and why when it
-    can't be read: no live session, every read failing, or no ``/proc`` (a Mac)."""
+    row names one, else per core over its ``/proc/stat``'s ``cpuN`` lines; ``cpu=False`` (a cloud
+    start) reads and judges ``/proc/meminfo`` alone. None and why when it can't be read: no live
+    session, every read failing, or no ``/proc`` (a Mac)."""
     # ponytail: a host's load and memory read through one of its sessions, since the server reads
     # no host-level file (GET /v1/hosts/<id>/filesystem/<file> answers 404 "path is not a
     # directory") and GET /v1/hosts carries no load or memory. Upgrade: either one, which would
@@ -2356,8 +2364,8 @@ def far_capacity(
         sid = str(s["id"])
         try:
             meminfo = og.read_file(sid, "/proc/meminfo")
-            loadavg = og.read_file(sid, "/proc/loadavg")
-            stat = "" if max_load is not None else og.read_file(sid, "/proc/stat")
+            loadavg = og.read_file(sid, "/proc/loadavg") if cpu else "0"
+            stat = "" if max_load is not None or not cpu else og.read_file(sid, "/proc/stat")
         except Gone as e:
             return None, f"no {str(e).split(':', 1)[0]}"
         except Fail as e:
@@ -2368,16 +2376,18 @@ def far_capacity(
             load = float(loadavg.split()[0])
         except (IndexError, ValueError):
             return None, "/proc/loadavg unreadable"
-        if max_load is not None:
-            cpu, room = f"load {load:.1f} (max {max_load:g})", load < max_load
+        if not cpu:
+            judged, room = "cloud start, cpu not judged", True
+        elif max_load is not None:
+            judged, room = f"load {load:.1f} (max {max_load:g})", load < max_load
         else:
             cores = len(re.findall(r"^cpu\d+\s", stat, re.MULTILINE)) or 1
             per = load / cores
-            cpu = f"load {per:.1f} per core (max {MAX_LOAD_PER_CORE:g})"
+            judged = f"load {per:.1f} per core (max {MAX_LOAD_PER_CORE:g})"
             room = per <= MAX_LOAD_PER_CORE
         mb = int(found.group(1)) / 1024 if found else None
         memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
-        return room and (mb is None or mb >= min_mb), f"{cpu}, {memory} (min {min_mb:g})"
+        return room and (mb is None or mb >= min_mb), f"{judged}, {memory} (min {min_mb:g})"
     return None, why
 
 
@@ -2389,14 +2399,17 @@ def host_name(og: Omnigent, host_id: str) -> str:
         return host_id
 
 
-def host_capacity(og: Omnigent, host_id: str, name: str) -> tuple[bool | None, str]:
+def host_capacity(
+    og: Omnigent, host_id: str, name: str, cpu: bool = True
+) -> tuple[bool | None, str]:
     """``capacity`` for host ``host_id`` under its limits: measured here on this host, read
-    through a session on another (``far_capacity``, None when unreadable)."""
+    through a session on another (``far_capacity``, None when unreadable); ``cpu=False`` for a
+    cloud start, judged on memory and the session cap alone."""
     min_mb, max_load = host_limits(name)
     if host_id == og.host_id:
-        ok, line = capacity(min_mb=min_mb, max_load=max_load)
+        ok, line = capacity(min_mb=min_mb, max_load=max_load, cpu=cpu)
     else:
-        ok, line = far_capacity(og, host_id, min_mb, max_load)
+        ok, line = far_capacity(og, host_id, min_mb, max_load, cpu=cpu)
     cap = host_row(name).get("max_sessions")
     if cap is not None:
         # from the session list, so it holds where load and memory can't be read
@@ -2974,10 +2987,12 @@ def start(
                     " so its signature would name an effort it doesn't run"
                 )
     effort = picked
-    # its load lands on the host --host names, else this one: a cloud start's bridge runs there too
+    # its load lands on the host --host names, else this one; a cloud start's bridge runs there
+    # too, but its work runs in the VM, so it is judged on memory alone (#868)
     target = host_id or og.host_id
     name, deadline = host_name(og, target), time.monotonic() + CAPACITY_WAIT_SECONDS
-    while not (room := host_capacity(og, target, name))[0]:
+    cloud = harness == CLOUD_HARNESS
+    while not (room := host_capacity(og, target, name, cpu=not cloud))[0]:
         if room[0] is None:
             print(unchecked(name, room[1]), file=sys.stderr)
             break
