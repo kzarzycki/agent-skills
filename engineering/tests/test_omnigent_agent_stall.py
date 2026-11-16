@@ -27,10 +27,20 @@ def fast(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def detach(tmp_path: Path, command: str) -> tuple[Path, Path, int]:
     """The detached recipe (verifier.md) in its own session: pid file, then ``run <pid>``, the
-    command's output, an exit line. The launcher shell exits, so init reaps the run."""
+    command's output, an exit line. Perl's setsid, as the recipe uses, since macOS has no
+    `setsid` command; the launcher exits after its fork, so init reaps the run."""
     log, pidfile = tmp_path / "run.log", tmp_path / "pid"
     inner = f'echo $$ > {pidfile}; echo "run $$" > {log}; {{ {command}; }} >> {log} 2>&1; echo "exit $?" >> {log}'
-    subprocess.run(["sh", "-c", f"setsid sh -c '{inner}' </dev/null >/dev/null 2>&1 &"], check=True)
+    launcher = [
+        "perl",
+        "-MPOSIX=setsid",
+        "-e",
+        "fork and exit; setsid; exec @ARGV",
+        "sh",
+        "-c",
+        inner,
+    ]
+    subprocess.run(launcher, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=True)
     for _ in range(100):
         if pidfile.exists() and log.exists() and "run " in log.read_text():
             break
