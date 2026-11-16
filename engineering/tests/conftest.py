@@ -108,3 +108,12 @@ def _approvals_stubs(request: pytest.FixtureRequest) -> None:
     if request.module.__name__.startswith("test_approvals"):
         for name in AUTOUSE:
             request.getfixturevalue(name)
+
+
+@pytest.fixture(autouse=True)
+def _brief_head_merges(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """approvals.py's brief checks the PR's head merges into its base with git: its other tests have no such repo, so
+    the check reads clean there. test_approvals_brief_conflict.py runs the real one."""
+    module = request.module
+    if module.__name__ != "test_approvals_brief_conflict" and hasattr(module, "approvals"):
+        monkeypatch.setattr(module.approvals, "conflicted", lambda _pr, _base, _head: [])

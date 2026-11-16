@@ -2419,8 +2419,7 @@ def pin_environment(workspace: Path) -> None:
     own = own_settings(workspace)
     if environment_pin(own):
         return
-    dirs = git_dirs(workspace)  # no checkout: no main to copy from
-    main = Path(dirs[1]).parent if len(dirs) == 3 and dirs[0] != dirs[1] else None
+    main = main_worktree(workspace)  # no checkout: no main to copy from
     if main and (env := environment_pin(own_settings(main))):
         remote = own.get("remote") if isinstance(own.get("remote"), dict) else {}
         own["remote"] = {**remote, "defaultEnvironmentId": env}
@@ -2437,47 +2436,156 @@ def pin_environment(workspace: Path) -> None:
     )
 
 
-def launch_dir(
-    remote: str, branch: str, env: str, path: Path, trust: bool = False, config: Path | None = None
-) -> None:
-    """A directory cloud sessions launch from, with no working tree: nothing on the cloud path reads
-    its files (the bridge checks for a git repo, the CLI bundles it and reads the pin), so a
-    blobless ``--no-checkout`` clone with HEAD on ``branch`` stands in for a full checkout. It holds
-    the pin (``remote.defaultEnvironmentId``) and the ``tmp/loop/`` that briefs and reports use. The
-    folder-trust entry in the user's Claude config (``config``, default ``~/.claude.json``) is
-    written only with ``trust``: trust is the user's decision, never this script's."""
-    if path.exists() and any(path.iterdir()):
-        raise Fail(f"{path} is not empty")
-    done = subprocess.run(
-        [
-            "git",
-            "clone",
-            "--no-checkout",
-            "--filter=blob:none",
-            "--branch",
-            branch,
-            remote,
-            str(path),
-        ],
+def main_worktree(path: Path) -> Path | None:
+    """The main worktree of the repository ``path`` is a linked worktree of, as git lists it first
+    and as Claude Code keys a worktree's trust; None in a main checkout or outside a checkout. It
+    is the common git dir's parent only when that dir is named ``.git``: after ``clone
+    --separate-git-dir`` (or for a bare repository) git and Claude Code name the git dir itself,
+    since nothing in it records where the checkout is."""
+    dirs = git_dirs(path)
+    if len(dirs) != 3 or dirs[0] == dirs[1]:
+        return None
+    first = subprocess.run(
+        ["git", "-C", str(path), "worktree", "list", "--porcelain", "-z"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.split("\0")[0]
+    return Path(first.removeprefix("worktree ")) if first.startswith("worktree ") else None
+
+
+def claude_config() -> Path:
+    """The user's Claude Code config, where folder trust is kept."""
+    return Path.home() / ".claude.json"
+
+
+def folder_trusted(path: Path, config: Path | None = None) -> bool:
+    """Whether Claude Code trusts ``path``. It trusts by path, so a separate clone is untrusted even
+    inside a trusted folder, while a linked worktree takes its main worktree's trust (``main_worktree``).
+    An unreadable config trusts nothing."""
+    try:
+        projects = json.loads((config or claude_config()).read_text()).get("projects")
+    except (OSError, ValueError, AttributeError):
+        return False
+    if not isinstance(projects, dict):
+        return False
+    places = {str(path.resolve())}
+    if main := main_worktree(path):  # a linked worktree
+        places.add(str(main.resolve()))
+    return any(
+        isinstance(projects.get(p), dict) and projects[p].get("hasTrustDialogAccepted") is True
+        for p in places
+    )
+
+
+def refuse_untrusted_launch_dir(workspace: Path) -> None:
+    """A cloud session started from a folder Claude Code does not trust is created, then fails with
+    "has not trusted <dir>", so refuse before any session exists, naming both ways out."""
+    if not folder_trusted(workspace):
+        raise Fail(
+            f"{workspace} is not trusted by Claude Code, so a cloud session started from it fails"
+            " after it is created: re-run `launch-dir` from inside a trusted checkout of the"
+            " repository (it makes a worktree that inherits the checkout's trust), or pass"
+            " `launch-dir --trust` as the user's decision"
+        )
+
+
+def repo_id(url: str) -> str:
+    """``url`` reduced to host and path, so the ssh, https and file spellings of a repository match.
+    Only the host is case-blind: a path's case can name another repository."""
+    u = re.sub(r"^([A-Za-z][A-Za-z0-9+.-]*://)?([^@/]+@)?", "", url.strip())
+    u = re.sub(r"^([^/:]+):(?!\d+/)", r"\1/", u)  # scp-style host:path
+    host, slash, path = u.partition("/")
+    return (host.lower() + slash + path).rstrip("/").removesuffix(".git")
+
+
+def same_repo_checkout(remote: str, here: Path) -> tuple[Path, str] | None:
+    """The checkout root and remote name when ``here`` is inside a checkout that has ``remote``
+    among its remotes, else None."""
+    top = subprocess.run(
+        ["git", "-C", str(here), "rev-parse", "--show-toplevel"],
         capture_output=True,
         text=True,
         check=False,
     )
-    if done.returncode:
-        raise Fail(f"git clone {remote} ({branch}): {done.stderr.strip()[-300:]}")
+    if top.returncode or not top.stdout.strip():
+        return None
+    urls = subprocess.run(
+        ["git", "-C", top.stdout.strip(), "config", "--get-regexp", r"^remote\..*\.url$"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.splitlines()
+    for line in urls:
+        key, _, url = line.partition(" ")
+        if repo_id(url) == repo_id(remote):
+            return Path(top.stdout.strip()), key.removeprefix("remote.").removesuffix(".url")
+    return None
+
+
+def launch_dir(
+    remote: str,
+    branch: str,
+    env: str,
+    path: Path,
+    trust: bool = False,
+    config: Path | None = None,
+    here: Path | None = None,
+) -> None:
+    """A directory cloud sessions launch from, with no working tree: nothing on the cloud path reads
+    its files (the bridge checks for a git repo, the CLI bundles it and reads the pin), so a
+    ``--no-checkout`` stand-in with HEAD on ``branch`` replaces a full checkout. Run inside a checkout
+    of the same repository (``here``, default the current directory) it is a worktree of that
+    checkout, which inherits the checkout's folder trust; otherwise a blobless clone, which Claude
+    Code does not trust. It holds the pin (``remote.defaultEnvironmentId``) and the ``tmp/loop/``
+    that briefs and reports use. The folder-trust entry in the user's Claude config (``config``,
+    default ``~/.claude.json``) is written only with ``trust``: trust is the user's decision, never
+    this script's. It prints whether the folder is trusted."""
+    if path.exists() and any(path.iterdir()):
+        raise Fail(f"{path} is not empty")
+    source = same_repo_checkout(remote, here or Path.cwd())
+    if source:
+        main, name = source
+        # the checkout's own remote, by name: its settings (a partial clone's among them) apply
+        steps = [
+            ["git", "-C", str(main), "fetch", "-q", name, branch],
+            # a branch of its own: the one named may be checked out in the caller's checkout
+            ["git", "-C", str(main), "worktree", "add", "-q", "--no-checkout"]
+            + ["-b", f"launch/{path.name}", str(path), "FETCH_HEAD"],
+        ]
+    else:
+        steps = [
+            ["git", "clone", "--no-checkout", "--filter=blob:none", "--branch", branch]
+            + [remote, str(path)]
+        ]
+    for cmd in steps:
+        done = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if done.returncode:
+            what = "clone" if not source else "fetch" if cmd[3] == "fetch" else "worktree add"
+            raise Fail(f"git {what} {remote} ({branch}): {done.stderr.strip()[-300:]}")
     (path / SETTINGS).parent.mkdir(parents=True, exist_ok=True)
     (path / SETTINGS).write_text(
         json.dumps({"remote": {"defaultEnvironmentId": env}}, indent=2) + "\n"
     )
     (path / "tmp" / "loop").mkdir(parents=True, exist_ok=True)
     if trust:
-        config = config or Path.home() / ".claude.json"
+        config = config or claude_config()
         data = json.loads(config.read_text()) if config.exists() else {}
         data.setdefault("projects", {}).setdefault(str(path.resolve()), {})[
             "hasTrustDialogAccepted"
         ] = True
         config.write_text(json.dumps(data, indent=2) + "\n")
-    print(f"launch dir {path}: {branch}, environment {env}" + (", trusted" * trust))
+    trusted = folder_trusted(path, config)
+    print(
+        f"launch dir {path}: {branch}, environment {env}"
+        + (f", worktree of {source[0]}" if source else ", clone")
+        + (
+            ", trusted"
+            if trusted
+            else ", NOT trusted: `start` refuses it; re-run from a trusted"
+            " checkout of the repository, or pass --trust as the user's decision"
+        )
+    )
 
 
 def move_head(workspace: Path, pr: int) -> None:
@@ -2495,11 +2603,20 @@ def move_head(workspace: Path, pr: int) -> None:
     if not index or Path(index).exists():
         return
     branch = pr_branch(pr, workspace)
+    dirs = git_dirs(workspace)
+    own = ""  # a linked worktree moves its own branch: the PR's may be checked out in the main checkout
+    if len(dirs) == 3 and dirs[0] != dirs[1]:
+        own = subprocess.run(
+            ["git", "-C", str(workspace), "symbolic-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
     for cmd in (
         # the PR's own ref, which a fork's branch has too and a same-named origin branch can't shadow
         ["fetch", "-q", "origin", f"+refs/pull/{pr}/head:refs/remotes/origin/pr/{pr}"],
-        ["update-ref", f"refs/heads/{branch}", f"refs/remotes/origin/pr/{pr}"],
-        ["symbolic-ref", "HEAD", f"refs/heads/{branch}"],
+        ["update-ref", own or f"refs/heads/{branch}", f"refs/remotes/origin/pr/{pr}"],
+        ["symbolic-ref", "HEAD", own or f"refs/heads/{branch}"],
     ):
         done = subprocess.run(
             ["git", "-C", str(workspace), *cmd], capture_output=True, text=True, check=False
@@ -7039,6 +7156,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         # The aliases are native harnesses; a workspace on another host is that host's to check.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             pin_environment(workspace)
+            refuse_untrusted_launch_dir(workspace)
             if args.pr:
                 move_head(workspace, args.pr)
         elif not remote:
