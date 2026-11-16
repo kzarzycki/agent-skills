@@ -70,7 +70,7 @@ LOOP_LABELS = {
     RISK_LABEL: ("b60205", "Its consequences need the owner at merge"),
     QUEUED: (
         "fbca04",
-        "land put it in GitHub's merge queue; off once its Landed comment is written",
+        "land put it in GitHub's merge queue; off once its Landed comment is written or it merged elsewhere",
     ),
     EPIC: ("8250df", "An outcome the owner tracks; its work items are sub-issues"),
     BUG: ("d73a4a", "Something a user or the pipeline hits is wrong"),

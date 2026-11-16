@@ -879,3 +879,20 @@ def test_land_wait_on_an_unknown_that_never_settles_stops_at_the_ceiling(
     code, lines = queue["land"]("8", "--wait")
     assert code == approvals.WAITING and lines[-1].startswith("land --wait stopped after 2 hours")
     assert queue["comments"] == []
+
+
+def test_the_label_sync_keeps_loop_queued_and_gives_one_land_created_its_colour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`loop:queued` is one of the loop's labels: a repo where an enqueue's REST call created it bare gets it updated,
+    never listed as foreign and deleted once nothing carries it."""
+    import labels  # beside approvals.py, which the harness puts on the path
+
+    monkeypatch.setattr(
+        labels, "tracker_settings", lambda _tracker: {}
+    )  # no project labels or renames
+    monkeypatch.setattr(labels, "renames", lambda _tracker: [])
+    existing = {**labels.LOOP_LABELS, approvals.QUEUED: ("ededed", "")}
+    actions, unlisted = labels.plan(existing, "")
+    assert actions == [("update", approvals.QUEUED, *labels.LOOP_LABELS[approvals.QUEUED])]
+    assert unlisted == []
