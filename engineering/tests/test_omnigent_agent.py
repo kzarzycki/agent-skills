@@ -11782,3 +11782,32 @@ def test_call_allows_each_request_the_timeout_it_is_given_else_thirty_seconds(
     og.call("GET", "/v1/x")
     og.call("GET", "/v1/x", timeout=180.0)
     assert seen == [30.0, 180.0]
+
+
+def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    modes: list[str | None] = []
+
+    class Starter(FakeOmnigent):
+        launch: list[str] = []
+
+        def info(self, sid: str) -> dict:
+            if sid == "starter":
+                return {"harness": "claude-native", "terminal_launch_args": self.launch}
+            return super().info(sid)
+
+        def create(self, agent: str, title: str, model: str | None = None, *rest: object) -> str:
+            modes.append(rest[2] if len(rest) > 2 else None)  # permission_mode
+            return super().create(agent, title, model, *rest)
+
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "starter")
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
+    og = Starter()
+    og.launch = ["--permission-mode", "bypassPermissions"]
+    omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert modes == ["bypassPermissions"]
+    assert "bypassPermissions inherited" in capsys.readouterr().err
+    og.launch = []  # a starter with no mode leaves the harness default
+    omnigent_agent.start(og, "claude", "t2", "do X", tmp_path / "r.md", None, 0)
+    assert modes[-1] is None

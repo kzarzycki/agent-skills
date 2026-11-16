@@ -1583,6 +1583,23 @@ def own_id() -> str:
     )
 
 
+def starter_mode(og: "Omnigent") -> tuple[str, str]:
+    """The ``--permission-mode`` the session this runs in was launched with, and its id: the
+    fallback of a Claude child's start. ``("", "")`` outside Omnigent, for a starter that is not a
+    Claude session, or one launched with no mode."""
+    if not (sid := own_id()):
+        return "", ""
+    try:
+        info = og.info(sid)
+    except Fail:
+        return "", ""
+    args = info.get("terminal_launch_args") or []
+    if "claude" not in str(info.get("harness") or "") or "--permission-mode" not in args:
+        return "", ""
+    at = args.index("--permission-mode") + 1
+    return (str(args[at]), sid) if at < len(args) else ("", "")
+
+
 def runner_log(info: dict) -> str:
     """Where the session's runner logs: one file per primary session, children included."""
     root = info.get("parent_session_id") or info.get("id") or "*"
@@ -2830,6 +2847,17 @@ def start(
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
 
+    inherited = ""
+    if not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
+        # Neither flag nor variable: a Claude child takes its Claude starter's own mode, resolved
+        # here once for the guards below and for ``create``.
+        inherited, from_sid = starter_mode(og)
+        if inherited:
+            print(
+                f"permission mode {inherited} inherited from this session ({from_sid})",
+                file=sys.stderr,
+            )
+            permission_mode = inherited if applied(inherited) else None
     if permission_mode and not applied(permission_mode):
         raise Fail(
             f"--permission-mode is for claude sessions ({BYPASS} for antigravity, and"
@@ -2843,7 +2871,7 @@ def start(
         )
     # The flag was refused above, so a mode here came from the environment: the session starts in
     # its harness's default stance, which a run counting on the mode is told (#987).
-    mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
+    mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE") or inherited
     if mode and not applied(mode):
         print(
             f"{agent} takes no permission mode: {mode} was not applied; its session starts in"
