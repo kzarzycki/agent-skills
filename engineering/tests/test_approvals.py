@@ -2717,6 +2717,10 @@ def test_an_unfinished_report_posts_nothing(
 
 RANGED = f"""Verifier: claude, pass 1
 
+## Criteria
+
+- The review posts each finding.
+
 ## Correctness
 
 ### C1 (Major) app.py:9-11: a line range and a capitalised severity
@@ -2786,6 +2790,10 @@ def test_a_finding_heading_verdict_cant_read_posts_nothing(
 SUBHEADED = f"""# PR #66 verifier report
 
 Verifier: claude, same-family, pass 1
+
+## Criteria
+
+- The review posts each finding.
 
 ## Standards
 
