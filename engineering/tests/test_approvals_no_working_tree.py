@@ -26,7 +26,9 @@ from approvals_harness import (
 
 LOOP = "docs/agents/loop.md"
 REAL = approvals.judge_with_base  # the shared fixtures replace it per test
-REAL_BASE = approvals.policy_base  # `lands` reads the policy from the work tree; these tests read it from origin
+REAL_BASE = (
+    approvals.policy_base
+)  # `lands` reads the policy from the work tree; these tests read it from origin
 MARK = "<!-- origin's main -->"
 
 

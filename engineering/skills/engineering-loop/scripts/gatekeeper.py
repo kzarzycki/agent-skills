@@ -3543,7 +3543,9 @@ def policy_file(root: Path, path: Path, base: str | None = None) -> str | None:
     """`path` as project() reads it: from `origin/<base>` (policy_base), None where the base lacks it, printing
     `differs` once when the working tree's copy is another; from the working tree, printing `unbased` once, when there
     is no such ref."""
-    policy_ref(root)  # a clone with no working tree: origin's default branch fetched once, a failed fetch refused
+    policy_ref(
+        root
+    )  # a clone with no working tree: origin's default branch fetched once, a failed fetch refused
     found = policy_base(str(root), base)
     held = read(root / path) if (root / path).exists() else None
     if found is None:
