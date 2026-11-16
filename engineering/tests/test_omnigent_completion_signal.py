@@ -35,9 +35,15 @@ def rest(
             "tree": {"sha": TREE},
             "committer": {"date": "2026-01-01T10:00:00Z"},
         },
-        f"repos/{{owner}}/{{repo}}/git/matching-refs/heads/loop-gate/{TREE}-": refs or [],
+        f"repos/{{owner}}/{{repo}}/git/matching-refs/heads/loop-gate/{TREE}-": [
+            {"ref": r["ref"], "object": {"sha": r["sha"]}} for r in refs or []
+        ],
         f"repos/{{owner}}/{{repo}}/commits/{HEAD}/statuses?per_page=100": statuses or [],
     }
+    for r in refs or []:  # a record's commit carries the pass's time as its committer date
+        single[f"repos/{{owner}}/{{repo}}/git/commits/{r['sha']}"] = {
+            "committer": {"date": r["at"]}
+        }
 
     def gh(*args: str, timeout: float = 0) -> str:
         calls.append(args)
@@ -51,12 +57,20 @@ def rest(
     return calls
 
 
-def wait(until: str, budget: str = "30") -> int:
-    return omnigent_agent.main(["wait-for", "--pr", "7", "--until", until, "--budget", budget])
+def wait(until: str, budget: str = "30", *more: str) -> int:
+    return omnigent_agent.main(
+        ["wait-for", "--pr", "7", "--until", until, "--budget", budget, *more]
+    )
 
 
-def status(state: str, description: str = "d", context: str = "gate") -> dict[str, Any]:
-    return {"context": context, "state": state, "description": description}
+def status(
+    state: str, description: str = "d", context: str = "gate", at: str = "2026-01-01T11:00:00Z"
+) -> dict[str, Any]:
+    return {"context": context, "state": state, "description": description, "created_at": at}
+
+
+def record(at: str, key: str = "k") -> dict[str, str]:
+    return {"ref": f"refs/heads/loop-gate/{TREE}-{key}", "sha": "d" * 40, "at": at}
 
 
 def said(body: str, at: str = "2026-01-01T11:00:00Z", n: int = 1) -> dict[str, Any]:
@@ -67,20 +81,74 @@ def report(head: str, satisfied: str) -> str:
     return f"## Correctness\n\nHead: {head}\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: {satisfied}\n"
 
 
-def test_gate_passes_on_a_record_branch_for_the_heads_tree(
+def test_gate_passes_on_a_record_branch_newer_than_a_failure(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    ref = f"refs/heads/loop-gate/{TREE}-k"
-    calls = rest(monkeypatch, refs=[{"ref": ref}], statuses=[status("failure")])
+    """A run restarted after a failure, where the status can't be written (a cloud VM): its record is the newest."""
+    rec = record("2026-01-01T12:00:00Z")
+    calls = rest(monkeypatch, refs=[rec], statuses=[status("failure", at="2026-01-01T11:00:00Z")])
     assert wait("gate") == 0
-    assert capsys.readouterr().out == f"PR #7 head {HEAD}: passed, record branch {ref}\n"
+    assert capsys.readouterr().out == f"PR #7 head {HEAD}: passed, record branch {rec['ref']}\n"
     assert all("--paginate" not in call for call in calls)  # REST alone, no checkout read
+
+
+def test_gate_fails_on_a_failure_newer_than_a_record_branch(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A recorded pass, then a later `gate_steps` step or a rerun that failed: the failure is the newest."""
+    rec = record("2026-01-01T11:00:00Z", "step1")
+    rest(
+        monkeypatch,
+        refs=[rec],
+        statuses=[status("failure", "Failed: x", at="2026-01-01T12:00:00Z")],
+    )
+    assert wait("gate") == 1
+    assert capsys.readouterr().out == f"PR #7 head {HEAD}: gate failure: Failed: x\n"
+
+
+def test_gate_since_ignores_an_older_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A restart on the same head: the old run's failure does not answer the new run's wait."""
+    rest(monkeypatch, statuses=[status("error", at="2026-01-01T11:00:00Z")])
+    assert wait("gate", "0.2", "--since", "2026-01-01T11:30:00Z") == 6
+    assert capsys.readouterr().out == "still running\n"
+
+
+def test_gate_keeps_polling_past_an_answer_not_shaped_as_rest(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A proxy's error page once, then the pass: the wait asks again rather than ending on a traceback."""
+    rest(monkeypatch, statuses=[status("success", "ok")])
+    real = omnigent_agent.gh
+    answers = {"n": 0}
+
+    def gh(*args: str, timeout: float = 0) -> str:
+        answers["n"] += 1
+        return "not json" if answers["n"] == 1 else real(*args, timeout=timeout)
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    assert wait("gate") == 0
+    assert capsys.readouterr().out == f"PR #7 head {HEAD}: passed, gate status: ok\n"
+    assert answers["n"] > 1
+
+
+def test_since_needs_an_iso_time_and_a_signal_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    rest(monkeypatch)
+    assert wait("gate", "0.2", "--since", "yesterday") == 2
+    assert wait("checks", "0.2", "--since", "2026-01-01T11:30:00Z") == 2
 
 
 def test_gate_passes_on_a_green_gate_status(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    rest(monkeypatch, statuses=[status("success", "Tree t on h: c"), status("failure")])
+    rest(
+        monkeypatch,
+        statuses=[
+            status("success", "Tree t on h: c"),
+            status("failure", at="2026-01-01T10:30:00Z"),
+        ],
+    )
     assert wait("gate") == 0
     assert capsys.readouterr().out == f"PR #7 head {HEAD}: passed, gate status: Tree t on h: c\n"
 
@@ -148,4 +216,13 @@ def test_verdict_ignores_a_question_older_than_the_head(
 ) -> None:
     rest(monkeypatch, comments=[said("## Verifier question\n\nx", at="2026-01-01T09:00:00Z")])
     assert wait("verdict", "0.2") == 6
+    assert capsys.readouterr().out == "still running\n"
+
+
+def test_verdict_since_ignores_an_older_question(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A verifier restarted on the same head after it asked: the old question does not answer the new wait."""
+    rest(monkeypatch, comments=[said("## Verifier question\n\nx", at="2026-01-01T11:00:00Z")])
+    assert wait("verdict", "0.2", "--since", "2026-01-01T11:30:00Z") == 6
     assert capsys.readouterr().out == "still running\n"

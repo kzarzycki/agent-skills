@@ -228,7 +228,7 @@ seconds (default 570, under a 10-minute tool call), printing nothing until it en
 `exit <n>` line with that code, the line before it and, on red, the last 30 lines (with `--pid`,
 only an `exit` line after the `run <pid>` line naming that run, which the detached recipe writes
 first, since a reused log path still holds the previous run's line; a log alone is trusted as
-the caller's run); on the pid gone; on the PR's condition settled (red checks named, exit 1; `gate`: the current head's record branch or `gate` status, exit 1 on a failure one; `verdict`: a report naming the head with its `SATISFIED:` line, exit 1 for `no` or a later `## Verifier question`, its URL printed; both through REST alone); else `still running`, exit 6 (a run that itself
+the caller's run); on the pid gone; on the PR's condition settled (red checks named, exit 1; `gate`: the current head's newest signal, a record branch (its commit's date) or `gate` status, exit 1 on a failure one; `verdict`: a report naming the head with its `SATISFIED:` line, exit 1 for `no` or a later `## Verifier question`, its URL printed; both through REST alone, and `--since <ISO time>` ignores a signal older than it, for a run restarted on the same head); else `still running`, exit 6 (a run that itself
 exits 6 prints `exit 6`, and that is its end).
 It needs no session, so it serves every backend. Its `--notify` runs `$LOOP_NOTIFY <outcome>`
 once the run ends, as a merge queue tells a lane, so a detached run's wrapper ends with

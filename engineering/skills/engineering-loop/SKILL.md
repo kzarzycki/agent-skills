@@ -643,7 +643,11 @@ or the owner's private network.
   `--until verdict` when a comment or review naming the head on its `Head:` line holds a
   `SATISFIED:` line (exit 1 for `no`, or for a `## Verifier question` posted after the head's
   commit), printing the URL it read. Both read REST only, so they run from a launch dir with no
-  working tree. Exit 6 is the budget: call it again.
+  working tree. The newest gate signal wins, so a failure after a recorded pass is exit 1, and
+  `--since <ISO time>` ignores signals older than a run restarted on the same head. Exit 6 is the
+  budget: call it again. Where the failure status cannot be written (a cloud VM's proxy refuses
+  status writes), a failed run reads as exit 6 until the budget; with `gate_steps`, exit 0 is one
+  step's pass, and `local-ci <pr>` says whether the whole gate has one.
 - **Proof.** The worker proves what the VM runs. The full gate's host-only parts (emulator,
   simulator and device tests), the instance, the acceptance examples and the evidence are
   the lead's and the verifier's, on the host. A failure there costs a round trip (relay,

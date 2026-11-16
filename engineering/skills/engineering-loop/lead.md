@@ -386,7 +386,10 @@ fires, ask the child for its report. A worker's gate or verifier run is waited o
 it posts on the PR, `wait-for --pr <n> --until gate` or `--until verdict` (orchestrating-agents'
 backends/omnigent.md, Waiting on a run or a PR), never by the worker's turn ending, since the run
 can outlast the turn or die with its machine; one that settles on nothing by the run's usual
-length is restarted.
+length is restarted, and the wait on the restart passes `--since <its start time>`, so the old
+run's failure or question does not answer it. Where the failure status cannot be written (a proxy
+that refuses status writes), a failed run reads as exit 6 until the budget; with
+`gate_steps`, exit 0 is one step's pass, and `local-ci <pr>` says whether the whole gate has one.
 Finish a worker or verifier as soon as its report is read or its verdict posted, since an
 idle child keeps its agent process, MCP servers and runner alive. With Omnigent, `run` and
 `wait` already finish the child whose report they return, except a `--pr` worker, which they keep
