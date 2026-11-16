@@ -11547,6 +11547,10 @@ def test_an_owner_item_ignores_the_elicitation_id_a_re_raised_prompt_gets() -> N
     assert omnigent_agent.owner_item(line.format("e0")) == omnigent_agent.owner_item(
         line.format("e1")
     )
+    joined = "a t-a: blocked on a prompt: {}: Bash(ls); {}: Bash(rm x)"
+    assert omnigent_agent.owner_item(joined.format("e0", "e1")) == omnigent_agent.owner_item(
+        joined.format("e2", "e3")
+    )
 
 
 def test_a_changed_owner_item_is_posted_as_owner(
