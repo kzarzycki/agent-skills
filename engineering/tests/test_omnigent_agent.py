@@ -3616,6 +3616,9 @@ def test_a_cloud_start_is_judged_on_memory_alone_here_and_on_another_host(
         "cloud start, cpu not judged, 4000 MB available (min 1536)",
     )
     assert read == ["/proc/meminfo"]  # no load read for a cloud start
+    read.clear()
+    assert omnigent_agent.far_capacity(og, "far", 1536, None, cpu=False)[0] is True
+    assert read == ["/proc/meminfo"]  # nor /proc/stat, with no max_load in the row
     assert omnigent_agent.far_capacity(og, "far", 1536, 5)[0] is False  # a local one: load 99
 
 
@@ -3655,8 +3658,8 @@ def test_a_cloud_start_waits_on_its_bridge_host_s_memory_by_its_row(
     assert omnigent_agent.main(argv) == 1
     err = capsys.readouterr().err
     assert (
-        "cc-experiments over capacity for 0s: load 3.0 (max 40), 2000 MB available (min 2500)"
-        in err
+        "cc-experiments over capacity for 0s: cloud start, cpu not judged,"
+        " 2000 MB available (min 2500)" in err
     )
     assert og.sessions == {}
     og.procs["far"]["/proc/meminfo"] = mem(2500)
@@ -3675,7 +3678,9 @@ def test_a_host_s_row_overridden_by_its_variable(
     argv = [*far_start("claude-cloud", "cc-experiments"), "--workspace", "/there/repo"]
     assert omnigent_agent.main(argv) == 0 and og.sessions
     monkeypatch.setenv("OMNIGENT_MAX_LOAD_CC_EXPERIMENTS", "2.5")
-    assert omnigent_agent.main(argv) == 1  # load 3 over its overridden max
+    assert omnigent_agent.main(argv) == 0  # a cloud start judges no load (#868)
+    local = [*far_start("claude", "cc-experiments"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(local) == 1  # a local one: load 3 over its overridden max
 
 
 def test_a_start_on_a_linux_host_waits_on_its_row_s_absolute_load(

@@ -249,8 +249,10 @@ share over about a second and its available memory, and exits 0 when it has room
 session, 1 when not. It reads idle CPU, not the load average, which on macOS also counts threads
 waiting on I/O and memory and reads several times too high; load per core decides only when idle
 cannot be measured. `start` and `run` wait while the host the new session's load lands on has
-none: the host `--host` names, else this one, for a `claude-cloud` start too, since its bridge
-session runs on that host. They print `<host> over capacity, waiting: …` and fail after
+none: the host `--host` names, else this one. A `claude-cloud` start is judged there on memory
+and the row's `max_sessions` alone, since its bridge is all that runs on the host and its work runs
+in the VM: its line reads `cloud start, cpu not judged, …`, and on another host only
+`/proc/meminfo` is read. They print `<host> over capacity, waiting: …` and fail after
 `OMNIGENT_CAPACITY_WAIT_SECONDS` (default 600), since sessions on an overloaded host time out and
 fail; a queue that would rather wait sets it longer. Another host's `/proc/meminfo`
 (`MemAvailable`) and `/proc/loadavg` are read through a live session on it (not archived, not

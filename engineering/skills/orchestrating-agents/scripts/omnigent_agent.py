@@ -2273,8 +2273,9 @@ def far_capacity(
 ) -> tuple[bool | None, str]:
     """``capacity`` for another host, read through a live session there: its ``/proc/meminfo``
     (``MemAvailable``) and ``/proc/loadavg`` (the 1-minute load), judged by ``max_load`` when its
-    row names one, else per core over its ``/proc/stat``'s ``cpuN`` lines. None and why when it
-    can't be read: no live session, every read failing, or no ``/proc`` (a Mac)."""
+    row names one, else per core over its ``/proc/stat``'s ``cpuN`` lines; ``cpu=False`` (a cloud
+    start) reads and judges ``/proc/meminfo`` alone. None and why when it can't be read: no live
+    session, every read failing, or no ``/proc`` (a Mac)."""
     # ponytail: a host's load and memory read through one of its sessions, since the server reads
     # no host-level file (GET /v1/hosts/<id>/filesystem/<file> answers 404 "path is not a
     # directory") and GET /v1/hosts carries no load or memory. Upgrade: either one, which would
