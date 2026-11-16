@@ -1376,9 +1376,7 @@ def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.Mon
     assert gate(said("codex", 1, "high")) == []
     # a tier word inside the model id is no tier: only a word of its own after the signature is
     assert gate(said("codex/sol-mid-preview/med", 1, "high")) == []
-    assert gate(
-        said("claude/small-model/?, same-family", 1, "high")
-    )  # a same-family pass is a fallback (#890)
+    assert gate(said("claude/small-model/?, same-family", 1, "high")) == []
     assert gate(said("claude, same-family, small", 1, "high"))
 
 
@@ -5806,7 +5804,8 @@ def test_record_writes_only_a_passing_check_on_a_clean_unchanged_tree(
     checkout.update(change)
     assert approvals.main(["local-ci", "--record"]) == 1
     assert not (checkout["common"] / "approvals").exists()
-    assert hub == {}
+    # a failed run writes its failure status (test_approvals_failed_gate.py), never a pass
+    assert not [s for found in hub.values() for s in found if s["state"] == "success"]
     checkout.update({"status": "", "exit": 0, "after": None})
     assert approvals.main(["local-ci", "--record"]) == 0
     assert record_at().exists()

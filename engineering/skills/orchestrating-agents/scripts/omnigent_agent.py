@@ -6,7 +6,7 @@
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> <env-id> <path> [--trust]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
-    python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
+    python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
@@ -83,7 +83,13 @@ recipe's), printing it and the line before it (the gate's summary), or on red th
 exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
 which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
 ``--until`` condition settled (``checks``, the default: all done, exit 0 green, 1 red naming them;
-``merged``; ``closed``: exit 0 once it holds, 1 when a PR closes unmerged); else ``still running``
+``merged``; ``closed``: exit 0 once it holds, 1 when a PR closes unmerged; ``gate``: the PR's current
+head's newest gate signal, a pass (a ``loop-gate/<head's tree>-`` record branch on origin, by its commit's date,
+or a green ``gate`` status), exit 0, or a ``gate`` failure or error status, exit 1; ``verdict``: a PR comment or review naming the current head
+on a ``Head:`` line holds a ``SATISFIED:`` line, exit 0 for yes and 1 for no, or a ``## Verifier question``
+comment came after the head's commit, exit 1; with ``--since <ISO time>`` either ignores a signal older than it,
+for a run restarted on the same head; each prints the URL it read, all through REST, so it works
+from a launch dir with no working tree); else ``still running``
 (exit 6; a run's own 6 prints ``exit 6`` and is an end). ``--notify`` also runs ``$LOOP_NOTIFY
 <outcome>`` once it ends, unset nothing, so a
 detached run's wrapper tells the session that started it (e.g. ``LOOP_NOTIFY="python3
@@ -3588,15 +3594,106 @@ def pr_outcome(pr: int, until: str, timeout: float) -> tuple[int, str] | None:
     return 0, f"PR #{pr} checks green ({len(checks)})"
 
 
+def pr_rest(path: str, end: float, pages: bool = False) -> Any:
+    """``repos/{owner}/{repo}/<path>`` through REST (``{owner}/{repo}`` from this clone, which a launch dir with no
+    working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list."""
+    timeout = max(0.01, min(HTTP_SECONDS, end - time.monotonic()))
+    if not pages:
+        return json.loads(gh("api", f"repos/{{owner}}/{{repo}}/{path}", timeout=timeout))
+    out = gh(
+        "api", "--paginate", f"repos/{{owner}}/{{repo}}/{path}", "--jq", ".[]", timeout=timeout
+    )
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+
+def gate_outcome(pr: int, end: float, since: float | None = None) -> tuple[int, str] | None:
+    """Whether PR ``pr``'s current head has a gate pass, by its newest signal: a ``loop-gate/<tree>-`` record branch
+    for its tree (``approvals.py local-ci --record`` pushes it; its commit's committer date is the pass's time) or a
+    green ``gate`` status is 0, a ``gate`` status failed or errored (a failed ``--record`` run writes it) is 1, so a
+    failure after a recorded pass (a later ``gate_steps`` step, a rerun) is not read as a pass, and a record after a
+    failure (a restart where the status can't be written) is. Signals older than ``since`` (seconds) are ignored;
+    None while there is none."""
+    head = pr_rest(f"pulls/{pr}", end)["head"]["sha"]
+    tree = pr_rest(f"git/commits/{head}", end)["tree"]["sha"]
+    signals: list[tuple[float, int, str]] = []
+    for record in pr_rest(f"git/matching-refs/heads/loop-gate/{tree}-", end):
+        at = pr_rest(f"git/commits/{record['object']['sha']}", end)["committer"]["date"]
+        signals.append((stamp(at), 0, f"passed, record branch {record['ref']}"))
+    for status in pr_rest(f"commits/{head}/statuses?per_page=100", end):
+        if status.get("context") != "gate" or status.get("state") == "pending":
+            continue
+        said = f"{status.get('description') or ''} {status.get('target_url') or ''}".strip()
+        if status.get("state") == "success":
+            signals.append((stamp(status["created_at"]), 0, f"passed, gate status: {said}"))
+        else:
+            signals.append((stamp(status["created_at"]), 1, f"gate {status.get('state')}: {said}"))
+    fresh = [x for x in signals if since is None or x[0] >= since]
+    if not fresh:
+        return None
+    _, code, text = max(
+        fresh, key=lambda x: x[0]
+    )  # a tie keeps the first: a record over its own status
+    return code, f"PR #{pr} head {head}: {text}"
+
+
+# a failed call, or an answer not shaped as REST's (a proxy's error page): the next poll asks again
+BLIPS = (Fail, KeyError, TypeError, ValueError)
+QUESTION = re.compile(r"\s*## Verifier question\b")
+SATISFIED = re.compile(r"^SATISFIED:\s*(\S+)", re.MULTILINE)
+
+
+def verdict_outcome(pr: int, end: float, since: float | None = None) -> tuple[int, str] | None:
+    """The newest verifier word on PR ``pr``'s current head, from its comments and reviews: a report whose ``Head:``
+    line names the head and that holds a ``SATISFIED:`` line (0 for yes, 1 otherwise), or a ``## Verifier question``
+    comment posted after the head's commit (1); None while there is neither. A report on an older head, and any word
+    posted before ``since`` (seconds), is ignored."""
+    head = pr_rest(f"pulls/{pr}", end)["head"]["sha"]
+    committed = pr_rest(f"git/commits/{head}", end)["committer"]["date"]
+    said = [(c["created_at"], c) for c in pr_rest(f"issues/{pr}/comments", end, pages=True)]
+    said += [
+        (r["submitted_at"], r)
+        for r in pr_rest(f"pulls/{pr}/reviews", end, pages=True)
+        if r.get("submitted_at")
+    ]
+    for when, item in sorted(said, key=lambda x: stamp(x[0]), reverse=True):
+        if since is not None and stamp(when) < since:
+            break  # newest first: the rest are older still
+        body, url = item.get("body") or "", item.get("html_url") or ""
+        if QUESTION.match(body):
+            if stamp(when) > stamp(committed):
+                return 1, f"PR #{pr} head {head}: the verifier asked a question: {url}"
+            continue
+        heads = {
+            line[len("Head:") :].strip().lower()
+            for line in body.splitlines()
+            if line.startswith("Head:")
+        }
+        if head.lower() in heads and (found := SATISFIED.search(body)):
+            word = found[1].lower()
+            return (0 if word == "yes" else 1), f"PR #{pr} head {head}: SATISFIED: {word}: {url}"
+    return None
+
+
+def stamp(when: str) -> float:
+    """A GitHub ISO time as seconds."""
+    return datetime.fromisoformat(when.replace("Z", "+00:00")).timestamp()
+
+
 def wait_for(
-    log: Path | None, pid: str | None, pr: int | None, until: str, budget: float
+    log: Path | None,
+    pid: str | None,
+    pr: int | None,
+    until: str,
+    budget: float,
+    since: float | None = None,
 ) -> tuple[int, str] | None:
     """Block up to ``budget`` seconds on a run's log exit line, its pid, or PR ``pr``'s ``until``
-    condition, printing nothing meanwhile; return the exit code and the outcome text: the run's own
+    condition (a ``gate`` or ``verdict`` signal older than ``since`` ignored), printing nothing meanwhile; return the exit code and the outcome text: the run's own
     code (0 or 1 for a PR, 1 for a pid gone with no exit line), or None once the budget passes,
     since a run may itself exit ``LIMIT``."""
     deadline = time.monotonic() + budget
     every = WAIT_FOR_PR_EVERY if pr is not None else WAIT_FOR_EVERY
+    settled = {"gate": gate_outcome, "verdict": verdict_outcome}.get(until)
 
     def ended() -> tuple[int, str] | None:
         """The log's exit line: with ``--pid``, only one after the marker of the run it names, so a
@@ -3633,9 +3730,12 @@ def wait_for(
             if (left := deadline - time.monotonic()) <= 0:
                 return None
             try:  # a query may not outlast the budget
-                if outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
+                if settled is not None:
+                    if outcome := settled(pr, time.monotonic() + left, since):
+                        return outcome
+                elif outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
                     return outcome
-            except Fail:  # a GitHub blip: the next poll asks again
+            except BLIPS:  # a GitHub blip: the next poll asks again
                 pass
         elif pid and pid_of(pid) is None:
             if outcome := ended():  # written on its way out
@@ -6516,8 +6616,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             help="which verifier a verifier start runs (default: $OMNIGENT_VERIFIER_ROUTE, else codex): codex is the"
             " agent as named; gemini replaces it with agy's Gemini (experimental, needs --host on a host with agy"
             " logged in); claude with a fresh Claude session of another model than --author-model (same-family)."
-            " The two fallbacks are for a Codex refusal, never for a high-risk change unless the project's policy"
-            " allows it until a date",
+            " The two fallbacks are for a Codex refusal",
         )
         p.add_argument(
             "--author-model",
@@ -6742,7 +6841,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     )
     p.add_argument("--pid", help="a run's pid, or the file holding it")
     p.add_argument("--pr", type=int, help="a PR, waited on until --until holds")
-    p.add_argument("--until", choices=("checks", "merged", "closed"), default="checks")
+    p.add_argument(
+        "--until", choices=("checks", "merged", "closed", "gate", "verdict"), default="checks"
+    )
+    p.add_argument(
+        "--since",
+        help="an ISO time: with --until gate|verdict, a signal older than it is ignored (a restarted run's start)",
+    )
     p.add_argument(
         "--budget",
         type=float,
@@ -6875,7 +6980,19 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 usage = Fail("wait-for needs --log and/or --pid, or --pr")
                 usage.code = 2
                 raise usage
-            ended = wait_for(args.log, args.pid, args.pr, args.until, args.budget)
+            since = None
+            if args.since is not None:
+                try:
+                    since = stamp(args.since)
+                except ValueError:
+                    since = None
+                if since is None or args.until not in ("gate", "verdict"):
+                    usage = Fail(
+                        "wait-for --since takes an ISO time, with --pr and --until gate|verdict"
+                    )
+                    usage.code = 2
+                    raise usage
+            ended = wait_for(args.log, args.pid, args.pr, args.until, args.budget, since)
             if ended is None:
                 waiting = args.log and lock_text(args.log, run_of(args.pid) if args.pid else None)
                 progress = (
