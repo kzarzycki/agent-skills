@@ -2745,7 +2745,9 @@ def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
     if not fetched(merge.lower()):
         raise Refused(f"merge {merge} is not a commit here or on origin")
     head = git("rev-parse", f"{merge}^2").strip()
-    record, entry, loop = reusable(head), None, project()[1]
+    with policy_from(str(pull_request(pr)["baseRefName"])):
+        loop = project()[1]  # the head proof of the base the PR merges onto, not the default branch's
+    record, entry = reusable(head), None
     if record is None and (entry := admitted(head, loop)) is None:
         raise Refused(
             f"the head {head} has no green `local-ci --record` pass of its own under the gate command"
