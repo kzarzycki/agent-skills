@@ -216,6 +216,14 @@ however the session started. It reads the session's Omnigent record first (`llm_
 reported it, and `reasoning_effort`), since a Codex child's rollout sits under a private `CODEX_HOME`. The
 `AGENT_SIGNATURE=` line `start` puts atop a brief names the model the server took for the session (its
 `model_override`, `?` for the harness default), never the id asked for.
+
+**Usage.** `python3 scripts/omnigent_agent.py usage [<session>...]` prints the tokens and cost of the session it
+runs in and of each session named, one line each, read from each session's record (`usage_by_model`,
+`total_cost_usd`), which totals its whole spawn tree, archived children included; then a `Tokens spent:
+<tokens>, $<cost> (<n> session trees)` line for a PR body. Name only top-level sessions (a verifier on another
+host, a cloud worker): a named session inside another named one's tree is skipped, not counted twice. A
+session with no usage recorded, or one not read, is named `uncounted` and adds nothing. `GET /v1/usage`
+gives the same tree cost per top-level session, but no tokens.
 Below it, a child on this host that is not a top-level lead gets `LOOP_HEAVY_LOCK=<path>`, one
 lock per lead (the runner's primary session, which a lead's workers and their children share;
 `$LOOP_HEAVY_LOCK` when the caller has it), so a lead's parallel workers
