@@ -154,7 +154,7 @@ the rest, exiting 1 when a finish failed; it keeps a ``--pr`` worker, ``--force`
 repository its label names) is merged or closed, saying why, and a PR it can't read keeps it; ``reap --merged [--pr N]``
 also finishes every live ``--pr`` worker whose PR is merged or closed (``approvals.py land`` starts it detached for each PR it merged); it cannot tell a child still owing its report from a finished one, so it runs once every
 report is in. Finishing archives the session, which keeps its transcript; nothing here deletes a
-session. A session running with no new history item for ``OMNIGENT_STUCK_SECONDS`` (default 1800, longer than a foreground
+session. A session running with no new item the agent wrote (``agent_progress_at``: a message, reasoning, tool call or result; not the brief or a server heartbeat) for ``OMNIGENT_STUCK_SECONDS`` (default 1800, longer than a foreground
 command or a heavy-slot wait) is stuck: ``status`` and ``watch`` report it once as ``stuck (no activity for N min)`` (``run``'s and ``supervise``'s look at a child owing a report says so once too, naming ``reap --force``), and
 ``reap --force`` stops its turn and archives it, printing its workspace to check with ``git status`` (a dead mutation run can
 leave its patch applied); a running session with recent activity stays kept.
@@ -3906,13 +3906,41 @@ def reap(
     return lines, failed
 
 
+def agent_progress_at(items: list[dict]) -> float | None:
+    """When the agent last wrote a history item, None when it wrote none (or none is dated). The
+    one definition of progress, shared by ``stuck_minutes`` and the supervisor's progress deadline.
+    The agent's items are an assistant message, a reasoning item, a tool call and its result (a
+    type ending ``_call`` or ``_call_output``). The user's messages (the brief, a nudge) and every
+    server item (``resource_event``, a heartbeat, a status or system event) are not its progress,
+    however recent: the server writes them whether or not the agent works."""
+    return max(
+        (
+            float(i["created_at"])
+            for i in items
+            if i.get("created_at")
+            and (
+                (i.get("type") == "message" and i.get("role") == "assistant")
+                or str(i.get("type")).endswith(("_call", "_call_output"))
+                or i.get("type") == "reasoning"
+            )
+        ),
+        default=None,
+    )
+
+
 def stuck_minutes(info: dict, items: list[dict]) -> int | None:
-    """Whole minutes a running session has written no history item, once that passes
-    ``STUCK_SECONDS``, else None. A history with no dated item says nothing, so it is not stuck."""
+    """Whole minutes a running session has made no progress (``agent_progress_at``), once that
+    passes ``STUCK_SECONDS``, else None. A session whose agent wrote nothing counts from its first
+    item, the brief's arrival; a history with no dated item says nothing, so it is not stuck."""
     if str(info.get("status")) not in RUNNING:
         return None
     dated = [float(i["created_at"]) for i in items if i.get("created_at")]
-    quiet = time.time() - max(dated, default=time.time())
+    since = agent_progress_at(items)
+    if since is None:
+        since = min(dated, default=None)
+    if since is None:
+        return None
+    quiet = time.time() - since
     return int(quiet // 60) if quiet > STUCK_SECONDS else None
 
 
@@ -5685,11 +5713,8 @@ def supervise_registry(
             # a new failure or prompt, also with the same error: its own event, kept on restart
             lead["occurrences"] = lead.get("occurrences", 0) + 1
         # its own history counts, not a message to it: a nudge is no progress
-        own = [
-            float(i.get("created_at") or 0)
-            for i in items
-            if not from_user(i) and i.get("type") != "resource_event"
-        ]
+        progress = agent_progress_at(items)
+        own = [progress] if progress else []
         # once it has acted or been seen, a new instruction to it (a relay, the owner typing)
         # starts a new chain too; the supervisor's own lines do not. On first sight progress
         # counts from then, not from its brief.

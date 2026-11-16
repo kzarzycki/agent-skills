@@ -5381,6 +5381,18 @@ def test_a_lead_stuck_running_raises_one_deadline_for_its_progress(
     assert state_of(registry)["settled"]["a"][0].startswith("deadline:a:")
 
 
+def test_the_progress_deadline_ignores_heartbeats_as_stuck_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    skewed(monkeypatch)
+    beat = {"id": "hb", "type": "heartbeat", "created_at": time.time()}
+    og = Lead(told("brief", 3000), ending("STILL WORKING: on it", 1300), beat)
+    og.snap = {"status": "running"}
+    supervised(og, registry, monkeypatch, 1, lambda poll: None, notify="cos", console=True, fyi="post")
+    assert [p.split("\n")[0] for p in fyis(og)] == ["Supervisor: a t-a: no progress 22m (unknown)"]
+
+
 @pytest.mark.parametrize(
     ("said_ago", "child_ago", "deadline"),
     [
@@ -10931,6 +10943,61 @@ def test_stuck_minutes_is_none_for_a_session_that_is_not_running() -> None:
     assert omnigent_agent.stuck_minutes({"status": "running"}, old) is not None
 
 
+def brief_and_heartbeats(brief_age: float, beat_age: float) -> FakeOmnigent:
+    """A running session whose history is its brief and recent server items, nothing the agent wrote."""
+    og = running_session(brief_age)
+    now = time.time()
+    og.sessions["k"] = [
+        {"id": "b", "type": "message", "role": "user", "created_at": now - brief_age},
+        {"id": "h1", "type": "resource_event", "created_at": now - beat_age},
+        {"id": "h2", "type": "heartbeat", "created_at": now - beat_age},
+        {"id": "h3", "type": "status", "role": "system", "created_at": now - beat_age},
+    ]
+    return og
+
+
+def test_a_brief_with_recent_heartbeats_is_stuck_and_reap_force_archives_it() -> None:
+    og = brief_and_heartbeats(2 * 3600, 30)
+    assert omnigent_agent.observe(og, "k", {}, baseline=True)[0] == ("stuck", "b")
+    lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert not failed and og.interrupted == ["k"] and og.archived == ["k"]
+    assert lines == ["k kid: archived (stuck); check git status in /w/kid"]
+
+
+def test_a_brief_with_heartbeats_is_not_stuck_before_the_limit_from_its_start() -> None:
+    og = brief_and_heartbeats(600, 30)
+    assert omnigent_agent.observe(og, "k", {})[0] == ("running",)
+    assert omnigent_agent.reap(og, ["k"], force=True)[0][0].startswith("k kid: kept (running)")
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"type": "message", "role": "assistant"},
+        {"type": "function_call"},
+        {"type": "function_call_output"},
+    ],
+)
+def test_a_recent_agent_item_keeps_a_session_from_being_stuck(item: dict) -> None:
+    og = brief_and_heartbeats(2 * 3600, 30)
+    og.sessions["k"].append({"id": "a", **item, "created_at": time.time() - 60})
+    assert omnigent_agent.observe(og, "k", {})[0] == ("running",)
+    assert omnigent_agent.reap(og, ["k"], force=True)[0][0].startswith("k kid: kept (running)")
+
+
+def test_agent_progress_at_counts_only_what_the_agent_wrote() -> None:
+    items = [
+        {"type": "message", "role": "user", "created_at": 500.0},
+        {"type": "heartbeat", "created_at": 400.0},
+        {"type": "resource_event", "created_at": 450.0},
+        {"type": "message", "role": "assistant", "created_at": 100.0},
+        {"type": "function_call", "created_at": 200.0},
+        {"type": "message", "role": "assistant"},  # undated
+    ]
+    assert omnigent_agent.agent_progress_at(items) == 200.0
+    assert omnigent_agent.agent_progress_at(items[:3]) is None
+
+
 def test_a_session_whose_items_carry_no_date_is_not_stuck() -> None:
     og = running_session(0)
     og.sessions["k"] = [{"id": "i1", "type": "message", "role": "assistant"}]
@@ -11010,7 +11077,7 @@ def test_a_session_with_an_old_and_a_recent_item_is_running_and_kept_by_reap_for
 ) -> None:
     og = running_session(60)
     og.sessions["k"] = [
-        {"id": f"i{n}", "type": "message", "role": "user", "created_at": time.time() - age}
+        {"id": f"i{n}", "type": "message", "role": "assistant", "created_at": time.time() - age}
         for n, age in enumerate(ages)
     ]
     assert omnigent_agent.observe(og, "k", {})[0] == ("running",)
