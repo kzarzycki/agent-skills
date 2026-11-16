@@ -206,7 +206,13 @@ def test_a_malformed_budget_line_is_reported_and_the_defaults_apply(repo: Path) 
 
 
 def test_an_issue_that_is_not_a_number_is_a_usage_error(repo: Path) -> None:
-    assert acceptance(repo, "../7").returncode == 2
+    check(repo, "acceptance/7/ok.sh", PASSING)
+
+    result = acceptance(repo, "../acceptance/7")
+
+    assert result.returncode == 2, result
+    assert "the issue is a number" in result.stderr
+    assert verdicts(result.stdout) == []
 
 
 def flat(name: str) -> str:
