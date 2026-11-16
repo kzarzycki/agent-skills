@@ -928,6 +928,9 @@ class Omnigent:
             )
         self.base, self.host_id = base.rstrip("/"), host.group(1)
         self._token = ""
+        self.loops: dict[
+            tuple[str, str], str
+        ] = {}  # loop.md read on another host, by host, workspace
 
     def token(self) -> str:
         code = f"from omnigent.cli_auth import refresh_stored_token as r, load_token as l; print(r({self.base!r}) or l({self.base!r}) or '')"
@@ -1187,9 +1190,9 @@ class Omnigent:
         if agent == "claude":
             args = ["--permission-mode", mode] if mode else []
             if role and (stem := Path(role).stem) in LEAN_ROLES:
-                args += lean_args(str(body["workspace"]), stem)
+                args += lean_args(str(body["workspace"]), stem, self, host_id)
             if top_level:
-                args += autocompact_args(str(body["workspace"]))
+                args += autocompact_args(str(body["workspace"]), self, host_id)
             if args:
                 body["terminal_launch_args"] = args
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
@@ -1335,6 +1338,58 @@ class Omnigent:
             raise
         return out
 
+    def loop_text(self, workspace: str, host_id: str | None) -> str:
+        """The project's ``docs/agents/loop.md`` on host ``host_id``, which a session started for
+        ``workspace`` there will run on; empty when the checkout there has none, or when ``workspace``
+        sits outside a checkout. Read once per host and workspace, through the host's file API.
+        That API lists a folder before any session exists but gives no file's text, so the checkout
+        and the file are found by listing, and the text is read through a live session on the host.
+        A host or workspace that can't be read is a ``Fail`` naming the host and the path: a silent
+        empty value is how a missing ``Lead autocompact:`` went unnoticed."""
+        key = (host_id or "", workspace)
+        if key not in self.loops:
+            self.loops[key] = self.read_loop(workspace, host_id or "")
+        return self.loops[key]
+
+    def read_loop(self, workspace: str, host_id: str) -> str:
+        host = self.hosts().get(host_id, host_id)
+
+        def listed(folder: str) -> list[str]:
+            path = "/v1/hosts/" + host_id + "/filesystem/" + quote(folder.strip("/"), safe="/")
+            try:
+                return [e["name"] for e in self.call("GET", path + "?limit=1000").get("data", [])]
+            except Fail as e:
+                cause = e.__cause__
+                missing = isinstance(cause, HTTPError) and cause.code == 404
+                if not missing:
+                    raise Fail(f"{LOOP_FILE}: host {host} unreadable at {folder}: {e}") from e
+                raise Gone(folder) from e
+
+        root = Path(workspace)
+        try:
+            listed(workspace)
+        except Gone as e:
+            raise Fail(f"{LOOP_FILE}: workspace {workspace} is not on host {host}") from e
+        while ".git" not in listed(str(root)):
+            if root.parent == root:
+                return ""  # outside a checkout, as locally
+            root = root.parent
+        target = str(root / LOOP_FILE)
+        try:
+            if LOOP_FILE.name not in listed(str(root / LOOP_FILE.parent)):
+                return ""
+        except Gone:
+            return ""
+        why = "no live session there to read it through"
+        for s in live_sessions(self, host_id)[:FAR_READS]:
+            try:
+                return self.read_file(str(s["id"]), target)
+            except Gone:
+                return ""
+            except Fail as e:
+                why = f"read failed: {e}"
+        raise Fail(f"{LOOP_FILE}: host {host} can't read {target}: {why}")
+
     def interrupt(self, sid: str) -> None:
         """Stop ``sid``'s running turn, as the owner's stop does."""
         self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt"})
@@ -1442,28 +1497,37 @@ def read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def project_line(workspace: str, key: str) -> str:
+def project_line(
+    workspace: str, key: str, og: Omnigent | None = None, host_id: str | None = None
+) -> str:
     """The value of the line ``<key>: <value>`` in the project's ``docs/agents/loop.md`` at the root
-    of ``workspace``'s checkout, else empty: none there, or a workspace outside a checkout."""
-    root = checkout_root(workspace)
-    try:
-        text = (Path(root) / LOOP_FILE).read_text() if root else ""
-    except FileNotFoundError:
-        return ""
+    of ``workspace``'s checkout, else empty: none there, or a workspace outside a checkout. On the
+    host a session will run on: ``host_id``, when it is not this machine's (``og.host_id``), is read
+    through Omnigent (``Omnigent.loop_text``); else here."""
+    if og and host_id and host_id != og.host_id:
+        text = og.loop_text(workspace, host_id)
+    else:
+        root = checkout_root(workspace)
+        try:
+            text = (Path(root) / LOOP_FILE).read_text() if root else ""
+        except FileNotFoundError:
+            return ""
     found = re.search(rf"^{re.escape(key)}:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)
     return found.group(1) if found else ""
 
 
-def placement_hosts(workspace: str) -> list[str]:
+def placement_hosts(
+    workspace: str, og: Omnigent | None = None, host_id: str | None = None
+) -> list[str]:
     """The hosts the project's ``docs/agents/loop.md`` names for a gate or verifier: those of
     ``Placement: hosts: <a>, <b>``; none for ``same machine`` (the default when the line is
     absent) or ``CI``. The old ``Verifier hosts: <a>, <b>`` line reads as the same list and
     ``Cloud verifier:`` as the same machine; the new line wins."""
-    new = project_line(workspace, "Placement")
+    new = project_line(workspace, "Placement", og, host_id)
     if new:
         value = new[len("hosts:") :] if new.lower().startswith("hosts:") else ""
     else:
-        value = project_line(workspace, "Verifier hosts")
+        value = project_line(workspace, "Verifier hosts", og, host_id)
     return [h for h in (x.strip() for x in value.split(",")) if h]
 
 
@@ -1483,12 +1547,14 @@ def cloud_default_host(og: Omnigent, named: list[str]) -> str:
     raise Fail(f"no host loop.md's Placement line names is online: {', '.join(named)}; pass --host")
 
 
-def lean_args(workspace: str, role: str) -> list[str]:
+def lean_args(
+    workspace: str, role: str, og: Omnigent | None = None, host_id: str | None = None
+) -> list[str]:
     """The launch args of a lean Claude ``role`` child (``LEAN_TOOLS``), plus what the project's
     ``<Role> tools:`` line names beyond them: a tool, or an MCP server configured for the checkout
     (the user's, the project's ``.mcp.json`` or the checkout's local one), which goes in its own
     ``--mcp-config`` beside Omnigent's. ``full`` there is no args: every configured tool and server."""
-    named = project_line(workspace, f"{role.capitalize()} tools")
+    named = project_line(workspace, f"{role.capitalize()} tools", og, host_id)
     if named == "full":
         return []
     root = checkout_root(workspace)
@@ -1506,14 +1572,16 @@ def lean_args(workspace: str, role: str) -> list[str]:
     return args + (["--mcp-config", json.dumps({"mcpServers": servers})] if servers else [])
 
 
-def autocompact_args(workspace: str) -> list[str]:
+def autocompact_args(
+    workspace: str, og: Omnigent | None = None, host_id: str | None = None
+) -> list[str]:
     """``--autocompact <size>`` for a top-level Claude session when the project's ``Lead
     autocompact:`` line names a size, so the lead compacts there instead of at the user's window;
     else none. A size Claude Code refuses fails here, since the CLI would exit before the lead
     starts. ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` in the user's Claude settings outranks the flag, so
     its presence is reported: set that window as ``autoCompactWindow``. This process's own
     environment is not read, since the lead's comes from the Omnigent runner, not from its caller."""
-    size = project_line(workspace, "Lead autocompact")
+    size = project_line(workspace, "Lead autocompact", og, host_id)
     if not size:
         return []
     # Claude Code's spellings: 150000, 150k, 0.15M, and a bare number up to 1000 as thousands
@@ -2843,6 +2911,15 @@ def start(
             " the harness default",
             file=sys.stderr,
         )
+    if (
+        agent == "claude"
+        and host_id
+        and host_id != og.host_id
+        and (top_level or (role and Path(role).stem in LEAN_ROLES))
+    ):
+        # the project's loop.md, once, on the host the session runs on: a host that can't be read
+        # stops the start here, before a session exists
+        og.loop_text(workspace or os.getcwd(), host_id)
     chosen, source = model_for(agent, model)
     if chosen:
         try:
