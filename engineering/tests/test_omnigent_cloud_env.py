@@ -333,3 +333,30 @@ def test_cloud_env_takes_the_line_s_env_name_and_needs_a_committed_script(
     assert omnigent_agent.main(["cloud-env", str(bare)]) == 1
     assert "no .claude/cloud-setup.sh committed" in capfd.readouterr().err
     assert len(api["requests"]) == requests
+
+
+def test_the_listing_follows_its_pages_and_two_environments_of_one_name_are_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    envs = omnigent_agent.ENVS
+    pages = {
+        "": {"environments": ENVS[:2], "has_more": True, "last_id": "env_repo"},
+        "env_repo": {"environments": ENVS[2:], "has_more": False, "last_id": "env_default"},
+    }
+    asked: list[str] = []
+
+    def call(path: str, body: object, auth: dict, masked: tuple = ()) -> dict:
+        after = path.partition("after_id=")[2]
+        asked.append(after)
+        return pages[after]
+
+    monkeypatch.setattr(envs, "call", call)
+    assert [e["environment_id"] for e in envs.environments({})] == [
+        "env_dev",
+        "env_repo",
+        "env_default",
+    ]
+    assert asked == ["", "env_repo"]
+    twice = [*ENVS, {"environment_id": "env_two", "name": "widget"}]
+    with pytest.raises(envs.Refused, match="2 cloud environments are named 'widget'"):
+        envs.pick(twice, "", "widget")
