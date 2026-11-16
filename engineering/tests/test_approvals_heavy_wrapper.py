@@ -422,3 +422,12 @@ def test_an_exception_while_a_step_runs_kills_its_group(
     # killed, not waited out: the step would sleep 30 s
     assert time.monotonic() - began < 10
     assert gone(int(pids.read_text().split()[1]))
+
+
+def test_the_heavy_command_exits_as_a_shell_does_for_a_command_a_signal_ended(
+    tmp_path: Path,
+) -> None:
+    ran = subprocess.run(
+        heavy_command("sh", "-c", "kill -KILL $$"), cwd=tmp_path, capture_output=True, check=False
+    )
+    assert ran.returncode == 128 + signal.SIGKILL
