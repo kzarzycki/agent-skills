@@ -83,19 +83,69 @@ def test_the_bare_child_check_catches_a_start_but_not_a_mention(tmp_path: Path) 
     assert [hit.split(": ", 1)[1] for hit in bare_children(tmp_path)] == starts
 
 
-def test_the_cloud_split_is_reached_only_through_its_loop_md_line() -> None:
-    """Without the line every role file reads as before: each adds one pointer line, no more."""
+def section_of(text: str, heading: str) -> str:
+    """The body of the `## <heading>` section, joined onto one line."""
+    return " ".join(text.split(f"\n## {heading}\n", 1)[1].split("\n## ", 1)[0].split())
+
+
+def test_the_cloud_is_the_default_and_none_opts_out() -> None:
+    """No line means claude-cloud with the policy's gate; `none` means host workers (#1119)."""
     skill = (LOOP / "SKILL.md").read_text()
-    section = skill.split("\n## Cloud worker\n", 1)[1].split("\n## ", 1)[0]
-    assert section.strip().startswith("With the loop.md line `Cloud worker: <agent>, gate <task>`")
-    assert "Without the line nothing" in section
-    assert "`Cloud worker: <agent>, gate <task>`" in next(
-        line for line in skill.splitlines() if line.startswith("| `docs/agents/loop.md` |")
+    section = section_of(skill, "Cloud worker")
+    assert section.startswith("With the loop.md line `Cloud worker: <agent>, gate <task>`")
+    assert (
+        "Without the line the same holds with `claude-cloud` as the agent and the policy's `gate`"
+        " as the gate" in section
     )
-    for role in ("lead.md", "worker.md", "verifier.md"):
-        cloud = [line for line in (LOOP / role).read_text().splitlines() if "cloud" in line.lower()]
-        assert len(cloud) == 1, (role, cloud)
-        assert "`Cloud worker:`" in cloud[0] and "SKILL.md, Cloud worker" in cloud[0]
+    assert "Without the line nothing" not in section  # the opt-in it replaced
+    assert (
+        "A line that opens `Cloud worker: none`, with the project's reason after it, keeps workers on hosts"
+        in section
+    )
+    assert "A project that has the line keeps its meaning" in section
+    assert "`Cloud worker: <agent>, gate <task>, env <name>`" in section
+    assert "`omnigent_agent.py cloud-env <checkout>`" in section
+    row = next(line for line in skill.splitlines() if line.startswith("| `docs/agents/loop.md` |"))
+    assert "`Cloud worker: <agent>, gate <task>`" in row and "`Cloud worker: none`" in row
+
+
+def test_placement_is_stated_once_and_the_role_files_point_to_it() -> None:
+    """Every heavy run by any role, in one order, with a lead's own run's recipe (#1119)."""
+    rule = section_of((LOOP / "SKILL.md").read_text(), "Where heavy steps run")
+    for run in (
+        "implementation, the gate, the verifier's test and mutation runs, proof runs, and a"
+        " lead's own suite, build and e2e runs",
+        "the only place placement is stated",
+    ):
+        assert run in rule
+    order = [
+        "1. To a Claude cloud session: the agent the project's `docs/agents/loop.md` names on its"
+        " `Cloud worker:` line, else `claude-cloud`",
+        "2. Else to a host that offers the harness the step needs, under the start's capacity check",
+        "3. A step that needs a particular machine",
+    ]
+    assert [rule.index(step) for step in order] == sorted(rule.index(step) for step in order)
+    assert (
+        "a cloud launch that is refused, whose setup fails twice, or that is out of quota goes to a host"
+        in rule
+    )
+    assert "The lead's report says which run went where and why" in rule
+    assert (
+        "`run claude-cloud <title> <brief> <launch dir>/tmp/loop/<report> --workspace <launch dir>"
+        " --no-keep`" in rule
+    )
+    assert (
+        "`REPORT` last message holding each command's exit code, the summary line and every failure"
+        in rule
+    )
+    for role in ("lead.md", "worker.md", "verifier.md", "proof-run.md"):
+        text = " ".join((LOOP / role).read_text().split())
+        assert "SKILL.md, Where heavy steps run" in text, role
+        assert (
+            "else `claude-cloud`" not in text and "under the start's capacity check" not in text
+        ), role
+    lead = " ".join((LOOP / "lead.md").read_text().split())
+    assert "each heavy run that did not go to the cloud with where it went and why" in lead
 
 
 def test_the_verifier_waits_in_few_long_calls_and_reruns_repros_together() -> None:
