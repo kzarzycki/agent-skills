@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -99,3 +102,70 @@ def test_no_skill_sends_the_user_to_a_setup_skill() -> None:
         )
     ]
     assert offenders == []
+
+
+def _lead_steps() -> dict[int, str]:
+    """lead.md's numbered steps, by number, each up to the next step or paragraph heading."""
+    text = (PACKAGE / "skills" / "engineering-loop" / "lead.md").read_text()
+    parts = re.split(r"^(\d+)\. \*\*", text, flags=re.MULTILINE)
+    return {
+        int(number): " ".join(body.split("\n\n")[0].split())
+        for number, body in zip(parts[1::2], parts[2::2], strict=True)
+    }
+
+
+def _acceptance(text: str) -> list[str]:
+    """The headings of a template's `## Acceptance` section, up to the next `## ` heading."""
+    section = text.split("## Acceptance\n", 1)[1].split("\n## ", 1)[0]
+    return re.findall(r"^### .+$", section, flags=re.MULTILINE)
+
+
+def test_lead_splits_acceptance_into_before_and_after_merge_lists() -> None:
+    steps = _lead_steps()
+    assert "`### Before merge`" in steps[2] and "`### After merge`" in steps[2]
+    assert "flat `## Acceptance` list reads as all Before merge" in steps[2]
+    assert "runs the spec's Before merge list there" in steps[6]
+    assert "run only the spec's After merge list" in steps[9]
+    assert "`After merge: none`" in steps[9]
+    assert "owner's instance" not in steps[9]
+
+
+def test_no_loop_file_names_the_owners_instance() -> None:
+    loop = PACKAGE / "skills" / "engineering-loop"
+    assert [
+        path.relative_to(loop).as_posix()
+        for path in loop.rglob("*.md")
+        if "owner's instance" in path.read_text()
+    ] == []
+
+
+def test_the_verifier_counts_only_before_merge_lines() -> None:
+    text = " ".join((PACKAGE / "skills" / "engineering-loop" / "verifier.md").read_text().split())
+    assert "mark each Before merge line run" in text
+    assert "List each After merge line under an `After merge:` line in the report" in text
+    assert "never counted as run or not run" in text
+
+
+def test_the_loop_tables_name_both_acceptance_lists() -> None:
+    lines = (PACKAGE / "skills" / "engineering-loop" / "SKILL.md").read_text().splitlines()
+    proof = next(line for line in lines if line.startswith("| **Proof.**"))
+    spec = next(line for line in lines if line.startswith("| Spec |"))
+    for row in (proof, spec):
+        assert "Before merge" in row and "After merge" in row
+
+
+def test_the_to_spec_template_holds_both_acceptance_lists() -> None:
+    for root in ("overlays", "."):
+        text = (PACKAGE / root / "skills" / "to-spec" / "SKILL.md").read_text()
+        assert _acceptance(text) == ["### Before merge", "### After merge"]
+        assert text.index("## Testing Decisions") < text.index("## Acceptance")
+        assert text.index("## Acceptance") < text.index("## Out of Scope")
+
+
+def test_the_board_setup_issue_template_holds_both_acceptance_lists() -> None:
+    stage_root = os.environ.get("CAPABILITY_PACK_QUALIFICATION_STAGE_ROOT")
+    if stage_root is not None:
+        assert Path(stage_root).resolve() == PACKAGE.resolve()
+        pytest.skip("the board-setup template is outside the explicit package stage")
+    board = PACKAGE.parent / "utilities/skills/github-project-board-setup/references/templates.md"
+    assert _acceptance(board.read_text()) == ["### Before merge", "### After merge"]
