@@ -453,7 +453,6 @@ def ensure_codex() -> None:
         raise Refused(
             f"Codex is not logged in and ${VAR} is not set: run `cloud_verifier.py seed` on the host, then start a new session"
         )
-    REDACT.seed(seeded)
     try:
         left = (
             f"its access token has {days_left(json.loads(base64.b64decode(seeded))):.1f} days left"

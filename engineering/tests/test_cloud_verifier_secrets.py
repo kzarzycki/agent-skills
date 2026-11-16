@@ -130,6 +130,8 @@ def environment_api(world, fail: str = "", echo: dict | None = None):
             new = {"access_token": jwt(10), "refresh_token": fake(), "id_token": fake()}
             world["shown"].extend(new.values())
             return new
+        if body is not None:  # the copy stored in the environment is a secret too
+            world["shown"].append(body["config"]["environment"][VAR])
         if fail and fail in url and body is not None:
             raise ValueError(f"rejected {headers} {json.dumps(body)}")
         return {"name": "dev", "config": {"environment": {}, "network_config": {}}}
