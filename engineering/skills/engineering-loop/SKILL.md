@@ -765,13 +765,17 @@ or the owner's private network.
 - **One heavy gate per host slot.** Leads on one host share its cores, and gates run at
   once slow every one of them several times over and starve new sessions of the capacity
   to start. So the project's test part runs behind a host-wide slot that every worktree
-  shares: the template's `scripts/gate-slot` (`GATE_SLOTS` slots, default 1; a lock frees
-  itself however the run exits), or, in a project without it, a lock on the same file,
-  `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock`, around its heavy check. A parallel runner takes the
-  `GATE_JOBS` it exports (the cores free at start), never `-n auto` or a fixed count.
+  shares: the template's `scripts/gate-slot`, or, in a project without it, a lock on a file
+  of the same set, `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, around its heavy check (a lock
+  frees itself however the run exits). The host has `GATE_SLOTS` slots, `gate.1.lock` to `gate.<N>.lock`: the
+  variable when it is a whole number from 1, else a third of the host's cores, at least 1. A run takes the first
+  free one and waits, saying so once, only when every one is held; `GATE_SLOTS=1` keeps one heavy gate on the host
+  at a time, for a project whose gate needs the whole host. A parallel runner takes the `GATE_JOBS` it exports (the
+  cores free at start), never `-n auto` or a fixed count, and never more than the host's cores divided by `<N>`,
+  since `<N>` gates load the host at once and a larger share each would oversubscribe it.
   `test:changed` while iterating and the lint parts stay outside the slot. `approvals.py`'s
-  `local-ci` and `land` take that file's lock around each gate step they run and set
-  `LOOP_GATE_SLOT_HELD` to its path, as `mutate.py` does, so a wrapper under them that finds
+  `local-ci` and `land` take a slot's lock around each gate step they run and set
+  `LOOP_GATE_SLOT_HELD` to its path, as `mutate.py` does (both through one function, `approvals.take_slot`), so a wrapper under them that finds
   the variable naming its lock takes none, since it would wait on its own parent.
   Beside it runs a short lane, a lock on `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.short.lock`, which
   a job expected to finish within the policy's `short_seconds` (Settings, default 120) takes instead of the
