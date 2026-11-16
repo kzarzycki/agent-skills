@@ -5360,12 +5360,22 @@ def add_standing(path: Path, text: str) -> None:
     bullet = "- " + " ".join(text.split())
     try:
         old = path.read_text() if path.exists() else ""
-        m = re.search(r"^## Standing decisions\b.*?\n(.*?)(?=^## |\Z)", old, re.M | re.S)
+        m = re.search(
+            r"^## Standing decisions\b.*?\n(.*?)(?=^## |\Z)", old, re.MULTILINE | re.DOTALL
+        )
         if m:
             body = m.group(1).rstrip("\n")
-            new = old[: m.start(1)] + (body + "\n" if body else "") + bullet + "\n\n" + old[m.end(1) :].lstrip("\n")
+            new = (
+                old[: m.start(1)]
+                + (body + "\n" if body else "")
+                + bullet
+                + "\n\n"
+                + old[m.end(1) :].lstrip("\n")
+            )
         else:
-            new = (old.rstrip("\n") + "\n\n" if old.strip() else "") + f"## Standing decisions\n{bullet}\n"
+            new = (
+                old.rstrip("\n") + "\n\n" if old.strip() else ""
+            ) + f"## Standing decisions\n{bullet}\n"
         path.write_text(new)
     except OSError as e:
         raise Fail(f"{path}: {reason(e)}") from e
@@ -7368,7 +7378,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             text = text_or_file(args.message)[0]
             if not args.stop and not args.dry_run:
                 if not args.decisions:
-                    raise Fail("broadcast posts only a stop order: give --stop, or --decisions FILE")
+                    raise Fail(
+                        "broadcast posts only a stop order: give --stop, or --decisions FILE"
+                    )
                 add_standing(args.decisions, text)
                 print(f"added to {args.decisions}; posted to no session")
                 return 0
