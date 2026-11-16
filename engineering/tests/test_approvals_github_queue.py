@@ -670,3 +670,16 @@ def test_a_bare_land_that_cannot_list_the_merged_prs_says_so_and_still_exits_0(
     code, lines = queue["land"]()
     assert code == 0, lines
     assert lines[-1] == "land could not list the PRs merged into main: gh: timed out"
+
+
+def test_an_entry_awaiting_checks_on_a_commit_github_names_no_date_for_is_left_alone(
+    queue: dict[str, Any],
+) -> None:
+    queue["opened"](7)
+    queue["pulls"][7]["mergeQueueEntry"] = {
+        "state": "AWAITING_CHECKS",
+        "position": 1,
+        "headCommit": None,
+    }
+    assert queue["land"]("7")[0] == approvals.WAITING
+    assert (queue["dequeued"], queue["enqueued"]) == ([], [])
