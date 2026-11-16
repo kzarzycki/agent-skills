@@ -8,6 +8,8 @@ disable-model-invocation: true
 
 Answer from this map which skill or flow fits the user's situation. A **flow** is a path through the skills: most work runs along the main flow, on-ramps merge onto it, and the rest is standalone or vocabulary underneath.
 
+The summaries here are for orientation: read a skill's `SKILL.md` before stating what it does or recommending that a step be skipped.
+
 ## Main flow: idea to ship
 
 1. **`/grill-with-docs`** sharpens the idea by interview and records what it learns in `GLOSSARY.md` and ADRs. Use it whenever there is a repo to write into; without one, use `/grilling`.

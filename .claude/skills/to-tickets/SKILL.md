@@ -35,7 +35,7 @@ Present the breakdown as a numbered list: title, blocked by, and the end-to-end 
 
 Render the approved tickets as one complete batch, every ticket's title, body, labels and blockers in dependency order (blockers first), and have the user review it before any issue is created. Publish it following the realization file's issue-batch protocol for approval, markers, resume, creation and relationship wiring rather than improvising tracker commands. Don't close or edit a parent issue; linking the tickets to it is the only change it gets.
 
-- **Real tracker** (GitHub, Linear, …): one issue per ticket in the issue template, linked by the platform's native blocking and sub-issue relationships where it has them, otherwise by the "Blocked by" section. Label each `ready-for-agent` unless told otherwise; the tickets are agent-grabbable by construction.
+- **Real tracker** (GitHub, Linear, …): one issue per ticket in the issue template, linked by the platform's native blocking relationship where it has one, otherwise by the "Blocked by" section. When the source was an existing issue, make each ticket its sub-issue (the realization file's operation). Label each `ready-for-agent` unless told otherwise; the tickets are agent-grabbable by construction.
 - **Local files**, when the repo configures them instead: one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order, in the local template; never one combined file.
 
 Leave file paths and code snippets out of tickets; they go stale. The exception is a prototype snippet (state machine, reducer, schema, type shape) that states a decision more precisely than prose: inline only its decision-rich part and say it came from a prototype.
@@ -57,7 +57,7 @@ The end-to-end behaviour this ticket makes work, from the user's perspective, no
 
 ## Blocked by
 
-- A reference to each blocking ticket, or "None (can start immediately)".
+- A reference to each blocking ticket, or "None (can start immediately)". Omit this section when the blockers will be set as native edges (the tracker has a native blocking relationship).
 
 </issue-template>
 
