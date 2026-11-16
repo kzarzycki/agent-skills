@@ -5736,6 +5736,8 @@ def checkout(
     monkeypatch.setattr(approvals, "git", git)
     monkeypatch.setattr(approvals.subprocess, "run", run)
     monkeypatch.setattr(approvals, "one_repo", lambda: None)  # the faked run serves the check alone
+    # nor the host's load: macOS reads swap through `sysctl`, a run Linux's /proc/meminfo spares (#1009)
+    monkeypatch.setattr(approvals, "host_load", lambda: {"load_1m": None, "swap_used_mb": None})
     monkeypatch.setattr(approvals, "project", lambda: (None, state["loop"]))
     return state
 
