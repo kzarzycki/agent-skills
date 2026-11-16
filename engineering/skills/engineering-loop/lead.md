@@ -244,7 +244,8 @@ design, wireframes included for a UI, and delegate the rest.
      `## Evidence`, keeping the `Token estimate:` line and adding below it the `Tokens spent:` line
      that `python3 <orchestrating-agents' folder>/scripts/omnigent_agent.py usage <session>...`
      prints last, naming each top-level session your notes list (a verifier on another host, a
-     cloud worker), since your session's record totals only its own tree, children included. A
+     worker started outside your tree), since your session's record totals only its own tree,
+     children included. A
      session Omnigent has no usage for is named as uncounted rather than guessed, since a guess
      would read as a measurement. Information only, like the estimate; on another backend, write
      `Tokens spent: not counted (<backend>)`. Where the change is high risk, the merge approval is also the owner's
