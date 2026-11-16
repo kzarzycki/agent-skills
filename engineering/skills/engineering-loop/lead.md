@@ -114,7 +114,7 @@ design, wireframes included for a UI, and delegate the rest.
    Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
 7. **Verify** (board: `Verify`). A worker report or fix-round gate log naming a test that passed only on its
    retry is yours to record on its `Flaky:` issue, and at the third occurrence to start
-   the skip PR from main (SKILL.md, Flaky tests). Commit and push. Before a verifier starts,
+   the skip PR from main (SKILL.md, Flaky tests). Commit and push; under `ci: false`, then post the pass with `approvals.py local-ci <pr> --head <the pushed sha>`, since GitHub can still show the previous head for a moment after a push and a bare `local-ci <pr>` would post on it: `--head` waits about 30 s for the push, refuses naming both heads, and its one output line names the head it posted on. Before a verifier starts,
    each deviation on the worker report's `Spec deviations:` line is fixed, or taken to the
    owner as a scope change (SKILL.md, Approvals and proof: rewrite the issue, then
    `needs-owner`), since a verifier pass on a narrowed spec only finds what the report
@@ -180,7 +180,22 @@ design, wireframes included for a UI, and delegate the rest.
    author context, `--model` other than the author's (`--author-model`), the report labelled `Verifier: claude,
    same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
    of quota)". Either fallback may land a low or medium risk change; `check merge` reads its family as a lower
-   tier and refuses a high-risk one, which waits for Codex or the owner. agy on another host takes the brief
+   tier and refuses a high-risk one, which waits for Codex or the owner, unless the owner has turned on the
+   policy's `risk.lower_tier_until: <date>` (SKILL.md, Settings): through that UTC day `check merge` lands it on the
+   fallback's satisfied verdict and prints a line naming the setting; every other proof and the go still hold, and
+   the day after, the date lifts nothing and the refusal says so. Such a PR keeps `risk:high` and its review
+   heading, so a default-tier review afterwards finds it. This lists each merged one whose newest verdict came
+   from a lower tier or a fallback, since the day the setting was turned on:
+
+   ```sh
+   gh pr list --state merged --label risk:high --search 'merged:>=<YYYY-MM-DD>' --limit 200 \
+     --json number,title,reviews --jq '.[]
+       | select([.reviews[].body | select(test("^Verifier \\("))] | last // ""
+         | test("^Verifier \\([^)]*\\b(agy|gemini[\\w.-]*|same-family|mid|small)\\b"))
+       | "#\(.number) \(.title)"'
+   ```
+
+   agy on another host takes the brief
    as a file there (backends/omnigent.md, Antigravity). Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), naming the last green head (the newest head whose
    gate passed) for the fix round's gate (worker.md, Gates and push). A correctness finding's fix
