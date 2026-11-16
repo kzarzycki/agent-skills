@@ -17,7 +17,7 @@
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
-    uv run scripts/approvals.py local-ci <pr> [--run]      # with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
+    uv run scripts/approvals.py local-ci <pr> [--head <sha>] [--run]  # --head: the commit just pushed, refused if GitHub's head stays another; with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
     uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
@@ -6919,7 +6919,34 @@ def no_pass(head: str, why: list[str] | tuple[str, ...] = ()) -> str:
     return "\n".join(lines)
 
 
-def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = False) -> int:
+# `local-ci <pr> --head`: how many times the PR's head is read, and the seconds between reads (about 30 s in all)
+HEAD_READS, HEAD_WAIT = 4, 10
+
+
+def settled_head(pr: int, want: str | None) -> str:
+    """The PR's head from GitHub. With `want` (the commit just pushed, in full), GitHub may still answer the previous
+    head for a moment after a push, so a different head is read again, HEAD_READS times in all, HEAD_WAIT seconds apart;
+    one still different is refused, naming both, before anything is read or posted on it. `want` is compared whole,
+    never as a prefix, so a short or non-hex one is refused."""
+    if want is not None and not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", want):
+        raise Refused(
+            f"--head {want}: the whole commit hash (40 hex digits), not a prefix or a ref"
+        )
+    for read in range(HEAD_READS):
+        head = pull_request(pr)["headRefOid"]
+        if want is None or head.lower() == want.lower():
+            return head
+        if read < HEAD_READS - 1:
+            time.sleep(HEAD_WAIT)
+    raise Refused(
+        f"PR #{pr}'s head on GitHub is {head}, not {want} after {HEAD_READS} reads over"
+        f" {(HEAD_READS - 1) * HEAD_WAIT} s: nothing posted; run it again once GitHub shows the push"
+    )
+
+
+def local_ci(
+    pr: int | None, proof: dict[str, Any] | None = None, run: bool = False, want: str | None = None
+) -> int:
     """With a PR: post a pass on its head, from a recorded pass on its tree; with `run`, from a run now when there is
     none, and without it refuse then (no_pass). Without a PR: on a
     clean checkout, reuse or run and record a pass on HEAD, for `local-ci <pr>` to reuse; on one with changes, run the
@@ -6927,7 +6954,8 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
     `head_proof` (`--head-proof`, no PR), the gate takes its `env` names from this process (gate), and the pass is
     published as the head proof instead. With `gate_steps`, a step with a pass on the tree is reused and only the
     others run; in a cloud session a `host` step is left for a host, said, and the steps that passed are published,
-    but no head proof, nor a pass for a PR, since the gate as a whole has none."""
+    but no head proof, nor a pass for a PR, since the gate as a whole has none. With a PR it prints one line naming the
+    head it posted on; `want` (`--head <sha>`) is the head the caller just pushed (settled_head)."""
     if pr is None:
         passed = proof["env"] if proof else ()
         # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
@@ -6962,7 +6990,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
         elif not record.get("published"):
             publish(head, record)
         return 0
-    head = pull_request(pr)["headRefOid"]
+    head = settled_head(pr, want)
     why: list[str] = []
     if record := reusable(head, why=why):
         source = f"{reused(record)}\n"
@@ -6981,6 +7009,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
         pr,
         f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
     )
+    print(f"{CHECKED} on {head}: posted on PR #{pr}")
     return 0
 
 
@@ -7212,6 +7241,7 @@ def main(argv: list[str]) -> int:
     recording.add_argument("--run", action="store_true")
     recording.add_argument("--status", metavar="HEAD")
     recording.add_argument("--head-proof", action="store_true")
+    recording.add_argument("--head", metavar="SHA")
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int, nargs="*")
     merging.add_argument("--wait", action="store_true")
@@ -7280,12 +7310,18 @@ def main(argv: list[str]) -> int:
                 raise Refused(
                     "local-ci takes a PR number, or --record to record a run on HEAD before one exists"
                 )
+            if args.head and args.pr is None:
+                raise Refused("local-ci --head goes with a PR: --record gates HEAD itself")
             proof = None
             if args.head_proof and (proof := head_proof(project()[1])) is None:
                 raise Refused("loop.md sets no `head_proof`: --head-proof has no status to publish")
             if args.head_proof and not args.record:
                 raise Refused("--head-proof goes with --record: the head proof is the checkout's")
-            return local_ci(args.pr, proof, args.run) if leads_its_session() else detach(argv)
+            return (
+                local_ci(args.pr, proof, args.run, args.head)
+                if leads_its_session()
+                else detach(argv)
+            )
         if args.command == "land":
             if args.only and not args.pr:
                 parser.error("land --only needs a PR: there is nothing to restrict to")
