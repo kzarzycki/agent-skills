@@ -119,8 +119,9 @@ for a verifier, whose report then counts only with its ``SATISFIED:`` line, and 
 the same way, printing every line with the local time and, with ``--notify``, posting it into that
 session as ``Supervisor: <line>`` (reviving it first when reaped). A terminal event drops the
 session's line once posted; an error or an event-less ``--timeout`` is logged and the loop goes on.
-It also raises one ``landed`` line per repo and new default-branch head of the repos its followed
-leads work in, whatever the leads write (``gh api``; the first head seen is only stored).
+It also raises one ``landed`` line per repo and new default-branch head of the repos its followed,
+non-``direct`` leads work in, whatever the leads write, when a PR its own GitHub login opened is among
+those merged (``gh api``; the first head seen is only stored).
 With ``--console``, the chief of staff's or a project manager's console (it labels its own session ``omni.role=cos``, or, on ``<repo>-leads.registry``, ``omni.role=pm`` and ``omni.repos=<repo>``), each poll it also writes ``<registry
 stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a restart re-posts no event it
 settled), appends each event to ``<registry stem>.events.jsonl``, labels each session with
@@ -4015,9 +4016,11 @@ def default_head(repo: str) -> str:
 
 
 def merged_since(repo: str, old: str, new: str) -> str:
-    """The PRs merged between ``old`` and ``new``, as ``#12, #13``: the ``(#N)`` that ends each
-    commit's subject (a squash or queue merge), or a ``Merge pull request #N`` subject; else how
-    many commits came with no PR named, or why the comparison was not read."""
+    """The PRs merged between ``old`` and ``new`` that the GitHub login this runs as opened, the
+    one leads open theirs with, as ``#12, #13``: the ``(#N)`` that ends each commit's subject (a
+    squash or queue merge), or a ``Merge pull request #N`` subject. Empty when none is (a bot's or
+    another person's PR, a commit naming no PR), since no lead landed it; a comparison, login or
+    author not read is named, so the landing is still raised."""
     try:
         subjects = gh(
             "api",
@@ -4032,8 +4035,24 @@ def merged_since(repo: str, old: str, new: str) -> str:
         m = re.search(r"\(#(\d+)\)\s*$", s) or re.match(r"Merge pull request #(\d+)", s)
         if m and f"#{m[1]}" not in prs:
             prs.append(f"#{m[1]}")
-    n = len(subjects)
-    return ", ".join(prs) or f"no PR named in its {n} commit{'s' * (n != 1)}"
+    if not prs:
+        return ""
+    try:
+        me = gh("api", "user", "--jq", ".login").strip()
+    except Fail as e:
+        return f"{', '.join(prs)} (authors not read: {e})"
+    # ponytail: the login stands for "a lead's PR", so the owner's own hand-made PR counts too;
+    # telling them apart needs a PR-to-lead link that nothing records yet.
+    mine = []
+    for pr in prs:
+        try:
+            author = gh("api", f"repos/{repo}/pulls/{pr[1:]}", "--jq", ".user.login").strip()
+        except Fail as e:
+            mine.append(f"{pr} (author not read: {e})")
+            continue
+        if author == me:
+            mine.append(pr)
+    return ", ".join(mine)
 
 
 def pr_label(label: object) -> tuple[str, int] | None:
@@ -6044,17 +6063,19 @@ def supervise_registry(
         lead["label"] = {"line": line, "at": at}
 
     def landings() -> None:
-        """Watch the default branch of each repo a followed lead's workspace is a checkout of
-        (``workspace_repo``, read once per lead): when its head moved since the last one seen, one
-        ``landed`` event per repo and new head, raised on the repo's first lead in the registry,
-        naming the new sha and the PRs merged since (``merged_since``). The first head seen for a
+        """Watch the default branch of each repo a followed lead not marked ``direct`` has its
+        workspace in (``workspace_repo``, read once per lead), since a direct lead's owner reads
+        its landings in its session: when its head moved since the last one seen and a lead's PR
+        is among those merged since (``merged_since``), one ``landed`` event per repo and new
+        head, raised on the repo's first such lead in the registry, naming the new sha and those
+        PRs; a move with none (a bot's or a person's merge) only stores the head. The first head seen for a
         repo is only stored (``heads`` in the state), so a start reports no old merge. The lead's
         own words play no part, so a landing it wrote under a wait, or none at all, still comes."""
         for sid in [s for s in repos if s not in owed]:
             del repos[sid]
         first: dict[str, str] = {}  # each repo's first lead
         for sid, owes in owed.items():
-            if not owes[3]:
+            if not owes[3] or owes[5]:  # not followed, or the owner drives it
                 continue
             if sid not in repos:
                 try:
@@ -6077,8 +6098,7 @@ def supervise_registry(
                 continue
             log(("head", repo), None)
             old = heads.get(repo)
-            if old and old != sha:
-                merged = merged_since(repo, old, sha)
+            if old and old != sha and (merged := merged_since(repo, old, sha)):
                 line = (
                     f"{repo}: its default branch moved to {sha}; merged since {old[:12]}: {merged}"
                 )
