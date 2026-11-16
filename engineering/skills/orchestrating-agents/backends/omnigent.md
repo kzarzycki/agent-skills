@@ -316,6 +316,9 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
 - A send answers `queued`/`launching` even when the brief never arrives. The script
   counts a start only once that one line is a user message in the history, and otherwise
   abandons the session and retries once with a fresh one, titled `<title>-r<n>`.
+  A signal (a caller's `timeout`) while it confirms leaves the session unarchived, since the
+  brief may be in: it prints the session id on stdout and exits with the signal's code, and
+  `status <sid>` says whether to wait on that session or start another.
 - Omnigent refuses (409) a title an earlier child of the same parent holds, archived or
   not, such as a rerun `s120-verifier-p1`. The create then tries the next free
   `<title>-r<n>`, the same sequence the retry above uses, and prints the title it used. A create that fails (a timeout
@@ -646,7 +649,8 @@ alive while it declares a live background task. A named session that shows no li
 read, a registry or children not read, and a wait no session answers (the owner, `CI` with no
 session titled so) leave the deadline as above. Each deadline is one event per
 lead and `progress_at`, so new progress starts a new chain. A lead whose registry line has the
-`direct` field (`omnigent_agent.py direct <session>`, `--off` clears it), one the owner drives in
+`direct` field (`start --top-level --direct` writes it at launch, `omnigent_agent.py direct <session>`
+later, `--off` clears it), one the owner drives in
 its own session, has no deadline at all: its quiet ends and `USER NEEDED` are recorded, not
 routed, since the owner reads them there, and the `no event in <n>s` log line leaves it out; its
 `DONE`, failures and prompts route as any lead's.
