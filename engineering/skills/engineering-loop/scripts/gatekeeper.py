@@ -259,7 +259,7 @@ counts for nothing. A step without `paths`, with an empty list, or whose paths m
 the tree, as above; a change to `gate_steps` changes every keyed step's key. A cloud session runs no `host` step: `local-ci --record` there runs the rest, says
 which step it left and exits 0, with no head proof and no pass on the whole gate, which `local-ci <pr>` and `land` need
 and refuse there. Each step that runs, or the one gate, holds the host gate slot (an exclusive flock on
-`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock`) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
+`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, n up to `GATE_SLOTS`, a third of the cores by default) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
 path so a wrapper in it takes no lock of its own, and none when this process already runs under it; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
 nothing and exits with the check's code, so it is the gate while iterating too and its clean green run, the last one,
 records itself.
@@ -4638,6 +4638,7 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
                 ),
                 work,
                 out,
+                land=True,
             )
         code = done["code"]
         if done["left"]:
@@ -5445,13 +5446,14 @@ def ran_step(
     cwd: Path | None = None,
     out: Any = None,
     load: dict[str, Any] | None = None,
+    land: bool = False,
 ) -> tuple[int, int, int]:
     """Run one gate step (gate_plan) in its environment (gate_env) under the host gate slot (heavy_slot), in `cwd`
     with its output to `out` when given: its exit, the seconds it ran and the seconds it waited for the slot; `load`,
     when given, gets the host's load at the step's start, once it holds the slot (host_load). A command that isn't
     there is refused, naming the gate, since loop.md is hand-written."""
     where = {"cwd": cwd, "stdout": out, "stderr": subprocess.STDOUT} if cwd else {}
-    with heavy_slot(step["name"], out) as (slot, waited):
+    with heavy_slot(step["name"], out, land) as (slot, waited):
         if load is not None:
             load.update(host_load())
         began = time.monotonic()
@@ -5507,10 +5509,104 @@ def gate_env(step: dict[str, Any]) -> dict[str, str]:
 SLOT_HELD = "LOOP_GATE_SLOT_HELD"
 
 
-def slot_path() -> str:
-    """The host gate slot's lock file, the one SKILL.md, mutate.py and the project's gate wrapper name."""
+def slot_file(name: str) -> str:
+    """A lock file of the host's gate, by name, in the cache every worktree and clone of the host shares."""
     cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.environ.get("HOME", "~"), ".cache")
-    return os.path.join(cache, "engineering-loop", "gate.1.lock")
+    return os.path.join(cache, "engineering-loop", name)
+
+
+def gate_slots() -> int:
+    """How many heavy gates the host runs at once: `GATE_SLOTS` when it is a whole number from 1, else a third of the
+    host's cores, at least 1 (the template's `scripts/gate-slot` reads the same variable). `GATE_SLOTS=1` keeps one
+    gate at a time. A runner under a slot takes at most the host's cores divided by this number as its `GATE_JOBS`,
+    since this many gates load the host at once and a larger share would oversubscribe it."""
+    said = os.environ.get("GATE_SLOTS", "")
+    if said.isdigit() and int(said) >= 1:
+        return int(said)
+    return max(1, (os.cpu_count() or 1) // 3)
+
+
+def slot_path(number: int = 1) -> str:
+    """The lock file of heavy gate slot `number` (1..gate_slots()), the one SKILL.md, mutate.py and the project's gate
+    wrapper name."""
+    return slot_file(f"gate.{number}.lock")
+
+
+def held_slot() -> str | None:
+    """The heavy slot this process already runs under (SLOT_HELD names its lock file), else None: any `gate.<n>.lock`
+    of the slot directory, whatever `GATE_SLOTS` this process reads, since its parent may have taken a slot under
+    another count."""
+    held = os.environ.get(SLOT_HELD) or ""
+    same = os.path.dirname(held) == os.path.dirname(slot_path())
+    return held if same and re.fullmatch(r"gate\.\d+\.lock", os.path.basename(held)) else None
+
+
+def land_waiting() -> bool:
+    """Whether a land's gate step waits for a slot on this host (take_slot's `land`): it holds a shared flock on the
+    `gate.land.lock` file while it waits, so an exclusive try on that file fails exactly then."""
+    fd = os.open(slot_file("gate.land.lock"), os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
+
+def take_slot(
+    waiting: Callable[[], None] = lambda: None, land: bool = False
+) -> tuple[int | None, str]:
+    """Hold the first free heavy slot's exclusive flock and return (its fd, its path); closing the fd frees the lock,
+    as does the process dying. A run already under a holder of a slot (held_slot) takes none: (None, that path), since
+    it would wait on its own parent. With every slot held, `waiting` is called once and the slots are tried again until
+    one frees. A land's gate step (`land`) holds the landing lock of its base while it waits, which blocks every other
+    land, so it takes a freed slot ahead of any PR gate: flock has no priority, so a waiting land marks itself (a shared
+    flock on `gate.land.lock`, held only while it waits) and a PR gate that finds the mark takes no slot, trying again
+    until no land waits."""
+    if (held := held_slot()) is not None:
+        return None, held
+    os.makedirs(os.path.dirname(slot_path()), exist_ok=True)
+    mark = os.open(slot_file("gate.land.lock"), os.O_WRONLY | os.O_CREAT, 0o644) if land else None
+    if mark is not None:
+        fcntl.flock(mark, fcntl.LOCK_SH)
+    said = False
+    try:
+        if land and gate_slots() == 1:
+            # one slot: block in the kernel, as a gate wrapper's own flock does, so a land competes evenly with a
+            # wrapper waiter instead of losing every race to it by polling; PR gates poll and yield to the mark
+            fd = os.open(slot_path(), os.O_WRONLY | os.O_CREAT, 0o644)
+            try:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    waiting()
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+            except BaseException:
+                os.close(fd)
+                raise
+            return fd, slot_path()
+        while True:
+            if land or not land_waiting():
+                for number in range(1, gate_slots() + 1):
+                    path = slot_path(number)
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        os.close(fd)
+                        continue
+                    except BaseException:
+                        os.close(fd)
+                        raise
+                    return fd, path
+            if not said:
+                said = True
+                waiting()
+            time.sleep(0.2)
+    finally:
+        if mark is not None:
+            os.close(mark)
 
 
 # the heavy wrapper (SKILL.md, One heavy gate per host slot): a command prefix a host sets in a file outside every repo,
@@ -5654,29 +5750,21 @@ def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int,
 
 
 @contextlib.contextmanager
-def heavy_slot(name: str, out: Any = None) -> Any:
-    """Hold the host gate slot, an exclusive flock on slot_path(), for one gate step: (its path, the whole seconds
-    waited for it). A run already under a holder of that path (SLOT_HELD) takes none and waits 0, since it would wait
-    on its own parent. A wait is said once, as `local-ci: <step>: waiting for the host gate slot`."""
-    path, began = slot_path(), time.monotonic()
-    if os.environ.get(SLOT_HELD) == path:
-        yield path, 0
-        return
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
+def heavy_slot(name: str, out: Any = None, land: bool = False) -> Any:
+    """Hold a host gate slot (take_slot, `land` as it takes it) for one gate step: (its path, the whole seconds
+    waited for it). A wait is said once, as `local-ci: <step>: waiting for the host gate slot`."""
+    began = time.monotonic()
+    fd, path = take_slot(
+        lambda: print(
+            f"local-ci: {name}: waiting for the host gate slot", file=out or sys.stderr, flush=True
+        ),
+        land,
+    )
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print(
-                f"local-ci: {name}: waiting for the host gate slot",
-                file=out or sys.stderr,
-                flush=True,
-            )
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        yield path, round(time.monotonic() - began)
+        yield path, 0 if fd is None else round(time.monotonic() - began)
     finally:
-        os.close(fd)
+        if fd is not None:
+            os.close(fd)
 
 
 def local_ci_dir() -> Path:
@@ -5881,6 +5969,7 @@ def run_steps(
     cwd: Path | None = None,
     out: Any = None,
     passed: list[str] | tuple[str, ...] = (),
+    land: bool = False,
 ) -> dict[str, Any]:
     """Run each gate step (gate_plan, with `passed`) that has no pass on `tree` (step_pass) and may run here (here),
     in order, each under the host gate slot (ran_step), and record each that passes as run on `commit`, with the
@@ -5916,7 +6005,7 @@ def run_steps(
             done["left"].append(step["name"])
             continue
         load: dict[str, Any] = {}
-        code, seconds, waited = ran_step(step, cwd, out, load)
+        code, seconds, waited = ran_step(step, cwd, out, load, land)
         done["ran"].append(step["name"])
         if code or (changed := changes()):
             return done | {"code": code, "step": step, "changed": "" if code else changed}
@@ -5953,10 +6042,18 @@ def head_moved(commit: str, tree: str, now: str, now_tree: str) -> str:
 
 
 def stored(record: dict[str, Any]) -> None:
-    """Write a pass this clone ran to its record file (recorded)."""
+    """Write a pass this clone ran to its record file (recorded), whole or not at all: two gates on one tree and command
+    run at once on two slots (gate_slots), and a plain write truncates the file first, so a reader between the two
+    would find it empty. The record goes to a file of this process's own, then replaces the shared one in one step."""
     where = recorded(record["tree"], record["command"])
     where.parent.mkdir(parents=True, exist_ok=True)
-    where.write_text(json.dumps(record, indent=2) + "\n")
+    partial = where.with_name(f"{where.name}.{os.getpid()}.partial")
+    try:
+        partial.write_text(json.dumps(record, indent=2) + "\n")
+        os.replace(partial, where)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
 
 
 def origin_of(record: dict[str, Any]) -> str:
