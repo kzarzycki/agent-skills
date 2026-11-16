@@ -3881,6 +3881,27 @@ def test_a_cloud_start_waits_on_its_bridge_host_s_memory_by_its_row(
     assert og.hosts_of == {"s0": "far", "s1": "far"}
 
 
+def test_a_far_pinned_main_checkout_is_refused_before_any_session_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "oz", meminfo=mem(9000), loadavg="0.10 0 0")
+    pin = '{"remote": {"defaultEnvironmentId": "env_1"}}'
+    files = og.procs["far"]
+    argv = [*far_start("claude", "oz"), "--workspace", "/there/repo"]
+    files["/there/repo/.claude/settings.local.json"] = pin
+    files["/there/repo/.git"] = "HEAD\nconfig"  # a folder: a main checkout
+    assert omnigent_agent.main(argv) == 1
+    assert "claude-cloud" in capsys.readouterr().err and og.sessions == {}
+    files["/there/repo/.git"] = "gitdir: /there/main/.git/worktrees/repo"  # a worktree
+    assert omnigent_agent.main(argv) == 0
+    files["/there/repo/.git"] = "HEAD\nconfig"
+    del files["/there/repo/.claude/settings.local.json"]  # no pin
+    assert omnigent_agent.main(argv) == 0 and len(og.sessions) == 2
+    og.others, og.archived = [], list(og.sessions)  # no live session there to read through
+    assert omnigent_agent.main(argv) == 0
+    assert "pinned-checkout check skipped" in capsys.readouterr().err
+
+
 def test_a_host_s_row_overridden_by_its_variable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
