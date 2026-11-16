@@ -191,3 +191,58 @@ def test_mutate_takes_a_free_slot_when_the_first_is_held(repo: Path, tmp_path: P
     assert slots(record) == [approvals.slot_path(2)]
     assert not any("waiting" in line for line in log(repo))
     assert clean(repo)
+
+
+def test_a_waiting_land_takes_the_next_free_slot_ahead_of_a_waiting_pr_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A land holds the landing lock while its gate waits, so it takes a freed slot first though the PR gate waited
+    longer. The slot frees between two polls of the PR gate, so a plain race would give it to the PR gate."""
+    monkeypatch.setenv("GATE_SLOTS", "1")
+    hold(1, 1.52)
+    order: list[str] = []
+
+    def gate(name: str, land: bool) -> None:
+        fd, _ = approvals.take_slot(land=land)
+        order.append(name)
+        time.sleep(0.4)
+        assert fd is not None
+        os.close(fd)
+
+    pr = threading.Thread(target=gate, args=("pr", False))
+    land = threading.Thread(target=gate, args=("land", True))
+    pr.start()
+    time.sleep(0.5)
+    land.start()
+    for thread in (pr, land):
+        thread.join(20)
+    assert order == ["land", "pr"]
+
+
+def test_a_lands_batch_gate_runs_its_steps_as_a_land(
+    steps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the land's own gate steps take a slot ahead of PR gates: gate_batch hands run_steps `land`, and run_steps
+    hands it to each step it runs."""
+    seen: list[bool] = []
+    real = approvals.run_steps
+
+    def run_steps(*_args: Any, land: bool = False, **_kw: Any) -> dict[str, Any]:
+        seen.append(land)
+        return {"code": 0, "left": [], "ran": [], "records": [], "step": None}
+
+    monkeypatch.setattr(approvals, "run_steps", run_steps)
+    assert approvals.gate_batch(steps["repo"], []) == (steps["tree"], "reused")
+    assert seen == [True]
+
+    lands: list[bool] = []
+
+    def ran_step(_step: Any, _cwd: Any, _out: Any, _load: Any, land: bool) -> tuple[int, int, int]:
+        lands.append(land)
+        return 0, 0, 0
+
+    monkeypatch.setattr(approvals, "run_steps", real)
+    monkeypatch.setattr(approvals, "ran_step", ran_step)
+    monkeypatch.setattr(approvals, "step_pass", lambda *_a, **_k: None)
+    approvals.run_steps(steps["head"], steps["tree"], lambda: "", steps["repo"], land=True)
+    assert lands and all(lands)

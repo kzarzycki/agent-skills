@@ -5149,6 +5149,7 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
                 ),
                 work,
                 out,
+                land=True,
             )
         code = done["code"]
         if done["left"]:
@@ -5958,13 +5959,14 @@ def ran_step(
     cwd: Path | None = None,
     out: Any = None,
     load: dict[str, Any] | None = None,
+    land: bool = False,
 ) -> tuple[int, int, int]:
     """Run one gate step (gate_plan) in its environment (gate_env) under the host gate slot (heavy_slot), in `cwd`
     with its output to `out` when given: its exit, the seconds it ran and the seconds it waited for the slot; `load`,
     when given, gets the host's load at the step's start, once it holds the slot (host_load). A command that isn't
     there is refused, naming the gate, since loop.md is hand-written."""
     where = {"cwd": cwd, "stdout": out, "stderr": subprocess.STDOUT} if cwd else {}
-    with heavy_slot(step["name"], out) as (slot, waited):
+    with heavy_slot(step["name"], out, land) as (slot, waited):
         if load is not None:
             load.update(host_load())
         began = time.monotonic()
@@ -6051,43 +6053,70 @@ def held_slot() -> str | None:
     return held if held in [slot_path(number) for number in range(1, gate_slots() + 1)] else None
 
 
-def take_slot(waiting: Callable[[], None] = lambda: None) -> tuple[int | None, str]:
+def land_waiting() -> bool:
+    """Whether a land's gate step waits for a slot on this host (take_slot's `land`): it holds a shared flock on the
+    `gate.land.lock` file while it waits, so an exclusive try on that file fails exactly then."""
+    fd = os.open(slot_file("gate.land.lock"), os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
+
+def take_slot(
+    waiting: Callable[[], None] = lambda: None, land: bool = False
+) -> tuple[int | None, str]:
     """Hold the first free heavy slot's exclusive flock and return (its fd, its path); closing the fd frees the lock,
     as does the process dying. A run already under a holder of a slot (held_slot) takes none: (None, that path), since
     it would wait on its own parent. With every slot held, `waiting` is called once and the slots are tried again until
-    one frees."""
+    one frees. A land's gate step (`land`) holds the landing lock of its base while it waits, which blocks every other
+    land, so it takes a freed slot ahead of any PR gate: flock has no priority, so a waiting land marks itself (a shared
+    flock on `gate.land.lock`, held only while it waits) and a PR gate that finds the mark takes no slot, trying again
+    until no land waits."""
     if (held := held_slot()) is not None:
         return None, held
     os.makedirs(os.path.dirname(slot_path()), exist_ok=True)
+    mark = os.open(slot_file("gate.land.lock"), os.O_WRONLY | os.O_CREAT, 0o644) if land else None
+    if mark is not None:
+        fcntl.flock(mark, fcntl.LOCK_SH)
     said = False
-    while True:
-        for number in range(1, gate_slots() + 1):
-            path = slot_path(number)
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                os.close(fd)
-                continue
-            except BaseException:
-                os.close(fd)
-                raise
-            return fd, path
-        if not said:
-            said = True
-            waiting()
-        time.sleep(0.2)
+    try:
+        while True:
+            if land or not land_waiting():
+                for number in range(1, gate_slots() + 1):
+                    path = slot_path(number)
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        os.close(fd)
+                        continue
+                    except BaseException:
+                        os.close(fd)
+                        raise
+                    return fd, path
+            if not said:
+                said = True
+                waiting()
+            time.sleep(0.2)
+    finally:
+        if mark is not None:
+            os.close(mark)
 
 
 @contextlib.contextmanager
-def heavy_slot(name: str, out: Any = None) -> Any:
-    """Hold a host gate slot (take_slot) for one gate step: (its path, the whole seconds waited for it). A wait is said
+def heavy_slot(name: str, out: Any = None, land: bool = False) -> Any:
+    """Hold a host gate slot (take_slot, `land` as it takes it) for one gate step: (its path, the whole seconds waited for it). A wait is said
     once, as `local-ci: <step>: waiting for the host gate slot`."""
     began = time.monotonic()
     fd, path = take_slot(
         lambda: print(
             f"local-ci: {name}: waiting for the host gate slot", file=out or sys.stderr, flush=True
-        )
+        ),
+        land,
     )
     try:
         yield path, 0 if fd is None else round(time.monotonic() - began)
@@ -6298,6 +6327,7 @@ def run_steps(
     cwd: Path | None = None,
     out: Any = None,
     passed: list[str] | tuple[str, ...] = (),
+    land: bool = False,
 ) -> dict[str, Any]:
     """Run each gate step (gate_plan, with `passed`) that has no pass on `tree` (step_pass) and may run here (here),
     in order, each under the host gate slot (ran_step), and record each that passes as run on `commit`, with the
@@ -6333,7 +6363,7 @@ def run_steps(
             done["left"].append(step["name"])
             continue
         load: dict[str, Any] = {}
-        code, seconds, waited = ran_step(step, cwd, out, load)
+        code, seconds, waited = ran_step(step, cwd, out, load, land)
         done["ran"].append(step["name"])
         if code or (changed := changes()):
             return done | {"code": code, "step": step, "changed": "" if code else changed}

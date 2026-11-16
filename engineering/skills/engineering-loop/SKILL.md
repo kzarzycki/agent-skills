@@ -773,6 +773,9 @@ or the owner's private network.
   at a time, for a project whose gate needs the whole host. A parallel runner takes the `GATE_JOBS` it exports (the
   cores free at start), never `-n auto` or a fixed count, and never more than the host's cores divided by `<N>`,
   since `<N>` gates load the host at once and a larger share each would oversubscribe it.
+  A land's gate step holds the landing lock while it waits, which stops every other land, so it takes a freed slot
+  ahead of a waiting PR gate: a waiting land holds a shared lock on `gate.land.lock`, and a PR gate that finds it
+  takes no slot until no land waits.
   `test:changed` while iterating and the lint parts stay outside the slot. `approvals.py`'s
   `local-ci` and `land` take a slot's lock around each gate step they run and set
   `LOOP_GATE_SLOT_HELD` to its path, as `mutate.py` does (both through one function, `approvals.take_slot`), so a wrapper under them that finds
