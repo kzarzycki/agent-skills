@@ -180,7 +180,22 @@ design, wireframes included for a UI, and delegate the rest.
    author context, `--model` other than the author's (`--author-model`), the report labelled `Verifier: claude,
    same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
    of quota)". Either fallback may land a low or medium risk change; `check merge` reads its family as a lower
-   tier and refuses a high-risk one, which waits for Codex or the owner. agy on another host takes the brief
+   tier and refuses a high-risk one, which waits for Codex or the owner, unless the owner has turned on the
+   policy's `risk.lower_tier_until: <date>` (SKILL.md, Settings): through that UTC day `check merge` lands it on the
+   fallback's satisfied verdict and prints a line naming the setting; every other proof and the go still hold, and
+   the day after, the date lifts nothing and the refusal says so. Such a PR keeps `risk:high` and its review
+   heading, so a default-tier review afterwards finds it. This lists each merged one whose newest verdict came
+   from a lower tier or a fallback, since the day the setting was turned on:
+
+   ```sh
+   gh pr list --state merged --label risk:high --search 'merged:>=<YYYY-MM-DD>' --limit 200 \
+     --json number,title,reviews --jq '.[]
+       | select([.reviews[].body | select(test("^Verifier \\("))] | last // ""
+         | test("^Verifier \\([^)]*\\b(agy|gemini[\\w.-]*|same-family|mid|small)\\b"))
+       | "#\(.number) \(.title)"'
+   ```
+
+   agy on another host takes the brief
    as a file there (backends/omnigent.md, Antigravity). Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), naming the last green head (the newest head whose
    gate passed) for the fix round's gate (worker.md, Gates and push). A correctness finding's fix
