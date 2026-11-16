@@ -136,15 +136,32 @@ def test_verifier_start_refuses_a_workspace_not_at_the_briefs_reviewed_head(
     assert "HEAD not read" in capsys.readouterr().err
 
 
-def test_a_start_with_a_pr_whose_head_moved_asks_for_a_new_brief(tmp_path: Path) -> None:
+def test_a_start_with_a_pr_whose_head_moved_asks_for_a_new_brief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
     git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
     subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "c"], check=True)
-    brief = "- Reviewed head: " + "a" * 40
-    with pytest.raises(
-        omnigent_agent.Fail, match=r"brief for the current head \(`approvals.py brief 7`"
-    ):
-        omnigent_agent.refuse_stale_workspace(FakeOmnigent(), brief, tmp_path, False, "h", 7)
+    old = subprocess.run(
+        [*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    # the PR got a push after the brief: the start's own checkout moves the workspace past it
+    monkeypatch.setattr(
+        omnigent_agent,
+        "check_out_head",
+        lambda ws, pr: subprocess.run(
+            [*git, "commit", "-q", "--allow-empty", "-m", "d"], check=True
+        ),
+    )
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text(f"- Reviewed head: {old}\n")
+    argv = ["start", "codex", "t", "b.md", str(tmp_path / "r.md"), "--role", "verifier.md"]
+    assert omnigent_agent.main([*argv, "--pr", "7"]) == 1
+    err = capsys.readouterr().err
+    assert "`approvals.py brief 7`" in err and "checkout --detach" not in err
+    assert og.sessions == {}
 
 
 def test_verifier_start_reads_a_remote_workspace_head_through_a_session_there(

@@ -7615,7 +7615,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 file=sys.stderr,
             )
         if verifier:
-            refuse_stale_workspace(og, brief, workspace, remote, host, args.pr)
+            refuse_stale_workspace(og, brief, workspace, remote, host, verifies)
         if here:  # a remote lead's report is written on its host, never read here
             report.parent.mkdir(parents=True, exist_ok=True)
         # what the child's tree held before it ran: wait fails only on a change it made
