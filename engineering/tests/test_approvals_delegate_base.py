@@ -104,7 +104,7 @@ def test_mains_delegate_all_covers_a_branch_whose_policy_lacks_it(
     assert len(checkout["posted"]) == 1
 
 
-def test_a_default_branch_with_no_policy_falls_back_to_the_checkouts(
+def test_a_default_branch_with_no_policy_gives_no_delegates_go_whatever_the_checkout_says(
     checkout: dict[str, Any],
     hub: dict[str, list[dict[str, Any]]],
     capsys: pytest.CaptureFixture[str],
@@ -113,12 +113,10 @@ def test_a_default_branch_with_no_policy_falls_back_to_the_checkouts(
     git_in(origin, "rm", "-q", str(LOOP))
     git_in(
         origin, "commit", "-q", "-m", "no policy"
-    )  # main holds none: today's rule reads the checkout
+    )  # main holds none: the policy is main's (#1047), so the checkout's `delegate: all` is no rule
     LOOP.write_text(ALL)
-    assert delegate(capsys)[0] == 0
-    hub.clear()
-    LOOP.write_text(RULE)
     assert delegate(capsys)[0] == 1
+    assert hub == {}
 
 
 def test_mains_gatekeeper_md_policy_is_read_as_the_checkouts_would_be(
