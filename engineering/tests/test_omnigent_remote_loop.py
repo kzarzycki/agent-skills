@@ -104,10 +104,9 @@ def test_a_lead_on_another_host_gets_the_autocompact_its_loop_md_there_names() -
     [
         {**CHECKOUT},
         {f"{REPO}/.git/HEAD": ""},
-        {**CHECKOUT, LOOP: None},
         {f"{REPO}/src/x": "", "/docs/agents/loop.md": "Lead autocompact: 150k\n"},
     ],
-    ids=["no loop.md", "no docs/agents", "loop.md gone before the read", "outside a checkout"],
+    ids=["no loop.md", "no docs/agents", "outside a checkout"],
 )
 def test_a_remote_checkout_with_no_loop_md_reads_as_no_line(files: dict[str, str | None]) -> None:
     og = Server(files)
@@ -156,11 +155,14 @@ def test_a_start_reads_the_remote_loop_md_once_and_only_when_a_claude_session_ne
     assert [c for c in og.calls if c == ("READ", LOOP)] == [("READ", LOOP)] * reads
 
 
-@pytest.mark.parametrize("why", ["live", "unreadable", "listing"])
+@pytest.mark.parametrize("why", ["live", "unreadable", "listing", "404 on a listed file"])
 def test_an_unreadable_remote_loop_md_fails_the_start_naming_host_and_path_with_no_create(
     why: str,
 ) -> None:
-    og = Server({**CHECKOUT, LOOP: "Lead autocompact: 150k\n"}, live=why != "live")
+    text = (
+        None if why == "404 on a listed file" else "Lead autocompact: 150k\n"
+    )  # an older host's 404
+    og = Server({**CHECKOUT, LOOP: text}, live=why != "live")
     if why == "unreadable":
         og.read_file = lambda sid, path: (_ for _ in ()).throw(omnigent_agent.Fail("HTTP 502"))  # type: ignore[method-assign]
     if why == "listing":

@@ -1384,8 +1384,8 @@ class Omnigent:
         for s in live_sessions(self, host_id)[:FAR_READS]:
             try:
                 return self.read_file(str(s["id"]), target)
-            except Gone:
-                return ""
+            except Gone:  # listed, so an older host refusing the read, not "no line"
+                why = f"read answered 404 for a file the listing shows (session {s['id']})"
             except Fail as e:
                 why = f"read failed: {e}"
         raise Fail(f"{LOOP_FILE}: host {host} can't read {target}: {why}")
@@ -1516,18 +1516,17 @@ def project_line(
     return found.group(1) if found else ""
 
 
-def placement_hosts(
-    workspace: str, og: Omnigent | None = None, host_id: str | None = None
-) -> list[str]:
+def placement_hosts(workspace: str) -> list[str]:
     """The hosts the project's ``docs/agents/loop.md`` names for a gate or verifier: those of
     ``Placement: hosts: <a>, <b>``; none for ``same machine`` (the default when the line is
     absent) or ``CI``. The old ``Verifier hosts: <a>, <b>`` line reads as the same list and
-    ``Cloud verifier:`` as the same machine; the new line wins."""
-    new = project_line(workspace, "Placement", og, host_id)
+    ``Cloud verifier:`` as the same machine; the new line wins. It reads the caller's checkout, never a
+    remote one: the line picks the host, so no target host exists yet to read it from."""
+    new = project_line(workspace, "Placement")
     if new:
         value = new[len("hosts:") :] if new.lower().startswith("hosts:") else ""
     else:
-        value = project_line(workspace, "Verifier hosts", og, host_id)
+        value = project_line(workspace, "Verifier hosts")
     return [h for h in (x.strip() for x in value.split(",")) if h]
 
 
