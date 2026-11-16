@@ -121,6 +121,8 @@ def assert_clean(capfd, shown: list[str]) -> str:
 def environment_api(world, fail: str = "", echo: dict | None = None):
     """The environment API: `fail` names an environment whose store fails with an error echoing what was sent."""
 
+    refreshed: list[str] = []
+
     def post_json(url: str, body: dict | None, headers: dict) -> dict:
         if url == cv.REFRESH_URL:
             if echo is not None:
@@ -129,11 +131,12 @@ def environment_api(world, fail: str = "", echo: dict | None = None):
                 )
             new = {"access_token": jwt(10), "refresh_token": fake(), "id_token": fake()}
             world["shown"].extend(new.values())
+            refreshed.extend(new.values())
             return new
         if body is not None:  # the copy stored in the environment is a secret too
             world["shown"].append(body["config"]["environment"][VAR])
         if fail and fail in url and body is not None:
-            raise ValueError(f"rejected {headers} {json.dumps(body)}")
+            raise ValueError(f"rejected {headers} {json.dumps(body)} after {refreshed}")
         return {"name": "dev", "config": {"environment": {}, "network_config": {}}}
 
     return post_json
@@ -168,6 +171,21 @@ def test_a_refused_refresh_that_echoes_the_refresh_token_prints_no_secret(
     monkeypatch.setattr(cv, "post_json", environment_api(world, echo=echo))
     assert cv.main(["seed", "--env", "env_A"]) == 2
     assert "was refused (HTTP 400" in assert_clean(capfd, world["shown"])
+
+
+def test_a_seed_home_whose_refresh_is_refused_prints_no_secret(world, monkeypatch, capfd) -> None:
+    (
+        Path(os.environ["CODEX_HOME"]) / "auth.json"
+    ).unlink()  # no host login: the seed home's is used
+    seed = login(2)  # under --min-days: refreshed first
+    (Path(os.environ["CODEX_CLOUD_HOME"]) / "auth.json").write_text(json.dumps(seed))
+    world["shown"].extend(values(seed))
+    echo = {
+        "error": {"code": seed["tokens"]["refresh_token"], "message": seed["tokens"]["id_token"]}
+    }
+    monkeypatch.setattr(cv, "post_json", environment_api(world, echo=echo))
+    assert cv.main(["seed", "--env", "env_A"]) == 2
+    assert "no usable Codex login" in assert_clean(capfd, world["shown"])
 
 
 @pytest.fixture
@@ -274,7 +292,8 @@ def test_an_unexpected_exception_prints_its_traceback_redacted_and_exits_1(
 
 
 def test_a_debug_print_of_the_variables_opening_is_masked(world, monkeypatch, capfd) -> None:
-    monkeypatch.setattr(cv, "verify", lambda *_: print(os.environ[VAR][:30]) or 0)
+    token = world["vm"]["tokens"]["access_token"]
+    monkeypatch.setattr(cv, "verify", lambda *_: print(os.environ[VAR][:30], token[5:15]) or 0)
     assert cv.main(["verify", "--pr", "1", "--brief", "b.md"]) == 0
     assert "[secret]" in assert_clean(capfd, world["shown"])
 
