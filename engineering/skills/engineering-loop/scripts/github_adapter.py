@@ -488,14 +488,15 @@ GROUP_RED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE"}
 
 def rest_queue(found: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
     """The PR's `mergeQueueEntry` and `removals` as PULL reads them, from REST, which has neither: `found`, its REST
-    pull, and `events`, its timeline. The entry: awaiting checks on its group's commit while GitHub's readonly ref for
-    it (`gh-readonly-queue/<base>/pr-<n>-<sha>`) exists, else queued while the timeline's newest queue event is an add;
-    none, and no removal, for a PR whose timeline has no queue event.
+    pull, and `events`, its timeline. The entry, only while the timeline's newest queue event is an add (GitHub may
+    delete a group's ref a while after it took the PR out): awaiting checks on its group's commit while GitHub's
+    readonly ref for it (`gh-readonly-queue/<base>/pr-<n>-<sha>`) exists, else queued; none, and no removal, for a PR
+    whose timeline has no queue event.
     A `removed_from_merge_queue` event names no reason, so each gets GraphQL's from what REST reads on its group (the
     commit of the newest `merge_group` run on such a ref since the PR's add before it): `merged`, the last one, when
     GitHub reports the PR merged or the group's commit is in the base (GitHub takes it out a moment before it reports
     the merge); `failed_checks` when a check the base requires failed on the group's commit; `merge_conflict`, the last
-    one, when GitHub reports the PR conflicting; else `unknown`, which counts for nothing, as `checks_timed_out` and
+    one, when GitHub reports the PR conflicting or is still working that out; else `unknown`, which counts for nothing, as `checks_timed_out` and
     `manual` do."""
     number, base, merged = found["number"], found["base"]["ref"], bool(found.get("merged"))
     prefix = f"gh-readonly-queue/{base}/pr-{number}-"
@@ -503,17 +504,17 @@ def rest_queue(found: dict[str, Any], events: list[dict[str, Any]]) -> dict[str,
     entry = None
     if not queue:  # never in a merge queue: no ref, no group
         return {"mergeQueueEntry": entry, "removals": {"nodes": []}}
-    if refs := [] if merged else rest_pages(f"git/matching-refs/heads/{prefix}"):
-        group = refs[-1]["object"]["sha"]
-        made = rest(f"repos/{{owner}}/{{repo}}/commits/{group}")["commit"]["committer"]["date"]
-        suites = rest(f"repos/{{owner}}/{{repo}}/commits/{group}/check-suites?per_page=1")
-        commit = {
-            "committedDate": made,
-            "checkSuites": {"totalCount": suites.get("total_count") or 0},
-        }
-        entry = {"state": "AWAITING_CHECKS", "position": None, "headCommit": commit}
-    elif not merged and queue and queue[-1]["event"] == QUEUE_ADDED:
+    if not merged and queue[-1]["event"] == QUEUE_ADDED:
         entry = {"state": "QUEUED", "position": None, "headCommit": None}
+        if refs := rest_pages(f"git/matching-refs/heads/{prefix}"):
+            group = refs[-1]["object"]["sha"]
+            made = rest(f"repos/{{owner}}/{{repo}}/commits/{group}")["commit"]["committer"]["date"]
+            suites = rest(f"repos/{{owner}}/{{repo}}/commits/{group}/check-suites?per_page=1")
+            commit = {
+                "committedDate": made,
+                "checkSuites": {"totalCount": suites.get("total_count") or 0},
+            }
+            entry = {"state": "AWAITING_CHECKS", "position": None, "headCommit": commit}
     removed = [event for event in queue if event["event"] == QUEUE_REMOVED]
     if not removed:
         return {"mergeQueueEntry": entry, "removals": {"nodes": []}}
@@ -538,7 +539,8 @@ def rest_queue(found: dict[str, Any], events: list[dict[str, Any]]) -> dict[str,
             reason = "failed_checks"
         elif last and group and in_base(base, group):
             reason = "merged"
-        elif last and found.get("mergeable") is False:
+        # false: conflicting; null: GitHub working it out again, which the gatekeeper waits on, as on a host
+        elif last and found.get("mergeable") is not True:
             reason = "merge_conflict"
         nodes.append(
             {"reason": reason, "createdAt": at, "beforeCommit": {"oid": commit} if commit else None}

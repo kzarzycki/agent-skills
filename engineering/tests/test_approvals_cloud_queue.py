@@ -471,8 +471,60 @@ def test_rest_pull_reads_the_queue_state_from_the_timeline(cloud: Cloud) -> None
     cloud.routes["repos/{owner}/{repo}/actions/runs?event=merge_group&per_page=100"] = {
         "workflow_runs": []
     }
+    cloud.routes["repos/{owner}/{repo}/pulls/7"]["mergeable"] = True  # GitHub knows: no conflict
     pull = approvals.github.rest_pull(7)
     assert pull["mergeQueueEntry"] is None
     assert pull["removals"] == {
         "nodes": [{"reason": "unknown", "createdAt": "2026-10-03T00:01:00Z", "beforeCommit": None}]
     }
+
+
+def test_a_red_removal_is_read_while_the_groups_readonly_ref_outlives_it(
+    cloud_queue: dict[str, Any],
+) -> None:
+    """The timeline says the PR is out: a ref GitHub has not deleted yet is no entry, so the red is handled."""
+    head = cloud_queue["opened"](7)
+    cloud_queue["land"]("7")
+    red_out(cloud_queue, 7, "g1", 410)
+    cloud_queue["suites"]["g1"] = 1
+    cloud_queue["readonly"][7] = "g1"
+    code, lines = cloud_queue["land"]("7")
+    assert code == approvals.WAITING, lines
+    assert not any("is in the merge queue" in line for line in lines), lines
+    [note] = notes_on(cloud_queue, 7, approvals.QUEUE_RED)
+    assert f"Head: {head}\nGroup: g1\n" in note
+    assert cloud_queue["enqueued"] == [(7, head), (7, head)]
+
+
+def test_a_conflict_removal_is_read_while_the_groups_readonly_ref_outlives_it(
+    cloud_queue: dict[str, Any],
+) -> None:
+    cloud_queue["opened"](7)
+    cloud_queue["land"]("7")
+    cloud_queue["build"](7, "g1")
+    cloud_queue["out"](7)
+    cloud_queue["readonly"][7] = "g1"
+    cloud_queue["pulls"][7]["mergeable"] = "CONFLICTING"
+    code, lines = cloud_queue["land"]("7")
+    assert code == 1, lines
+    assert "PR #7 conflicts with main: merge `origin/main` in" in lines
+    assert len(cloud_queue["enqueued"]) == 1
+
+
+def test_a_removal_read_while_github_works_out_mergeability_waits_as_on_a_host(
+    cloud_queue: dict[str, Any],
+) -> None:
+    """REST's `mergeable: null` after a removal: the gatekeeper waits a poll, as for GraphQL's `UNKNOWN` conflict."""
+    head = cloud_queue["opened"](7)
+    cloud_queue["land"]("7")
+    cloud_queue["build"](7, "g1")
+    cloud_queue["out"](7)
+    cloud_queue["pulls"][7]["mergeable"] = "UNKNOWN"
+    assert cloud_queue["land"]("7") == (
+        approvals.WAITING,
+        ["GitHub is still working out whether PR #7 conflicts with main"],
+    )
+    assert cloud_queue["enqueued"] == [(7, head)]
+    cloud_queue["pulls"][7]["mergeable"] = "MERGEABLE"  # GitHub decided: no conflict
+    assert cloud_queue["land"]("7")[0] == approvals.WAITING
+    assert cloud_queue["enqueued"] == [(7, head), (7, head)]
