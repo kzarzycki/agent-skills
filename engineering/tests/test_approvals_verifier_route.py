@@ -59,7 +59,10 @@ def test_a_lower_codex_tier_is_still_refused_for_high_risk(
     monkeypatch: pytest.MonkeyPatch, tier: str
 ) -> None:
     assert gate(f"codex/terra-6.1/med {tier}", "low — a fixture", monkeypatch) == []
-    assert f"lower tier ({tier})" in gate(f"codex/terra-6.1/med {tier}", "high — CI permissions", monkeypatch)[0]
+    assert (
+        f"lower tier ({tier})"
+        in gate(f"codex/terra-6.1/med {tier}", "high — CI permissions", monkeypatch)[0]
+    )
 
 
 def test_the_dated_override_is_gone(monkeypatch: pytest.MonkeyPatch) -> None:

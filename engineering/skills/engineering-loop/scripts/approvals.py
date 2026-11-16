@@ -2034,8 +2034,7 @@ def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
     tiers = [
         found[1]
         for number, lines in on_head
-        if number == last
-        and (found := LOWER_TIER.search(lines["Family"]))
+        if number == last and (found := LOWER_TIER.search(lines["Family"]))
     ]
     return tiers[0].lower() if tiers else None
 
