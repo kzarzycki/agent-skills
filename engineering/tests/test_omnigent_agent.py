@@ -2664,6 +2664,21 @@ def test_outside_a_session_the_server_is_named_or_the_one_login_never_config_yam
     assert omnigent_agent.Omnigent("https://a.example").base == "https://a.example"
 
 
+def test_a_prefixed_host_id_in_config_is_held_bare_so_this_host_s_sessions_are_local(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("host:\n  host_id: host_ab12\n")
+    monkeypatch.setattr(omnigent_agent, "CONFIG", config)
+    monkeypatch.setenv("RUNNER_SERVER_URL", "https://work.example")
+    og = omnigent_agent.Omnigent()
+    assert og.host_id == "ab12"  # the server's form (#1133)
+    assert not omnigent_agent.elsewhere(og, {"host_id": "ab12"})
+    assert omnigent_agent.elsewhere(og, {"host_id": "cd34"})
+    config.write_text("host:\n  host_id: ab12\n")
+    assert omnigent_agent.Omnigent().host_id == "ab12"  # a bare one stays as it is
+
+
 def test_a_session_acts_on_its_own_server_over_the_config_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -10840,7 +10855,8 @@ def in_checkout(og: Fleet) -> None:
 
 def github(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> list[tuple[str, ...]]:
     """``gh`` faked: the default branch's head is ``head[0]``, which a test moves between polls;
-    a comparison lists two merges. Each call is recorded."""
+    a comparison lists two merges, both PRs opened by the login it runs as. Each call is
+    recorded."""
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 0)
     calls: list[tuple[str, ...]] = []
 
@@ -10848,6 +10864,8 @@ def github(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> list[tuple[str, 
         calls.append(args)
         if args[1] == "repos/o/r/commits/HEAD":
             return head[0] + "\n"
+        if args[1] == "user" or args[1].startswith("repos/o/r/pulls/"):
+            return "me\n"
         if args[1] == f"repos/o/r/compare/{OLD}...{NEW}":
             return "Fix the gate (#12)\nSupervisor: one more (#781) (#13)\nchore: bump\n"
         raise AssertionError(args)
@@ -10950,11 +10968,17 @@ def test_a_landing_the_lead_wrote_under_a_named_wait_reaches_the_manager(
     assert f"[act] {line} (its default branch moved: a step owed after a landing)" in post
 
 
+FAR = "until 2099-01-01T00:00Z"  # a timed wait's end: the supervisor raises no deadline before it
+
+
 def heads_moving(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> None:
-    """``gh`` faked: the default branch's head is ``head[0]``, any comparison one merge."""
+    """``gh`` faked: the default branch's head is ``head[0]``, any comparison one merge of a PR the
+    login it runs as opened."""
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 0)
 
     def gh(*args: str, timeout: float = 0) -> str:
+        if args[1] == "user" or args[1].startswith("repos/o/r/pulls/"):
+            return "me\n"
         return head[0] + "\n" if args[1] == "repos/o/r/commits/HEAD" else "Fix the gate (#12)\n"
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
@@ -10965,9 +10989,10 @@ def test_a_turn_end_from_before_the_run_is_in_no_post_though_its_label_shows_it(
 ) -> None:
     """#877's first case: a lead that never settles, its last message weeks old, is the row of
     two landings' posts; neither gives that message as its turn end."""
-    registry = direct_lead(tmp_path)  # the owner drives it: no deadline, so it never settles
+    registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    old = "STILL WORKING: waiting on the verifier; an outage notice from weeks ago"
+    # a wait timed far ahead: no deadline, so it never settles
+    old = f"STILL WORKING: waiting on the verifier {FAR}; an outage notice from weeks ago"
     og = Lead(told("brief", 30 * 86400), ending(old, 29 * 86400))
     in_checkout(og)
     head = ["1" * 40]
@@ -11058,9 +11083,9 @@ def test_a_state_kept_before_seen_from_reports_no_old_turn_end(
 ) -> None:
     """A state file written before ``seen_from`` was kept starts the lead's cutoff at the run that
     reads it, so its old last message is not the turn end of the next post."""
-    registry = direct_lead(tmp_path)  # the owner drives it: no deadline, so it never settles
+    registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    old = "STILL WORKING: waiting on the verifier since last month"
+    old = f"STILL WORKING: waiting on the verifier {FAR}, since last month"  # it never settles
     og = Lead(told("brief", 30 * 86400), ending(old, 29 * 86400))
     in_checkout(og)
     head = ["1" * 40]
