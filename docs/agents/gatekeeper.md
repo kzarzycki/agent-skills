@@ -19,4 +19,5 @@ risk:
     - CODEOWNERS
     - docs/agents/loop.md
     - docs/agents/gatekeeper.md
+  lower_tier_until: 2026-11-20   # Codex is out of quota until 2026-11-20 05:47 UTC: a fallback verdict lands a high-risk PR through that UTC day
 ```
