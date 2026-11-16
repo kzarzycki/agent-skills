@@ -135,8 +135,9 @@ itself (no post, a nudge, a revive, telling the leads registered ``after=`` it o
 ``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
 what its rules can't settle, and posts what needs the notified session or the owner as
 ``Supervisor [act] b-<id>: …`` or ``Supervisor [owner] b-<id>: …``, at most one post per 5
-minutes; ``--fyi post`` posts every line as without it too, ``--decisions`` names the owner's
-standing decisions for the small model. Without it, it writes none of these and posts every line.
+minutes, and for a lead marked ``direct`` nothing but a failed turn that lost its runner, which
+the owner can't see in its session; ``--fyi post`` posts every line as without it too,
+``--decisions`` names the owner's standing decisions for the small model. Without it, it writes none of these and posts every line.
 A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
 a user service running that same command line less ``--install`` and ``--log`` (a systemd user unit
 ``omnigent-supervise-<hash>`` with ``Restart=always`` on Linux, a launchd agent
@@ -371,14 +372,20 @@ USAGE_LIMIT_ERRORS = (
 # provider recovers: the supervisor revives it again after each backoff (minutes, the last
 # repeated) until the next revive would fall past the cap, and only then reports it. A false
 # match costs revives, never a report: the cap still reports it.
+# A failure whose text matches one of these lost the session's runner or host: the session died
+# where its own reader can't see why, so even a direct lead's is routed.
+LOST_RUNNER_ERRORS = (
+    r"\brunner (lost|is offline|disconnected|went away)",  # the host went away: a lost runner
+    r"\bhost (went away|restarted|rebooted|is (offline|unreachable|gone))",  # or a host restart
+    r"made no progress for \d+s",  # a cloud worker cut with its host reads as silence
+)
+LOST_RUNNER = re.compile("|".join(LOST_RUNNER_ERRORS), re.IGNORECASE)
 TRANSIENT_ERRORS = (
     r"authentication_failed",  # an auth outage on the provider's side, not a bad key
     r"Attention Required",  # a Cloudflare challenge page (a 403)
     r"\b5\d\d\b",  # any 5xx, a cloud create's 503 included
     r"overloaded",
-    r"\brunner (lost|is offline|disconnected|went away)",  # the host went away: a lost runner
-    r"\bhost (went away|restarted|rebooted|is (offline|unreachable|gone))",  # or a host restart
-    r"made no progress for \d+s",  # a cloud worker cut with its host reads as silence
+    *LOST_RUNNER_ERRORS,
     r"\brate_limit",  # a provider's rate limit: it clears within minutes, per session
     *USAGE_LIMIT_ERRORS,
 )
@@ -461,8 +468,9 @@ FOLLOW_FIELD = "follow"  # a registry line's mark for a lead followed, not owed 
 AFTER_FIELD = "after="  # a followed lead's line: the lead whose DONE it waits on
 # A followed manager's line: the registry of its own leads, the sessions its wait on its leads names
 LEADS_FIELD = "leads="
-# A followed lead the owner drives directly, in its own session: no deadline, nudge or quiet-end
-# routing, since the owner is its follower; its DONE, failures and prompts are still routed.
+# A followed lead the owner drives directly, in its own session: the owner is its follower, so
+# nothing about it is posted (no deadline, nudge, DONE, prompt or failure) but a failure that lost
+# its runner, which the owner can't see there; its DONE still tells the leads waiting on it.
 DIRECT_FIELD = "direct"
 # The supervisor's own lines to a followed lead, which start no new progress chain.
 OWN_LINES = ("Supervisor: ", REVIVED, NO_REPORT)
@@ -4999,7 +5007,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``wake`` (a timed
     wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``park`` (a usage limit:
     join the parked sessions, which one probe at a time revives), ``done``
-    (act, and tell each lead waiting on it), ``act`` (to the chief of staff), ``owner`` (queued
+    (act, and tell each lead waiting on it; for a ``direct`` lead only the telling), ``act`` (to the chief of staff), ``owner`` (queued
     for the owner) and ``read-report`` (read ``head``, then route again). Nothing approves: a
     prompt is the owner's."""
     # ``wait`` is the lead's, from its report when its last message is only the path
@@ -5008,10 +5016,12 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "act", "its default branch moved: a step owed after a landing"
     if kind == "archived":
         return "rule", "absorb", "archived: drop its row"
+    error = event.get("line", "").partition("\n")[0]  # the status line, not the lead's own words
+    lost = kind == "failed" and (event.get("offline") or LOST_RUNNER.search(error))
+    if event.get("direct") and kind != "ended" and not lost:  # its turn end: below, read first
+        return "rule", "record", "the owner drives it directly: they see it in its session"
     if kind == "blocked":
         if event.get("question"):
-            if event.get("direct"):
-                return "rule", "record", "the owner drives it directly: they answer its question"
             return (
                 "rule",
                 "act",
@@ -5041,8 +5051,6 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     if kind == "news":  # a session its wait names ended: only the waiter can act on it
         return "rule", "tell", "a session its wait names ended: tell the waiter"
     if kind == "deadline":
-        if event.get("direct"):
-            return "rule", "record", "the owner drives it directly: no deadline"
         if wait == "parked":
             return "rule", "record", "parked: no deadline"
         if wait != "unknown":
@@ -5070,7 +5078,9 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if not ENDING.search(text) and wait == "unknown" and not event.get("direct"):
             return "rule", "act", "its report names no ending"
     ending = ending_of(text)
-    if event.get("direct") and ending != "DONE":
+    if event.get("direct"):  # the owner reads its turn there: a DONE tells only its waiters
+        if ending == "DONE":
+            return "rule", "done", "done, driven by the owner: told only to the leads waiting on it"
         return "rule", "record", "the owner drives it directly: they read its turn there"
     if event.get("nudged") and not ending and wait == "unknown":  # its last words, unchanged
         return "rule", "act", "quiet again after its nudge"
@@ -5560,7 +5570,7 @@ def supervise_registry(
             }
         elif action == "tell":
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
-        elif action in ("act", "owner", "done"):
+        elif action in ("act", "owner") or action == "done" and not event["direct"]:
             queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
         if action == "act" and event["limit"] and event["capped"]:  # past the cap: no more probes
             for parked in state["leads"].values():
