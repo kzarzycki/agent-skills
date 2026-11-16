@@ -3149,7 +3149,7 @@ def test_worker_md_s_heavy_lock_command_waits_for_the_lock_and_passes_the_exit_t
 
     text = (Path(__file__).resolve().parents[1] / "skills/engineering-loop/worker.md").read_text()
     command = re.search(
-        r"`(perl -MFcntl=:flock .*?)\s+<path> uv run <this skill's folder>/scripts/approvals\.py heavy\s+mise run check`",
+        r"`(perl -MFcntl=:flock .*?)\s+<path> uv run <this skill's folder>/scripts/approvals\.py push-gate`",
         text,
         re.DOTALL,
     )
