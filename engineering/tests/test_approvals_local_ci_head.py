@@ -29,6 +29,8 @@ def lagging(
         return {**pull(), "headRefOid": OLD if state["reads"] <= state["lag"] else new}
 
     monkeypatch.setattr(approvals, "pull_request", read)
+    # the base is not a head read: policy_from(base_branch(pr)) must not count against the head's lag
+    monkeypatch.setattr(approvals, "base_branch", lambda _pr: "main")
     monkeypatch.setattr(approvals, "comment", lambda n, body: state["posted"].append((n, body)))
     monkeypatch.setattr(approvals.time, "sleep", lambda s: state["slept"].append(s))
     monkeypatch.setattr(approvals, "publish", lambda head, *_a: state["published"].append(head))
