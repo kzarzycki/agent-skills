@@ -110,3 +110,21 @@ def test_head_goes_with_a_pr_not_with_record(
 ) -> None:
     assert approvals.main(["local-ci", "--record", "--head", OLD]) != 0
     assert "goes with a PR" in capsys.readouterr().out
+
+
+def test_a_head_that_shares_only_a_prefix_with_the_pushed_one_is_a_different_head(
+    lagging: dict[str, Any], steps: dict[str, Any]
+) -> None:
+    assert approvals.main(["local-ci", "--record"]) == 0
+    other = lagging["new"][:12] + ("0" if lagging["new"][12] != "0" else "1") * 28
+    with pytest.raises(approvals.Refused, match=other):
+        approvals.local_ci(7, want=other)
+    assert lagging["posted"] == []
+
+
+def test_an_upper_case_head_is_the_same_commit(
+    lagging: dict[str, Any], steps: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert approvals.main(["local-ci", "7", "--head", lagging["new"].upper()]) == 0
+    assert len(lagging["posted"]) == 1
