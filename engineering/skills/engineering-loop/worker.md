@@ -28,11 +28,13 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    folder>/scripts/approvals.py push-gate` before each push, or after it on a fix round (below):
    it runs loop.md's `Affected tests: <command> <base>` line, the project's lint and the tests
    its change affects against that base, and without the line `mise run check`, as before, so
-   a push runs the whole test tier only where the project names no selector. It is not the
-   gate of record and records nothing: that is CI's PR run on the head, and the merge queue
-   runs every part once. With `ci: false`, the gate of record is `approvals.py local-ci --record`
-   on the committed head you push for review (SKILL.md, Adopting the loop), in place of
-   `push-gate`, since the merge check needs that pass on the head. A test that passed only on its retry, or failed in a
+   a push runs the whole test tier only where the project names no selector. While the PR is
+   a draft, that run is the head's gate, since CI doesn't run on drafts; it records nothing.
+   Once the PR is ready, CI's PR run reruns lint and the same selection on a clean machine as
+   the head's gate of record, and the merge queue runs every part in full. With `ci: false`,
+   a head you push once the PR is ready takes `approvals.py local-ci --record` on the
+   committed head (SKILL.md, Adopting the loop) in place of `push-gate`, since the merge
+   check needs that pass on the head. A test that passed only on its retry, or failed in a
    file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report with
    the run it came from (a CI run's id, else the time the gate started), since that run and
    the head are what make it one occurrence.
