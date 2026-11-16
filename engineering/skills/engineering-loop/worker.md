@@ -24,8 +24,11 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
-2. **Gates and push.** Run `mise run test:changed` while iterating and `mise run check`
-   before each push, or after it on a fix round (below) (with `ci: false`, `approvals.py local-ci --record` on the committed
+2. **Gates and push.** Run `mise run test:changed` while iterating. Before each push (after it on a fix round, below)
+   run the project's lint and, where loop.md has an `Affected tests:` line, `uv run <this skill's folder>/scripts/approvals.py
+   affected-tests` on every head, which runs that selection against `git merge-base origin/<base> HEAD` in the variable
+   `Gate base:` names (else `GATE_BASE`), in place of the full `mise run check`; without the line, run `mise run check`
+   as today. A selector that selects nothing exits 0 (with `ci: false`, `approvals.py local-ci --record` on the committed
    head, SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
    file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report with
    the run it came from (a CI run's id, else the time the gate started), since that run and

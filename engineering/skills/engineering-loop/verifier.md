@@ -158,8 +158,7 @@ yourself, keeping standards and spec as separate axes.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is
   the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
-- **Gates and repros:** you may run `mise run check`. Run a gate as the bare command
-  (`mise run check`), with no wrapper, redirect or detach around it, and keep it running with
+- **Gates and repros:** don't rerun the gate: read the gate of record (the head's `gate` status and its `loop-gate/` record) and run the PR's own tests and acceptance checks. Run a repro or test as the bare command, with no wrapper, redirect or detach around it, and keep it running with
   your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain
   command, so a wrapped one asks for approval, and on a reviewed sandbox each ask is a paid
   model call. Then write its proof log from what it printed: the head's SHA, the command, its
