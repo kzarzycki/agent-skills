@@ -2168,13 +2168,26 @@ def listed(public: str, signers: Path) -> bool:
     )
 
 
+def armoured(value: str) -> str:
+    """A signing key as ssh-keygen reads it: literal `\\n` as newlines, and a value with no `-----BEGIN` line, which
+    a one-line environment variable leaves, as its base64 in OpenSSH armour at 70 characters a line."""
+    value = value.replace("\\n", "\n")
+    if "-----BEGIN" in value:
+        return value
+    body = "".join(value.split())
+    lines = [body[i : i + 70] for i in range(0, len(body), 70)]
+    return "\n".join(
+        ["-----BEGIN OPENSSH PRIVATE KEY-----", *lines, "-----END OPENSSH PRIVATE KEY-----"]
+    )
+
+
 @contextlib.contextmanager
 def placed(loop: str | None) -> Any:
     """Refuse a land where loop.md's `land.where` (default `host`) excludes the place it runs, before any PR is read.
     In a cloud session (CLOUD) also refuse one without the `land` section, since GitHub's own merge is GraphQL there
     and signs with GitHub's key, and one whose `signing_key_env` variable is unset, empty or holds a key the allowed
-    signers lack; else hold that key in a mode-0600 file in a fresh temporary directory, removed whatever happens, and
-    sign each squash with it (SIGNING). The key and the variable's value are never printed."""
+    signers lack; else hold that key (armoured(), if a one-line variable stripped its armour) in a mode-0600 file in
+    a fresh temporary directory, removed whatever happens, and sign each squash with it (SIGNING). The key and the variable's value are never printed."""
     global SIGNING
     land, cloud = settings(loop).get("land"), in_cloud()
     place = "a cloud session" if cloud else "a host"
@@ -2205,7 +2218,7 @@ def placed(loop: str | None) -> Any:
         raise Refused(f"no allowed signers file at {signers}")
     folder = Path(tempfile.mkdtemp(prefix="land-key-"))
     try:
-        file = folder / "key"
+        file, key = folder / "key", armoured(key)
         with os.fdopen(os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as out:
             out.write(key if key.endswith("\n") else key + "\n")
         public = subprocess.run(
