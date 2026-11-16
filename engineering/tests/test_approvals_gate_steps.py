@@ -17,6 +17,7 @@ from approvals_harness import (
     approvals,
     gatekeeper_md,
     git_in,
+    heavy_by_run,
     pull,
 )
 
@@ -265,6 +266,7 @@ def test_a_step_run_under_a_held_slot_takes_none_and_tells_its_command(
     fcntl.flock(held, fcntl.LOCK_EX)
     monkeypatch.setenv(approvals.SLOT_HELD, slot)
     monkeypatch.setattr(approvals.subprocess, "run", run)
+    monkeypatch.setattr(approvals, "run_heavy", heavy_by_run)
     step = threading.Thread(
         target=approvals.ran_step, args=(approvals.gate_plan()[0],), daemon=True
     )
@@ -336,6 +338,7 @@ def test_a_step_run_takes_the_slot_and_tells_its_command_it_is_held(
         return subprocess.CompletedProcess(words, 0)
 
     monkeypatch.setattr(approvals.subprocess, "run", run)
+    monkeypatch.setattr(approvals, "run_heavy", heavy_by_run)
     assert approvals.ran_step(approvals.gate_plan()[0]) == (0, 0, 0)
     assert seen[0][approvals.SLOT_HELD] == approvals.slot_path()
 

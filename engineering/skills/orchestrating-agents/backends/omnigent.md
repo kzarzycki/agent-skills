@@ -139,7 +139,7 @@ command, and its only other mode skips them all, so `start` refuses it a `--role
 `--permission-mode bypassPermissions` (or the variable) opts into that, which it launches with
 `--dangerously-skip-permissions`. Antigravity's effort is the user's configuration: agy names it
 in the model of its own settings (`Gemini 3.8 Flash (Low)`), which Omnigent copies into each
-session, so the launcher passes none. On another host agy takes the brief as a file there too, written through the host's file API: the render check it makes of a pasted first line fails on a long inline paste, which scrolls the line away. `--verifier-route gemini` (or `$OMNIGENT_VERIFIER_ROUTE`) on a verifier start picks this agent in bypass mode, and `--verifier-route claude` a same-family Claude of another `--model` than the required `--author-model`: engineering-loop's lead.md, Verifier route, says when. An unknown name fails before a session is created.
+session, so the launcher passes none. On another host agy takes the brief as a file there too, written through the host's file API: the render check it makes of a pasted first line fails on a long inline paste, which scrolls the line away. `--verifier-route gemini` (or `$OMNIGENT_VERIFIER_ROUTE`) on a verifier start picks this agent in bypass mode, and `--verifier-route claude` a same-family Claude of another `--model` than the required `--author-model`: engineering-loop's lead.md, Verifier route, says when. An unknown name fails before a session is created. The flag without `--role <skills>/engineering-loop/verifier.md` is refused the same way, since the route would otherwise be dropped silently; `$OMNIGENT_VERIFIER_ROUTE` alone is not refused, as a host may export it for every start.
 
 **Cloud workers.** A worker whose tools run in a cloud VM can't write a file on this host,
 so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment
@@ -216,6 +216,14 @@ however the session started. It reads the session's Omnigent record first (`llm_
 reported it, and `reasoning_effort`), since a Codex child's rollout sits under a private `CODEX_HOME`. The
 `AGENT_SIGNATURE=` line `start` puts atop a brief names the model the server took for the session (its
 `model_override`, `?` for the harness default), never the id asked for.
+
+**Usage.** `python3 scripts/omnigent_agent.py usage [<session>...]` prints the tokens and cost of the session it
+runs in and of each session named, one line each, read from each session's record (`usage_by_model`,
+`total_cost_usd`), which totals its whole spawn tree, archived children included; then a `Tokens spent:
+<tokens>, $<cost> (<n> session trees)` line for a PR body. Name only top-level sessions (a verifier on another
+host, a cloud worker): a named session inside another named one's tree is skipped, not counted twice. A
+session with no usage recorded, or one not read, is named `uncounted` and adds nothing. `GET /v1/usage`
+gives the same tree cost per top-level session, but no tokens.
 Below it, a child on this host that is not a top-level lead gets `LOOP_HEAVY_LOCK=<path>`, one
 lock per lead (the runner's primary session, which a lead's workers and their children share;
 `$LOOP_HEAVY_LOCK` when the caller has it), so a lead's parallel workers
@@ -238,6 +246,17 @@ when it ends; unset, nothing is sent. `run`, `send` and `wait`, which can wait h
 take the same `--notify`: once they end, however they end, `$LOOP_NOTIFY` gets one line, `exit <code>:`
 and the report path, or the failure's first line.
 
+**One wake per child.** Omnigent wakes a session when a child's turn ends in two cases: the child is
+a sub-agent of that session (always, and no field turns it off), or that session subscribes to it
+(`start --top-level` subscribes the root of its starter's tree). `$LOOP_NOTIFY` names the session
+that ran the command, so a `run`, `send` or `wait` with `--notify` skips its line only when that
+very session is the one Omnigent tells and the command ends on the child's own turn end (exit 0,
+report in); it says `not telling $LOOP_NOTIFY` on stderr. Every other ending (a timeout, a send
+that never lands, a crash, a signal) sends the line, since Omnigent says nothing of it, and so does
+a child that tells another session (a sub-agent of your primary session while you are its own
+sub-agent, a subscription held by your root). Without `--notify` the command's exit is a second
+wake beside Omnigent's notice. Don't poll or `watch` a child for the wake you were not given.
+
 **Waiting on a condition.** `python3 scripts/omnigent_agent.py wait-until --every <s> --limit
 <s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so
 each sleep stays short of any tool timeout, and exits 0 once it exits 0, or 6 once `--limit`
@@ -249,8 +268,10 @@ share over about a second and its available memory, and exits 0 when it has room
 session, 1 when not. It reads idle CPU, not the load average, which on macOS also counts threads
 waiting on I/O and memory and reads several times too high; load per core decides only when idle
 cannot be measured. `start` and `run` wait while the host the new session's load lands on has
-none: the host `--host` names, else this one, for a `claude-cloud` start too, since its bridge
-session runs on that host. They print `<host> over capacity, waiting: …` and fail after
+none: the host `--host` names, else this one. A `claude-cloud` start is judged there on memory
+and the row's `max_sessions` alone, since its bridge is all that runs on the host and its work runs
+in the VM: its line reads `cloud start, cpu not judged, …`, and on another host only
+`/proc/meminfo` is read. They print `<host> over capacity, waiting: …` and fail after
 `OMNIGENT_CAPACITY_WAIT_SECONDS` (default 600), since sessions on an overloaded host time out and
 fail; a queue that would rather wait sets it longer. Another host's `/proc/meminfo`
 (`MemAvailable`) and `/proc/loadavg` are read through a live session on it (not archived, not
