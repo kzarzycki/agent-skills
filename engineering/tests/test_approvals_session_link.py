@@ -62,7 +62,7 @@ def test_land_body_under_pr_body_returns_the_body_without_the_link_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        approvals,
+        approvals.github,
         "gh",
         lambda *args: (
             '{"squash_merge_commit_message": "PR_BODY"}'
@@ -309,8 +309,8 @@ def test_the_pr_query_reads_each_texts_link_id_and_right_to_edit(
             {"data": answered({"repository": {"pullRequest": found}}, selection(query[6:]))}
         )
 
-    monkeypatch.setattr(approvals, "gh", gh)
-    monkeypatch.setattr(approvals, "_rest_only", False)
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    monkeypatch.setattr(approvals.github, "_rest_only", False)
     texts = approvals.session_links(approvals.pull_request(7))
     assert len(queries) == 1
     assert [(what, method, path, can) for what, method, path, _text, can in texts] == [

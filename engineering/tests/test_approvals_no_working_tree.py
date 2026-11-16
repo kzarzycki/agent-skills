@@ -26,6 +26,7 @@ from approvals_harness import (
 
 LOOP = "docs/agents/loop.md"
 REAL = approvals.judge_with_base  # the shared fixtures replace it per test
+REAL_BASE = approvals.policy_base  # `lands` reads the policy from the work tree; these tests read it from origin
 MARK = "<!-- origin's main -->"
 
 
@@ -36,6 +37,7 @@ def launch(
     """The policy files on origin's main, and a `--no-checkout` clone of origin to run from, as a host keeps to launch
     cloud sessions; the real base comparison of #926 back, and the script installed outside the clone."""
     monkeypatch.setattr(approvals, "judge_with_base", REAL)
+    monkeypatch.setattr(approvals, "policy_base", REAL_BASE)
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     work = lands["work"]
     (work / LOOP).write_text((work / LOOP).read_text() + f"\n{MARK}\n")
@@ -165,14 +167,14 @@ def test_a_batch_github_merges_only_in_part_names_the_tree_left_ungated(
     launch["open"](7, {"7.txt": "7\n"})
     launch["open"](8, {"8.txt": "8\n"})
     passed(launch, monkeypatch, {"7.txt": "7\n", "8.txt": "8\n"})
-    fake = approvals.gh
+    fake = approvals.github.gh
 
     def refuses_8(*args: str, **kwargs: Any) -> str:
         if args[:3] == ("pr", "merge", "8"):
             raise approvals.subprocess.CalledProcessError(1, "gh", stderr="refused")
         return fake(*args, **kwargs)
 
-    monkeypatch.setattr(approvals, "gh", refuses_8)
+    monkeypatch.setattr(approvals.github, "gh", refuses_8)
     runs = launch["runs"]()
     code, lines = launch["land"]()
     assert code == 1, lines  # PR #8 was refused
@@ -253,14 +255,14 @@ def test_a_partial_land_publishes_a_pass_recorded_on_the_tree_and_runs_no_gate(
     launch["open"](7, {"7.txt": "7\n"})
     launch["open"](8, {"8.txt": "8\n"})
     passed(launch, monkeypatch, {"7.txt": "7\n", "8.txt": "8\n"})
-    fake = approvals.gh
+    fake = approvals.github.gh
 
     def refuses_8(*args: str, **kwargs: Any) -> str:
         if args[:3] == ("pr", "merge", "8"):
             raise approvals.subprocess.CalledProcessError(1, "gh", stderr="refused")
         return fake(*args, **kwargs)
 
-    monkeypatch.setattr(approvals, "gh", refuses_8)
+    monkeypatch.setattr(approvals.github, "gh", refuses_8)
     # a pass on the tree main is left with after #7 alone, recorded where the files are
     work = launch["work"]
     monkeypatch.chdir(work)
