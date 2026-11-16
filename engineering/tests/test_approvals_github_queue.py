@@ -516,12 +516,15 @@ def test_a_red_on_main_the_base_does_not_require_is_no_red_main(queue: dict[str,
 
 
 def test_a_pr_merged_outside_the_queue_gets_no_landed_comment_from_it(
-    queue: dict[str, Any],
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    labelled: list[tuple[int, str, bool]] = []
+    monkeypatch.setattr(approvals, "label", lambda *args: labelled.append(args))
     queue["opened"](7)
     queue["pulls"][7]["state"] = "MERGED"
     assert queue["land"]("7") == (0, ["PR #7 is merged"])
-    assert queue["comments"] == []
+    # nor a label call, since it carries no `loop:queued` to take off
+    assert queue["comments"] == [] and labelled == []
 
 
 def test_a_bare_land_exits_1_when_a_candidate_conflicts_and_still_enqueues_the_rest(
