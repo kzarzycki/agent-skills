@@ -13,6 +13,7 @@
     python3 scripts/omnigent_agent.py approve <session> [--decline]
     python3 scripts/omnigent_agent.py owner-said <session> <quote-file>
     python3 scripts/omnigent_agent.py status <session>...
+    python3 scripts/omnigent_agent.py usage [<session>...]
     python3 scripts/omnigent_agent.py report <session> [<path>] [--registry <file>]
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>] [--force] [--merged [--pr N]]
@@ -38,7 +39,7 @@ workspace it started from and that a foreground command stops at 10 minutes; ``w
 so the report is a file here as for any child; ``send --pr N`` takes only a comment created after
 the report there, and reaches a session whose workspace is on another host. A lead launches it as one background command, so its
 exit is the wake; ``run``, ``send`` and ``wait`` take ``--notify`` as ``wait-for`` does, running
-``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. ``send`` answers that question in the same session, also mid-turn, then waits the
+``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. Omnigent already wakes this session for a child that is its sub-agent or one it subscribes to: when that child ends its turn with the report in, the line is skipped and said on stderr, so a child wakes its lead once (#1086). ``send`` answers that question in the same session, also mid-turn, then waits the
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
@@ -118,8 +119,9 @@ for a verifier, whose report then counts only with its ``SATISFIED:`` line, and 
 the same way, printing every line with the local time and, with ``--notify``, posting it into that
 session as ``Supervisor: <line>`` (reviving it first when reaped). A terminal event drops the
 session's line once posted; an error or an event-less ``--timeout`` is logged and the loop goes on.
-It also raises one ``landed`` line per repo and new default-branch head of the repos its followed
-leads work in, whatever the leads write (``gh api``; the first head seen is only stored).
+It also raises one ``landed`` line per repo and new default-branch head of the repos its followed,
+non-``direct`` leads work in, whatever the leads write, when a PR its own GitHub login opened is among
+those merged (``gh api``; the first head seen is only stored).
 With ``--console``, the chief of staff's or a project manager's console (it labels its own session ``omni.role=cos``, or, on ``<repo>-leads.registry``, ``omni.role=pm`` and ``omni.repos=<repo>``), each poll it also writes ``<registry
 stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a restart re-posts no event it
 settled), appends each event to ``<registry stem>.events.jsonl``, labels each session with
@@ -135,8 +137,9 @@ itself (no post, a nudge, a revive, telling the leads registered ``after=`` it o
 ``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
 what its rules can't settle, and posts what needs the notified session or the owner as
 ``Supervisor [act] b-<id>: …`` or ``Supervisor [owner] b-<id>: …``, at most one post per 5
-minutes; ``--fyi post`` posts every line as without it too, ``--decisions`` names the owner's
-standing decisions for the small model. Without it, it writes none of these and posts every line.
+minutes, and for a lead marked ``direct`` nothing but a failed turn that lost its runner, which
+the owner can't see in its session; ``--fyi post`` posts every line as without it too,
+``--decisions`` names the owner's standing decisions for the small model. Without it, it writes none of these and posts every line.
 A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
 a user service running that same command line less ``--install`` and ``--log`` (a systemd user unit
 ``omnigent-supervise-<hash>`` with ``Restart=always`` on Linux, a launchd agent
@@ -371,14 +374,20 @@ USAGE_LIMIT_ERRORS = (
 # provider recovers: the supervisor revives it again after each backoff (minutes, the last
 # repeated) until the next revive would fall past the cap, and only then reports it. A false
 # match costs revives, never a report: the cap still reports it.
+# A failure whose text matches one of these lost the session's runner or host: the session died
+# where its own reader can't see why, so even a direct lead's is routed.
+LOST_RUNNER_ERRORS = (
+    r"\brunner (lost|is offline|disconnected|went away)",  # the host went away: a lost runner
+    r"\bhost (went away|restarted|rebooted|is (offline|unreachable|gone))",  # or a host restart
+    r"made no progress for \d+s",  # a cloud worker cut with its host reads as silence
+)
+LOST_RUNNER = re.compile("|".join(LOST_RUNNER_ERRORS), re.IGNORECASE)
 TRANSIENT_ERRORS = (
     r"authentication_failed",  # an auth outage on the provider's side, not a bad key
     r"Attention Required",  # a Cloudflare challenge page (a 403)
     r"\b5\d\d\b",  # any 5xx, a cloud create's 503 included
     r"overloaded",
-    r"\brunner (lost|is offline|disconnected|went away)",  # the host went away: a lost runner
-    r"\bhost (went away|restarted|rebooted|is (offline|unreachable|gone))",  # or a host restart
-    r"made no progress for \d+s",  # a cloud worker cut with its host reads as silence
+    *LOST_RUNNER_ERRORS,
     r"\brate_limit",  # a provider's rate limit: it clears within minutes, per session
     *USAGE_LIMIT_ERRORS,
 )
@@ -461,8 +470,9 @@ FOLLOW_FIELD = "follow"  # a registry line's mark for a lead followed, not owed 
 AFTER_FIELD = "after="  # a followed lead's line: the lead whose DONE it waits on
 # A followed manager's line: the registry of its own leads, the sessions its wait on its leads names
 LEADS_FIELD = "leads="
-# A followed lead the owner drives directly, in its own session: no deadline, nudge or quiet-end
-# routing, since the owner is its follower; its DONE, failures and prompts are still routed.
+# A followed lead the owner drives directly, in its own session: the owner is its follower, so
+# nothing about it is posted (no deadline, nudge, DONE, prompt or failure) but a failure that lost
+# its runner, which the owner can't see there; its DONE still tells the leads waiting on it.
 DIRECT_FIELD = "direct"
 # The supervisor's own lines to a followed lead, which start no new progress chain.
 OWN_LINES = ("Supervisor: ", REVIVED, NO_REPORT)
@@ -933,8 +943,13 @@ class Omnigent:
                 f"which Omnigent server? Not inside a session, no --server, and {AUTH_TOKENS}"
                 " holds not exactly one login: pass --server <url>"
             )
-        self.base, self.host_id = base.rstrip("/"), host.group(1)
+        # the server names hosts bare (sessions, GET /v1/hosts) and accepts either form on its
+        # routes, while config.yaml may write `host_<id>`: hold the bare one, so every == holds
+        self.base, self.host_id = base.rstrip("/"), host.group(1).removeprefix("host_")
         self._token = ""
+        self.loops: dict[
+            tuple[str, str], str
+        ] = {}  # loop.md read on another host, by host, workspace
 
     def token(self) -> str:
         code = f"from omnigent.cli_auth import refresh_stored_token as r, load_token as l; print(r({self.base!r}) or l({self.base!r}) or '')"
@@ -1194,9 +1209,9 @@ class Omnigent:
         if agent == "claude":
             args = ["--permission-mode", mode] if mode else []
             if role and (stem := Path(role).stem) in LEAN_ROLES:
-                args += lean_args(str(body["workspace"]), stem)
+                args += lean_args(str(body["workspace"]), stem, self, host_id)
             if top_level:
-                args += autocompact_args(str(body["workspace"]))
+                args += autocompact_args(str(body["workspace"]), self, host_id)
             if args:
                 body["terminal_launch_args"] = args
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
@@ -1342,6 +1357,58 @@ class Omnigent:
             raise
         return out
 
+    def loop_text(self, workspace: str, host_id: str | None) -> str:
+        """The project's ``docs/agents/loop.md`` on host ``host_id``, which a session started for
+        ``workspace`` there will run on; empty when the checkout there has none, or when ``workspace``
+        sits outside a checkout. Read once per host and workspace, through the host's file API.
+        That API lists a folder before any session exists but gives no file's text, so the checkout
+        and the file are found by listing, and the text is read through a live session on the host.
+        A host or workspace that can't be read is a ``Fail`` naming the host and the path: a silent
+        empty value is how a missing ``Lead autocompact:`` went unnoticed."""
+        key = (host_id or "", workspace)
+        if key not in self.loops:
+            self.loops[key] = self.read_loop(workspace, host_id or "")
+        return self.loops[key]
+
+    def read_loop(self, workspace: str, host_id: str) -> str:
+        host = self.hosts().get(host_id, host_id)
+
+        def listed(folder: str) -> list[str]:
+            path = "/v1/hosts/" + host_id + "/filesystem/" + quote(folder.strip("/"), safe="/")
+            try:
+                return [e["name"] for e in self.call("GET", path + "?limit=1000").get("data", [])]
+            except Fail as e:
+                cause = e.__cause__
+                missing = isinstance(cause, HTTPError) and cause.code == 404
+                if not missing:
+                    raise Fail(f"{LOOP_FILE}: host {host} unreadable at {folder}: {e}") from e
+                raise Gone(folder) from e
+
+        root = Path(workspace)
+        try:
+            listed(workspace)
+        except Gone as e:
+            raise Fail(f"{LOOP_FILE}: workspace {workspace} is not on host {host}") from e
+        while ".git" not in listed(str(root)):
+            if root.parent == root:
+                return ""  # outside a checkout, as locally
+            root = root.parent
+        target = str(root / LOOP_FILE)
+        try:
+            if LOOP_FILE.name not in listed(str(root / LOOP_FILE.parent)):
+                return ""
+        except Gone:
+            return ""
+        why = "no live session there to read it through"
+        for s in live_sessions(self, host_id)[:FAR_READS]:
+            try:
+                return self.read_file(str(s["id"]), target)
+            except Gone:  # listed, so an older host refusing the read, not "no line"
+                why = f"read answered 404 for a file the listing shows (session {s['id']})"
+            except Fail as e:
+                why = f"read failed: {e}"
+        raise Fail(f"{LOOP_FILE}: host {host} can't read {target}: {why}")
+
     def interrupt(self, sid: str) -> None:
         """Stop ``sid``'s running turn, as the owner's stop does."""
         self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt"})
@@ -1449,14 +1516,21 @@ def read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def project_line(workspace: str, key: str) -> str:
+def project_line(
+    workspace: str, key: str, og: Omnigent | None = None, host_id: str | None = None
+) -> str:
     """The value of the line ``<key>: <value>`` in the project's ``docs/agents/loop.md`` at the root
-    of ``workspace``'s checkout, else empty: none there, or a workspace outside a checkout."""
-    root = checkout_root(workspace)
-    try:
-        text = (Path(root) / LOOP_FILE).read_text() if root else ""
-    except FileNotFoundError:
-        return ""
+    of ``workspace``'s checkout, else empty: none there, or a workspace outside a checkout. On the
+    host a session will run on: ``host_id``, when it is not this machine's (``og.host_id``), is read
+    through Omnigent (``Omnigent.loop_text``); else here."""
+    if og and host_id and host_id != og.host_id:
+        text = og.loop_text(workspace, host_id)
+    else:
+        root = checkout_root(workspace)
+        try:
+            text = (Path(root) / LOOP_FILE).read_text() if root else ""
+        except FileNotFoundError:
+            return ""
     found = re.search(rf"^{re.escape(key)}:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)
     return found.group(1) if found else ""
 
@@ -1465,7 +1539,8 @@ def placement_hosts(workspace: str) -> list[str]:
     """The hosts the project's ``docs/agents/loop.md`` names for a gate or verifier: those of
     ``Placement: hosts: <a>, <b>``; none for ``same machine`` (the default when the line is
     absent) or ``CI``. The old ``Verifier hosts: <a>, <b>`` line reads as the same list and
-    ``Cloud verifier:`` as the same machine; the new line wins."""
+    ``Cloud verifier:`` as the same machine; the new line wins. It reads the caller's checkout, never a
+    remote one: the line picks the host, so no target host exists yet to read it from."""
     new = project_line(workspace, "Placement")
     if new:
         value = new[len("hosts:") :] if new.lower().startswith("hosts:") else ""
@@ -1490,12 +1565,14 @@ def cloud_default_host(og: Omnigent, named: list[str]) -> str:
     raise Fail(f"no host loop.md's Placement line names is online: {', '.join(named)}; pass --host")
 
 
-def lean_args(workspace: str, role: str) -> list[str]:
+def lean_args(
+    workspace: str, role: str, og: Omnigent | None = None, host_id: str | None = None
+) -> list[str]:
     """The launch args of a lean Claude ``role`` child (``LEAN_TOOLS``), plus what the project's
     ``<Role> tools:`` line names beyond them: a tool, or an MCP server configured for the checkout
     (the user's, the project's ``.mcp.json`` or the checkout's local one), which goes in its own
     ``--mcp-config`` beside Omnigent's. ``full`` there is no args: every configured tool and server."""
-    named = project_line(workspace, f"{role.capitalize()} tools")
+    named = project_line(workspace, f"{role.capitalize()} tools", og, host_id)
     if named == "full":
         return []
     root = checkout_root(workspace)
@@ -1513,14 +1590,16 @@ def lean_args(workspace: str, role: str) -> list[str]:
     return args + (["--mcp-config", json.dumps({"mcpServers": servers})] if servers else [])
 
 
-def autocompact_args(workspace: str) -> list[str]:
+def autocompact_args(
+    workspace: str, og: Omnigent | None = None, host_id: str | None = None
+) -> list[str]:
     """``--autocompact <size>`` for a top-level Claude session when the project's ``Lead
     autocompact:`` line names a size, so the lead compacts there instead of at the user's window;
     else none. A size Claude Code refuses fails here, since the CLI would exit before the lead
     starts. ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` in the user's Claude settings outranks the flag, so
     its presence is reported: set that window as ``autoCompactWindow``. This process's own
     environment is not read, since the lead's comes from the Omnigent runner, not from its caller."""
-    size = project_line(workspace, "Lead autocompact")
+    size = project_line(workspace, "Lead autocompact", og, host_id)
     if not size:
         return []
     # Claude Code's spellings: 150000, 150k, 0.15M, and a bare number up to 1000 as thousands
@@ -1572,6 +1651,49 @@ def heavy_lock() -> str:
     return str(cache / f"heavy-{sid}.lock")
 
 
+def tokens_text(n: int) -> str:
+    """``n`` tokens, rough: ``2.5M``, ``86k``."""
+    return f"{n / 1e6:.1f}M" if n >= 100_000 else f"{n / 1e3:.0f}k"
+
+
+def usage_lines(og: Omnigent, sids: list[str]) -> list[str]:
+    """``usage``'s lines: one per session of ``sids``, read from its record, whose
+    ``usage_by_model`` and ``total_cost_usd`` already total its whole spawn tree (its children,
+    archived ones included), then the PR body's ``Tokens spent:`` line. So a lead names only
+    itself and the top-level sessions it started (a verifier on another host, a cloud worker),
+    which are trees of their own; a named session inside another named one's tree is skipped, not
+    counted twice. Tokens count every class, cache reads included. A session with no usage
+    recorded (a cloud session Omnigent can't count) or not read is ``uncounted`` and adds
+    nothing to the total."""
+    named = list(dict.fromkeys(sids))
+    lines, tokens, cost, uncounted, counted = [], 0, 0.0, [], 0
+    for sid in named:
+        try:
+            info = og.info(sid)
+        except Fail as e:
+            lines.append(f"{sid}: uncounted (not read: {e})")
+            uncounted.append(sid)
+            continue
+        root = info.get("root_conversation_id") or sid
+        title = f" {info['title']}" if info.get("title") else ""
+        if root != sid and root in named:
+            lines.append(f"{sid}{title}: in {root}'s tree, counted there")
+            continue
+        models = (info.get("usage_by_model") or {}).values()
+        n = sum(int(m.get("total_tokens") or 0) for m in models)
+        usd = float(info.get("total_cost_usd") or sum(m.get("total_cost_usd") or 0 for m in models))
+        if not (n or usd):
+            lines.append(f"{sid}{title}: uncounted (no usage recorded)")
+            uncounted.append(sid)
+            continue
+        tokens, cost, counted = tokens + n, cost + usd, counted + 1
+        lines.append(f"{sid}{title}: {tokens_text(n)} tokens, ${usd:.2f}")
+    not_counted = f"; uncounted: {', '.join(uncounted)}" if uncounted else ""
+    trees = f"{counted} session tree{'s' * (counted != 1)}"
+    lines.append(f"Tokens spent: {tokens_text(tokens)}, ${cost:.2f} ({trees}{not_counted})")
+    return lines
+
+
 def own_id() -> str:
     """The session this runs in: a child's own id, not its lead's. Codex names it in
     OMNIGENT_SESSION_ID, a Claude pane in OMNIGENT_TERMINAL_LAUNCH_SESSION_ID; else the primary."""
@@ -1581,6 +1703,23 @@ def own_id() -> str:
         or env.get("OMNIGENT_TERMINAL_LAUNCH_SESSION_ID")
         or parent_id()
     )
+
+
+def starter_mode(og: Omnigent) -> tuple[str, str]:
+    """The ``--permission-mode`` the session this runs in was launched with, and its id: the
+    fallback of a Claude child's start. ``("", "")`` outside Omnigent, for a starter that is not a
+    Claude session, or one launched with no mode."""
+    if not (sid := own_id()):
+        return "", ""
+    try:
+        info = og.info(sid)
+    except Fail:
+        return "", ""
+    args = info.get("terminal_launch_args") or []
+    if "claude" not in str(info.get("harness") or "") or "--permission-mode" not in args:
+        return "", ""
+    at = args.index("--permission-mode") + 1
+    return (str(args[at]), sid) if at < len(args) else ("", "")
 
 
 def runner_log(info: dict) -> str:
@@ -2206,14 +2345,21 @@ def cpu_idle() -> float | None:
         return None
 
 
-def capacity(min_mb: float | None = None, max_load: float | None = None) -> tuple[bool, str]:
+def capacity(
+    min_mb: float | None = None, max_load: float | None = None, cpu: bool = True
+) -> tuple[bool, str]:
     """Whether this host has room for another session, and a line saying what it carries. CPU is
     judged by idle share, not the load average, which on macOS also counts threads waiting on I/O
     and memory and so overstates CPU use several times over; load per core decides only when idle
     cannot be measured. A host row's ``max_load`` (absolute) also refuses, and ``min_mb`` replaces
-    the default memory line (``host_limits``)."""
+    the default memory line (``host_limits``). ``cpu=False`` judges memory alone: a cloud start
+    adds only its bridge here, and its work runs in the VM (#868)."""
     min_mb = MIN_AVAILABLE_MB if min_mb is None else min_mb
-    idle, mb = cpu_idle(), available_mb()
+    mb = available_mb()
+    if not cpu:
+        memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
+        return mb is None or mb >= min_mb, f"cloud start, cpu not judged, {memory} (min {min_mb:g})"
+    idle = cpu_idle()
     parts, room = [], True
     if idle is not None:
         parts.append(f"cpu {idle:.0f}% idle (min {MIN_CPU_IDLE:g})")
@@ -2269,12 +2415,13 @@ def live_sessions(og: Omnigent, host_id: str) -> list[dict]:
 
 
 def far_capacity(
-    og: Omnigent, host_id: str, min_mb: float, max_load: float | None
+    og: Omnigent, host_id: str, min_mb: float, max_load: float | None, cpu: bool = True
 ) -> tuple[bool | None, str]:
     """``capacity`` for another host, read through a live session there: its ``/proc/meminfo``
     (``MemAvailable``) and ``/proc/loadavg`` (the 1-minute load), judged by ``max_load`` when its
-    row names one, else per core over its ``/proc/stat``'s ``cpuN`` lines. None and why when it
-    can't be read: no live session, every read failing, or no ``/proc`` (a Mac)."""
+    row names one, else per core over its ``/proc/stat``'s ``cpuN`` lines; ``cpu=False`` (a cloud
+    start) reads and judges ``/proc/meminfo`` alone. None and why when it can't be read: no live
+    session, every read failing, or no ``/proc`` (a Mac)."""
     # ponytail: a host's load and memory read through one of its sessions, since the server reads
     # no host-level file (GET /v1/hosts/<id>/filesystem/<file> answers 404 "path is not a
     # directory") and GET /v1/hosts carries no load or memory. Upgrade: either one, which would
@@ -2289,8 +2436,8 @@ def far_capacity(
         sid = str(s["id"])
         try:
             meminfo = og.read_file(sid, "/proc/meminfo")
-            loadavg = og.read_file(sid, "/proc/loadavg")
-            stat = "" if max_load is not None else og.read_file(sid, "/proc/stat")
+            loadavg = og.read_file(sid, "/proc/loadavg") if cpu else "0"
+            stat = "" if max_load is not None or not cpu else og.read_file(sid, "/proc/stat")
         except Gone as e:
             return None, f"no {str(e).split(':', 1)[0]}"
         except Fail as e:
@@ -2301,16 +2448,18 @@ def far_capacity(
             load = float(loadavg.split()[0])
         except (IndexError, ValueError):
             return None, "/proc/loadavg unreadable"
-        if max_load is not None:
-            cpu, room = f"load {load:.1f} (max {max_load:g})", load < max_load
+        if not cpu:
+            judged, room = "cloud start, cpu not judged", True
+        elif max_load is not None:
+            judged, room = f"load {load:.1f} (max {max_load:g})", load < max_load
         else:
             cores = len(re.findall(r"^cpu\d+\s", stat, re.MULTILINE)) or 1
             per = load / cores
-            cpu = f"load {per:.1f} per core (max {MAX_LOAD_PER_CORE:g})"
+            judged = f"load {per:.1f} per core (max {MAX_LOAD_PER_CORE:g})"
             room = per <= MAX_LOAD_PER_CORE
         mb = int(found.group(1)) / 1024 if found else None
         memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
-        return room and (mb is None or mb >= min_mb), f"{cpu}, {memory} (min {min_mb:g})"
+        return room and (mb is None or mb >= min_mb), f"{judged}, {memory} (min {min_mb:g})"
     return None, why
 
 
@@ -2322,14 +2471,17 @@ def host_name(og: Omnigent, host_id: str) -> str:
         return host_id
 
 
-def host_capacity(og: Omnigent, host_id: str, name: str) -> tuple[bool | None, str]:
+def host_capacity(
+    og: Omnigent, host_id: str, name: str, cpu: bool = True
+) -> tuple[bool | None, str]:
     """``capacity`` for host ``host_id`` under its limits: measured here on this host, read
-    through a session on another (``far_capacity``, None when unreadable)."""
+    through a session on another (``far_capacity``, None when unreadable); ``cpu=False`` for a
+    cloud start, judged on memory and the session cap alone."""
     min_mb, max_load = host_limits(name)
     if host_id == og.host_id:
-        ok, line = capacity(min_mb=min_mb, max_load=max_load)
+        ok, line = capacity(min_mb=min_mb, max_load=max_load, cpu=cpu)
     else:
-        ok, line = far_capacity(og, host_id, min_mb, max_load)
+        ok, line = far_capacity(og, host_id, min_mb, max_load, cpu=cpu)
     cap = host_row(name).get("max_sessions")
     if cap is not None:
         # from the session list, so it holds where load and memory can't be read
@@ -2830,6 +2982,16 @@ def start(
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
 
+    if agent == "claude" and not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
+        # Neither flag nor variable: a Claude child takes its Claude starter's own mode, and only
+        # a Claude child, since another harness keeps its own explicit opt-in (the agy --role guard).
+        inherited, from_sid = starter_mode(og)
+        if inherited:
+            print(
+                f"permission mode {inherited} inherited from this session ({from_sid})",
+                file=sys.stderr,
+            )
+            permission_mode = inherited
     if permission_mode and not applied(permission_mode):
         raise Fail(
             f"--permission-mode is for claude sessions ({BYPASS} for antigravity, and"
@@ -2841,8 +3003,9 @@ def start(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
         )
-    # The flag was refused above, so a mode here came from the environment: the session starts in
-    # its harness's default stance, which a run counting on the mode is told (#987).
+    # The flag was refused above, so a mode not applied here came from the environment (an inherited
+    # one is a Claude child's, always applied): the session starts in its harness's default stance,
+    # which a run counting on the mode is told (#987).
     mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
     if mode and not applied(mode):
         print(
@@ -2850,6 +3013,15 @@ def start(
             " the harness default",
             file=sys.stderr,
         )
+    if (
+        agent == "claude"
+        and host_id
+        and host_id != og.host_id
+        and (top_level or (role and Path(role).stem in LEAN_ROLES))
+    ):
+        # the project's loop.md, once, on the host the session runs on: a host that can't be read
+        # stops the start here, before a session exists
+        og.loop_text(workspace or os.getcwd(), host_id)
     chosen, source = model_for(agent, model)
     if chosen:
         try:
@@ -2898,10 +3070,12 @@ def start(
                     " so its signature would name an effort it doesn't run"
                 )
     effort = picked
-    # its load lands on the host --host names, else this one: a cloud start's bridge runs there too
+    # its load lands on the host --host names, else this one; a cloud start's bridge runs there
+    # too, but its work runs in the VM, so it is judged on memory alone (#868)
     target = host_id or og.host_id
     name, deadline = host_name(og, target), time.monotonic() + CAPACITY_WAIT_SECONDS
-    while not (room := host_capacity(og, target, name))[0]:
+    cloud = harness == CLOUD_HARNESS
+    while not (room := host_capacity(og, target, name, cpu=not cloud))[0]:
         if room[0] is None:
             print(unchecked(name, room[1]), file=sys.stderr)
             break
@@ -3880,9 +4054,11 @@ def default_head(repo: str) -> str:
 
 
 def merged_since(repo: str, old: str, new: str) -> str:
-    """The PRs merged between ``old`` and ``new``, as ``#12, #13``: the ``(#N)`` that ends each
-    commit's subject (a squash or queue merge), or a ``Merge pull request #N`` subject; else how
-    many commits came with no PR named, or why the comparison was not read."""
+    """The PRs merged between ``old`` and ``new`` that the GitHub login this runs as opened, the
+    one leads open theirs with, as ``#12, #13``: the ``(#N)`` that ends each commit's subject (a
+    squash or queue merge), or a ``Merge pull request #N`` subject. Empty when none is (a bot's or
+    another person's PR, a commit naming no PR), since no lead landed it; a comparison, login or
+    author not read is named, so the landing is still raised."""
     try:
         subjects = gh(
             "api",
@@ -3897,8 +4073,24 @@ def merged_since(repo: str, old: str, new: str) -> str:
         m = re.search(r"\(#(\d+)\)\s*$", s) or re.match(r"Merge pull request #(\d+)", s)
         if m and f"#{m[1]}" not in prs:
             prs.append(f"#{m[1]}")
-    n = len(subjects)
-    return ", ".join(prs) or f"no PR named in its {n} commit{'s' * (n != 1)}"
+    if not prs:
+        return ""
+    try:
+        me = gh("api", "user", "--jq", ".login").strip()
+    except Fail as e:
+        return f"{', '.join(prs)} (authors not read: {e})"
+    # ponytail: the login stands for "a lead's PR", so the owner's own hand-made PR counts too;
+    # telling them apart needs a PR-to-lead link that nothing records yet.
+    mine = []
+    for pr in prs:
+        try:
+            author = gh("api", f"repos/{repo}/pulls/{pr[1:]}", "--jq", ".user.login").strip()
+        except Fail as e:
+            mine.append(f"{pr} (author not read: {e})")
+            continue
+        if author == me:
+            mine.append(pr)
+    return ", ".join(mine)
 
 
 def pr_label(label: object) -> tuple[str, int] | None:
@@ -4999,7 +5191,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``wake`` (a timed
     wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``park`` (a usage limit:
     join the parked sessions, which one probe at a time revives), ``done``
-    (act, and tell each lead waiting on it), ``act`` (to the chief of staff), ``owner`` (queued
+    (act, and tell each lead waiting on it; for a ``direct`` lead only the telling), ``act`` (to the chief of staff), ``owner`` (queued
     for the owner) and ``read-report`` (read ``head``, then route again). Nothing approves: a
     prompt is the owner's."""
     # ``wait`` is the lead's, from its report when its last message is only the path
@@ -5008,10 +5200,12 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "act", "its default branch moved: a step owed after a landing"
     if kind == "archived":
         return "rule", "absorb", "archived: drop its row"
+    error = event.get("line", "").partition("\n")[0]  # the status line, not the lead's own words
+    lost = kind == "failed" and (event.get("offline") or LOST_RUNNER.search(error))
+    if event.get("direct") and kind != "ended" and not lost:  # its turn end: below, read first
+        return "rule", "record", "the owner drives it directly: they see it in its session"
     if kind == "blocked":
         if event.get("question"):
-            if event.get("direct"):
-                return "rule", "record", "the owner drives it directly: they answer its question"
             return (
                 "rule",
                 "act",
@@ -5041,8 +5235,6 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     if kind == "news":  # a session its wait names ended: only the waiter can act on it
         return "rule", "tell", "a session its wait names ended: tell the waiter"
     if kind == "deadline":
-        if event.get("direct"):
-            return "rule", "record", "the owner drives it directly: no deadline"
         if wait == "parked":
             return "rule", "record", "parked: no deadline"
         if wait != "unknown":
@@ -5070,7 +5262,9 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if not ENDING.search(text) and wait == "unknown" and not event.get("direct"):
             return "rule", "act", "its report names no ending"
     ending = ending_of(text)
-    if event.get("direct") and ending != "DONE":
+    if event.get("direct"):  # the owner reads its turn there: a DONE tells only its waiters
+        if ending == "DONE":
+            return "rule", "done", "done, driven by the owner: told only to the leads waiting on it"
         return "rule", "record", "the owner drives it directly: they read its turn there"
     if event.get("nudged") and not ending and wait == "unknown":  # its last words, unchanged
         return "rule", "act", "quiet again after its nudge"
@@ -5560,7 +5754,7 @@ def supervise_registry(
             }
         elif action == "tell":
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
-        elif action in ("act", "owner", "done"):
+        elif action in ("act", "owner") or action == "done" and not event["direct"]:
             queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
         if action == "act" and event["limit"] and event["capped"]:  # past the cap: no more probes
             for parked in state["leads"].values():
@@ -5909,17 +6103,19 @@ def supervise_registry(
         lead["label"] = {"line": line, "at": at}
 
     def landings() -> None:
-        """Watch the default branch of each repo a followed lead's workspace is a checkout of
-        (``workspace_repo``, read once per lead): when its head moved since the last one seen, one
-        ``landed`` event per repo and new head, raised on the repo's first lead in the registry,
-        naming the new sha and the PRs merged since (``merged_since``). The first head seen for a
+        """Watch the default branch of each repo a followed lead not marked ``direct`` has its
+        workspace in (``workspace_repo``, read once per lead), since a direct lead's owner reads
+        its landings in its session: when its head moved since the last one seen and a lead's PR
+        is among those merged since (``merged_since``), one ``landed`` event per repo and new
+        head, raised on the repo's first such lead in the registry, naming the new sha and those
+        PRs; a move with none (a bot's or a person's merge) only stores the head. The first head seen for a
         repo is only stored (``heads`` in the state), so a start reports no old merge. The lead's
         own words play no part, so a landing it wrote under a wait, or none at all, still comes."""
         for sid in [s for s in repos if s not in owed]:
             del repos[sid]
         first: dict[str, str] = {}  # each repo's first lead
         for sid, owes in owed.items():
-            if not owes[3]:
+            if not owes[3] or owes[5]:  # not followed, or the owner drives it
                 continue
             if sid not in repos:
                 try:
@@ -5942,8 +6138,7 @@ def supervise_registry(
                 continue
             log(("head", repo), None)
             old = heads.get(repo)
-            if old and old != sha:
-                merged = merged_since(repo, old, sha)
+            if old and old != sha and (merged := merged_since(repo, old, sha)):
                 line = (
                     f"{repo}: its default branch moved to {sha}; merged since {old[:12]}: {merged}"
                 )
@@ -6569,11 +6764,41 @@ def main(argv: list[str] | None = None) -> int:
         # an uncaught exception is an ending too: exit 1, as Python gives, and its first line
         if "report" in ended:
             ended.setdefault("failure", (str(e).splitlines() or [type(e).__name__])[0])
-            notify(f"exit {1 if isinstance(e, Exception) else 130}: {ended['failure']}")
+            tell(ended, f"exit {1 if isinstance(e, Exception) else 130}: {ended['failure']}", False)
         raise
     if "report" in ended:
-        notify(f"exit {code}: {ended.get('failure') or ended['report']}")
+        turn_end = code == 0 and "failure" not in ended  # the report is in: the child's turn ended
+        tell(ended, f"exit {code}: {ended.get('failure') or ended['report']}", turn_end)
     return code
+
+
+def tell(ended: dict[str, str], text: str, turn_end: bool) -> None:
+    """``notify``, unless this ending is the child's own turn end and Omnigent already wakes this
+    session for the child (``cover``): a second line would start a second turn. Any other ending (a
+    timeout, an undelivered send, a crash) is no turn end, so Omnigent says nothing of it."""
+    if turn_end and ended.get("covered"):
+        print(
+            f"not telling $LOOP_NOTIFY: Omnigent tells this session when {ended['covered']} ends",
+            file=sys.stderr,
+        )
+        return
+    notify(text)
+
+
+def cover(og: Omnigent, sid: str, ended: dict[str, str]) -> None:
+    """Mark ``sid`` covered in ``ended`` when Omnigent tells this very session (the one
+    ``$LOOP_NOTIFY`` names) when the child's turn ends: it is the child's parent, or subscribes to
+    it. A failed lookup marks nothing, so the line is sent."""
+    if "report" not in ended or not (me := own_id()):
+        return
+    try:
+        if og.info(sid).get("parent_session_id") == me or any(
+            str(s.get("session_id")) == sid
+            for s in og.call("GET", f"/v1/sessions/{me}/subscriptions").get("data", [])
+        ):
+            ended["covered"] = sid
+    except Fail:
+        pass
 
 
 def command(argv: list[str] | None, ended: dict[str, str]) -> int:
@@ -6765,6 +6990,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("--decline", action="store_true", help="decline instead of accept")
     p = sub.add_parser("status")
     p.add_argument("sessions", nargs="+")
+    p = sub.add_parser(
+        "usage",
+        description="tokens and cost of the session tree this runs in and of each session named,"
+        " and the PR body's Tokens spent: line",
+    )
+    p.add_argument(
+        "sessions", nargs="*", help="top-level sessions to add, such as a verifier on another host"
+    )
     p = sub.add_parser("report", description="print a file of a session's workspace or host")
     p.add_argument("session")
     p.add_argument("path", nargs="?", help="default: the report in the session's registry line")
@@ -7049,6 +7282,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             sid = args.session = og.session_id(args.session)
         if args.cmd == "status":
             args.sessions = [og.session_id(s) for s in args.sessions]
+        if args.cmd == "usage":
+            sids = [s for s in [own_id(), *map(og.session_id, args.sessions)] if s]
+            if not sids:
+                raise Fail("usage names no session outside an Omnigent session")
+            print("\n".join(usage_lines(og, sids)))
+            return 0
         if args.cmd == "report" and not args.path:
             line = registry and registered(registry)[0].get(sid)
             if not line:
@@ -7151,6 +7390,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 )
             supervise(og, owed, args.silent_seconds, args.timeout)  # it prints each line
             return 0
+        if args.cmd in ("send", "wait"):
+            cover(og, args.session, ended)
         if args.cmd == "wait":
             # a path on the session's host, which this one neither resolves nor reads (as start's)
             far = not args.pr and elsewhere(og, og.info(args.session))
@@ -7424,6 +7665,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             return sid
 
         sid = launch()
+        cover(og, sid, ended)
         if args.cmd == "run":
             print(
                 wait(og, sid, report, args.timeout, verifier, launched, args.pr, baseline, launch)
