@@ -68,6 +68,7 @@ def worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.delenv("GATE_BASE", raising=False)
     monkeypatch.delenv("MY_BASE", raising=False)
     monkeypatch.setattr(approvals, "policy_base", lambda _root, _base=None: None)
+    monkeypatch.setattr(approvals, "open_pulls", lambda: [])  # no PR for the branch: the default branch is the base
     monkeypatch.chdir(repo)
     log = tools / "ran.log"
 
@@ -82,6 +83,7 @@ def worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     return {
         "commit": commit,
+        "repo": repo,
         "set_loop": set_loop,
         "ran": lambda: log.read_text().splitlines() if log.exists() else [],
         "selector": f"{sys.executable} {tools / 'selector.py'}",
@@ -144,3 +146,84 @@ def test_land_and_local_ci_never_set_the_base_variable(
     assert "GATE_BASE" not in approvals.gate_env({"sets": sets})
     _, _, with_proof = approvals.gate(["GATE_BASE"])
     assert with_proof == {"GATE_BASE": "abc"}
+
+
+def test_the_selection_uses_the_merge_base_not_the_tip_of_origins_base(
+    worker: dict[str, Any],
+) -> None:
+    """Main moves on after `work` branched: its new file is no part of the change."""
+    repo = worker["repo"]
+    worker["set_loop"](f"# Loop\n\nAffected tests: {worker['selector']}\n")
+    worker["commit"]("app.py", "value = 2\n")
+    git_in(repo, "checkout", "-q", "main")
+    worker["commit"]("later.py", "later = 1\n")
+    git_in(repo, "push", "-q", "origin", "main")
+    git_in(repo, "checkout", "-q", "work")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selected app.py"]
+
+
+def test_a_gate_base_line_that_names_no_variable_is_refused(
+    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worker["set_loop"](f"# Loop\n\nGate base: not-a-name\n\nAffected tests: {worker['selector']}\n")
+    assert approvals.main(["affected-tests"]) == 1
+    assert "no variable name" in capsys.readouterr().out
+    assert worker["ran"]() == []
+
+
+def test_a_stacked_pr_selects_against_its_own_base(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = worker["repo"]
+    worker["set_loop"](f"# Loop\n\nAffected tests: {worker['selector']}\n")
+    git_in(repo, "checkout", "-q", "-b", "stack", "main")
+    worker["commit"]("parent.py", "parent = 1\n")
+    git_in(repo, "push", "-q", "origin", "stack")
+    git_in(repo, "checkout", "-q", "-B", "work", "stack")
+    worker["commit"]("app.py", "value = 2\n")
+    monkeypatch.setattr(
+        approvals, "open_pulls", lambda: [{"headRefName": "work", "baseRefName": "stack"}]
+    )
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selected app.py"]
+
+
+def test_a_shallow_clone_is_deepened_before_the_merge_base(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker["set_loop"](f"# Loop\n\nAffected tests: {worker['selector']}\n")
+    worker["commit"]("app.py", "value = 2\n")
+    deepened: list[Any] = []
+    monkeypatch.setattr(approvals, "deepened", lambda pr: deepened.append(pr))
+    assert approvals.main(["affected-tests"]) == 0
+    assert deepened == [None]
+
+
+def test_the_selection_and_the_fallback_run_under_the_host_gate_slot(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    probe = f"{sys.executable} -c 'import os, sys; sys.exit(0 if os.environ.get(\"LOOP_GATE_SLOT_HELD\") else 9)'"
+    worker["set_loop"](f"# Loop\n\nAffected tests: {probe}\n")
+    assert approvals.main(["affected-tests"]) == 0
+    worker["set_loop"]("# Loop\n")
+    held: list[str | None] = []
+    real = approvals.run_heavy
+    monkeypatch.setattr(
+        approvals,
+        "run_heavy",
+        lambda words, env=None, **kw: (held.append((env or {}).get("LOOP_GATE_SLOT_HELD")), real(words, env=env, **kw))[1],
+    )
+    assert approvals.main(["affected-tests"]) == 0
+    assert held and held[0]
+
+
+def test_base_prints_the_variable_for_a_head_proof_and_runs_nothing(
+    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worker["set_loop"](f"# Loop\n\nAffected tests: {worker['selector']}\n")
+    worker["commit"]("app.py", "value = 2\n")
+    expect = git_in(worker["repo"], "rev-parse", "main").strip()
+    assert approvals.main(["affected-tests", "--base"]) == 0
+    assert capsys.readouterr().out == f"GATE_BASE={expect}\n"
+    assert worker["ran"]() == []
