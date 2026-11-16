@@ -148,10 +148,13 @@ def test_the_heavy_wrapper_key_is_the_prefix_among_other_keys_and_comments(
     script = wrapper(tmp_path)
     configure(
         host,
-        "# the host's limits\n\nunknown_key = 1\nnot a setting\n"
+        "# the host's limits = none yet\n\nunknown_key = 1\nnot a setting\n"
         f"heavy_wrapper = {script} first\n  heavy_wrapper  =  {script} --slice='loop heavy' --  \n",
     )
-    assert approvals.host_config()["unknown_key"] == "1"
+    assert approvals.host_config() == {
+        "unknown_key": "1",
+        "heavy_wrapper": f"{script} --slice='loop heavy' --",
+    }
     assert approvals.heavy_argv(["make", "test"]) == [
         str(script),
         "--slice=loop heavy",
