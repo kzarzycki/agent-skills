@@ -750,7 +750,7 @@ or the owner's private network.
   takes the heavy slot. `mutate.py` measures rather than declares: it runs the tests once on the unmutated head
   in the short lane and keeps the patches there only when that run passed within `short_seconds`.
   The slot limits how many heavy steps run at once; the heavy wrapper limits what each takes. A host turns it on with
-  one line in `${XDG_CONFIG_HOME:-~/.config}/engineering-loop/heavy-wrapper`, a command prefix (`systemd-run --user
+  one line in `${XDG_CONFIG_HOME:-~/.config}/engineering-loop/host`, a `heavy_wrapper = <prefix>` line (`key = value` lines, so later host settings share the file), a command prefix (`systemd-run --user
   --scope --quiet --slice=loop-heavy.slice -p CPUQuota=400% -p MemoryMax=6G --`), and every heavy step then runs under
   it: each gate step of `local-ci` and `land`, the `pre_land` check, `mutate.py`'s test runs, and any command run as
   `uv run <this skill's folder>/scripts/approvals.py heavy <cmd>`. Without the file every step runs as before; a prefix

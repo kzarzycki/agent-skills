@@ -83,9 +83,9 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def configure(host: Path, text: str) -> Path:
     """The host's wrapper file holding `text`."""
-    path = host / ".config" / "engineering-loop" / "heavy-wrapper"
+    path = host / ".config" / "engineering-loop" / "host"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(f"# host\nother = 1\nheavy_wrapper = {text}" if text.strip() else text)
     return path
 
 
@@ -124,15 +124,15 @@ def test_xdg_config_home_names_where_the_wrapper_file_is(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert approvals.heavy_argv(["true"]) == ["true"]
     (tmp_path / "xdg" / "engineering-loop").mkdir(parents=True)
-    (tmp_path / "xdg" / "engineering-loop" / "heavy-wrapper").write_text(f"{script} --p='A B'\n")
+    (tmp_path / "xdg" / "engineering-loop" / "host").write_text(f"heavy_wrapper = {script} --p='A B'\n")
     assert approvals.heavy_argv(["true"]) == [str(script), "--p=A B", "true"]
 
 
-def test_the_first_line_that_is_not_blank_or_a_comment_is_the_prefix(
+def test_the_first_heavy_wrapper_line_is_the_prefix(
     tmp_path: Path, host: Path
 ) -> None:
     script = wrapper(tmp_path)
-    configure(host, f"# the host's limits\n\n{script} --slice='loop heavy' --\n{script} second\n")
+    configure(host, f"{script} --slice='loop heavy' --\nheavy_wrapper = {script} second\n")
     assert approvals.heavy_argv(["make", "test"]) == [
         str(script),
         "--slice=loop heavy",

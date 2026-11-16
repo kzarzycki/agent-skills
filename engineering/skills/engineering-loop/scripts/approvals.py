@@ -5840,23 +5840,24 @@ heavy_probed: dict[tuple[str, ...], str | None] = {}
 
 
 def heavy_wrapper_path() -> str:
-    """The host's heavy wrapper file, beside the gate slot's lock under the config home rather than the cache."""
+    """The host config file (`key = value` lines), beside the gate slot's lock under the config home, not the cache."""
     config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
         os.environ.get("HOME", "~"), ".config"
     )
-    return os.path.join(config, "engineering-loop", "heavy-wrapper")
+    return os.path.join(config, "engineering-loop", "host")
 
 
 def heavy_prefix(env: Any = None) -> list[str]:
-    """The heavy wrapper's words: the file's first line that is not blank or a `#` comment, split like a shell
-    command; none without the file or such a line, under a wrapped step (HEAVY_WRAPPED in `env`, else this process's),
+    """The heavy wrapper's words: the value of the host config's first `heavy_wrapper = <prefix>` line (blank lines,
+    `#` comments and other keys are skipped), split like a shell command; none without the file or such a line, under a wrapped step (HEAVY_WRAPPED in `env`, else this process's),
     or where the prefix can't run, which says so on stderr once per process and runs the step unwrapped, since the
     gate must never fail because of the wrapper."""
     if (os.environ if env is None else env).get(HEAVY_WRAPPED) == "1":
         return []
     try:
         with open(heavy_wrapper_path(), encoding="utf-8", errors="replace") as text:
-            line = next((s for s in map(str.strip, text) if s and not s.startswith("#")), "")
+            pairs = (s.partition("=") for s in map(str.strip, text) if s and not s.startswith("#"))
+            line = next((v.strip() for k, _, v in pairs if k.strip() == "heavy_wrapper"), "")
     except OSError:
         return []
     if not line:
