@@ -102,7 +102,7 @@ design, wireframes included for a UI, and delegate the rest.
    before reporting: a finding the worker could have checked costs a fix round, a full gate and
    another pass. The worker gets those checks only, never a verdict, review text or the
    verifier's report, so the verifier stays independent and runs the same checks itself.
-   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker; every step's placement is SKILL.md, Where heavy steps run):
+   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; every step's placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
@@ -382,7 +382,11 @@ alive before saying so, since a restart kills your background runs. A child stil
 no turn item a few minutes after its start never got its brief: treat it as dead.
 A child that ends its turn saying it waits (for a build, a gate, CI) rather than reporting
 has left no report and will not wake itself: arm such a wait on its process or log, and when it
-fires, ask the child for its report.
+fires, ask the child for its report. A worker's gate or verifier run is waited on by what
+it posts on the PR, `wait-for --pr <n> --until gate` or `--until verdict` (orchestrating-agents'
+backends/omnigent.md, Waiting on a run or a PR), never by the worker's turn ending, since the run
+can outlast the turn or die with its machine; one that settles on nothing by the run's usual
+length is restarted.
 Finish a worker or verifier as soon as its report is read or its verdict posted, since an
 idle child keeps its agent process, MCP servers and runner alive. With Omnigent, `run` and
 `wait` already finish the child whose report they return, except a `--pr` worker, which they keep
