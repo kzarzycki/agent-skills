@@ -20,7 +20,7 @@ it (Approvals and proof); no step runs for their changes.
 | **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
 | **Build.** Workers, or the lead when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
 | **Gates.** `mise run check` before every push (on a fix round, beside the review: worker.md, Gates and push), its test part behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot); GitHub runs every `check:` part. | a broken change |
-| **Proof.** On the PR branch before review, then on the owner's instance after landing: each new result against a reference the code did not produce. | works in tests, not in use |
+| **Proof.** The spec's Before merge list on the PR branch before review, then its After merge list (checks that need the merged default branch or a deployed environment) after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
 
@@ -350,7 +350,7 @@ produces what this table says:
 | Stage | Must produce | Default skill |
 |---|---|---|
 | Intent | open questions settled, or asked in the issue | `grilling` |
-| Spec | the spec in the issue, or linked from it, with acceptance examples and the reference each checks against | `to-spec` |
+| Spec | the spec in the issue, or linked from it, with acceptance examples as a Before merge and an After merge list and the reference each checks against | `to-spec` |
 | Plan, only when gatekeeper.md's `practice` names a `plan` skill | ordered slices, each with its check, as a `## Plan` comment on the issue | none |
 | Build | commits on the branch, with `check` green | the worker role |
 | Review | findings with path, cost and repro, then the verdict lines | `code-review`, run by the verifier |
