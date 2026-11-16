@@ -111,7 +111,7 @@ exceptions:
 | `gatekeeper` | 2 | the gatekeeper CLI, today engineering-loop's `approvals.py` |
 | `engineering` | 1 | every craft skill above at layer 1 under `engineering/`, `orchestrating-agents` with its native backend, a new `browsing` skill |
 | `omnigent` | 0 | `omnigent-agents` (the runner backend and its driver), `operating-omnigent`, `omnigent-telemetry` |
-| `github` | 0 | `github.md`, `board.py`, `labels.py`, `github-project-board-setup` |
+| `github` | 0 | `github.md`, `board.py`, `labels.py`, `rulesets.py`, `github-project-board-setup` |
 | `vendoring` | tooling | the capability-pack tool, `ROUTINE.md`, `update-delta-audit` |
 | `research`, `utilities`, `content`, `experimental` | 1 (`overnight-run` 4) | unchanged |
 

@@ -49,7 +49,20 @@ gatekeeper.md holds the gatekeeper's policy, a fenced `yaml` block under `## Pol
 keeps the prose for people and agents: why a path is critical, how to judge a finding, the
 risk criteria in words. A project without gatekeeper.md may keep the block under loop.md's
 `## Settings` for now: `approvals.py` reads it there with a deprecation line, and refuses a
-project with both, since two sources of the bar would drift. The block is YAML because a person
+project with both, since two sources of the bar would drift. `approvals.py` reads these files,
+and issue-tracker.md, from the base's copy on `origin/<base>`, never the checkout's: the base the
+PR a command acts on merges onto, the ref `land` builds on (`check`, `land`, `local-ci <pr>`,
+`approve merge`, `delegate`, `brief`), else the default branch. `land` fetches the base before
+it reads the policy (where it may run, its key, which drafts to ready) and reads it again after
+its fetch under the landing lock, so a policy another land changed meanwhile decides the batch:
+it places the land again (refused, the lock released, where the base now excludes the place it
+runs; signed with the key it now names), and a draft it readied that the new policy would not
+ready goes back to draft. A failed fetch before the lock readies no draft. So a PR can't
+loosen its own gate and a checkout behind its
+base can't hold an old one: a working-tree copy that differs gets one line naming the file and
+both commits, and only a checkout without that ref (no `origin`) reads its own, with a line
+saying so. A PR that changes the gate is therefore gated, recorded and landed under the base's
+gate, and its own applies from the next PR on. The block is YAML because a person
 reads and edits it by hand as `key: value` under section names, a list one item per line,
 and it is typed (a boolean, a number and a list are each their own kind, so none is a
 string the reader guesses at). A string needs no quotes unless YAML would read it otherwise:
@@ -232,7 +245,11 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   says GitHub enforces no rules there, since its proofs are the only gate. `mise run
   setup:github` applies it; GitHub layers it on top of the repo's own rulesets, which it
   leaves untouched, and reverting deletes only it. `setup:github` also syncs the repo's
-  labels with `scripts/labels.py` (github.md, Labels).
+  labels with `scripts/labels.py` (github.md, Labels). The files here are also what
+  `scripts/rulesets.py check` compares the live rulesets against, one line per difference
+  (`rulesets.py snapshot` writes them from a repo set up by hand): GitHub sends no alert when
+  a ruleset is deleted, disabled, narrowed or given a bypass actor, so a project runs the check
+  on a schedule, for example from its hygiene job.
 
 **Which token the agents use.** What the token can do bounds what a misbehaving agent can undo.
 
@@ -450,7 +467,7 @@ approver's go may be relayed to the session where landing runs: `approve merge <
 that name it the delegate's, so the PR shows whose go landed it, and `check merge` and `land`
 print whose go they used. Into the default branch it is refused unless the policy on
 `origin/<base>` sets `delegate: all` under `loop` (a branch's own edit of it is not the owner's;
-a base with no policy file leaves the checkout's), and there a delegate's go counts only while it does; without the
+a base with no policy file leaves the default branch's), and there a delegate's go counts only while it does; without the
 key (`feature`) the owner's go alone covers the default branch. A status covers one commit, so
 it never covers code the approver did not see; it carries to a head whose commits since are
 only merges of the base, once the verifier's pass there says `Logic change: none`. Into the default branch these are the only go:
@@ -546,7 +563,7 @@ or several; `check merge`, `check queue` and `land` print one line per merge nam
 first parent and the predicate. Anything else (a PR commit after H, new, edited or rebased,
 a conflict, an evil merge, an overlapping file, a touched except path, a git error) carries
 nothing, and the check prints which condition failed: the head needs its own verifier pass. The gate never carries: H'
-runs its own, as CI does, and under `ci: false` that is `local-ci <pr> --run` on H', since a
+runs its own, as CI does, and under `ci: false` that is `local-ci <pr> --head <H'> --run` on H', since a
 `local-ci` record stands in for CI on one exact tree. This skips a review on purpose, so a
 project opts in by writing the section.
 
@@ -637,6 +654,19 @@ or the owner's private network.
   else as a fresh `run --pr`. Nothing in
   the cloud calls the host, through MCP or otherwise, since such a tool can drop mid-run and
   stall the work, and nothing new watches the PR.
+- **Wait on the signal, not the turn.** A cloud worker's gate and verifier post their own
+  end on the PR, so wait on that rather than on the worker's turn, which may end before its run
+  does: orchestrating-agents' `omnigent_agent.py wait-for --pr <n> --until gate` settles when
+  the PR's current head has a pass (the record branch `local-ci --record` pushes, or a green
+  `gate` status; exit 1 on the `gate` failure status a failed `--record` run writes), and
+  `--until verdict` when a comment or review naming the head on its `Head:` line holds a
+  `SATISFIED:` line (exit 1 for `no`, or for a `## Verifier question` posted after the head's
+  commit), printing the URL it read. Both read REST only, so they run from a launch dir with no
+  working tree. The newest gate signal wins, so a failure after a recorded pass is exit 1, and
+  `--since <ISO time>` ignores signals older than a run restarted on the same head. Exit 6 is the
+  budget: call it again. Where the failure status cannot be written (a cloud VM's proxy refuses
+  status writes), a failed run reads as exit 6 until the budget; with `gate_steps`, exit 0 is one
+  step's pass, and `local-ci <pr>` says whether the whole gate has one.
 - **Proof.** The worker proves what the VM runs. The full gate's host-only parts (emulator,
   simulator and device tests), the instance, the acceptance examples and the evidence are
   the lead's and the verifier's, on the host. A failure there costs a round trip (relay,
@@ -649,10 +679,14 @@ or the owner's private network.
   evidence or a brief's text quoted there, since a public repo publishes them.
   The commits too: the cloud harness tells each session to end every commit with a
   `Claude-Session:` link, and neither a brief nor a committed `attribution.commit` in
-  `.claude/settings.json` removes that instruction. `land` drops the line from the squash
-  body, so `main` stays clean, but the PR branch's commits keep it. A private repo may accept
+  `.claude/settings.json` removes that instruction; a PR body it writes ends with a bare line
+  holding the link even under an empty `attribution.pr`, and its proxy appends a `_Generated by
+  [Claude Code](<link>)_` footer to every body and comment it writes. `land` drops each of these
+  lines from the squash body and, before the merge, from the PR's body and comments on GitHub,
+  so `main` and the PR page stay clean; `check merge` names any such text the account can't
+  edit (a comment by another account), for a person to clear. The PR branch's commits keep it. A private repo may accept
   that. A public repo publishes its branch commits, so it strips the line at the source with
-  `approvals.py commit-msg <file>`, which removes every `Claude-Session:` line and folds the
+  `approvals.py commit-msg <file>`, which removes every such line and folds the
   blank lines as `land` does: its pre-commit config runs that command at the `commit-msg`
   stage (a local hook, `stages: [commit-msg]`), and the cloud environment's setup installs
   that hook type (`pre-commit install --hook-type commit-msg`), since a session's clone has
@@ -667,7 +701,8 @@ or the owner's private network.
   place, the way the Codex CLI does it, in one atomic replace of the host's `auth.json`; a refused refresh exits 2
   and names `codex login`. `--env` repeats, to seed every environment in one run. To keep them fresh without the
   owner, run `seed` every 2 days as an Omnigent scheduled task on the host that holds the login, on a small model,
-  keeping the run (`sys_session_keep`) when it exits non-zero. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
+  keeping the run (`sys_session_keep`) when it exits non-zero. The script never prints a secret's value, in its own output, a
+  traceback or the verifier's, and a refused seed is described by its length, hash and days left, which is how to check one. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
   PR's head, runs Codex on the brief and posts the report as a PR comment. The worker's session only carries
   the pass: the lead sends it the brief `approvals.py brief` prints, with `send --pr`, asking it to save the
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
@@ -751,7 +786,7 @@ or the owner's private network.
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
   either), since it misses different things; otherwise, as for a user with one family installed, a fresh
-  session of the same family is the normal path. When Codex refuses, lead.md's Verifier route names the two fallbacks, Gemini through agy and then a same-family Claude, each labelled and neither landing a high-risk change. The PR body names which ran
+  session of the same family is the normal path. When Codex refuses, lead.md's Verifier route names the two fallbacks, Gemini through agy and then a same-family Claude, each labelled; a satisfied one lands a change of any risk like a Codex verdict. The PR body names which ran
   (`verifier: same family` for the latter). A PR with code from both families gets a
   verifier for each family's changes where both are available, integration edits
   included; each writes its own report, and the cap counts rounds they share. The family

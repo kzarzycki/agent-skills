@@ -139,7 +139,7 @@ command, and its only other mode skips them all, so `start` refuses it a `--role
 `--permission-mode bypassPermissions` (or the variable) opts into that, which it launches with
 `--dangerously-skip-permissions`. Antigravity's effort is the user's configuration: agy names it
 in the model of its own settings (`Gemini 3.8 Flash (Low)`), which Omnigent copies into each
-session, so the launcher passes none. On another host agy takes the brief as a file there too, written through the host's file API: the render check it makes of a pasted first line fails on a long inline paste, which scrolls the line away. `--verifier-route gemini` (or `$OMNIGENT_VERIFIER_ROUTE`) on a verifier start picks this agent in bypass mode, and `--verifier-route claude` a same-family Claude of another `--model` than the required `--author-model`: engineering-loop's lead.md, Verifier route, says when. An unknown name fails before a session is created.
+session, so the launcher passes none. On another host agy takes the brief as a file there too, written through the host's file API: the render check it makes of a pasted first line fails on a long inline paste, which scrolls the line away. `--verifier-route gemini` (or `$OMNIGENT_VERIFIER_ROUTE`) on a verifier start picks this agent in bypass mode, and `--verifier-route claude` a same-family Claude of another `--model` than the required `--author-model`: engineering-loop's lead.md, Verifier route, says when. An unknown name fails before a session is created. The flag without `--role <skills>/engineering-loop/verifier.md` is refused the same way, since the route would otherwise be dropped silently; `$OMNIGENT_VERIFIER_ROUTE` alone is not refused, as a host may export it for every start.
 
 **Cloud workers.** A worker whose tools run in a cloud VM can't write a file on this host,
 so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment
@@ -223,12 +223,12 @@ take one heavy slot between them (worker.md, Gates and push); a session gets no 
 its starter, so the path rides in the brief.
 
 **Waiting on a run or a PR.** `python3 scripts/omnigent_agent.py wait-for --log <log> [--pid
-<n|file>]`, `--pid <n|file>` or `--pr N [--until checks|merged|closed]` blocks up to `--budget`
+<n|file>]`, `--pid <n|file>` or `--pr N [--until checks|merged|closed|gate|verdict]` blocks up to `--budget`
 seconds (default 570, under a 10-minute tool call), printing nothing until it ends: on the log's
 `exit <n>` line with that code, the line before it and, on red, the last 30 lines (with `--pid`,
 only an `exit` line after the `run <pid>` line naming that run, which the detached recipe writes
 first, since a reused log path still holds the previous run's line; a log alone is trusted as
-the caller's run); on the pid gone; on the PR's condition settled (red checks named, exit 1); else `still running`, exit 6 (a run that itself
+the caller's run); on the pid gone; on the PR's condition settled (red checks named, exit 1; `gate`: the current head's newest signal, a record branch (its commit's date) or `gate` status, exit 1 on a failure one; `verdict`: a report naming the head with its `SATISFIED:` line, exit 1 for `no` or a later `## Verifier question`, its URL printed; both through REST alone, and `--since <ISO time>` ignores a signal older than it, for a run restarted on the same head); else `still running`, exit 6 (a run that itself
 exits 6 prints `exit 6`, and that is its end).
 It needs no session, so it serves every backend. Its `--notify` runs `$LOOP_NOTIFY <outcome>`
 once the run ends, as a merge queue tells a lane, so a detached run's wrapper ends with
@@ -316,6 +316,9 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
 - A send answers `queued`/`launching` even when the brief never arrives. The script
   counts a start only once that one line is a user message in the history, and otherwise
   abandons the session and retries once with a fresh one, titled `<title>-r<n>`.
+  A signal (a caller's `timeout`) while it confirms leaves the session unarchived, since the
+  brief may be in: it prints the session id on stdout and exits with the signal's code, and
+  `status <sid>` says whether to wait on that session or start another.
 - Omnigent refuses (409) a title an earlier child of the same parent holds, archived or
   not, such as a rerun `s120-verifier-p1`. The create then tries the next free
   `<title>-r<n>`, the same sequence the retry above uses, and prints the title it used. A create that fails (a timeout
@@ -646,7 +649,8 @@ alive while it declares a live background task. A named session that shows no li
 read, a registry or children not read, and a wait no session answers (the owner, `CI` with no
 session titled so) leave the deadline as above. Each deadline is one event per
 lead and `progress_at`, so new progress starts a new chain. A lead whose registry line has the
-`direct` field (`omnigent_agent.py direct <session>`, `--off` clears it), one the owner drives in
+`direct` field (`start --top-level --direct` writes it at launch, `omnigent_agent.py direct <session>`
+later, `--off` clears it), one the owner drives in
 its own session, has no deadline at all: its quiet ends and `USER NEEDED` are recorded, not
 routed, since the owner reads them there, and the `no event in <n>s` log line leaves it out; its
 `DONE`, failures and prompts route as any lead's.

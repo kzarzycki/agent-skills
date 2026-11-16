@@ -102,7 +102,7 @@ design, wireframes included for a UI, and delegate the rest.
    before reporting: a finding the worker could have checked costs a fix round, a full gate and
    another pass. The worker gets those checks only, never a verdict, review text or the
    verifier's report, so the verifier stays independent and runs the same checks itself.
-   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker; every step's placement is SKILL.md, Where heavy steps run):
+   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; every step's placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
@@ -114,7 +114,7 @@ design, wireframes included for a UI, and delegate the rest.
    Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
 7. **Verify** (board: `Verify`). A worker report or fix-round gate log naming a test that passed only on its
    retry is yours to record on its `Flaky:` issue, and at the third occurrence to start
-   the skip PR from main (SKILL.md, Flaky tests). Commit and push. Before a verifier starts,
+   the skip PR from main (SKILL.md, Flaky tests). Commit and push; under `ci: false`, then post the pass with `approvals.py local-ci <pr> --head <the pushed sha>`, since GitHub can still show the previous head for a moment after a push and a bare `local-ci <pr>` would post on it: `--head` waits about 30 s for the push, refuses naming both heads, and its one output line names the head it posted on. Before a verifier starts,
    each deviation on the worker report's `Spec deviations:` line is fixed, or taken to the
    owner as a scope change (SKILL.md, Approvals and proof: rewrite the issue, then
    `needs-owner`), since a verifier pass on a narrowed spec only finds what the report
@@ -179,8 +179,8 @@ design, wireframes included for a UI, and delegate the rest.
    fallback)"; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
    author context, `--model` other than the author's (`--author-model`), the report labelled `Verifier: claude,
    same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
-   of quota)". Either fallback may land a low or medium risk change; `check merge` reads its family as a lower
-   tier and refuses a high-risk one, which waits for Codex or the owner. agy on another host takes the brief
+   of quota)". A satisfied fallback verdict lands a change of any risk the way a Codex one does: `check merge` reads
+   its family as no tier, and refuses only a `mid` or `small` Codex tier on a high-risk change. agy on another host takes the brief
    as a file there (backends/omnigent.md, Antigravity). Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), naming the last green head (the newest head whose
    gate passed) for the fix round's gate (worker.md, Gates and push). A correctness finding's fix
@@ -382,7 +382,14 @@ alive before saying so, since a restart kills your background runs. A child stil
 no turn item a few minutes after its start never got its brief: treat it as dead.
 A child that ends its turn saying it waits (for a build, a gate, CI) rather than reporting
 has left no report and will not wake itself: arm such a wait on its process or log, and when it
-fires, ask the child for its report.
+fires, ask the child for its report. A worker's gate or verifier run is waited on by what
+it posts on the PR, `wait-for --pr <n> --until gate` or `--until verdict` (orchestrating-agents'
+backends/omnigent.md, Waiting on a run or a PR), never by the worker's turn ending, since the run
+can outlast the turn or die with its machine; one that settles on nothing by the run's usual
+length is restarted, and the wait on the restart passes `--since <its start time>`, so the old
+run's failure or question does not answer it. Where the failure status cannot be written (a proxy
+that refuses status writes), a failed run reads as exit 6 until the budget; with
+`gate_steps`, exit 0 is one step's pass, and `local-ci <pr>` says whether the whole gate has one.
 Finish a worker or verifier as soon as its report is read or its verdict posted, since an
 idle child keeps its agent process, MCP servers and runner alive. With Omnigent, `run` and
 `wait` already finish the child whose report they return, except a `--pr` worker, which they keep
