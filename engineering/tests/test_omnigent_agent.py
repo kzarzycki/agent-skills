@@ -773,6 +773,7 @@ def test_a_child_its_leads_root_subscribes_to_is_covered_too(
 ) -> None:
     og = Posting()
     code, calls = lead_run(tmp_path, monkeypatch, og, "start", "claude", "t", "b.md", "r.md")
+    assert code == 0
     og.parents.clear()
     og.roots["lead"] = "chief"  # start --top-level subscribes the root of the starter's tree
     og.subscriptions.append(("chief", "s0"))
@@ -785,6 +786,7 @@ def test_a_child_nothing_tells_the_lead_about_still_gets_the_notify_line(
 ) -> None:
     og = Posting()
     code, calls = lead_run(tmp_path, monkeypatch, og, "start", "claude", "t", "b.md", "r.md")
+    assert code == 0
     og.parents.clear()  # top level, no subscription: the line is the only wake
     assert omnigent_agent.main(["wait", "s0", "r.md", "--notify"]) == 0
     assert og.wakes(calls) == 1 and calls.read_text().startswith("exit 0:")
