@@ -181,6 +181,7 @@ carry_over_main:
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
 | `land` | `signed_squash_to` and `allowed_signers`, set together or not at all; `where` (`host`, `cloud` or `both`), `signing_key_env`, `merge_queue` and `merge_commit_heads` (a list of fnmatch patterns over head branch names, such as `sync/*`) | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub; `where` is where `land` may run, and in a cloud session it signs with the key in the variable `signing_key_env` names, which must be in the allowed signers, never the session's own, and lands a PR there only with `merge_queue: false`, since REST can't say whether the base requires a merge queue (`approvals.py`'s docstring says how) | GitHub merges, on a host only; a PR whose head matches `merge_commit_heads` lands with `gh pr merge --merge --match-head-commit`, keeping the head's ancestry (an upstream-sync PR needs it), and every other PR is squashed as before; `land` prints each PR's method, and a match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form |
 | `carry_over_main` | `except`, a list of globs, required | deprecated, goes in the next release (Approvals and proof); the project's merge-check configuration (lint, type, test and gate config, lockfiles): clean merges of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
+| `adapters` | `tracker`, `forge`, `evidence` | the adapter each of the gatekeeper's ports runs on, by name: `github`, `gatekeeper.py`'s own (`github_adapter.py`), is the one it ships, and a name no adapter has is refused, naming it (`gatekeeper.py`'s docstring) | `github` |
 
 issue-tracker.md holds its label and board facts in a block of the same form under its own
 `## Settings`, read by `approvals.py` (`label_names`), `labels.py` and `board.py`, refused the
@@ -517,7 +518,16 @@ until they approve. A spec the owner approved and then edited for wording needs 
 needs nothing. `mise run loop:approvals build` before building and `mise run
 loop:approvals merge` before merging check every proof (`scripts/approvals.py` lists
 them); `merge` exits 3 while it waits for `check` or the owner's go, and 1 when a proof
-is missing. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land [<pr>...]` (the
+is missing. `scripts/approvals.py` is `scripts/gatekeeper.py`'s name before #614, kept for
+one release line, so every command here runs under either; gatekeeper.py's docstring lists
+the verbs. The gatekeeper's own names for `approve`, `verdict` and `local-ci` are `record
+approval`, `record verdict` and `record checks`, and `report --json <report>` prints a
+verifier report's facts as JSON, for a flow engine that should not parse the prose. It reaches
+the tracker, the forge and the evidence only through its ports, each run by the adapter the
+policy's `adapters` names (Settings); `scripts/github_adapter.py` is GitHub's, the default,
+read when a GitHub call misbehaves. Its own commit status counts under `loop:approvals` and,
+for one release line, under `gatekeeper`: a ruleset may require either, and the gate waits
+for neither. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land [<pr>...]` (the
 project's `loop:land` task). It lands every landable PR into the base as one batch, so a base
 that moved costs one gate, not a merge, a gate and a verdict per PR, and no PR lands on a base
 it was never gated on:
@@ -798,6 +808,16 @@ or the owner's private network.
   line, so a job wrongly declared short shows in its log; `short_seconds: 0` turns the lane off and every job
   takes the heavy slot. `mutate.py` measures rather than declares: it runs the tests once on the unmutated head
   in the short lane and keeps the patches there only when that run passed within `short_seconds`.
+  The slot limits how many heavy steps run at once; the heavy wrapper limits what each takes. A host turns it on with
+  one line in `${XDG_CONFIG_HOME:-~/.config}/engineering-loop/host`, a `heavy_wrapper = <prefix>` line (`key = value` lines, so later host settings share the file), a command prefix (`systemd-run --user
+  --scope --quiet --slice=loop-heavy.slice -p CPUQuota=400% -p MemoryMax=6G --`), and every heavy step then runs under
+  it: each gate step of `local-ci` and `land`, the `pre_land` check, `mutate.py`'s test runs, and any command run as
+  `uv run <this skill's folder>/scripts/approvals.py heavy <cmd>`. Without the file every step runs as before; a prefix
+  that can't run (its command not on `PATH`, or `<prefix> true` failing) prints one line and runs the step unwrapped,
+  so the gate never fails for it, and a wrapped step carries `LOOP_HEAVY_WRAPPED=1`, so a heavy call under it adds no
+  scope of its own. Limits given on the scope cap each step alone; `systemctl --user set-property loop-heavy.slice
+  CPUQuota=… MemoryMax=…` caps all of them together. A database server's backend runs in the server's own cgroup,
+  so wrapping its client caps only the client.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts

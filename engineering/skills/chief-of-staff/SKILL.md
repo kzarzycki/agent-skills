@@ -146,9 +146,9 @@ its landing order.
   its own session (they talk to it there, not through you) is marked at launch with `start
   --top-level --direct`, since a mark added afterwards is easy to forget and until then its quiet
   ends and questions come to you; one you adopt or mark later gets `python3 <script> direct
-  <session>` (`--off` clears it). Either way the supervisor still tells you its `DONE`, failures
-  and approval prompts, but raises no deadline, sends no nudge and leaves its quiet ends and
-  questions to the owner, who reads them there.
+  <session>` (`--off` clears it). Either way the supervisor posts you nothing about it, its
+  `DONE`, questions and prompts included, since the owner reads them there: only a failed turn
+  that lost its runner, which the owner can't see there, comes to you.
 - **Host load.** Before starting or resuming sessions on a host, check its capacity: load
   average per core and available memory, in one call on that host with `python3 <script> capacity`
   (exit 0 with room, 1 over; `start` and `run` wait for room themselves). Over it,

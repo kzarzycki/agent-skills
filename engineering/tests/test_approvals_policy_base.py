@@ -351,7 +351,7 @@ def test_a_draft_readied_before_the_lock_wait_goes_back_to_draft_when_the_new_po
     monkeypatch.setattr(approvals, "in_cloud", lambda: False)
     monkeypatch.setattr(approvals, "required_checks", lambda _base: set())
     calls: list[tuple[str, ...]] = []
-    monkeypatch.setattr(approvals, "gh", lambda *args, **_kw: calls.append(args) or "")
+    monkeypatch.setattr(approvals.github, "gh", lambda *args, **_kw: calls.append(args) or "")
     # readied() marked it ready under the policy before the wait
     monkeypatch.setattr(
         approvals,
