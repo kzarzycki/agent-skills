@@ -448,7 +448,7 @@ def test_a_base_that_stops_allowing_this_place_during_the_wait_refuses_and_relea
         "unlock",
         lambda base, _tip: released.append(base) or subprocess.CompletedProcess([], 0, "", ""),
     )
-    monkeypatch.setattr(approvals, "local_queue", lambda *_a: pytest.fail("batched"))
+    monkeypatch.setattr(approvals, "local_queue", lambda *_a: pytest.fail("local_queue"))
     with pytest.raises(
         approvals.Refused, match="`land.where` is `cloud`, so land does not run in a host"
     ):
@@ -488,12 +488,12 @@ def test_a_land_signs_with_the_key_the_policy_names_under_the_lock(
     monkeypatch.setattr(approvals, "unlock", lambda *_a: subprocess.CompletedProcess([], 0, "", ""))
     used: list[str] = []
 
-    def batched(*_a: Any) -> tuple[int, bool]:
+    def local_queue(*_a: Any) -> tuple[int, bool]:
         key = next(arg for arg in approvals.SIGNING if arg.startswith("user.signingkey="))
         used.append(Path(key.removeprefix("user.signingkey=")).read_text())
         return 0, False
 
-    monkeypatch.setattr(approvals, "local_queue", batched)
+    monkeypatch.setattr(approvals, "local_queue", local_queue)
     assert approvals.landing(7) == (0, False)
     assert used == [(keys / "second").read_text()]
     assert approvals.SIGNING == []

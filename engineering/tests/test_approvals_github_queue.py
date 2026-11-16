@@ -58,12 +58,13 @@ def run(name: str, conclusion: str, job: int) -> dict[str, Any]:
 @pytest.fixture
 def queue(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """`lands` on a base whose rules require `qualify` and a SQUASH merge queue. `enqueued` and `dequeued` hold each
-    mutation's (PR, head); `checks` the check runs by commit or branch, `logs` the job logs by id. `remove(n, reason,
-    at, group)` has the queue drop PR #n; `merge(n)` has it merge #n, its runs on the merge commit."""
+    mutation's (PR, head); `checks` the check runs by commit or branch, `logs` the job logs by id, `built` the commit of
+    main each group was built on (`m0`, which has no checks, by default). `remove(n, reason, at, group)` has the queue
+    drop PR #n; `merge(n)` has it merge #n, its runs on the merge commit."""
     rules = approvals.Required({"qualify"})
     rules.queue = "SQUASH"
     state = lands
-    state.update(rules=rules, enqueued=[], dequeued=[], checks={}, logs={})
+    state.update(rules=rules, enqueued=[], dequeued=[], checks={}, logs={}, built={})
     pulls = state["pulls"]
     monkeypatch.setattr(approvals, "required_checks", lambda _base: state["rules"])
     fake = approvals.gh
@@ -91,6 +92,24 @@ def queue(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, A
         if args[:2] == ("api", "--paginate") and "/check-runs" in args[2]:
             ref = args[2].split("/commits/")[1].split("/")[0]
             return "".join(json.dumps(each) + "\n" for each in state["checks"].get(ref, []))
+        if args[0] == "api" and "/compare/" in args[1]:
+            if (built := state["built"].get(args[1].split("...")[1], "m0")) is None:
+                raise subprocess.CalledProcessError(1, "gh", stderr="gh: Not Found (HTTP 404)")
+            return built + "\n"
+        if args[:2] == ("pr", "list"):
+            assert args[args.index("--state") + 1] == "merged"
+            if state.get("unlisted"):
+                raise subprocess.CalledProcessError(1, "gh", stderr="gh: timed out")
+            return json.dumps(
+                [
+                    {
+                        "number": n,
+                        "comments": [{"body": c["body"]} for c in pr["comments"]["nodes"]],
+                    }
+                    for n, pr in pulls.items()
+                    if pr["state"] == "MERGED"
+                ]
+            )
         if args[0] == "api" and args[1].endswith("/logs"):
             return "\n".join(state["logs"][int(args[1].split("/")[-2])]) + "\n"
         if args[0] == "api" and re.fullmatch(r"repos/\{owner\}/\{repo\}/commits/\w+", args[1]):
@@ -126,7 +145,18 @@ def queue(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, A
         )
         commit = state["squashes"][number]
         remove(number, approvals.QUEUE_MERGED, at=AGAIN_AT, group=commit)
-        state["checks"][commit] = [run("qualify", "success", 991), run("lint", "success", 992)]
+        # a check another app runs, which links no Actions run
+        other = {
+            "name": "cla",
+            "conclusion": "success",
+            "id": 1,
+            "html_url": "https://cla.example.com/7",
+        }
+        state["checks"][commit] = [
+            run("qualify", "success", 991),
+            run("lint", "success", 992),
+            other,
+        ]
         return commit
 
     monkeypatch.setattr(approvals, "gh", gh)
@@ -292,6 +322,7 @@ def test_a_removal_for_a_conflict_gets_the_conflict_comment_and_is_not_enqueued(
     queue: dict[str, Any],
 ) -> None:
     head = queue["opened"](7)
+    queue["pulls"][7]["mergeable"] = "UNKNOWN"  # GitHub works it out again after the base moved
     queue["remove"](7, approvals.MERGE_CONFLICT)
     code, lines = queue["land"]("7")
     assert code == 1, lines
@@ -328,12 +359,15 @@ def test_a_pr_the_queue_has_just_merged_is_waited_on_not_enqueued_again(
 
 
 def entry(minutes: int, suites: int = 0, state: str = "AWAITING_CHECKS") -> dict[str, Any]:
+    """A queue entry whose group commit was made `minutes` ago."""
     at = datetime.now(UTC) - timedelta(minutes=minutes)
     return {
         "state": state,
         "position": 1,
-        "enqueuedAt": at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "headCommit": {"checkSuites": {"totalCount": suites}},
+        "headCommit": {
+            "committedDate": at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "checkSuites": {"totalCount": suites},
+        },
     }
 
 
@@ -477,3 +511,162 @@ def test_a_pr_merged_outside_the_queue_gets_no_landed_comment_from_it(
     queue["pulls"][7]["state"] = "MERGED"
     assert queue["land"]("7") == (0, ["PR #7 is merged"])
     assert queue["comments"] == []
+
+
+def test_a_bare_land_exits_1_when_a_candidate_conflicts_and_still_enqueues_the_rest(
+    queue: dict[str, Any],
+) -> None:
+    queue["opened"](7)
+    eight = queue["opened"](8)
+    queue["pulls"][7]["mergeable"] = "CONFLICTING"
+    code, lines = queue["land"]()
+    assert code == 1, lines
+    assert queue["enqueued"] == [(8, eight)]
+
+
+LINK = "https://claude.ai/code/session_01AbCdEf"
+BODY = "## Summary\n\nFix it.\n\n## Evidence\n\nlog line"
+
+
+def test_a_pr_body_loses_its_session_link_before_it_is_enqueued(queue: dict[str, Any]) -> None:
+    head = queue["opened"](7, body=f"{BODY}\n\n{LINK}\n")
+    queue["pulls"][7]["viewerCanUpdate"] = True
+    code, lines = queue["land"]("7")
+    assert code == approvals.WAITING, lines
+    assert queue["edits"] == {"repos/{owner}/{repo}/pulls/7": BODY}
+    assert queue["enqueued"] == [(7, head)]
+
+
+def test_a_pr_the_queue_merged_has_its_worker_sessions_finished(
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archived: list[int] = []
+    monkeypatch.setattr(approvals, "archive_workers", archived.append)
+    queue["opened"](7)
+    queue["queue_merge"](7)
+    assert queue["land"]("7") == (0, ["PR #7 is merged"])
+    assert archived == [7] and len(notes_on(queue, 7, approvals.LANDED)) == 1
+
+
+def test_a_bare_land_comments_landed_on_each_pr_the_queue_merged_without_one(
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archived: list[int] = []
+    monkeypatch.setattr(approvals, "archive_workers", archived.append)
+    for number in (6, 7, 9):
+        queue["opened"](number)
+    queue["queue_merge"](6)
+    queue["queue_merge"](7)
+    approvals.comment(7, "Landed\nBase: x\n")  # a `land 7` already wrote its trail
+    queue["comments"].clear()
+    queue["pulls"][9]["state"] = "MERGED"  # merged outside the queue: not its trail
+    code, lines = queue["land"]()
+    assert code == 0, lines
+    assert [n for n, _ in queue["comments"]] == [6] and archived == [6]
+    assert queue["land"]()[0] == 0 and [n for n, _ in queue["comments"]] == [6]
+
+
+def test_two_reds_on_groups_built_on_a_red_main_evict_nobody_once_main_is_green(
+    queue: dict[str, Any],
+) -> None:
+    head = queue["opened"](7)
+    queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
+    queue["remove"](7, approvals.FAILED_CHECKS, at=AGAIN_AT, group="g2")
+    red_group(queue, "g2", 420)
+    queue["built"].update(g1="m1", g2="m1")
+    queue["checks"]["m1"] = [run("qualify", "failure", 500)]
+    queue["checks"]["main"] = queue["checks"]["m1"]
+    code, lines = queue["land"]("7")
+    assert code == 1 and lines[-1].startswith("main itself is red"), lines
+    queue["checks"]["main"] = [run("qualify", "success", 501)]
+    code, lines = queue["land"]("7")
+    assert code == approvals.WAITING, lines
+    assert (
+        "PR #7 was red in the merge queue on a red main: it counts for nothing, enqueued again"
+        in lines
+    )
+    assert not queue["pulls"][7]["isDraft"] and queue["comments"] == []
+    assert queue["enqueued"] == [(7, head)]
+
+
+def test_one_red_on_a_group_built_on_a_red_main_gets_no_red_comment_once_main_is_green(
+    queue: dict[str, Any],
+) -> None:
+    queue["opened"](7)
+    queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
+    red_group(queue, "g1", 410)
+    queue["built"]["g1"] = "m1"
+    queue["checks"]["m1"] = [run("qualify", "failure", 500)]
+    code, lines = queue["land"]("7")
+    assert code == approvals.WAITING, lines
+    assert notes_on(queue, 7, approvals.QUEUE_RED) == []
+
+
+def test_a_red_under_a_red_main_then_one_under_a_green_main_is_the_prs_first(
+    queue: dict[str, Any],
+) -> None:
+    head = queue["opened"](7)
+    queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
+    queue["remove"](7, approvals.FAILED_CHECKS, at=AGAIN_AT, group="g2")
+    red_group(queue, "g2", 420)
+    queue["built"].update(g1="m1", g2="m2")
+    queue["checks"]["m1"] = [run("qualify", "failure", 500)]
+    queue["checks"]["m2"] = [run("qualify", "success", 501)]
+    code, lines = queue["land"]("7")
+    assert code == approvals.WAITING, lines
+    assert not queue["pulls"][7]["isDraft"] and notes_on(queue, 7, approvals.QUEUE_EVICTED) == []
+    [note] = notes_on(queue, 7, approvals.QUEUE_RED)
+    assert "Group: g2\n" in note and queue["enqueued"] == [(7, head)]
+
+
+def test_a_red_on_a_group_whose_main_commit_is_still_running_counts_nothing_yet(
+    queue: dict[str, Any],
+) -> None:
+    queue["opened"](7)
+    queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
+    red_group(queue, "g1", 410)
+    queue["built"]["g1"] = "m1"
+    queue["checks"]["m1"] = [run("qualify", None, 500)]  # type: ignore[arg-type]
+    code, lines = queue["land"]("7")
+    assert (code, lines) == (approvals.WAITING, ["PR #7: main's checks on m1 are still running"])
+    assert queue["comments"] == [] and queue["enqueued"] == []
+
+
+def test_an_entry_queued_long_whose_group_was_just_built_is_left_alone(
+    queue: dict[str, Any],
+) -> None:
+    """Enqueued 40 minutes ago behind other entries, its group commit made a second ago, before GitHub's check suite."""
+    queue["opened"](7)
+    queue["pulls"][7]["mergeQueueEntry"] = {**entry(0), "enqueuedAt": "2026-10-02T09:00:00Z"}
+    assert queue["land"]("7")[0] == approvals.WAITING
+    assert queue["dequeued"] == []
+
+
+def test_a_conflict_removal_github_now_reports_mergeable_is_enqueued_again(
+    queue: dict[str, Any],
+) -> None:
+    """The queue tests an entry on those ahead of it: the conflict was with one of them, not with main."""
+    head = queue["opened"](7)
+    queue["remove"](7, approvals.MERGE_CONFLICT)
+    code, lines = queue["land"]("7")
+    assert code == approvals.WAITING, lines
+    assert queue["enqueued"] == [(7, head)] and queue["comments"] == []
+
+
+def test_a_red_on_a_group_github_cannot_place_on_main_counts(queue: dict[str, Any]) -> None:
+    queue["opened"](7)
+    queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
+    red_group(queue, "g1", 410)
+    queue["built"]["g1"] = None  # GitHub compares no commit it no longer has
+    assert queue["land"]("7")[0] == approvals.WAITING
+    assert len(notes_on(queue, 7, approvals.QUEUE_RED)) == 1
+
+
+def test_a_bare_land_that_cannot_list_the_merged_prs_says_so_and_still_exits_0(
+    queue: dict[str, Any],
+) -> None:
+    queue["opened"](7)
+    queue["unlisted"] = True
+    code, lines = queue["land"]()
+    assert code == 0, lines
+    assert lines[-1] == "land could not list the PRs merged into main: gh: timed out"

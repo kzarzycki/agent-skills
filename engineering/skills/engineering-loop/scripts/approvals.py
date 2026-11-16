@@ -109,7 +109,8 @@ repository's default branch, through one of two merge queues, picked by the base
 merge queue where they carry a `merge_queue` rule, else the local merge queue. Both take the same candidates (step 2) and
 differ in where the gate runs (GitHub's `merge_group` CI, or this host), when they run (continuously on GitHub, or within
 one `land` call) and how a red group is isolated (GitHub's per-entry groups, or the local one-at-a-time fallback, step
-6). One `land` runs one of them, never a mix. The local merge queue lands its candidates as one batch:
+6). One `land` runs one of them, never a mix, since one `land` gates its candidates in one place, so a PR never merges
+on a tree another path gated. The local merge queue lands its candidates as one batch:
 1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
 pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
 tip says the state: each lock commit holds the empty tree, its title says `landing lock: held` or `landing lock: free`
@@ -191,20 +192,27 @@ The GitHub merge queue takes no landing lock (GitHub orders the entries, and two
 nothing), builds no local batch, runs no local gate, publishes no pass and deletes no record branch. Once it has fetched
 the base (the base-drift refusal below), each of step 2's candidates, oldest PR first, goes in with GraphQL
 `enqueuePullRequest`, `expectedHeadOid` the head the proofs judged, and GitHub drops an entry whose head moves, so no
-proof outlives a push. A PR already queued is left alone, unless its entry has waited 10 minutes in `AWAITING_CHECKS`
-with no check suite on its commit (GitHub lost its `merge_group` event): then it is dequeued and enqueued again. Else
+proof outlives a push. A PR already queued is left alone, unless its entry is in `AWAITING_CHECKS` with no check suite
+on its group's commit 10 minutes after that commit was made (GitHub lost its `merge_group` event): then it is dequeued
+and enqueued again. Else
 the queue's last removal of the head decides: the PR's `RemovedFromMergeQueueEvent`s since its head was pushed and since
 it last went ready, so a PR evicted and marked ready again counts anew. `merged`: it waits, since GitHub reports the
-merge a moment after the removal. `merge_conflict`, or a PR GitHub reports conflicting: step 3's conflict comment,
-once per head, and not enqueued (exit 1). `failed_checks`: first the checks the base requires are read on its tip; one
-red there stops the land (exit 1, `<base> itself is red`), counting nothing and evicting nobody. Else the head's first
-such removal gets a `Red in the merge queue` comment naming the check that failed on the queue's commit, its run and
+merge a moment after the removal. A PR GitHub reports conflicting, or a `merge_conflict` removal while GitHub doesn't
+yet report the PR mergeable: step 3's conflict comment, once per head, and not enqueued (exit 1); once GitHub reports it
+mergeable it is enqueued again, since the queue tests an entry on the entries ahead of it, so the conflict may have
+been with one of them. `failed_checks`: first the checks the base requires are read on its tip; one red there stops
+the land (exit 1, `<base> itself is red`), counting nothing and evicting nobody. Then each such removal is placed on
+the base commit its group was built on (the merge base of the base and the group's commit): red required checks
+there make it the base's fault, so it never counts and gets no comment, and the PR is enqueued again; still running,
+nothing counts yet (exit 3, `<base>'s checks on <sha> are still running`). Of the removals that count, the head's first
+gets a `Red in the merge queue` comment naming the check that failed on the queue's commit, its run and
 its failed job log's last 30 lines, and is enqueued again; its second turns the PR back to draft with the same, as
 step 6 evicts (`Evicted from the merge queue`, exit 1). Any other removal (`checks_timed_out`, `manual`) counts for
 nothing, and the PR is enqueued again. The count lives in GitHub's timeline, so any land applies it and `land` keeps no
 state. A named PR enqueued or queued exits 3, naming its queue position and head; a bare `land` exits 0 once its
 candidates are in. `land --wait` polls the entry as above until the PR merges, then exits 0; the first land that reads
-a PR the queue merged comments `Landed` on it, `Base:` its merge commit, `Tree:` that commit's tree and `Gate: merge
+a PR the queue merged (a `land <pr>` naming it, or a bare `land`, which reads the PRs merged into the base over the last
+day that carry no `Landed` comment) comments `Landed` on it, `Base:` its merge commit, `Tree:` that commit's tree and `Gate: merge
 queue` with the links of the runs on that commit (the queue's `merge_group` CI), and finishes its worker sessions as
 step 5 does. The queue merges with its own `merge_method` and writes the squash message from the repo's squash
 default, which `land` neither sets nor overrides: session link lines stay out of commits through the `commit-msg`
@@ -557,7 +565,7 @@ PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSI
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
-  mergeQueueEntry {{ state position enqueuedAt headCommit {{ checkSuites {{ totalCount }} }} }}
+  mergeQueueEntry {{ state position headCommit {{ committedDate checkSuites {{ totalCount }} }} }}
   removals: timelineItems(last: 50, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {{ nodes {{
     ... on RemovedFromMergeQueueEvent {{ reason createdAt beforeCommit {{ oid }} }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
@@ -2316,7 +2324,7 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
     if pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]:
         return f"{where}: auto-merge or the merge queue would merge it with GitHub's signature: turn it off"
     # REST can't say whether a PR is queued, nor whether classic branch protection requires a queue (required_checks()
-    # refuses only a ruleset's): a cloud session, where only REST answers, takes the project's word in loop.md
+    # reports only a ruleset's): a cloud session, where only REST answers, takes the project's word in loop.md
     if pull["isInMergeQueue"] is None and not (
         in_cloud() and settings(project()[1]).get("land", {}).get("merge_queue") is False
     ):
@@ -3724,7 +3732,7 @@ def required_checks(base: str) -> Required:
     queue = [word for word in rulesets.split() if word.startswith(":merge_queue")]
     found = Required(set((rulesets + protection).split()) - set(queue))
     if queue:
-        found.queue = queue[0].rpartition(":")[2] or "MERGE"
+        found.queue = queue[0].rpartition(":")[2]
     return found
 
 
@@ -4358,7 +4366,8 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     the GitHub merge queue where its rules require one, else the local merge queue, where loop.md lets land run (placed)
     (`only`: the named PRs alone); the exit, and whether a wait would end it (lock, CI on a head, a queue entry), so
     land --wait runs it again. Every decision is the policy of the base the PRs
-    merge onto (policy_from): the named PRs' base is read first (land_base, which changes no PR), the base fetched,
+    merge onto (policy_from): the named PRs' base is read first (land_base, which changes no open PR, and gives one the GitHub merge queue merged its
+    `Landed` comment: queue_landed), the base fetched,
     and its policy read to place the land (placed: where it may run and the key it signs with) and to ready drafts,
     then read again after the fetch under the lock for the batch (landing_here)."""
     named, base, worst = land_base(pr)
@@ -5315,8 +5324,15 @@ def evicted(
         gh("pr", "ready", "--undo", str(number))
     comment(
         number,
-        f"{title}\nHead: {head}\n\n{why}: fix it, then `land {number}` marks it ready again.\n\n<details><summary>"
-        f"{what}</summary>\n\n````\n" + "\n".join(tail) + "\n````\n</details>\n",
+        f"{title}\nHead: {head}\n\n{why}: fix it, then `land {number}` marks it ready again.\n\n"
+        + folded(what, tail),
+    )
+
+
+def folded(what: str, lines: list[str]) -> str:
+    """A comment's closing block of log `lines`, folded under `what`."""
+    return (
+        f"<details><summary>{what}</summary>\n\n````\n" + "\n".join(lines) + "\n````\n</details>\n"
     )
 
 
@@ -5370,7 +5386,39 @@ def github_queue(
             failed.add(pull["number"])
         if pull["number"] in numbers or code != WAITING:
             exits[pull["number"]] = (code, again)
+    if not named:
+        queue_trail(base)
     return outcome(named, exits, worst, failed)
+
+
+def queue_trail(base: str) -> None:
+    """A bare land's `Landed` comments (queue_landed) on the PRs the GitHub merge queue merged into `base` in the last
+    day that have none yet, since no `land <pr>` may ever read them merged. ponytail: the newest 30 merged in a day,
+    which a land run at least daily covers; widen the window if lands run further apart."""
+    since = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 24 * 3600))
+    try:
+        merged = gh(
+            "pr",
+            "list",
+            "--state",
+            "merged",
+            "--base",
+            base,
+            "--search",
+            f"merged:>={since}",
+            "--limit",
+            "30",
+            "--json",
+            "number,comments",
+        )
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"land could not list the PRs merged into {base}: {' '.join((exc.stderr or str(exc)).split())}"
+        )
+        return
+    for each in json.loads(merged or "[]"):
+        if not any(note["body"].startswith(f"{LANDED}\n") for note in each.get("comments") or []):
+            queue_landed(pull_request(each["number"]))
 
 
 def queue_step(
@@ -5378,9 +5426,10 @@ def queue_step(
 ) -> tuple[int, bool]:
     """One candidate in the GitHub merge queue, and the exit it means for a named PR. In the queue: left alone, or,
     stuck (stuck), dequeued and enqueued again. Out of it, by the queue's last removal of its head (queue_removals):
-    merged, waited on; a conflict (or one GitHub reports), commented once per head and not enqueued; a red group, after
-    a check that `base`'s tip is green (main_red), commented once and enqueued again, or evicted on the second red of
-    the head; any other removal, or none, enqueued."""
+    merged, waited on; a conflict GitHub still reports (or one it reports with no removal), commented once per head and
+    not enqueued; a red group, after a check that `base`'s tip is green (main_red), counted only when built on a green
+    commit of `base` (own_reds), then commented once and enqueued again, or evicted on the second red of the head; any
+    other removal, or none, enqueued."""
     where, head = f"PR #{pull['number']}", pull["headRefOid"]
     # the queue merges every entry its one way
     if merge_method(pull, loop) == "merge" and method != "MERGE":
@@ -5405,16 +5454,27 @@ def queue_step(
     if reason == QUEUE_MERGED:
         print(f"{where} left the merge queue merged at {head}")
         return WAITING, True
-    if reason == MERGE_CONFLICT or pull.get("mergeable") == "CONFLICTING":
+    # the queue tests an entry on top of those ahead of it, so its conflict may be with one of them, not with the base
+    if pull.get("mergeable") == "CONFLICTING" or (
+        reason == MERGE_CONFLICT and pull.get("mergeable") != "MERGEABLE"
+    ):
         print(f"{where} conflicts with {base}: merge `origin/{base}` in")
         conflict_note(pull, base)
         return 1, False
     if reason == FAILED_CHECKS:
         main_red(base, required)
-        group = (removals[-1].get("beforeCommit") or {}).get("oid") or "unknown"
+        reds = own_reds(where, base, removals, required)
+        if reds is None:
+            return WAITING, True
+        group = group_of(removals[-1])
+        if not reds or reds[-1] != group:
+            print(
+                f"{where} was red in the merge queue on a red {base}: it counts for nothing, enqueued again"
+            )
+            return enqueue(pull)
         name, run, tail = failing_check(group, required)
         why = f"`{name}` failed on the merge queue's commit {group} (run {run})"
-        if sum(removal.get("reason") == FAILED_CHECKS for removal in removals) > 1:
+        if len(reds) > 1:
             evicted(
                 pull,
                 QUEUE_EVICTED,
@@ -5434,19 +5494,22 @@ def queue_step(
             comment(
                 pull["number"],
                 f"{QUEUE_RED}\nHead: {head}\nGroup: {group}\n\n{why}: enqueued once more, in case it was a flake."
-                f" A second red on this head turns it back to draft.\n\n<details><summary>The failed job's last"
-                " lines</summary>\n\n````\n" + "\n".join(tail) + "\n````\n</details>\n",
+                " A second red on this head turns it back to draft.\n\n"
+                + folded("The failed job's last lines", tail),
             )
     return enqueue(pull)
 
 
 def stuck(entry: dict[str, Any]) -> bool:
-    """Whether a merge-queue entry has waited STUCK seconds for checks with no check suite on its commit."""
-    if entry.get("state") != "AWAITING_CHECKS" or not entry.get("enqueuedAt"):
+    """Whether a merge-queue entry has waited STUCK seconds for checks with no check suite on its commit, timed from
+    that commit, so an entry long `QUEUED` behind others isn't stuck the moment its group is built. ponytail: takes
+    `headCommit` to be the group's commit, which only a live queue proves; were it the PR's head, nothing is stuck."""
+    commit = entry.get("headCommit") or {}
+    if entry.get("state") != "AWAITING_CHECKS" or not commit.get("committedDate"):
         return False
-    suites = ((entry.get("headCommit") or {}).get("checkSuites") or {}).get("totalCount") or 0
-    queued = datetime.fromisoformat(entry["enqueuedAt"].replace("Z", "+00:00")).timestamp()
-    return not suites and time.time() - queued >= STUCK
+    suites = (commit.get("checkSuites") or {}).get("totalCount") or 0
+    built = datetime.fromisoformat(commit["committedDate"].replace("Z", "+00:00")).timestamp()
+    return not suites and time.time() - built >= STUCK
 
 
 def queue_removals(pull: dict[str, Any]) -> list[dict[str, Any]]:
@@ -5460,11 +5523,68 @@ def queue_removals(pull: dict[str, Any]) -> list[dict[str, Any]]:
         if event.get("__typename") == "ReadyForReviewEvent"
     ]
     since = max([head_pushed(pull) or "", *ready])
-    return [
-        removal
-        for removal in (pull.get("removals") or {}).get("nodes") or []
-        if removal and (removal.get("createdAt") or "") > since
-    ]
+    return [removal for removal in queue_events(pull) if (removal.get("createdAt") or "") > since]
+
+
+def queue_events(pull: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every removal of the PR from the merge queue GitHub lists, oldest first."""
+    return [removal for removal in (pull.get("removals") or {}).get("nodes") or [] if removal]
+
+
+def group_of(removal: dict[str, Any]) -> str:
+    """The merge queue's commit a removal's group was built as."""
+    return (removal.get("beforeCommit") or {}).get("oid") or "unknown"
+
+
+def own_reds(
+    where: str, base: str, removals: list[dict[str, Any]], required: set[str]
+) -> list[str] | None:
+    """The groups of the `failed_checks` removals that count against the PR: each built on a commit of `base` whose
+    required checks are green, since one built on a red commit failed for `base`'s fault, and one GitHub can't place
+    counts. None while a group's base commit is still running them: whose fault it was isn't known yet."""
+    reds = []
+    for removal in removals:
+        if removal.get("reason") != FAILED_CHECKS:
+            continue
+        group = group_of(removal)
+        if under := built_on(base, group):
+            red, running = required_state(under, required)
+            if running:
+                print(f"{where}: {base}'s checks on {under} are still running")
+                return None
+            if red:
+                continue
+        reds.append(group)
+    return reds
+
+
+def built_on(base: str, group: str) -> str | None:
+    """The commit of `base` the merge queue built its commit `group` on (their merge base), None where GitHub can't
+    compare them."""
+    try:
+        return (
+            gh(
+                "api",
+                f"repos/{{owner}}/{{repo}}/compare/{base}...{group}",
+                "--jq",
+                ".merge_base_commit.sha",
+            ).strip()
+            or None
+        )
+    except subprocess.CalledProcessError:
+        return None
+
+
+def required_state(ref: str, required: set[str]) -> tuple[list[str], list[str]]:
+    """The checks a base requires (every check, where it requires none) on `ref`: those red, and those still running."""
+    mine = {
+        name: run["conclusion"]
+        for name, run in commit_checks(ref).items()
+        if not required or name in required
+    }
+    return sorted(name for name, done in mine.items() if done in RED), sorted(
+        name for name, done in mine.items() if not done
+    )
 
 
 def enqueue(pull: dict[str, Any]) -> tuple[int, bool]:
@@ -5518,12 +5638,7 @@ def run_link(url: str) -> str:
 def main_red(base: str, required: set[str]) -> None:
     """Refuse while a check `base` requires (every check, where it requires none) is red on its tip: every queue entry
     would fail on it, so no removal counts as red and nobody is evicted until it is fixed."""
-    red = sorted(
-        name
-        for name, run in commit_checks(base).items()
-        if (not required or name in required) and run["conclusion"] in RED
-    )
-    if red:
+    if red := required_state(base, required)[0]:
         raise Refused(
             f"{base} itself is red ({', '.join(f'`{name}`' for name in red)} on its tip): no merge-queue removal counts"
             " as red and nobody is evicted until it is fixed"
@@ -5549,11 +5664,7 @@ def queue_landed(pull: dict[str, Any]) -> None:
     """A PR the GitHub merge queue merged gets its `Landed` comment, from the first land that reads it merged: `Base:`
     its merge commit, `Tree:` that commit's tree, `Gate: merge queue` with the links of the runs on it, the queue's
     `merge_group` CI; and its worker sessions finished. Nothing for a PR it did not merge, or one already commented."""
-    merged = [
-        removal
-        for removal in (pull.get("removals") or {}).get("nodes") or []
-        if removal and removal.get("reason") == QUEUE_MERGED
-    ]
+    merged = [removal for removal in queue_events(pull) if removal.get("reason") == QUEUE_MERGED]
     if not merged or any(note["body"].startswith(f"{LANDED}\n") for note in notes(pull)):
         return
     commit = (merged[-1].get("beforeCommit") or {}).get("oid")
