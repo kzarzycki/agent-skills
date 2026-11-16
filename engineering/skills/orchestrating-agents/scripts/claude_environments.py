@@ -97,10 +97,11 @@ def call(path: str, body: dict | None, auth: dict, masked: tuple[str, ...] = ())
         with urllib.request.urlopen(req, timeout=45) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
-        said = e.read().decode(errors="replace")[-400:]
+        said = e.read().decode(errors="replace")
         for value in (auth.get("Authorization", "").removeprefix("Bearer "), *masked):
             if value and len(value) >= 8:
                 said = said.replace(value, "[secret]")
+        said = said[-400:]  # cut after masking: a secret the cut splits would keep its tail
         path_only = path.split("?")[0]
         raise Refused(
             f"{'POST' if body is not None else 'GET'} {path_only}: HTTP {e.code}: {said.strip()}"

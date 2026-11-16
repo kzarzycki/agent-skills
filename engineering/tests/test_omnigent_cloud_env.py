@@ -160,7 +160,8 @@ def test_a_cloud_start_and_a_launch_dir_pin_the_environment_the_login_resolves(
 
 TOKEN = "sk-ant-oat01-" + "Q" * 24 + "secretToken"
 REFRESH = "sk-ant-ort01-" + "R" * 24 + "refreshToken"
-SEEDED = "c2VlZGVkLWxvZ2luLXNlY3JldC12YWx1ZQ=="  # a variable already in the environment
+# a variable already in the environment, longer than the refusal's cut, as a seeded auth.json is
+SEEDED = "c2VlZGVkLWxvZ2luLXNlY3JldC12YWx1ZQ" + "S" * 1200 + "seededLoginTail=="
 
 
 class FakeAPI(BaseHTTPRequestHandler):
@@ -211,8 +212,9 @@ class FakeAPI(BaseHTTPRequestHandler):
             return self.reply(404, {"error": {"message": "not found"}})
         if method == "GET":
             return self.reply(200, {"environment_id": env, **envs[env]})
-        if self.world.get("refuse"):  # a refusal that echoes what was sent
-            return self.reply(400, {"error": {"message": f"bad config: {json.dumps(body)}"}})
+        if self.world.get("refuse"):  # a refusal that echoes what was sent, the login's token too
+            said = f"bad config: {json.dumps(body)} from {self.headers.get('Authorization')}"
+            return self.reply(400, {"error": {"message": said}})
         envs[env] = {
             "name": body["name"],
             "description": body["description"],
