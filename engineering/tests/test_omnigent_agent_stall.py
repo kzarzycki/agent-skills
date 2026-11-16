@@ -196,3 +196,17 @@ def test_a_pid_leading_wait_fors_own_group_is_killed_alone(
     argv = ["wait-for", "--log", str(log), "--pid", str(pidfile), "--stall", "1", "--budget", "60"]
     assert omnigent_agent.main(argv) == 1
     os.killpg(pid, 0)  # the group's other member, `sleep`, is still there
+
+
+def test_a_pid_inside_another_group_is_killed_alone(tmp_path: Path) -> None:
+    child = tmp_path / "child"
+    log, pidfile, leader = detach(tmp_path, f"sleep 60 & echo $! > {child}; sleep 60")
+    for _ in range(100):
+        if child.exists() and child.read_text().strip():
+            break
+        time.sleep(0.05)
+    pidfile.write_text(child.read_text())  # a member of the run's group, not its leader
+    age(log, 100)
+    argv = ["wait-for", "--log", str(log), "--pid", str(pidfile), "--stall", "1", "--budget", "60"]
+    assert omnigent_agent.main(argv) == 1
+    os.killpg(leader, 0)  # the leader and the rest of the group live on
