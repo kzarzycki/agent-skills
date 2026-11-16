@@ -4463,10 +4463,10 @@ def batch_wait(
     (oldest first) and leaves `waits`; one that turns red, or asks the owner, is dropped from the wait. Returns the
     text for the Landed comment's `Batch:` line, empty when nothing was waited for."""
     near = {
-        number: pull
+        number
         for number, exit in waits.items()
         if exit == (WAITING, True)
-        and not owner_waits(pull := pulls.get(number) or pull_request(number), issues[number] or [], loop)
+        and not owner_waits(pulls.get(number) or pull_request(number), issues[number] or [], loop)
     }
     if not near:
         return ""
@@ -4491,15 +4491,14 @@ def batch_wait(
                 candidates.append(pull)
                 waits.pop(number)
                 joined.append(number)
-                del near[number]
+                near.remove(number)
                 print(f"PR #{number} turned landable and joins the batch")
-            elif verdict.exit == (WAITING, True) and not owner_waits(
-                pull, verdict.issues or [], loop
+            elif not (
+                verdict.exit == (WAITING, True)
+                and not owner_waits(pull, verdict.issues or [], loop)
             ):
-                near[number] = pull
-            else:
                 waits[number] = verdict.exit
-                del near[number]
+                near.remove(number)
                 print(f"PR #{number} no longer waits only on its checks: left out of the wait")
     candidates.sort(key=lambda pull: pull["number"])
     spent = round(time.monotonic() - start)
