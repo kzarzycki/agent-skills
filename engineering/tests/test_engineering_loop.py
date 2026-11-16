@@ -113,14 +113,18 @@ def test_placement_is_stated_once_and_the_role_files_point_to_it() -> None:
     """Every heavy run by any role, in one order, with a lead's own run's recipe (#1119)."""
     rule = section_of((LOOP / "SKILL.md").read_text(), "Where heavy steps run")
     for run in (
-        "implementation, the gate, the verifier's test and mutation runs, proof runs, and a"
-        " lead's own suite, build and e2e runs",
+        (
+            "implementation, the gate, the verifier's test and mutation runs, proof runs, and a"
+            " lead's own suite, build and e2e runs"
+        ),
         "the only place placement is stated",
     ):
         assert run in rule
     order = [
-        "1. To a Claude cloud session: the agent the project's `docs/agents/loop.md` names on its"
-        " `Cloud worker:` line, else `claude-cloud`",
+        (
+            "1. To a Claude cloud session: the agent the project's `docs/agents/loop.md` names on"
+            " its `Cloud worker:` line, else `claude-cloud`"
+        ),
         "2. Else to a host that offers the harness the step needs, under the start's capacity check",
         "3. A step that needs a particular machine",
     ]
