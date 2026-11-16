@@ -2558,9 +2558,9 @@ def git_dirs(workspace: Path) -> list[str]:
 def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
     """A main checkout pinned for cloud sessions is where they are launched from: a local agent
     working there switched its branch under every later start, and carried another worker's
-    uncommitted edits along. A worktree's pin, copied in by ``pin_environment``, is its own. A
-    folder inside the main checkout is the checkout, so the pin is read at its root, which git
-    names even when its git dir lives elsewhere (``--separate-git-dir``)."""
+    uncommitted edits along. A linked worktree is not the checkout, whatever it pins. A folder
+    inside the main checkout is the checkout, so the pin is read at its root, which git names
+    even when its git dir lives elsewhere (``--separate-git-dir``)."""
     dirs = git_dirs(workspace)
     if len(dirs) == 3 and dirs[0] == dirs[1] and environment_pin(own_settings(Path(dirs[2]))):
         raise Fail(
@@ -2570,15 +2570,31 @@ def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
         )
 
 
+def refuse_shadowed_pin(workspace: Path, env: str, main: Path | None) -> None:
+    """``claude --cloud`` in a linked worktree takes its main checkout's pin when that checkout has
+    one, so a different pin of the worktree's own never applies and the session would run the other
+    environment's setup script and variables (#1152): fail, naming both, before any session exists."""
+    theirs = environment_pin(own_settings(main)) if main else ""
+    if theirs and theirs != env:
+        raise Fail(
+            f"{workspace} pins environment {env}, but a cloud session launched there takes"
+            f" {main / SETTINGS}'s {theirs}: repin that file to {env}, or make the launch dir"
+            " outside that checkout (`launch-dir` then clones; folder trust is the user's call,"
+            " --trust)"
+        )
+
+
 def pin_environment(workspace: Path) -> None:
     """Make sure a cloud session started in ``workspace`` gets the repo's claude.ai environment: it
     takes ``remote.defaultEnvironmentId`` from the workspace's untracked settings file, which a new
     worktree lacks, and without it lands in the account's default environment. A worktree missing
-    the pin takes its main checkout's; with neither, fail before any session exists."""
+    the pin takes its main checkout's; with neither, fail before any session exists, as with a
+    pin of its own that its main checkout's shadows."""
     own = own_settings(workspace)
-    if environment_pin(own):
-        return
     main = main_worktree(workspace)  # no checkout: no main to copy from
+    if env := environment_pin(own):
+        refuse_shadowed_pin(workspace, env, main)
+        return
     if main and (env := environment_pin(own_settings(main))):
         remote = own.get("remote") if isinstance(own.get("remote"), dict) else {}
         own["remote"] = {**remote, "defaultEnvironmentId": env}
@@ -2705,6 +2721,7 @@ def launch_dir(
     source = same_repo_checkout(remote, here or Path.cwd())
     if source:
         main, name = source
+        refuse_shadowed_pin(path, env, main_worktree(main) or main)
         # the checkout's own remote, by name: its settings (a partial clone's among them) apply
         steps = [
             ["git", "-C", str(main), "fetch", "-q", name, branch],

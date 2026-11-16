@@ -308,3 +308,28 @@ def test_start_pr_leaves_the_pr_branch_and_any_checkout_of_it_alone(
         assert git("symbolic-ref", "--short", "HEAD", cwd=other) == "pr-branch"
         assert git("rev-parse", "HEAD", cwd=other) == held
         assert git("status", "--porcelain", cwd=other) == ""
+
+
+def pin(folder: Path, env: str) -> None:
+    (folder / ".claude").mkdir(exist_ok=True)
+    (folder / ".claude" / "settings.local.json").write_text(
+        json.dumps({"remote": {"defaultEnvironmentId": env}})
+    )
+
+
+def test_a_worktree_pin_its_main_checkouts_pin_shadows_is_refused_naming_both(
+    tmp_path: Path, bare: Path, real_trust: Path
+) -> None:
+    main = checkout(bare, tmp_path / "main")
+    pin(main, "env_A")
+    with pytest.raises(omnigent_agent.Fail, match="env_B.*env_A"):
+        omnigent_agent.launch_dir(f"file://{bare}", "main", "env_B", tmp_path / "b", here=main)
+    assert not (tmp_path / "b").exists()  # refused before git made anything
+    dest = tmp_path / "a"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", "env_A", dest, here=main)
+    omnigent_agent.pin_environment(dest)  # the same pin as its checkout's passes
+    pin(dest, "env_B")
+    with pytest.raises(omnigent_agent.Fail, match="env_B.*env_A"):
+        omnigent_agent.pin_environment(dest)
+    (main / ".claude" / "settings.local.json").unlink()
+    omnigent_agent.pin_environment(dest)  # an unpinned checkout leaves the worktree's own pin
