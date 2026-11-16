@@ -365,13 +365,22 @@ def test_a_line_a_descendant_prints_after_verify_returns_is_still_redacted(
     world, vm, tmp_path, capfd
 ) -> None:
     argv, _ = vm
+    go, done = tmp_path / "go", tmp_path / "done"
     codex = tmp_path / "bin" / "codex"
     text = codex.read_text().replace(
         "cat >/dev/null\n",
-        'cat >/dev/null\n(sleep 3.5; cat "$CODEX_HOME/auth.json"; echo) &\n',
+        f'cat >/dev/null\n(while [ ! -f "{go}" ]; do sleep 0.1; done;'
+        f' cat "$CODEX_HOME/auth.json"; echo; touch "{done}") &\n',
     )
     codex.write_text(text)
-    assert cv.main(argv) == 0
-    capfd.readouterr()  # what arrived while `verify` ran is checked by the other tests
-    time.sleep(5)  # the child prints now, with the real streams back in place
+    try:
+        assert cv.main(argv) == 0
+        capfd.readouterr()  # what arrived while `verify` ran is checked by the other tests
+    finally:
+        go.touch()  # the child prints only now, with the real streams back in place
+    deadline = time.monotonic() + 10
+    while not done.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert done.exists()
+    time.sleep(1)  # the relay thread writes the line it read
     assert_clean(capfd, world["shown"])

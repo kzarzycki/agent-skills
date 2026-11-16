@@ -601,7 +601,9 @@ def codex_exec(cmd: list[str], brief: str) -> int:
         except OSError:  # Codex exited before reading it all: its exit says so
             pass
 
-    out = sys.stdout  # bound now: a line after `main` puts the real streams back must still go through the redactor
+    # Bound now, while `main` has the redactor in place: a line that arrives after
+    # `main` has put the real streams back must still go through it.
+    out = sys.stdout
 
     def relay() -> None:
         for line in child.stdout:
