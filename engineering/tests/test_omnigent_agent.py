@@ -726,7 +726,7 @@ class Posting(FakeOmnigent):
 
 
 def lead_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, og: Posting, *argv: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, og: Posting, *argv: str, writes: bool = True
 ) -> tuple[int, Path]:
     calls = notify_stub(tmp_path, monkeypatch)
     monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
@@ -737,7 +737,8 @@ def lead_run(
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.chdir(repo)
     info = og.info
-    og.info = lambda s: ((repo / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
+    if writes:  # the child's report lands while it is polled
+        og.info = lambda s: ((repo / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
     return omnigent_agent.main([*argv]), calls
 
 
@@ -768,17 +769,54 @@ def test_a_subscribed_top_level_child_under_a_background_wait_wakes_its_lead_onc
     assert "not telling $LOOP_NOTIFY" in capsys.readouterr().err
 
 
-def test_a_child_its_leads_root_subscribes_to_is_covered_too(
+def test_a_child_another_session_subscribes_to_still_gets_the_notify_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = Posting()
     code, calls = lead_run(tmp_path, monkeypatch, og, "start", "claude", "t", "b.md", "r.md")
     assert code == 0
     og.parents.clear()
-    og.roots["lead"] = "chief"  # start --top-level subscribes the root of the starter's tree
-    og.subscriptions.append(("chief", "s0"))
+    og.subscriptions.append(("chief", "s0"))  # Omnigent tells chief, not the caller
     assert omnigent_agent.main(["wait", "s0", "r.md", "--notify"]) == 0
-    assert og.wakes(calls) == 1 and not calls.exists()
+    assert calls.read_text().startswith("exit 0:")
+
+
+def test_a_sub_agent_caller_still_gets_the_line_for_a_child_its_primary_hears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = Posting()
+    code, calls = lead_run(tmp_path, monkeypatch, og, "start", "claude", "t", "b.md", "r.md")
+    assert code == 0 and og.parents == {"s0": "lead"}  # the primary session is told
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "worker")  # the caller is a sub-agent of the lead
+    assert omnigent_agent.main(["wait", "s0", "r.md", "--notify"]) == 0
+    assert calls.read_text().startswith("exit 0:")
+
+
+def test_a_covered_child_that_never_ends_its_turn_still_gets_the_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = Posting(status="running")
+    code, calls = lead_run(
+        tmp_path, monkeypatch, og, "start", "claude", "t", "b.md", "r.md", writes=False
+    )
+    assert code == 0 and og.parents == {"s0": "lead"}  # covered: its turn end would tell the lead
+    assert omnigent_agent.main(["wait", "s0", "r.md", "--timeout", "0", "--notify"]) != 0
+    assert calls.read_text().startswith("exit 1:")
+    assert "not telling" not in capsys.readouterr().err
+
+
+def test_a_covered_child_a_send_never_reaches_still_gets_the_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = Posting()
+    code, calls = lead_run(
+        tmp_path, monkeypatch, og, "start", "claude", "t", "b.md", "r.md", writes=False
+    )
+    assert code == 0 and og.parents == {"s0": "lead"}
+    og.deaf = {0}  # the follow-up never lands
+    argv = ["send", "s0", "b.md", "r.md", "--confirm-seconds", "0", "--notify"]
+    assert omnigent_agent.main(argv) != 0
+    assert calls.read_text().startswith("exit ")
 
 
 def test_a_child_nothing_tells_the_lead_about_still_gets_the_notify_line(

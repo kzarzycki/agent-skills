@@ -372,9 +372,10 @@ inbox notice, so watch your children as your backend's file in orchestrating-age
 and for a child that still owes its report a detached `supervise --registry` that `run` and
 `send` arm). Supervise with a process the host runs, not an in-session background command or
 session cron, which die with your session and lose every wake they owed.
-A child under a background `run --notify`, `send --notify` or `wait --notify` wakes you once:
-Omnigent's notice when the child is your sub-agent or you subscribe to it, else the command's
-`--notify` line (orchestrating-agents' backends/omnigent.md, One wake per child). Don't poll or
+A child under a background `run --notify`, `send --notify` or `wait --notify` wakes you once when
+it ends its turn with its report in: by Omnigent's notice when the child is your own sub-agent or you
+subscribe to it, else by the command's `--notify` line, which also reports every other ending (a
+timeout, a failure) (orchestrating-agents' backends/omnigent.md, One wake per child). Don't poll or
 `watch` it for the other. Without `--notify`, expect Omnigent's notice and the command's exit both.
 Your own long runs (a gate, a land, a live check) start detached the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, since Claude Code's low-memory reaper stops
