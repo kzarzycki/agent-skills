@@ -587,6 +587,8 @@ One rule, for every project and every machine. Heavy steps (implementation, the 
 
 When a launch fails, for any reason (refused, no capacity, unreachable), take the next option on this list. Never fall back to running the step locally on the host that refused: what a machine accepts is its own configuration, so a refusal is the answer and not an obstacle. If no option is left, stop and report the refusal's text. Role files and briefs point here instead of restating it.
 
+With a cloud worker, a host makes no gate pass, since the worker's VM already holds the checkout and build and the host's cores run the sessions. When `local-ci <pr>` on a host finds no pass for the head, have the worker run `local-ci --record` on that head and push its record, then run `local-ci <pr>` again; never `--run` it, or `--record` it, on the host. Two steps stay on the host because no cloud pass can cover them: a `host` step of `gate_steps`, and `land`'s gate of a batch tree that no recorded pass covers.
+
 ## Cloud worker
 
 With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead runs on
