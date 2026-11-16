@@ -208,7 +208,9 @@ The GitHub merge queue takes no landing lock (GitHub orders the entries, and two
 nothing), builds no local batch, runs no local gate, publishes no pass and deletes no record branch. Once it has fetched
 the base (the base-drift refusal below), each of step 2's candidates, oldest PR first, goes in with GraphQL
 `enqueuePullRequest`, `expectedHeadOid` the head the proofs judged, and GitHub drops an entry whose head moves, so no
-proof outlives a push. A PR already queued is left alone, unless its entry is in `AWAITING_CHECKS` with no check suite
+proof outlives a push. Where GraphQL answers 403 it goes in with auto-merge on (REST `ccr/auto_merge`, the queue's
+merge method and that head), and the PR is read again: a head other than the judged one has auto-merge taken off
+and is refused (exit 1), naming both heads, and the other candidates still go in. A PR already queued is left alone, unless its entry is in `AWAITING_CHECKS` with no check suite
 on its group's commit 10 minutes after that commit was made (GitHub lost its `merge_group` event): then it is dequeued
 and enqueued again. Else
 the queue's last removal of the head decides: the PR's `RemovedFromMergeQueueEvent`s since its head was pushed and since
@@ -237,8 +239,12 @@ land. The queue merges with its own `merge_method` and writes the squash message
 default, which `land` neither sets nor overrides: session link lines stay out of commits through the `commit-msg`
 hook, and the PR's body and comments lose theirs before it is enqueued, as in step 5. A head matching
 `land.merge_commit_heads` is refused unless the queue's method is `MERGE`, since the queue merges every entry one way;
-`land.signed_squash_to` is refused, since GitHub signs the queue's commit; and so is a cloud session, since
-`enqueuePullRequest` is GraphQL, which its proxy refuses.
+`land.signed_squash_to` is refused, since GitHub signs the queue's commit. A cloud session takes this path too, with
+no `land.signing_key_env`, since GitHub signs: REST answers every step (auto-merge off dequeues; the PR's queue state
+is its timeline's queue events, GitHub's `gh-readonly-queue/<base>/pr-<n>-<sha>` ref and the repo's `merge_group`
+runs), and since REST names no removal's reason, each is read from its group's commit: `merged` when GitHub reports
+the PR merged or that commit is in the base, `failed_checks` when a check the base requires failed on it,
+`merge_conflict` when GitHub reports the PR conflicting, else none, which counts for nothing.
 With loop.md's `land` section (`signed_squash_to: <branch>`, `allowed_signers: <path>`), for a repo that trusts only
 commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the batch is the same, but each
 PR lands as a squash made in this checkout instead: one commit holding the tree it lands, on the base's tip the
@@ -265,9 +271,9 @@ user.signingkey=<file> -c gpg.ssh.program=ssh-keygen`, over the session's key an
 signed and verified with it. The batch's pass is published as below: GitHub refusing the status
 there, it goes to origin as a ref. There REST alone answers, and it says neither whether a PR is in a merge queue nor
 whether classic branch protection requires one, so a PR is a candidate there only with `merge_queue: false` in the
-section, the project's word that its base requires none (a ruleset that does picks the GitHub merge queue, which a
-cloud session refuses); a draft is refused, and an evicted PR stays
-ready, each said, since GitHub changes a draft only over GraphQL. Off a cloud session only `where` is new.
+section, the project's word that its base requires none (a ruleset that does picks the GitHub merge queue, above);
+a draft is marked ready and an evicted PR turned back to draft through the proxy's draft routes
+(`ccr/ready_for_review`, `ccr/convert_to_draft`). Off a cloud session only `where` is new.
 `land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip.
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
 printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
@@ -2159,10 +2165,11 @@ def armoured(value: str) -> str:
 
 
 @contextlib.contextmanager
-def placed(loop: str | None) -> Any:
+def placed(loop: str | None, queue: bool = False) -> Any:
     """Refuse a land where loop.md's `land.where` (default `host`) excludes the place it runs, before any PR is read.
     In a cloud session (CLOUD) also refuse one without the `land` section, since GitHub's own merge is GraphQL there
-    and signs with GitHub's key, and one whose `signing_key_env` variable is unset, empty or holds a key the allowed
+    and signs with GitHub's key. Unless the base requires GitHub's merge queue (`queue`), which merges and signs each
+    PR itself, refuse there too one whose `signing_key_env` variable is unset, empty or holds a key the allowed
     signers lack; else hold that key (armoured(), if a one-line variable stripped its armour) in a mode-0600 file in
     a fresh temporary directory, removed whatever happens, and sign each squash with it (SIGNING). The key and the variable's value are never printed."""
     global SIGNING
@@ -2176,7 +2183,7 @@ def placed(loop: str | None) -> Any:
     where = (land or {}).get("where", "host")
     if where not in ("both", "cloud" if cloud else "host"):
         raise Refused(f"loop.md's `land.where` is `{where}`, so land does not run in {place}")
-    if not cloud:
+    if not cloud or queue:
         yield
         return
     name = land.get("signing_key_env")
@@ -3339,8 +3346,8 @@ PORTS = {
         "ready",  # (pr, undo=False) -> marks a draft ready, or a ready PR a draft
         "merge",  # (pr, method, body, head) -> merges pinned to head, `body` None for the forge's default
         "edit_text",  # (method, path, body) -> replaces the body of a PR, comment or review at the forge's route
-        "enqueue_pull",  # (node, head) -> puts the PR in its base's merge queue pinned to head; its position, or None
-        "dequeue_pull",  # (node) -> takes the PR out of the merge queue
+        "enqueue_pull",  # (pr, node, head, method) -> puts the PR in its base's merge queue pinned to head; its position, or None
+        "dequeue_pull",  # (pr, node) -> takes the PR out of the merge queue
         "commit_checks",  # (ref) -> {name: {conclusion, url, id}} of the newest run of each check on the commit
         "job_log",  # (job) -> a check run's job log
         "commit_tree",  # (sha) -> the commit's tree SHA
@@ -3884,8 +3891,12 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         )
     with policy_from(base):
         tracker, loop = project()
-        with placed(loop):
-            return landing_here(named, base, worst, tracker, loop, only, not fetch.returncode)
+        # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
+        rules = required_checks(base)
+        with placed(loop, bool(getattr(rules, "queue", None))):
+            return landing_here(
+                named, base, worst, tracker, loop, only, not fetch.returncode, rules
+            )
 
 
 def land_base(
@@ -3928,8 +3939,9 @@ def landing_here(
     loop: str | None,
     only: bool = False,
     ready: bool = True,
+    rules: set[str] | None = None,
 ) -> tuple[int, bool]:
-    """land_base's batch under the lock. `tracker` and `loop`, the policy read before the lock, decide only which
+    """land_base's batch under the lock, `rules` the base's required checks (required_checks, read here when None). `tracker` and `loop`, the policy read before the lock, decide only which
     drafts to mark ready before the wait (none without `ready`: the base's fetch failed, so its policy may be stale),
     so the holder's next batch includes them; after the fetch under the lock the policy is read again, and that copy
     alone decides the batch: the land is placed again under it (placed: refused, the lock released, where it now
@@ -3938,7 +3950,7 @@ def landing_here(
     when the policy is unchanged."""
     # the base's rules pick the merge queue: GitHub's where they require one, else the local one, never a mix of the two;
     # `loop:approvals` and `gatekeeper` are check merge's own statuses, on the proofs land reads itself
-    rules = required_checks(base)
+    rules = required_checks(base) if rules is None else rules
     required = rules - OWN
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
     if ready:
@@ -4356,7 +4368,6 @@ def unreadied(
         if verdict.draft:
             found.append(pull)
             continue
-        # never in a cloud session, where landable readies no draft
         port("forge").ready(pull["number"], undo=True)
         print(
             f"PR #{pull['number']} is a draft again: it was readied under the policy the base had before this land's"
@@ -4404,12 +4415,6 @@ def landable(
             for line in owner:
                 print(line)
             return Verdict((WAITING, False), issues=issues)
-        # GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses
-        if in_cloud():
-            print(
-                f"{where} is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
-            )
-            return Verdict((1, False), issues=issues)
         return Verdict(None, draft=True, issues=issues)
     if pull.get("waiting"):  # readied by this land: its CI has only just started
         return Verdict(pull["waiting"], issues=issues)
@@ -4808,13 +4813,7 @@ def evicted(
     of the log `what` names."""
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
     print(f"{where} {said}: evicted")
-    # GitHub turns a PR back to draft only over GraphQL, which a cloud session's proxy refuses
-    if in_cloud():
-        print(
-            f"{where} stays ready, since a cloud session can't make it a draft: make it one on GitHub"
-        )
-    else:
-        port("forge").ready(number, undo=True)
+    port("forge").ready(number, undo=True)
     comment(
         number,
         f"{title}\nHead: {head}\n\n{why}: fix it, then `land {number}` marks it ready again.\n\n"
@@ -4855,11 +4854,6 @@ def github_queue(
     local gate, since GitHub's queue orders the entries, gates each group with its `merge_group` CI run and isolates a
     red one. Every candidate (candidates_of), oldest PR first, goes in pinned to its head (queue_step). A named PR in
     the queue waits (exit 3) until it merges; a bare land is done once its candidates are in."""
-    if in_cloud():
-        raise Refused(
-            f"{base}'s rules require GitHub's merge queue, and a cloud session can't enqueue: enqueuePullRequest is"
-            " GraphQL, which its proxy refuses. Land on a host"
-        )
     if signed(loop):
         raise Refused(
             f"{base}'s rules require GitHub's merge queue, which merges with GitHub's signature, but loop.md's"
@@ -4922,12 +4916,12 @@ def queue_step(
         if not stuck(entry):
             print(f"{where} is in the merge queue at {head}, position {entry.get('position')}")
             return WAITING, True
-        dequeue_pull(pull["id"])
+        dequeue_pull(pull["number"], pull["id"])
         print(
             f"{where}: its merge-queue entry waited {STUCK // 60} minutes for checks GitHub never started:"
             " dequeued, to enqueue it again"
         )
-        return enqueue(pull)
+        return enqueue(pull, method)
     removals = queue_removals(pull)
     reason = removals[-1].get("reason") if removals else None
     # GitHub takes a PR out of the queue a moment before it reports the merge
@@ -4954,7 +4948,7 @@ def queue_step(
             print(
                 f"{where} was red in the merge queue on a red {base}: it counts for nothing, enqueued again"
             )
-            return enqueue(pull)
+            return enqueue(pull, method)
         name, run, tail = failing_check(group, required)
         why = f"`{name}` failed on the merge queue's commit {group} (run {run})"
         if len(reds) > 1:
@@ -4980,7 +4974,7 @@ def queue_step(
                 " A second red on this head turns it back to draft.\n\n"
                 + folded("The failed job's last lines", tail),
             )
-    return enqueue(pull)
+    return enqueue(pull, method)
 
 
 def stuck(entry: dict[str, Any]) -> bool:
@@ -5071,17 +5065,21 @@ def required_state(
     )
 
 
-def enqueue(pull: dict[str, Any]) -> tuple[int, bool]:
-    """Put the PR in the GitHub merge queue pinned to the head the proofs judged, its session link lines dropped first
-    (unlink_pull): exit 3 while it waits there, 1 when GitHub refuses."""
+def enqueue(pull: dict[str, Any], method: str) -> tuple[int, bool]:
+    """Put the PR in the GitHub merge queue (merging with `method`) pinned to the head the proofs judged, its session
+    link lines dropped first (unlink_pull): exit 3 while it waits there, 1 when GitHub refuses, or when its head moved
+    as it went in (the forge port's REST answer reads it again)."""
     where, head = f"PR #{pull['number']}", pull["headRefOid"]
     unlink_pull(pull)
     # before the enqueue, so no PR the queue merges lacks it: the bare land's trail follows it (queue_trail)
     label(pull["number"], QUEUED, add=True)
     try:
-        position = enqueue_pull(pull["id"], head)
+        position = enqueue_pull(pull["number"], pull["id"], head, method)
     except subprocess.CalledProcessError as exc:
         print(f"{where}: GitHub refused to enqueue it at {head}: {stderr_of(exc)}")
+        return 1, False
+    except Refused as exc:
+        print(f"{where}: {exc}")
         return 1, False
     print(f"{where} enqueued at {head}, position {position}")
     return WAITING, True

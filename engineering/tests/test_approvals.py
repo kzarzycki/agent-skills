@@ -5441,18 +5441,6 @@ def test_the_cloud_key_file_is_the_owners_alone(
     assert modes == [0o600]
 
 
-def test_a_cloud_land_refuses_a_draft_it_cannot_mark_ready(
-    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses."""
-    cloud_land["pulls"][7]["isDraft"] = True
-    assert cloud_land["out"](capsys, cloud_land["land"]("7"))[-1] == (
-        "PR #7 is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
-    )
-    assert cloud_land["calls"] == []
-    assert cloud_land["main"]() == cloud_land["base"]
-
-
 def test_a_cloud_land_reads_the_default_branch_over_rest(
     cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5499,22 +5487,6 @@ def test_a_key_is_listed_only_as_its_type_and_body_together_on_a_live_line(tmp_p
     assert not approvals.listed("ssh-ed25519 BODY landing", signers)
     signers.write_text(signers.read_text() + 'd@example.com namespaces="git" ssh-ed25519 BODY d\n')
     assert approvals.listed("ssh-ed25519 BODY landing", signers)
-
-
-def test_a_cloud_eviction_leaves_the_pr_ready_and_says_so(
-    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """GitHub turns a PR back to draft only over GraphQL: a cloud session says it stays ready; a host makes it one."""
-    pull = cloud_land["pulls"][7]
-    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
-    assert (
-        "PR #7 stays ready, since a cloud session can't make it a draft: make it one on GitHub"
-        in (capsys.readouterr().out.splitlines())
-    )
-    assert cloud_land["calls"] == []
-    monkeypatch.delenv(approvals.CLOUD)
-    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
-    assert cloud_land["calls"] == [("pr", "ready", "--undo", "7")]
 
 
 def test_required_checks_never_stand_in_for_the_gate(
