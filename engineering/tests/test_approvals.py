@@ -31,6 +31,14 @@ SPEC = importlib.util.spec_from_file_location("approvals", SCRIPTS / "approvals.
 assert SPEC and SPEC.loader
 approvals = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(approvals)
+
+
+def heavy_by_run(words: Any, env: Any = None, **popen: Any) -> tuple[int, Any]:
+    """approvals.run_heavy through `approvals.subprocess.run`, so a test that fakes that run fakes a gate step too."""
+    done = approvals.subprocess.run(list(words), check=False, env=env, **popen)
+    return done.returncode, getattr(done, "stdout", None)
+
+
 # board.py reads names from approvals.py beside it, as when run
 sys.path.insert(0, str(SCRIPTS))
 BOARD_SPEC = importlib.util.spec_from_file_location("board", SCRIPTS / "board.py")
@@ -548,7 +556,7 @@ def test_check_build_before_the_pr_judges_the_issue(
             raise subprocess.CalledProcessError(
                 1, ["gh"], stderr=f"Could not resolve to a PullRequest with the number of {n}"
             )
-        return {"number": 5, "labels": {"nodes": []}}
+        return {"number": 5, "labels": {"nodes": []}, "baseRefName": "main"}
 
     monkeypatch.setattr(approvals, "pull_request", pull_request)
     monkeypatch.setattr(approvals, "gated", lambda *a: (["gated"], []))
@@ -3464,6 +3472,9 @@ def lands(
     times the file says, leaving `leftover.txt`; `runs()` counts its runs. `land(*argv)` runs it: (exit, lines)."""
     # a landed PR's worker sessions are Omnigent's, which no land here may reach (test_approvals_keep_pr_worker.py)
     monkeypatch.setattr(approvals, "archive_workers", lambda _number: None)
+    # its tests rewrite the policy in the work tree after opening PRs, so it is read there, as in a checkout without
+    # origin (test_approvals_policy_base.py tests the read from origin/<base>)
+    monkeypatch.setattr(approvals, "policy_base", lambda _root, _base=None: None)
     origin, work = tmp_path / "origin.git", tmp_path / "work"
     git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     (origin / "hooks" / "pre-receive").write_text(NO_REWRITE)
@@ -4902,6 +4913,8 @@ def signing(landing: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     git("config", "user.email", "lander@example.com")
     git("remote", "add", "origin", REPO)
     git("config", f"url.{remote.as_uri()}.insteadOf", REPO)
+    loop = tmp_path / "docs" / "agents" / "loop.md"
+    loop.write_text(add(loop.read_text(), "land", SIGNED_LAND))
     git("add", "docs")
     git("commit", "-qm", "base")
     git("push", "-q", "origin", "main")
@@ -4916,8 +4929,6 @@ def signing(landing: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     git("config", "gpg.format", "ssh")
     git("config", "user.signingkey", str(key))
     (tmp_path / "signers").write_text(f"lander@example.com {key.with_suffix('.pub').read_text()}")
-    loop = tmp_path / "docs" / "agents" / "loop.md"
-    loop.write_text(add(loop.read_text(), "land", SIGNED_LAND))
     head = git("rev-parse", "feature")
     landing["pull"].update(
         headRefOid=head, reviews={"nodes": [verdict_on(head, "0 blocker, 0 major, 0 minor")]}
@@ -5086,6 +5097,8 @@ def test_land_with_the_line_refuses_another_base_and_a_line_it_cannot_read(
     ]
     loop = tmp_path / "docs" / "agents" / "loop.md"
     loop.write_text(loop.read_text().replace("  allowed_signers: signers\n", ""))
+    signing["git"]("commit", "-qam", "no signers")  # the policy is main's (#1047)
+    signing["git"]("push", "-q", "origin", "main")
     assert refused_untouched(landing, signing, capsys) == [
         "loop.md's `land` lacks `allowed_signers`"
     ]
@@ -5355,11 +5368,12 @@ def test_land_refuses_where_loop_md_excludes_the_place_it_runs(
     )
     if not marker:
         monkeypatch.delenv(approvals.CLOUD)
-    # never a PR read: the refusal comes first
-    monkeypatch.setattr(approvals, "pull_request", lambda n: pytest.fail(f"PR #{n} read"))
+    # never a PR changed (readied, labelled, merged): the refusal comes first, after only the read of its base, whose
+    # policy it is (#1047)
     assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
         f"loop.md's `land.where` is `{where}`, so land does not run in {place}"
     ]
+    assert cloud_land["calls"] == []
     unmoved(cloud_land)
 
 
@@ -5740,6 +5754,7 @@ def checkout(
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pull())
     monkeypatch.setattr(approvals, "git", git)
     monkeypatch.setattr(approvals.subprocess, "run", run)
+    monkeypatch.setattr(approvals, "run_heavy", heavy_by_run)
     monkeypatch.setattr(approvals, "one_repo", lambda: None)  # the faked run serves the check alone
     monkeypatch.setattr(approvals, "project", lambda: (None, state["loop"]))
     return state
@@ -6151,6 +6166,7 @@ def test_a_gate_whose_command_is_not_there_is_refused_naming_it(
         raise FileNotFoundError(2, "No such file or directory", "misee")
 
     monkeypatch.setattr(approvals.subprocess, "run", missing)
+    monkeypatch.setattr(approvals, "run_heavy", heavy_by_run)
     assert approvals.main(["local-ci", "--record"]) == 1
     assert "can't run: [Errno 2] No such file or directory: 'misee'" in capsys.readouterr().out
     assert not (checkout["common"] / "approvals").exists()
@@ -6393,10 +6409,19 @@ def shallow_clone(tmp_path: Path, behind: int = 3, depth: int = 1) -> tuple[Path
     git_in(work, "branch", "-M", "main")
     git_in(work, "remote", "add", "origin", str(origin))
     git_in(work, "push", "-q", "origin", "main")
-    for n in range(behind):
-        (work / "app.py").write_text(f"value = {n + 2}\n")
-        git_in(work, "commit", "-qam", f"change {n}")
-    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/feature")
+    # One `git fast-import` writes the history: no per-commit `git commit` to race a background gc or maintenance
+    # job for the index lock, sign with a host's key or need a host identity (#970).
+    stream = f"reset refs/heads/feature\nfrom {fork}\n" + "".join(
+        f"commit refs/heads/feature\ncommitter loop <loop@example.com> {1_700_000_000 + n} +0000\n"
+        f"data {len(f'change {n}')}\nchange {n}\nM 100644 inline app.py\n"
+        f"data {len(f'value = {n + 2}' + chr(10))}\nvalue = {n + 2}\n\n"
+        for n in range(behind)
+    )
+    subprocess.run(
+        ["git", "-C", str(work), "-c", "gc.auto=0", "-c", "maintenance.auto=false", "fast-import", "--quiet"],
+        input=stream, check=True, capture_output=True, text=True,
+    )  # fmt: skip
+    git_in(work, "push", "-q", "origin", "refs/heads/feature:refs/heads/feature")
     git_in(
         tmp_path, "clone", "-q", "--depth", str(depth), "--branch", "feature",
         f"file://{origin}", str(clone),
@@ -6654,6 +6679,10 @@ def gate_faked(
     return repo, head, {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
 
 
+# what approvals.py prints once reading the policy in a checkout without origin, as gate_faked's repo is (#1047)
+UNBASED = "approvals.py: no origin/<base> ref, so the policy is read from the working tree\n"
+
+
 def caller(repo: Path, env: dict[str, str], *args: str) -> subprocess.Popen[str]:
     """`local-ci` run as an agent's harness runs it: in a process group of its own, not leading a session."""
     return subprocess.Popen(
@@ -6772,7 +6801,9 @@ def test_a_caller_left_alone_exits_and_prints_as_an_attached_run(
     tmp_path: Path, exit_code: int, code: int, last: str
 ) -> None:
     repo, head, env = gate_faked(tmp_path, exit_code)
-    out, err = caller(repo, env, "--record").communicate(timeout=60)
+    out, err = (
+        text.replace(UNBASED, "") for text in caller(repo, env, "--record").communicate(timeout=60)
+    )
     record = next((repo / ".git" / "approvals" / "local-ci").glob("*.json"), None)
     # a pass then says it isn't published: the repo has no remote
     assert (out.splitlines()[:2], err) == (
@@ -6807,7 +6838,7 @@ def test_a_second_local_ci_on_a_running_head_follows_it(tmp_path: Path) -> None:
         check=False,
     )
     assert status.returncode == 3 and status.stdout.startswith(f"running on {head}")
-    assert first.communicate(timeout=60)[0].startswith("gate done\n")
+    assert first.communicate(timeout=60)[0].replace(UNBASED, "").startswith("gate done\n")
     second.communicate(timeout=60)
     assert (first.returncode, second.returncode) == (0, 0)
     assert (tmp_path / "runs").read_text() == "run\n"  # one gate ran
@@ -6879,7 +6910,7 @@ def test_a_stale_run_on_the_head_is_replaced_by_a_new_one(
     assert status.returncode == 1  # failed, or ended without an exit code: not running (3)
     run = caller(repo, env, "--record")
     out, _ = run.communicate(timeout=30)
-    assert (run.returncode, out.splitlines()[0]) == (0, "gate done")
+    assert (run.returncode, out.replace(UNBASED, "").splitlines()[0]) == (0, "gate done")
     assert (common / f"{head}.exit").read_text() == "0\n"
     assert (tmp_path / "runs").read_text() == "run\n"
 
@@ -7971,6 +8002,8 @@ def batched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     stray = git("rev-parse", "HEAD")
     git("push", "-q", "origin", f"{evil}:refs/heads/evil", f"{stray}:refs/heads/stray")
     monkeypatch.chdir(checker)
+    # batch reads the PR's base for its policy; the PR merges onto main here
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {"baseRefName": "main"})
     return {
         "head": head,
         "merge": merge,

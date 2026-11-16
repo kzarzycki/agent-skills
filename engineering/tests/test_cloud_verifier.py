@@ -974,7 +974,7 @@ def test_an_endpoint_error_that_echoes_the_token_does_not_print_it(
     monkeypatch.setattr(cv, "WS_URL", FakeCloud("", error_echo=True).url)
     assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 2
     shown = capsys.readouterr()
-    assert token not in shown.out + shown.err and "***" in shown.err
+    assert token not in shown.out + shown.err and "[secret]" in shown.err
 
 
 def test_a_malformed_frame_exits_2_not_with_a_traceback(route_1b, monkeypatch, capsys) -> None:
