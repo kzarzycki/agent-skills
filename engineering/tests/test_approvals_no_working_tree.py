@@ -175,6 +175,7 @@ def test_a_batch_github_merges_only_in_part_names_the_tree_left_ungated(
     monkeypatch.setattr(approvals, "gh", refuses_8)
     runs = launch["runs"]()
     code, lines = launch["land"]()
+    assert code == 1, lines  # PR #8 was refused
     tree = git_in(launch["origin"], "rev-parse", "main^{tree}").strip()
     assert launch["merged"]() == ["7"], lines
     assert any(f"Tree {tree}: no recorded pass" in line for line in lines), lines
