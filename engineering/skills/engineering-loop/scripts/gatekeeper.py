@@ -1312,7 +1312,7 @@ def raise_risk(pull: dict[str, Any], why: str, loop: str | None, mark: bool = Fa
     return found
 
 
-# approvals.py's module when it loaded this one, by path and out of sys.modules: the module its importers read
+# approvals.py's stand-in module when it ran this source by path and out of sys.modules: the module its importers read
 IMPORTER: ModuleType | None = None
 
 
@@ -3945,7 +3945,11 @@ def base_drift(base: str) -> list[str]:
         return []
     paths = [TRACKER, LOOP, POLICY]
     # the gatekeeper and its GitHub adapter, the code that judges
-    for running_file in reversed((__file__, github.__file__ or "")):
+    for running_file in reversed(
+        dict.fromkeys(
+            (__file__, str(Path(__file__).with_name("gatekeeper.py")), github.__file__ or "")
+        )
+    ):
         try:
             paths.insert(0, Path(running_file).resolve().relative_to(root.resolve()))
         except ValueError:
@@ -7136,7 +7140,7 @@ def main(argv: list[str]) -> int:
 
 def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.ArgumentParser) -> int:
     """The verb `args` names; a refusal raises."""
-    if stale := pack_behind(__file__):
+    if stale := pack_behind(__file__) or pack_behind(Path(__file__).with_name("gatekeeper.py")):
         print(stale, file=sys.stderr)
         if refuses_stale():
             return 1

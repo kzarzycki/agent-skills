@@ -284,14 +284,13 @@ def test_todays_verbs_run_the_record_verbs(
 
 
 def test_approvals_py_imported_is_the_gatekeeper(tmp_path: Path) -> None:
-    """A script that imports approvals (board.py, labels.py, mutate.py) reads the gatekeeper's names, and a name set on
-    it is set on the gatekeeper, whose code reads it."""
+    """A script that imports approvals (board.py, labels.py, mutate.py) gets the gatekeeper's names in one namespace: a
+    name set on it is the one the gatekeeper's own functions read."""
     code = (
         f"import sys\nsys.path.insert(0, {str(SCRIPTS)!r})\nimport approvals\n"
-        "gatekeeper = approvals._GATEKEEPER\n"
-        "assert approvals.check is gatekeeper.check and approvals.READY == 'approved:spec'\n"
+        "assert approvals.READY == 'approved:spec'\n"
         "approvals.toplevel = lambda: 'here'\n"
-        "assert gatekeeper.toplevel() == 'here'\n"
+        "assert approvals.check.__globals__['toplevel']() == 'here'\n"
         "print('ok')\n"
     )
     run = subprocess.run(
