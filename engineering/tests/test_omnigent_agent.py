@@ -779,10 +779,18 @@ def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_
     assert capsys.readouterr().out == "still running\nrunning\n"  # with its progress line
     # the lock arrives mid-wait: the full budget runs from `locked`, not from entry
     log.write_text(f"run 1\nlock {lock}\n")
-    threading.Timer(0.2, lambda: log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")).start()
+    locked_at: list[float] = []
+
+    def take_the_lock() -> None:
+        log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")
+        locked_at.append(time.monotonic())
+
+    threading.Timer(0.05, take_the_lock).start()  # a loaded or niced host fires it late: measure from the write
     began = time.monotonic()
     assert omnigent_agent.main(["wait-for", "--log", str(log), "--budget", "0.3"]) == 6
-    assert time.monotonic() - began >= 0.45
+    ended = time.monotonic()
+    assert locked_at and locked_at[0] - began < 0.3  # it came inside the entry's budget, else nothing is proven
+    assert ended - locked_at[0] >= 0.29  # the budget ran on from the lock, not out at 0.3 from entry
     assert capsys.readouterr().out == "still running\nrunning\n"
     log.write_text(f"lock {lock}\n")  # waiting past the lock ceiling: no verdict
     os.utime(log, (time.time() - 7300, time.time() - 7300))
