@@ -601,10 +601,12 @@ def codex_exec(cmd: list[str], brief: str) -> int:
         except OSError:  # Codex exited before reading it all: its exit says so
             pass
 
+    out = sys.stdout  # bound now: a line after `main` puts the real streams back must still go through the redactor
+
     def relay() -> None:
         for line in child.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
+            out.write(line)
+            out.flush()
 
     writer = threading.Thread(target=feed, daemon=True)
     writer.start()

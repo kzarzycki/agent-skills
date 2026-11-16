@@ -359,3 +359,19 @@ def test_a_background_descendant_of_codex_does_not_hold_verify_up(
     assert cv.main(argv) == 0
     assert time.monotonic() - started < 20
     assert "trailing line" in capfd.readouterr().out
+
+
+def test_a_line_a_descendant_prints_after_verify_returns_is_still_redacted(
+    world, vm, tmp_path, capfd
+) -> None:
+    argv, _ = vm
+    codex = tmp_path / "bin" / "codex"
+    text = codex.read_text().replace(
+        "cat >/dev/null\n",
+        'cat >/dev/null\n(sleep 3.5; cat "$CODEX_HOME/auth.json"; echo) &\n',
+    )
+    codex.write_text(text)
+    assert cv.main(argv) == 0
+    capfd.readouterr()  # what arrived while `verify` ran is checked by the other tests
+    time.sleep(5)  # the child prints now, with the real streams back in place
+    assert_clean(capfd, world["shown"])
