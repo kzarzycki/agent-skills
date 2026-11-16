@@ -77,7 +77,8 @@ backoff on the same model, never on another, which would leave the work on a mod
 chose.
 
 **Permission mode.** A Claude child starts in `--permission-mode <mode>`, else
-`OMNIGENT_PERMISSION_MODE`, else the harness default; the mode is the project's or owner's
+`OMNIGENT_PERMISSION_MODE`, else the `--permission-mode` its Claude starter was launched with
+(named on stderr; none there, none here), else the harness default; the mode is the project's or owner's
 choice, set in the environment once. Omnigent applies it as the session's
 `terminal_launch_args` when it launches the terminal, so `info` shows it. A Codex child takes
 none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
@@ -675,9 +676,12 @@ session titled so) leave the deadline as above. Each deadline is one event per
 lead and `progress_at`, so new progress starts a new chain. A lead whose registry line has the
 `direct` field (`start --top-level --direct` writes it at launch, `omnigent_agent.py direct <session>`
 later, `--off` clears it), one the owner drives in
-its own session, has no deadline at all: its quiet ends and `USER NEEDED` are recorded, not
-routed, since the owner reads them there, and the `no event in <n>s` log line leaves it out; its
-`DONE`, failures and prompts route as any lead's.
+its own session, has no deadline at all, and nothing about it is posted: its turn ends, `DONE`
+included, its questions, prompts and failures are recorded, since the owner sees them there, and
+the `no event in <n>s` log line leaves it out. Its `DONE` still tells the leads registered `after=`
+it, and a failed turn that lost its runner (offline, or an error naming a lost runner or host)
+routes as any lead's, since the owner can't see why in that session. A direct lead that goes
+offline while idle raises nothing.
 
 **Routing.** With `--console` an event is not posted as a line: the supervisor routes it, by
 `route`'s table (the design's § Routing an event), and settles what needs no decision itself.
