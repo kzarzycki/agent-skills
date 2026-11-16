@@ -582,7 +582,7 @@ def codex_exec(cmd: list[str], brief: str) -> int:
     """Run Codex without the seeded variable (it reads the auth.json `verify` wrote), its output relayed line by line
     through this process's redacted stdout, so a verifier can neither read the variable nor print a token."""
     env = {k: v for k, v in os.environ.items() if k != VAR}
-    with subprocess.Popen(
+    child = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -590,23 +590,31 @@ def codex_exec(cmd: list[str], brief: str) -> int:
         text=True,
         errors="replace",
         env=env,
-    ) as child:
-        assert child.stdin and child.stdout
+    )
+    # no `with`: closing the pipe would wait on the relay thread, which waits on any descendant holding it
+    assert child.stdin and child.stdout
 
-        def feed() -> None:  # beside the relay, so neither pipe fills while the other waits
-            try:
-                child.stdin.write(brief)
-                child.stdin.close()
-            except OSError:  # Codex exited before reading it all: its exit says so
-                pass
+    def feed() -> None:  # beside the relay, so neither pipe fills while the other waits
+        try:
+            child.stdin.write(brief)
+            child.stdin.close()
+        except OSError:  # Codex exited before reading it all: its exit says so
+            pass
 
-        writer = threading.Thread(target=feed, daemon=True)
-        writer.start()
+    def relay() -> None:
         for line in child.stdout:
             sys.stdout.write(line)
             sys.stdout.flush()
-        writer.join()
-        return child.wait()
+
+    writer = threading.Thread(target=feed, daemon=True)
+    writer.start()
+    reader = threading.Thread(target=relay, daemon=True)
+    reader.start()
+    code = child.wait()
+    # a background descendant of Codex can hold the pipe open long after it exits: wait only briefly for the tail
+    reader.join(2)
+    writer.join(2)
+    return code
 
 
 def needs_a_look(why: str, what: str) -> None:

@@ -324,3 +324,36 @@ def test_a_secret_split_over_two_writes_is_still_masked(capfd) -> None:
 
 def test_describe_names_length_and_a_short_hash() -> None:
     assert cv.describe("X", "abc") == "X: 3 chars, sha256 ba7816bf"
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda s: "!" + s + "!?" + s,  # not base64
+        lambda s: base64.b64encode(("not json " + s).encode()).decode(),  # base64, not JSON
+        lambda s: base64.b64encode(json.dumps({"note": s}).encode()).decode(),  # JSON, no tokens
+    ],
+    ids=["not-base64", "not-json", "no-tokens"],
+)
+def test_a_seed_that_is_no_login_is_refused_by_length_and_hash_alone(
+    world, vm, monkeypatch, capfd, make
+) -> None:
+    argv, _ = vm
+    value = make(secrets.token_urlsafe(24))
+    monkeypatch.setenv(VAR, value)
+    assert cv.main(argv) == 2
+    out = assert_clean(capfd, [value])
+    assert "not a base64 ChatGPT login" in out and cv.describe(VAR, value) in out
+
+
+def test_a_background_descendant_of_codex_does_not_hold_verify_up(
+    world, vm, tmp_path, capfd
+) -> None:
+    argv, seen = vm
+    codex = tmp_path / "bin" / "codex"
+    text = codex.read_text().replace("cat >/dev/null\n", "cat >/dev/null\nsleep 30 &\necho trailing line\n")
+    codex.write_text(text)
+    started = time.monotonic()
+    assert cv.main(argv) == 0
+    assert time.monotonic() - started < 20
+    assert "trailing line" in capfd.readouterr().out
