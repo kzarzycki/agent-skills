@@ -44,7 +44,7 @@ output under `== head ==` and each patch's test output under a `== <patch> ==` h
 run, so a stopped run keeps what it finished. Exit 0 when every patch was killed, 1 when one survived (the log names it),
 else 3 when one was inconclusive, 2 when it refuses, a patch doesn't apply, or the tree can't be restored (stderr names the paths). The log goes outside the
 checkout or to an ignored path, never a tracked file or a patch, since writing it would destroy that file. Standard
-library and git, and approvals.py, beside it, to read the policy (so PyYAML).
+library and git, and approvals.py, beside it, to read the policy and run each test command under the host's heavy wrapper (so PyYAML).
 """
 
 from __future__ import annotations
@@ -60,11 +60,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Callable
-
-# approvals.py, beside this script, owns the host gate slots: how many there are and which one a run takes
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import approvals
+from typing import Any, Callable
 
 
 class Interrupted(Exception):
@@ -107,7 +103,7 @@ def on_signal(signum: int, _frame: object) -> None:
 SHORT = "gate.short.lock"
 # the policy's `short_seconds` when it sets none
 SHORT_SECONDS = 120
-SLOT_HELD = approvals.SLOT_HELD
+SLOT_HELD = "LOOP_GATE_SLOT_HELD"
 # the policy's `mutate.inconclusive_exit` when it sets none: a test command's exit for "setup failed, no verdict"
 # (EX_TEMPFAIL, sysexits.h), which no test runner reports for a failed assertion
 INCONCLUSIVE_EXIT = 75
@@ -115,16 +111,25 @@ INCONCLUSIVE_EXIT = 75
 
 def slot_path(name: str = SHORT) -> str:
     """The short lane's lock file (a heavy slot is approvals.take_slot's to pick)."""
-    return approvals.slot_file(name)
+    return approvals().slot_file(name)
+
+
+def approvals() -> Any:
+    """approvals.py beside this script, which holds the policy's reader and the heavy-step runner."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import approvals as loaded
+
+    return loaded
 
 
 def policy() -> tuple[int, int]:
     """The policy's `short_seconds` (SKILL.md, Settings, SHORT_SECONDS without it) and `mutate.inconclusive_exit`
     (INCONCLUSIVE_EXIT without it); a policy off its schema is refused, as approvals.py refuses it, and so is a
     reserved exit outside 1..255, which no command can return or which would read a pass as a setup failure."""
+    loaded = approvals()
     try:
-        settings = approvals.settings(approvals.project()[1])
-    except approvals.Refused as refusal:
+        settings = loaded.settings(loaded.project()[1])
+    except loaded.Refused as refusal:
         raise Refused(str(refusal)) from refusal
     reserved = settings.get("mutate", {}).get("inconclusive_exit", INCONCLUSIVE_EXIT)
     if not 1 <= reserved <= 255:
@@ -193,7 +198,7 @@ def run_test(
     if slot == slot_path(SHORT):
         fd = take_short(slot, waiting)
     else:
-        fd, slot = approvals.take_slot(waiting)
+        fd, slot = approvals().take_slot(waiting)
     try:
         began = time.monotonic()
         code, output = run_command(command, slot)
@@ -210,10 +215,10 @@ def lane(
     short lane when the test command passes on the unmutated head, in the short lane, within `limit` seconds. With
     `built` a head run is needed whatever the lane, since its outputs are what each patch's are compared to: one that
     would run none runs once in the heavy slot."""
-    heavy = approvals.slot_path()
+    heavy = approvals().slot_path()
     # its holder is this run's parent: a short-lane run would hand its children a variable that no longer names the
     # heavy slot, and a heavy wrapper under them would wait on that parent
-    if approvals.held_slot() is not None:
+    if approvals().held_slot() is not None:
         why = "heavy: run under a holder of the heavy slot"
         return heavy, why, run_test(command, heavy, waiting)[1] if built else None
     if limit <= 0:
@@ -228,26 +233,18 @@ def lane(
 
 
 def run_command(command: str, slot: str) -> tuple[int, str]:
-    # its own session, so stopping it reaches every process the shell started
-    proc = subprocess.Popen(
-        command,
-        shell=True,
+    # a heavy step (approvals.run_heavy): the shell's argv as shell=True builds it, under the host's heavy wrapper, in a
+    # session of its own, so stopping it (Interrupted) reaches every process the shell started
+    return approvals().run_heavy(
+        ["/bin/sh", "-c", command],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         # a test may print bytes that aren't UTF-8; strict decoding would raise with the patch still applied
         encoding="utf-8",
         errors="replace",
-        start_new_session=True,
         # a .pyc written in the same second as its source hides the next same-sized patch of it
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", SLOT_HELD: slot},
     )
-    try:
-        output, _ = proc.communicate()
-    except Interrupted:
-        os.killpg(proc.pid, signal.SIGKILL)
-        proc.wait()
-        raise
-    return proc.returncode, output
 
 
 def restore(top: Path, patch: Path) -> None:

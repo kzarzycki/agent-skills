@@ -775,14 +775,16 @@ or the owner's private network.
   since `<N>` gates load the host at once and a larger share each would oversubscribe it.
   A land's gate step holds the landing lock while it waits, which stops every other land, so it takes a freed slot
   ahead of a waiting PR gate: a waiting land holds a shared lock on `gate.land.lock`, and a PR gate that finds it
-  takes no slot until no land waits.
+  takes no slot until no land waits. A project's own wrapper takes the same care: it skips its lock when
+  `LOOP_GATE_SLOT_HELD` names any `gate.<n>.lock` of that directory, not only `gate.1.lock`, since a gate under slot 2
+  would otherwise hold two; one that waits in a plain blocking `flock` is woken by the kernel ahead of a polling
+  gate, so a project that wants a land to go first has its wrapper take its slot the way `approvals.take_slot` does
+  (this repo's `tools/gate_slot.py`). With one slot a land blocks in the kernel too, so it competes evenly with a
+  wrapper's `flock`.
   `test:changed` while iterating and the lint parts stay outside the slot. `approvals.py`'s
   `local-ci` and `land` take a slot's lock around each gate step they run and set
   `LOOP_GATE_SLOT_HELD` to its path, as `mutate.py` does (both through one function, `approvals.take_slot`), so a wrapper under them that finds
-  the variable naming any `gate.<n>.lock` takes none, since it would wait on its own parent. A wrapper takes its slot
-  through `approvals.take_slot`, or polls as it does, never a blocking `flock`, which wakes the moment a slot frees and
-  beats a waiting land; a wrapper outside this skill that blocks (the template's `scripts/gate-slot` until it polls)
-  can still beat a land.
+  the variable naming its lock takes none, since it would wait on its own parent.
   Beside it runs a short lane, a lock on `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.short.lock`, which
   a job expected to finish within the policy's `short_seconds` (Settings, default 120) takes instead of the
   heavy one, so a two-minute job waits only for another short job, never behind a long gate: at most one heavy
@@ -790,6 +792,16 @@ or the owner's private network.
   line, so a job wrongly declared short shows in its log; `short_seconds: 0` turns the lane off and every job
   takes the heavy slot. `mutate.py` measures rather than declares: it runs the tests once on the unmutated head
   in the short lane and keeps the patches there only when that run passed within `short_seconds`.
+  The slot limits how many heavy steps run at once; the heavy wrapper limits what each takes. A host turns it on with
+  one line in `${XDG_CONFIG_HOME:-~/.config}/engineering-loop/host`, a `heavy_wrapper = <prefix>` line (`key = value` lines, so later host settings share the file), a command prefix (`systemd-run --user
+  --scope --quiet --slice=loop-heavy.slice -p CPUQuota=400% -p MemoryMax=6G --`), and every heavy step then runs under
+  it: each gate step of `local-ci` and `land`, the `pre_land` check, `mutate.py`'s test runs, and any command run as
+  `uv run <this skill's folder>/scripts/approvals.py heavy <cmd>`. Without the file every step runs as before; a prefix
+  that can't run (its command not on `PATH`, or `<prefix> true` failing) prints one line and runs the step unwrapped,
+  so the gate never fails for it, and a wrapped step carries `LOOP_HEAVY_WRAPPED=1`, so a heavy call under it adds no
+  scope of its own. Limits given on the scope cap each step alone; `systemctl --user set-property loop-heavy.slice
+  CPUQuota=… MemoryMax=…` caps all of them together. A database server's backend runs in the server's own cgroup,
+  so wrapping its client caps only the client.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
