@@ -1,0 +1,198 @@
+"""approvals.py: `loop.batch_wait_seconds` makes `land` wait for a PR held only by its required checks (#1032)."""
+
+from __future__ import annotations
+
+import time as real_time
+from typing import Any
+
+import pytest
+from approvals_harness import (
+    GITHUB_RULE,
+    added,  # noqa: F401
+    approvals,
+    assigned,  # noqa: F401
+    attached,  # noqa: F401
+    board_risks,  # noqa: F401
+    git_in,
+    graphql_answers,  # noqa: F401
+    hub,  # noqa: F401
+    lands,  # noqa: F401
+    loop_md,
+    others_open,  # noqa: F401
+    pushed,  # noqa: F401
+    refs,  # noqa: F401
+    required,  # noqa: F401
+)
+
+
+class Clock:
+    """A stubbed `time` for approvals: `sleep` moves `monotonic` by what it is asked, then runs `tick(now)`."""
+
+    def __init__(self) -> None:
+        self.now, self.slept, self.tick = 0.0, [], lambda _now: None
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+        self.tick(self.now)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(real_time, name)
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    stub = Clock()
+    monkeypatch.setattr(approvals, "time", stub)
+    return stub
+
+
+@pytest.fixture(autouse=True)
+def checks_required(monkeypatch: pytest.MonkeyPatch, required: list[str]) -> None:
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"check"})
+
+
+def policy(lands: dict[str, Any], setting: str) -> None:
+    """The base's loop.md with `setting` under `loop:`, committed to origin's main before any PR is opened."""
+    work = lands["work"]
+    (work / "docs" / "agents" / "loop.md").write_text(
+        GITHUB_RULE.replace("```yaml\n", f"```yaml\nloop:\n{setting}\n", 1)
+    )
+    git_in(work, "add", "docs")
+    git_in(work, "commit", "-q", "-m", "policy")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(work, "fetch", "-q", "origin")
+
+
+def check(lands: dict[str, Any], number: int, state: str) -> None:
+    """PR `number`'s required `check` is now `state` (SUCCESS, or PENDING while it runs)."""
+    nodes = lands["pulls"][number]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
+    nodes["contexts"]["nodes"] = [
+        {"__typename": "CheckRun", "name": "check", "status": "COMPLETED", "conclusion": state}
+    ]
+
+
+def batch_line(lands: dict[str, Any], number: int) -> str:
+    [body] = [b for n, b in lands["comments"] if n == number and b.startswith("Landed\n")]
+    return next(line for line in body.splitlines() if line.startswith("Batch:"))
+
+
+def test_a_pr_whose_checks_turn_green_during_the_wait_joins_the_one_gate(
+    lands: dict[str, Any], clock: Clock
+) -> None:
+    policy(lands, "  batch_wait_seconds: 600")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    check(lands, 8, "PENDING")
+    clock.tick = lambda now: check(lands, 8, "SUCCESS") if now >= 300 else None
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert lands["merged"]() == ["7", "8"] and lands["runs"]() == 1
+    assert sum(clock.slept) == 300
+    assert any("waits up to 600 s" in line and "#8" in line for line in lines), lines
+    assert any("PR #8 turned landable" in line for line in lines), lines
+    assert batch_line(lands, 7) == batch_line(lands, 8) == "Batch: #7, #8 (waited 300 s, joined: #8)"
+
+
+def test_the_wait_ends_at_the_deadline_and_the_pr_that_is_still_pending_stays_out(
+    lands: dict[str, Any], clock: Clock
+) -> None:
+    policy(lands, "  batch_wait_seconds: 100")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    check(lands, 8, "PENDING")
+    code, lines = lands["land"]()
+    assert (code, lands["merged"](), lands["runs"]()) == (approvals.WAITING, ["7"], 1)
+    assert sum(clock.slept) == 100
+    assert batch_line(lands, 7) == "Batch: #7 (waited 100 s, joined: none)"
+
+
+def test_a_pr_that_turns_red_during_the_wait_ends_it(lands: dict[str, Any], clock: Clock) -> None:
+    policy(lands, "  batch_wait_seconds: 600")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    check(lands, 8, "PENDING")
+    clock.tick = lambda _now: check(lands, 8, "FAILURE")
+    code, lines = lands["land"]()
+    assert (code, lands["merged"](), len(clock.slept)) == (0, ["7"], 1)
+    assert any("left out of the wait" in line for line in lines), lines
+
+
+@pytest.mark.parametrize("other", ["red", "owner", "owner and pending", "gap"])
+def test_no_pr_held_by_its_checks_alone_gates_at_once(
+    lands: dict[str, Any], clock: Clock, other: str
+) -> None:
+    """A red check, an owner wait (with or without pending checks behind it) and a proof gap are no wait."""
+    policy(lands, "  batch_wait_seconds: 600")
+    lands["open"](7, {"7.txt": "7\n"})
+    if other.startswith("owner"):
+        lands["open"](8, {".github/ci.yml": "on: push\n"})
+        lands["pulls"][8]["files"] = {"nodes": [{"path": ".github/ci.yml"}]}
+    else:
+        lands["open"](8, {"8.txt": "8\n"}, **({"reviews": ()} if other == "gap" else {}))
+    if other == "red":
+        check(lands, 8, "FAILURE")
+    if other == "owner and pending":
+        check(lands, 8, "PENDING")
+    code, _ = lands["land"]()
+    assert (lands["merged"](), lands["runs"](), clock.slept) == (["7"], 1, [])
+
+
+def test_a_lone_pr_gates_at_once(lands: dict[str, Any], clock: Clock) -> None:
+    policy(lands, "  batch_wait_seconds: 600")
+    lands["open"](7, {"7.txt": "7\n"})
+    assert lands["land"]()[0] == 0
+    assert (lands["merged"](), clock.slept, batch_line(lands, 7)) == (["7"], [], "Batch: #7")
+
+
+def test_unset_keeps_todays_call_order(
+    lands: dict[str, Any], clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    check(lands, 8, "PENDING")
+    calls: list[str] = []
+    monkeypatch.setattr(approvals, "batch_wait", lambda *_a: calls.append("wait") or "")
+    judged, land = approvals.landable, approvals.landable
+    monkeypatch.setattr(
+        approvals,
+        "landable",
+        lambda pull, *rest: calls.append(f"landable {pull['number']}") or judged(pull, *rest),
+    )
+    code, _ = lands["land"]()
+    assert (code, calls, lands["merged"](), clock.slept) == (
+        approvals.WAITING,
+        ["landable 7", "landable 8"],
+        ["7"],
+        [],
+    )
+    assert land is judged
+
+
+def test_only_never_reads_or_waits_on_other_prs(
+    lands: dict[str, Any], clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy(lands, "  batch_wait_seconds: 600")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    check(lands, 8, "PENDING")
+    read: list[int] = []
+    monkeypatch.setattr(
+        approvals, "pull_request", lambda n: read.append(n) or lands["pulls"][n]
+    )
+    assert lands["land"]("7", "--only")[0] == 0
+    assert (set(read), lands["merged"](), clock.slept) == ({7}, ["7"], [])
+
+
+@pytest.mark.parametrize("bad", ["-1", "'600'", "1.5", "true"])
+def test_a_setting_that_is_no_non_negative_whole_number_is_refused_naming_the_key(bad: str) -> None:
+    with pytest.raises(approvals.Refused, match="batch_wait_seconds"):
+        approvals.settings(loop_md(f"loop:\n  batch_wait_seconds: {bad}\n"))
+
+
+def test_the_setting_alone_asks_for_no_signing_keys() -> None:
+    loop = loop_md("loop:\n  batch_wait_seconds: 600\n")
+    assert approvals.settings(loop) == {"batch_wait_seconds": 600}
