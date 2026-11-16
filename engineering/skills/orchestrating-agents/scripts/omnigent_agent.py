@@ -1583,7 +1583,7 @@ def own_id() -> str:
     )
 
 
-def starter_mode(og: "Omnigent") -> tuple[str, str]:
+def starter_mode(og: Omnigent) -> tuple[str, str]:
     """The ``--permission-mode`` the session this runs in was launched with, and its id: the
     fallback of a Claude child's start. ``("", "")`` outside Omnigent, for a starter that is not a
     Claude session, or one launched with no mode."""

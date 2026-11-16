@@ -19,6 +19,7 @@ from datetime import datetime
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
@@ -11790,7 +11791,7 @@ def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
     modes: list[str | None] = []
 
     class Starter(FakeOmnigent):
-        launch: list[str] = []
+        launch: ClassVar[list[str]] = []
 
         def info(self, sid: str) -> dict:
             if sid == "starter":
@@ -11804,10 +11805,10 @@ def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
     monkeypatch.setenv("OMNIGENT_SESSION_ID", "starter")
     monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
     og = Starter()
-    og.launch = ["--permission-mode", "bypassPermissions"]
+    Starter.launch = ["--permission-mode", "bypassPermissions"]
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
     assert modes == ["bypassPermissions"]
     assert "bypassPermissions inherited" in capsys.readouterr().err
-    og.launch = []  # a starter with no mode leaves the harness default
+    Starter.launch = []  # a starter with no mode leaves the harness default
     omnigent_agent.start(og, "claude", "t2", "do X", tmp_path / "r.md", None, 0)
     assert modes[-1] is None
