@@ -24,6 +24,7 @@ from test_approvals import DROP_RECORDS, PUSH_RECORD, RECORD_REF, cloud_land, un
 
 SHAPES = {
     "one line, no armour": lambda body: "".join(body),
+    "no armour, CRLF, spaces and tabs": lambda body: "\r\n ".join(body) + "\t",
     "literal backslash-n": lambda body: (
         "-----BEGIN OPENSSH PRIVATE KEY-----\\n"
         + "\\n".join(body)
@@ -77,3 +78,16 @@ def test_a_broken_one_line_key_is_refused_and_leaks_no_part_of_it(
     unmoved(cloud_land)
     seen = "\n".join(lines) + "".join(capsys.readouterr())
     assert not [i for i in range(len(value) - 7) if value[i : i + 8] in seen]
+
+
+def test_an_armourless_value_is_rewrapped_without_its_whitespace_at_70_characters() -> None:
+    # ssh-keygen skips whitespace inside the base64, so only the armour's own shape shows the strip
+    body = "A" * 75 + "B" * 70
+    out = approvals.armoured(" \t" + body[:30] + "\r\n " + body[30:] + "\r\n").split("\n")
+    assert out == [
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        body[:70],
+        body[70:140],
+        body[140:],
+        "-----END OPENSSH PRIVATE KEY-----",
+    ]
