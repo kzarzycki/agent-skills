@@ -3787,16 +3787,19 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
     new state once: until it ends, or exit 3 at CEILING."""
     if not wait:
         return landing(pr, only)[0]
-    deadline, said = time.monotonic() + CEILING, ""
+    deadline, said, spoke = time.monotonic() + CEILING, "", 0.0
     while True:
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
                 code, again = landing(pr, only)
         finally:
-            # a background command's log: each state once, not every 30 seconds; a held lock's age is no new state
-            if (state := re.sub(r"\d+ minutes? ago", "", out.getvalue())) != said:
+            # a background command's log: each state once, not every 30 seconds, a held lock's age being no new
+            # state; again every SLOT_SAY_SECONDS, so wait-for's stall check never reads a long wait as a hang
+            state = re.sub(r"\d+ minutes? ago", "", out.getvalue())
+            if state != said or time.monotonic() - spoke >= SLOT_SAY_SECONDS:
                 print(out.getvalue(), end="", flush=True)
+                spoke = time.monotonic()
             said = state
         if not again:
             return code
@@ -4623,7 +4626,7 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     command = gate()[0]
     log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
     for again in (False, True):
-        with log.open("w") as out:
+        with log.open("w") as out, saying(f"Tree {tree}: gating, log {public(str(log))}"):
             done = run_steps(
                 commit,
                 tree,
@@ -5671,6 +5674,26 @@ def flock_saying(fd: int, said: Callable[[], None]) -> None:
                 said()
                 next_say = now + SLOT_SAY_SECONDS
             time.sleep(0.1)
+
+
+@contextlib.contextmanager
+def saying(text: str) -> Any:
+    """Print `text` every SLOT_SAY_SECONDS while the block runs, to the process's own stdout, since `land --wait`
+    captures sys.stdout until landing returns: a run whose output goes to a log of its own (a batch gate) then never
+    reads as a hang to wait-for's stall check."""
+    stop = threading.Event()
+
+    def say() -> None:
+        while not stop.wait(SLOT_SAY_SECONDS):
+            print(text, file=sys.__stdout__, flush=True)
+
+    sayer = threading.Thread(target=say, daemon=True)
+    sayer.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        sayer.join()
 
 
 @contextlib.contextmanager
