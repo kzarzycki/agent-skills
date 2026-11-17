@@ -4452,7 +4452,9 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
     base, root = drifted.base, toplevel()
 
     def run(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False)
+        return subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, text=True, check=False
+        )
 
     if (
         run("symbolic-ref", "-q", "HEAD").stdout.strip() != f"refs/heads/{base}"
@@ -4461,7 +4463,10 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
     ):
         raise drifted
     tip = run("rev-parse", "--short=12", "HEAD").stdout.strip()
-    print(f"{drifted} -- this checkout fast-forwarded to origin/{base} ({tip}): land runs again from its code", flush=True)
+    print(
+        f"{drifted} -- this checkout fast-forwarded to origin/{base} ({tip}): land runs again from its code",
+        flush=True,
+    )
     os.environ[DEADLINE_ENV] = repr(deadline)
     os.execv(sys.executable, [sys.executable, *sys.argv])
 

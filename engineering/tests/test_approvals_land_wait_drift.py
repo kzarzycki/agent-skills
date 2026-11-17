@@ -43,7 +43,9 @@ def waiting(monkeypatch: pytest.MonkeyPatch, lands: dict[str, Any], pushed: None
     script = work / SCRIPT
     script.parent.mkdir()
     script.write_text(Path(approvals.__file__).read_text())
-    (work / "SKILL.md").write_text((Path(approvals.__file__).parent.parent / "SKILL.md").read_text())
+    (work / "SKILL.md").write_text(
+        (Path(approvals.__file__).parent.parent / "SKILL.md").read_text()
+    )
     monkeypatch.setattr(approvals, "__file__", str(script))
     monkeypatch.setattr(approvals, "RUNNING", (str(script),))
     git_in(work, "add", "-A")
@@ -72,13 +74,25 @@ def moved(state: dict[str, Any], tmp: Path) -> str:
     other = tmp / "other"
     git_in(tmp, "clone", "-q", str(state["origin"]), str(other))
     (other / SCRIPT).write_text((other / SCRIPT).read_text() + "\n# another land's change\n")
-    git_in(other, "-c", "user.email=l@example.com", "-c", "user.name=l", "commit", "-qam", "move the base")
+    git_in(
+        other,
+        "-c",
+        "user.email=l@example.com",
+        "-c",
+        "user.name=l",
+        "commit",
+        "-qam",
+        "move the base",
+    )
     git_in(other, "push", "-q", "origin", "HEAD:refs/heads/main")
     return git_in(other, "rev-parse", "HEAD").strip()
 
 
 def test_a_waiting_land_whose_base_moved_its_script_follows_the_base_and_lands(
-    waiting: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    waiting: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     work, tip = waiting["work"], moved(waiting, tmp_path)
     with pytest.raises(Restarted):
@@ -96,7 +110,8 @@ def test_a_waiting_land_whose_base_moved_its_script_follows_the_base_and_lands(
 
 
 @pytest.mark.parametrize(
-    "checkout", ["an edited tracked file", "a detached head", "another branch", "a commit the base lacks"]
+    "checkout",
+    ["an edited tracked file", "a detached head", "another branch", "a commit the base lacks"],
 )
 def test_any_other_checkout_keeps_the_refusal(
     waiting: dict[str, Any], tmp_path: Path, checkout: str
@@ -107,7 +122,9 @@ def test_any_other_checkout_keeps_the_refusal(
     elif checkout == "a commit the base lacks":  # no fast-forward
         git_in(work, "commit", "-q", "--allow-empty", "-m", "local")
     else:
-        git_in(work, "switch", "-q", *(["--detach"] if checkout == "a detached head" else ["-c", "pr"]))
+        git_in(
+            work, "switch", "-q", *(["--detach"] if checkout == "a detached head" else ["-c", "pr"])
+        )
     before = git_in(work, "rev-parse", "HEAD").strip()
     moved(waiting, tmp_path)
     with pytest.raises(approvals.Drifted, match="a PR's own copy would judge it"):
@@ -130,5 +147,7 @@ def test_the_run_again_keeps_the_first_runs_ceiling(
 ) -> None:
     monkeypatch.setattr(approvals, "landing", lambda _pr, _only=False: (approvals.WAITING, True))
     monkeypatch.setenv(approvals.DEADLINE_ENV, repr(time.monotonic() - 1))
-    monkeypatch.setattr(approvals.time, "sleep", lambda _s: pytest.fail("waited past the first run's ceiling"))
+    monkeypatch.setattr(
+        approvals.time, "sleep", lambda _s: pytest.fail("waited past the first run's ceiling")
+    )
     assert approvals.land(7, wait=True) == approvals.WAITING  # at once: no fresh 2 hours
