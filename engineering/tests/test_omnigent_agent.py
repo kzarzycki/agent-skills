@@ -12164,7 +12164,7 @@ def test_a_named_repository_reaches_the_head_reads_inside_the_checkout_and_the_h
 ) -> None:
     seen: list[tuple[str, tuple[object, ...]]] = []
 
-    def stop(name: str):  # noqa: ANN202
+    def stop(name: str):
         def read(*a: object) -> str:
             seen.append((name, a))
             raise omnigent_agent.Fail("stop here")
