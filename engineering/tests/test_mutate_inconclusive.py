@@ -298,3 +298,23 @@ def test_a_real_failing_test_still_kills(repo: Path) -> None:
     result = mutate(repo, patched, test="if grep -q 'a - b' calc.py; then exit 1; fi")
     assert result.returncode == 0, result.stderr
     assert f"{patched}: exit 1 killed" in log(repo)
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_a_heavy_lane_head_run_that_never_ran_is_refused_too(
+    repo: Path, held: bool, tmp_path: Path
+) -> None:
+    # --built makes the head run happen where the lane would run none: short_seconds 0, or a holder of the heavy slot
+    ignore_build(repo)
+    patched = patch(repo, "add.patch", "a + b", "a - b")
+    env = None
+    if held:
+        slot = tmp_path / "held.lock"
+        slot.touch()
+        env = {**os.environ, "LOOP_GATE_SLOT_HELD": str(slot)}
+    else:
+        policy(repo, "loop:\n  short_seconds: 0\n")
+        patched = patch(repo, "add2.patch", "a + b", "a - b")
+    result = run_built(repo, "no-such-command-xyz", ("build",), patched, env=env)
+    assert result.returncode == 2, result.stderr
+    assert "exited 127" in result.stderr

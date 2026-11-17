@@ -223,6 +223,16 @@ def run_test(
 NOT_RUN = (126, 127, 5)
 
 
+def head_run(command: str, slot: str, waiting: Callable[[], None]) -> tuple[int, str, float]:
+    """The unmutated head's run, refused when the test command did not run (NOT_RUN)."""
+    code, output, seconds = run_test(command, slot, waiting)
+    if code in NOT_RUN:
+        raise Refused(
+            f"the head run exited {code}, so `{command}` did not run any test: check --test"
+        )
+    return code, output, seconds
+
+
 def lane(
     command: str, limit: int, waiting: Callable[[], None], built: bool = False
 ) -> tuple[str, str, str | None]:
@@ -235,15 +245,11 @@ def lane(
     # heavy slot, and a heavy wrapper under them would wait on that parent
     if approvals().held_slot() is not None:
         why = "heavy: run under a holder of the heavy slot"
-        return heavy, why, run_test(command, heavy, waiting)[1] if built else None
+        return heavy, why, head_run(command, heavy, waiting)[1] if built else None
     if limit <= 0:
         why = f"heavy: short_seconds is {limit}"
-        return heavy, why, run_test(command, heavy, waiting)[1] if built else None
-    code, output, seconds = run_test(command, slot_path(SHORT), waiting)
-    if code in NOT_RUN:
-        raise Refused(
-            f"the head run exited {code}, so `{command}` did not run any test: check --test"
-        )
+        return heavy, why, head_run(command, heavy, waiting)[1] if built else None
+    code, output, seconds = head_run(command, slot_path(SHORT), waiting)
     if code:
         return heavy, f"heavy: head run failed (exit {code})", output
     if seconds <= limit:
