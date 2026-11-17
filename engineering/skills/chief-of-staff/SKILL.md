@@ -208,8 +208,8 @@ checking the host's capacity (Host load), as before.
 with where it was said, and at most one line of yours, marked as yours. Never paraphrase
 the owner. A lead acts on the owner's quoted words; your line is a colleague's note. Nudges,
 and the line to a lead that waits on another's result, go the same way. A message for every
-lead at once (a temporary rule) goes through `broadcast <message-file>` instead (`--dry-run`
-first lists who gets it), which relays to them all concurrently.
+lead at once goes through `broadcast <message-file> --stop` instead (`--dry-run`
+first lists who gets it), which relays to them all concurrently, and only for a stop order, which cannot wait. A rule change (a temporary rule, "pause to save tokens") is added to your board's Standing decisions with `broadcast <message-file> --decisions <board>` and posted to no session: each live post is a wake turn re-reading about 150k tokens of context per lead, and a lead reads the board on its next real turn.
 
 It returns at once, on this host or another, and its exit says what happened, so run it in
 the foreground and never poll the lead afterwards:
