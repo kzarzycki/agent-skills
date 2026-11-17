@@ -1,0 +1,1 @@
+- engineering-loop: `approvals.py` loaded by path and kept out of `sys.modules` forwards a name set on it (a test's stub) to the gatekeeper code that runs, as an imported one does, since it now runs gatekeeper.py's source in its own namespace.

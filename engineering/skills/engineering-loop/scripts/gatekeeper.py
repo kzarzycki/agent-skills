@@ -1355,7 +1355,7 @@ def raise_risk(pull: dict[str, Any], why: str, loop: str | None, mark: bool = Fa
     return found
 
 
-# approvals.py's module when it loaded this one, by path and out of sys.modules: the module its importers read
+# approvals.py's stand-in module when it ran this source by path and out of sys.modules: the module its importers read
 IMPORTER: ModuleType | None = None
 
 
@@ -3991,6 +3991,11 @@ def landing_here(
             sys.exit(128 + min(waiting))
 
 
+# the script files running here: this one, and the gatekeeper beside it when this is the approvals.py shim that runs
+# the gatekeeper's source (the same file, once, when the gatekeeper runs directly)
+RUNNING = tuple(dict.fromkeys((__file__, str(Path(__file__).with_name("gatekeeper.py")))))
+
+
 def base_drift(base: str) -> list[str]:
     """The running gatekeeper.py and github_adapter.py and the three policy files (tracker, loop.md, gatekeeper.md) whose text here differs from
     `origin/<base>`'s, as repo paths, since a PR's own edit of the code or rules that judge it must not judge it. Reads
@@ -4006,7 +4011,7 @@ def base_drift(base: str) -> list[str]:
         return []
     paths = [TRACKER, LOOP, POLICY]
     # the gatekeeper and its GitHub adapter, the code that judges
-    for running_file in reversed((__file__, github.__file__ or "")):
+    for running_file in reversed(dict.fromkeys((*RUNNING, github.__file__ or ""))):
         try:
             paths.insert(0, Path(running_file).resolve().relative_to(root.resolve()))
         except ValueError:
@@ -7661,7 +7666,7 @@ def main(argv: list[str]) -> int:
 
 def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.ArgumentParser) -> int:
     """The verb `args` names; a refusal raises."""
-    if stale := pack_behind(__file__):
+    if stale := next(filter(None, map(pack_behind, RUNNING)), None):
         print(stale, file=sys.stderr)
         if refuses_stale():
             return 1
