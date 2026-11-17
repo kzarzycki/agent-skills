@@ -64,7 +64,9 @@ def loop_repo(cwd: Path) -> Path | None:
         return None
     try:
         text = (root / LOOP_FILE).read_text()
-    except OSError, UnicodeDecodeError:
+    except OSError:
+        return None
+    except ValueError:  # undecodable; one clause each, since a tuple's form differs before 3.14
         return None
     return None if HOST_WORKERS.search(text) else root
 
@@ -290,8 +292,10 @@ def verdict(data: dict, env: dict[str, str], hook: Path) -> str | None:
         return None
     try:
         run = commands(command)
-    except ValueError, IndexError:
-        return None  # can't parse it: allowed
+    except ValueError:  # can't split it: allowed
+        return None
+    except IndexError:  # a wrapper missing its operand: allowed
+        return None
     for argv in run:
         if heavy(argv):
             return refusal(command.strip(), argv, cwd, hook)

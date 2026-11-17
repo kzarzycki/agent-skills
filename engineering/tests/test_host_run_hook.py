@@ -226,3 +226,11 @@ def test_the_pack_registers_the_hook_on_bash_before_the_tool_runs() -> None:
     (hook,) = group["hooks"]
     assert hook["type"] == "command"
     assert hook["command"] == "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/host_run.py"
+
+
+def test_the_hook_parses_on_the_oldest_python3_a_host_may_run_it_with() -> None:
+    """It runs on the consumer's `python3`, not this repo's: syntax only a newer Python reads
+    (`except A, B:`, which a 3.14 formatter writes) fails there with exit 1, which refuses nothing."""
+    import ast
+
+    ast.parse(SCRIPT.read_text(), feature_version=(3, 9))
