@@ -8,7 +8,8 @@ report path, so ask for nothing. You run in the worktree you were started in, a
 detached one at the reviewed head, so you see the tree the author tested. Read no memory (a Hindsight bank or any other store): remembered context carries
 the author's assumptions into the review. Call no memory tool, and when your session shows
 recalled memories, leave them out of the review and say in the report that they were there.
-With loop.md's `Cloud worker:` line, name your evidence files for the PR (SKILL.md, Cloud worker).
+Where your test and mutation runs go is SKILL.md, Where heavy steps run. Unless loop.md's
+`Cloud worker:` line says `none`, name your evidence files for the PR (SKILL.md, Cloud worker).
 
 Check the tree first:
 
@@ -68,7 +69,7 @@ yourself, keeping standards and spec as separate axes.
   and is waited on up to a total budget you state, in as few calls as you can: each call is
   `omnigent_agent.py wait-for --log <log> --pid <pid>`, which blocks close to a 10-minute tool
   call (`--budget` for another limit) and prints only the outcome, never short polls or a sleep
-  loop of your own, since every call re-reads the whole context. Where that script is not at hand,
+  loop of your own, since every call re-reads the whole context. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged. Where that script is not at hand,
   each call blocks close to the tool's limit (the longest yield the harness allows on a running
   command, or a sleep loop that checks the log for its exit line), never short polls. Where a
   foreground command stops at 10 minutes (a session in a hosted VM), the run is waited on within
@@ -85,7 +86,7 @@ yourself, keeping standards and spec as separate axes.
   on a run still pending, since nothing wakes an idle session and a run left queued can apply
   its mutation after you have gone.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
-  run the spec's acceptance examples on it: the UI in a headless browser (worker.md, Report,
+  run the spec's Before merge list on it: the UI in a headless browser (worker.md, Report,
   says how: your own headless browser, never one attached over CDP unless the check needs its logins), the API with its client,
   each result checked against the reference the spec names. Then read the server's log
   for the time you drove it; a traceback or error there is a finding even when the page
@@ -149,9 +150,13 @@ yourself, keeping standards and spec as separate axes.
   necessary, such as a log that shows a new failure, with a `New in the answer: <the log>` line
   naming that log; the verifier script hands no later question to the lead without that line
   (exit 1).
-- **An acceptance line you did not run** through the path a user takes (the spec's acceptance
-  examples, on the instance when one is up) blocks `SATISFIED: yes`, whatever the reason:
-  mark each acceptance line run (with its evidence), failing or not run. A line not run ends
+- **An acceptance line you did not run** through the path a user takes (the spec's Before
+  merge list, on the instance when one is up; a flat `## Acceptance` list is all Before merge)
+  blocks `SATISFIED: yes`, whatever the reason:
+  mark each Before merge line run (with its evidence), failing or not run. List each After
+  merge line under an `After merge:` line in the report (`After merge: none` when the spec has
+  none), never counted as run or not run, since it needs the merged default branch or a
+  deployed environment and the lead runs it after landing (lead.md step 9). A line not run ends
   the turn as a run the sandbox refuses does, in `<report>.question` naming the run the lead
   must make, and every other run the pass needs, listed as above (after an answer, only a run it
   made necessary, under a `New in the answer:` line); `approvals.py` refuses a satisfied report with a `Not run:` line. Probing a
@@ -159,8 +164,7 @@ yourself, keeping standards and spec as separate axes.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is
   the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
-- **Gates and repros:** you may run `mise run check`. Run a gate as the bare command
-  (`mise run check`), with no wrapper, redirect or detach around it, and keep it running with
+- **Gates and repros:** don't rerun the gate: read the gate of record and run the PR's own tests and acceptance checks. On a draft head with an `Affected tests:` line, the gate of record is the worker's report (its command and exit code); the `gate` status and the `loop-gate/` record are a ready head's. Run a repro or test as the bare command, with no wrapper, redirect or detach around it, and keep it running with
   your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain
   command, so a wrapped one asks for approval, and on a reviewed sandbox each ask is a paid
   model call. Then write its proof log from what it printed: the head's SHA, the command, its

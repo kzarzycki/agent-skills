@@ -56,6 +56,7 @@ def loop_md(settings: str = "") -> str:
     return f"# Loop facts\n\n## Settings\n\n```yaml\n{settings}```\n\nThe prose for people.\n"
 
 
+CAP = approvals.cap(None)  # SKILL.md § The cap: the default these tests pin
 BARE = loop_md()  # a loop.md with no settings, so no rules
 
 
@@ -3064,15 +3065,15 @@ def capped(*reviews: dict[str, Any], loop: str = BARE, **fields: Any) -> list[st
 def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfied_pass(
     hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    """Pass 5 left a major open: only the owner decides the fix, so the scoped pass 6 lands on their go."""
+    """The cap pass left a major open: only the owner decides the fix, so the scoped pass after it lands on their go."""
     open_at_cap = verdict_on(
-        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 5"
+        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading=f"Verifier (claude), pass {CAP}"
     )
-    pass6 = verdict_on(HEAD, heading="Verifier (claude), pass 6")
+    pass6 = verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")
     assert verified(open_at_cap, pass6) == []
     assert capped(open_at_cap, pass6) == [
         (
-            HELD + "a verifier review at the cap (pass 5) or later"
+            HELD + f"a verifier review at the cap (pass {CAP}) or later"
             " was not satisfied or left a blocker or major open, so the owner decides"
         )
     ]
@@ -3087,32 +3088,40 @@ def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfi
 def test_a_review_at_the_cap_holds_on_a_core_finding_or_on_not_being_satisfied(
     counts: str, satisfied: str
 ) -> None:
-    at_cap = verdict_on(OLD, counts, satisfied=satisfied, heading="Verifier (claude), pass 5")
-    assert capped(at_cap, verdict_on(HEAD, heading="Verifier (claude), pass 6")) != []
+    at_cap = verdict_on(OLD, counts, satisfied=satisfied, heading=f"Verifier (claude), pass {CAP}")
+    assert capped(at_cap, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")) != []
 
 
 def test_minors_only_at_the_cap_or_core_findings_before_it_need_no_owner() -> None:
-    minors = verdict_on(HEAD, "0 blocker, 0 major, 3 minor", heading="Verifier (claude), pass 5")
+    minors = verdict_on(
+        HEAD, "0 blocker, 0 major, 3 minor", heading=f"Verifier (claude), pass {CAP}"
+    )
     assert capped(minors) == []
     early = verdict_on(
-        OLD, "1 blocker, 0 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 4"
+        OLD,
+        "1 blocker, 0 major, 0 minor",
+        satisfied="no",
+        heading=f"Verifier (claude), pass {CAP - 1}",
     )
-    assert capped(early, verdict_on(HEAD, heading="Verifier (claude), pass 5")) == []
+    assert capped(early, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP}")) == []
 
 
 def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() -> None:
-    assert approvals.cap(None) == approvals.cap(BARE) == 5  # SKILL.md § The cap
-    assert approvals.cap(loop_md("loop:\n  cap: 3\n")) == 3
+    assert approvals.cap(None) == approvals.cap(BARE) == 3  # SKILL.md § The cap
+    assert approvals.cap(loop_md("loop:\n  cap: 4\n")) == 4
     with pytest.raises(approvals.Refused, match="`loop.cap` must be a whole number"):
         approvals.cap(loop_md("loop:\n  cap: 3 passes\n"))
     major = verdict_on(
-        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 3"
+        OLD,
+        "0 blocker, 1 major, 0 minor",
+        satisfied="no",
+        heading=f"Verifier (claude), pass {CAP - 1}",
     )
-    later = verdict_on(HEAD, heading="Verifier (claude), pass 4")
+    later = verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP}")
     assert capped(major, later) == []
-    assert capped(major, later, loop=loop_md("loop:\n  cap: 3\n")) == [
+    assert capped(major, later, loop=loop_md(f"loop:\n  cap: {CAP - 1}\n")) == [
         (
-            HELD + "a verifier review at the cap (pass 3) or later"
+            HELD + f"a verifier review at the cap (pass {CAP - 1}) or later"
             " was not satisfied or left a blocker or major open, so the owner decides"
         )
     ]
@@ -3416,13 +3425,6 @@ def test_any_other_rules_error_fails(
 ) -> None:
     landing["rulesets"] = error
     with pytest.raises(subprocess.CalledProcessError):
-        approvals.required_checks("main")
-
-
-def test_a_base_whose_rules_require_a_merge_queue_is_refused(landing: dict[str, Any]) -> None:
-    """GitHub's queue would merge a PR later, on a merge-group tree land never gated."""
-    landing.update(rulesets=["check", ":merge_queue"])
-    with pytest.raises(approvals.Refused, match="require GitHub's merge queue"):
         approvals.required_checks("main")
 
 
@@ -4049,7 +4051,9 @@ def test_a_machine_fault_twice_on_the_tip_after_the_merges_still_says_landed(
     refusing(monkeypatch, lambda args: args[2] == "8")
     codes = iter([0, 78, 78])
     monkeypatch.setattr(
-        approvals, "ran_step", lambda _step, cwd=None, out=None, load=None: (next(codes), 0, 0)
+        approvals,
+        "ran_step",
+        lambda _step, cwd=None, out=None, load=None, land=False: (next(codes), 0, 0),
     )
     code, lines = lands["land"]()
     assert (code, lands["merged"]()) == (1, ["7"])
@@ -7267,10 +7271,11 @@ def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reporte
     added: list[tuple[int, str, bool]],
 ) -> None:
     at_cap = verdict_on(
-        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 5"
+        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading=f"Verifier (claude), pass {CAP}"
     )
     pr = pull(
-        reviews=(at_cap, verdict_on(HEAD, heading="Verifier (claude), pass 6")), files=("app.py",)
+        reviews=(at_cap, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")),
+        files=("app.py",),
     )
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
     comments: list[tuple[int, str]] = []
@@ -7279,7 +7284,7 @@ def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reporte
     monkeypatch.chdir(PROJECT)
     capped_line = (
         HELD
-        + "a verifier review at the cap (pass 5) or later was not satisfied or left a blocker or major open, so the owner decides"
+        + f"a verifier review at the cap (pass {CAP}) or later was not satisfied or left a blocker or major open, so the owner decides"
     )
     assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
     assert capsys.readouterr().out.splitlines() == [capped_line]
