@@ -3100,7 +3100,7 @@ def test_without_top_level_the_create_body_and_brief_are_unchanged(
         tmp_path / "r.md.brief"
     ).read_text() == "AGENT_SIGNATURE=cc/?/?\n" + lock + DEFAULT_PREAMBLE.format(
         report=tmp_path / "r.md", role="Your role file is roles/worker.md; read it first.\n"
-    ) + "do X"
+    ).removesuffix("\n") + omnigent_agent.HOST_RUN_NOTE + "\n" + "do X"  # a host child (#1233)
     assert og.top_level == [False] and og.roles == ["roles/worker.md"]
 
 
