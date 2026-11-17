@@ -919,6 +919,44 @@ def commit_tree(sha: str) -> str:
     return gh("api", f"repos/{{owner}}/{{repo}}/commits/{sha}", "--jq", ".commit.tree.sha").strip()
 
 
+def tag_tree(repo: str, tag: str) -> tuple[str, dict[str, tuple[str, str]]] | None:
+    """Tag `tag` of `repo`: its commit and the (mode, blob SHA) of every path in that commit's tree; None when the repo
+    has no such tag, it names no commit, or GitHub truncates the tree."""
+    try:
+        found = rest(f"repos/{repo}/git/ref/tags/{tag}")["object"]
+    except subprocess.CalledProcessError as exc:
+        if "Not Found" in (exc.stderr or ""):
+            return None
+        raise
+    while found["type"] == "tag":  # an annotated tag: its object
+        found = rest(f"repos/{repo}/git/tags/{found['sha']}")["object"]
+    if found["type"] != "commit":
+        return None
+    listed = rest(f"repos/{repo}/git/trees/{found['sha']}?recursive=1")
+    if listed["truncated"]:
+        return None
+    return found["sha"], {
+        entry["path"]: (entry["mode"], entry["sha"])
+        for entry in listed["tree"]
+        if entry["type"] != "tree"
+    }
+
+
+def file_at(ref: str, path: str, repo: str | None = None) -> str | None:
+    """File `path`'s text at `ref` of `repo` (this checkout's when None); None when it has no such file."""
+    try:
+        return gh(
+            "api",
+            "-H",
+            "Accept: application/vnd.github.raw",
+            f"repos/{repo or '{owner}/{repo}'}/contents/{path}?ref={ref}",
+        )
+    except subprocess.CalledProcessError as exc:
+        if "Not Found" in (exc.stderr or ""):
+            return None
+        raise
+
+
 class Port:
     """One port's operations, each this module's function of that name, looked up at the call, so a stub set on the
     module (a test's) is the one called."""
@@ -962,5 +1000,7 @@ forge = Port(
     "commit_checks",
     "job_log",
     "commit_tree",
+    "tag_tree",
+    "file_at",
 )
 evidence = Port("statuses", "post_status", "post_review", "minimize")
