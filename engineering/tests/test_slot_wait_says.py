@@ -185,3 +185,26 @@ def test_a_batch_gate_says_it_is_gating_while_its_steps_run(
     work = tmp_path / "work"
     work.mkdir()
     assert approvals.gate_batch(work, []) == ("t", "run")
+
+
+def test_repeating_stops_its_thread_when_the_block_ends(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A thread left running keeps saying "waiting" or "gating" after its block, beside the next block's own."""
+    monkeypatch.setattr(approvals, "SLOT_SAY_SECONDS", 0.02)
+    calls: list[int] = []
+    twice = threading.Event()
+    before = set(threading.enumerate())
+    left: list[threading.Thread] = []
+
+    def block() -> None:
+        with approvals.repeating(lambda: (calls.append(1), len(calls) >= 2 and twice.set())):
+            assert twice.wait(30)
+        left.extend(set(threading.enumerate()) - before - {threading.current_thread()})
+
+    runner = threading.Thread(target=block, daemon=True)
+    runner.start()
+    runner.join(30)
+    assert not runner.is_alive(), "repeating waits on a thread that never stops"
+    assert left == []  # gone as the block ends, not only some time after
+    after = len(calls)
+    threading.Event().wait(0.2)
+    assert len(calls) == after
