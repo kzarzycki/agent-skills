@@ -6947,6 +6947,71 @@ def stops_raise() -> Any:
             signal.signal(sig, handler)
 
 
+HOST_COMMANDS = "~/.agents/host-commands"
+# what the Claude Code hook that reads the same file strips before it matches: launchers, wrappers, shells
+LAUNCHERS = (["swiftly", "run"], ["uv", "run"], ["python3"], ["python"])
+WRAPPERS = {
+    "env",
+    "exec",
+    "command",
+    "nohup",
+    "time",
+    "sudo",
+    "nice",
+    "setsid",
+    "timeout",
+    "xargs",
+    "stdbuf",
+}
+SHELLS = {"sh", "bash", "zsh", "dash"}
+
+
+def host_forbids(words: Sequence[str]) -> str | None:
+    """The line of the host's policy file (HOST_COMMANDS, or the file `AGENT_HOST_COMMANDS` names; one command per
+    line, text after `#` is a comment) whose words begin `words`, as the Claude Code hook that reads the same file
+    matches a typed command: path words by their basename, `VAR=` words and wrappers (WRAPPERS, with their options and
+    a count) dropped, then launchers (LAUNCHERS) stripped as often as they lead. A shell's `-c <script>` is read
+    segment by segment (`&&`, `;`, `|`). None where the file is absent or lists no such command, so a host without a
+    policy runs everything."""
+    path = os.path.expanduser(os.environ.get("AGENT_HOST_COMMANDS") or HOST_COMMANDS)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as text:
+            rules = [r for r in (line.split("#")[0].split() for line in text) if r]
+    except OSError:
+        return None
+
+    def forbidden(command: list[str]) -> str | None:
+        command = [os.path.basename(w) if "/" in w else w for w in command]
+        while command and (re.match(r"\w+=", command[0]) or command[0] in WRAPPERS):
+            wrapper = command[0] in WRAPPERS
+            command = command[1:]
+            while (
+                wrapper
+                and command
+                and (command[0].startswith("-") or re.fullmatch(r"[\d.]+[smhd]?", command[0]))
+            ):
+                command = command[1:]
+        if len(command) > 2 and command[0] in SHELLS and re.fullmatch(r"-\w*c\w*", command[1]):
+            lexer = shlex.shlex(command[2], posix=True, punctuation_chars=True)
+            lexer.whitespace_split, lexer.commenters = True, ""
+            try:
+                parts = list(lexer)
+            except ValueError:
+                parts = []
+            segments, now = [], []
+            for part in parts:
+                if set(part) <= set("();<>|&"):
+                    segments, now = [*segments, now], []
+                else:
+                    now.append(part)
+            return next((hit for seg in [*segments, now] if seg and (hit := forbidden(seg))), None)
+        while launcher := next((x for x in LAUNCHERS if command[: len(x)] == x), None):
+            command = command[len(launcher) :]
+        return next((" ".join(r) for r in rules if command[: len(r)] == r), None)
+
+    return forbidden(list(words))
+
+
 def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int, Any]:
     """Run one heavy step (a gate step, a `pre_land` check, a mutate.py test run, `heavy`) under the host's heavy
     wrapper (heavy_argv), with `popen` as Popen's other arguments: its exit code and what communicate() read from its
@@ -6954,6 +7019,11 @@ def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int,
     process group is killed before the exception goes on, so neither the step nor what it started outlives a stopped
     run: a wrapper (systemd-run --scope) puts the step in a group of its own, which a stop of the caller's group would
     never reach. A wrapped step's environment carries HEAVY_WRAPPED."""
+    if rule := host_forbids(words):
+        raise Refused(
+            f"no gate record for this tree: `{shlex.join(words)}` is on this host's {HOST_COMMANDS} ({rule!r}): "
+            "gate it on an allowed host or in claude-cloud"
+        )
     prefix = heavy_prefix(env)
     if prefix:
         env = {**(os.environ if env is None else env), HEAVY_WRAPPED: "1"}
