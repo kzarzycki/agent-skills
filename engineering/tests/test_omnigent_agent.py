@@ -3044,6 +3044,7 @@ def long_run_rule() -> str:
 DEFAULT_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
+The launcher placed this session on a host, so start each heavy run's command (a test suite, a gate, a build) with `LOOP_HOST_RUN=placed `, since the host-run hook refuses one without it.
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.

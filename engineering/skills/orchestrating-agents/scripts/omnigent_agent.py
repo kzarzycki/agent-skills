@@ -5,6 +5,7 @@
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py cloud-env <checkout>
+    python3 scripts/omnigent_agent.py cloud-run [--checkout DIR] [--timeout S] [--model M] -- <command...>
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
@@ -182,6 +183,13 @@ the repository, else the account's ``Default``. A name the login has no environm
 the checkout's committed ``.claude/cloud-setup.sh``, or replaces the setup script of the one already there
 (``POST /v1/environment_providers/<id>``, ``config.init_script``, no ``kind``), leaving its variables as they are; it
 sends no secret and prints none.
+``cloud-run [--checkout DIR] -- <command...>`` runs one shell command in a cloud session on the checkout's HEAD (one
+argument is shell text, several are words): it refuses tracked changes and a HEAD the branch's remote lacks before any
+session exists, naming ``git push``; reuses ``<main checkout>/.worktrees/cloud-run-<branch>``, which ``launch-dir`` makes
+the first time and later runs point at the branch as ``start --pr`` does; writes the brief and runs ``run <agent> ...
+--workspace <dir> --no-keep --model haiku --permission-mode auto``; prints the report path and exits with the command's
+code from its ``EXIT:`` line, or ``CLOUD_RUN_FAILED`` (125) when the cloud route fails, printing why and the host fallback,
+the command prefixed ``LOOP_HOST_RUN=<why>``, which the engineering pack's host-run hook lets through on a host.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -631,15 +639,28 @@ CLOUD_RUN_LINE = (
     " comment or a status file), not on your turn, so a `STILL WORKING` that names only your own"
     " background run is not a valid ending."
 )
-PREAMBLE = """\
+HOST_RUN = "LOOP_HOST_RUN"  # the prefix of a heavy run that stays on the host (the host-run hook)
+# A child the launcher placed on a host: its placement already chose the host, so it starts its
+# heavy runs with the prefix the engineering pack's host-run hook lets through; a cloud child's
+# preamble drops the line (cloud_preamble).
+HOST_RUN_LINE = (
+    "The launcher placed this session on a host, so start each heavy run's command (a test suite,"
+    f" a gate, a build) with `{HOST_RUN}=placed `, since the host-run hook refuses one without it."
+)
+PREAMBLE = (
+    """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
+"""
+    + HOST_RUN_LINE
+    + """
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
 
 """
+)
 # A worker in a cloud session can't write a host file, and GitHub's GraphQL API answers 403 there,
 # so it reports on the PR through REST; the comment is public, so it names nothing of the host.
 PR_PREAMBLE = """\
@@ -731,11 +752,12 @@ CLOUD_LEAD_ENDING = re.compile(r"[\s*_#>-]*(DONE|USER NEEDED|STILL WORKING|PARKE
 
 def cloud_preamble(preamble: str, pr: int | None) -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
-    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form.
+    It drops ``HOST_RUN_LINE``: the host-run hook lets every run in a cloud session through."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
-    preamble = preamble.replace(DETACH_LINE, CLOUD_RUN_LINE)
+    preamble = preamble.replace(HOST_RUN_LINE + "\n", "").replace(DETACH_LINE, CLOUD_RUN_LINE)
     return preamble.removesuffix("\n") + CLOUD_NOTE + "\n"
 
 
@@ -3032,8 +3054,16 @@ def move_head(workspace: Path, pr: int, repo: str = "") -> None:
     if not index or Path(index).exists():
         return
     branch = pr_branch(pr, workspace, repo) if repo else pr_branch(pr, workspace)
+    # the PR's own ref, which a fork's branch has too and a same-named origin branch can't shadow
+    aim_head(workspace, "origin", f"refs/pull/{pr}/head", f"refs/remotes/origin/pr/{pr}", branch)
+
+
+def aim_head(workspace: Path, remote: str, source: str, tracking: str, branch: str) -> None:
+    """Fetch ``remote``'s ``source`` ref into ``tracking`` and point a launch dir's HEAD at it,
+    checking no files out: a linked worktree moves its own branch, since ``branch`` may be checked
+    out in the main checkout; a clone moves ``branch``."""
     dirs = git_dirs(workspace)
-    own = ""  # a linked worktree moves its own branch: the PR's may be checked out in the main checkout
+    own = ""
     if len(dirs) == 3 and dirs[0] != dirs[1]:
         own = subprocess.run(
             ["git", "-C", str(workspace), "symbolic-ref", "HEAD"],
@@ -3042,9 +3072,8 @@ def move_head(workspace: Path, pr: int, repo: str = "") -> None:
             check=False,
         ).stdout.strip()
     for cmd in (
-        # the PR's own ref, which a fork's branch has too and a same-named origin branch can't shadow
-        ["fetch", "-q", "origin", f"+refs/pull/{pr}/head:refs/remotes/origin/pr/{pr}"],
-        ["update-ref", own or f"refs/heads/{branch}", f"refs/remotes/origin/pr/{pr}"],
+        ["fetch", "-q", remote, f"+{source}:{tracking}"],
+        ["update-ref", own or f"refs/heads/{branch}", tracking],
         ["symbolic-ref", "HEAD", own or f"refs/heads/{branch}"],
     ):
         done = subprocess.run(
@@ -3052,6 +3081,201 @@ def move_head(workspace: Path, pr: int, repo: str = "") -> None:
         )
         if done.returncode:
             raise Fail(f"git {cmd[0]} for {branch} in {workspace}: {done.stderr.strip()[-300:]}")
+
+
+# cloud-run's own failure, never the command's, as `timeout` and `docker run` use it
+CLOUD_RUN_FAILED = 125
+CLOUD_RUN_MODEL = "haiku"  # the small tier: the session only checks out, runs and reports
+CLOUD_RUN_EXIT = re.compile(r"^[\s*_`>-]*EXIT:[\s*_`]*(\d+)\b", re.MULTILINE)
+CLOUD_RUN_BRIEF = """\
+Run one command on commit {head} (branch {branch}) of this repository and report its result. Change, commit and push nothing.
+1. Check out that exact commit: `git checkout --detach {head}` (after `git fetch origin {branch}` when it is missing), and confirm `git rev-parse HEAD` prints {head}.
+2. From {where}, run this as one shell command, exactly as written:
+
+{command}
+
+3. Report it: the report's first line after `REPORT` is `EXIT: <n>`, the command's own exit code; then its summary line (the last line the runner prints, such as `3 failed, 120 passed`); then every failure, each failing test or step by name with its error, or the output's last 50 lines when it names none. When the command could not run at all (the checkout failed, a tool is missing), the line is `EXIT: none`, then why.
+"""
+
+
+class CloudRunTarget(NamedTuple):
+    """What ``cloud-run`` runs on: the checkout's root, its branch, the remote and remote branch it
+    tracks, HEAD's commit and the checkout directory's path inside the root."""
+
+    root: Path
+    branch: str
+    remote: str
+    remote_branch: str
+    head: str
+    prefix: str
+
+
+def git_line(root: Path, *args: str) -> str:
+    """A git command's trimmed output in ``root``, empty when it fails."""
+    done = subprocess.run(
+        ["git", "-C", str(root), *args], capture_output=True, text=True, check=False
+    )
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def cloud_run_target(checkout: Path) -> CloudRunTarget:
+    """The commit a cloud session can check out for ``checkout``, or a ``Fail`` before any session
+    exists: a cloud session clones from the remote, so tracked changes and a HEAD the branch's remote
+    does not hold would never reach it."""
+    root = checkout_root(str(checkout))
+    if not root:
+        raise Fail(f"cloud-run: {checkout} is not inside a checkout")
+    top = Path(root)
+    if changed := tracked_changes(top):
+        paths = ", ".join(line.split("\t")[0][3:] for line in changed[:5])
+        raise Fail(
+            f"cloud-run: {top} has tracked changes ({paths}), which a cloud session would not"
+            " see: commit them and `git push`, then run it again"
+        )
+    branch = git_line(top, "symbolic-ref", "--short", "HEAD")
+    if not branch:
+        raise Fail(
+            f"cloud-run: {top} has a detached HEAD: check out a branch and `git push` it, since a"
+            " cloud session clones a branch from the remote"
+        )
+    remote = git_line(top, "config", f"branch.{branch}.remote") or "origin"
+    merge = git_line(top, "config", f"branch.{branch}.merge")
+    remote_branch = merge.removeprefix("refs/heads/") or branch
+    head = git_line(top, "rev-parse", "HEAD")
+    tracking = f"refs/remotes/{remote}/{remote_branch}"
+    fetched = subprocess.run(
+        ["git", "-C", root, "fetch", "-q", remote, f"+refs/heads/{remote_branch}:{tracking}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    on_remote = fetched.returncode == 0 and (
+        subprocess.run(
+            ["git", "-C", root, "merge-base", "--is-ancestor", head, tracking],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+    if not on_remote:
+        raise Fail(
+            f"cloud-run: {head[:12]} is not on {remote}/{remote_branch}, and a cloud session"
+            f" clones from the remote: `git push -u {remote} {branch}`, then run it again"
+            + (f" ({fetched.stderr.strip()[-200:]})" if fetched.returncode else "")
+        )
+    prefix = git_line(checkout, "rev-parse", "--show-prefix").rstrip("/")
+    return CloudRunTarget(top, branch, remote, remote_branch, head, prefix)
+
+
+def cloud_run_dir(target: CloudRunTarget) -> Path:
+    """The launch dir of ``target``'s branch, ``<main checkout>/.worktrees/cloud-run-<branch>``: made
+    by ``launch_dir`` the first time, then fetched and pointed at the branch as ``start --pr``
+    points one at a PR, so each run reuses it."""
+    main = listed_main(target.root) or target.root
+    path = main / ".worktrees" / f"cloud-run-{re.sub(r'[^A-Za-z0-9._-]', '-', target.branch)}"
+    if path.is_dir() and git_dirs(path)[2:]:
+        aim_head(
+            path,
+            target.remote,
+            f"refs/heads/{target.remote_branch}",
+            f"refs/remotes/{target.remote}/{target.remote_branch}",
+            target.remote_branch,
+        )
+        return path
+    url = git_line(target.root, "remote", "get-url", target.remote)
+    if not url:
+        raise Fail(f"cloud-run: {target.root} has no URL for remote {target.remote}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ignored = subprocess.run(
+        ["git", "-C", str(main), "check-ignore", "-q", str(path)], capture_output=True, check=False
+    )
+    if ignored.returncode and not (path.parent / ".gitignore").exists():
+        # else the checkout's `git add .` takes the launch dir in as an embedded repository
+        (path.parent / ".gitignore").write_text("*\n")
+    with contextlib.redirect_stdout(sys.stderr):  # stdout is the report path alone
+        launch_dir(url, target.remote_branch, None, path, here=target.root)
+    return path
+
+
+def shell_text(command: list[str]) -> str:
+    """The shell command ``cloud-run``'s arguments name: one argument is shell text as written,
+    several are words, quoted as the shell needs."""
+    return command[0] if len(command) == 1 else shlex.join(command)
+
+
+def cloud_run_fallback(checkout: Path, command: str) -> str:
+    return (
+        "Host fallback (engineering-loop SKILL.md, Where heavy steps run; your report says this run"
+        f" went to the host and why): cd {shlex.quote(str(checkout))} &&"
+        f" {HOST_RUN}=<why the cloud route failed> {command}"
+    )
+
+
+def cloud_run(
+    argv: list[str],
+    checkout: Path,
+    command: str,
+    timeout: float,
+    model: str,
+) -> int:
+    """Run ``command`` in a cloud session on ``checkout``'s HEAD through ``run``, printing the
+    report path and returning the command's exit code from the report's ``EXIT:`` line; any
+    failure of the cloud route returns ``CLOUD_RUN_FAILED`` with the reason and the host fallback
+    on stderr. ``argv`` is the options ``run`` takes before its subcommand (``--server``)."""
+    try:
+        target = cloud_run_target(checkout)
+        workspace = cloud_run_dir(target)
+        line = cloud_worker(project_loop(target.root))
+        brief = CLOUD_RUN_BRIEF.format(
+            head=target.head,
+            branch=target.remote_branch,
+            where=f"`{target.prefix}`" if target.prefix else "the repository's root",
+            command=fenced(command),
+        )
+        when = time.strftime("%Y%m%d-%H%M%S")
+        report = workspace / "tmp" / "loop" / f"cloud-run-{target.head[:12]}-{when}.md"
+        run_argv = [
+            *argv,
+            "run",
+            line.agent if line else "claude-cloud",
+            f"cloud-run-{target.branch}-{target.head[:7]}",
+            brief,
+            str(report),
+            "--workspace",
+            str(workspace),
+            "--no-keep",
+            "--model",
+            model,
+            "--permission-mode",
+            "auto",
+            "--timeout",
+            str(timeout),
+        ]
+        with contextlib.redirect_stdout(sys.stderr):  # the session id and run's own lines
+            code = command_of(run_argv)
+        if code:
+            raise Fail(f"cloud-run: the cloud run ended with exit {code} and no result (above)")
+        text = report.read_text() if report.is_file() else ""
+        found = CLOUD_RUN_EXIT.search(text)
+        if not found:
+            raise Fail(f"cloud-run: {report} holds no `EXIT: <n>` line")
+    except Fail as e:
+        print(e, file=sys.stderr)
+        print(cloud_run_fallback(checkout, command), file=sys.stderr)
+        return CLOUD_RUN_FAILED
+    print(report)
+    return int(found.group(1))
+
+
+def fenced(command: str) -> str:
+    """``command`` as a fenced block, its fence longer than any it holds."""
+    ticks = max([3, *(len(m) + 1 for m in re.findall(r"`{3,}", command))])
+    return f"{'`' * ticks}sh\n{command}\n{'`' * ticks}"
+
+
+def command_of(argv: list[str]) -> int:
+    """``command`` for a nested subcommand, which reports nothing to ``$LOOP_NOTIFY``."""
+    return command(argv, {})
 
 
 def repo_flag(repo: str) -> list[str]:
@@ -7386,6 +7610,29 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     )
     p.add_argument("checkout", type=Path)
     p = sub.add_parser(
+        "cloud-run",
+        description="run one shell command in a Claude cloud session on the checkout's HEAD: print"
+        f" the report path and exit with the command's code, or {CLOUD_RUN_FAILED} when the cloud"
+        " route fails, printing why and the host fallback",
+    )
+    p.add_argument(
+        "--checkout",
+        type=Path,
+        default=Path("."),
+        help="the checkout whose HEAD runs, and the directory in it the command runs from (default: .)",
+    )
+    p.add_argument(
+        "--model",
+        default=CLOUD_RUN_MODEL,
+        help=f"the session's model (default {CLOUD_RUN_MODEL}, the small tier)",
+    )
+    p.add_argument(
+        "run_command",
+        nargs=argparse.REMAINDER,
+        metavar="-- COMMAND",
+        help="one argument is shell text as written; several are words, quoted as the shell needs",
+    )
+    p = sub.add_parser(
         "capacity", description="exit 0 when this host, or --host, has room for another session"
     )
     p.add_argument(
@@ -7701,6 +7948,19 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         if args.cmd == "cloud-env":
             print(cloud_env(args.checkout))
             return 0
+        if args.cmd == "cloud-run":
+            cmd = args.run_command[1:] if args.run_command[:1] == ["--"] else args.run_command
+            if not cmd:
+                usage = Fail("cloud-run needs -- COMMAND")
+                usage.code = 2
+                raise usage
+            return cloud_run(
+                ["--server", args.server] if args.server else [],
+                args.checkout.resolve(),
+                shell_text(cmd),
+                args.timeout,
+                args.model,
+            )
         if args.cmd == "capacity" and not args.host:
             ok, line = capacity()
             print(line)

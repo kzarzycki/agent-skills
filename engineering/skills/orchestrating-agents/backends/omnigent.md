@@ -224,6 +224,28 @@ host whose login has no environment for the project, and again after the setup s
 The client is `scripts/claude_environments.py`, which engineering-loop's `cloud_verifier.py seed`
 also uses.
 
+**One command in the cloud.** `python3 scripts/omnigent_agent.py cloud-run [--checkout <dir>]
+[--timeout <s>] [--model <m>] -- <command>` runs one shell command in a cloud session on the
+checkout's HEAD (one argument is shell text as written, several are words it quotes), from the
+same directory of the repository as `--checkout` (default `.`). It refuses, before any session
+exists, a checkout with tracked changes or a HEAD its branch's remote does not hold, naming `git
+push`, since the session clones from the remote. Its launch dir is
+`<main checkout>/.worktrees/cloud-run-<branch>`: `launch-dir` makes it the first time (its
+environment resolved as Cloud environments says; a `.worktrees/.gitignore` of `*` keeps it out of
+the checkout's `git add .` when the repository ignores no `.worktrees/`), and later runs fetch the
+branch and point the dir's HEAD at it, as `start --pr` does. It writes the brief (check out the
+exact commit, run the command, report `EXIT: <n>`, the summary line and every failure) and runs
+`run <the Cloud worker agent> ... --workspace <launch dir> --no-keep --model haiku
+--permission-mode auto`, so the session follows the cloud preamble's in-turn rule for a long
+run. It prints the report path and exits with the command's code from `EXIT:`; when the cloud
+route fails (a refusal, a failed setup or session, no quota, a report with no `EXIT: <n>`) it
+exits 125, printing the reason and the host fallback, the command prefixed `LOOP_HOST_RUN=<why>`.
+A lead starts it as a background command, as it does `run`. The engineering pack's host-run hook
+(its `hooks/host_run.py`, a Claude Code `PreToolUse` hook on Bash that APM deploys into each
+consuming repository's `.claude/settings.json`) refuses a heavy test or check command bare in a
+host session, naming this call; a child that `start` places on a host gets a preamble line
+telling it to prefix its heavy runs `LOOP_HOST_RUN=placed`, and a cloud child's preamble has none.
+
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
 is given, so a reviewer of the author's family is always a deliberate choice. Whether a

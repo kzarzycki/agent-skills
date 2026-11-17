@@ -168,6 +168,35 @@ def test_local_package_packs_and_installs_for_claude_and_codex(tmp_path: Path) -
     _run(["apm", "install"], cwd=consumer, env=env)
     _run(["apm", "compile", "--validate"], cwd=consumer, env=env)
     _assert_deployed_inventory(consumer)
+    _assert_host_run_hook_deployed(consumer)
+
+
+def _assert_host_run_hook_deployed(consumer: Path) -> None:
+    """APM merges the pack's host-run hook into the consumer's Claude settings, with its script
+    copied beside them, and the copy finds the deployed launcher it names (#1233)."""
+    settings = json.loads((consumer / ".claude" / "settings.json").read_text())
+    (group,) = [g for g in settings["hooks"]["PreToolUse"] if g.get("matcher") == "Bash"]
+    (hook,) = group["hooks"]
+    script = consumer / ".claude" / "hooks" / "engineering" / "hooks" / "host_run.py"
+    assert hook["command"] == (
+        'python3 "${CLAUDE_PROJECT_DIR}/.claude/hooks/engineering/hooks/host_run.py"'
+    )
+    assert script.is_file()
+    (consumer / ".git").mkdir(exist_ok=True)  # the hook finds the repository by its .git
+    (consumer / "docs" / "agents").mkdir(parents=True)
+    (consumer / "docs" / "agents" / "loop.md").write_text("# Loop\n")
+    call = {"tool_input": {"command": "uv run pytest"}, "cwd": str(consumer)}
+    done = subprocess.run(
+        [sys.executable, str(script)],
+        input=json.dumps(call),
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"]},
+        check=False,
+    )
+    launcher = consumer / ".claude" / "skills" / "orchestrating-agents" / "scripts"
+    assert done.returncode == 2, done.stderr
+    assert f"{launcher / 'omnigent_agent.py'} cloud-run" in done.stderr
 
 
 def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path) -> None:
