@@ -16,7 +16,11 @@ about the patch and are `inconclusive`, never killed or survived: a test command
 globs: a file, or a directory hashed over every file under it) naming what the test command builds, a patch whose hashes
 equal the head run's was never built into what the tests ran (`not built: inconclusive`). Hashes are taken after the
 head run, which `--built` makes run even where the lane would run none, and after each patch's run; a glob that matches
-nothing after the head run is refused. Without `--built` and the reserved code the log and exit codes are as before.
+nothing after the head run is refused. A test command that did not run says nothing either: exit 126 (not executable),
+127 (not found) or 5 (pytest collected no tests; any command's 5 is read so, since it is rare as a real failure) on the
+head run is refused (exit 2, naming the exit and the command), since a wrong `--test` would otherwise prove every patch;
+on a patch's run, which a patch can break (a collection error, a deleted script), it is `inconclusive: test command did
+not run`. Without `--built` and the reserved code the log and exit codes are as before.
 
 It refuses a tracked change or an untracked file that isn't ignored, the check `approvals.py local-ci` makes, so
 patches under a gitignored `tmp/loop/` don't count, and it refuses any patch that doesn't apply before running a test,
@@ -215,6 +219,20 @@ def run_test(
             os.close(fd)
 
 
+# exits of a test command that never ran: not executable, not found, pytest's "no tests collected"
+NOT_RUN = (126, 127, 5)
+
+
+def head_run(command: str, slot: str, waiting: Callable[[], None]) -> tuple[int, str, float]:
+    """The unmutated head's run, refused when the test command did not run (NOT_RUN)."""
+    code, output, seconds = run_test(command, slot, waiting)
+    if code in NOT_RUN:
+        raise Refused(
+            f"the head run exited {code}, so `{command}` did not run any test: check --test"
+        )
+    return code, output, seconds
+
+
 def lane(
     command: str, limit: int, waiting: Callable[[], None], built: bool = False
 ) -> tuple[str, str, str | None]:
@@ -227,11 +245,11 @@ def lane(
     # heavy slot, and a heavy wrapper under them would wait on that parent
     if approvals().held_slot() is not None:
         why = "heavy: run under a holder of the heavy slot"
-        return heavy, why, run_test(command, heavy, waiting)[1] if built else None
+        return heavy, why, head_run(command, heavy, waiting)[1] if built else None
     if limit <= 0:
         why = f"heavy: short_seconds is {limit}"
-        return heavy, why, run_test(command, heavy, waiting)[1] if built else None
-    code, output, seconds = run_test(command, slot_path(SHORT), waiting)
+        return heavy, why, head_run(command, heavy, waiting)[1] if built else None
+    code, output, seconds = head_run(command, slot_path(SHORT), waiting)
     if code:
         return heavy, f"heavy: head run failed (exit {code})", output
     if seconds <= limit:
@@ -389,6 +407,8 @@ def main(argv: list[str]) -> int:
             # a setup failure, or a build that left the output as the head's, says nothing about the patch
             if code == reserved:
                 verdict = "inconclusive: setup failed, no verdict"
+            elif code in NOT_RUN:
+                verdict = "inconclusive: test command did not run"
             elif built is not None and digest(args.built) == built:
                 verdict = "not built: inconclusive"
             else:
