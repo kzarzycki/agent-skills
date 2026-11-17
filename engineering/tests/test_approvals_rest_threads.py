@@ -25,8 +25,18 @@ ROUTE = "repos/{owner}/{repo}/pulls/7/ccr/review_threads"
 THREADS = {
     "totalCount": 2,
     "nodes": [
-        {"isResolved": True, "comments": {"nodes": [{"body": "done", "databaseId": 1, "url": "u1", "viewerCanUpdate": False}]}},
-        {"isResolved": False, "comments": {"nodes": [{"body": "open", "databaseId": 2, "url": "u2", "viewerCanUpdate": False}]}},
+        {
+            "isResolved": True,
+            "comments": {
+                "nodes": [{"body": "done", "databaseId": 1, "url": "u1", "viewerCanUpdate": False}]
+            },
+        },
+        {
+            "isResolved": False,
+            "comments": {
+                "nodes": [{"body": "open", "databaseId": 2, "url": "u2", "viewerCanUpdate": False}]
+            },
+        },
     ],
 }
 
@@ -39,7 +49,9 @@ def github(route_error: str, graphql_error: str | None = None):
     def gh(*args: str, data: str | None = None) -> str:
         calls.append(args)
         if "graphql" in args:
-            assert "reviewThreads" in " ".join(args) and "closingIssuesReferences" not in " ".join(args)
+            assert "reviewThreads" in " ".join(args) and "closingIssuesReferences" not in " ".join(
+                args
+            )
             assert "n=7" in args
             if graphql_error:
                 raise subprocess.CalledProcessError(1, "gh", stderr=graphql_error)
@@ -65,7 +77,11 @@ def test_where_github_answers_404_on_the_thread_route_the_threads_come_from_grap
 @pytest.mark.parametrize(
     ("route_error", "graphql_error", "raised"),
     [
-        ("Not Found (HTTP 404)", "gh: Resource not accessible by integration", "Resource not accessible"),
+        (
+            "Not Found (HTTP 404)",
+            "gh: Resource not accessible by integration",
+            "Resource not accessible",
+        ),
         ("gh: Server Error (HTTP 502)", None, "HTTP 502"),
     ],
 )

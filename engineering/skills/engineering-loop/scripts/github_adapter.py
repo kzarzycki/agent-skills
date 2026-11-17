@@ -471,7 +471,9 @@ def rest_threads(number: int) -> dict[str, Any]:
     except subprocess.CalledProcessError as exc:
         if "HTTP 404" not in (exc.stderr or ""):
             raise
-        found: dict[str, Any] = _graphql(_repository(f"pullRequest(number: $n) {{ {THREADS} }}"), n=number)
+        found: dict[str, Any] = _graphql(
+            _repository(f"pullRequest(number: $n) {{ {THREADS} }}"), n=number
+        )
         return found["pullRequest"]["reviewThreads"]
     listed = {found["id"]: found for found in rest_pages(f"pulls/{number}/comments?per_page=100")}
     nodes = [
