@@ -1374,25 +1374,10 @@ class Omnigent:
         host = self.hosts().get(host_id, host_id)
 
         def listed(folder: str) -> list[str]:
-            path = "/v1/hosts/" + host_id + "/filesystem/" + quote(folder.strip("/"), safe="/")
-            try:
-                return [e["name"] for e in self.call("GET", path + "?limit=1000").get("data", [])]
-            except Fail as e:
-                cause = e.__cause__
-                missing = isinstance(cause, HTTPError) and cause.code == 404
-                if not missing:
-                    raise Fail(f"{LOOP_FILE}: host {host} unreadable at {folder}: {e}") from e
-                raise Gone(folder) from e
+            return host_listing(self, host_id, folder, str(LOOP_FILE))
 
-        root = Path(workspace)
-        try:
-            listed(workspace)
-        except Gone as e:
-            raise Fail(f"{LOOP_FILE}: workspace {workspace} is not on host {host}") from e
-        while ".git" not in listed(str(root)):
-            if root.parent == root:
-                return ""  # outside a checkout, as locally
-            root = root.parent
+        if (root := far_checkout_root(self, host_id, workspace, str(LOOP_FILE))) is None:
+            return ""  # outside a checkout, as locally
         target = str(root / LOOP_FILE)
         try:
             if LOOP_FILE.name not in listed(str(root / LOOP_FILE.parent)):
@@ -2395,6 +2380,36 @@ def host_limits(name: str) -> tuple[float, float | None]:
     )
 
 
+def host_listing(og: Omnigent, host_id: str, folder: str, what: str) -> list[str]:
+    """The entry names of ``folder`` on host ``host_id`` through the host's file API, which lists a
+    folder with no session. ``Gone`` when it is missing, else ``Fail`` naming ``what`` is read."""
+    path = "/v1/hosts/" + host_id + "/filesystem/" + quote(folder.strip("/"), safe="/")
+    try:
+        return [e["name"] for e in og.call("GET", path + "?limit=1000").get("data", [])]
+    except Fail as e:
+        cause = e.__cause__
+        if not (isinstance(cause, HTTPError) and cause.code == 404):
+            host = og.hosts().get(host_id, host_id)
+            raise Fail(f"{what}: host {host} unreadable at {folder}: {e}") from e
+        raise Gone(folder) from e
+
+
+def far_checkout_root(og: Omnigent, host_id: str, workspace: str, what: str) -> Path | None:
+    """The folder holding ``.git`` at or above ``workspace`` on host ``host_id``, found by listing;
+    None outside a checkout; a workspace that is not on the host is a ``Fail``."""
+    try:
+        host_listing(og, host_id, workspace, what)
+    except Gone as e:
+        host = og.hosts().get(host_id, host_id)
+        raise Fail(f"{what}: workspace {workspace} is not on host {host}") from e
+    root = Path(workspace)
+    while ".git" not in host_listing(og, host_id, str(root), what):
+        if root.parent == root:
+            return None
+        root = root.parent
+    return root
+
+
 def read_on_host(og: Omnigent, host_id: str, path: str) -> str:
     """``path`` (absolute, on host ``host_id``) read through a live session there, since the host's
     own file API lists a folder but gives no file's text. ``Gone`` when a session answered 404
@@ -2584,20 +2599,30 @@ def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
 
 
 def refuse_far_pinned_checkout(og: Omnigent, agent: str, workspace: Path, host_id: str) -> None:
-    """``refuse_pinned_checkout`` for a workspace on host ``host_id``, read through a live session
-    there: a main checkout (``.git`` a folder, not a ``gitdir:`` file) whose settings pin an
-    environment is refused. A file that can't be read prints one line and the start goes on."""
+    """``refuse_pinned_checkout`` for a workspace on host ``host_id``: the checkout root is found by
+    listing, as ``read_loop`` does, and its files are read through a live session there. A main
+    checkout (``.git`` a folder, not a ``gitdir:`` file) whose settings pin an environment is
+    refused. A file the listing shows but the read can't give (a 404 from an older host included)
+    prints one line and the start goes on."""
+    what = f"pinned-checkout check for {agent}"
     try:
-        pin = environment_pin(json.loads(read_on_host(og, host_id, str(workspace / SETTINGS))))
-        main = pin and not read_on_host(og, host_id, str(workspace / ".git")).startswith("gitdir:")
-    except Gone:
-        return  # no settings file, or no checkout: nothing pinned here
-    except (Fail, ValueError) as e:
-        print(f"{workspace}: pinned-checkout check skipped on {host_id}: {e}", file=sys.stderr)
+        if (root := far_checkout_root(og, host_id, str(workspace), what)) is None:
+            return
+        folder = root / SETTINGS.parent
+        try:
+            if SETTINGS.name not in host_listing(og, host_id, str(folder), what):
+                return  # no settings file: nothing pinned
+        except Gone:
+            return
+        pin = environment_pin(json.loads(read_on_host(og, host_id, str(root / SETTINGS))))
+        main = pin and not read_on_host(og, host_id, str(root / ".git")).startswith("gitdir:")
+    except (Fail, Gone, ValueError) as e:  # listed, so a refused read: not "no file"
+        host = og.hosts().get(host_id, host_id)
+        print(f"{workspace}: pinned-checkout check skipped on {host}: {e}", file=sys.stderr)
         return
     if main:
         raise Fail(
-            f"{workspace} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
+            f"{root} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
             f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
             " give the local agent a worktree of it (--workspace)"
         )
