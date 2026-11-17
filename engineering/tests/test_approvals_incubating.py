@@ -7,11 +7,21 @@ from typing import Any
 import pytest
 from approvals_harness import (
     HEAD,
+    added,  # noqa: F401
     approvals,
     approved,
+    assigned,  # noqa: F401
+    attached,  # noqa: F401
+    board_risks,  # noqa: F401
+    graphql_answers,  # noqa: F401
+    hub,  # noqa: F401
     issue,
     loop_md,
+    others_open,  # noqa: F401
     pull,
+    pushed,  # noqa: F401
+    refs,  # noqa: F401
+    required,  # noqa: F401
     verdict_on,
 )
 
@@ -36,7 +46,7 @@ def merge(
     return approvals.proofs("merge", pr, issues, loop)
 
 
-def added(path: str) -> dict[str, Any]:
+def new_file(path: str) -> dict[str, Any]:
     return {"path": path, "changeType": "ADDED", "additions": 5, "deletions": 0}
 
 
@@ -45,11 +55,11 @@ def edited(path: str, deletions: int = 0) -> dict[str, Any]:
 
 
 def test_added_files_owe_no_evidence_or_verifier() -> None:
-    assert merge([added("new/skill.md")]) == []
+    assert merge([new_file("new/skill.md")]) == []
 
 
 def test_an_append_to_an_allowed_file_is_eligible() -> None:
-    assert merge([added("new.py"), edited("mise.toml")]) == []
+    assert merge([new_file("new.py"), edited("mise.toml")]) == []
 
 
 @pytest.mark.parametrize(
@@ -70,43 +80,71 @@ def test_touching_existing_code_owes_the_full_loop(files: list[dict[str, Any]], 
 
 
 def test_no_epic_line_owes_the_full_loop() -> None:
-    found = merge([added("x.md")], body="")
+    found = merge([new_file("x.md")], body="")
     assert any("no `Incubates: #<epic>` line" in line for line in found)
     assert any("## Evidence" in line for line in found)
 
 
 def test_a_closed_epic_owes_the_full_loop(epic: dict[str, Any]) -> None:
     epic["state"] = "CLOSED"
-    assert any("not an open issue labelled `incubating`" in line for line in merge([added("x.md")]))
+    assert any(
+        "not an open issue labelled `incubating`" in line for line in merge([new_file("x.md")])
+    )
 
 
 def test_a_high_risk_change_is_not_eligible() -> None:
     loop = loop_md("incubating:\n  append_paths: []\nrisk:\n  paths: [secure/**]\n")
-    found = merge([added("secure/key.py")], loop=loop)
+    found = merge([new_file("secure/key.py")], loop=loop)
     assert any("rates high or critical" in line for line in found)
 
 
 def test_waive_names_the_requirements_and_the_rest_stay_required() -> None:
     loop = loop_md("incubating:\n  waive: [evidence]\n")
-    found = merge([added("x.md")], loop=loop)
+    found = merge([new_file("x.md")], loop=loop)
     assert not any("## Evidence" in line for line in found)
     assert any("review" in line.lower() or "verifier" in line.lower() for line in found)
 
 
 def test_an_unknown_waive_name_is_refused() -> None:
     with pytest.raises(approvals.Refused, match="coverage"):
-        merge([added("x.md")], loop=loop_md("incubating:\n  waive: [speed]\n"))
+        merge([new_file("x.md")], loop=loop_md("incubating:\n  waive: [speed]\n"))
 
 
 def test_the_label_means_nothing_without_the_policy() -> None:
-    found = merge([added("x.md")], loop=loop_md(), body="")
+    found = merge([new_file("x.md")], loop=loop_md(), body="")
     assert any("## Evidence" in line for line in found)
 
 
 def test_a_waived_verifier_still_reads_an_unresolved_thread() -> None:
-    found = merge([added("x.md")], threads=(False,))
+    found = merge([new_file("x.md")], threads=(False,))
     assert any("unresolved" in line for line in found)
 
 
 def test_a_verdict_that_exists_is_not_required_to_be_satisfied_but_threads_still_count() -> None:
-    assert merge([added("x.md")], reviews=(verdict_on(HEAD),)) == []
+    assert merge([new_file("x.md")], reviews=(verdict_on(HEAD),)) == []
+
+
+def test_a_truncated_file_list_owes_the_full_loop() -> None:
+    pr = pull(body=BODY, labels=("incubating",))
+    pr["files"] = {"totalCount": 101, "nodes": [new_file("x.md")]}
+    found = approvals.proofs("merge", pr, [approved(1, "area:web", "kind:enhancement")], POLICY)
+    assert any("can't give every file" in line for line in found)
+
+
+def test_an_open_epic_without_the_label_owes_the_full_loop(epic: dict[str, Any]) -> None:
+    epic["labels"] = {"nodes": [{"name": "epic"}]}
+    assert any(
+        "not an open issue labelled `incubating`" in line for line in merge([new_file("x.md")])
+    )
+
+
+@pytest.mark.parametrize("body", ["`Incubates: #9`\n", "```\nIncubates: #9\n```\n"])
+def test_a_quoted_incubates_line_counts_for_nothing(body: str) -> None:
+    assert any(
+        "no `Incubates: #<epic>` line" in line for line in merge([new_file("x.md")], body=body)
+    )
+
+
+def test_a_waived_verifier_still_reads_a_request_for_changes() -> None:
+    found = merge([new_file("x.md")], latest=("CHANGES_REQUESTED",))
+    assert any("requested changes" in line for line in found)
