@@ -6,7 +6,8 @@ Read the notes, the spec, [coding-standards.md](coding-standards.md) and the pro
 `docs/agents/coding-standards.md` first. Run every command in your worktree, never in the
 main checkout. A lead that builds an item itself follows this file on its own PR
 branch: it pushes that branch, merges nothing, and writes the report into its notes.
-A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, Cloud worker.
+Where your build, gate and proof runs go is SKILL.md, Where heavy steps run; a worker in a
+cloud session (the default unless loop.md's `Cloud worker:` line says `none`) follows SKILL.md, Cloud worker.
 
 1. **Build**, with the Build skill when gatekeeper.md's `practice` names one, under these rules.
    On a branch with no PR yet, run `approvals.py check build --issue <n>` first (the
@@ -58,7 +59,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    `scripts/omnigent_agent.py wait-for --log <log> --pid <pid>` (a PR's checks: `wait-for --pr
    <n>`), which blocks close to the tool limit and prints only the outcome, since a foreground
    call times out and Claude Code's low-memory reaper stops in-session background shells; never
-   end a turn saying you are waiting, since nothing wakes you and the lead reads silence as work.
+   end a turn saying you are waiting, since nothing wakes you and the lead reads silence as work. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged.
    Any other pending condition (a queued run, a free device, an unlocked screen) is waited on the
    same way, in the foreground, with `scripts/omnigent_agent.py wait-until
    --every <s> --limit <s> -- <check>`, each call under the tool timeout: the
