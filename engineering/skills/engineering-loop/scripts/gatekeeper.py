@@ -5638,18 +5638,20 @@ def gate_session() -> dict[str, str]:
 
 def gate_ended(tree: str) -> str:
     """Whether the standing gate session's turn has ended or it is gone, so no record will come from it: "ended", or
-    "red" when its last message (in `status`'s output) has the line `DONE: red <tree>` for exactly this tree; else
+    "red" when its last message (after `status`'s first line, which alone names the state) has the line `DONE: red <tree>` for exactly this tree; else
     empty. Another tree's line, no line or an unreadable status is never red."""
     try:
         sid = gate_session()["session"]
         read = run_agent("status", sid, seconds=120)
     except (KeyError, subprocess.TimeoutExpired, OSError, subprocess.CalledProcessError):
         return ""
+    state, _, said = read.stdout.partition(
+        "\nlast message:"
+    )  # the model's own text must not pass for a state
     if not read.returncode and not any(
-        word in read.stdout for word in (": turn ended", ": archived", ": failed")
+        word in state for word in (": turn ended", ": archived", ": failed")
     ):
         return ""
-    said = read.stdout.partition("last message:")[2]
     red = re.search(rf"(?:^|\s)DONE: red {re.escape(tree)}\s*$", said, re.MULTILINE)
     return "red" if not read.returncode and red else "ended"
 

@@ -246,6 +246,11 @@ if (sys.argv[1], mode) == ("start", "hang"):
     import time
     time.sleep(60)
 if sys.argv[1] == "status":
+    if "|" in mode:  # "<state>|<last message text>"
+        state, text = mode.split("|", 1)
+        print("session-1 gate: " + state)
+        print("last message: " + text)
+        sys.exit(0)
     print("session-1 gate: " + ("turn ended" if mode.startswith("ended") else "running"))
     if mode.startswith("ended "):
         print("last message: DONE: " + mode[6:])
@@ -365,6 +370,21 @@ def test_only_a_red_line_for_this_tree_reads_as_red(session: dict[str, Any]) -> 
         assert approvals.gate_ended("t1") == kind, mode
 
 
+def test_a_message_never_passes_for_a_state(session: dict[str, Any]) -> None:
+    """Only status's first line names the state: the last message is the model's text, stale on a new turn."""
+    assert approvals.ask_cloud_gate("t1") == ""
+    for mode in (
+        "running|pytest step: failed",
+        "running|turn ended: yes",
+        "running|session: archived",
+        "running|DONE: red t1 (pytest: failed)\nDONE: red t1",
+    ):
+        session["mode"](mode)
+        assert approvals.gate_ended("t1") == "", mode
+    session["mode"]("failed|pytest step: failed")  # a failed state is read from the first line
+    assert approvals.gate_ended("t1") == "ended"
+
+
 def test_the_brief_names_the_tree_on_a_red_line_and_machine_exit_is_not_red(
     session: dict[str, Any],
 ) -> None:
@@ -407,6 +427,27 @@ def test_a_record_that_lands_as_the_turn_ends_still_counts(
     cloud["clock"].tick = lambda now: cloud["record"](cloud["asked"][0]) if now >= 60 else None
     code, lines = lands["land"]()
     assert (code, lands["merged"](), lands["runs"]()) == (0, ["7"], 0), lines
+
+
+@pytest.mark.parametrize("kind", ["red", "ended"])
+@pytest.mark.parametrize("then", ["running", "record"])
+def test_one_ended_read_neither_fails_the_tree_nor_falls_back(
+    lands: dict[str, Any], cloud: dict[str, Any], kind: str, then: str
+) -> None:
+    """A session just messaged can read idle once; only a second read running counts."""
+    policy(lands, ON)
+    lands["open"](7, {"7.txt": "7\n"})
+    reads = iter([kind])
+    cloud["ended"] = lambda: next(reads, "")
+    if then == "record":
+        cloud["clock"].tick = lambda now: cloud["record"](cloud["asked"][0]) if now >= 60 else None
+    code, lines = lands["land"]()
+    merged, runs = lands["merged"](), lands["runs"]()
+    assert not any("ran red" in line or "ended its turn" in line for line in lines), lines
+    if then == "record":
+        assert (code, merged, runs) == (0, ["7"], 0), lines
+    else:  # the session kept running with no record: the timeout, not the read, sends it to the host
+        assert sum(cloud["clock"].slept) >= TIMEOUT and (code, merged, runs) == (0, ["7"], 1), lines
 
 
 def test_a_start_that_fails_says_why(
