@@ -1908,12 +1908,12 @@ def queued(info: dict, text: str) -> bool:
 def started_late(og: Omnigent, sid: str, text: str) -> bool:
     """Whether a session whose brief missed the confirm window started anyway: the brief waits in
     its pending inputs, or its history holds an item past the opening ``resource_event`` (a real
-    server puts the brief first). Then it gets one more ``HTTP_SECONDS`` (a slow server takes a
+    server puts the brief first; an ``error`` item, a runner that failed to launch, is no start). Then it gets one more ``HTTP_SECONDS`` (a slow server takes a
     POST that timed out client-side later) for the brief to appear; one that shows an item past
     ``resource_event`` is kept. A session with neither is left to be abandoned at once."""
 
     def past() -> bool:
-        return any(i.get("type") != "resource_event" for i in og.items(sid))
+        return any(i.get("type") not in ("resource_event", "error") for i in og.items(sid))
 
     if not (queued(og.info(sid), text) or past()):
         return False

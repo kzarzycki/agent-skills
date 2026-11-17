@@ -637,6 +637,20 @@ def test_start_abandons_a_session_whose_brief_never_arrives(
     assert og.archived == ["s0", "s1"] and waits == [0, 0]
 
 
+def test_a_runner_launch_error_is_no_start_and_exits_1_through_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_grace: None
+) -> None:
+    og = FakeOmnigent(deaf={0, 1})
+    real_items = og.items
+    monkeypatch.setattr(og, "items", lambda sid: [*real_items(sid), {"type": "error"}])
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    assert og.archived == ["s0", "s1"]
+
+
 def test_start_abandons_a_queued_brief_that_never_lands_after_the_grace(
     tmp_path: Path, quick_grace: None
 ) -> None:
