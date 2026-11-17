@@ -253,4 +253,4 @@ def test_a_failed_quota_read_keeps_the_poll(monkeypatch: pytest.MonkeyPatch) -> 
         raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
 
     monkeypatch.setattr(github, "gh", failing)
-    assert real_poll_seconds() == approvals.QUEUE_POLL
+    assert real_poll_seconds() == max(approvals.POLL, approvals.QUEUE_POLL)

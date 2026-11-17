@@ -4479,9 +4479,9 @@ def poll_seconds() -> float:
         left, limit = github.gh(
             "api", "rate_limit", "--jq", r'.resources.core|"\(.remaining) \(.limit)"'
         ).split()
-        return LOW_POLL if int(left) < LOW_QUOTA * int(limit) else QUEUE_POLL
+        return LOW_POLL if int(left) < LOW_QUOTA * int(limit) else max(POLL, QUEUE_POLL)
     except (subprocess.CalledProcessError, ValueError):
-        return QUEUE_POLL
+        return max(POLL, QUEUE_POLL)
 
 
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
