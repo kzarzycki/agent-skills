@@ -4463,6 +4463,14 @@ def pr_outcome(pr: int, until: str, timeout: float, repo: str = "") -> tuple[int
     return 0, f"PR #{pr} checks green ({len(checks)})"
 
 
+def pr_settled(pr: int, repo: str = "") -> tuple[int, str] | None:
+    """A PR's end read from GitHub, not from any agent's words: closed or merged, else its checks
+    finished; None while it is open with a check pending or none registered yet."""
+    return pr_outcome(pr, "closed", HTTP_SECONDS, repo) or pr_outcome(
+        pr, "checks", HTTP_SECONDS, repo
+    )
+
+
 def kill_group(pid: int) -> None:
     """SIGTERM ``pid``'s process group (the detached recipe's ``setsid`` makes the pid its leader;
     any other pid gets the signal alone, never this process's own group), then SIGKILL after
@@ -7082,7 +7090,25 @@ def supervise_registry(
                 line = (
                     f"{repo}: its default branch moved to {sha}; merged since {old[:12]}: {merged}"
                 )
-                say(line, sid, f"landed:{repo}:{sha}", "landed")
+                # only a lead whose wait names a merged PR, or whose own PR it is, is told, and
+                # only it: the chief of staff gets nothing it has no step to take
+                merged_prs = {int(n) for n in re.findall(r"#(\d+)", merged)}
+                for lead_sid in owed:
+                    lead = state["leads"].get(lead_sid) or {}
+                    own = pr_label(
+                        (looks.get(lead_sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, "")
+                    )
+                    ref = re.fullmatch(r"(?:[\w.-]+/[\w.-]+)?#(\d+)", lead.get("wait") or "")
+                    named = {int(ref[1])} if ref else set()
+                    if repos.get(lead_sid) == repo and (
+                        merged_prs & (named | ({own[1]} if own and own[0] == repo else set()))
+                    ):
+                        head = f"{lead_sid} {lead.get('title') or ''}".rstrip()
+                        say(f"{head}: {line}", lead_sid, f"landed:{repo}:{sha}:{lead_sid}", "news")
+                print(
+                    stamp(f"landed:{repo}:{sha}: recorded, no lead waits on it: {merged}"),
+                    flush=True,
+                )
             heads[repo] = sha
 
     def alive(other: str, info: dict) -> bool:
@@ -7112,6 +7138,11 @@ def supervise_registry(
         wait = lead["wait"]
         if wait == notify or wait == "unknown":
             return False
+        if ref := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", wait):  # a PR: GitHub says
+            try:  # open with a check pending is a wait that is live; ended, it is news instead
+                return pr_settled(int(ref[2]), ref[1] or "") is None
+            except Exception:  # noqa: BLE001 - unread: not known to be moving
+                return False
         if re.fullmatch(r"b(?=[a-z]{0,7}[0-9])[a-z0-9]{8}", wait):  # its own background job
             try:
                 return bool(live_tasks(og.info(sid)))
@@ -7282,9 +7313,7 @@ def supervise_registry(
         lead["pr_at"] = now
         repo, pr = m.group(1) or "", int(m.group(2))
         try:
-            found = pr_outcome(pr, "closed", HTTP_SECONDS, repo) or pr_outcome(
-                pr, "checks", HTTP_SECONDS, repo
-            )
+            found = pr_settled(pr, repo)
         except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
             log(("pr", sid), f"{sid}: PR #{pr} not read: {reason(e)}")
             return

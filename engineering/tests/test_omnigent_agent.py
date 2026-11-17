@@ -11406,17 +11406,21 @@ def github(
 
 def landed(registry: Path) -> list[dict]:
     path = registry.with_suffix(".events.jsonl")
-    return [e for e in events_of(registry) if e["kind"] == "landed"] if path.exists() else []
+    return (
+        [e for e in events_of(registry) if e["id"].startswith("landed:")] if path.exists() else []
+    )
 
 
 def test_a_moved_default_branch_raises_one_act_event_for_its_new_head_and_then_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = following(tmp_path)
-    og = Lead(told("brief", 60), ending("STILL WORKING: waiting on the verifier", 5))
+    og = Lead(told("brief", 60), ending("STILL WORKING: spec filed\nWaits: #12", 5))
+    og.snap = {"status": "idle"}
     in_checkout(og)
     head = [OLD]
     github(monkeypatch, head)
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": None)
     seen: list[int] = []
 
     def later(poll: int) -> None:
@@ -11427,8 +11431,8 @@ def test_a_moved_default_branch_raises_one_act_event_for_its_new_head_and_then_n
     supervised(og, registry, monkeypatch, 4, later, notify="cos", console=True)
     assert seen == [0, 0, 1]  # nothing for the same head twice, one once it moved, none after
     (event,) = landed(registry)
-    assert event["id"] == f"landed:o/r:{NEW}"
-    assert (event["settled"], event["action"]) == ("rule", "act")
+    assert event["id"] == f"landed:o/r:{NEW}:{event['session']}"  # only the lead waiting on #12
+    assert (event["settled"], event["action"]) == ("rule", "tell")
     assert NEW in event["line"] and "#12, #13" in event["line"]
     assert state_of(registry)["heads"] == {"o/r": NEW}
 
@@ -11498,15 +11502,19 @@ def test_a_restart_reports_a_landing_made_while_it_was_down_but_not_one_it_repor
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = following(tmp_path)
-    og = Lead(told("brief", 60))
+    og = Lead(told("brief", 60), ending("STILL WORKING: x\nWaits: #12", 5))
+    og.snap = {"status": "idle"}
     in_checkout(og)
     head = [OLD]
     github(monkeypatch, head)
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": None)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
     head[0] = NEW
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
-    assert [e["id"] for e in landed(registry)] == [f"landed:o/r:{NEW}"]
+    assert [e["id"] for e in landed(registry)] == [
+        f"landed:o/r:{NEW}:{landed(registry)[0]['session']}"
+    ]
 
 
 def test_two_leads_in_one_repo_raise_one_event_for_one_new_head(
@@ -11514,13 +11522,17 @@ def test_two_leads_in_one_repo_raise_one_event_for_one_new_head(
 ) -> None:
     registry = tmp_path / "registry"
     registry.write_text(f"a={tmp_path / 'a.md'}\tfollow\nb={tmp_path / 'b.md'}\tfollow\n")
-    og = Fleet(a=[told("brief", 60)], b=[told("brief", 60)])
+    og = Fleet(
+        a=[told("brief", 60)], b=[told("brief", 60), ending("STILL WORKING: x\nWaits: #13", 5)]
+    )
+    og.snaps["b"] = {"status": "idle"}
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": None)
     in_checkout(og)
     head = [OLD]
     calls = github(monkeypatch, head)
     supervised(og, registry, monkeypatch, 2, lambda poll: head.__setitem__(0, NEW), console=True)
-    (event,) = landed(registry)
-    assert (event["session"], event["id"]) == ("a", f"landed:o/r:{NEW}")
+    (event,) = landed(registry)  # a waits on nothing: only b, whose wait names #13, is told
+    assert (event["session"], event["id"]) == ("b", f"landed:o/r:{NEW}:b")
     assert [c[1] for c in calls].count("repos/o/r/commits/HEAD") == 2  # one read per poll
 
 
@@ -11541,9 +11553,7 @@ def test_a_landing_the_lead_wrote_under_a_named_wait_reaches_the_manager(
     assert own == ("rule", "record", "names its wait: second")  # its own words reach no one
     moved = lambda poll: head.__setitem__(0, NEW)
     supervised(og, registry, monkeypatch, 2, moved, notify="cos", console=True)
-    (post,) = posted(og)
-    line = f"o/r: its default branch moved to {NEW}; merged since {OLD[:12]}: #12, #13"
-    assert f"[act] {line} (its default branch moved: a step owed after a landing)" in post
+    assert posted(og) == [] and landed(registry) == []  # no lead waits on #12 or #13: recorded only
 
 
 FAR = "until 2099-01-01T00:00Z"  # a timed wait's end: the supervisor raises no deadline before it
@@ -11691,8 +11701,7 @@ def test_without_console_a_landing_is_posted_as_a_line(
     head = [OLD]
     github(monkeypatch, head)
     supervised(og, registry, monkeypatch, 2, lambda poll: head.__setitem__(0, NEW), notify="cos")
-    line = f"o/r: its default branch moved to {NEW}; merged since {OLD[:12]}: #12, #13"
-    assert posted(og) == [f"Supervisor: {line}"]
+    assert posted(og) == []  # no lead waits on a merged PR: recorded, not posted
 
 
 def test_a_lead_outside_a_checkout_or_a_failed_head_read_raises_nothing_and_logs_once(
@@ -12967,4 +12976,4 @@ def test_a_pr_a_lead_waits_on_that_merged_is_news_to_it_from_github_once(
     )
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
     told_m = [t for s, t in og.inbox if s == "m" and "PR #976 merged; your wait names it" in t]
-    assert len(told_m) == 1 and reads == [(976, "closed")]  # once; read once within the throttle
+    assert len(told_m) == 1 and reads  # once, however often it is read
