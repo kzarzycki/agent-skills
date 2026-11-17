@@ -233,7 +233,9 @@ def test_a_callers_base_never_narrows_a_plain_pass_recorded_under_the_full_gate(
 ) -> None:
     """`gate_env` clears the `Gate base:` variable (else `GATE_BASE`) even when `local_ci_env` doesn't list it, and a
     head proof's `env` naming it is the one way it gets through."""
-    policy = approvals.Policy(gatekeeper_md("loop:\n  head_proof:\n    status: gate-sel\n    env: [GATE_BASE]\n"))
+    policy = approvals.Policy(
+        gatekeeper_md("loop:\n  head_proof:\n    status: gate-sel\n    env: [GATE_BASE]\n")
+    )
     monkeypatch.setattr(approvals, "project", lambda: (None, policy))
     monkeypatch.setenv("GATE_BASE", "abc")
     _, _, sets = approvals.gate()

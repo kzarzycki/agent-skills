@@ -5988,7 +5988,15 @@ def gate_env(step: dict[str, Any]) -> dict[str, str]:
     """The environment a gate step runs in: this process's, without the names `local_ci_env` lists and without the
     `Gate base:` variable (gate_base_variable), unless the step's command sets them, or a head proof's `passed` takes
     them from this process's (gate): a caller's base never narrows a plain pass."""
-    cleared = set(local_ci_env()) | {gate_base_variable()}
+    cleared = set(local_ci_env()) | {"GATE_BASE"}
+    with contextlib.suppress(Refused, OSError):  # the working tree's loop.md, read with no git call
+        held = toplevel() / LOOP
+        named = (
+            re.search(r"^Gate base:[ \t]*`?([A-Za-z_]\w*)\b", held.read_text(), re.MULTILINE)
+            if held.exists()
+            else None
+        )
+        cleared |= {named.group(1)} if named else set()
     return {name: value for name, value in os.environ.items() if name not in cleared} | step["sets"]
 
 
