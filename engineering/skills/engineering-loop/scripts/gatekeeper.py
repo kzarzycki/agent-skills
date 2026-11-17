@@ -809,6 +809,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
         merge_queue=bool,
         merge_commit_heads=list,
         batch_wait_seconds=int,
+        gate_on=Choice(("host", "cloud")),
+        cloud_gate_timeout_seconds=int,
         together=("signed_squash_to", "allowed_signers"),
         optional=(
             "signed_squash_to",
@@ -818,6 +820,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "merge_queue",
             "merge_commit_heads",
             "batch_wait_seconds",
+            "gate_on",
+            "cloud_gate_timeout_seconds",
         ),
     ),
     "carry_over_main": Table({"except": list}),
@@ -1000,10 +1004,9 @@ def settings(loop: str | None) -> dict[str, Any]:
                     deprecated(key)
         elif name in SCHEMA:
             data[name] = typed(section, SCHEMA[name], name, file)
-            if data[name].get("batch_wait_seconds", 0) < 0:
-                raise Refused(
-                    f"{file}'s `land.batch_wait_seconds` must be a whole number, 0 or more"
-                )
+            for key in ("batch_wait_seconds", "cloud_gate_timeout_seconds"):
+                if data[name].get(key, 0) < 0:
+                    raise Refused(f"{file}'s `land.{key}` must be a whole number, 0 or more")
             if name == "carry_over_main":
                 deprecated(name)
             if name == "risk" and "merge_paths" in section:
@@ -5466,6 +5469,7 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     commit, tree = run_in(work, "rev-parse", "HEAD"), run_in(work, "rev-parse", "HEAD^{tree}")
     command = gate()[0]
     log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
+    cloud_gate(commit, tree)
     for again in (False, True):
         with log.open("w") as out, saying(f"Tree {tree}: gating, log {public(str(log))}"):
             done = run_steps(
@@ -5518,6 +5522,110 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     if code:
         return tree, ""
     return tree, "run"
+
+
+LAND_BRANCH = "refs/heads/loop-land/{}"
+# land.cloud_gate_timeout_seconds: the measured cloud gate took 1,200-1,650 s, so 2,400 s leaves room for the first
+# session's start and a slow run, and a cloud that never answers costs one wait, not a hung land
+CLOUD_GATE_SECONDS = 2400
+
+
+def cloud_gate(commit: str, tree: str) -> None:
+    """With loop.md's `land: gate_on: cloud`, ask the repo's standing cloud gate session to run `local-ci --record` on
+    the batch commit `commit` (pushed as the branch `loop-land/<tree>`, deleted after) and wait up to
+    `cloud_gate_timeout_seconds` for the record branches of exactly `tree` (step_pass, the one trust rule for a pass
+    pushed by another clone), so gate_batch's run_steps then reuses them and runs nothing. A step that may run only
+    on a host (`where: host`) is not waited for. A refused start, a session that is gone or no record in time is one
+    printed line, and the gate then runs on this host as it does without the setting."""
+    land = settings(project()[1]).get("land", {})
+    if land.get("gate_on", "host") != "cloud":
+        return
+    steps = [step for step in gate_plan() if step["where"] != "host"]
+    if all(step_pass(commit, tree, step, show=False) for step in steps):
+        return
+    ref = LAND_BRANCH.format(tree)
+    timeout = land.get("cloud_gate_timeout_seconds", CLOUD_GATE_SECONDS)
+    why = ""
+    try:
+        git("push", "-q", "--no-verify", "origin", f"{commit}:{ref}")
+        why = ask_cloud_gate(tree) or wait_records(commit, tree, steps, timeout)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        why = " ".join((getattr(exc, "stderr", None) or str(exc)).split())
+    finally:
+        with contextlib.suppress(subprocess.CalledProcessError, OSError):
+            git("push", "-q", "--no-verify", "origin", f":{ref}")
+    if why:
+        print(f"Tree {tree}: no cloud gate ({why}): gating on this host")
+
+
+def wait_records(commit: str, tree: str, steps: list[dict[str, Any]], timeout: int) -> str:
+    """Wait until every step of `steps` has a pass on `tree` (step_pass); the reason none came within `timeout`
+    seconds, else empty."""
+    deadline = time.monotonic() + timeout
+    with saying(f"Tree {tree}: waiting for the cloud gate's record, up to {timeout} s"):
+        while not all(step_pass(commit, tree, step, show=False) for step in steps):
+            if (left := deadline - time.monotonic()) <= 0:
+                return f"no record for the tree within {timeout} s"
+            time.sleep(min(POLL, left))
+    return ""
+
+
+def ask_cloud_gate(tree: str) -> str:
+    """Ask the repo's standing gate session to gate the branch `loop-land/<tree>`: a message to the session whose id
+    `approvals/cloud-gate.json` (under the git common dir, beside land's other per-clone state) holds, else a new
+    one, started through orchestrating-agents' omnigent_agent.py (`relay`, `launch-dir`, `start`). The reason it
+    could not be asked, else empty."""
+    script, branch = agent_script(), LAND_BRANCH.format(tree).removeprefix("refs/heads/")
+    if not script.is_file():
+        return f"{script.name} is not installed"
+    me = Path(__file__).resolve().with_name("approvals.py")
+    task = (
+        f"Gate the branch {branch}: fetch it from origin, check it out, run `{sys.executable} {me}"
+        " local-ci --record` on it (the gate and its environment as the project's loop.md names them) and let the"
+        f" record branch be pushed. Touch no other branch. Then end the turn with `DONE: recorded {tree}` or"
+        " `DONE: red`. More branches arrive as messages, each the same task."
+    )
+    common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
+    state = common / "approvals"
+    state.mkdir(parents=True, exist_ok=True)
+
+    def agent(*args: str | Path, seconds: int = 600) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), *map(str, args)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=seconds,
+        )
+
+    kept = state / "cloud-gate.json"
+    with contextlib.suppress(OSError, ValueError, KeyError):
+        sid = json.loads(kept.read_text())["session"]
+        if not (told := agent("relay", sid, task, "--from", "land")).returncode:
+            return ""
+        print(
+            f"cloud gate session {sid} did not take the message ({told.stderr.strip()[-200:]}): starting one"
+        )
+    dirs = state / "cloud-gate-dirs"
+    dirs.mkdir(exist_ok=True)
+    launch = Path(tempfile.mkdtemp(dir=dirs)) / "launch"
+    made = agent("launch-dir", git("remote", "get-url", "origin").strip(), branch, launch)
+    if made.returncode:
+        return f"no launch dir: {made.stderr.strip()[-200:]}"
+    started = agent(
+        "start",
+        "claude-cloud",
+        "gate loop-land",
+        task,
+        launch / "tmp/loop/gate.md",
+        "--workspace",
+        launch,
+    )
+    sid = (started.stdout.split() or [""])[-1]
+    if started.returncode or not sid:
+        return f"start refused: {(started.stderr.strip() or started.stdout.strip())[-200:]}"
+    kept.write_text(json.dumps({"session": sid}) + "\n")
+    return ""
 
 
 def landed_pass(tip: str, tree: str) -> dict[str, Any]:
@@ -6177,13 +6285,19 @@ def merges(
         archive_workers(pull["number"])
 
 
+def agent_script() -> Path:
+    """orchestrating-agents' omnigent_agent.py, run as a command, since skills install separately and neither may
+    import the other."""
+    return Path(__file__).resolve().parents[2] / "orchestrating-agents/scripts/omnigent_agent.py"
+
+
 def archive_workers(number: int) -> None:
     """Start, detached, the finish of the kept `--pr` worker sessions of PR #number, which merged:
     orchestrating-agents' `omnigent_agent.py reap --merged --pr <n>`. It is not waited on, so a slow Omnigent or
     GitHub never holds the land, and its outcome goes to its own log, named in the line printed. A checkout without
     that skill, or a start that fails, is a printed line only: the PR has landed, and a session left open is the
     next `reap`'s."""
-    script = Path(__file__).resolve().parents[2] / "orchestrating-agents/scripts/omnigent_agent.py"
+    script = agent_script()
     if not script.is_file():
         print(f"PR #{number}: no worker sessions finished: {script.name} is not installed")
         return
