@@ -11522,7 +11522,7 @@ def test_two_leads_in_one_repo_raise_one_event_for_one_new_head(
 ) -> None:
     registry = tmp_path / "registry"
     registry.write_text(f"a={tmp_path / 'a.md'}\tfollow\nb={tmp_path / 'b.md'}\tfollow\n")
-    og = Fleet(
+    og = Leads(
         a=[told("brief", 60)], b=[told("brief", 60), ending("STILL WORKING: x\nWaits: #13", 5)]
     )
     og.snaps["b"] = {"status": "idle"}
@@ -11530,7 +11530,15 @@ def test_two_leads_in_one_repo_raise_one_event_for_one_new_head(
     in_checkout(og)
     head = [OLD]
     calls = github(monkeypatch, head)
-    supervised(og, registry, monkeypatch, 2, lambda poll: head.__setitem__(0, NEW), console=True)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        2,
+        lambda poll: head.__setitem__(0, NEW),
+        notify="cos",
+        console=True,
+    )
     (event,) = landed(registry)  # a waits on nothing: only b, whose wait names #13, is told
     assert (event["session"], event["id"]) == ("b", f"landed:o/r:{NEW}:b")
     assert [c[1] for c in calls].count("repos/o/r/commits/HEAD") == 2  # one read per poll
@@ -11574,6 +11582,12 @@ def heads_moving(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> None:
     monkeypatch.setattr(omnigent_agent, "gh", gh)
 
 
+def landings_posted(og: Fleet) -> list[str]:
+    """The posts to the chief of staff that carry a landing (a lead waiting on the supervisor
+    also raises its own ends and deadlines, which these tests leave aside)."""
+    return [p for p in posted(og) if "its default branch moved" in p]
+
+
 def test_a_turn_end_from_before_the_run_is_in_no_post_though_its_label_shows_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -11582,8 +11596,10 @@ def test_a_turn_end_from_before_the_run_is_in_no_post_though_its_label_shows_it(
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
     # a wait timed far ahead: no deadline, so it never settles
-    old = f"STILL WORKING: waiting on the verifier {FAR}; an outage notice from weeks ago"
+    old = "STILL WORKING: an outage notice from weeks ago\nWaits: supervisor"
+    first_line = old.splitlines()[0]
     og = Lead(told("brief", 30 * 86400), ending(old, 29 * 86400))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}}  # its PR: a landing is its news
     in_checkout(og)
     head = ["1" * 40]
     heads_moving(monkeypatch, head)
@@ -11594,10 +11610,10 @@ def test_a_turn_end_from_before_the_run_is_in_no_post_though_its_label_shows_it(
             head[0] = str(poll + 1) * 40
 
     supervised(og, registry, monkeypatch, 5, land, notify="cos", console=True)
-    posts = posted(og)
+    posts = landings_posted(og)
     assert len(posts) == 2 and all("its default branch moved" in p for p in posts)
-    assert all("\na t-a: idle · " in p and old not in p and "turn ended" not in p for p in posts)
-    assert [l["status.line"] for s, l in og.labels if s == "a"][-1].endswith(f": {old}")
+    assert all("\na t-a: idle · " in p and old not in p and "turn ended ·" not in p for p in posts)
+    assert [l["status.line"] for s, l in og.labels if s == "a"][-1].endswith(f": {first_line}")
 
 
 def test_a_turn_end_in_the_run_is_posted_once_also_across_restarts(
@@ -11608,13 +11624,14 @@ def test_a_turn_end_in_the_run_is_posted_once_also_across_restarts(
     another restart give it no more; the key it was told under is kept in the state."""
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    og = Lead(told("brief", 600), ending("STILL WORKING: waiting on the verifier", 500))
+    og = Lead(told("brief", 600), ending("STILL WORKING: x\nWaits: supervisor", 500))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}}  # its PR: a landing is its news
     in_checkout(og)
     head = ["1" * 40]
     heads_moving(monkeypatch, head)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # the run that saw it
     offset[0] = 60.0
-    new = "STILL WORKING: waiting on the verifier for the second fix"
+    new = "STILL WORKING: the second fix\nWaits: supervisor"
     og.histories["a"].append(ending(new, 0))  # written while the supervisor is down
     offset[0], head[0] = 120.0, "2" * 40
 
@@ -11624,10 +11641,10 @@ def test_a_turn_end_in_the_run_is_posted_once_also_across_restarts(
     supervised(og, registry, monkeypatch, 2, land, notify="cos", console=True)  # a restart
     offset[0], head[0] = 120.0 + 602.0, "4" * 40
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # another restart
-    posts = posted(og)
+    posts = landings_posted(og)
     assert len(posts) == 3 and all("its default branch moved" in p for p in posts)
-    assert [new in p for p in posts] == [True, False, False]
-    assert f"\na t-a: turn ended · waits on verifier: {new}" in posts[0]
+    assert [new.splitlines()[0] in p for p in posts] == [True, False, False]
+    assert f"\na t-a: turn ended · waits on supervisor: {new.splitlines()[0]}" in posts[0]
     lead = state_of(registry)["leads"]["a"]
     assert lead["told_turn"] == lead["turn"] == f"m{new}0"
 
@@ -11640,12 +11657,16 @@ def test_a_turn_end_without_an_id_is_keyed_by_its_time_and_each_is_posted_once(
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
     anon = lambda text, ago: {k: v for k, v in ending(text, ago).items() if k != "id"}
-    og = Lead(told("brief", 600), anon("STILL WORKING: waiting on the verifier", 500))
+    og = Lead(told("brief", 600), anon("STILL WORKING: x\nWaits: supervisor", 500))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}}  # its PR: a landing is its news
     in_checkout(og)
     head = ["1" * 40]
     heads_moving(monkeypatch, head)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # the run that saw it
-    first, second = "STILL WORKING: waiting on CI", "STILL WORKING: waiting on the verifier again"
+    first, second = (
+        "STILL WORKING: first\nWaits: supervisor",
+        "STILL WORKING: second\nWaits: supervisor",
+    )
     offset[0] = 60.0
     og.histories["a"].append(anon(first, 0))  # written while the supervisor is down
     offset[0], head[0] = 120.0, "2" * 40
@@ -11657,9 +11678,9 @@ def test_a_turn_end_without_an_id_is_keyed_by_its_time_and_each_is_posted_once(
     supervised(og, registry, monkeypatch, 2, land, notify="cos", console=True)  # a restart
     offset[0], head[0] = 120.0 + 602.0, "4" * 40
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # another restart
-    posts = posted(og)
+    posts = landings_posted(og)
     assert len(posts) == 3 and all("its default branch moved" in p for p in posts)
-    assert [(first in p, second in p) for p in posts] == [
+    assert [(first.splitlines()[0] in p, second.splitlines()[0] in p) for p in posts] == [
         (True, False),
         (False, True),
         (False, False),
@@ -11675,8 +11696,9 @@ def test_a_state_kept_before_seen_from_reports_no_old_turn_end(
     reads it, so its old last message is not the turn end of the next post."""
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    old = f"STILL WORKING: waiting on the verifier {FAR}, since last month"  # it never settles
+    old = "STILL WORKING: since last month\nWaits: supervisor"
     og = Lead(told("brief", 30 * 86400), ending(old, 29 * 86400))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}}  # its PR: a landing is its news
     in_checkout(og)
     head = ["1" * 40]
     heads_moving(monkeypatch, head)
@@ -11685,11 +11707,11 @@ def test_a_state_kept_before_seen_from_reports_no_old_turn_end(
     for key in ("seen_from", "told_turn"):  # as an older supervisor wrote it
         state["leads"]["a"].pop(key, None)
     registry.with_suffix(".state.json").write_text(json.dumps(state))
-    offset[0], head[0] = 120.0, "2" * 40
+    offset[0], head[0] = 120.0 + 301.0, "2" * 40
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # a restart
-    [post] = posted(og)
+    [post] = landings_posted(og)
     assert "its default branch moved" in post
-    assert "\na t-a: idle · " in post and old not in post and "turn ended" not in post
+    assert "\na t-a: idle · " in post and old not in post and "turn ended ·" not in post
 
 
 def test_without_console_a_landing_is_posted_as_a_line(

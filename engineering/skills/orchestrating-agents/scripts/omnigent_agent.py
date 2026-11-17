@@ -7093,6 +7093,7 @@ def supervise_registry(
                 # only a lead whose wait names a merged PR, or whose own PR it is, is told, and
                 # only it: the chief of staff gets nothing it has no step to take
                 merged_prs = {int(n) for n in re.findall(r"#(\d+)", merged)}
+                told_any = False
                 for lead_sid in owed:
                     lead = state["leads"].get(lead_sid) or {}
                     own = pr_label(
@@ -7104,11 +7105,15 @@ def supervise_registry(
                         merged_prs & (named | ({own[1]} if own and own[0] == repo else set()))
                     ):
                         head = f"{lead_sid} {lead.get('title') or ''}".rstrip()
-                        say(f"{head}: {line}", lead_sid, f"landed:{repo}:{sha}:{lead_sid}", "news")
-                print(
-                    stamp(f"landed:{repo}:{sha}: recorded, no lead waits on it: {merged}"),
-                    flush=True,
-                )
+                        # a lead waiting on the supervisor has no one else to tell it
+                        kind = "landed" if lead.get("wait") in ("supervisor", "cos") else "news"
+                        say(f"{head}: {line}", lead_sid, f"landed:{repo}:{sha}:{lead_sid}", kind)
+                        told_any = True
+                if not told_any:
+                    print(
+                        stamp(f"landed:{repo}:{sha}: recorded, no lead waits on it: {merged}"),
+                        flush=True,
+                    )
             heads[repo] = sha
 
     def alive(other: str, info: dict) -> bool:
