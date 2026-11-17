@@ -168,7 +168,7 @@ def test_a_beat_that_reached_origin_but_reported_failure_stays_in_held(
         seen.append(new)
         return subprocess.CompletedProcess([], 1, "", "reset")
 
-    held, thread = run_beat(lands, monkeypatch, lost_answer)
+    held, _ = run_beat(lands, monkeypatch, lost_answer)
     deadline = time.monotonic() + 20
     while not seen and time.monotonic() < deadline:
         time.sleep(0.02)
