@@ -1872,6 +1872,10 @@ def graduate(epic: int, pr: int) -> int:
     merged = merged_pull(pr)
     if not merged:
         raise Refused(f"PR #{pr} is not merged, and graduating #{epic} takes its merge")
+    if (base := merged.get("base", {}).get("ref")) != default_branch():
+        raise Refused(
+            f"PR #{pr} merged into {base}, not the default branch: graduating takes the merge into main"
+        )
     if epic not in {int(n) for n in GRADUATES.findall(QUOTED.sub("", merged.get("body") or ""))}:
         raise Refused(f"PR #{pr}'s body has no `Graduates #{epic}` line")
     comment(epic, f"{GRADUATED} #{pr}: the incubating label comes off and this epic closes.")

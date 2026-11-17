@@ -180,8 +180,11 @@ def graduating(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     """Every call `graduate` makes, in order, with PR #5 merged and saying `Graduates #9`."""
     calls: list[tuple[Any, ...]] = []
     monkeypatch.setattr(
-        approvals, "merged_pull", lambda n: {"body": "Graduates #9\n"} if n == 5 else None
+        approvals,
+        "merged_pull",
+        lambda n: {"body": "Graduates #9\n", "base": {"ref": "main"}} if n == 5 else None,
     )
+    monkeypatch.setattr(approvals, "default_branch", lambda: "main")
     monkeypatch.setattr(approvals, "comment", lambda n, body: calls.append(("comment", n, body)))
     monkeypatch.setattr(
         approvals, "label", lambda n, name, add: calls.append(("label", n, name, add))
@@ -208,7 +211,9 @@ def test_graduate_refuses_without_a_merged_pr_that_says_so(
     graduating: list[tuple[Any, ...]], pr: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     if pr == 5:
-        monkeypatch.setattr(approvals, "merged_pull", lambda n: {"body": "Part of #9\n"})
+        monkeypatch.setattr(
+            approvals, "merged_pull", lambda n: {"body": "Part of #9\n", "base": {"ref": "main"}}
+        )
     with pytest.raises(approvals.Refused):
         approvals.graduate(9, pr)
     assert graduating == []
@@ -218,6 +223,26 @@ def test_graduate_refuses_a_closed_or_unlabelled_epic(
     graduating: list[tuple[Any, ...]], epic: dict[str, Any]
 ) -> None:
     epic["state"] = "CLOSED"
+    with pytest.raises(approvals.Refused):
+        approvals.graduate(9, 5)
+    assert graduating == []
+
+
+def test_graduate_refuses_an_unlabelled_epic(
+    graduating: list[tuple[Any, ...]], epic: dict[str, Any]
+) -> None:
+    epic["labels"] = {"nodes": []}
+    with pytest.raises(approvals.Refused):
+        approvals.graduate(9, 5)
+    assert graduating == []
+
+
+def test_graduate_refuses_a_pr_merged_into_a_feature_branch(
+    graduating: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        approvals, "merged_pull", lambda n: {"body": "Graduates #9\n", "base": {"ref": "feature"}}
+    )
     with pytest.raises(approvals.Refused):
         approvals.graduate(9, 5)
     assert graduating == []

@@ -24,7 +24,8 @@ jobs:
           [ "$IS_PR" = "false" ] || exit 0
           api() { gh api "repos/$REPO/issues/$NUMBER$1" "${@:2}"; }
           # a graduation names its PR in a comment before it drops the label
-          if api /comments --paginate --jq '.[].body' | grep -q '^Graduated by #'; then exit 0; fi
+          graduated=$(api /comments --paginate --jq '[.[].body | startswith("Graduated by #")] | any')
+          if echo "$graduated" | grep -q true; then exit 0; fi
           case "$ACTION" in
             closed)
               case ",$LABELS," in *,incubating,*) ;; *) exit 0 ;; esac
