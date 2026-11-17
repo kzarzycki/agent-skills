@@ -13065,3 +13065,40 @@ def test_a_session_the_lead_started_that_went_idle_after_its_turn_is_news_but_an
         og.histories[WORKER] = [ending("Pass 4 written. SATISFIED: yes", age)]
         supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
         assert len(told_idle(og)) == expect
+
+
+def test_a_session_that_ended_on_a_still_working_turn_or_was_just_prompted_is_not_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    for n, history in enumerate(
+        (
+            [ending("STILL WORKING: compiling", 100)],  # idle between turns, not finished
+            [ending("Pass 4 written.", 100), said("user", "now pass 5", "u1")],  # prompted since
+        )
+    ):
+        (tmp_path / str(n)).mkdir()
+        registry, og = manager(
+            tmp_path / str(n),
+            f"STILL WORKING: waiting on session {WORKER}",
+            m={"status": "idle"},
+            **{WORKER: gone},
+        )
+        og.histories[WORKER] = history
+        supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+        assert told_idle(og) == []
+
+
+def test_a_failed_github_read_is_asked_again_only_after_a_minute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976", m={"status": "idle"})
+    calls: list[tuple] = []
+
+    def down(*a, **k):
+        calls.append(a)
+        raise omnigent_agent.Fail("gh: HTTP 502")
+
+    monkeypatch.setattr(omnigent_agent, "gh", down)
+    supervised(og, registry, monkeypatch, 6, notify=COS, console=True, fyi="post")
+    assert len(calls) <= 2  # one for the news read, at most one for the moving check

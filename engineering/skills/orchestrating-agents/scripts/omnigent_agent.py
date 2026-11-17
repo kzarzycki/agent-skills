@@ -5886,6 +5886,7 @@ def lead_status(info: dict, items: list[dict]) -> dict:
     WORKING`` names, else ``unknown``; and its turn, the key of that message (its id, else its
     ``created_at``) with ``turn_at``, when it was written."""
     said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
+    items = [i for i in items if i.get("type") == "message"]
     text = text_of(said[-1]).strip() if said else ""
     e = info.get("last_task_error") or {}
     if info.get("archived"):
@@ -5904,6 +5905,9 @@ def lead_status(info: dict, items: list[dict]) -> dict:
         "ending": ending_of(text),
         "wait": wait_of(text, said[-1].get("created_at") if said else None),
         "named": named_of(text),
+        "refs": [v for form, v in trailer_items(text) if form == "ref"],  # PRs a set names
+        "still": "STILL WORKING" in text,  # an intermediate turn: its wait is not its end
+        "asked": bool(items) and items[-1].get("role") == "user",  # prompted since it answered
         "last_line": text.splitlines()[0][:200] if text else "",
         "turn": str(said[-1].get("id") or said[-1].get("created_at") or "") if said else "",
         "turn_at": float(said[-1].get("created_at") or 0) if said else 0.0,
@@ -7125,11 +7129,11 @@ def supervise_registry(
                     own = pr_label(
                         (looks.get(lead_sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, "")
                     )
-                    named = {  # a wait is a set: each PR it names
-                        int(n)
-                        for n in re.findall(
-                            r"(?:^|, )(?:[\w.-]+/[\w.-]+)?#(\d+)", lead.get("wait") or ""
-                        )
+                    named = {  # a wait is a set, and may share it with the supervisor: each PR it names
+                        int(m[2])
+                        for r in [*(lead.get("refs") or []), *(lead.get("wait") or "").split(", ")]
+                        if (m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", r.strip()))
+                        and m[1] in (None, repo)
                     }
                     if repos.get(lead_sid) == repo and (
                         merged_prs & (named | ({own[1]} if own and own[0] == repo else set()))
@@ -7165,8 +7169,14 @@ def supervise_registry(
         seen = lead.setdefault("pr_seen", {})
         key = f"{repo}#{pr}"
         if not fresh and key in seen and time.time() - seen[key][0] < PR_POLL_SECONDS:
+            if len(seen[key]) > 2:  # a failed read counts as a read: GitHub is asked once a minute
+                raise Fail(seen[key][2])
             return seen[key][1] and tuple(seen[key][1])
-        found = pr_settled(pr, repo)
+        try:
+            found = pr_settled(pr, repo)
+        except Exception as e:
+            seen[key] = [time.time(), None, reason(e)]
+            raise
         seen[key] = [time.time(), found]
         return found
 
@@ -7374,7 +7384,8 @@ def supervise_registry(
             if (
                 over["state"] == "idle"
                 and over["turn"]
-                and over["wait"] == "unknown"
+                and not over["still"]
+                and not over["asked"]
                 and (named or over["turn_at"] > float(lead.get("turn_at") or 0))
             ):
                 return f"{other} went idle at {at}", False

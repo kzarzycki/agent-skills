@@ -127,3 +127,22 @@ def test_the_login_not_read_still_raises_the_landing_naming_why(
     moved(waiting("#843", "#844"), registry, monkeypatch, head)
     (event,) = base.landed(registry)
     assert event["line"].endswith("not read: gh api: HTTP 401")
+
+
+def test_a_set_that_shares_the_supervisor_with_a_pr_still_hears_that_pr_land(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, head = base.following(tmp_path), [OLD]
+    github(monkeypatch, head, {"844": "me"})
+    moved(waiting("supervisor", "#844"), registry, monkeypatch, head)
+    (event,) = base.landed(registry)
+    assert event["action"] == "act"  # it waits on the supervisor, who has the step to take
+
+
+def test_a_pr_of_another_repo_that_a_wait_names_is_not_this_repos_landing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, head = base.following(tmp_path), [OLD]
+    github(monkeypatch, head, {"844": "me"})
+    moved(waiting("other/repo#844"), registry, monkeypatch, head)
+    assert base.landed(registry) == []
