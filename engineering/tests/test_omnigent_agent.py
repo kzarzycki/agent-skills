@@ -12998,9 +12998,32 @@ def test_a_pr_a_lead_waits_on_that_merged_is_news_to_it_from_github_once(
     reads = []
     monkeypatch.setattr(
         omnigent_agent,
-        "pr_outcome",
-        lambda pr, until, timeout, repo="": reads.append((pr, until)) or (0, f"PR #{pr} merged"),
+        "pr_settled",
+        lambda pr, repo="": reads.append(pr) or (0, f"PR #{pr} merged"),
     )
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
     told_m = [t for s, t in og.inbox if s == "m" and "PR #976 merged; your wait names it" in t]
     assert len(told_m) == 1 and reads  # once, however often it is read
+
+
+def test_a_set_that_names_ci_is_not_over_when_only_its_pr_ended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976, CI", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    assert [t for s, t in og.inbox if s == "m" and "your wait names it" in t] == []
+
+
+def test_an_open_pr_a_lead_waits_on_costs_one_github_read_a_minute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976", m={"status": "idle"})
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        omnigent_agent,
+        "gh",
+        lambda *a, **k: calls.append(a) or '{"state":"OPEN","statusCheckRollup":[]}',
+    )
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    assert len(calls) == 1

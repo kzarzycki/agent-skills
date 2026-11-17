@@ -95,13 +95,17 @@ def test_wait_on_prints_only_a_well_formed_line_the_parser_reads_back() -> None:
     ("text", "child"),
     [
         (
-            "STILL WORKING: waiting on cloud worker session db6eead2cb8646eba42e47039543b187"
-            " (build of #985 on PR #986).",
+            (
+                "STILL WORKING: waiting on cloud worker session db6eead2cb8646eba42e47039543b187"
+                " (build of #985 on PR #986)."
+            ),
             "db6eead2cb8646eba42e47039543b187",
         ),
         (
-            "STILL WORKING: waiting on verifier pass 2 (session 42272f5175ea4d6d8191e68730720884)"
-            " and CI for #1291.",
+            (
+                "STILL WORKING: waiting on verifier pass 2 (session 42272f5175ea4d6d8191e68730720884)"
+                " and CI for #1291."
+            ),
             "42272f5175ea4d6d8191e68730720884",
         ),
     ],
@@ -116,3 +120,7 @@ def test_a_waits_line_may_name_a_set() -> None:
     assert oa.wait_of(text) == f"#12, o/r#13, {'a' * 32}"
     assert oa.wait_of("STILL WORKING: x\nWaits: #12, soon") != "#12, soon"  # all or none
     assert oa.wait_of("STILL WORKING: x\nWaits: supervisor, #12") == "supervisor"
+
+
+def test_a_mistyped_time_in_a_set_voids_the_line() -> None:
+    assert oa.trailer_items("STILL WORKING: x\nWaits: until 2026-13-40T99:99Z, #12") == []

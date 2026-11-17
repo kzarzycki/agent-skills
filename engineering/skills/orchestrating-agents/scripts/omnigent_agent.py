@@ -4423,10 +4423,8 @@ def log_outcome(log: Path, code: int, run: str | None = None) -> str:
     return "\n".join([f"exit {code}", *(body[-LOG_TAIL:] if code else body[-1:])])
 
 
-def pr_outcome(pr: int, until: str, timeout: float, repo: str = "") -> tuple[int, str] | None:
-    """PR ``pr``'s ``until`` condition, once it is settled: 0 and a line when it holds, 1 and a line
-    when it never will (closed unmerged, a check red); None while it is pending. The query gets
-    ``timeout`` seconds."""
+def pr_view(pr: int, timeout: float, repo: str = "") -> dict:
+    """PR ``pr``'s state and checks from one ``gh pr view``, which gets ``timeout`` seconds."""
     view = gh(
         "pr",
         "view",
@@ -4436,7 +4434,16 @@ def pr_outcome(pr: int, until: str, timeout: float, repo: str = "") -> tuple[int
         "state,statusCheckRollup",
         timeout=timeout,
     )
-    data = json.loads(view)
+    return json.loads(view)
+
+
+def pr_outcome(
+    pr: int, until: str, timeout: float, repo: str = "", data: dict | None = None
+) -> tuple[int, str] | None:
+    """PR ``pr``'s ``until`` condition, once it is settled: 0 and a line when it holds, 1 and a line
+    when it never will (closed unmerged, a check red); None while it is pending. The query gets
+    ``timeout`` seconds; ``data`` is a ``pr_view`` already read, which spares the query."""
+    data = data or pr_view(pr, timeout, repo)
     state = data["state"]
     if until in ("merged", "closed") and state != "OPEN":
         held = state == "MERGED" or until == "closed"
@@ -4466,8 +4473,9 @@ def pr_outcome(pr: int, until: str, timeout: float, repo: str = "") -> tuple[int
 def pr_settled(pr: int, repo: str = "") -> tuple[int, str] | None:
     """A PR's end read from GitHub, not from any agent's words: closed or merged, else its checks
     finished; None while it is open with a check pending or none registered yet."""
-    return pr_outcome(pr, "closed", HTTP_SECONDS, repo) or pr_outcome(
-        pr, "checks", HTTP_SECONDS, repo
+    data = pr_view(pr, HTTP_SECONDS, repo)  # one read decides both conditions
+    return pr_outcome(pr, "closed", HTTP_SECONDS, repo, data) or pr_outcome(
+        pr, "checks", HTTP_SECONDS, repo, data
     )
 
 
@@ -5964,7 +5972,13 @@ def trailer_items(text: str) -> list[tuple[str, str]]:
     for part in re.split(r"\s*,\s*|\s+and\s+", found[-1].strip()) if found else []:
         if not (m := TRAILER_FORMS.fullmatch(part.strip())):
             return []
-        items.append(next((k, v) for k, v in m.groupdict().items() if v))
+        form, value = next((k, v) for k, v in m.groupdict().items() if v)
+        if form == "until":
+            try:
+                datetime.fromisoformat(value.replace(" ", "T"))
+            except ValueError:
+                return []  # a mistyped time in a set: no half-read line
+        items.append((form, value))
     return items
 
 
@@ -7141,6 +7155,17 @@ def supervise_registry(
         last = max(float(info.get("updated_at") or 0), active(other))
         return time.time() - last < DEADLINE_SECONDS
 
+    def settled(lead: dict, pr: int, repo: str, fresh: bool = False):
+        """``pr_settled`` for ``lead``, read at most once per ``PR_POLL_SECONDS`` unless ``fresh``,
+        so the overdue check and the news check share one GitHub read."""
+        seen = lead.setdefault("pr_seen", {})
+        key = f"{repo}#{pr}"
+        if not fresh and key in seen and time.time() - seen[key][0] < PR_POLL_SECONDS:
+            return seen[key][1] and tuple(seen[key][1])
+        found = pr_settled(pr, repo)
+        seen[key] = [time.time(), found]
+        return found
+
     def moving(sid: str, lead: dict, wait: str = "") -> bool:
         """Whether every session ``sid``'s wait names shows life (``alive``). A wait names X by
         a full session id in ``sid``'s follow set: one of its leads (the sessions its line's
@@ -7159,7 +7184,7 @@ def supervise_registry(
             return False
         if ref := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", wait):  # a PR: GitHub says
             try:  # open with a check pending is a wait that is live; ended, it is news instead
-                return pr_settled(int(ref[2]), ref[1] or "") is None
+                return settled(lead, int(ref[2]), ref[1] or "") is None
             except Exception:  # noqa: BLE001 - unread: not known to be moving
                 return False
         if re.fullmatch(r"b(?=[a-z]{0,7}[0-9])[a-z0-9]{8}", wait):  # its own background job
@@ -7342,7 +7367,7 @@ def supervise_registry(
         for item in items:
             if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", item):
                 try:
-                    found = pr_settled(int(m[2]), m[1] or "")
+                    found = settled(lead, int(m[2]), m[1] or "", fresh=True)
                 except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
                     log(("pr", sid), f"{sid}: PR #{m[2]} not read: {reason(e)}")
                     pending = True
@@ -7354,6 +7379,10 @@ def supervise_registry(
                     failed = failed or found[1]
                 else:
                     done.append(found[1])
+            elif (
+                item == "CI"
+            ):  # not read here: a set naming it is not over; the deadline is the net
+                pending = True
             elif re.fullmatch(r"[0-9a-f]{32}", item):
                 end = session_end(item)
                 if end is None:
