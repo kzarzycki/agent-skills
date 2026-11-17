@@ -8,7 +8,7 @@
     uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
     uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
-    uv run --python 3.11 scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
+    uv run --python '>=3.11' scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
@@ -4141,7 +4141,7 @@ def setup_problems(root: Path) -> list[str]:
     except ImportError:
         refusal = (
             "check setup reads mise's TOML with tomllib, which needs Python 3.11 or later: "
-            "run `uv run --python 3.11 <path to>/approvals.py check setup`"
+            "run `uv run --python '>=3.11' <path to>/approvals.py check setup`"
         )
         return [refusal]
     found = []

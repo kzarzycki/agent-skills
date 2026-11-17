@@ -214,4 +214,13 @@ def test_check_setup_refuses_on_a_python_without_tomllib_and_names_the_flag(
     monkeypatch.setitem(sys.modules, "tomllib", None)  # `import tomllib` then raises ImportError
     repo_with(tmp_path, monkeypatch, {POLICY: FENCED, "mise.toml": UV_TASK})
     code, out = run_setup(capsys)
-    assert code == 1 and "Python 3.11" in out and "uv run --python 3.11" in out
+    assert code == 1 and "Python 3.11" in out and "uv run --python '>=3.11'" in out
+
+
+def test_a_task_whose_run_is_a_list_is_read_line_by_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ci = '[tasks.ci]\nrun = ["mise run fmt", "cargo check"]\n'
+    flow = (WORKFLOW % "install: false").replace("loop:approvals merge 1", "ci")
+    repo_with(tmp_path, monkeypatch, {POLICY: FENCED, "mise.toml": VIA_TASK + ci, FLOW: flow})
+    assert run_setup(capsys)[0] == 0
