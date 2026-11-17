@@ -532,13 +532,14 @@ import sys
 import tempfile
 import threading
 import time
-import tomllib
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any, NamedTuple
+
+import tomllib
 
 try:
     import yaml
@@ -4112,7 +4113,9 @@ def pack_tasks(root: Path) -> set[str]:
         if task not in named
         and (
             PACK_SCRIPT.search(body)
-            or any(re.search(rf"mise run\b[^\n]*[ '\"]{re.escape(other)}\b", body) for other in named)
+            or any(
+                re.search(rf"mise run\b[^\n]*[ '\"]{re.escape(other)}\b", body) for other in named
+            )
         )
     }:
         named |= grew
@@ -4157,7 +4160,8 @@ def setup_problems(root: Path) -> list[str]:
             )
             # another step that installs uv (mise install, setup-uv) makes the skip harmless; step order is not read
             installs_uv = any(
-                "setup-uv" in str(step.get("uses", "")) or re.search(r"\bmise install\b", str(step.get("run", "")))
+                "setup-uv" in str(step.get("uses", ""))
+                or re.search(r"\bmise install\b", str(step.get("run", "")))
                 for step in steps
             )
             if skipped and runs_pack and not installs_uv:
@@ -8430,7 +8434,9 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return affected_tests()
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
         return heavy(args.words)
-    if args.command == "check" and args.point == "setup":  # reads the policy itself, to list it beside the rest
+    if (
+        args.command == "check" and args.point == "setup"
+    ):  # reads the policy itself, to list it beside the rest
         return setup()
     one_repo()
     if args.command == "check":

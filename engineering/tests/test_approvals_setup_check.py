@@ -37,7 +37,9 @@ jobs:
       - run: mise run loop:approvals merge 1
 """
 FLOW = ".github/workflows/approvals.yml"
-TABLE_TASK = '[tasks]\nlogin = "python3 .agents/skills/engineering-loop/scripts/approvals.py check merge"\n'
+TABLE_TASK = (
+    '[tasks]\nlogin = "python3 .agents/skills/engineering-loop/scripts/approvals.py check merge"\n'
+)
 VIA_TASK = UV_TASK + '[tasks.check]\nrun = "mise run loop:approvals merge 1"\n'
 PACK_TASK_FLOW = WORKFLOW.replace("loop:approvals", "check")
 
@@ -105,11 +107,18 @@ def test_a_bare_python_task_fails_the_check_until_it_runs_with_uv(
     [
         ("mise.toml", TABLE_TASK),
         ("mise.local.toml", BARE_TASK),
-        (".mise/tasks/approvals", "#!/bin/sh\npython3 .agents/skills/engineering-loop/scripts/approvals.py check merge\n"),
+        (
+            ".mise/tasks/approvals",
+            "#!/bin/sh\npython3 .agents/skills/engineering-loop/scripts/approvals.py check merge\n",
+        ),
     ],
 )
 def test_a_bare_python_step_in_any_mise_form_fails_the_check(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], path: str, text: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    path: str,
+    text: str,
 ) -> None:
     repo_with(tmp_path, monkeypatch, {POLICY: FENCED, path: text})
     code, out = run_setup(capsys)
@@ -118,9 +127,14 @@ def test_a_bare_python_step_in_any_mise_form_fails_the_check(
 
 @pytest.mark.parametrize("setting", ["install: false", "install_args: node", "install_args: ''"])
 def test_a_workflow_that_installs_no_uv_fails_the_check_until_it_does(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], setting: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    setting: str,
 ) -> None:
-    repo = repo_with(tmp_path, monkeypatch, {POLICY: FENCED, "mise.toml": UV_TASK, FLOW: WORKFLOW % setting})
+    repo = repo_with(
+        tmp_path, monkeypatch, {POLICY: FENCED, "mise.toml": UV_TASK, FLOW: WORKFLOW % setting}
+    )
     code, out = run_setup(capsys)
     assert code == 1 and "job `approvals`" in out
     (repo / FLOW).write_text(WORKFLOW % "install_args: uv")
@@ -130,7 +144,11 @@ def test_a_workflow_that_installs_no_uv_fails_the_check_until_it_does(
 def test_a_task_that_reaches_a_pack_script_through_another_task_counts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    repo_with(tmp_path, monkeypatch, {POLICY: FENCED, "mise.toml": VIA_TASK, FLOW: PACK_TASK_FLOW % "install: false"})
+    repo_with(
+        tmp_path,
+        monkeypatch,
+        {POLICY: FENCED, "mise.toml": VIA_TASK, FLOW: PACK_TASK_FLOW % "install: false"},
+    )
     code, out = run_setup(capsys)
     assert code == 1 and "job `approvals`" in out
 
@@ -139,7 +157,9 @@ def test_a_task_that_reaches_a_pack_script_through_another_task_counts(
 def test_a_job_that_installs_uv_another_way_passes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], step: str
 ) -> None:
-    flow = (WORKFLOW % "install: false").replace("      - run: mise run", f"      {step}\n      - run: mise run")
+    flow = (WORKFLOW % "install: false").replace(
+        "      - run: mise run", f"      {step}\n      - run: mise run"
+    )
     repo_with(tmp_path, monkeypatch, {POLICY: FENCED, "mise.toml": UV_TASK, FLOW: flow})
     assert run_setup(capsys)[0] == 0
 
