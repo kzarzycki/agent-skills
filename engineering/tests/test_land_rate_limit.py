@@ -284,6 +284,7 @@ def test_a_low_quota_poll_still_says_the_wait_each_minute_and_asks_github_each_p
 def test_a_failed_quota_read_keeps_the_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     def failing(*args: str) -> str:
         raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
+
     monkeypatch.setattr(github.random, "randint", lambda low, high: 0)
 
     monkeypatch.setattr(github, "gh", failing)

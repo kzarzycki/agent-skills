@@ -22,7 +22,7 @@ def land(
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(approvals.github, "gh", lambda *args, **_k: calls.append(args) or "")
     monkeypatch.setattr(approvals, "land_body", lambda _pull: None)
-    monkeypatch.setattr(approvals, "pull_status", lambda _n: {"state": "MERGED"})
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
     monkeypatch.setattr(approvals, "git", lambda *args: TREE if args[0] == "rev-parse" else "")
     monkeypatch.setattr(approvals, "publish", lambda *_a, **_k: None)
     monkeypatch.setattr(approvals, "drop_records", lambda _heads: None)
