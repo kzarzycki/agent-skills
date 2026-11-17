@@ -90,7 +90,9 @@ def test_an_author_not_read_still_raises_the_landing_naming_why(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry, head = base.following(tmp_path), [OLD]
-    github(monkeypatch, head, {"843": "release-bot[bot]", "846": "me"}, listing="gh pr list: HTTP 502")
+    github(
+        monkeypatch, head, {"843": "release-bot[bot]", "846": "me"}, listing="gh pr list: HTTP 502"
+    )
     moved(base.Lead(base.told("brief", 60)), registry, monkeypatch, head)
     (event,) = base.landed(registry)
     assert event["line"].endswith("merged since " + OLD[:12] + ": not read: gh pr list: HTTP 502")
