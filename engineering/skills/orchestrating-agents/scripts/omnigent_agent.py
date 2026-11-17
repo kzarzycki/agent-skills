@@ -5952,17 +5952,27 @@ def own_run_only(text: str) -> bool:
     return bool(tokens) and all(t.lower() in OWN_RUN_WORDS for t in tokens)
 
 
-def trailer_of(text: str) -> dict[str, str]:
-    """The last ``Waits:`` line of a ``STILL WORKING`` message, as the one form it names
-    (``supervisor``, ``session``, ``ref``, ``ci`` or ``until``: its value); empty when there is no
-    such line or it names none of them."""
+def trailer_items(text: str) -> list[tuple[str, str]]:
+    """The forms the last ``Waits:`` line of a ``STILL WORKING`` message names, in order, each
+    ``(form, value)`` with the form ``supervisor``, ``session``, ``ref``, ``ci`` or ``until``. The
+    line is a set: items split by a comma or "and", all of which must be a form, else none count,
+    since a line half read would wake a lead on a wrong thing. Empty when there is no such line."""
     if "STILL WORKING" not in text:
-        return {}
+        return []
     found = TRAILER.findall(text[text.find("STILL WORKING") :])
-    if not found or not (m := TRAILER_FORMS.fullmatch(found[-1].strip())):
-        return {}
-    form, value = next((k, v) for k, v in m.groupdict().items() if v)
-    return {form: value}
+    items = []
+    for part in re.split(r"\s*,\s*|\s+and\s+", found[-1].strip()) if found else []:
+        if not (m := TRAILER_FORMS.fullmatch(part.strip())):
+            return []
+        items.append(next((k, v) for k, v in m.groupdict().items() if v))
+    return items
+
+
+def trailer_of(text: str) -> dict[str, str]:
+    """The first form the ``Waits:`` line names (``trailer_items``) as ``{form: value}``; a
+    ``supervisor`` anywhere in it wins, since the supervisor is the one who must act then."""
+    items = trailer_items(text)
+    return dict([next((i for i in items if i[0] == "supervisor"), items[0])]) if items else {}
 
 
 def wait_line(words: list[str]) -> str:
@@ -5993,6 +6003,10 @@ def wait_of(text: str, at: float | None = None) -> str:
     written), else ``unknown``."""
     if ending_of(text) == "PARKED":
         return "parked"
+    if len(items := trailer_items(text)) > 1 and not trailer_of(text).get("supervisor"):
+        return ", ".join(  # a set: each thing it waits on, as its own wait would name it
+            {"ci": "CI"}.get(f, v.strip("[]")) for f, v in items if f != "until"
+        )
     if tr := trailer_of(text):
         form, value = next(iter(tr.items()))
         if form == "until":
@@ -6030,12 +6044,10 @@ def wait_of(text: str, at: float | None = None) -> str:
         ahead = [x for x in times if written is not None and x[1].timestamp() > written]
         if pick := (waited or ahead or times)[:1]:
             return f"until {pick[0][2]}"
+    if len(ids := named_of(text)) == 1:  # a child's id anywhere in the wait, not only after "on"
+        return ids[0]
     if m := WAIT.search(text):
         return m.group(1) if m.group(1) == "CI" else m.group(1).lower()
-    if (
-        len(ids := named_of(text)) == 1
-    ):  # a child's id anywhere in the wait, not only after "on <word>"
-        return ids[0]
     if m := NAMED.search(text):
         return m.group(1).lower()
     return "unknown"
@@ -7129,7 +7141,7 @@ def supervise_registry(
         last = max(float(info.get("updated_at") or 0), active(other))
         return time.time() - last < DEADLINE_SECONDS
 
-    def moving(sid: str, lead: dict) -> bool:
+    def moving(sid: str, lead: dict, wait: str = "") -> bool:
         """Whether every session ``sid``'s wait names shows life (``alive``). A wait names X by
         a full session id in ``sid``'s follow set: one of its leads (the sessions its line's
         ``leads=`` registry follows) or of its ``kin`` (its live children and subscriptions, a
@@ -7140,7 +7152,9 @@ def supervise_registry(
         session, a session outside its follow set, the owner, a word no kin answers), a named
         session that shows no life or is not read, and a registry or kin not read, are False:
         the deadline is raised as without it."""
-        wait = lead["wait"]
+        wait = wait or lead["wait"]
+        if ", " in wait:  # a set is live while any one of its members is
+            return any(moving(sid, lead, part) for part in wait.split(", "))
         if wait == notify or wait == "unknown":
             return False
         if ref := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", wait):  # a PR: GitHub says
@@ -7263,25 +7277,6 @@ def supervise_registry(
                 head = f"{sid} {lead['title']}".rstrip()
                 line = f"{head}: {other} ended {over['ending']} at {at}; your wait still names it"
                 say(line, sid, f"deadline:{sid}:{other}:{lead.get('turn')}", "news")
-        # a session it started (its children and subscriptions) that ended is news to it even when
-        # its wait names none: the lead cannot tell from its own words that the wait is over
-        try:
-            kin = [k for k in og.kin(sid) if k != notify and k not in quiet_named]
-        except Exception as e:  # noqa: BLE001 - unread: only the named sessions are told
-            log(("kin", sid), f"{sid}: children not read: {reason(e)}")
-            kin = []
-        for other in kin:
-            try:
-                over = lead_status(og.info(other), og.items(other))
-            except Exception as e:  # noqa: BLE001 - unread: not known to have ended
-                log(("kin", other), f"{other}: history not read: {reason(e)}")
-                continue
-            log(("kin", other), None)
-            if over["ending"] and over["state"] == "idle":
-                at = datetime.fromtimestamp(over["turn_at"], timezone.utc).strftime("%H:%MZ")
-                head = f"{sid} {lead['title']}".rstrip()
-                line = f"{head}: {other}, a session it started, ended {over['ending']} at {at}"
-                say(line, sid, f"deadline:{sid}:{other}:{lead.get('turn')}", "news")
         quiet = time.time() - lead["progress_at"]
         spent = lead.get("nudged_at") == lead["progress_at"]
         if due is not None and lead["progress_at"] < due:
@@ -7305,28 +7300,82 @@ def supervise_registry(
                     line += f"\nquiet: {', '.join(quiet_named)}"
                 say(line, sid, f"deadline:{sid}:{lead['progress_at']:.0f}{nudged}", "deadline")
 
-    def pr_news(sid: str, lead: dict) -> None:
-        """A PR a lead's wait names (``#n`` or ``owner/repo#n``) that merged, closed or finished its
-        checks is news to the lead, read from GitHub and not from its words: once per lead turn and
-        outcome, at most one read per ``PR_POLL_SECONDS``. Only while the lead's turn has ended."""
-        m = re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", lead.get("wait") or "")
-        if not m or lead.get("state") != "idle" or lead.get("direct"):
+    def wait_news(sid: str, lead: dict) -> None:
+        """What a lead waits on, read from GitHub and the sessions themselves and not from its
+        words, is news to it once it has settled, at most one read per ``PR_POLL_SECONDS`` and
+        only while its turn has ended. The wait is a set (a ``Waits:`` line may name several PRs
+        and sessions): the first failure (a PR closed unmerged or red, a session that failed, was
+        archived, ended ``USER NEEDED`` or ``PARKED``) is news at once, successes are not, and
+        when every member has ended that is news too. A session the lead started that ended with a
+        final state, though its wait names none, is news as well; its ``DONE`` only once the
+        set has no pending member. An intermediate ``STILL WORKING`` turn is no end."""
+        if lead.get("state") != "idle" or lead.get("direct"):
             return
         now = time.time()
-        if now - float(lead.get("pr_at") or 0) < PR_POLL_SECONDS:
+        if now - float(lead.get("news_at") or 0) < PR_POLL_SECONDS:
             return
-        lead["pr_at"] = now
-        repo, pr = m.group(1) or "", int(m.group(2))
+        lead["news_at"] = now
+        wait = lead.get("wait") or ""
+        items = (
+            [] if wait in ("unknown", "parked") or wait.startswith("until ") else wait.split(", ")
+        )
+        head = f"{sid} {lead['title']}".rstrip()
+        done: list[str] = []  # members that ended well
+        failed = ""
+        pending = False
+
+        def session_end(other: str) -> tuple[str, bool] | None:
+            """How ``other`` ended: a line and whether it failed; None while it has not."""
+            try:
+                over = lead_status(og.info(other), og.items(other))
+            except Exception as e:  # noqa: BLE001 - unread: not known to have ended
+                log(("kin", other), f"{other}: history not read: {reason(e)}")
+                return None
+            log(("kin", other), None)
+            at = datetime.fromtimestamp(over["turn_at"], timezone.utc).strftime("%H:%MZ")
+            if over["state"] in ("failed", "archived"):
+                return f"{other} {over['state']}", True
+            if over["state"] == "idle" and over["ending"]:
+                return f"{other} ended {over['ending']} at {at}", over["ending"] != "DONE"
+            return None
+
+        for item in items:
+            if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", item):
+                try:
+                    found = pr_settled(int(m[2]), m[1] or "")
+                except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
+                    log(("pr", sid), f"{sid}: PR #{m[2]} not read: {reason(e)}")
+                    pending = True
+                    continue
+                log(("pr", sid), None)
+                if found is None:
+                    pending = True
+                elif found[0]:
+                    failed = failed or found[1]
+                else:
+                    done.append(found[1])
+            elif re.fullmatch(r"[0-9a-f]{32}", item):
+                end = session_end(item)
+                if end is None:
+                    pending = True
+                elif end[1]:
+                    failed = failed or end[0]
+                else:
+                    done.append(end[0])
+        if failed or (items and not pending and done):
+            line = f"{head}: {failed or '; '.join(done)}; your wait names it"
+            kind = "fail" if failed else "all"
+            say(line, sid, f"wait:{sid}:{lead.get('turn')}:{kind}:{(failed or wait)[:60]}", "news")
         try:
-            found = pr_settled(pr, repo)
-        except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
-            log(("pr", sid), f"{sid}: PR #{pr} not read: {reason(e)}")
+            kin = [k for k in og.kin(sid) if k != notify and k not in items]
+        except Exception as e:  # noqa: BLE001 - unread: only what the wait names is told
+            log(("kin", sid), f"{sid}: children not read: {reason(e)}")
             return
-        log(("pr", sid), None)
-        if found:
-            head = f"{sid} {lead['title']}".rstrip()
-            line = f"{head}: {found[1]}; your wait names it"
-            say(line, sid, f"pr:{sid}:{lead.get('turn')}:{pr}:{found[1]}", "news")
+        for other in kin:
+            end = session_end(other)
+            if end and (end[1] or not pending):
+                line = f"{head}: {end[0]}; a session it started"
+                say(line, sid, f"deadline:{sid}:{other}:{lead.get('turn')}", "news")
 
     def due(sid: str, lead: dict) -> None:
         """Send a transient failure's revive once its backoff (``retrying.at``) has passed, through
@@ -7464,7 +7513,7 @@ def supervise_registry(
                             window = time.monotonic()
                             say(event, sid, eid, kind)
                         if console:
-                            pr_news(sid, lead)
+                            wait_news(sid, lead)
                             overdue(sid, lead)
                             due(sid, lead)
                         continue

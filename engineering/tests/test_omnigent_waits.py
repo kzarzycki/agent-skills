@@ -89,3 +89,30 @@ def test_wait_on_prints_only_a_well_formed_line_the_parser_reads_back() -> None:
     for bad in (["session", "ef38cdf6"], ["pr"], ["ci", "now"], ["until", "2026-13-40T99:99Z"], []):
         with pytest.raises(oa.Fail):
             oa.wait_line(bad)
+
+
+@pytest.mark.parametrize(
+    ("text", "child"),
+    [
+        (
+            "STILL WORKING: waiting on cloud worker session db6eead2cb8646eba42e47039543b187"
+            " (build of #985 on PR #986).",
+            "db6eead2cb8646eba42e47039543b187",
+        ),
+        (
+            "STILL WORKING: waiting on verifier pass 2 (session 42272f5175ea4d6d8191e68730720884)"
+            " and CI for #1291.",
+            "42272f5175ea4d6d8191e68730720884",
+        ),
+    ],
+)
+def test_a_child_id_inside_the_sentence_is_the_wait(text: str, child: str) -> None:
+    assert oa.wait_of(text) == child
+    assert oa.named_of(text) == [child]
+
+
+def test_a_waits_line_may_name_a_set() -> None:
+    text = "STILL WORKING: x\nWaits: #12, o/r#13 and session " + "a" * 32
+    assert oa.wait_of(text) == f"#12, o/r#13, {'a' * 32}"
+    assert oa.wait_of("STILL WORKING: x\nWaits: #12, soon") != "#12, soon"  # all or none
+    assert oa.wait_of("STILL WORKING: x\nWaits: supervisor, #12") == "supervisor"
