@@ -1123,8 +1123,26 @@ def matches(terms: dict[str, Any], labels: set[str], paths: list[str] | None) ->
 INCUBATING = "incubating"
 # the body line naming the epic that tracks the feature an incubating PR belongs to
 INCUBATES = re.compile(r"^[ \t>*-]*Incubates:[ \t]+#(\d+)\b", re.MULTILINE | re.IGNORECASE)
+GRADUATES = re.compile(r"^[ \t>*-]*Graduates:?[ \t]+#(\d+)\b", re.MULTILINE | re.IGNORECASE)
 # the requirements `incubating.waive` may name; an eligible PR stops owing each (incubation)
 WAIVABLE = ("evidence", "proof_run", "verifier", "full_gate", "coverage")
+
+
+def graduation(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
+    """One line per `incubating` issue the PR would close without a `Graduates #<n>` line for it: an epic stays open
+    while the feature incubates, and graduating is the merge of a full-loop PR that says so (gatekeeper.py graduate)."""
+    body = pull["body"] or ""
+    kinds = links(body)
+    said = {int(n) for n in GRADUATES.findall(QUOTED.sub("", body))}
+    return [
+        f"PR #{pull['number']} would close #{issue['number']}, which is labelled `{INCUBATING}`: an incubating issue"
+        f" stays open until a PR graduates it (`Graduates #{issue['number']}`, with the full loop); use `Part of`"
+        f" for a slice"
+        for issue in issues
+        if INCUBATING in names(issue)
+        and kinds.get(issue["number"], CLOSES) == CLOSES
+        and issue["number"] not in said
+    ]
 
 
 def incubation(
@@ -1136,6 +1154,10 @@ def incubation(
     policy = settings(loop).get(INCUBATING)
     if policy is None or INCUBATING not in names(pull):
         return set(), []
+    if GRADUATES.search(QUOTED.sub("", pull["body"] or "")):
+        return set(), [
+            f"PR #{pull['number']} graduates an issue, so it owes the full loop, not the `{INCUBATING}` waivers"
+        ]
     waive = policy.get("waive", list(WAIVABLE))
     if unknown := [name for name in waive if name not in WAIVABLE]:
         raise Refused(
@@ -2268,6 +2290,8 @@ def proofs(
             found += linked(pull, issues, loop)
     waived, lapsed = incubation(pull, issues, loop) if point == "merge" else (set(), [])
     found += lapsed
+    if point == "merge":
+        found += graduation(pull, issues)
     if "evidence" not in waived:
         found += demo_form(pull)
     if point != "merge":
