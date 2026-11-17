@@ -21,6 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 from urllib.error import HTTPError, URLError
+from urllib.parse import unquote
 from urllib.request import Request
 
 import pytest
@@ -99,6 +100,19 @@ class FakeOmnigent:
         return REAL_USERS(self, workspace, host_id)
 
     def call(self, method: str, path: str, body: object = None) -> dict:
+        if path.startswith("/v1/hosts/"):  # a host's folder listing: the names under it in procs
+            host, folder = path.split("?")[0].removeprefix("/v1/hosts/").split("/filesystem/")
+            under = "/" + unquote(folder).strip("/") + "/"
+            names = {
+                k[len(under) :].split("/")[0]
+                for k in self.procs.get(host, {})
+                if k.startswith(under)
+            }
+            if not names:
+                raise omnigent_agent.Fail("GET listing") from HTTPError(
+                    path, 404, "", Message(), None
+                )
+            return {"data": [{"name": n} for n in sorted(names)]}
         if (method, path) == ("GET", SESSIONS_LIVE):
             made = [
                 {
@@ -124,7 +138,7 @@ class FakeOmnigent:
 
     def read_file(self, sid: str, path: str) -> str:  # a host's /proc, by host, else none
         proc = self.procs.get(self.hosts_of.get(sid) or self.host_of(sid), {})
-        if path not in proc:
+        if proc.get(path) is None:  # None: listed, but an older host answers 404 to the read
             raise omnigent_agent.Gone(f"{path}: not found")
         return proc[path]
 
@@ -3882,6 +3896,51 @@ def test_a_cloud_start_waits_on_its_bridge_host_s_memory_by_its_row(
     assert og.hosts_of == {"s0": "far", "s1": "far"}
 
 
+def test_a_far_pinned_main_checkout_is_refused_before_any_session_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "oz", meminfo=mem(9000), loadavg="0.10 0 0")
+    pin = '{"remote": {"defaultEnvironmentId": "env_1"}}'
+    files, settings = og.procs["far"], "/there/repo/.claude/settings.local.json"
+    argv = [*far_start("claude", "oz"), "--workspace", "/there/repo"]
+    files[settings], files["/there/repo/.git"] = pin, "HEAD\nconfig"  # .git a folder: main
+    assert omnigent_agent.main(argv) == 1
+    assert "claude-cloud" in capsys.readouterr().err and og.sessions == {}
+    # a folder inside the checkout is the checkout
+    files["/there/repo/engineering/x"] = ""
+    sub = [*far_start("claude", "oz"), "--workspace", "/there/repo/engineering"]
+    assert omnigent_agent.main(sub) == 1 and og.sessions == {}
+    assert "/there/repo is the main checkout" in capsys.readouterr().err  # the root it found
+    started = 0
+    other = "/there/repo/.claude/settings.json"
+    for settings_text, git, also in (
+        (pin, "gitdir: /there/main/.git/worktrees/repo", None),  # a worktree
+        ('{"permissions": {}}', "HEAD\nconfig", None),  # settings with no pin
+        (None, "HEAD\nconfig", "{}"),  # .claude holds another file, not the settings
+        (None, "HEAD\nconfig", None),  # no .claude folder at all
+    ):
+        files["/there/repo/.git"] = git
+        files.pop(settings, None)
+        files.pop(other, None)
+        if settings_text:
+            files[settings] = settings_text
+        if also:
+            files[other] = also
+        assert omnigent_agent.main(argv) == 0
+        started += 1
+        assert len(og.sessions) == started and "skipped" not in capsys.readouterr().err
+    files["/there/repo/.git"] = "HEAD\nconfig"
+    for bad in ("{", None):  # not JSON; listed but the read answers 404 (an older host)
+        files[settings] = bad  # type: ignore[assignment]
+        assert omnigent_agent.main(argv) == 0
+        started += 1
+        err = capsys.readouterr().err
+        assert len(og.sessions) == started and "pinned-checkout check skipped on oz" in err
+    og.others, og.archived = [], list(og.sessions)  # no live session there to read through
+    assert omnigent_agent.main(argv) == 0
+    assert "pinned-checkout check skipped on oz" in capsys.readouterr().err
+
+
 def test_a_host_s_row_overridden_by_its_variable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6982,7 +7041,73 @@ def broadcast(
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
     (tmp_path / "m.md").write_text(text)
-    return omnigent_agent.main(["broadcast", str(tmp_path / "m.md"), *args])
+    live = [] if "--decisions" in args else ["--stop"]
+    return omnigent_agent.main(["broadcast", str(tmp_path / "m.md"), *live, *args])
+
+
+def test_a_broadcast_without_stop_writes_the_decisions_file_and_posts_to_no_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    board = tmp_path / "board.md"
+    board.write_text("# Board\n\n## Standing decisions\n- merge on green\n\n## Closed\n- x\n")
+    before = list(og.sessions[lead])
+    args = ("--include", lead, "--decisions", str(board))
+    assert broadcast(og, tmp_path, monkeypatch, *args, text="pause\nto save tokens") == 0
+    assert "posted to no session" in capsys.readouterr().out
+    assert og.sessions[lead] == before
+    assert omnigent_agent.standing(board) == "- merge on green"  # the owner's section, unchanged
+    text = board.read_text()
+    assert "## Chief of staff decisions\n- pause to save tokens\n" in text
+    assert "## Standing decisions\n- merge on green\n\n## Closed\n- x" in text
+    fresh = tmp_path / "fresh.md"
+    assert broadcast(og, tmp_path, monkeypatch, "--decisions", str(fresh)) == 0
+    assert "- rule" in fresh.read_text()
+    assert omnigent_agent.standing(fresh) == ""  # not the owner's section
+
+
+def test_a_dry_run_without_stop_writes_nothing_and_no_flag_is_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    board = tmp_path / "board.md"
+    args = ("--include", lead, "--decisions", str(board), "--dry-run")
+    assert broadcast(og, tmp_path, monkeypatch, *args) == 0
+    assert not board.exists()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "m.md").write_text("rule")
+    assert omnigent_agent.main(["broadcast", str(tmp_path / "m.md"), "--include", lead]) == 1
+    assert "only a stop order" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        omnigent_agent.main(["broadcast", "x", "--stop", "--decisions", str(board)])
+
+
+def test_the_loop_contract_names_the_file_a_lead_reads_and_a_decisions_target_is_that_file() -> (
+    None
+):
+    skills = Path(omnigent_agent.__file__).resolve().parents[2]
+    for doc in ("engineering-loop/SKILL.md", "engineering-loop/lead.md", "chief-of-staff/SKILL.md"):
+        assert "Standing decisions:" in (skills / doc).read_text()
+    # only the new text has these: the lead reads the remote copy, the chief of staff writes its own section
+    assert (
+        "git show origin/<default branch>:<path>"
+        in (skills / "engineering-loop/lead.md").read_text()
+    )
+    cos = (skills / "chief-of-staff/SKILL.md").read_text()
+    assert "git show origin/<default branch>:<path>" in cos
+    assert "under `## Chief of staff decisions`" in cos
+
+
+def test_a_stop_order_still_posts_to_the_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    assert broadcast(og, tmp_path, monkeypatch, "--include", lead, text="STOP") == 0
+    assert "delivered" in capsys.readouterr().out
+    assert omnigent_agent.text_of(og.sessions[lead][-1]).endswith("STOP")
 
 
 def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_archived_or_automations(

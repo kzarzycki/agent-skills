@@ -22,6 +22,10 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    the spec. A brief with "the verifier will check" lists the checks the verifier will run on
    your head: run each on your own head before you report, and list each one's result in the
    report, since a check left to the verifier costs a fix round, a full gate and another pass.
+   For each scriptable Before merge line of the spec, write the check it names and commit it
+   in the PR: in the project's suite where loop.md's `Acceptance tests:` line is set, else as
+   an executable file in `acceptance/<issue>/` (SKILL.md, Acceptance checks), so the example
+   reruns after the merge; a `Manual:` line gets the evidence it names instead.
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
@@ -82,6 +86,11 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    That SHA is the whole provenance: a checksum manifest or digest exchange adds nothing a
    commit does not already pin. A fix that changes code a proof exercises reruns that proof
    before the report, which lists each proof log with the SHA it names.
+   Run the acceptance command on the head (SKILL.md, Acceptance checks) into a log stamped
+   that way and hand it over as the spec's proof. Just before the report, run `git status
+   --porcelain` and commit or remove what it lists, and the report carries the line `git status
+   --porcelain: empty`, since the verifier may review in that tree and an uncommitted check
+   proves nothing on the head.
    A change to a web UI gets a rendered check, since passing tests say nothing about what
    the page shows: the project's own browser e2e when it has one, else `uv run
    <this skill's folder>/scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,

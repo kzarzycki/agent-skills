@@ -89,6 +89,8 @@ class Memory:
             "commit_checks": lambda ref: {},
             "job_log": lambda job: "",
             "commit_tree": lambda sha: sha,
+            "tag_tree": lambda repo, tag: None,
+            "file_at": lambda ref, path, repo=None: None,
             "statuses": lambda sha: self.statuses.get(sha, []),
             "post_status": lambda sha, context, description, state="success": None,
             "post_review": lambda pr, review: None,

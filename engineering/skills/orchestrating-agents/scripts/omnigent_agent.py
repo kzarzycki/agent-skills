@@ -10,7 +10,7 @@
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
-    python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
+    python3 scripts/omnigent_agent.py broadcast <message-file> [--stop | --decisions FILE] [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
     python3 scripts/omnigent_agent.py owner-said <session> <quote-file>
     python3 scripts/omnigent_agent.py status <session>...
@@ -66,7 +66,9 @@ even with ``--answer``; a plain relay sent as a message opens with ``[relayed by
 item, time, author) and the message, and 1 when it is only in a message an agent or Omnigent posted
 (a brief, a supervisor post, a relay) or nowhere: a lead checks a relayed owner decision with it.
 ``broadcast``
-relays one message to every followed lead in the registry (``--registry``, else
+posts only a stop order (``--stop``), which cannot wait for a lead's next turn; any other message
+is added to ``--decisions FILE`` and posted to no session, since each live post wakes every lead
+to re-read its whole context. It relays one message to every followed lead in the registry (``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``), ``--include``'s sessions and, with ``--active-hours N``, every
 top-level session of the caller's updated within N hours, all at once: never this session, an archived one or
 one in an automations project, nor one with a question or approval prompt pending, which a
@@ -1431,39 +1433,22 @@ class Omnigent:
         host = self.hosts().get(host_id, host_id)
 
         def listed(folder: str) -> list[str]:
-            path = "/v1/hosts/" + host_id + "/filesystem/" + quote(folder.strip("/"), safe="/")
-            try:
-                return [e["name"] for e in self.call("GET", path + "?limit=1000").get("data", [])]
-            except Fail as e:
-                cause = e.__cause__
-                missing = isinstance(cause, HTTPError) and cause.code == 404
-                if not missing:
-                    raise Fail(f"{LOOP_FILE}: host {host} unreadable at {folder}: {e}") from e
-                raise Gone(folder) from e
+            return host_listing(self, host_id, folder, str(LOOP_FILE))
 
-        root = Path(workspace)
-        try:
-            listed(workspace)
-        except Gone as e:
-            raise Fail(f"{LOOP_FILE}: workspace {workspace} is not on host {host}") from e
-        while ".git" not in listed(str(root)):
-            if root.parent == root:
-                return ""  # outside a checkout, as locally
-            root = root.parent
+        if (root := far_checkout_root(self, host_id, workspace, str(LOOP_FILE))) is None:
+            return ""  # outside a checkout, as locally
         target = str(root / LOOP_FILE)
         try:
             if LOOP_FILE.name not in listed(str(root / LOOP_FILE.parent)):
                 return ""
         except Gone:
             return ""
-        why = "no live session there to read it through"
-        for s in live_sessions(self, host_id)[:FAR_READS]:
-            try:
-                return self.read_file(str(s["id"]), target)
-            except Gone:  # listed, so an older host refusing the read, not "no line"
-                why = f"read answered 404 for a file the listing shows (session {s['id']})"
-            except Fail as e:
-                why = f"read failed: {e}"
+        try:
+            return read_on_host(self, host_id, target)
+        except Gone as e:  # listed, so an older host refusing the read, not "no line"
+            why = f"read answered 404 for a file the listing shows ({e})"
+        except Fail as e:
+            why = str(e)
         raise Fail(f"{LOOP_FILE}: host {host} can't read {target}: {why}")
 
     def interrupt(self, sid: str) -> None:
@@ -2454,6 +2439,51 @@ def host_limits(name: str) -> tuple[float, float | None]:
     )
 
 
+def host_listing(og: Omnigent, host_id: str, folder: str, what: str) -> list[str]:
+    """The entry names of ``folder`` on host ``host_id`` through the host's file API, which lists a
+    folder with no session. ``Gone`` when it is missing, else ``Fail`` naming ``what`` is read."""
+    path = "/v1/hosts/" + host_id + "/filesystem/" + quote(folder.strip("/"), safe="/")
+    try:
+        return [e["name"] for e in og.call("GET", path + "?limit=1000").get("data", [])]
+    except Fail as e:
+        cause = e.__cause__
+        if not (isinstance(cause, HTTPError) and cause.code == 404):
+            host = og.hosts().get(host_id, host_id)
+            raise Fail(f"{what}: host {host} unreadable at {folder}: {e}") from e
+        raise Gone(folder) from e
+
+
+def far_checkout_root(og: Omnigent, host_id: str, workspace: str, what: str) -> Path | None:
+    """The folder holding ``.git`` at or above ``workspace`` on host ``host_id``, found by listing;
+    None outside a checkout; a workspace that is not on the host is a ``Fail``."""
+    try:
+        host_listing(og, host_id, workspace, what)
+    except Gone as e:
+        host = og.hosts().get(host_id, host_id)
+        raise Fail(f"{what}: workspace {workspace} is not on host {host}") from e
+    root = Path(workspace)
+    while ".git" not in host_listing(og, host_id, str(root), what):
+        if root.parent == root:
+            return None
+        root = root.parent
+    return root
+
+
+def read_on_host(og: Omnigent, host_id: str, path: str) -> str:
+    """``path`` (absolute, on host ``host_id``) read through a live session there, since the host's
+    own file API lists a folder but gives no file's text. ``Gone`` when a session answered 404
+    (naming it), else ``Fail``: no live session, or the read failed."""
+    why: Exception = Fail("no live session there to read it through")
+    for s in live_sessions(og, host_id)[:FAR_READS]:
+        try:
+            return og.read_file(str(s["id"]), path)
+        except Gone:
+            why = Gone(f"session {s['id']}")
+        except Fail as e:
+            why = Fail(f"read failed: {e}")
+    raise why
+
+
 def live_sessions(og: Omnigent, host_id: str) -> list[dict]:
     """The live sessions (not archived, not failed) on host ``host_id``, sub-agents included."""
     path, found, after = "/v1/sessions?kind=any&limit=1000", [], ""
@@ -2622,6 +2652,36 @@ def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
     if len(dirs) == 3 and dirs[0] == dirs[1] and environment_pin(own_settings(Path(dirs[2]))):
         raise Fail(
             f"{workspace} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
+            f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
+            " give the local agent a worktree of it (--workspace)"
+        )
+
+
+def refuse_far_pinned_checkout(og: Omnigent, agent: str, workspace: Path, host_id: str) -> None:
+    """``refuse_pinned_checkout`` for a workspace on host ``host_id``: the checkout root is found by
+    listing, as ``read_loop`` does, and its files are read through a live session there. A main
+    checkout (``.git`` a folder, not a ``gitdir:`` file) whose settings pin an environment is
+    refused. A file the listing shows but the read can't give (a 404 from an older host included)
+    prints one line and the start goes on."""
+    what = f"pinned-checkout check for {agent}"
+    try:
+        if (root := far_checkout_root(og, host_id, str(workspace), what)) is None:
+            return
+        folder = root / SETTINGS.parent
+        try:
+            if SETTINGS.name not in host_listing(og, host_id, str(folder), what):
+                return  # no settings file: nothing pinned
+        except Gone:
+            return
+        pin = environment_pin(json.loads(read_on_host(og, host_id, str(root / SETTINGS))))
+        main = pin and not read_on_host(og, host_id, str(root / ".git")).startswith("gitdir:")
+    except (Fail, Gone, ValueError) as e:  # listed, so a refused read: not "no file"
+        host = og.hosts().get(host_id, host_id)
+        print(f"{workspace}: pinned-checkout check skipped on {host}: {e}", file=sys.stderr)
+        return
+    if main:
+        raise Fail(
+            f"{root} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
             f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
             " give the local agent a worktree of it (--workspace)"
         )
@@ -5741,6 +5801,9 @@ def triage(event: str, decisions: str, prompt: str = ROUTING_PROMPT) -> tuple[st
     return "unsure", "small model: no route in its answer"
 
 
+COS_DECISIONS = "## Chief of staff decisions"
+
+
 def standing(path: Path | None) -> str:
     """The standing decisions in ``path``: the section under a ``## Standing decisions`` heading,
     else the whole file; none without a file, or when it can't be read. A project manager's board,
@@ -5751,12 +5814,34 @@ def standing(path: Path | None) -> str:
     except OSError as e:
         print(f"{path}: {reason(e)}; no standing decisions", file=sys.stderr)
         text = ""
+    text = re.sub(rf"^{COS_DECISIONS}\b.*?(?=^## |\Z)", "", text, flags=re.MULTILINE | re.DOTALL)
     m = re.search(r"^## Standing decisions\b.*?\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
     own = (m.group(1) if m else text).strip()
     node = path.resolve().parent if path and path.name == "board.md" else None
     if node and node.parent.name == "projects" and (node.parent.parent / "board.md").is_file():
         return "\n\n".join(x for x in (standing(node.parent.parent / "board.md"), own) if x)
     return own
+
+
+def add_standing(path: Path, text: str) -> None:
+    """Add ``text`` as a bullet to the ``## Chief of staff decisions`` section of ``path``, created
+    with the file when absent. It is never the ``## Standing decisions`` section, the owner's
+    only, which ``standing`` returns and routing treats as their authority; leads read both."""
+    bullet = "- " + " ".join(text.split())
+    try:
+        old = path.read_text() if path.exists() else ""
+        m = re.search(rf"^{COS_DECISIONS}\b.*?\n(.*?)(?=^## |\Z)", old, re.MULTILINE | re.DOTALL)
+        if m:
+            body = m.group(1).rstrip("\n")
+            new = old[: m.start(1)] + (body + "\n" if body else "") + bullet + "\n\n"
+            new += old[m.end(1) :].lstrip("\n")
+        else:
+            new = (
+                old.rstrip("\n") + "\n\n" if old.strip() else ""
+            ) + f"{COS_DECISIONS}\n{bullet}\n"
+        path.write_text(new)
+    except OSError as e:
+        raise Fail(f"{path}: {reason(e)}") from e
 
 
 def status_line(lead: dict, turn: bool = True) -> str:
@@ -7359,6 +7444,18 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     )
     p.add_argument("--host", action="append", default=[], metavar="NAME", help="only this host")
     p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
+    how = p.add_mutually_exclusive_group()
+    how.add_argument(
+        "--stop",
+        action="store_true",
+        help="a stop order: post it to the sessions now (default: only add it to --decisions)",
+    )
+    how.add_argument(
+        "--decisions",
+        type=Path,
+        metavar="FILE",
+        help="the file a message without --stop is added to, under Chief of staff decisions",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser(
         "launch-dir",
@@ -7770,6 +7867,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             return 0
         if args.cmd == "broadcast":
             text = text_or_file(args.message)[0]
+            if not args.stop and not args.dry_run:
+                if not args.decisions:
+                    raise Fail(
+                        "broadcast posts only a stop order: give --stop, or --decisions FILE"
+                    )
+                add_standing(args.decisions, text)
+                print(f"added to {args.decisions}; posted to no session")
+                return 0
             targets, unsent = broadcast_targets(
                 og, registry, args.active_hours, args.include, args.project, args.host, args.exclude
             )
@@ -8013,7 +8118,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         )
         if launches and here:  # what ends it without a report writes FAILED there
             unreported = report
-        # The aliases are native harnesses; a workspace on another host is that host's to check.
+        if remote and (args.agent in AGENTS or og.harness(args.agent) != CLOUD_HARNESS):
+            refuse_far_pinned_checkout(og, args.agent, workspace, host)
+        # The aliases are native harnesses.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             pin_environment(workspace)
             refuse_untrusted_launch_dir(workspace)
