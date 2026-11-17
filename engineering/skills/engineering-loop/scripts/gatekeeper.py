@@ -4165,10 +4165,10 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
     if not wait:
         return landing(pr, only)[0]
     global held_tip
-    deadline, said, spoke, checked, heard = time.monotonic() + CEILING, "", 0.0, 0.0, ""
+    deadline, said, spoke, heard = time.monotonic() + CEILING, "", 0.0, ""
     github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
     while True:
-        held_tip, checked = None, time.monotonic()
+        held_tip = None
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
