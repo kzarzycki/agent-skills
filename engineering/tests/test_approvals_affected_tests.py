@@ -185,7 +185,12 @@ def test_a_stacked_pr_selects_against_its_own_base(
     git_in(repo, "checkout", "-q", "-B", "work", "stack")
     worker["commit"]("app.py", "value = 2\n")
     monkeypatch.setattr(
-        approvals, "open_pulls", lambda: [{"headRefName": "work", "baseRefName": "stack"}]
+        approvals,
+        "open_pulls",
+        lambda: [
+            {"headRefName": "child", "baseRefName": "work"},  # stacked on this branch, listed first
+            {"headRefName": "work", "baseRefName": "stack"},
+        ],
     )
     assert approvals.main(["affected-tests"]) == 0
     assert worker["ran"]() == ["selected app.py"]
@@ -223,12 +228,18 @@ def test_the_selection_and_the_fallback_run_under_the_host_gate_slot(
     assert held and held[0]
 
 
-def test_base_prints_the_variable_for_a_head_proof_and_runs_nothing(
-    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+def test_a_callers_base_never_narrows_a_plain_pass_recorded_under_the_full_gate(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    worker["set_loop"](f"# Loop\n\nAffected tests: {worker['selector']}\n")
-    worker["commit"]("app.py", "value = 2\n")
-    expect = git_in(worker["repo"], "rev-parse", "main").strip()
-    assert approvals.main(["affected-tests", "--base"]) == 0
-    assert capsys.readouterr().out == f"GATE_BASE={expect}\n"
-    assert worker["ran"]() == []
+    """`gate_env` clears the `Gate base:` variable (else `GATE_BASE`) even when `local_ci_env` doesn't list it, and a
+    head proof's `env` naming it is the one way it gets through."""
+    policy = approvals.Policy(gatekeeper_md("loop:\n  head_proof:\n    status: gate-sel\n    env: [GATE_BASE]\n"))
+    monkeypatch.setattr(approvals, "project", lambda: (None, policy))
+    monkeypatch.setenv("GATE_BASE", "abc")
+    _, _, sets = approvals.gate()
+    assert "GATE_BASE" not in approvals.gate_env({"sets": sets})
+    worker["set_loop"]("# Loop\n\nGate base: MY_BASE\n")
+    monkeypatch.setenv("MY_BASE", "abc")
+    assert "MY_BASE" not in approvals.gate_env({"sets": {}})
+    _, _, with_proof = approvals.gate(["GATE_BASE"])
+    assert approvals.gate_env({"sets": with_proof})["GATE_BASE"] == "abc"

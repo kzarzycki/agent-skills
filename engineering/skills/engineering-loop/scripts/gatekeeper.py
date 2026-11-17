@@ -21,7 +21,7 @@
     uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
-    uv run scripts/approvals.py affected-tests [--base]   # the worker's gate on a draft head: loop.md's `Affected tests:` command, else `check`; --base prints the base variable for `local-ci --record --head-proof`
+    uv run scripts/approvals.py affected-tests   # the worker's gate on a draft head: loop.md's `Affected tests:` command, else `check`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
@@ -5881,28 +5881,31 @@ def pr_base_of_head() -> str | None:
     return None
 
 
-def affected_tests(show_base: bool = False) -> int:
+def gate_base_variable() -> str:
+    """The variable loop.md's line `Gate base:` names, else `GATE_BASE`; refused when it is no variable name."""
+    text = policy_file(toplevel(), LOOP, POLICY_BASE.get()) or ""
+    named = re.search(r"^Gate base:[ \t]*`?([^\s`]+)", text, re.MULTILINE)
+    variable = named.group(1) if named else "GATE_BASE"
+    if not re.fullmatch(r"[A-Za-z_]\w*", variable):
+        raise Refused(f"loop.md's `Gate base:` names {variable!r}, which is no variable name")
+    return variable
+
+
+def affected_tests() -> int:
     """`affected-tests`: the worker's test run on a head, from loop.md's line `Affected tests: <command>` (the command
     selects and runs the tests a change affects against the base it reads from the variable the line `Gate base:`
     names, else `GATE_BASE`). The base is `git merge-base origin/<base> HEAD`, `<base>` being the base of the open PR
     for the checked-out branch, else the default branch; a shallow clone is deepened first (deepened), as `local-ci`
     does. Without the line it runs `mise run check`, with the variable unset, so a project that names no selector runs
     its whole suite. Either runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its
-    exit passes through: a selector that selects nothing exits 0 itself. `--base` prints `<variable>=<merge base>`
-    and runs nothing, for `env "$(approvals.py affected-tests --base)" approvals.py local-ci --record --head-proof`,
-    the `ci: false` gate of record whose head proof's `env` names that variable. Only this verb sets the variable:
-    `land` and `local-ci` never do (gate_env), apart from a head proof's own `env` names."""
+    exit passes through: a selector that selects nothing exits 0 itself. Only this verb sets the variable: `land` and
+    `local-ci` never do, and gate_env clears it from their environment, apart from a head proof's own `env` names."""
     root = toplevel()
     text = policy_file(root, LOOP, POLICY_BASE.get()) or ""
     found = re.search(r"^Affected tests:[ \t]*(.+?)[ \t]*$", text, re.MULTILINE)
-    named = re.search(r"^Gate base:[ \t]*`?([^\s`]+)", text, re.MULTILINE)
-    variable = named.group(1) if named else "GATE_BASE"
-    if not re.fullmatch(r"[A-Za-z_]\w*", variable):
-        raise Refused(f"loop.md's `Gate base:` names {variable!r}, which is no variable name")
+    variable = gate_base_variable()
     env = {name: value for name, value in os.environ.items() if name != variable}
     if found is None:
-        if show_base:
-            raise Refused("loop.md has no `Affected tests:` line: there is no base to name")
         words, sets = [*LOCAL_CI[:-1], "check"], {}
     else:
         _, words, sets = command_line(found.group(1).strip().strip("`"), "Affected tests")
@@ -5917,9 +5920,6 @@ def affected_tests(show_base: bool = False) -> int:
             raise Refused(
                 f"no merge base of origin/{base} and HEAD: fetch origin/{base} deeper"
             ) from exc
-        if show_base:
-            print(f"{variable}={env[variable]}")
-            return 0
     print(f"affected-tests: {shlex.join(words)}", file=sys.stderr, flush=True)
     try:
         with heavy_slot("affected-tests") as (slot, _):
@@ -5985,9 +5985,10 @@ def swap_used_mb() -> int | None:
 
 
 def gate_env(step: dict[str, Any]) -> dict[str, str]:
-    """The environment a gate step runs in: this process's, without the names `local_ci_env` lists unless the step's
-    command sets them, or a head proof's `passed` takes them from this process's (gate)."""
-    cleared = set(local_ci_env())
+    """The environment a gate step runs in: this process's, without the names `local_ci_env` lists and without the
+    `Gate base:` variable (gate_base_variable), unless the step's command sets them, or a head proof's `passed` takes
+    them from this process's (gate): a caller's base never narrows a plain pass."""
+    cleared = set(local_ci_env()) | {gate_base_variable()}
     return {name: value for name, value in os.environ.items() if name not in cleared} | step["sets"]
 
 
@@ -7698,7 +7699,7 @@ def main(argv: list[str]) -> int:
     releasing.add_argument("issue", type=int)
     hooking = commands.add_parser("commit-msg")
     hooking.add_argument("message", type=Path)
-    commands.add_parser("affected-tests").add_argument("--base", action="store_true")
+    commands.add_parser("affected-tests")
     wrapping = commands.add_parser("heavy")
     wrapping.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
     args = parser.parse_args(aliased(argv))
@@ -7730,7 +7731,7 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "commit-msg":  # the same: git hands the hook its message file
         return commit_msg(args.message)
     if args.command == "affected-tests":
-        return affected_tests(args.base)
+        return affected_tests()
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
         return heavy(args.words)
     one_repo()

@@ -31,10 +31,9 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    round's too: it runs that selection against `git merge-base origin/<base> HEAD` (the base of the branch's open PR,
    else the default branch; a shallow clone is deepened) in the variable `Gate base:` names (else `GATE_BASE`), under the
    host gate slot, in place of the full `mise run check`; without the line, run `mise run check` as today. A selector
-   that selects nothing exits 0. With `ci: false` the gate of record on the ready head is `env "$(uv run <this skill's
-   folder>/scripts/approvals.py affected-tests --base)" uv run <this skill's folder>/scripts/approvals.py local-ci --record
-   --head-proof` on the committed head (you set the variable that way; SKILL.md, Adopting the loop), and without the line
-   `approvals.py local-ci --record` as today. A test that passed only on its retry, or failed in a
+   that selects nothing exits 0. With `ci: false` the draft heads run `affected-tests` too, but the gate of record on the ready head is the full
+   `approvals.py local-ci --record` on the committed head, run once when the PR goes ready (again only if the head
+   moves after that), since `check merge` needs a plain pass on the head (SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
    file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report with
    the run it came from (a CI run's id, else the time the gate started), since that run and
    the head are what make it one occurrence.

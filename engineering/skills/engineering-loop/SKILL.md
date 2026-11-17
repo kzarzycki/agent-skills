@@ -287,7 +287,7 @@ A PR stays a draft until no core finding is open (Review trail on the PR), so CI
 jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
-draft, the check on each head the worker pushes, a fix round's too, is `uv run <this skill's folder>/scripts/approvals.py affected-tests` where loop.md has an `Affected tests:` line (the commit hook's `lint:` tasks ran at commit; it replaces a `GATE_BASE=<last green>` delta run), else `mise run check` as before; no role reruns the full unit tier on a PR head. Who runs what, with the line: a draft head, the worker's `affected-tests`; a ready PR, CI's selection, or with `ci: false` the gate of record `env "$(uv run <this skill's folder>/scripts/approvals.py affected-tests --base)" uv run <this skill's folder>/scripts/approvals.py local-ci --record --head-proof`, run by the worker on the committed head: `--base` prints the base variable set to the merge base `affected-tests` computes, `env` sets it for that run, and a `head_proof` whose `env` names the variable takes the caller's value (over a `gate_steps` command's own assignment); the verifier reads the gate of record and runs the PR's own tests. `land`'s batch gate and the merge-queue run stay full, since only they test the code that becomes main, and they never set the base variable. Without the line, behaviour is as before. With `ci: false` in gatekeeper.md and no such line, the
+draft, the check on each head the worker pushes, a fix round's too, is `uv run <this skill's folder>/scripts/approvals.py affected-tests` where loop.md has an `Affected tests:` line (the commit hook's `lint:` tasks ran at commit; it replaces a `GATE_BASE=<last green>` delta run), else `mise run check` as before; no role reruns the full unit tier on a PR head. Who runs what, with the line: a draft head, the worker's `affected-tests`; a ready PR, CI's selection; the verifier, on a draft head, reads the worker's report (its command and exit code) and runs the PR's own tests, the `gate` status and `loop-gate/` record being a ready head's. `ci: false` is the one case where a PR head runs the full tier: the draft heads run `affected-tests` as above, but the gate of record on the ready head is the full `approvals.py local-ci --record`, run by the worker once when the PR goes ready (again only if the head moves after that), since `check merge` needs a plain pass on the head and a narrowed run is none; this holds with or without a `head_proof`. `local-ci` always clears the `Gate base:` variable (else `GATE_BASE`) from its environment, unless a head proof's `env` names it, so a caller's base never narrows a recorded plain pass. `land`'s batch gate and the merge-queue run stay full, since only they test the code that becomes main, and they never set the base variable. Without the line, behaviour is as before. With `ci: false` in gatekeeper.md and no such line, the
 check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
 instead, and is the gate while iterating too: it runs the merge check, gatekeeper.md's `gate`
 (default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and pushes it
@@ -636,8 +636,8 @@ A brief that names a host worktree for a test run says where the code is, not wh
 With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead runs on
 the host and the workers run in the cloud, with the verifier in the worker's VM unless `Placement:` says otherwise (Where heavy steps run), as sessions of `<agent>`, a registered
 Omnigent agent whose tools run in a cloud VM, which the lead starts. Without the line the
-same holds with `claude-cloud` as the agent and the policy's `gate` as the gate, so a project
-needs no setup before its heavy runs leave the host. A line that opens `Cloud worker: none`,
+same holds with `claude-cloud` as the agent, so a project
+needs no setup before its heavy runs leave the host. The cloud worker's gate is one rule: `affected-tests` when loop.md has an `Affected tests:` line, else the `Cloud worker:` line's gate task, else the policy's `gate`. A line that opens `Cloud worker: none`,
 with the project's reason after it, keeps workers on hosts: nothing in this section applies
 and every role file reads as written. A project that has the line keeps its meaning. `env <name>` on the
 line (`Cloud worker: <agent>, gate <task>, env <name>`) names the project's cloud environment, the one
@@ -654,11 +654,10 @@ or the owner's private network.
 
 - **Who does what.** The lead runs intent, spec, the branch and draft PR, `check build`,
   triage, the fetch and merge (or fast-forward) of each worker's reported branch into the
-  PR branch, the full gate where it runs (below), the instance, the verdict's post, thread
-  resolution, `land` and acceptance. The full gate (`mise run
-  check` (`affected-tests` with an `Affected tests:` line, `local-ci --record` with `ci: false` and none, Adopting the loop); on a fix round started detached beside the
-  next verifier, lead.md step 7) runs in the worker's VM, on its checkout and build; `Placement:` never moves it, since that line places the verifier only; the host's
-  `local-ci <pr>`, `check merge` and `land` reuse its recorded pass either way. The worker codes and compiles, runs `mise run <task>`,
+  PR branch, the worker's gate where it runs (below), the instance, the verdict's post, thread
+  resolution, `land` and acceptance. The worker's gate (the rule above, Adopting the loop; on a fix round started detached beside the
+  next verifier, lead.md step 7) runs in the worker's VM, on its checkout and build; `Placement:` never moves it, since that line places the verifier only; a `local-ci --record` pass it makes (`ci: false`, on the ready head) is reused by the host's
+  `local-ci <pr>`, `check merge` and `land`, while `affected-tests` records nothing. The worker codes and compiles, runs `mise run <task>`,
   the light gate (what the VM can run: compile, unit tests, headless web tests on its
   Chromium), before each push, and pushes to the `claude/…` branch its session was given,
   since a cloud session declines any other branch without its own user's permission and a
