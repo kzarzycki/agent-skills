@@ -172,7 +172,7 @@ yourself, keeping standards and spec as separate axes.
 - **An acceptance line you did not run** blocks `SATISFIED: yes`, whatever the reason: a
   Before merge line's check run by the acceptance command, a `Manual:` line probed through
   the path a user takes (on the instance when one is up) or accepted on evidence (Manual
-  lines); a flat `## Acceptance` list is all Before merge. Mark each Before merge line run
+  lines; a flat `## Acceptance` list is all Before merge): mark each Before merge line run
   (with its evidence), accepted on evidence, failing or not run. List each After
   merge line under an `After merge:` line in the report (`After merge: none` when the spec has
   none), never counted as run or not run, since it needs the merged default branch or a
