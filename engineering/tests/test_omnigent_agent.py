@@ -12157,3 +12157,39 @@ def test_a_far_workspace_never_reads_a_local_checkout_at_the_same_path(
     assert omnigent_agent.pr_repo(7, tmp_path / "ws", local=False) == "c/d"
     assert omnigent_agent.pr_repo(7, tmp_path / "ws") == "c/d"
     assert ran == [None, tmp_path / "ws"]
+
+
+def test_a_named_repository_reaches_the_head_reads_inside_the_checkout_and_the_head_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[str, tuple[object, ...]]] = []
+
+    def stop(name: str):  # noqa: ANN202
+        def read(*a: object) -> str:
+            seen.append((name, a))
+            raise omnigent_agent.Fail("stop here")
+
+        return read
+
+    monkeypatch.setattr(omnigent_agent, "pr_head", stop("head"))
+    monkeypatch.setattr(omnigent_agent, "pr_branch", stop("branch"))
+    with pytest.raises(omnigent_agent.Fail):
+        omnigent_agent.check_out_head(tmp_path, 7, "a/b")
+    subprocess.run(["git", "init", "-q", str(tmp_path / "launch")], check=True)
+    with pytest.raises(omnigent_agent.Fail):
+        omnigent_agent.move_head(tmp_path / "launch", 7, "a/b")
+    assert seen == [("head", (7, tmp_path, "a/b")), ("branch", (7, tmp_path / "launch", "a/b"))]
+
+
+def test_start_for_another_host_never_reads_a_local_checkout_at_its_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "ws" / ".git").mkdir(parents=True)
+    ran: list[Path | None] = []
+    monkeypatch.setattr(omnigent_agent, "repo_slug", lambda cwd=None: ran.append(cwd) or "c/d")
+    og = FakeOmnigent()
+    omnigent_agent.start(
+        og, "claude", "t", "do X", tmp_path / "r", None, 0, workspace=str(tmp_path / "ws"),
+        host_id="far", pr=7,
+    )  # fmt: skip
+    assert ran == [None]
