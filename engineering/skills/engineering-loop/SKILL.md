@@ -370,6 +370,20 @@ verifier reruns them on every pass: a longer check is split or moves to the nigh
 budget the runner prints one line saying so and still exits on the checks' result, since the
 budget is a signal, not a gate.
 
+**Nightly.** After a merge nothing reruns a spec's checks but the project's nightly, so the
+nightly runs the project's full suite, which holds every spec's acceptance checks, plus
+`uv run <this skill's folder>/scripts/acceptance.py --all` where the project uses the
+`acceptance/<issue>/` folders; the workflow itself (its schedule, where it runs) is the
+project's. When it ends red, it calls `uv run <this skill's folder>/scripts/nightly.py red
+--last-green <sha> --red <sha> --run <url>`, with the newest default-branch commit a nightly
+passed on, the one it failed on and the run's link, from a checkout holding the history
+between them. It lists the PRs merged on the default branch since the last green (first-parent
+merges and squash commits, each PR's linked issues and their epics) and opens one issue
+`Nightly red since <short sha>` with that list and the link, or, while that issue is open,
+comments the new run and the merges since the last red on it, so a person or a lead bisects
+from a short list rather than the whole history. It needs only git and gh, checks each body
+against `LOOP_DENY_LIST` before posting, and its docstring has the formats and exit codes.
+
 **Fixing the gate itself.** `land` reads `gate_steps` from the default branch, so a PR that changes them lands under the old
 policy, which still runs the step the PR moves (to `where: linux`, say) on a host where it can't pass. Run from a host where
 the step runs, a clean checkout of the merge tree `land` will build (`git fetch origin pull/<n>/merge`, or the queue's

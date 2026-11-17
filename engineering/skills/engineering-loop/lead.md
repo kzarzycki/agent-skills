@@ -366,6 +366,16 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    merge list of `none`, or none at all, means no acceptance runs here, and your report says
    `After merge: none`. A failure is reverted the same way, and the fix
    forward is a new change through this loop, never a patch on main.
+   With loop.md's `Verifier session: reuse`, send the spec's After merge list to the kept
+   verifier right after the merge, before you finish its session, since that session already
+   knows the change and a new agent would learn it again: it runs each line on the merged
+   default branch and reports each result, and you read that report as a worker's.
+   Otherwise, or once that verifier's session has ended, run the list as above.
+   **Epic handoff note.** When the merge closed an epic's last open sub-issue (step 8), once the
+   After merge list has run, comment on the epic: each story's PR and merge commit, each spec's
+   acceptance checks (the acceptance command with its issue, SKILL.md, Acceptance checks), the
+   After merge results, and what the next nightly must confirm (SKILL.md, Nightly), so the owner
+   reads one note on what landed and what is still to be confirmed. The epic closes as step 8 says.
 10. **Clean up** once acceptance has run, pass or fail. Close the agents, and stop only the
    processes you started, as worker.md, Report says, since a shared pattern kills other
    agents' runs too. For every
