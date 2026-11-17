@@ -53,7 +53,7 @@ def path_without(tmp_path: Path, *tools: str) -> str:
     for folder in os.environ["PATH"].split(os.pathsep):
         if os.path.isdir(folder):
             for program in os.scandir(folder):
-                if program.name not in tools and not (bin_ / program.name).exists():
+                if program.name not in tools and not os.path.lexists(bin_ / program.name):
                     (bin_ / program.name).symlink_to(program.path)
     return str(bin_)
 
