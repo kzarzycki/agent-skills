@@ -289,7 +289,7 @@ whether classic branch protection requires one, so a PR is a candidate there onl
 section, the project's word that its base requires none (a ruleset that does picks the GitHub merge queue, which a
 cloud session refuses); a draft is refused, and an evicted PR stays
 ready, each said, since GitHub changes a draft only over GraphQL. Off a cloud session only `where` is new.
-`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip.
+`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip. `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its 2-hour ceiling; any other checkout keeps the refusal.
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
 printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
@@ -538,7 +538,7 @@ from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, NoReturn
 
 try:
     import yaml
@@ -3753,6 +3753,14 @@ class Refused(Exception):
     """A reason to stop with exit 1, printed as is."""
 
 
+class Drifted(Refused):
+    """judge_with_base's refusal of code or policy here that is not `origin/<base>`'s, which `land --wait` can catch up on."""
+
+    def __init__(self, message: str, base: str) -> None:
+        super().__init__(message)
+        self.base = base
+
+
 class MachineFault(Refused):
     """The gate exited with loop.md's `machine_exit` twice on one tree in `land`: the machine isn't ready."""
 
@@ -4384,14 +4392,18 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
     if not wait:
         return landing(pr, only)[0]
     global held_tip
-    deadline, said, spoke, heard = time.monotonic() + CEILING, "", 0.0, ""
+    # a land run again on the base's new code (caught_up) keeps the first run's ceiling; the clock is system-wide
+    deadline = float(os.environ.pop(DEADLINE_ENV, "0")) or time.monotonic() + CEILING
+    said, spoke, heard = "", 0.0, ""
     github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
     while True:
         held_tip = None
-        out = io.StringIO()
+        out, drifted = io.StringIO(), None
         try:
             with contextlib.redirect_stdout(out):
                 code, again = landing(pr, only)
+        except Drifted as exc:
+            drifted = exc
         finally:
             # a background command's log: each state once, not every 30 seconds, a held lock's age being no new
             # state; again every SLOT_SAY_SECONDS, so wait-for's stall check never reads a long wait as a hang
@@ -4400,6 +4412,8 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
                 print(out.getvalue(), end="", flush=True)
                 spoke = time.monotonic()
             said, heard = state, out.getvalue()
+        if drifted:
+            caught_up(drifted, deadline)
         if not again:
             return code
         nap = poll_seconds()
@@ -4425,6 +4439,31 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
                 :1
             ] != [held_tip[1]]:
                 break
+
+
+DEADLINE_ENV = "LOOP_LAND_DEADLINE"
+
+
+def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
+    """A waiting land whose base moved its code or policy (another land merged a change to them): fast-forward a clean
+    checkout of the base to the fetched `origin/<base>` and run this land again from that code, in place (#1280), since
+    the wait was the point and nobody reads its log. Any other checkout (another branch, a detached head, an edit of a
+    tracked file, a fast-forward refused) keeps the refusal, since a PR's own copy must never judge it."""
+    base, root = drifted.base, toplevel()
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False)
+
+    if (
+        run("symbolic-ref", "-q", "HEAD").stdout.strip() != f"refs/heads/{base}"
+        or run("status", "--porcelain", "--untracked-files=no").stdout.strip()
+        or run("merge", "-q", "--ff-only", f"refs/remotes/origin/{base}").returncode
+    ):
+        raise drifted
+    tip = run("rev-parse", "--short=12", "HEAD").stdout.strip()
+    print(f"{drifted} -- this checkout fast-forwarded to origin/{base} ({tip}): land runs again from its code", flush=True)
+    os.environ[DEADLINE_ENV] = repr(deadline)
+    os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
 def poll_seconds() -> float:
@@ -4663,9 +4702,10 @@ def judge_with_base(base: str, fetch: bool = False) -> None:
                 " it by its own rules; check out the base"
             )
     if differ := base_drift(base):
-        raise Refused(
+        raise Drifted(
             f"{', '.join(differ)} differ{'s' * (len(differ) == 1)} from origin/{base}'s: a PR's own copy would judge it;"
-            f" run from the base's code (a checkout of origin/{base})"
+            f" run from the base's code (a checkout of origin/{base})",
+            base,
         )
 
 
