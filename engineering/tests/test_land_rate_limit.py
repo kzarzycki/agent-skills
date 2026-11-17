@@ -213,3 +213,34 @@ def test_a_low_quota_stretches_the_poll(
 ) -> None:
     monkeypatch.setattr(github, "gh", lambda *args: answer)
     assert real_poll_seconds() == poll
+
+
+def test_a_low_quota_poll_still_says_the_wait_each_minute_and_asks_github_each_poll(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    now, ran = [0.0], []
+    monkeypatch.setattr(github, "wait_until", None)
+    monkeypatch.setattr(approvals, "poll_seconds", lambda: approvals.LOW_POLL)
+    monkeypatch.setattr(approvals.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        approvals.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)
+    )
+
+    def landing(pr: Any, only: bool = False) -> tuple[int, bool]:
+        ran.append(now[0])
+        print("checks pending")
+        return approvals.WAITING, True
+
+    monkeypatch.setattr(approvals, "landing", landing)
+    approvals.land(1, wait=True)
+    assert all(b - a == approvals.LOW_POLL for a, b in itertools.pairwise(ran))
+    # said again each SLOT_SAY_SECONDS, so wait-for's 300 s stall check never fires
+    assert capsys.readouterr().out.count("checks pending") >= approvals.CEILING // 120
+
+
+def test_a_failed_quota_read_keeps_the_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing(*args: str) -> str:
+        raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
+
+    monkeypatch.setattr(github, "gh", failing)
+    assert real_poll_seconds() == approvals.POLL

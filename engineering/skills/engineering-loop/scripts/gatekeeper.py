@@ -4187,17 +4187,23 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
         if time.monotonic() + nap > deadline:
             print(f"land --wait stopped after {CEILING // 3600} hours, still waiting")
             return WAITING
-        while time.monotonic() + nap <= deadline:
-            time.sleep(nap)
+        # a round asks GitHub again after `nap`, or RECHECK on a held lock; the sleep goes in POLL steps, so the log
+        # is never silent past wait-for's stall check and a lock that moved is seen at once (ls-remote costs no quota)
+        while time.monotonic() + POLL <= deadline:
+            time.sleep(POLL)
             if (
                 heard and time.monotonic() - spoke >= SLOT_SAY_SECONDS
             ):  # wait-for's stall check reads silence as a hang
                 print(heard, end="", flush=True)
                 spoke = time.monotonic()
             # the lock still held at the same tip, and its holder checked lately: nothing to ask GitHub
-            if not held_tip or time.monotonic() - checked >= RECHECK:
-                break
-            if git("ls-remote", "origin", held_tip[0]).split()[:1] != [held_tip[1]]:
+            waited = time.monotonic() - checked
+            if not held_tip:
+                if waited >= nap:
+                    break
+            elif waited >= max(nap, RECHECK) or git("ls-remote", "origin", held_tip[0]).split()[
+                :1
+            ] != [held_tip[1]]:
                 break
 
 
