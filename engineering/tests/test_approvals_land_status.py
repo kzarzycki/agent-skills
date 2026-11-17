@@ -56,14 +56,7 @@ def test_a_merge_github_refuses_turns_the_land_status_to_an_error(
     lands: dict[str, Any], posted: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     head = lands["open"](7, {"7.txt": "7\n"})
-    fake = approvals.github.gh
-
-    def gh(*args: str, data: str | None = None) -> str:
-        if args[:2] == ("pr", "merge"):
-            raise subprocess.CalledProcessError(1, args, stderr="Review required")
-        return fake(*args, data=data)
-
-    monkeypatch.setattr(approvals.github, "gh", gh)
+    refuse_merges(monkeypatch, "Review required")
     code, lines = lands["land"]()
     assert code == 1, lines
     assert [(p[0], p[3]) for p in posted if p[1] == "land"] == [(head, "success"), (head, "error")]
@@ -82,3 +75,52 @@ def test_a_land_status_that_cannot_be_posted_stops_the_merge(
     code, lines = lands["land"]()
     assert code == 1, lines
     assert not any(call[:2] == ("pr", "merge") for call in lands["calls"])
+
+
+def refuse_merges(monkeypatch: pytest.MonkeyPatch, stderr: str) -> None:
+    fake = approvals.github.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("pr", "merge"):
+            raise subprocess.CalledProcessError(1, args, stderr=stderr)
+        return fake(*args, data=data)
+
+    monkeypatch.setattr(approvals.github, "gh", gh)
+
+
+def test_a_long_refusal_still_withdraws_the_land_status_within_githubs_140_characters(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = lands["open"](7, {"7.txt": "7\n"})
+    refuse_merges(monkeypatch, "Repository rule violations found " + "x" * 200)
+    seen: list[tuple[str, str]] = []
+
+    def post(sha: str, context: str, description: str, state: str = "success") -> None:
+        if len(description) > 140:  # GitHub answers 422
+            raise subprocess.CalledProcessError(
+                1, ("gh",), stderr="HTTP 422: description is too long"
+            )
+        seen.append((sha, state))
+
+    monkeypatch.setattr(approvals, "post_status", post)
+    code, lines = lands["land"]()
+    assert code == 1, lines
+    assert seen[-2:] == [(head, "success"), (head, "error")], lines
+
+
+def test_an_error_post_that_fails_is_reported_and_the_land_still_exits_1(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    refuse_merges(monkeypatch, "Review required")
+
+    def post(sha: str, context: str, description: str, state: str = "success") -> None:
+        if state == "error":
+            raise subprocess.CalledProcessError(1, ("gh",), stderr="HTTP 502")
+
+    monkeypatch.setattr(approvals, "post_status", post)
+    code, lines = lands["land"]()
+    assert code == 1, lines
+    assert any("its `land` success could not be withdrawn: HTTP 502" in line for line in lines), (
+        lines
+    )
