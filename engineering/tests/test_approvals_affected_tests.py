@@ -68,7 +68,9 @@ def worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.delenv("GATE_BASE", raising=False)
     monkeypatch.delenv("MY_BASE", raising=False)
     monkeypatch.setattr(approvals, "policy_base", lambda _root, _base=None: None)
-    monkeypatch.setattr(approvals, "open_pulls", lambda: [])  # no PR for the branch: the default branch is the base
+    monkeypatch.setattr(
+        approvals, "open_pulls", list
+    )  # no PR for the branch: the default branch is the base
     monkeypatch.chdir(repo)
     log = tools / "ran.log"
 
@@ -212,7 +214,10 @@ def test_the_selection_and_the_fallback_run_under_the_host_gate_slot(
     monkeypatch.setattr(
         approvals,
         "run_heavy",
-        lambda words, env=None, **kw: (held.append((env or {}).get("LOOP_GATE_SLOT_HELD")), real(words, env=env, **kw))[1],
+        lambda words, env=None, **kw: (
+            held.append((env or {}).get("LOOP_GATE_SLOT_HELD")),
+            real(words, env=env, **kw),
+        )[1],
     )
     assert approvals.main(["affected-tests"]) == 0
     assert held and held[0]
