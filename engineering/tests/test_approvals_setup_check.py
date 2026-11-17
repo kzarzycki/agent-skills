@@ -170,3 +170,23 @@ def test_a_job_that_only_says_check_is_not_a_pack_task(
     flow = (WORKFLOW % "install: false").replace("mise run loop:approvals merge 1", "cargo check")
     repo_with(tmp_path, monkeypatch, {POLICY: FENCED, "mise.toml": VIA_TASK, FLOW: flow})
     assert run_setup(capsys)[0] == 0
+
+
+def test_a_file_task_is_named_by_its_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    body = "#!/bin/sh\nuv run .agents/skills/engineering-loop/scripts/approvals.py check merge\n"
+    flow = (WORKFLOW % "install: false").replace("loop:approvals", "ci:approve")
+    repo_with(tmp_path, monkeypatch, {POLICY: FENCED, ".mise/tasks/ci/approve": body, FLOW: flow})
+    code, out = run_setup(capsys)
+    assert code == 1 and "job `approvals`" in out
+
+
+def test_a_mise_run_of_another_task_does_not_make_a_later_step_a_pack_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    flow = (WORKFLOW % "install: false").replace(
+        "mise run loop:approvals merge 1", "mise run lint\n      - run: cargo check"
+    )
+    repo_with(tmp_path, monkeypatch, {POLICY: FENCED, "mise.toml": VIA_TASK, FLOW: flow})
+    assert run_setup(capsys)[0] == 0

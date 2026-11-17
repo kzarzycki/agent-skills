@@ -539,8 +539,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, NamedTuple
 
-import tomllib
-
 try:
     import yaml
 except ImportError:  # run as `python3 approvals.py` where PyYAML isn't installed
@@ -4092,7 +4090,10 @@ def mise_files(root: Path) -> list[Path]:
 
 def pack_tasks(root: Path) -> set[str]:
     """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does:
-    `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named by their path, `/` as `:`)."""
+    `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named by their path, `/` as `:`).
+    Needs tomllib (Python 3.11+), imported here so the other commands still start on the pack's 3.9."""
+    import tomllib
+
     bodies: dict[str, str] = {}
     for path in mise_files(root):
         if path.suffix == ".toml":
@@ -4128,7 +4129,13 @@ def setup_problems(root: Path) -> list[str]:
     after `jdx/mise-action` was told not to install (`install: false`, or `install_args` without uv), so there is no
     `uv`. ponytail: a text scan of mise.toml and .github/workflows, not a run of each step, which needs the forge;
     the upgrade is `check setup --run`, executing each task against a stub forge."""
-    found, tasks = [], pack_tasks(root)
+    try:
+        tasks = pack_tasks(root)
+    except ImportError:
+        return [
+            "reading the mise tasks needs Python 3.11 or later: run `uv run --python 3.11 <script> check setup`"
+        ]
+    found = []
     workflows = sorted((root / ".github" / "workflows").glob("*.y*ml"))
     for path in mise_files(root) + workflows:
         for number, line in enumerate(read(path).splitlines(), 1):
@@ -4154,7 +4161,7 @@ def setup_problems(root: Path) -> list[str]:
                 or ("install_args" in w and not re.search(r"\buv\b", str(w["install_args"])))
                 for w in withs
             )
-            runs = " ".join(str(step.get("run", "")) for step in steps)
+            runs = "\n".join(str(step.get("run", "")) for step in steps)
             runs_pack = PACK_SCRIPT.search(runs) or any(
                 re.search(rf"mise run\b[^\n]*[ '\"]{re.escape(task)}\b", runs) for task in tasks
             )
