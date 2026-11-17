@@ -7349,8 +7349,13 @@ def supervise_registry(
         failed = ""
         pending = False
 
-        def session_end(other: str) -> tuple[str, bool] | None:
-            """How ``other`` ended: a line and whether it failed; None while it has not."""
+        def session_end(other: str, named: bool = True) -> tuple[str, bool] | None:
+            """How ``other`` ended: a line and whether it failed; None while it has not. A session
+            idle with a last message that is no ``STILL WORKING`` and has no ending word (a
+            verifier or a cloud run whose answer is its report, a harness that never writes
+            ``DONE``) has ended too: its turn is over and nothing will wake it. For a session the
+            lead did not name that counts only when the message came after the lead's own turn,
+            so an old idle session is no news."""
             try:
                 over = lead_status(og.info(other), og.items(other))
             except Exception as e:  # noqa: BLE001 - unread: not known to have ended
@@ -7362,6 +7367,13 @@ def supervise_registry(
                 return f"{other} {over['state']}", True
             if over["state"] == "idle" and over["ending"]:
                 return f"{other} ended {over['ending']} at {at}", over["ending"] != "DONE"
+            if (
+                over["state"] == "idle"
+                and over["turn"]
+                and over["wait"] == "unknown"
+                and (named or over["turn_at"] > float(lead.get("turn_at") or 0))
+            ):
+                return f"{other} went idle at {at}", False
             return None
 
         for item in items:
@@ -7401,7 +7413,7 @@ def supervise_registry(
             log(("kin", sid), f"{sid}: children not read: {reason(e)}")
             return
         for other in kin:
-            end = session_end(other)
+            end = session_end(other, named=False)
             if end and (end[1] or not pending):
                 line = f"{head}: {end[0]}; a session it started"
                 say(line, sid, f"deadline:{sid}:{other}:{lead.get('turn')}", "news")

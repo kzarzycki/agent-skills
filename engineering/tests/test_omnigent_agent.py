@@ -13027,3 +13027,41 @@ def test_an_open_pr_a_lead_waits_on_costs_one_github_read_a_minute(
     )
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
     assert len(calls) == 1
+
+
+def told_idle(og) -> list[str]:
+    return [t for s, t in og.inbox if s == "m" and "went idle" in t]
+
+
+def test_a_named_session_idle_with_no_ending_word_is_news_to_its_waiter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a verifier of another harness, or a cloud run, whose answer is its report: no DONE line
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(
+        tmp_path,
+        f"STILL WORKING: waiting on session {WORKER}",
+        m={"status": "idle"},
+        **{WORKER: gone},
+    )
+    og.histories[WORKER] = [ending("Verdict written. SATISFIED: yes", 100)]
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert len(told_idle(og)) == 1 and WORKER in told_idle(og)[0]
+
+
+def test_a_session_the_lead_started_that_went_idle_after_its_turn_is_news_but_an_old_one_is_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    for age, expect in ((100, 1), (2000, 0)):  # the lead's turn was 600 s ago
+        (tmp_path / str(age)).mkdir()
+        registry, og = manager(
+            tmp_path / str(age),
+            "STILL WORKING: waiting on the check. Report: m.md",
+            m={"status": "idle"},
+            **{WORKER: gone},
+        )
+        og.histories["m"] = [ending("STILL WORKING: waiting on the check. Report: m.md", 600)]
+        og.histories[WORKER] = [ending("Pass 4 written. SATISFIED: yes", age)]
+        supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+        assert len(told_idle(og)) == expect
