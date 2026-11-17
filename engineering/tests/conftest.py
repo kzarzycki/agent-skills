@@ -119,6 +119,18 @@ def _approvals_stubs(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _status_follows_the_pull(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """approvals.py reads a PR's state, base and head alone through pull_status (one REST call); most tests fake the
+    whole PR with pull_request, so there it answers from that fake. A test of pull_status sets its own."""
+    module = request.module
+    if module.__name__.startswith("test_approvals") and hasattr(module, "approvals"):
+        approvals = module.approvals
+        monkeypatch.setattr(approvals, "pull_status", lambda n: approvals.pull_request(n))
+
+
+@pytest.fixture(autouse=True)
 def _brief_head_merges(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """approvals.py's brief checks the PR's head merges into its base with git: its other tests have no such repo, so
     the check reads clean there. test_approvals_brief_conflict.py runs the real one."""

@@ -203,6 +203,7 @@ def test_land_wait_follows_the_entry_until_the_queue_merges_it_then_comments_lan
             queue["queue_merge"](7)
 
     monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)  # one sleep a round
+    monkeypatch.setattr(approvals.github.random, "randint", lambda low, high: 0)  # no jitter
     monkeypatch.setattr(approvals.time, "sleep", slept)
     code, lines = queue["land"]("7", "--wait")
     assert code == 0, lines
@@ -850,6 +851,7 @@ def test_land_wait_follows_an_unknown_mergeability_until_github_settles_it(
         queue["pulls"][8]["mergeable"] = "MERGEABLE"
 
     monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)  # one sleep a round
+    monkeypatch.setattr(approvals.github.random, "randint", lambda low, high: 0)  # no jitter
     monkeypatch.setattr(approvals.time, "sleep", slept)
     monkeypatch.setattr(approvals, "CEILING", 90)
     code, lines = queue["land"]("8", "--wait")

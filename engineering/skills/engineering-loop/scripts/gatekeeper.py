@@ -662,6 +662,7 @@ QUEUE_POLL = 120
 RECHECK = 300
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
 LOW_POLL, LOW_QUOTA = 300, 0.1
+POLL_JITTER = 60  # most seconds of random delay added to a land --wait poll
 # a wait that meets this many network failures in a row (NETWORK) fails with the last one
 MISSES = 3
 # what git and gh print when the network, not the request, failed: a name that did not resolve, a dropped or timed-out
@@ -3303,7 +3304,7 @@ def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
         raise Refused(f"merge {merge} is not a commit here or on origin")
     head = git("rev-parse", f"{merge}^2").strip()
     # the head proof of the base the PR merges onto, not the default branch's
-    with policy_from(str(pull_request(pr)["baseRefName"])):
+    with policy_from(str(pull_status(pr)["baseRefName"])):
         loop = project()[1]
     record, entry = reusable(head), None
     if record is None and (entry := admitted(head, loop)) is None:
@@ -3892,6 +3893,7 @@ PORTS = {
     "tracker": ("issue_node", "issues", "comment", "label", "assign"),
     "forge": (
         "pull_request",  # (pr) -> the PR node, with its reviews, threads, checks, comments and closing issues
+        "pull_status",  # (pr) -> {state, baseRefName, headRefOid, mergeable} alone, for a caller that reads no more
         "current_pr",  # () -> the checkout's branch's open PR number, or None
         "pr_changes",  # (pr) -> each file the PR changes, with its patch
         "merged_pull",  # (pr) -> the merged PR with its head and merge commit, or None
@@ -4004,6 +4006,7 @@ def through(name: str, operation: str) -> Callable[..., Any]:
 issue_node, issues_of = through("tracker", "issue_node"), through("tracker", "issues")
 label, assign = through("tracker", "label"), through("tracker", "assign")
 pull_request, current_pr = through("forge", "pull_request"), through("forge", "current_pr")
+pull_status = through("forge", "pull_status")
 pr_changes, merged_pull = through("forge", "pr_changes"), through("forge", "merged_pull")
 tag_tree, file_at = through("forge", "tag_tree"), through("forge", "file_at")
 repo_tags = through("forge", "repo_tags")
@@ -4616,15 +4619,19 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
 
 
 def poll_seconds() -> float:
-    """QUEUE_POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA. `gh api rate_limit` is not counted against the
-    quota; gh shows no response headers, so nothing is read for free. A failed read keeps QUEUE_POLL."""
+    """QUEUE_POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA, plus up to POLL_JITTER random seconds so
+    waiting lands do not poll in the same minute. `gh api rate_limit` is not counted against the quota; gh shows no
+    response headers, so nothing is read for free. A failed read keeps QUEUE_POLL."""
+    base = max(POLL, QUEUE_POLL)
     try:
         left, limit = github.gh(
             "api", "rate_limit", "--jq", r'.resources.core|"\(.remaining) \(.limit)"'
         ).split()
-        return LOW_POLL if int(left) < LOW_QUOTA * int(limit) else max(POLL, QUEUE_POLL)
+        if int(left) < LOW_QUOTA * int(limit):
+            base = LOW_POLL
     except (subprocess.CalledProcessError, ValueError):
-        return max(POLL, QUEUE_POLL)
+        pass
+    return base + github.random.randint(0, POLL_JITTER)
 
 
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
@@ -6521,7 +6528,7 @@ def merges(
                 else:
                     # a merge queue the base's rules don't name (classic branch protection's) only queues it, to
                     # merge later on a tree this batch never gated
-                    if (state := pull_request(pull["number"])["state"]) != "MERGED":
+                    if (state := pull_status(pull["number"])["state"]) != "MERGED":
                         raise Refused(f"GitHub left it {state}, not merged")
                     print(f"{where} merged at {head}")
         except (subprocess.CalledProcessError, Refused) as exc:
@@ -7622,7 +7629,7 @@ def base_branch(pr: int | None) -> str | None:
     """The branch `local-ci` diffs against: PR `pr`'s base, else the default branch (`origin/HEAD`, else what `origin`
     says its HEAD is); None when neither answers."""
     if pr is not None:
-        return str(pull_request(pr)["baseRefName"])
+        return str(pull_status(pr)["baseRefName"])
     with contextlib.suppress(subprocess.CalledProcessError):
         return (
             git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")
@@ -8636,7 +8643,7 @@ def settled_head(pr: int, want: str | None) -> str:
             f"--head {want}: the whole commit hash (40 hex digits), not a prefix or a ref"
         )
     for read in range(HEAD_READS):
-        head = pull_request(pr)["headRefOid"]
+        head = pull_status(pr)["headRefOid"]
         if want is None or head.lower() == want.lower():
             return head
         if read < HEAD_READS - 1:
