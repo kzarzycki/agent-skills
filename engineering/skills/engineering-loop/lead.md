@@ -7,6 +7,13 @@ design, wireframes included for a UI, and delegate the rest. Every heavy run, a 
 your own (a suite to sort failures, a build, an e2e run), goes where SKILL.md, Where heavy
 steps run says, which also gives your own run's recipe.
 
+Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
+edits and commits go to a Sonnet worker: your context is re-read on every call (about 150k
+tokens), a worker's is short. A piece too small to justify a hand-off stays with you, since
+a hand-off costs about $0.30 in wakes: a one-line check, or reading a failing gate to
+decide what to do, which needs your judgement. Starting a worker and then doing its work
+yourself is the one failure to avoid: your context then holds it twice.
+
 1. **Intent.** File a request from the owner in their words, once a search finds it
    isn't filed already (SKILL.md, One concern per PR), with its category and
    component labels and no state label: that is its intent issue. Act on an issue you are
@@ -42,7 +49,10 @@ steps run says, which also gives your own run's recipe.
    and the verifier run on the PR branch, and `### After merge`, only the checks that need the
    merged default branch or a deployed environment (step 9), or `none`. A spec with one flat
    `## Acceptance` list reads as all Before merge, since a spec written before the split needs
-   no rewrite. Where gatekeeper.md has a `signoff` rule, end the spec with a line `Sign-off:
+   no rewrite. Each Before merge line ends with the check that runs it (a test name, or
+   `acceptance/<issue>/<file>`: SKILL.md, Acceptance checks), or starts with `Manual:` and
+   names the evidence it needs, for a judgment no command can run ("the page reads clearly"),
+   so the worker knows which checks to write and the verifier which to run. Where gatekeeper.md has a `signoff` rule, end the spec with a line `Sign-off:
    owner` or `Sign-off: none`: `owner` where a rule matches or the change needs a person to
    try it in use. Add the size label, then check who approves it (SKILL.md, Approvals and
    proof). A spec gatekeeper.md's `spec.auto` list covers (`bug`, a `Found while #n`
@@ -120,7 +130,9 @@ steps run says, which also gives your own run's recipe.
 6. **Prove** before review: a worker drives the real thing on the PR branch the way
    loop.md § Proof on a branch says, runs the spec's Before merge list there, and
    reports; you read the report. Each proof log names the commit it ran on (worker.md,
-   Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
+   Report), so the verifier can tie it to the head it reviews. The acceptance proof is the
+   acceptance command's log on the head (SKILL.md, Acceptance checks), plus the evidence each
+   `Manual:` line names. Green gates are necessary, not sufficient.
 7. **Verify** (board: `Verify`). A worker report or fix-round gate log naming a test that passed only on its
    retry is yours to record on its `Flaky:` issue, and at the third occurrence to start
    the skip PR from main (SKILL.md, Flaky tests). Commit and push; under `ci: false`, then post the pass with `approvals.py local-ci <pr> --head <the pushed sha>`, since GitHub can still show the previous head for a moment after a push and a bare `local-ci <pr>` would post on it: `--head` waits about 30 s for the push, refuses naming both heads, and its one output line names the head it posted on. Before a verifier starts,
@@ -255,7 +267,7 @@ steps run says, which also gives your own run's recipe.
    - A project's own batching merge queue (`check queue`, `batch`) is deprecated: where the
      project's instructions still name one, enqueue there as they say until it adopts `land`.
    - Run `uv run <this skill's folder>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
-     with `--wait`) once no local objection is left: `mise run check` passed on the head, the
+     with `--wait`) once no local objection is left: the gate of record passed on the head (the worker's `affected-tests`, or `mise run check` where loop.md has no `Affected tests:` line; `land`'s batch gate runs the full tier), the
      newest verifier review, satisfied with no core finding open, covers it, and every review
      thread is resolved (SKILL.md, Review trail on the PR). Start it as a background
      command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work
@@ -295,7 +307,7 @@ steps run says, which also gives your own run's recipe.
      alone holds nothing, since `land` batches every PR that is ready.
    - A check red after ready: `gh pr ready --undo`, then start a worker in the same worktree
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
-     runs `mise run check` and pushes; a fresh verifier (step 7) reviews only the change
+     runs the gate of worker.md step 2 and pushes; a fresh verifier (step 7) reviews only the change
      since its last verdict's head; then `land` runs again on the new head.
    - Where a high-risk change waits for the owner's go, `land` exits 3 with only that left
      once the base's required checks have passed the head, so the owner never approves a head

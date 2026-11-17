@@ -21,6 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 from urllib.error import HTTPError, URLError
+from urllib.parse import unquote
 from urllib.request import Request
 
 import pytest
@@ -99,6 +100,19 @@ class FakeOmnigent:
         return REAL_USERS(self, workspace, host_id)
 
     def call(self, method: str, path: str, body: object = None) -> dict:
+        if path.startswith("/v1/hosts/"):  # a host's folder listing: the names under it in procs
+            host, folder = path.split("?")[0].removeprefix("/v1/hosts/").split("/filesystem/")
+            under = "/" + unquote(folder).strip("/") + "/"
+            names = {
+                k[len(under) :].split("/")[0]
+                for k in self.procs.get(host, {})
+                if k.startswith(under)
+            }
+            if not names:
+                raise omnigent_agent.Fail("GET listing") from HTTPError(
+                    path, 404, "", Message(), None
+                )
+            return {"data": [{"name": n} for n in sorted(names)]}
         if (method, path) == ("GET", SESSIONS_LIVE):
             made = [
                 {
@@ -124,7 +138,7 @@ class FakeOmnigent:
 
     def read_file(self, sid: str, path: str) -> str:  # a host's /proc, by host, else none
         proc = self.procs.get(self.hosts_of.get(sid) or self.host_of(sid), {})
-        if path not in proc:
+        if proc.get(path) is None:  # None: listed, but an older host answers 404 to the read
             raise omnigent_agent.Gone(f"{path}: not found")
         return proc[path]
 
@@ -312,9 +326,6 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
     monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
     monkeypatch.delenv("OMNIGENT_SUPERVISE_REGISTRY", raising=False)  # else run arms a real one
-    monkeypatch.setattr(
-        omnigent_agent, "capacity", lambda **_: (True, "")
-    )  # else a busy host waits
 
 
 def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
@@ -3882,6 +3893,51 @@ def test_a_cloud_start_waits_on_its_bridge_host_s_memory_by_its_row(
     og.procs["far"]["/proc/meminfo"] = mem(3000)
     assert omnigent_agent.main(argv) == 0  # this host's own load is not the bridge host's
     assert og.hosts_of == {"s0": "far", "s1": "far"}
+
+
+def test_a_far_pinned_main_checkout_is_refused_before_any_session_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "oz", meminfo=mem(9000), loadavg="0.10 0 0")
+    pin = '{"remote": {"defaultEnvironmentId": "env_1"}}'
+    files, settings = og.procs["far"], "/there/repo/.claude/settings.local.json"
+    argv = [*far_start("claude", "oz"), "--workspace", "/there/repo"]
+    files[settings], files["/there/repo/.git"] = pin, "HEAD\nconfig"  # .git a folder: main
+    assert omnigent_agent.main(argv) == 1
+    assert "claude-cloud" in capsys.readouterr().err and og.sessions == {}
+    # a folder inside the checkout is the checkout
+    files["/there/repo/engineering/x"] = ""
+    sub = [*far_start("claude", "oz"), "--workspace", "/there/repo/engineering"]
+    assert omnigent_agent.main(sub) == 1 and og.sessions == {}
+    assert "/there/repo is the main checkout" in capsys.readouterr().err  # the root it found
+    started = 0
+    other = "/there/repo/.claude/settings.json"
+    for settings_text, git, also in (
+        (pin, "gitdir: /there/main/.git/worktrees/repo", None),  # a worktree
+        ('{"permissions": {}}', "HEAD\nconfig", None),  # settings with no pin
+        (None, "HEAD\nconfig", "{}"),  # .claude holds another file, not the settings
+        (None, "HEAD\nconfig", None),  # no .claude folder at all
+    ):
+        files["/there/repo/.git"] = git
+        files.pop(settings, None)
+        files.pop(other, None)
+        if settings_text:
+            files[settings] = settings_text
+        if also:
+            files[other] = also
+        assert omnigent_agent.main(argv) == 0
+        started += 1
+        assert len(og.sessions) == started and "skipped" not in capsys.readouterr().err
+    files["/there/repo/.git"] = "HEAD\nconfig"
+    for bad in ("{", None):  # not JSON; listed but the read answers 404 (an older host)
+        files[settings] = bad  # type: ignore[assignment]
+        assert omnigent_agent.main(argv) == 0
+        started += 1
+        err = capsys.readouterr().err
+        assert len(og.sessions) == started and "pinned-checkout check skipped on oz" in err
+    og.others, og.archived = [], list(og.sessions)  # no live session there to read through
+    assert omnigent_agent.main(argv) == 0
+    assert "pinned-checkout check skipped on oz" in capsys.readouterr().err
 
 
 def test_a_host_s_row_overridden_by_its_variable(

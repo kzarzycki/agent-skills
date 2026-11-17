@@ -19,7 +19,7 @@ it (Approvals and proof); no step runs for their changes.
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
 | **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
 | **Build.** Workers, or the lead when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
-| **Gates.** `mise run check` before every push (on a fix round, beside the review: worker.md, Gates and push), its test part behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot); GitHub runs every `check:` part. | a broken change |
+| **Gates.** On a draft head, the worker's loop.md `Affected tests:` selection (`approvals.py affected-tests`; lint ran in the commit hook), else `mise run check` (worker.md, Gates and push; who runs what: Adopting the loop); the test part behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot); GitHub runs every `check:` part. | a broken change |
 | **Proof.** The spec's Before merge list on the PR branch before review, then its After merge list (checks that need the merged default branch or a deployed environment) after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
@@ -32,9 +32,9 @@ question for the owner, not a guess:
 
 | Where | Sections | Read at |
 |---|---|---|
-| mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` on each pushed head, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
+| mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` on each pushed head (`approvals.py affected-tests` where loop.md has an `Affected tests:` line, Adopting the loop), `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
 | `docs/agents/gatekeeper.md` | Policy (the block `approvals.py` reads, below), which nothing else reads | Spec, Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models), `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Gate base: <variable>` (the one its `check` reads as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` (with `, env <name>` for its cloud environment) where a project's cloud workers differ from the default `claude-cloud` with the policy's gate, or `Cloud worker: none` and its reason where its heavy runs stay on hosts (Cloud worker), with `Cloud verifier: worker session` beside it where the verifier runs in the worker's VM, and `Verifier hosts: <name>, <name>` (the Omnigent hosts a verifier may run on: lead.md step 7), which agents read. | every step but Gates |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models), `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Affected tests: <command>` (the command that selects and runs the tests a change affects, against the base it reads from the `Gate base:` variable, else `GATE_BASE`: `approvals.py affected-tests` sets it to `git merge-base origin/<base> HEAD`; a project without a selector names its whole suite, or omits the line and runs `check`), `Gate base: <variable>` (the one its `check` and `Affected tests:` read as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` (with `, env <name>` for its cloud environment) where a project's cloud workers differ from the default `claude-cloud` with the policy's gate, or `Cloud worker: none` and its reason where its heavy runs stay on hosts (Cloud worker), with `Cloud verifier: worker session` beside it where the verifier runs in the worker's VM, `Verifier hosts: <name>, <name>` (the Omnigent hosts a verifier may run on: lead.md step 7), `Acceptance tests: <command>` (the command that runs one spec's checks) and `Acceptance budget: <spec minutes>, <nightly minutes>` (both: Acceptance checks), which agents read. | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -86,7 +86,7 @@ run it with `uv run`. They need Python 3.9 or later. Every key is optional:
 ```yaml
 spec:
   # specs approved by policy, with no owner record; any other waits for the owner.
-  # `auto: true` approves every spec, and the risk rule then holds the spec, not the merge
+  # `auto: true` approves every spec, and by default the risk rule then holds the spec, not the merge
   auto:
     - bug
     - follow-up
@@ -126,8 +126,19 @@ risk:
   paths:
     - .github/**
     - CODEOWNERS
-  merge_paths:   # the owner's own go on the head, whatever the labels and the verifier say
+  critical_paths:   # the `critical` level, whatever the labels and the verifier say; was merge_paths
     - src/orders/**
+
+levels:   # what each level asks; the values shown are the defaults
+  low:
+    spec: policy
+    merge: gates
+  high:   # under `spec.auto: true` {spec: owner, merge: gates}
+    spec: policy
+    merge: go
+  critical:
+    spec: policy
+    merge: owner
 
 plan:
   labels:
@@ -150,6 +161,7 @@ bot:
 land:
   signed_squash_to: main
   allowed_signers: ~/.config/git/allowed_signers
+  batch_wait_seconds: 600   # land waits up to this long before it gates, while another PR waits only on its required checks; default 0
 
 carry_over_main:
   # a clean merge of main keeps the head's verdict unless either side changed one of these
@@ -177,9 +189,10 @@ carry_over_main:
 | `mutate` | `inconclusive_exit` | a whole number from 1 to 255: the exit a test command returns for "setup failed, no verdict", which `mutate.py` reports as an inconclusive patch (never killed) and exits 3 for; the project's test command exits with it when its device or build setup fails (verifier.md, Mutation-check the new tests) | `75` |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
-| `risk` | `merge_paths` | globs matched on the PR's files, as `paths` are: a PR touching one merges only on the owner's go on its head (Approvals and proof) | the rule above decides |
+| `risk` | `critical_paths` | globs matched on the PR's files, as `paths` are: a PR touching one rates `critical` (Approvals and proof); `merge_paths` is its deprecated name, read with a `deprecated:` line, and both set is refused | nothing rates `critical` |
+| `levels` | `low`, `high`, `critical`, each with `spec` (`policy` or `owner`) and `merge` (`gates`, `go` or `owner`) | what a change rated at that level needs (Approvals and proof); a key left out keeps its default | `low` {policy, gates}; `high` {policy, go}, or under `spec.auto: true` {owner, gates}; `critical` {policy, owner} |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
-| `land` | `signed_squash_to` and `allowed_signers`, set together or not at all; `where` (`host`, `cloud` or `both`), `signing_key_env`, `merge_queue` and `merge_commit_heads` (a list of fnmatch patterns over head branch names, such as `sync/*`) | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub; `where` is where `land` may run, and in a cloud session it signs with the key in the variable `signing_key_env` names, which must be in the allowed signers, never the session's own, and lands a PR there only with `merge_queue: false`, since REST can't say whether the base requires a merge queue (`approvals.py`'s docstring says how); a base whose ruleset requires GitHub's merge queue needs no key there, since GitHub merges and signs | GitHub merges, on a host only; a PR whose head matches `merge_commit_heads` lands with `gh pr merge --merge --match-head-commit`, keeping the head's ancestry (an upstream-sync PR needs it), and every other PR is squashed as before; `land` prints each PR's method, and a match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form |
+| `land` | `signed_squash_to` and `allowed_signers`, set together or not at all; `where` (`host`, `cloud` or `both`), `signing_key_env`, `merge_queue`, `merge_commit_heads` (a list of fnmatch patterns over head branch names, such as `sync/*`) and `batch_wait_seconds` (a whole number of seconds, 0 or more) | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub; `where` is where `land` may run, and in a cloud session it signs with the key in the variable `signing_key_env` names, which must be in the allowed signers, never the session's own, and lands a PR there only with `merge_queue: false`, since REST can't say whether the base requires a merge queue (`approvals.py`'s docstring says how); a base whose ruleset requires GitHub's merge queue needs no key there, since GitHub merges and signs; `batch_wait_seconds` makes `land`, holding the lock, wait up to that long before it gates the batch while another open PR into the same base is held by nothing but its required checks still running (the proofs and any owner go already hold, and a PR whose required check no workflow will run, a conflicting one or a readied draft whose workflow lacks `ready_for_review`, never counts), and each such PR whose checks turn green in that time joins the batch and shares its one gate; its wait and who joined are printed and shown on the `Landed` comment's `Batch:` line, and `land` of named PRs only never waits; it is optional, so it needs no signing keys | GitHub merges, on a host only; no wait for `batch_wait_seconds`; a PR whose head matches `merge_commit_heads` lands with `gh pr merge --merge --match-head-commit`, keeping the head's ancestry (an upstream-sync PR needs it), and every other PR is squashed as before; `land` prints each PR's method, and a match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form |
 | `carry_over_main` | `except`, a list of globs, required | deprecated, goes in the next release (Approvals and proof); the project's merge-check configuration (lint, type, test and gate config, lockfiles): clean merges of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
 | `adapters` | `tracker`, `forge`, `evidence` | the adapter each of the gatekeeper's ports runs on, by name: `github`, `gatekeeper.py`'s own (`github_adapter.py`), is the one it ships, and a name no adapter has is refused, naming it (`gatekeeper.py`'s docstring) | `github` |
 
@@ -287,7 +300,7 @@ A PR stays a draft until no core finding is open (Review trail on the PR), so CI
 jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
-draft, `mise run check` on each pushed head is its check. With `ci: false` in gatekeeper.md, the
+draft, the check on each head the worker pushes, a fix round's too, is `uv run <this skill's folder>/scripts/approvals.py affected-tests` where loop.md has an `Affected tests:` line (the commit hook's `lint:` tasks ran at commit; it replaces a `GATE_BASE=<last green>` delta run), else `mise run check` as before; no role reruns the full unit tier on a PR head. Who runs what, with the line: a draft head, the worker's `affected-tests`; a ready PR, CI's selection; the verifier, on a draft head, reads the worker's report (its command and exit code) and runs the PR's own tests, the `gate` status and `loop-gate/` record being a ready head's. `ci: false` is the one case where a PR head runs the full tier: the draft heads run `affected-tests` as above, but the gate of record on the ready head is the full `approvals.py local-ci --record`, run by the worker once when the PR goes ready (again only if the head moves after that), since `check merge` needs a plain pass on the head and a narrowed run is none; this holds with or without a `head_proof`. `local-ci` always clears the `Gate base:` variable (else `GATE_BASE`) from its environment, unless a head proof's `env` names it, so a caller's base never narrows a recorded plain pass. `land`'s batch gate and the merge-queue run stay full, since only they test the code that becomes main, and they never set the base variable. Without the line, behaviour is as before. With `ci: false` in gatekeeper.md and no such line, the
 check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
 instead, and is the gate while iterating too: it runs the merge check, gatekeeper.md's `gate`
 (default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and pushes it
@@ -334,6 +347,24 @@ asked, and screenshots it (worker.md, Report; its docstring has the flags). `scr
 each mutation patch alone, runs the tests and restores the tree, writing a log stamped with the head: the worker
 runs it before its report and the verifier in review (verifier.md, Mutation-check the new tests; its
 docstring has the log format and exit codes).
+
+**Acceptance checks.** Each scriptable Before merge line of a spec becomes a check committed in
+its PR, so a later change that breaks the example fails a run rather than a reader's memory.
+The acceptance command runs one spec's checks: with loop.md's optional line `Acceptance tests:
+<command>`, it is `<command> <issue>`, which the project wires however its suite selects tests
+(a tag or marker, a name filter such as `#842` in the test name, a folder per spec), prints one
+line per check and exits 0 when all pass; the loop names no runner. Without the line it is
+`uv run <this skill's folder>/scripts/acceptance.py <issue>`, which runs every executable file in
+`acceptance/<issue>/` at the repo root, in name order, from the repo root (a shell script, a SQL
+client call, an HTTP call, any language), prints `PASS` or `FAIL` per file and the total, and
+exits 0 when all pass, 1 when one fails and 2 when there is nothing to run, so "no checks" is
+never read as "passed"; `--all` runs every `acceptance/*/` folder, for a nightly. The worker runs
+it on the head before its report (worker.md, Report), and its docstring has the line formats.
+One spec's checks finish within 10 min on the gate's machine and the `--all` run within 90, or
+the minutes of loop.md's `Acceptance budget: <spec minutes>, <nightly minutes>`, since the
+verifier reruns them on every pass: a longer check is split or moves to the nightly. Over the
+budget the runner prints one line saying so and still exits on the checks' result, since the
+budget is a signal, not a gate.
 
 **Fixing the gate itself.** `land` reads `gate_steps` from the default branch, so a PR that changes them lands under the old
 policy, which still runs the step the PR moves (to `where: linux`, say) on a host where it can't pass. Run from a host where
@@ -400,15 +431,16 @@ gatekeeper.md's policy (Settings) holds:
   critical ones: a spec the `risk` rule matches, or one opened by an account without write
   access, since anyone who can open an issue would otherwise approve their own, waits for
   the owner's record and `approved:spec`. The risk rule then holds the spec instead of the
-  merge: the owner decides while the change is still cheap, and its merge is automatic
-  like any other. `approvals.py` judges the rule on the labels of the issue and the PR
+  merge (the default `high` level there is `{spec: owner, merge: gates}`, below): the owner
+  decides while the change is still cheap, and its merge is automatic like any other. `approvals.py` judges the rule on the labels of the issue and the PR
   and the PR's files, at `check build` the files pushed so far, so a file the spec didn't
   foresee still reaches the owner before the merge. `auto: true` moves the rule rather than
   a key of its own, since with every spec approved by policy the spec is the one point the
   owner sees a risky change before it is built, and holding the merge as well would ask
   them twice.
-- The gates are the merge approval of a change that is not high risk.
-- `risk` says what is high risk here, and any one of its terms matching holds: `labels`,
+- The gates are the merge approval of a change whose level asks `gates` of the merge (by
+  default a `low` one).
+- `risk` is the rating: it says what rates `high` here, and any one of its terms matching holds: `labels`,
   matched exactly on the PR and its issues as GitHub names them (`size:L` and `size:XL`
   for large or larger, `area:billing`, `kind:bug`); `paths`, globs matched on the PR's
   files; `always: true`; and `verifier: true`. `approvals.py` reads the keys, never the
@@ -425,15 +457,37 @@ gatekeeper.md's policy (Settings) holds:
   for that term comes off when a later pass says `Risk: low`; one added again after it
   stays. loop.md § Risk criteria adds the project's own criteria in words, which the
   verifier reads.
-- `risk.merge_paths`, globs matched on the PR's files as `paths` are, names the paths whose
-  merge the owner always approves, such as the code that places orders or moves money. A PR
-  touching one is high risk whatever its labels, `spec.auto` and the verifier's `Risk:` line
-  say, and only the owner's go on its head (`approve merge <pr> --head <sha> --by owner`)
-  lets it merge, into any branch: `check merge`, `check queue` and `land` wait for it, a new
-  push needs a new go, `approve merge --by delegate` and `delegate` refuse it, and
-  `approved:merge` is no go, since a rule that depends on someone remembering a label is no
-  rule. It is a list of its own beside `paths`, so a project keeps a wide list holding the
-  spec under `auto: true` and a short one holding every merge. Paths it can't judge hold.
+- `risk.critical_paths`, globs matched on the PR's files as `paths` are, names the paths
+  that rate `critical`, such as the code that places orders or moves money, whatever the
+  PR's labels, `spec.auto` and the verifier's `Risk:` line say. By default only the owner's
+  go on its head (`approve merge <pr> --head <sha> --by owner`) lets such a PR merge, into
+  any branch: `check merge`, `check queue` and `land` wait for it, a new push needs a new
+  go, `approve merge --by delegate` and `delegate` refuse it, and `approved:merge` is no go,
+  since a rule that depends on someone remembering a label is no rule. It is a list of its
+  own beside `paths`, so a project keeps a wide list holding the spec under `auto: true` and
+  a short one holding every merge. Paths it can't judge hold. `merge_paths`, its old name,
+  is deprecated for one release: read as `critical_paths` with one `deprecated:` line, and
+  refused beside it, since two sources of one list would drift.
+- `levels` says what each level of the rating needs, so a project changes the rule without
+  changing the rating: `low` (everything the rating doesn't raise), `high` and `critical`,
+  each with `spec`, `policy` (`spec.auto` decides) or `owner` (a spec rated at that level
+  before the build waits for the owner's record and `approved:spec`, whatever `spec.auto`
+  says), and `merge`, `gates` (the gates are the merge approval), `go` (a person's go on
+  the head: the owner's, or the delegate's where `loop.delegate` and the feature-branch rule
+  below allow) or `owner` (the owner's own go on the head, into any branch, as above). A key
+  left out keeps its default, which reproduces the rule before `levels`: `low` `{spec:
+  policy, merge: gates}`, `high` `{spec: policy, merge: go}`, or under `spec.auto: true`
+  `{spec: owner, merge: gates}`, and `critical` `{spec: policy, merge: owner}`. A change
+  rated by several terms takes the strictest `merge` any of them asks. A term the spec's
+  hold never reads (`risk:high`, an exact revert of a high-risk change, the `verifier` term,
+  the cap) rates the change only after its spec was approved: it takes its level's `merge`,
+  or `go` where that level's `spec` is `owner` and its `merge` is `gates`, since the owner
+  never saw that rating. `high: {merge: gates}` lands high risk on the gates in a low-stakes
+  repo, and the rating still shows as `risk:high`; `low: {merge: go}` holds every merge for
+  a go. The verifier's tier rule stays tied to the rating: a `high` or `critical` change
+  needs a default-tier verdict whatever its `merge` says. `check merge` and `land` print the
+  level and the action they applied on stderr (`PR #7: risk: high (it matches a risk rule
+  (path `.github/**`)); merge: go`).
 - `plan` asks for the owner's approval of a matching plan.
 - `bot.<login>`, such as `bot.dependabot[bot]` with `paths` `uv.lock` and
   `pyproject.toml`: a PR that bot opens needs no verifier review when every commit is the
@@ -456,10 +510,12 @@ gatekeeper.md's policy (Settings) holds:
   a PR, so it is fixed before the PR reaches `land`. Without a `signoff` section
   no keyword is checked, and `Implements` is a link like `Part of`.
 
-A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
-matches (unless under `spec.auto: true`, where it held the spec, but for its `verifier` term), or the cap was reached with a blocker or major open (The cap). A high-risk spec
-covered by policy is still built and PR'd; its merge waits for the owner's go on its
-head, asked for once `check` is green there: `uv run <this skill's folder>/scripts/approvals.py
+A change rates `high` when `risk:high` is on the PR or an issue it closes, a risk rule
+matches, or the cap was reached with a blocker or major open (The cap), and `critical`
+when it touches `risk.critical_paths`. A high-risk spec covered by policy is still built
+and PR'd; where its level asks a go (by default `high`, but for a rule that held its spec
+under `spec.auto: true`, and `critical`), its merge waits for the owner's go on its head,
+asked for once `check` is green there: `uv run <this skill's folder>/scripts/approvals.py
 approve merge <pr> --head <sha> --by owner`, naming the head you showed them and run in
 the session where the owner said it, posts a commit status `owner` on that one commit and a
 record naming it, and refuses a head that moved since; the script writes every word, so
@@ -475,7 +531,7 @@ a base with no policy file leaves the default branch's), and there a delegate's 
 key (`feature`) the owner's go alone covers the default branch. A status covers one commit, so
 it never covers code the approver did not see; it carries to a head whose commits since are
 only merges of the base, once the verifier's pass there says `Logic change: none`. Into the default branch these are the only go:
-anyone with triage rights can add a label, so `approved:merge` there is no go. On a change that is not high risk
+anyone with triage rights can add a label, so `approved:merge` there is no go. On a change whose level asks no go
 `approved:merge` means nothing. On a PR into a feature branch (any base but the default
 branch) the label added after the head's push is a go too, and it may be the delegated
 approver's, where loop.md names one: once the gate is green and a satisfied verdict from the
@@ -483,7 +539,11 @@ verifier's top model covers the head, it runs `approvals.py delegate <pr>`, whic
 label and a record naming it the delegate's. So dependent work can go on landing behind a
 high-risk change. `delegate` refuses a PR into the default branch, and the branch's own
 merge to the default branch is high risk while any PR merged into the branch carries
-`risk:high`: the stream gets one go, as a whole, the owner's or, with `loop.delegate: all`, the delegate's. When the gate infers high risk, it adds `risk:high` to the PR. Otherwise
+`risk:high`: the stream gets one go, as a whole, the owner's or, with `loop.delegate: all`, the delegate's. When the gate rates a change `high` or `critical`, it adds `risk:high` to the PR, except
+for a term the label, read back as a `high` rating after the spec, would ask more of: a
+rule that held the spec at a level on `{spec: owner, merge: gates}` (the default under
+`spec.auto: true`), or a level whose `merge` is lighter than that rating's, such as
+`critical: {merge: gates}` beside the default `high`. Where the level asks `gates`,
 the merge approval is the gates themselves: every verifier review on the newest pass's
 commit satisfied with no blocker or major open, that commit covering the head that lands,
 every review thread resolved, no review requesting changes, and the base's required checks
@@ -525,7 +585,7 @@ isolated (one PR at a time, or GitHub's per-entry groups). The local merge queue
   merges, so a lock whose PR is merged and in the base was left by a land that died after its
   merges and is broken at once; one older than 2 hours (a land that died before them) is broken too.
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
-  wait, with the owner's go where the change is high risk and the base's required checks
+  wait, with the owner's go where the change's risk level asks one and the base's required checks
   green. `land <pr>...` marks each named draft ready, before it waits for the lock so the holder's next batch includes it, never on a missing proof, since ready starts CI.
   Several named PRs land in one batch; one that is no candidate is left out with its reason and the rest land, the exit being the worst of them (1 over 3 over 0).
 - With gatekeeper.md's `head_proof`, a candidate's head also carries a green status of its `status`
@@ -647,7 +707,7 @@ With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead runs on
 the host and the workers run in the cloud, with the verifier in the worker's VM unless `Placement:` says otherwise (Where heavy steps run), as sessions of `<agent>`, a registered
 Omnigent agent whose tools run in a cloud VM, which the lead starts. Without the line the
 same holds with `claude-cloud` as the agent and the policy's `gate` as the gate, so a project
-needs no setup before its heavy runs leave the host. A line that opens `Cloud worker: none`,
+needs no setup before its heavy runs leave the host. The cloud worker's gate is one rule, which overrides that default where loop.md has an `Affected tests:` line: `affected-tests` when loop.md has an `Affected tests:` line, else the `Cloud worker:` line's gate task, else the policy's `gate`. A line that opens `Cloud worker: none`,
 with the project's reason after it, keeps workers on hosts: nothing in this section applies
 and every role file reads as written. A project that has the line keeps its meaning. `env <name>` on the
 line (`Cloud worker: <agent>, gate <task>, env <name>`) names the project's cloud environment, the one
@@ -664,11 +724,10 @@ or the owner's private network.
 
 - **Who does what.** The lead runs intent, spec, the branch and draft PR, `check build`,
   triage, the fetch and merge (or fast-forward) of each worker's reported branch into the
-  PR branch, the full gate where it runs (below), the instance, the verdict's post, thread
-  resolution, `land` and acceptance. The full gate (`mise run
-  check`, or `local-ci --record` with `ci: false`; on a fix round started detached beside the
-  next verifier, lead.md step 7) runs in the worker's VM, on its checkout and build; `Placement:` never moves it, since that line places the verifier only; the host's
-  `local-ci <pr>`, `check merge` and `land` reuse its recorded pass either way. The worker codes and compiles, runs `mise run <task>`,
+  PR branch, the worker's gate where it runs (below), the instance, the verdict's post, thread
+  resolution, `land` and acceptance. The worker's gate (the rule above, Adopting the loop; on a fix round started detached beside the
+  next verifier, lead.md step 7) runs in the worker's VM, on its checkout and build; `Placement:` never moves it, since that line places the verifier only; a `local-ci --record` pass it makes (`ci: false`, on the ready head) is reused by the host's
+  `local-ci <pr>`, `check merge` and `land`, while `affected-tests` records nothing. The worker codes and compiles, runs `mise run <task>`,
   the light gate (what the VM can run: compile, unit tests, headless web tests on its
   Chromium), before each push, and pushes to the `claude/…` branch its session was given,
   since a cloud session declines any other branch without its own user's permission and a
@@ -946,7 +1005,7 @@ or the owner's private network.
   in the dismissal. A human review follows the same pattern. The PR is marked ready once no core finding (blocker or major)
   is open, and squashed on merge. The PR keeps a public trail of what was found, fixed and
   iterated, and the project's CI skips draft PRs, so it doesn't run on half-done work:
-  `mise run check` on each pushed head is the check while a PR is a draft.
+  the worker's `Affected tests:` selection (`approvals.py affected-tests`, else `mise run check`) on each pushed head is the check while a PR is a draft.
 - **Remove, don't append.** Remove a thing as if it never existed. Edit and compress
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds
@@ -954,7 +1013,7 @@ or the owner's private network.
 - **Models.** Every start names a model fit for the job, never the harness default. The owner's named model wins; else loop.md's `Worker model:
   <tier> for <condition>` line names a tier for a worker whose issue matches the condition
   (on the issue's labels), so the choice sits in one file the owner can change; else the lead
-  picks: `frontier` for hard design, root-cause work, risky reviews; `top` or `mid` for routine work by size; effort high or below. A `Verifier model:` line does the same for a verifier whose PR
+  picks by design complexity times risk, for a worker and a verifier alike: `small` for mechanical work (a rename, a generated file, a docs fix); `mid` for the usual range and when unsure; `top` for high complexity or high risk; `frontier` only for very high complexity or very high risk, since "high" is common and `frontier` costs several times `top`. Effort high or below. A `Verifier model:` line does the same for a verifier whose PR
   matches, judged as `check merge` judges risk: on the labels of the PR and its issues and
   on the PR's files, so a PR that `check merge` rates high never gets a lower tier. The
   verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
@@ -963,7 +1022,7 @@ or the owner's private network.
   reads the tier from the verdict's `Verifier:` line (verifier.md) and refuses until then. It applies within the verifier's own family: it lowers the tier, never the family, which
   stays the other one from the author's (Independent verification). The tier is `frontier`, `top`, `mid` or `small` (Claude's Fable, Opus, Sonnet, Haiku;
   Codex's Astra, Sol, Terra, Luna; each family names its own), so one line holds for every family
-  and outlives a release. `frontier` costs several times `top`: use it only when the job needs it. Resolve the tier
+  and outlives a release. Resolve the tier
   at launch from the newest generation of the family's tier models only: its model of that
   tier, else its closest higher tier (its highest when none is higher), never an older
   generation's model, which the family has already superseded. A lead that can't read the
@@ -984,7 +1043,7 @@ or the owner's private network.
   the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr> --wait`,
   which marks it ready and lands it with every other landable PR in one gated batch. The PR merges only when the newest
   verdict covers the head that lands, the required checks are green there, and, where the
-  change is high risk (Approvals and proof), the owner's go is on that head.
+  change's risk level asks a go (Approvals and proof), the owner's go is on that head.
   The verdict's commit is the head itself: any commit after it, a merge of main included,
   needs a verifier pass first, and a triage or comment is no verdict.
 

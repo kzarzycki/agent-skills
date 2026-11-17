@@ -69,7 +69,7 @@ yourself, keeping standards and spec as separate axes.
   and is waited on up to a total budget you state, in as few calls as you can: each call is
   `omnigent_agent.py wait-for --log <log> --pid <pid>`, which blocks close to a 10-minute tool
   call (`--budget` for another limit) and prints only the outcome, never short polls or a sleep
-  loop of your own, since every call re-reads the whole context. Where that script is not at hand,
+  loop of your own, since every call re-reads the whole context. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged. Where that script is not at hand,
   each call blocks close to the tool's limit (the longest yield the harness allows on a running
   command, or a sleep loop that checks the log for its exit line), never short polls. Where a
   foreground command stops at 10 minutes (a session in a hosted VM), the run is waited on within
@@ -127,9 +127,10 @@ yourself, keeping standards and spec as separate axes.
   itself; it changes CI permissions, secrets, branch protection or the loop's own approval
   rules; or it changes what users see in a significant way the spec did not ask for, or
   asked for only vaguely, so the owner would be surprised. loop.md § Risk criteria, where it
-  has one, adds the project's own. Anything else is low. `verifier: true` in the policy's
-  `risk` (docs/agents/gatekeeper.md) lets a low change merge without the owner, so judge it on the diff, not on
-  how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
+  has one, adds the project's own. Anything else is low. With `verifier: true` in the policy's
+  `risk` (docs/agents/gatekeeper.md) your `Risk:` line rates the change, and the policy's `levels` say what each
+  rating needs at merge (by default a high change waits for the owner's go, a low one for the gates alone), so
+  judge it on the diff, not on how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls.
 - **A run the sandbox refuses.** A gate, mutation or instance run the sandbox won't let you
   make (a lock or path it can't write, such as a read-only heavy-slot lock) ends in a question
@@ -163,8 +164,7 @@ yourself, keeping standards and spec as separate axes.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is
   the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
-- **Gates and repros:** you may run `mise run check`. Run a gate as the bare command
-  (`mise run check`), with no wrapper, redirect or detach around it, and keep it running with
+- **Gates and repros:** don't rerun the gate: read the gate of record and run the PR's own tests and acceptance checks. On a draft head with an `Affected tests:` line, the gate of record is the worker's report (its command and exit code); the `gate` status and the `loop-gate/` record are a ready head's. Run a repro or test as the bare command, with no wrapper, redirect or detach around it, and keep it running with
   your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain
   command, so a wrapped one asks for approval, and on a reviewed sandbox each ask is a paid
   model call. Then write its proof log from what it printed: the head's SHA, the command, its
