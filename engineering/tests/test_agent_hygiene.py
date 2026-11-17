@@ -655,6 +655,24 @@ def test_a_closed_pr_worktree_with_old_git_state_and_no_remote_branch_is_removed
     assert f"would remove worktree {path} (o/r#9 closed)" in out, out
 
 
+def test_a_worktree_holding_only_an_empty_ignored_dir_and_apm_local_is_removed(
+    tmp_path, monkeypatch
+):
+    worktree, run = landing_world(tmp_path, monkeypatch)
+    path, _ = worktree("finished", "verified")
+    exclude = tmp_path.resolve() / "dev/r/.git/info/exclude"
+    exclude.write_text("emptyout/\n.apm-local/\nkept/\n")
+    (path / "emptyout/nested").mkdir(parents=True)
+    (path / ".apm-local").mkdir()
+    (path / ".apm-local/state.json").write_text("{}")
+    out = run()
+    assert f"would remove worktree {path} (o/r#9 closed)" in out, out
+    (path / "kept").mkdir()
+    (path / "kept/work.txt").write_text("x")
+    out = run()
+    assert "ignored files that may not rebuild: kept" in out, out
+
+
 def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
     hygiene = load("agent_hygiene")
     hygiene.REPO, hygiene.DOTAGENTS = (
@@ -1217,7 +1235,7 @@ def drift_check(home, run, told, hygiene):
 
 
 def test_tell(tmp_path, monkeypatch):
-    """tell() finds the chief of staff on a server other than the CLI's default and posts only there."""
+    """tell() finds the chief of staff by its label on the configured server and asks no other logged-in server."""
     home = tmp_path.resolve()
     monkeypatch.setenv("HOME", str(home))
     hygiene = load("agent_hygiene_tell")
@@ -1268,14 +1286,15 @@ def test_tell(tmp_path, monkeypatch):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return server
 
-    personal = serve(
+    personal = serve([{"id": "cos1", "labels": {"omni.role": "cos"}}])
+    work = serve([{"id": "other", "labels": {"omni.role": "lead"}}])
+    # a chief of staff in a project of another name, with an archived one before it
+    named = serve(
         [
             {"id": "old", "labels": {"omni.role": "cos"}, "archived": True},
-            {"id": "cos1", "labels": {"omni.role": "cos"}},
+            {"id": "cos2", "labels": {"omni.role": "cos"}, "project": "Another name"},
         ]
     )
-    work = serve([{"id": "other", "labels": {"omni.role": "lead"}}])
-    # Tried before personal: one redirects there (its token must not follow), one fails after listing a cos.
     moved = serve([], redirect=f"http://127.0.0.1:{personal.server_port}")
     broken = serve([{"id": "cos9", "labels": {"omni.role": "cos"}}], detail_status=503)
     echo = serve([], echo=True)
@@ -1285,6 +1304,7 @@ def test_tell(tmp_path, monkeypatch):
         for name, server in (
             ("work", work),
             ("personal", personal),
+            ("named", named),
             ("moved", moved),
             ("broken", broken),
             ("echo", echo),
@@ -1292,45 +1312,63 @@ def test_tell(tmp_path, monkeypatch):
         )
     }
     (home / ".omnigent").mkdir(exist_ok=True)
-    (home / ".omnigent/config.yaml").write_text(f"host:\n  name: devbox\nserver: {urls['work']}\n")
+    config = home / ".omnigent/config.yaml"
     hygiene.OMNIGENT_PYTHON = (
         sys.executable
-    )  # LOGINS below stands in for the Omnigent tool's token lookup
+    )  # LOGINS below stands in for the Omnigent tool's token lookup: every server is logged in
     hygiene.LOGINS = (
-        f'import json, sys; tokens = {{s: "t-" + s[-5:] for s in sys.argv[1:] + {json.dumps([urls["garbled"], urls["echo"], urls["moved"], urls["broken"], urls["personal"]])}}}; '
+        f"import json, sys; tokens = {{s: 't-' + s[-5:] for s in sys.argv[1:] + {json.dumps(list(urls.values()))}}}; "
         "print(json.dumps(tokens))"
     )
+
+    def configure(name):
+        config.write_text(f"host:\n  name: devbox\nserver: {urls[name]}\n")
+
+    def refused(name, text):
+        configure(name)
+        try:
+            hygiene.tell(text)
+        except RuntimeError as error:
+            return str(error)
+        raise AssertionError(f"tell() must raise when {name} holds no chief of staff")
+
     try:
-        where = hygiene.tell("hello")
-        assert where == f"cos1 on {urls['personal']}", where
+        # Acceptance 1: the configured server answers with no chief of staff, another logged-in one has one.
+        error = refused("work", "hello")
+        assert error.startswith(f"{urls['work']}: no chief of staff"), error
+        assert not posts and {r[0] for r in seen} == {work.server_port}, (posts, seen)
+        # ... a chief of staff in a project of another name gets the message, found by its label alone.
+        configure("named")
+        assert hygiene.tell("hello") == f"cos2 on {urls['named']}"
         assert [(port, path) for port, path, _, _ in posts] == [
-            (personal.server_port, "/v1/sessions/cos1/events")
+            (named.server_port, "/v1/sessions/cos2/events")
         ], posts
-        assert posts[0][2] == f"Bearer t-{urls['personal'][-5:]}", "each server gets its own token"
+        assert posts[0][2] == f"Bearer t-{urls['named'][-5:]}"
         assert posts[0][3]["data"]["content"][0]["text"] == "hello"
-        assert not [
-            r
-            for r in seen
-            if r[0] == personal.server_port and r[2] != f"Bearer t-{urls['personal'][-5:]}"
-        ], ("a redirect carried another server's token", seen)
-        assert any(r[0] == broken.server_port and r[1] == "/v1/sessions/cos9" for r in seen), (
-            "broken was tried"
-        )
+        assert not [r for r in seen if "project=" in r[1]], seen
+        # a failure on the configured server never moves on to another
+        before = len(seen)
+        assert refused("broken", "x").startswith(f"{urls['broken']}: HTTP 503")
+        assert f"{urls['echo']}: HTTP 401" in refused("echo", "x")
+        assert "Bearer" not in refused("echo", "x"), "a token in the error"
+        assert f"{urls['garbled']}: BadStatusLine" in refused("garbled", "x")
+        # a redirect to a server holding a chief of staff is not followed (nor its token carried)
+        assert refused("moved", "x").startswith(f"{urls['moved']}: HTTP 302")
+        assert not [r for r in seen[before:] if r[0] == personal.server_port], seen
+        # unreachable: the error names the server
         personal.shutdown()
         personal.server_close()
-        try:
-            hygiene.tell("again")
-            raise AssertionError("tell() must raise when no server holds the chief of staff")
-        except RuntimeError as error:
-            assert f"{urls['work']}: none" in str(error) and urls["personal"] in str(error), error
-            assert f"{urls['echo']}: HTTP 401" in str(error) and "Bearer" not in str(error), (
-                "a token in the error",
-                error,
-            )
-            assert f"{urls['garbled']}: BadStatusLine" in str(error), error
+        configure("personal")
+        assert refused("personal", "x").startswith(f"{urls['personal']}: URLError")
+        # no config.yaml `server:`: RUNNER_SERVER_URL, else the CLI default
+        config.write_text("host:\n  name: devbox\n")
+        monkeypatch.setenv("RUNNER_SERVER_URL", urls["named"] + "/")
+        assert hygiene.configured_server() == urls["named"]
+        monkeypatch.delenv("RUNNER_SERVER_URL")
+        assert hygiene.configured_server() == hygiene.DEFAULT_SERVER
         assert len(posts) == 1, posts
     finally:
-        for server in (work, moved, broken, echo, garbled):
+        for server in (work, named, moved, broken, echo, garbled):
             server.shutdown()
             server.server_close()
 
