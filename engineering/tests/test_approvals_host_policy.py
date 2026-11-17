@@ -8,17 +8,7 @@ from pathlib import Path
 import pytest
 from approvals_harness import (
     SCRIPTS,
-    added,  # noqa: F401
     approvals,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
-    others_open,  # noqa: F401
-    pushed,  # noqa: F401
-    refs,  # noqa: F401
-    required,  # noqa: F401
 )
 
 POLICY = "# heavy here\nmise run check  # whole suite\napprovals.py local-ci\nswift build\n"
