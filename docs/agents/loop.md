@@ -11,6 +11,10 @@ A mid worker costs about half a top one per item, and a small item needs no more
 
 Verifier model: mid for not risk:high
 
+Lead model: mid for size:S or smaller
+
+A lead on a size:S item runs routine rounds, and a mid lead costs half a top one per token.
+
 Lead autocompact: 200k
 
 A lead re-reads its whole context every turn, so a smaller window costs less per turn; its notes
