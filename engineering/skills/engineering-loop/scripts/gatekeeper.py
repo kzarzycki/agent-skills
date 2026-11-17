@@ -174,6 +174,10 @@ this clone's record, or a record branch in origin for a candidate's head with th
 date with the base runs no gate. GitHub's required checks never stand in for it, since the pass is then published as the gate
 command's. Otherwise it runs the gate there as `local-ci` does (below), its log under the git common dir, and records
 the pass by tree; a gate that leaves the worktree changed is red, since it no longer ran on the batch as merged.
+From a clone with no working tree (no index: a `--no-checkout` launch dir), where every command reads the policy files
+from origin's default branch (policy_ref), steps 3 and 4 make no worktree: the heads merge in objects (`git merge-tree
+--write-tree`), a recorded pass of every gate step on the batch's tree is reused, and with none `land` refuses naming
+the tree, as it refuses a `pre_land` it has no checkout to run in; it never runs the gate there.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
 --match-head-commit`), with the body the repo's squash default would write less every session link line (a
 `Claude-Session:` line, or a line that is only a claude.ai session link), since a cloud session's harness adds its link
@@ -3475,6 +3479,82 @@ def toplevel() -> Path:
         raise Refused("not in a git checkout: run from the repo's checkout") from exc
 
 
+def working_tree(root: Path) -> bool:
+    """Whether the clone at `root` has its files checked out: False when HEAD names a commit and there is no index, as
+    in a `--no-checkout` clone or worktree that a host keeps only to launch cloud sessions from."""
+    index = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-path", "index"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    born = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", "-q", "HEAD^{commit}"],
+        capture_output=True,
+        check=False,
+    )
+    return born.returncode != 0 or not index or Path(index).exists()
+
+
+@functools.cache
+def policy_ref(root: Path) -> str | None:
+    """Where the policy files are read: None in a clone with a working tree, whose files they are (judge_with_base
+    refuses a land or merge check where they differ from the base's); in one without, origin's default branch's
+    remote-tracking ref, fetched once per run, since its files are the ones main holds and the host needs no checkout.
+    A failed fetch is refused, since the ref as last fetched may hold an older policy than main's now."""
+    if working_tree(root):
+        return None
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, text=True, check=False
+        )
+
+    # origin/HEAD as the clone recorded it, else as origin says now
+    name = run("symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD").stdout.strip()
+    name = name.removeprefix("origin/") or "".join(
+        re.findall(
+            r"^ref: refs/heads/(\S+)\tHEAD$",
+            run("ls-remote", "--symref", "origin", "HEAD").stdout,
+            re.MULTILINE,
+        )[:1]
+    )
+    if not name:
+        raise Refused(
+            f"{root} has no working tree and origin names no default branch, so there is no policy to read:"
+            " run where the files are checked out"
+        )
+    ref = f"refs/remotes/origin/{name}"
+    if run("fetch", "-q", "origin", f"+refs/heads/{name}:{ref}").returncode:
+        raise Refused(
+            f"{root} has no working tree and origin/{name} could not be fetched, so the policy would be the last"
+            " fetched one: retry, or run where the files are checked out"
+        )
+    return ref
+
+
+def shown_at(root: Path, ref: str, path: Path) -> bytes | None:
+    """`path`'s bytes at `ref`, None where the ref holds no such file."""
+    found = subprocess.run(
+        ["git", "-C", str(root), "show", f"{ref}:{path.as_posix()}"],
+        capture_output=True,
+        check=False,
+    )
+    return found.stdout if found.returncode == 0 else None
+
+
+def policy_bytes(root: Path, path: Path) -> bytes | None:
+    """A policy file's bytes as this run reads it (policy_ref): the working tree's, else origin's default branch's."""
+    if (ref := policy_ref(root)) is not None:
+        return shown_at(root, ref, path)
+    try:
+        return (root / path).read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise Refused(f"{root / path}: {exc.strerror}") from exc
+
+
 # the base the PR a command acts on merges onto, which project() reads the policy from (policy_from); None: the
 # default branch, for a command with no PR
 POLICY_BASE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -3515,9 +3595,17 @@ def policy_file(root: Path, path: Path, base: str | None = None) -> str | None:
     """`path` as project() reads it: from `origin/<base>` (policy_base), None where the base lacks it, printing
     `differs` once when the working tree's copy is another; from the working tree, printing `unbased` once, when there
     is no such ref."""
+    policy_ref(
+        root
+    )  # a clone with no working tree: origin's default branch fetched once, a failed fetch refused
     found = policy_base(str(root), base)
     held = read(root / path) if (root / path).exists() else None
     if found is None:
+        if not working_tree(root):  # no files to fall back to: empty policy would judge by defaults
+            raise Refused(
+                f"{root} has no working tree and no origin/{base or default_base(str(root))} ref, so there is no"
+                " policy to read: fetch that base, or run where the files are checked out"
+            )
         unbased(str(root))
         return held
     ref, tip = found
@@ -3528,7 +3616,7 @@ def policy_file(root: Path, path: Path, base: str | None = None) -> str | None:
         check=False,
     )
     based = shown.stdout if shown.returncode == 0 else None
-    if held != based:
+    if held != based and working_tree(root):  # with no working tree there is no copy to differ
         head = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "HEAD"],
             capture_output=True,
@@ -4000,7 +4088,9 @@ def base_drift(base: str) -> list[str]:
     """The running gatekeeper.py and github_adapter.py and the three policy files (tracker, loop.md, gatekeeper.md) whose text here differs from
     `origin/<base>`'s, as repo paths, since a PR's own edit of the code or rules that judge it must not judge it. Reads
     the ref as fetched (a land has just fetched it); a script inside the checkout that the base lacks (a PR adds or moves it) differs; only one
-    installed outside the checkout, or a ref that is missing, has nothing to compare and counts as equal."""
+    installed outside the checkout, or a ref that is missing, has nothing to compare and counts as equal. A policy file
+    is compared as this run reads it (policy_bytes): with no working tree, origin's default branch's, so a land into
+    the default branch finds no drift by construction, and one into another base still compares with that base's."""
     root = toplevel()
     ref = f"refs/remotes/origin/{base}"
     if subprocess.run(
@@ -4009,7 +4099,7 @@ def base_drift(base: str) -> list[str]:
         check=False,
     ).returncode:
         return []
-    paths = [TRACKER, LOOP, POLICY]
+    paths: list[Path] = []
     # the gatekeeper and its GitHub adapter, the code that judges
     for running_file in reversed(dict.fromkeys((*RUNNING, github.__file__ or ""))):
         try:
@@ -4017,17 +4107,15 @@ def base_drift(base: str) -> list[str]:
         except ValueError:
             pass
     differ = []
-    for path in paths:
-        shown = subprocess.run(
-            ["git", "-C", str(root), "show", f"{ref}:{path.as_posix()}"],
-            capture_output=True,
-            check=False,
-        )
-        theirs = shown.stdout if shown.returncode == 0 else None
-        try:
-            ours = (root / path).read_bytes()
-        except OSError:
-            ours = None
+    for path in [*paths, TRACKER, LOOP, POLICY]:
+        theirs = shown_at(root, ref, path)
+        if path in (TRACKER, LOOP, POLICY):
+            ours = policy_bytes(root, path)
+        else:
+            try:
+                ours = (root / path).read_bytes()
+            except OSError:
+                ours = None
         if ours != theirs:
             differ.append(path.as_posix())
     return differ
@@ -4505,7 +4593,20 @@ def local_queue(
     failed: set[int] = set()
     # each PR to land, the tree it lands, the tree gated with it, and how that passed
     landed: list[tuple[dict[str, Any], str, str, str]] = []
-    if candidates:
+    if candidates and policy_ref(toplevel()) is not None:
+        # no working tree here: the batch is computed in objects and gated only by a recorded pass, never run here
+        if settings(loop).get("pre_land"):
+            raise Refused(
+                f"loop.md's `pre_land` runs in a checkout of {base}'s tip, and this clone has no working tree:"
+                " land where the files are checked out"
+            )
+        tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
+        landed = merged_trees(candidates, base, tip, failed)
+        if landed and held:
+            repointed(base, held, landed[-1][0]["number"])
+        if landed:
+            merges(landed, base, tip, None, loop, failed)
+    elif candidates:
         with batch_tree(base) as work:
             tip = run_in(work, "rev-parse", "HEAD")
             candidates = [pull for pull in candidates if pre_landed(pull, base, work, loop, failed)]
@@ -4625,11 +4726,17 @@ def merged_onto(
         subprocess.run(
             ["git", "-C", str(work), "merge", "--abort"], capture_output=True, check=False
         )
+    skip_conflict(pull, base, before, failed)
+    return False
+
+
+def skip_conflict(pull: dict[str, Any], base: str, before: list[int], failed: set[int]) -> None:
+    """Leave out a PR whose head conflicts with the batch, saying so once per head on the PR."""
+    where = f"PR #{pull['number']}"
     failed.add(pull["number"])
     ahead = f" plus {', '.join(f'#{n}' for n in before)} merged before it" if before else ""
     print(f"{where} conflicts with {base}{ahead}: skipped")
     conflict_note(pull, base, ahead)
-    return False
 
 
 def conflict_note(pull: dict[str, Any], base: str, ahead: str = "") -> None:
@@ -4645,6 +4752,64 @@ def conflict_note(pull: dict[str, Any], base: str, ahead: str = "") -> None:
             f"{CONFLICTS}\nHead: {head}\n\nIt conflicts with {base}{ahead}: merge origin/{base} in, rerun the gates,"
             " get a verdict on the merge (lead.md step 8), then land again.\n",
         )
+
+
+def merged_trees(
+    candidates: list[dict[str, Any]], base: str, tip: str, failed: set[int]
+) -> list[tuple[dict[str, Any], str, str, str]]:
+    """merge_batch for a clone with no working tree: each candidate's head merged onto `tip` (origin's `base`) in
+    objects alone, `git merge-tree --write-tree` and `git commit-tree`, so no file is checked out, then the batch's tree
+    reused from a recorded pass of every gate step on it (step_pass), since no gate runs here. With none it refuses,
+    naming the tree, so a session with a working tree passes it (`local-ci --record` on a head with that tree)."""
+    commit, merged, trees = tip, [], []
+    for pull in candidates:
+        head = pull["headRefOid"]
+        if not fetched(head):
+            print(
+                f"PR #{pull['number']}: its head {head} is not on origin: push it, then land again"
+            )
+            failed.add(pull["number"])
+            continue
+        made = subprocess.run(
+            ["git", "merge-tree", "--write-tree", "--no-messages", commit, head],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if made.returncode == 1:
+            skip_conflict(pull, base, [p["number"] for p in merged], failed)
+            continue
+        if made.returncode:
+            raise Refused(
+                f"git merge-tree {commit} {head}: {made.stderr.strip() or made.returncode}"
+            )
+        tree = made.stdout.split()[0]
+        commit = git(
+            "-c",
+            "commit.gpgsign=false",
+            "commit-tree",
+            tree,
+            "-p",
+            commit,
+            "-p",
+            head,
+            "-m",
+            f"Merge {head}",
+        ).strip()
+        merged.append(pull)
+        trees.append(tree)
+    if not merged:
+        return []
+    missing = [step["name"] for step in gate_plan() if step_pass(commit, tree, step) is None]
+    if missing:
+        numbers = ", ".join(f"#{pull['number']}" for pull in merged)
+        raise Refused(
+            f"Tree {tree} (the batch of {numbers} on {base} at {tip}): {', '.join(f'`{m}`' for m in missing)} has no"
+            " recorded pass on it, and land runs no gate in a clone with no working tree: pass it where the files are"
+            " checked out (`approvals.py local-ci --record` on a head with this tree), then land again"
+        )
+    print(f"Tree {tree}: `{gate()[0]}` passed on it before, reused")
+    return [(pull, own, tree, "reused") for pull, own in zip(merged, trees, strict=True)]
 
 
 def pre_landed(
@@ -5338,14 +5503,15 @@ def merges(
     landed: list[tuple[dict[str, Any], str, str, str]],
     base: str,
     tip: str,
-    work: Path,
+    work: Path | None,
     loop: str | None,
     failed: set[int],
 ) -> None:
     """Merge each PR through GitHub in the batch's order, pinned to its head (or, with loop.md's `land` section, as a
     signed squash of the tree it lands on the commit before it), stopping at the first one GitHub refuses or leaves
     open, then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
-    the batch partial, or someone merged meanwhile) the tip is gated here. Each landed PR gets a `Landed` comment."""
+    the batch partial, or someone merged meanwhile) the tip is gated here, or with no worktree (`work` None) its pass
+    reused where one is recorded and the tree named where none is. Each landed PR gets a `Landed` comment."""
     local, command, done = signed(loop), gate()[0], []
     for pull, tree, gated, how in landed:
         where, head = f"PR #{pull['number']}", pull["headRefOid"]
@@ -5397,12 +5563,22 @@ def merges(
             else f"{base}'s tree is {actual} after the merges, not the {tree} they make: someone merged meanwhile,"
             f" so {tip} is gated now"
         )
-        reset(work, tip)
-        try:
-            if gate_batch(work, [])[1]:
+        if work is None:
+            if all(step_pass(tip, actual, step) is not None for step in gate_plan()):
+                print(f"Tree {actual}: `{command}` passed on it before, reused")
                 publish(tip, landed_pass(tip, actual))
-        except MachineFault as exc:  # the PRs landed: each still gets its comment
-            print(exc)
+            else:
+                print(
+                    f"Tree {actual}: no recorded pass, and land runs no gate in a clone with no working tree: pass {tip}"
+                    " where the files are checked out (`approvals.py local-ci --record`)"
+                )
+        else:
+            reset(work, tip)
+            try:
+                if gate_batch(work, [])[1]:
+                    publish(tip, landed_pass(tip, actual))
+            except MachineFault as exc:  # the PRs landed: each still gets its comment
+                print(exc)
     # after every publication above, which pushes the landed tree's record again when it is the heads' tree
     drop_records([pull["headRefOid"] for pull, *_ in done])
     numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)

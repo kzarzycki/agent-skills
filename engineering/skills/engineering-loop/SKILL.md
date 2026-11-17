@@ -540,6 +540,12 @@ isolated (one PR at a time, or GitHub's per-entry groups). The local merge queue
   that conflicts with a comment saying so, and gates the result's tree once, or reuses the
   gate's pass on that tree, never GitHub's required checks in its place: a PR already up to
   date with the base, with a pass on its head, runs no gate.
+- Run from a clone with no working tree (a `--no-checkout` launch dir a host keeps for cloud
+  sessions), every `approvals.py` command reads the tracker file, loop.md and gatekeeper.md from
+  origin's default branch, and `land` merges in objects (`git merge-tree --write-tree`): it reuses
+  a recorded pass on the batch's tree and, with none, refuses naming the tree, so a session with
+  the files checked out runs `local-ci --record` on a head with it. It never runs the gate or
+  `pre_land` there, refusing a project with `pre_land` set.
 - Green: it merges each PR through GitHub in the same order, pinned to its head, checks the
   base ended at the gated tree, publishes the pass on the new tip, and comments `Landed` on each.
 - Red: it lands one PR at a time on the last green commit (a one-PR batch's red run is its first run alone). A PR red alone twice is evicted
