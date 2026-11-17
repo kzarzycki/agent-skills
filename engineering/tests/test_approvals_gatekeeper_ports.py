@@ -61,6 +61,7 @@ class Memory:
             "comment": lambda n, body: self.comments.append((n, body)),
             "label": lambda n, name, add: self.labels.append((n, name, add)),
             "assign": lambda n, login, add: None,
+            "close_issue": lambda n: None,
             "pull_request": lambda n: self.pulls[n],
             "pull_status": lambda n: self.pulls[n],
             "current_pr": lambda: None,

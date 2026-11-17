@@ -731,6 +731,19 @@ def assign(number: int, login: str, add: bool) -> None:
     )
 
 
+def close_issue(number: int) -> None:
+    """Close an issue as completed; closing a closed one is fine."""
+    gh(
+        "api",
+        "-X",
+        "PATCH",
+        f"repos/{{owner}}/{{repo}}/issues/{number}",
+        "-f",
+        "state=closed",
+        "--silent",
+    )
+
+
 def comment(number: int, body: str) -> None:
     gh(
         "api",
@@ -1089,7 +1102,7 @@ class Port:
         return found
 
 
-tracker = Port("issue_node", "issues", "comment", "label", "assign")
+tracker = Port("issue_node", "issues", "comment", "label", "assign", "close_issue")
 forge = Port(
     "pull_request",
     "pull_status",

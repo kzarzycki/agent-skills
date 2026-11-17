@@ -427,6 +427,12 @@ read by later slices of #1288. Without an `incubating` section the label means n
 An `incubating` issue stays open while the feature incubates: `check merge` refuses a PR that would close one unless its
 body also says `Graduates #<n>`, and a PR that says it owes the full loop, labelled `incubating` or not. A slice uses
 `Part of #<n>`.
+`approvals.py graduate <epic> --pr <n>` graduates an epic once PR <n> has merged with `Graduates #<epic>`: it comments,
+removes the label and then closes. The graduating PR says `Part of #<epic>` beside `Graduates #<epic>`, so GitHub leaves
+the epic for that command. The workflow `.github/workflows/incubating-epic.yml` (an adopting project copies it) reopens
+an `incubating` issue someone closed, and puts a dropped label back on an open `epic`, each with a comment; both leave
+an issue alone once a `Graduated by` comment is on it. Anyone with write access can still graduate by hand: the
+workflow keeps accidents out, not a person set on it.
 
 ### Approvals and proof
 
