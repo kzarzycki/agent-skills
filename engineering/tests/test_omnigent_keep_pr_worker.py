@@ -287,3 +287,37 @@ def test_an_unresolvable_repository_is_refused_before_any_session_exists(
         omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r", None, 0, pr=7)
     assert not og.created
     assert not og.archived
+
+
+def test_a_worker_of_a_named_repository_is_waited_on_from_outside_a_checkout(
+    og: base.FakeOmnigent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og.reply = "https://github.com/a/b/pull/7#issuecomment-42"
+    calls: list[tuple[str, ...]] = []
+
+    def fake(*args: str, **kw: object) -> str:
+        calls.append(args)
+        if args[0] == "api":
+            return json.dumps(base.on_pr(7, "done", "a/b"))
+        raise omnigent_agent.Fail("gh repo view: fatal: not a git repository")
+
+    monkeypatch.setattr(omnigent_agent, "gh", fake)
+    sid, _ = omnigent_agent.start(
+        og, "claude-cloud", "t", "do X", tmp_path / "r", None, 0, pr=omnigent_agent.pr_ref("a/b#7")
+    )
+    assert omnigent_agent.main(["wait", sid, str(tmp_path / "r.md"), "--pr", "a/b#7"]) == 0
+    assert (tmp_path / "r.md").read_text() == "done"
+    assert ("api", "repos/a/b/issues/comments/42") in calls
+
+
+def test_reap_merged_with_a_named_pr_takes_only_that_repositorys_workers(
+    og: base.FakeOmnigent,
+) -> None:
+    og.call = lambda *a, **k: {  # type: ignore[method-assign]
+        "data": [
+            {"id": "s1", "labels": {"omni.pr": "a/b#7"}},
+            {"id": "s2", "labels": {"omni.pr": "c/d#7"}},
+        ]
+    }
+    assert omnigent_agent.pr_workers(og, omnigent_agent.pr_ref("a/b#7")) == ["s1"]
+    assert omnigent_agent.pr_workers(og, omnigent_agent.pr_ref("7")) == ["s1", "s2"]

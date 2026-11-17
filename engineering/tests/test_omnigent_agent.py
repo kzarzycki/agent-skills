@@ -12081,3 +12081,79 @@ def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
     with pytest.raises(omnigent_agent.Fail, match="a --role child blocks unattended"):
         Starter.launch = bypass
         omnigent_agent.start(og, "agy", "t-agy", "x", tmp_path / "r.md", "worker.md", 0)
+
+
+def named_pr_argv(host: str, tmp_path: Path) -> list[str]:
+    """VERIFY_FAR with ``--pr a/b#7``, for the far host or (``h``) this one."""
+    argv = [*VERIFY_FAR]
+    argv[argv.index("--pr") + 1] = "a/b#7"
+    if host == "h":
+        argv[argv.index("mac")] = "h"
+        argv[argv.index("/there/repo")] = str(tmp_path)
+        argv[4] = str(tmp_path / "tmp/loop/pr7-v1.md")
+    return argv
+
+
+def test_a_named_repository_reaches_the_far_verifiers_head_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    far_verifier(tmp_path, monkeypatch, "")
+    seen: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        omnigent_agent,
+        "pr_head",
+        lambda *a: (seen.append(a), PR7_HEAD)[1],  # type: ignore[func-returns-value]
+    )
+    assert omnigent_agent.main(named_pr_argv("mac", tmp_path)) == 0
+    assert seen == [(7, Path.cwd(), "a/b")]
+
+
+def test_a_named_repository_reaches_the_verifiers_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    far_verifier(tmp_path, monkeypatch, "")
+    seen: list[tuple[object, ...]] = []
+    monkeypatch.setattr(omnigent_agent, "check_out_head", lambda *a: seen.append(a))
+    assert omnigent_agent.main(named_pr_argv("h", tmp_path)) == 0
+    assert seen == [(tmp_path, 7, "a/b")]
+
+
+def test_a_named_repository_reaches_the_launch_dir_head_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "")
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    for name in ("pin_environment", "refuse_untrusted_launch_dir"):
+        monkeypatch.setattr(omnigent_agent, name, lambda *a: None)
+    seen: list[tuple[object, ...]] = []
+    monkeypatch.setattr(omnigent_agent, "move_head", lambda *a: seen.append(a))
+    argv = ["start", "claude-cloud", "w", "do X", str(tmp_path / "tmp" / "r.md"), "--pr", "a/b#7"]
+    assert omnigent_agent.main([*argv, "--workspace", str(tmp_path), "--confirm-seconds", "0"]) == 0
+    assert seen == [(tmp_path, 7, "a/b")]
+
+
+@pytest.mark.parametrize("which", ["pr_head", "pr_branch"])
+def test_a_pr_lookup_names_the_repository_it_was_given(
+    which: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[list[str]] = []
+
+    def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        ran.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "x\n", "")
+
+    monkeypatch.setattr(omnigent_agent.subprocess, "run", run)
+    getattr(omnigent_agent, which)(7, tmp_path, "a/b")
+    getattr(omnigent_agent, which)(7, tmp_path)
+    assert ran[0][ran[0].index("--repo") + 1] == "a/b" and "--repo" not in ran[1]
+
+
+def test_a_far_workspace_never_reads_a_local_checkout_at_the_same_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "ws" / ".git").mkdir(parents=True)
+    ran: list[Path | None] = []
+    monkeypatch.setattr(omnigent_agent, "repo_slug", lambda cwd=None: ran.append(cwd) or "c/d")
+    assert omnigent_agent.pr_repo(7, tmp_path / "ws", local=False) == "c/d"
+    assert omnigent_agent.pr_repo(7, tmp_path / "ws") == "c/d"
+    assert ran == [None, tmp_path / "ws"]

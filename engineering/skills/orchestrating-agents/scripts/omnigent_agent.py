@@ -784,18 +784,25 @@ def pr_ref(text: str) -> PrRef:
     return ref
 
 
-def pr_repo(pr: int, workspace: str | Path | None) -> str:
+def pr_repo(pr: int, workspace: str | Path | None, local: bool = True) -> str:
     """The repository of PR ``pr``: the slug it was named with, else that of ``workspace`` when it is a
-    local checkout, else of the current directory. Refused, naming ``--pr owner/repo#N``, when none resolves."""
+    local checkout on this host (``local``), else of the current directory. Refused, naming ``--pr owner/repo#N``, when none resolves."""
     if repo := getattr(pr, "repo", ""):
         return repo
-    here = Path(workspace) if workspace and (Path(workspace) / ".git").exists() else None
+    here = Path(workspace) if local and workspace and (Path(workspace) / ".git").exists() else None
     try:
         return repo_slug(here) if here else repo_slug()
     except Fail as e:
         raise Fail(
             f"--pr {pr}: no repository to read it from ({e}); name it as --pr owner/repo#{pr}"
         ) from e
+
+
+def pr_slug(pr: int) -> str:
+    """The repository PR ``pr`` was named in (``owner/repo#N``), else this checkout's."""
+    return getattr(pr, "repo", "") or gh(
+        "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"
+    )
 
 
 def repo_slug(cwd: Path | None = None) -> str:
@@ -3216,7 +3223,11 @@ def start(
         return Fail(reason + left)
 
     # the PR's repository, before any session exists: a failure here leaves nothing to abandon (#1167)
-    slug = pr_repo(pr, workspace) if pr and not reviews(role) else ""
+    slug = (
+        pr_repo(pr, workspace, not host_id or host_id == og.host_id)
+        if pr and not reviews(role)
+        else ""
+    )
     # Omnigent refuses a sibling with a title an earlier child holds, archived or not, abandoned
     # here or left by an earlier run: each refusal and each abandon moves to the next <title>-r<n>.
     n = 0
@@ -3469,7 +3480,7 @@ def wait(
             # a re-attached wait finds the report it already posted
             if not (report.exists() and report.read_text() == body):
                 denied(body)
-                repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+                repo = pr_slug(pr)
                 url = gh(
                     "api",
                     f"repos/{repo.strip()}/issues/{pr}/comments",
@@ -4008,7 +4019,7 @@ def pr_report(said: str, pr: int, since: int | None = None) -> str | None:
     links = [m for m in COMMENT_URL.finditer(said) if int(m[2]) == pr]
     if not links:
         return None
-    repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
+    repo = pr_slug(pr).strip()
     for m in links:
         if m[1].lower() != repo.lower():
             continue
@@ -4175,7 +4186,12 @@ def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
     found = []
     for s in page.get("data", []):
         label = pr_label((s.get("labels") or {}).get(PR_LABEL, ""))
-        if not s.get("archived") and label and (pr is None or label[1] == pr):
+        named = getattr(pr, "repo", "")
+        if (
+            not s.get("archived")
+            and label
+            and (pr is None or (label[1] == pr and (not named or label[0] == named)))
+        ):
             found.append(str(s["id"]))
     return found
 
@@ -7077,7 +7093,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         action="store_true",
         help="also finish every kept --pr worker whose PR is merged or closed",
     )
-    p.add_argument("--pr", type=int, help="with --merged, only the workers of this PR")
+    p.add_argument(
+        "--pr", type=pr_ref, help="with --merged, only the workers of this PR (N or owner/repo#N)"
+    )
     p = sub.add_parser("supervise")
     p.add_argument(
         "owed", nargs="*", metavar="SESSION=REPORT", help="a session and the report it owes"
@@ -7173,7 +7191,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         if p.prog.split()[-1] in ("run", "start", "send", "wait"):
             p.add_argument(
                 "--pr",
-                type=pr_ref if p.prog.split()[-1] in ("run", "start") else int,
+                type=pr_ref,
                 help="a cloud worker's PR (N, or owner/repo#N from outside a checkout): it reports as a comment there, which wait writes to the report path",
             )
         if p.prog.split()[-1] in ("run", "send", "wait"):
