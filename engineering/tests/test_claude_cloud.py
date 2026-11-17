@@ -424,3 +424,40 @@ def test_claude_cloud_env_and_its_old_name_run_the_shared_code_without_secrets(
         assert config["environment"] == {"REGISTRY_USER": "example"}
         assert config["network_config"]["allowed_hosts"] == ["pypi.org", HOST]
         assert not [p for _, p, _ in world.requests if p.startswith(cc.CREDENTIALS)]
+
+
+def test_access_none_allows_only_the_listed_hosts(tmp_path: Path, world: World) -> None:
+    root = make_repo(
+        tmp_path, {**DEFINITION, "network": {"access": "none", "allowed_hosts": ["pypi.org"]}}
+    )
+    assert run_setup(root, proof=False) == 0
+    network = world.envs["env_new"]["config"]["network_config"]
+    assert network == {"allowed_hosts": ["pypi.org", HOST], "allow_default_hosts": False}
+    bad = make_repo(tmp_path, {**DEFINITION, "network": {"access": "full"}}, name="bad")
+    assert run_setup(bad, proof=False) == 1
+
+
+def test_the_output_masks_a_token_and_its_base64_and_the_prompt_is_hidden_input() -> None:
+    import inspect
+
+    say = cc.Out()
+    say.hide(TOKEN)
+    assert say.clean(f"a {TOKEN} b {B64} c") == "a [secret] b [secret] c"
+    assert inspect.signature(cc.setup).parameters["ask"].default is cc.getpass.getpass
+
+
+def test_the_session_url_is_read_through_terminal_escapes(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    (root / ".claude/settings.local.json").write_text(
+        '{"remote": {"defaultEnvironmentId": "env_x"}}'
+    )
+
+    def run(*cmd: str, check: bool = True, **kw: Any) -> subprocess.CompletedProcess:
+        out = "\x1b[1mhttps://claude.ai/code/\x1b[0msession_Z9\x1b[0m\r\n"
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    lines: list[str] = []
+    say = cc.Out()
+    say.stream = type("S", (), {"write": lambda _s, t: lines.append(t), "flush": lambda _s: None})()
+    assert cc.start_session("x", root, "main", run, say) == 0
+    assert "session session_Z9" in "".join(lines)
