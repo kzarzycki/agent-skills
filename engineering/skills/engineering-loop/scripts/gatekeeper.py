@@ -2064,7 +2064,7 @@ def tiered(
 def pin_target(pull: dict[str, Any]) -> str | None:
     """The released pack tag (PACK_TAG of PACK_REPO) the PR pins, when its diff touches only the pin (PIN_FILES) and
     the pack's vendored skill files, and every vendored file in it equals the tag's byte for byte (by blob SHA, a hash
-    of the bytes; a removed one is one the tag lacks); else None. The lock at the head names the target: its pack
+    of the bytes; a removed one is one the tag lacks, and one main's own lock lists); else None. The lock at the head names the target: its pack
     dependency's `resolved_ref`, whose `resolved_commit` must be the tag's commit, with apm.yml pinning that ref; a
     vendored file is one either side's lock lists among the pack's `deployed_files`. The tag is read from the pack's
     repository, never from the PR's tree, which its author controls. Any read that fails, or a file list past the
@@ -2097,21 +2097,26 @@ def pin_target(pull: dict[str, Any]) -> str | None:
     if released is None or released[0].lower() != str(commit).lower():
         return None
     files = released[1]
-    vendored = set(deployed) | set(base[3] if base else ())
+    owned = set(base[3] if base else ())  # main's lock alone controls what a PR may remove
+    vendored = set(deployed) | owned
 
-    def source(path: str) -> str | None:
+    def source(path: str, removed: bool = False) -> str | None:
         found = VENDORED.fullmatch(path)
-        return f"{virtual}/skills/{found[1]}" if found and path in vendored else None
+        return (
+            f"{virtual}/skills/{found[1]}"
+            if found and path in (owned if removed else vendored)
+            else None
+        )
 
     for change in changes:
         path, status = change["filename"], change.get("status")
         # a rename removes its old path, which must be a vendored file the tag lacks (a pin file is none)
         old = change.get("previous_filename")
-        if old and status == "renamed" and ((was := source(old)) is None or was in files):
+        if old and status == "renamed" and ((was := source(old, True)) is None or was in files):
             return None
         if path in PIN_FILES:
             continue
-        if (want := source(path)) is None:
+        if (want := source(path, status == "removed")) is None:
             return None
         if status == "removed":
             if want in files:
@@ -2125,6 +2130,8 @@ def pinned_pack(lock: str | None) -> tuple[str, str, str, list[str]] | None:
     """The pack's (resolved_ref, resolved_commit, virtual_path, deployed_files) in an apm.lock.yaml's text, or None
     when it has no dependency on the pack from GitHub."""
     data = yaml.safe_load(lock) if lock else None
+    if data is not None and not isinstance(data, dict):
+        raise ValueError("apm.lock.yaml is not a mapping")
     for dep in (data or {}).get("dependencies") or []:
         if (
             isinstance(dep, dict)
@@ -2147,7 +2154,10 @@ def pins(manifest: str | None, tag: str) -> bool:
     """Whether an apm.yml's text pins the pack at `tag`: `{git: <repo>/engineering, ref: <tag>}` or
     `<repo>/engineering#<tag>` among its apm dependencies."""
     data = yaml.safe_load(manifest) if manifest else None
-    entries = ((data or {}).get("dependencies") or {}).get("apm") or []
+    deps = data.get("dependencies") if isinstance(data, dict) else data
+    if deps is not None and not isinstance(deps, dict):
+        raise ValueError("apm.yml is not a mapping")
+    entries = (deps or {}).get("apm") or []
     want = f"{PACK_REPO}/engineering"
     return any(
         entry == f"{want}#{tag}"

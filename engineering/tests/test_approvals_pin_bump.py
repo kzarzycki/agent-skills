@@ -275,3 +275,49 @@ def test_a_rule_is_rebuilt_from_the_names_it_reads() -> None:
     assert rule is not None and rule([]) == "x"
     assert approvals.rule_in("def lower(a, b):\n    return None\n") is None
     assert approvals.rule_in("not python (") is None
+
+
+OWN = ".claude/skills/own-skill/SKILL.md"
+
+
+def test_a_removal_only_the_head_lock_lists_keeps_mains_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # the head lock is the PR author's: a path only it lists as the pack's is not one the PR may delete
+    listed = lock().replace(f"  - {VENDORED}\n", f"  - {VENDORED}\n  - {OWN}\n")
+    files = bump(monkeypatch, head_lock=listed, extra=(change(OWN, status="removed"),))
+    assert refused(gate(MID, files, monkeypatch))
+    renamed = change(VENDORED, status="renamed", previous_filename=OWN)
+    files = bump(monkeypatch, head_lock=listed, extra=(renamed,))
+    assert refused(gate(MID, files, monkeypatch))
+
+
+@pytest.mark.parametrize(
+    ("head_lock", "pinned", "base_lock"),
+    [
+        ("- a\n- b\n", None, None),
+        ("just a string\n", None, None),
+        (None, "- a\n", None),
+        (None, "dependencies: [x]\n", None),
+        (None, None, "- a\n"),
+    ],
+    ids=["lock-list", "lock-string", "manifest-list", "deps-list", "base-lock-list"],
+)
+def test_a_pin_file_that_is_not_a_mapping_keeps_mains_rule(
+    monkeypatch: pytest.MonkeyPatch,
+    head_lock: str | None,
+    pinned: str | None,
+    base_lock: str | None,
+) -> None:
+    files = bump(monkeypatch, head_lock=head_lock)
+    real = approvals.file_at
+
+    def file_at(at: str, path: str, repo: str | None = None) -> str | None:
+        if repo is None and path == "apm.yml" and pinned and at == HEAD:
+            return pinned
+        if repo is None and path == "apm.lock.yaml" and base_lock and at != HEAD:
+            return base_lock
+        return real(at, path, repo)
+
+    monkeypatch.setattr(approvals, "file_at", file_at)
+    assert refused(gate(MID, files, monkeypatch))
