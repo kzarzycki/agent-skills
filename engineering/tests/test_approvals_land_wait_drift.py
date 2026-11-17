@@ -25,6 +25,7 @@ from approvals_harness import (
 )
 
 REAL = approvals.judge_with_base  # the shared fixtures replace it per test
+LANDING = approvals.landing  # the fixture below replaces it
 SCRIPT = "scripts/approvals.py"
 
 
@@ -131,6 +132,41 @@ def test_any_other_checkout_keeps_the_refusal(
         approvals.land(7, wait=True)
     assert git_in(work, "rev-parse", "HEAD").strip() == before
     assert waiting["execs"] == []
+
+
+def test_a_drift_the_fast_forward_leaves_keeps_the_refusal(waiting: dict[str, Any]) -> None:
+    """The running script in the checkout but untracked at the base: drift no fast-forward clears, so no run again."""
+    work = waiting["work"]
+    git_in(work, "rm", "-q", "--cached", SCRIPT)
+    git_in(work, "commit", "-qm", "untrack the script")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    with pytest.raises(approvals.Drifted):
+        approvals.land(7, wait=True)
+    assert waiting["execs"] == []
+
+
+def test_the_lock_is_released_before_the_run_again(
+    waiting: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real landing: the base moves while the lock is held, so the drift is found under it."""
+    monkeypatch.setattr(approvals, "landing", LANDING)
+    work = waiting["work"]
+    waiting["open"](7, {"feature.txt": "x\n"})
+    git_in(work, "checkout", "-q", "main")
+    take, held = approvals.locked, []
+
+    def locked(*args: Any, **kwargs: Any) -> bool:
+        taken = take(*args, **kwargs)
+        held.append(waiting["lock"]())
+        moved(waiting, tmp_path)
+        return taken
+
+    monkeypatch.setattr(approvals, "locked", locked)
+    with pytest.raises(Restarted):
+        approvals.land(7, wait=True)
+    assert len(waiting["execs"]) == 1
+    assert held and held[0]  # the drift was found under the lock
+    assert waiting["lock"]() == ""  # and the lock was released before the run again
 
 
 def test_without_wait_the_refusal_stands(waiting: dict[str, Any], tmp_path: Path) -> None:

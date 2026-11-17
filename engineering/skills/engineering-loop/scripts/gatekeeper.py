@@ -4448,7 +4448,7 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
     """A waiting land whose base moved its code or policy (another land merged a change to them): fast-forward a clean
     checkout of the base to the fetched `origin/<base>` and run this land again from that code, in place (#1280), since
     the wait was the point and nobody reads its log. Any other checkout (another branch, a detached head, an edit of a
-    tracked file, a fast-forward refused) keeps the refusal, since a PR's own copy must never judge it."""
+    tracked file, a fast-forward refused or one that moves nothing) keeps the refusal, since a PR's own copy must never judge it."""
     base, root = drifted.base, toplevel()
 
     def run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -4456,10 +4456,13 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
             ["git", "-C", str(root), *args], capture_output=True, text=True, check=False
         )
 
+    before = run("rev-parse", "HEAD").stdout.strip()
     if (
         run("symbolic-ref", "-q", "HEAD").stdout.strip() != f"refs/heads/{base}"
         or run("status", "--porcelain", "--untracked-files=no").stdout.strip()
         or run("merge", "-q", "--ff-only", f"refs/remotes/origin/{base}").returncode
+        # a drift the fast-forward left in place (a running script the base doesn't track) would re-run land forever
+        or run("rev-parse", "HEAD").stdout.strip() == before
     ):
         raise drifted
     tip = run("rev-parse", "--short=12", "HEAD").stdout.strip()
