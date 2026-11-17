@@ -7125,8 +7125,12 @@ def supervise_registry(
                     own = pr_label(
                         (looks.get(lead_sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, "")
                     )
-                    ref = re.fullmatch(r"(?:[\w.-]+/[\w.-]+)?#(\d+)", lead.get("wait") or "")
-                    named = {int(ref[1])} if ref else set()
+                    named = {  # a wait is a set: each PR it names
+                        int(n)
+                        for n in re.findall(
+                            r"(?:^|, )(?:[\w.-]+/[\w.-]+)?#(\d+)", lead.get("wait") or ""
+                        )
+                    }
                     if repos.get(lead_sid) == repo and (
                         merged_prs & (named | ({own[1]} if own and own[0] == repo else set()))
                     ):
