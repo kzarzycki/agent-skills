@@ -64,6 +64,8 @@ CD_STEP = re.compile(
     r"(cd)[ \t]+((?:'[^']*'|\"[^\"]*\"|[^\s;&|'\"()])+)"
 )
 SEP_AFTER = re.compile(r"[ \t]*(?:&&|;)[ \t]*")
+# a directory change the rewrite does not parse: options, ``pushd``/``popd``, ``builtin cd``, ``command cd``
+UNPARSED_CD = re.compile(r"\b(?:pushd|popd)\b|\b(?:builtin|command)[ \t]+cd\b|\bcd[ \t]+-")
 # pytest options that take the next word as their value, so it is no test path
 PYTEST_VALUED = {
     "-k",
@@ -345,7 +347,11 @@ def cloud_command(command: str, cwd: Path, root: Path) -> str | None:
     first one to ``root``), and dropped when it moves nowhere; a command that starts in a
     subdirectory of ``root`` gets a ``cd`` there first. None when a ``cd`` can't be followed or leaves
     ``root``: the host path it names is not in the cloud clone, so the ``cd`` would fail there and
-    its exit code would read as the command's own failure."""
+    its exit code would read as the command's own failure. As a net under every form it does not
+    rewrite, also None when the result still names a host directory it knows (the call's, the
+    root's, one a ``cd`` reached) or a directory change it does not parse (``UNPARSED_CD``), and when
+    a ``cd`` inside a ``( … )`` group is followed by another, since the group's ``cd`` does not
+    persist and the flat walk here would misplace the later one."""
     text = command.strip()
     host, vm = (
         cwd,
@@ -358,9 +364,15 @@ def cloud_command(command: str, cwd: Path, root: Path) -> str | None:
         vm = cwd
     out: list[str] = []
     pos = 0
+    followed = {cwd, root}
+    grouped = False  # a cd seen inside a ( … ) group
     for found in CD_STEP.finditer(text):
         if found.start(1) < pos:
             continue
+        if grouped:
+            return None
+        before = text[: found.start(1)]
+        grouped = before.count("(") > before.count(")")
         try:
             target = shlex.split(found.group(2))[0]
         except (ValueError, IndexError):
@@ -370,13 +382,18 @@ def cloud_command(command: str, cwd: Path, root: Path) -> str | None:
             return None
         step = os.path.relpath(moved, vm)
         host = vm = moved
+        followed.add(moved)
         out.append(text[pos : found.start(1)])
         pos = found.end()
         if step == "." and (sep := SEP_AFTER.match(text, pos)):
             pos = sep.end()  # a cd that moves nowhere goes, with its separator
         else:
             out.append(f"cd {shlex.quote(step)}")
-    return prefix + "".join(out) + text[pos:]
+    run = prefix + "".join(out) + text[pos:]
+    named = [str(d) for d in followed if len(d.parts) > 1]  # never the bare "/"
+    if UNPARSED_CD.search(run) or any(d in run for d in named):
+        return None
+    return run
 
 
 def launcher(root: Path) -> str:

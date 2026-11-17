@@ -395,3 +395,39 @@ def test_a_cd_outside_the_checkout_gets_the_fallback_alone(
     assert reason is not None and "claude-cloud-run --checkout" not in reason
     assert f"goes outside {other}" in reason
     assert reason.endswith(f"LOOP_HOST_RUN=<reason> {command}")
+
+
+@pytest.mark.parametrize(
+    ("command", "run"),
+    [
+        # forms the rewrite does not parse: the fallback alone (None)
+        ("cd -P {repo}/sub && pytest", None),
+        ("cd -- {repo}/sub && pytest", None),
+        ("pushd {repo}/sub >/dev/null && pytest; popd", None),
+        ("pushd sub && pytest; popd", None),
+        ("builtin cd {repo}/sub && pytest", None),
+        ("command cd {repo}/sub && pytest", None),
+        ("make -C {repo}/sub test", None),
+        ("cd -P sub && pytest", None),
+        # a cd in a ( … ) group does not persist, so a later cd can't be placed
+        ("(cd a/sub && ls); cd a && pytest", None),
+        # the plain forms keep their rewrite
+        ("cd {repo}/sub && pytest", "cd sub && pytest"),
+        ("(cd sub && pytest)", "(cd sub && pytest)"),
+        ("git pull && cd {repo} && pytest", "git pull && pytest"),
+    ],
+)
+def test_a_suggested_call_never_names_a_host_directory(
+    repo: Path, command: str, run: str | None
+) -> None:
+    """The verifier's pass-3 M2 and m1: whatever form changes directory, the suggested call holds
+    no host path the cloud clone lacks; a form it can't place gets the fallback alone."""
+    command = command.format(repo=repo)
+    reason = refused(command, repo)
+    assert reason is not None
+    if run is None:
+        assert "claude-cloud-run --checkout" not in reason
+        assert reason.endswith(f"LOOP_HOST_RUN=<reason> {command}")
+        return
+    checkout, cloud = suggested(reason)
+    assert checkout == str(repo) and cloud == run and str(repo) not in cloud
