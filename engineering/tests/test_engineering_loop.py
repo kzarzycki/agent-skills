@@ -135,7 +135,7 @@ def test_placement_is_stated_once_and_the_role_files_point_to_it() -> None:
     )
     assert "The lead's report says which run went where and why" in rule
     # a lead's own run is one call, made the default by the pack's hook (#1233)
-    assert "`omnigent_agent.py cloud-run [--checkout DIR] -- <command>`" in rule
+    assert "`omnigent_agent.py claude-cloud-run [--checkout DIR] -- <command>`" in rule
     assert "exits with the command's own code" in rule
     assert "PreToolUse hook" in rule and "`LOOP_HOST_RUN=<reason>`" in rule
     assert "launch-dir" not in rule.split("A lead's own heavy run")[1].split("\n")[0]

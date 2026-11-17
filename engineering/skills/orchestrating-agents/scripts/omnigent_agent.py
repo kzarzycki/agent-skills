@@ -5,7 +5,7 @@
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py cloud-env <checkout>
-    python3 scripts/omnigent_agent.py cloud-run [--checkout DIR] [--timeout S] -- <command...>
+    python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
@@ -171,9 +171,9 @@ command or a heavy-slot wait) is stuck: ``status`` and ``watch`` report it once 
 ``reap --force`` stops its turn and archives it, printing its workspace to check with ``git status`` (a dead mutation run can
 leave its patch applied); a running session with recent activity stays kept.
 
-``cloud-run`` runs one shell command in a Claude cloud session on the checkout's HEAD and exits with
+``claude-cloud-run`` runs one shell command in a Claude cloud session on the checkout's HEAD and exits with
 the command's code from its report's ``EXIT:`` line; it refuses tracked changes and an unpushed HEAD
-before any session exists, reuses ``<main checkout>/.worktrees/cloud-run-<branch>`` as its launch dir,
+before any session exists, reuses ``<main checkout>/.worktrees/claude-cloud-run-<branch>`` as its launch dir,
 and exits ``CLOUD_RUN_FAILED`` (125) with the host fallback when the cloud route fails.
 
 Cloud environments (``claude_environments.py`` beside this file, on the host's Claude Code login, whose token goes
@@ -3154,8 +3154,8 @@ def pr_branch(pr: int, workspace: Path, repo: str = "") -> str:
     return out.stdout.strip()
 
 
-# cloud-run's own exit when the cloud route fails or refuses (as ``docker run``'s 125 is its own),
-# so a caller tells it from the command's code, which cloud-run otherwise exits with
+# claude-cloud-run's own exit when the cloud route fails or refuses (as ``docker run``'s 125 is its own),
+# so a caller tells it from the command's code, which claude-cloud-run otherwise exits with
 CLOUD_RUN_FAILED = 125
 CLOUD_RUN_MODEL = "haiku"  # the cheap tier: the session only runs a command and copies its result
 CLOUD_RUN_EXIT = re.compile(r"^[\s*_`>#-]*EXIT:[\s*_`]*(\d+)\b", re.MULTILINE)
@@ -3178,7 +3178,7 @@ HOST_FALLBACK = (
 
 
 def cloud_run_failed(reason: str, command: str = "") -> Fail:
-    """cloud-run's own failure: ``reason``, and with ``command`` the host fallback for it."""
+    """claude-cloud-run's own failure: ``reason``, and with ``command`` the host fallback for it."""
     e = Fail(reason + (f"\n{HOST_FALLBACK.format(command=command)}" if command else ""))
     e.code = CLOUD_RUN_FAILED
     return e
@@ -3198,18 +3198,18 @@ def run_head(checkout: Path) -> tuple[Path, str, str, str, str]:
     HEAD its branch's remote doesn't hold, since the session clones from the remote."""
     root = checkout_root(str(checkout))
     if not root:
-        raise cloud_run_failed(f"cloud-run: {checkout} is not inside a checkout")
+        raise cloud_run_failed(f"claude-cloud-run: {checkout} is not inside a checkout")
     path = Path(root)
     if changed := tracked_changes(path):
         listed = ", ".join(line.split("\t")[0][3:] for line in changed[:5])
         raise cloud_run_failed(
-            f"cloud-run: {path} has tracked changes ({listed}), which a cloud session never sees:"
+            f"claude-cloud-run: {path} has tracked changes ({listed}), which a cloud session never sees:"
             " commit them, `git push`, and run it again"
         )
     branch = git_out(path, "symbolic-ref", "--short", "HEAD")
     if not branch:
         raise cloud_run_failed(
-            f"cloud-run: {path} has a detached HEAD: check out a branch, `git push` it, and run it again"
+            f"claude-cloud-run: {path} has a detached HEAD: check out a branch, `git push` it, and run it again"
         )
     remote = git_out(path, "config", f"branch.{branch}.remote") or "origin"
     merge = git_out(path, "config", f"branch.{branch}.merge").removeprefix("refs/heads/") or branch
@@ -3230,23 +3230,23 @@ def run_head(checkout: Path) -> tuple[Path, str, str, str, str]:
     )
     if not on_remote:
         raise cloud_run_failed(
-            f"cloud-run: HEAD {head[:12]} is not on {remote}/{merge}, which the cloud session clones:"
+            f"claude-cloud-run: HEAD {head[:12]} is not on {remote}/{merge}, which the cloud session clones:"
             f" `git push {remote} {branch}`, and run it again"
         )
     return path, branch, remote, merge, head
 
 
 def cloud_run_dir(root: Path, branch: str, remote: str, merge: str) -> Path:
-    """The launch dir of ``root``'s branch, ``<main checkout>/.worktrees/cloud-run-<branch>``:
+    """The launch dir of ``root``'s branch, ``<main checkout>/.worktrees/claude-cloud-run-<branch>``:
     ``launch_dir`` makes it the first time, later runs fetch and point its HEAD at the branch."""
     main = listed_main(root) or root
-    path = main / ".worktrees" / f"cloud-run-{re.sub(r'[^A-Za-z0-9._-]+', '-', branch)}"
+    path = main / ".worktrees" / f"claude-cloud-run-{re.sub(r'[^A-Za-z0-9._-]+', '-', branch)}"
     if path.exists() and any(path.iterdir()):
         repoint(path, remote, f"refs/heads/{merge}", f"refs/remotes/{remote}/{merge}", merge)
     else:
         url = git_out(root, "remote", "get-url", remote)
         if not url:
-            raise cloud_run_failed(f"cloud-run: {root} has no URL for its remote {remote}")
+            raise cloud_run_failed(f"claude-cloud-run: {root} has no URL for its remote {remote}")
         launch_dir(url, merge, None, path, here=root)
     return path
 
@@ -3281,20 +3281,20 @@ def cloud_run(
     try:
         place = cloud_run_dir(root, branch, remote, merge)
     except Fail as e:
-        raise cloud_run_failed(f"cloud-run: no launch dir: {e}", command) from e
+        raise cloud_run_failed(f"claude-cloud-run: no launch dir: {e}", command) from e
     line = cloud_worker(project_loop(root))
     agent = line.agent if line else "claude-cloud"
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    report = place / "tmp" / "loop" / f"cloud-run-{stamp}.md"
+    report = place / "tmp" / "loop" / f"claude-cloud-run-{stamp}.md"
     brief = report.with_suffix(".brief.md")
     brief.parent.mkdir(parents=True, exist_ok=True)
     brief.write_text(cloud_run_brief(command, merge, head))
-    model = os.environ.get("OMNIGENT_MODEL_CLOUD_RUN") or CLOUD_RUN_MODEL
+    model = os.environ.get("OMNIGENT_MODEL_CLAUDE_CLOUD_RUN") or CLOUD_RUN_MODEL
     argv = [
         *(["--server", server] if server else []),
         "run",
         agent,
-        f"cloud-run {branch} {head[:8]}",
+        f"claude-cloud-run {branch} {head[:8]}",
         str(brief),
         str(report),
         "--workspace",
@@ -3310,16 +3310,16 @@ def cloud_run(
     code = launch(argv)
     if code != 0:
         raise cloud_run_failed(
-            f"cloud-run: the cloud session gave no result (run exited {code}; its reason is above)",
+            f"claude-cloud-run: the cloud session gave no result (run exited {code}; its reason is above)",
             command,
         )
     exit_code = cloud_run_exit(report)
     if exit_code is None:
         raise cloud_run_failed(
-            f"cloud-run: the report {report} names no `EXIT: <n>` line, so the command's result is unknown",
+            f"claude-cloud-run: the report {report} names no `EXIT: <n>` line, so the command's result is unknown",
             command,
         )
-    print(f"cloud-run: {command} exited {exit_code} on {head[:12]}; report {report}")
+    print(f"claude-cloud-run: {command} exited {exit_code} on {head[:12]}; report {report}")
     return exit_code
 
 
@@ -7573,7 +7573,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         "--clone", action="store_true", help="clone even inside a checkout of the repository"
     )
     p = sub.add_parser(
-        "cloud-run",
+        "claude-cloud-run",
         description="run one shell command in a Claude cloud session on the checkout's HEAD and exit"
         f" with its code ({CLOUD_RUN_FAILED} when the cloud route itself fails)",
     )
@@ -7900,10 +7900,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             if args.notify:
                 notify(outcome)
             return code
-        if args.cmd == "cloud-run":
+        if args.cmd == "claude-cloud-run":
             words = args.run[1:] if args.run[:1] == ["--"] else args.run
             if not words:
-                usage = Fail("cloud-run needs -- COMMAND")
+                usage = Fail("claude-cloud-run needs -- COMMAND")
                 usage.code = 2
                 raise usage
             # one word is a shell command as written; several are joined as argv

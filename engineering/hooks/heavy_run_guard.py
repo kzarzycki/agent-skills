@@ -10,9 +10,12 @@ command one of whose segments is heavy (``heavy``), when all of these hold:
 - the call's ``cwd`` is inside a repository with ``docs/agents/loop.md``, whose ``Cloud worker:``
   line is not ``none`` (a project that keeps its workers on hosts runs there);
 - the segment is not prefixed ``LOOP_HOST_RUN=<reason>`` (nor the whole command), the host
-  fallback: the cloud route failed, or the run needs this host.
+  fallback: the cloud route failed, or the run needs this host;
+- the cloud route can run here: an Omnigent server is configured for this session
+  (``RUNNER_SERVER_URL`` set). Without one (plain Claude Code) the run is allowed with one line on
+  stderr saying it stayed on this machine, so nobody is blocked by a route they can't use.
 
-The refusal names the ``cloud-run`` call for that exact command and the fallback. Anything it
+The refusal names the ``claude-cloud-run`` call for that exact command and the fallback. Anything it
 can't read or parse is allowed (exit 0), so a bug here never blocks work. Stdlib only, no
 subprocess: it runs on every Bash call.
 """
@@ -29,6 +32,13 @@ from pathlib import Path
 LOOP_FILE = Path("docs") / "agents" / "loop.md"
 NO_CLOUD = re.compile(r"^Cloud worker:[ \t]*none\b", re.MULTILINE | re.IGNORECASE)
 HOST_RUN = "LOOP_HOST_RUN"
+# the Omnigent server claude-cloud-run launches through; unset, the cloud route can't run here
+RUNNER = "RUNNER_SERVER_URL"
+NOTICE = (
+    "heavy_run_guard: this test or check run stayed on this machine, since no Omnigent server is"
+    f" configured for this session ({RUNNER} unset), so it can't go to a Claude cloud session; how to"
+    " set up the cloud route is in engineering-loop's SKILL.md, Cloud worker."
+)
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 SEPARATORS = {"&&", "||", ";", "|", "&", "|&", ";;", "(", ")", "\n"}
 HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\1")
@@ -259,12 +269,12 @@ def launcher(root: Path) -> str:
 
 
 def refusal(command: str, cwd: Path, root: Path) -> str:
-    """The reason the hook prints: the ``cloud-run`` call for this exact command, and the fallback."""
+    """The reason the hook prints: the ``claude-cloud-run`` call for this exact command, and the fallback."""
     run = command.strip()
     if cwd != root:  # the cloud session runs at the checkout's root
         run = f"cd {shlex.quote(os.path.relpath(cwd, root))} && {run}"
     call = (
-        f"python3 {shlex.quote(launcher(root))} cloud-run --checkout {shlex.quote(str(root))}"
+        f"python3 {shlex.quote(launcher(root))} claude-cloud-run --checkout {shlex.quote(str(root))}"
         f" -- {shlex.quote(run)}"
     )
     return (
@@ -272,44 +282,46 @@ def refusal(command: str, cwd: Path, root: Path) -> str:
         " a test or check run to a Claude cloud session. Run it there (commit and push first; it"
         " exits with the command's own code):\n"
         f"  {call}\n"
-        f"If cloud-run fails, or the run needs this host (a device, a `host` gate step), run it with"
+        f"If claude-cloud-run fails, or the run needs this host (a device, a `host` gate step), run it with"
         f" the reason as a prefix: {HOST_RUN}=<reason> {command.strip()}"
     )
 
 
-def verdict(payload: dict, env: dict[str, str]) -> str | None:
-    """The refusal for this tool call, or None to allow it."""
+def verdict(payload: dict, env: dict[str, str]) -> tuple[int, str]:
+    """The hook's exit code and stderr line for this tool call: ``(2, <refusal>)`` for a heavy run
+    the cloud route could make, ``(0, NOTICE)`` for one it can't (no Omnigent server), else ``(0, "")``."""
     if env.get("CLAUDE_CODE_REMOTE") == "true":
-        return None
+        return 0, ""
     if payload.get("tool_name", "Bash") != "Bash":
-        return None
+        return 0, ""
     command = (payload.get("tool_input") or {}).get("command")
     if not isinstance(command, str) or not command.strip():
-        return None
+        return 0, ""
     cwd = Path(payload.get("cwd") or os.getcwd())
     root = loop_repo(cwd)
     if root is None:
-        return None
+        return 0, ""
     parts = segments(command)
     if parts and parts[0][0].startswith(HOST_RUN + "=") and parts[0][0].partition("=")[2].strip():
-        return None  # the whole command starts with the fallback prefix
+        return 0, ""  # the whole command starts with the fallback prefix
     for words in parts:
         rest, host = strip_leading(words)
         if not host and heavy(rest):
-            return refusal(command, cwd, root)
-    return None
+            if not env.get(RUNNER):
+                return 0, NOTICE
+            return 2, refusal(command, cwd, root)
+    return 0, ""
 
 
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
-        reason = verdict(payload, dict(os.environ)) if isinstance(payload, dict) else None
+        code, line = verdict(payload, dict(os.environ)) if isinstance(payload, dict) else (0, "")
     except Exception:  # noqa: BLE001  (a parse bug must never block a command)
         return 0
-    if reason is None:
-        return 0
-    print(reason, file=sys.stderr)
-    return 2
+    if line:
+        print(line, file=sys.stderr)
+    return code
 
 
 if __name__ == "__main__":

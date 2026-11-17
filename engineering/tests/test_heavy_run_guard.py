@@ -15,7 +15,8 @@ assert spec and spec.loader
 guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
 
-HOST: dict[str, str] = {}
+# a host session the cloud route can run from: an Omnigent server is configured
+HOST = {"RUNNER_SERVER_URL": "http://127.0.0.1:1"}
 HEAVY = [
     "pytest",
     "pytest -q",
@@ -105,54 +106,64 @@ def call(command: str, cwd: Path) -> dict:
     return {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}
 
 
+def refused(command: str, cwd: Path, env: dict[str, str] = HOST) -> str | None:
+    """The refusal the hook gives, None when it allows the call (silently)."""
+    code, line = guard.verdict(call(command, cwd), env)
+    if code == 0:
+        assert line == "", line
+        return None
+    assert code == 2
+    return line
+
+
 @pytest.mark.parametrize("command", HEAVY)
 def test_a_heavy_command_on_a_host_is_refused_naming_its_cloud_run_call(
     repo: Path, command: str
 ) -> None:
-    reason = guard.verdict(call(command, repo), HOST)
+    reason = refused(command, repo)
     assert reason is not None, command
-    assert f"cloud-run --checkout {repo} -- " in reason
+    assert f"claude-cloud-run --checkout {repo} -- " in reason
     assert command.strip().split("\n")[0] in reason  # the exact command, in the call and fallback
     assert "LOOP_HOST_RUN=<reason>" in reason
 
 
 @pytest.mark.parametrize("command", LIGHT)
 def test_a_light_command_is_allowed(repo: Path, command: str) -> None:
-    assert guard.verdict(call(command, repo), HOST) is None, command
+    assert refused(command, repo) is None, command
 
 
 @pytest.mark.parametrize(
     "command",
     [
         "LOOP_HOST_RUN=x pytest",
-        "LOOP_HOST_RUN='cloud-run failed: quota' mise run check",
+        "LOOP_HOST_RUN='claude-cloud-run failed: quota' mise run check",
         "LOOP_HOST_RUN=device pytest && cargo test",  # the whole command starts with it
         "git fetch && LOOP_HOST_RUN=x pytest",  # a segment prefixed with it
     ],
 )
 def test_the_host_fallback_prefix_allows_it(repo: Path, command: str) -> None:
-    assert guard.verdict(call(command, repo), HOST) is None
+    assert refused(command, repo) is None
 
 
 def test_an_empty_fallback_reason_is_no_fallback(repo: Path) -> None:
-    assert guard.verdict(call("LOOP_HOST_RUN= pytest", repo), HOST) is not None
+    assert refused("LOOP_HOST_RUN= pytest", repo) is not None
 
 
 def test_a_cloud_session_is_allowed(repo: Path) -> None:
-    assert guard.verdict(call("pytest", repo), {"CLAUDE_CODE_REMOTE": "true"}) is None
-    assert guard.verdict(call("pytest", repo), {"CLAUDE_CODE_REMOTE": "false"}) is not None
+    assert refused("pytest", repo, {**HOST, "CLAUDE_CODE_REMOTE": "true"}) is None
+    assert refused("pytest", repo, {**HOST, "CLAUDE_CODE_REMOTE": "false"}) is not None
 
 
 def test_a_repo_without_loop_md_or_with_host_workers_is_allowed(repo: Path) -> None:
     loop = repo / "docs" / "agents" / "loop.md"
     loop.write_text("# Loop\n\nCloud worker: none, the suite needs a device\n")
-    assert guard.verdict(call("pytest", repo), HOST) is None
+    assert refused("pytest", repo) is None
     loop.unlink()
-    assert guard.verdict(call("pytest", repo), HOST) is None
+    assert refused("pytest", repo) is None
 
 
 def test_outside_any_repository_it_allows(tmp_path: Path) -> None:
-    assert guard.verdict(call("pytest", tmp_path), HOST) is None
+    assert refused("pytest", tmp_path) is None
 
 
 def test_it_finds_the_repo_from_the_calls_cwd_and_runs_the_cloud_call_from_there(
@@ -160,7 +171,7 @@ def test_it_finds_the_repo_from_the_calls_cwd_and_runs_the_cloud_call_from_there
 ) -> None:
     sub = repo / "pkg" / "src"
     sub.mkdir(parents=True)
-    reason = guard.verdict(call("pytest", sub), HOST)
+    reason = refused("pytest", sub)
     assert reason is not None and f"--checkout {repo} -- 'cd pkg/src && pytest'" in reason
 
 
@@ -188,13 +199,34 @@ def run_hook(
 
 def test_the_hook_refuses_with_exit_2_and_the_reason_on_stderr(repo: Path) -> None:
     """Claude Code's PreToolUse contract: exit 2 blocks the call and shows stderr to the model."""
-    done = run_hook(json.dumps(call("uv run pytest -q", repo)), repo)
+    done = run_hook(json.dumps(call("uv run pytest -q", repo)), repo, HOST)
     assert done.returncode == 2 and done.stdout == ""
-    assert "cloud-run" in done.stderr and "LOOP_HOST_RUN=<reason> uv run pytest -q" in done.stderr
-    allowed = run_hook(json.dumps(call("git status", repo)), repo)
+    assert (
+        "claude-cloud-run" in done.stderr
+        and "LOOP_HOST_RUN=<reason> uv run pytest -q" in done.stderr
+    )
+    allowed = run_hook(json.dumps(call("git status", repo)), repo, HOST)
     assert allowed.returncode == 0 and allowed.stderr == ""
-    cloud = run_hook(json.dumps(call("pytest", repo)), repo, {"CLAUDE_CODE_REMOTE": "true"})
-    assert cloud.returncode == 0
+    cloud = run_hook(json.dumps(call("pytest", repo)), repo, {**HOST, "CLAUDE_CODE_REMOTE": "true"})
+    assert cloud.returncode == 0 and cloud.stderr == ""
+
+
+@pytest.mark.parametrize("command", ["pytest", "mise run check", "cd x && cargo test"])
+def test_without_an_omnigent_server_a_heavy_run_stays_here_with_one_notice_line(
+    repo: Path, command: str
+) -> None:
+    """Plain Claude Code (no RUNNER_SERVER_URL) can't take the cloud route, so nothing is blocked."""
+    code, line = guard.verdict(call(command, repo), {})
+    assert code == 0 and line == guard.NOTICE and "\n" not in line
+    assert "stayed on this machine" in line and "SKILL.md, Cloud worker" in line
+    assert guard.verdict(call(command, repo), {"RUNNER_SERVER_URL": ""})[0] == 0  # empty: unset
+    done = run_hook(json.dumps(call(command, repo)), repo)  # the hook's own environment
+    assert done.returncode == 0 and done.stderr == guard.NOTICE + "\n"
+
+
+def test_without_an_omnigent_server_a_light_run_gets_no_notice(repo: Path) -> None:
+    assert guard.verdict(call("git status", repo), {}) == (0, "")
+    assert guard.verdict(call("LOOP_HOST_RUN=x pytest", repo), {}) == (0, "")
 
 
 def test_the_pack_registers_the_hook_on_bash_for_claude() -> None:

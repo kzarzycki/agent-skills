@@ -1,4 +1,4 @@
-"""`cloud-run` runs one command in a Claude cloud session on the checkout's pushed HEAD and exits with
+"""`claude-cloud-run` runs one command in a Claude cloud session on the checkout's pushed HEAD and exits with
 its code; a host child is told the heavy-run hook's prefix, a cloud one is not (#1233)."""
 
 import subprocess
@@ -46,7 +46,7 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(
         omnigent_agent, "resolve_environment", lambda env, repo: ("env_1", "the-env")
     )
-    for name in ("CLAUDE_CODE_REMOTE", "LOOP_DENY_LIST", "OMNIGENT_MODEL_CLOUD_RUN"):
+    for name in ("CLAUDE_CODE_REMOTE", "LOOP_DENY_LIST", "OMNIGENT_MODEL_CLAUDE_CLOUD_RUN"):
         monkeypatch.delenv(name, raising=False)
     return work
 
@@ -59,7 +59,7 @@ def cloud(monkeypatch: pytest.MonkeyPatch, reply: str) -> CloudFake:
 
 def cloud_run(checkout: Path, *command: str) -> int:
     return omnigent_agent.main(
-        ["cloud-run", "--checkout", str(checkout), "--timeout", "30", "--", *command]
+        ["claude-cloud-run", "--checkout", str(checkout), "--timeout", "30", "--", *command]
     )
 
 
@@ -94,9 +94,9 @@ def test_it_runs_the_command_with_the_cheap_model_auto_and_no_keep_and_exits_wit
     )
     head = git("rev-parse", "HEAD", cwd=checkout)
     assert cloud_run(checkout, "uv run pytest -q") == 3
-    run = launched[1]  # the first is cloud-run's own
+    run = launched[1]  # the first is claude-cloud-run's own
     assert run[:2] == ["run", "claude-cloud"]
-    place = checkout / ".worktrees" / "cloud-run-main"
+    place = checkout / ".worktrees" / "claude-cloud-run-main"
     assert run[run.index("--workspace") + 1] == str(place)
     assert "--no-keep" in run
     assert run[run.index("--model") + 1] == "haiku"
@@ -125,7 +125,7 @@ def test_a_second_run_reuses_the_launch_dir_and_points_it_at_the_new_head(
         ),
     )
     assert cloud_run(checkout, "pytest") == 0
-    place = checkout / ".worktrees" / "cloud-run-main"
+    place = checkout / ".worktrees" / "claude-cloud-run-main"
     head = commit(checkout, "b.txt")
     git("push", "-q", cwd=checkout)
     assert cloud_run(checkout, "pytest", "-q") == 0
@@ -143,6 +143,15 @@ def test_a_failed_launch_exits_with_its_own_code_and_prints_the_host_fallback(
     err = capsys.readouterr().err
     assert "the cloud session gave no result" in err
     assert "LOOP_HOST_RUN=<reason> mise run check" in err
+
+
+def test_the_model_variable_names_another_model(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = cloud(monkeypatch, "REPORT\nEXIT: 0")
+    monkeypatch.setenv("OMNIGENT_MODEL_CLAUDE_CLOUD_RUN", "sonnet")
+    assert cloud_run(checkout, "pytest") == 0
+    assert og.overrides["s0"] == "sonnet"
 
 
 def test_a_report_without_an_exit_line_is_a_failed_route_not_a_pass(

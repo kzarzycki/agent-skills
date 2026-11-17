@@ -6,9 +6,9 @@ request itself when it has none), each on its own branch in a worktree of your o
 design, wireframes included for a UI, and delegate the rest. Every heavy run, a worker's or
 your own (a suite to sort failures, a build, an e2e run), goes where SKILL.md, Where heavy
 steps run says, which also gives your own run's recipe.
-Your own test or check run is one `omnigent_agent.py cloud-run -- <command>` on a pushed head; a
+Your own test or check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
 refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
-`cloud-run` could not make or one that needs this host.
+`claude-cloud-run` could not make or one that needs this host.
 
 Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
 edits and commits go to a Sonnet worker: your context is re-read on every call (about 150k
