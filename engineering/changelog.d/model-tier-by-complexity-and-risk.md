@@ -1,1 +1,0 @@
-- engineering-loop: the Models paragraph picks a worker or verifier tier by design complexity times risk: `small` for mechanical work, `mid` for the usual range and as the default, `top` for high, `frontier` only for very high complexity or risk. Before, it named `frontier` for risky reviews, so leads put verifiers on Fable.
