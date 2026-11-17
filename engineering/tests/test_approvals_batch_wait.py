@@ -48,6 +48,7 @@ class Clock:
 def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
     stub = Clock()
     monkeypatch.setattr(approvals, "time", stub)
+    monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)  # these tests count 30 s rounds
     return stub
 
 

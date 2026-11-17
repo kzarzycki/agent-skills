@@ -175,7 +175,7 @@ would never come.
 3. With loop.md's `land: batch_wait_seconds` set (a whole number, default 0: no wait), and before the worktree below,
 it waits up to that long while another open PR into the same base is held by nothing but its required checks still
 running (its proofs and any owner go already hold: a red check, a draft, a proof gap or an owner wait never counts),
-polling every POLL seconds; each such PR that turns landable joins the batch and shares its one gate. It stops
+polling every QUEUE_POLL seconds; each such PR that turns landable joins the batch and shares its one gate. It stops
 when none is pending or the time is up, so a lone PR gates at once; with PRs named by `--only` it never reads or waits
 on other PRs. It prints the wait and who joined, and the `Landed` comment's `Batch:` line adds `(waited N s, joined:
 ...)`. The key is optional in `land`, which asks for signing keys only where `signed_squash_to` is set.
@@ -665,10 +665,13 @@ LOW_POLL, LOW_QUOTA = 300, 0.1
 # a wait that meets this many network failures in a row (NETWORK) fails with the last one
 MISSES = 3
 # what git and gh print when the network, not the request, failed: a name that did not resolve, a dropped or timed-out
-# connection, a ref listing cut short
+# connection, a ref listing cut short; an HTTP refusal (`unable to access … error: 403`, `RPC failed; HTTP 404`) is no
+# network failure, so a revoked token or a renamed repo fails at once
 NETWORK = re.compile(
-    r"Could not resolve host|RPC failed|Recv failure|expected flush|Operation timed out|Connection (?:timed out|reset|refused)"
-    r"|unable to access|Failed to connect|early EOF|TLS|Network is unreachable",
+    r"Could not resolve host|RPC failed; curl \d+|Recv failure|expected flush|Operation timed out"
+    r"|Connection (?:timed out|reset|refused)|Failed to connect|early EOF|Network is unreachable"
+    # gh's own client words a failed connection differently from git's curl
+    r"|error connecting to|dial tcp|no such host|i/o timeout|connection reset by peer",
     re.IGNORECASE,
 )
 # (lock ref, tip) of the last HELD lock locked() waited on; land() polls it without GitHub calls
@@ -4425,7 +4428,10 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
             missed += 1
             if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
                 raise
-            print(f"land --wait: network failure {missed}/{MISSES}, trying again: {stderr_of(exc)}", flush=True)
+            print(
+                f"land --wait: network failure {missed}/{MISSES}, trying again: {stderr_of(exc)}",
+                flush=True,
+            )
             code, again = WAITING, True
         finally:
             # a background command's log: each state once, not every 30 seconds, a held lock's age being no new
@@ -4465,7 +4471,10 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
                     missed += 1
                     if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
                         raise
-                    print(f"land --wait: network failure {missed}/{MISSES}, polling again: {stderr_of(exc)}", flush=True)
+                    print(
+                        f"land --wait: network failure {missed}/{MISSES}, polling again: {stderr_of(exc)}",
+                        flush=True,
+                    )
                     continue
                 missed = 0
                 if tip != [held_tip[1]]:
@@ -5222,7 +5231,7 @@ def batch_wait(
     )
     joined: list[int] = []
     while near and time.monotonic() < deadline:
-        time.sleep(min(POLL, max(0.0, deadline - time.monotonic())))
+        time.sleep(min(QUEUE_POLL, max(0.0, deadline - time.monotonic())))
         for number in sorted(near):
             pull = pull_request(number)
             with contextlib.redirect_stdout(

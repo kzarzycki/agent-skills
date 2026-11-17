@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import subprocess
 import time
+import types
 from typing import Any
 
 import pytest
 from approvals_harness import (
-    approvals,
     added,  # noqa: F401
+    approvals,
     assigned,  # noqa: F401
     attached,  # noqa: F401
     board_risks,  # noqa: F401
@@ -147,6 +148,10 @@ def hold(monkeypatch: pytest.MonkeyPatch, polls: list[Any]) -> list[int]:
     [
         "fatal: unable to access 'https://github.com/x/y/': Could not resolve host: github.com",
         "error: RPC failed; curl 56 Recv failure: Operation timed out\nfatal: expected flush after ref listing",
+        "error connecting to api.github.com",
+        'Post "https://api.github.com/graphql": dial tcp: lookup api.github.com: no such host',
+        'Get "https://api.github.com/x": net/http: request canceled (i/o timeout)',
+        "read tcp 10.0.0.2:5->140.82.0.6:443: read: connection reset by peer",
     ],
 )
 def test_a_network_miss_in_the_lock_poll_is_polled_again(
@@ -201,3 +206,39 @@ def test_a_network_miss_in_landing_is_tried_again_at_the_next_poll(
 
     monkeypatch.setattr(approvals, "landing", landing)
     assert approvals.land(1, wait=True) == 0 and len(rounds) == 2
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "fatal: unable to access 'https://github.com/x/y/': The requested URL returned error: 403",
+        "fatal: unable to access 'https://github.com/x/y/': The requested URL returned error: 404",
+        "error: RPC failed; HTTP 403 curl 22 The requested URL returned error: 403",
+        "error: RPC failed; HTTP 404",
+        "fatal: Authentication failed for 'https://github.com/x/y/'",
+    ],
+)
+def test_a_git_http_refusal_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch, clock: list[float], text: str
+) -> None:
+    ran = hold(monkeypatch, [network(text)])
+    with pytest.raises(subprocess.CalledProcessError):
+        approvals.land(1, wait=True)
+    assert len(ran) == 1
+
+
+def test_the_batch_wait_polls_every_queue_poll(
+    monkeypatch: pytest.MonkeyPatch, clock: list[float]
+) -> None:
+    slept: list[float] = []
+    monkeypatch.setattr(
+        approvals.time, "sleep", lambda s: (slept.append(s), clock.__setitem__(0, clock[0] + s))
+    )
+    monkeypatch.setattr(approvals, "pull_request", lambda number: {"number": number})
+    monkeypatch.setattr(approvals, "check_never_comes", lambda *a: False)
+    monkeypatch.setattr(approvals, "owner_waits", lambda *a: False)
+    monkeypatch.setattr(
+        approvals, "landable", lambda *a: types.SimpleNamespace(exit=None, issues=None)
+    )
+    approvals.batch_wait(1000, {}, {7: []}, [], {7: (approvals.WAITING, True)}, None, None, set())
+    assert slept == [approvals.QUEUE_POLL]  # one round, at the base poll, not POLL
