@@ -25,6 +25,7 @@
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
+    uv run scripts/approvals.py heavy --plan     # the host's gate slot count and the limit that set it (cores, memory, GATE_SLOTS, off)
 
 gatekeeper.py is the gatekeeper; approvals.py, its name before #614, runs it for one release line, every verb above
 unchanged. Its own names for three of them, and one verb more:
@@ -306,7 +307,9 @@ counts for nothing. A step without `paths`, with an empty list, or whose paths m
 the tree, as above; a change to `gate_steps` changes every keyed step's key. A cloud session runs no `host` step: `local-ci --record` there runs the rest, says
 which step it left and exits 0, with no head proof and no pass on the whole gate, which `local-ci <pr>` and `land` need
 and refuse there. Each step that runs, or the one gate, holds the host gate slot (an exclusive flock on
-`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, n up to `GATE_SLOTS`, a third of the cores by default) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
+`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, n up to the host's slot count: `GATE_SLOTS`, else the
+smaller of the cores and the memory over loop.md's `Gate cost:` per run, a third of the cores without the line; none
+at all under `GATE_SLOTS=off`; `heavy --plan` prints it) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
 path so a wrapper in it takes no lock of its own, and none when this process already runs under it; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
 nothing and exits with the check's code, so it is the gate while iterating too and its clean green run, the last one,
 records itself.
@@ -6039,9 +6042,15 @@ def ran_gate(
     return 0
 
 
-def heavy(words: list[str]) -> int:
+def heavy(words: list[str], plan: bool = False) -> int:
     """`heavy <command> [args...]`: run one command as a heavy step (run_heavy), for the role files' shell recipes, and
-    exit with its exit code (128 plus the signal that ended it); 127 for a command that can't start, as a shell says."""
+    exit with its exit code (128 plus the signal that ended it); 127 for a command that can't start, as a shell says.
+    `heavy --plan` runs nothing: it prints the host's slot plan (SlotPlan.line) and exits 0."""
+    if plan:
+        if words:
+            raise Refused("heavy --plan takes no command: `approvals.py heavy --plan`")
+        print(host_plan().line())
+        return 0
     if words[:1] == ["--"]:
         words = words[1:]
     if not words:
@@ -6195,15 +6204,125 @@ def slot_file(name: str) -> str:
     return os.path.join(cache, "engineering-loop", name)
 
 
-def gate_slots() -> int:
-    """How many heavy gates the host runs at once: `GATE_SLOTS` when it is a whole number from 1, else a third of the
-    host's cores, at least 1 (the template's `scripts/gate-slot` reads the same variable). `GATE_SLOTS=1` keeps one
-    gate at a time. A runner under a slot takes at most the host's cores divided by this number as its `GATE_JOBS`,
-    since this many gates load the host at once and a larger share would oversubscribe it."""
-    said = os.environ.get("GATE_SLOTS", "")
+# loop.md's line stating what one heavy gate run costs, measured on the project's heaviest gate:
+# `Gate cost: <cores> cores, <GB> GB`, optionally `, reserve <GB> GB`, whole numbers, so the template's shell
+# `gate-slot` counts with the same integer arithmetic
+GATE_COST = re.compile(r"^Gate cost:(.*)$", re.MULTILINE)
+GATE_COST_VALUE = re.compile(r"`?(\d+) cores?, (\d+) GB(?:, reserve (\d+) GB)?`?")
+# a run's cost where loop.md states none: a third of the cores, with memory never the limit (0 GB a run)
+COST_DEFAULT = (3, 0, None)
+# each malformed `Gate cost:` line already said in this process, so a polling wait says it once
+cost_said: set[str] = set()
+
+
+class SlotPlan(NamedTuple):
+    """The host's heavy gate slots and what set their number (slot_plan)."""
+
+    count: int  # 0 under `GATE_SLOTS=off`: no lock at all
+    limit: str  # `cores`, `memory`, `GATE_SLOTS` or `off`
+    cores: int
+    memory: int  # total memory, whole GB (2**30 bytes)
+    cost_cores: int
+    cost_memory: int  # GB
+    reserve: int  # GB
+
+    def line(self) -> str:
+        """The plan as `approvals.py heavy --plan` and the template's `gate-slot --plan` print it."""
+        return (
+            f"slots {self.count}: {self.limit} ({self.cores} cores, {self.memory} GB,"
+            f" cost {self.cost_cores} cores {self.cost_memory} GB, reserve {self.reserve} GB)"
+        )
+
+
+def slot_plan(
+    cores: int, memory: int, cost: tuple[int, int, int | None], said: str = ""
+) -> SlotPlan:
+    """How many heavy gates a host with `cores` and `memory` GB runs at once, for a run costing `cost` (cores, GB, and
+    the reserve in GB or None) under `GATE_SLOTS`=`said`: the smaller of cores / cost cores and (memory - reserve) /
+    cost GB, each rounded down, at least 1, `cores` breaking a tie; cost GB 0 leaves memory out. The reserve, memory
+    the gates never take, defaults to a quarter of the memory, at least 4 GB. `said` overrides: a whole number from 1
+    is the count, and `off` is 0, no lock; anything else is ignored. The rows of tests/fixtures/gate-slots.tsv are
+    this function's cases, and the template's `gate-slot` tests the same file."""
+    cost_cores, cost_memory, reserve = cost
+    reserve = max(4, memory // 4) if reserve is None else reserve
+    plan = SlotPlan(0, "off", cores, memory, cost_cores, cost_memory, reserve)
+    if said == "off":
+        return plan
     if said.isdigit() and int(said) >= 1:
-        return int(said)
-    return max(1, (os.cpu_count() or 1) // 3)
+        return plan._replace(count=int(said), limit="GATE_SLOTS")
+    by_cores = cores // cost_cores
+    # a reserve past the memory gives a negative term, which counts as 1 slot as 0 does
+    by_memory = (memory - reserve) // cost_memory if cost_memory else by_cores
+    if by_memory < by_cores:
+        return plan._replace(count=max(1, by_memory), limit="memory")
+    return plan._replace(count=max(1, by_cores), limit="cores")
+
+
+def total_memory(meminfo: str = "/proc/meminfo") -> int:
+    """The host's total memory in whole GB, rounded down: Linux's `meminfo` MemTotal, else macOS's `sysctl -n
+    hw.memsize`; 0 where neither answers, which leaves one slot once a cost names memory. Total, never available
+    memory, since a count that moves between runs strands a waiter on a slot that no longer exists."""
+    with contextlib.suppress(OSError, ValueError):
+        found = re.search(r"^MemTotal:\s+(\d+) kB", Path(meminfo).read_text(), re.MULTILINE)
+        if found:
+            return int(found.group(1)) // 2**20
+    with contextlib.suppress(OSError, ValueError, subprocess.SubprocessError):
+        # Popen, not subprocess.run, which many tests stub for the commands they fake
+        with subprocess.Popen(
+            ["sysctl", "-n", "hw.memsize"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ) as said:
+            out, _ = said.communicate(timeout=10)
+        if said.returncode == 0:
+            return int(out.strip()) // 2**30
+    return 0
+
+
+def gate_cost() -> tuple[int, int, int | None]:
+    """The run cost loop.md's `Gate cost:` line states (GATE_COST), read from the root of the checkout this process
+    runs in (the nearest directory up holding `.git`, a worktree's file too), as the template's `gate-slot` greps it
+    from the repo root; COST_DEFAULT outside a checkout, without the line, or with one that doesn't parse or names 0
+    cores, which says so on stderr, since a gate must never fail over its slot. It runs no git, since every slot
+    taken reads it."""
+    here = Path.cwd()
+    root = next((d for d in (here, *here.parents) if (d / ".git").exists()), None)
+    try:
+        text = (root / LOOP).read_text() if root is not None else ""
+    except (OSError, UnicodeDecodeError):
+        text = ""
+    if (line := GATE_COST.search(text)) is None:
+        return COST_DEFAULT
+    value = line.group(1).strip()
+    parsed = GATE_COST_VALUE.fullmatch(value)
+    if parsed is None or int(parsed.group(1)) == 0:
+        if value not in cost_said:
+            cost_said.add(value)
+            print(
+                f"loop.md's `Gate cost: {value}` is not `<cores> cores, <GB> GB[, reserve <GB> GB]` with cores"
+                " from 1: counting slots as a third of the cores",
+                file=sys.stderr,
+                flush=True,
+            )
+        return COST_DEFAULT
+    cores, memory, reserve = parsed.groups()
+    return int(cores), int(memory), None if reserve is None else int(reserve)
+
+
+def host_plan() -> SlotPlan:
+    """This host's slot plan (slot_plan): its cores, its total memory, loop.md's gate cost and `GATE_SLOTS`."""
+    return slot_plan(
+        os.cpu_count() or 1, total_memory(), gate_cost(), os.environ.get("GATE_SLOTS", "")
+    )
+
+
+def gate_slots() -> int:
+    """How many heavy gates the host runs at once (host_plan), 0 under `GATE_SLOTS=off`. A runner under a slot takes
+    at most the host's cores divided by this number as its `GATE_JOBS`, since this many gates load the host at once
+    and a larger share would oversubscribe it."""
+    return host_plan().count
 
 
 def slot_path(number: int = 1) -> str:
@@ -6239,20 +6358,24 @@ def take_slot(
 ) -> tuple[int | None, str]:
     """Hold the first free heavy slot's exclusive flock and return (its fd, its path); closing the fd frees the lock,
     as does the process dying. A run already under a holder of a slot (held_slot) takes none: (None, that path), since
-    it would wait on its own parent. With every slot held, `waiting` is called, again every SLOT_SAY_SECONDS, and the slots
+    it would wait on its own parent, and under `GATE_SLOTS=off` none is taken: (None, ""). The count is read once per
+    call (gate_slots). With every slot held, `waiting` is called, again every SLOT_SAY_SECONDS, and the slots
     are tried again until one frees. A land's gate step (`land`) holds the landing lock of its base while it waits, which blocks every other
     land, so it takes a freed slot ahead of any PR gate: flock has no priority, so a waiting land marks itself (a shared
     flock on `gate.land.lock`, held only while it waits) and a PR gate that finds the mark takes no slot, trying again
     until no land waits."""
     if (held := held_slot()) is not None:
         return None, held
+    # GATE_SLOTS=off: the host's owner runs every gate with no lock
+    if (slots := gate_slots()) == 0:
+        return None, ""
     os.makedirs(os.path.dirname(slot_path()), exist_ok=True)
     mark = os.open(slot_file("gate.land.lock"), os.O_WRONLY | os.O_CREAT, 0o644) if land else None
     if mark is not None:
         fcntl.flock(mark, fcntl.LOCK_SH)
     said = None  # when the wait is next said
     try:
-        if land and gate_slots() == 1:
+        if land and slots == 1:
             # one slot: block in the kernel, as a gate wrapper's own flock does, so a land competes evenly with a
             # wrapper waiter instead of losing every race to it by polling; PR gates poll and yield to the mark
             fd = os.open(slot_path(), os.O_WRONLY | os.O_CREAT, 0o644)
@@ -6264,7 +6387,7 @@ def take_slot(
             return fd, slot_path()
         while True:
             if land or not land_waiting():
-                for number in range(1, gate_slots() + 1):
+                for number in range(1, slots + 1):
                     path = slot_path(number)
                     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
                     try:
@@ -6469,11 +6592,14 @@ def saying(text: str) -> Any:
 @contextlib.contextmanager
 def heavy_slot(name: str, out: Any = None, land: bool = False) -> Any:
     """Hold a host gate slot (take_slot, `land` as it takes it) for one gate step: (its path, the whole seconds
-    waited for it). A wait is said as `local-ci: <step>: waiting for the host gate slot`, again every SLOT_SAY_SECONDS."""
+    waited for it). A wait is said as `local-ci: <step>: waiting for the host gate slot (<plan>)`, the plan as `heavy
+    --plan` prints it, again every SLOT_SAY_SECONDS."""
     began = time.monotonic()
     fd, path = take_slot(
         lambda: print(
-            f"local-ci: {name}: waiting for the host gate slot", file=out or sys.stderr, flush=True
+            f"local-ci: {name}: waiting for the host gate slot ({host_plan().line()})",
+            file=out or sys.stderr,
+            flush=True,
         ),
         land,
     )
@@ -7930,6 +8056,7 @@ def main(argv: list[str]) -> int:
     hooking.add_argument("message", type=Path)
     commands.add_parser("affected-tests")
     wrapping = commands.add_parser("heavy")
+    wrapping.add_argument("--plan", action="store_true")
     wrapping.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
     args = parser.parse_args(aliased(argv))
     if args.command == "record":  # each kind runs as the verb it was before #614
@@ -7962,7 +8089,7 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "affected-tests":
         return affected_tests()
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
-        return heavy(args.words)
+        return heavy(args.words, args.plan)
     one_repo()
     if args.command == "check":
         if args.point == "queue" and (args.pr is None or args.head is None):

@@ -1,0 +1,22 @@
+# cores	memory_gb	cost_cores	cost_gb	reserve_gb	GATE_SLOTS	count	limit
+# one host and one loop.md per row; - is a value left unset (no Gate cost line, the default reserve, GATE_SLOTS unset)
+16	64	-	-	-	-	5	cores
+2	8	-	-	-	-	1	cores
+1	4	-	-	-	-	1	cores
+16	16	4	4	-	-	3	memory
+16	64	4	4	-	-	4	cores
+8	24	2	4	-	-	4	cores
+12	18	2	2	-	-	6	cores
+64	256	8	16	-	-	8	cores
+64	256	4	16	-	-	12	memory
+4	8	4	8	-	-	1	memory
+8	2	1	1	-	-	1	memory
+16	16	4	0	-	-	4	cores
+8	32	2	6	2	-	4	cores
+8	32	2	6	10	-	3	memory
+16	64	4	4	-	2	2	GATE_SLOTS
+16	16	4	4	-	9	9	GATE_SLOTS
+16	64	4	4	-	off	0	off
+16	64	4	4	-	0	4	cores
+16	64	4	4	-	many	4	cores
+16	16	-	-	-	1.5	5	cores

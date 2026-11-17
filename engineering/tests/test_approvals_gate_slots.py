@@ -410,3 +410,228 @@ def test_the_repos_test_task_runs_pytest_behind_the_slot_wrapper() -> None:
     root = Path(__file__).resolve().parents[2]
     run = tomllib.loads((root / "mise.toml").read_text())["tasks"]["test"]["run"]
     assert run.startswith("uv run python tools/gate_slot.py pytest ")
+
+
+# the slot count's shared table (#1232): the template's `gate-slot` tests the same file, so both count alike
+TABLE = Path(__file__).resolve().parent / "fixtures" / "gate-slots.tsv"
+
+
+def table() -> list[Any]:
+    """The table's rows as pytest params, each named for its inputs and the limit it expects."""
+    rows = []
+    for line in TABLE.read_text().splitlines():
+        if line and not line.startswith("#"):
+            row = line.split("\t")
+            assert len(row) == 8, line
+            rows.append(pytest.param(*row, id="-".join(row)))
+    return rows
+
+
+def unset(value: str) -> int | None:
+    return None if value == "-" else int(value)
+
+
+@pytest.mark.parametrize(
+    ("cores", "memory", "cost_cores", "cost_gb", "reserve", "said", "count", "limit"), table()
+)
+def test_the_slot_count_follows_the_shared_table(
+    cores: str, memory: str, cost_cores: str, cost_gb: str, reserve: str, said: str,
+    count: str, limit: str,
+) -> None:  # fmt: skip
+    cost = (
+        approvals.COST_DEFAULT
+        if cost_cores == "-"
+        else (int(cost_cores), int(cost_gb), unset(reserve))
+    )
+    plan = approvals.slot_plan(int(cores), int(memory), cost, "" if said == "-" else said)
+    assert (plan.count, plan.limit) == (int(count), limit)
+
+
+def loop_md(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    """A checkout whose docs/agents/loop.md holds `text`, as the process's working directory, in a subdirectory, so
+    the line is read from the checkout's root."""
+    (tmp_path / "docs" / "agents").mkdir(parents=True)
+    (tmp_path / "docs" / "agents" / "loop.md").write_text(text)
+    (tmp_path / "sub").mkdir()
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    monkeypatch.chdir(tmp_path / "sub")
+
+
+def host(monkeypatch: pytest.MonkeyPatch, cores: int, memory: int, said: str | None) -> None:
+    monkeypatch.setattr(os, "cpu_count", lambda: cores)
+    monkeypatch.setattr(approvals, "total_memory", lambda: memory)
+    if said is None:
+        monkeypatch.delenv("GATE_SLOTS")
+    else:
+        monkeypatch.setenv("GATE_SLOTS", said)
+
+
+@pytest.mark.parametrize(
+    ("cores", "memory", "cost_cores", "cost_gb", "reserve", "said", "count", "limit"), table()
+)
+def test_the_host_counts_the_table_from_its_gate_cost_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    cores: str, memory: str, cost_cores: str, cost_gb: str, reserve: str, said: str,
+    count: str, limit: str,
+) -> None:  # fmt: skip
+    """The same rows read as a host does: loop.md's `Gate cost:` line, the host's cores and memory, `GATE_SLOTS`."""
+    line = "" if cost_cores == "-" else f"Gate cost: {cost_cores} cores, {cost_gb} GB"
+    line += "" if reserve == "-" else f", reserve {reserve} GB"
+    loop_md(tmp_path, monkeypatch, f"# Loop\n\n{line}\n")
+    host(monkeypatch, int(cores), int(memory), None if said == "-" else said)
+    assert (approvals.gate_slots(), approvals.host_plan().limit) == (int(count), limit)
+
+
+def test_cores_set_the_count_when_memory_holds_more_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_md(tmp_path, monkeypatch, "Gate cost: 4 cores, 4 GB\n")
+    host(monkeypatch, 16, 64, None)
+    assert approvals.host_plan().line() == (
+        "slots 4: cores (16 cores, 64 GB, cost 4 cores 4 GB, reserve 16 GB)"
+    )
+
+
+def test_memory_sets_the_count_when_it_holds_fewer_runs_than_the_cores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gate that starts a database container: 16 GB less the 4 GB reserve holds two 6 GB runs, the cores four."""
+    loop_md(tmp_path, monkeypatch, "Gate cost: `4 cores, 6 GB`\n")
+    host(monkeypatch, 16, 16, None)
+    assert approvals.host_plan().line() == (
+        "slots 2: memory (16 cores, 16 GB, cost 4 cores 6 GB, reserve 4 GB)"
+    )
+
+
+def test_a_reserve_on_the_line_replaces_the_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_md(tmp_path, monkeypatch, "Gate cost: 1 core, 2 GB, reserve 10 GB\n")
+    host(monkeypatch, 16, 16, None)
+    assert approvals.host_plan() == approvals.SlotPlan(3, "memory", 16, 16, 1, 2, 10)
+
+
+@pytest.mark.parametrize("value", ["4 cores", "0 cores, 4 GB", "4 cores, 1.5 GB", "four"])
+def test_a_gate_cost_line_that_does_not_parse_counts_a_third_of_the_cores_and_says_so_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    monkeypatch.setattr(approvals, "cost_said", set())
+    loop_md(tmp_path, monkeypatch, f"Gate cost: {value}\n")
+    host(monkeypatch, 12, 64, None)
+    assert approvals.host_plan()[:2] == (4, "cores")
+    approvals.host_plan()
+    assert capsys.readouterr().err.count(f"loop.md's `Gate cost: {value}` is not") == 1
+
+
+def test_outside_a_checkout_the_count_is_a_third_of_the_cores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A loop.md with the line in a directory no `.git` marks is not a checkout's, so it counts for nothing."""
+    (tmp_path / "docs" / "agents").mkdir(parents=True)
+    (tmp_path / "docs" / "agents" / "loop.md").write_text("Gate cost: 4 cores, 4 GB\n")
+    monkeypatch.chdir(tmp_path)
+    assert not any((d / ".git").exists() for d in (tmp_path, *tmp_path.parents))
+    assert approvals.gate_cost() == approvals.COST_DEFAULT
+
+
+def test_total_memory_is_meminfos_total_in_whole_gb(tmp_path: Path) -> None:
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:       16473764 kB\nMemAvailable:    1000000 kB\n")
+    assert approvals.total_memory(str(meminfo)) == 15
+
+
+def test_without_meminfo_total_memory_is_sysctls_hw_memsize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A macOS host: no meminfo, and `sysctl -n hw.memsize` prints bytes; with neither the memory is 0."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    sysctl = bin_dir / "sysctl"
+    sysctl.write_text('#!/bin/sh\n[ "$*" = "-n hw.memsize" ] && echo 34359738368\n')
+    sysctl.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    assert approvals.total_memory(str(tmp_path / "none")) == 32
+    sysctl.write_text("#!/bin/sh\necho 34359738368\nexit 1\n")
+    assert approvals.total_memory(str(tmp_path / "none")) == 0
+
+
+def test_heavy_plan_prints_the_plan_and_runs_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    loop_md(tmp_path, monkeypatch, "Gate cost: 4 cores, 4 GB\n")
+    host(monkeypatch, 16, 16, None)
+    assert approvals.main(["heavy", "--plan"]) == 0
+    assert capsys.readouterr().out == (
+        "slots 3: memory (16 cores, 16 GB, cost 4 cores 4 GB, reserve 4 GB)\n"
+    )
+    assert approvals.main(["heavy", "--plan", "true"]) == 1
+    assert "takes no command" in capsys.readouterr().out
+
+
+def test_a_wait_for_the_slot_names_the_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    loop_md(tmp_path, monkeypatch, "Gate cost: 16 cores, 1 GB\n")
+    host(monkeypatch, 16, 64, None)
+    hold(1, 1.0)
+    with approvals.heavy_slot("unit"):
+        pass
+    assert (
+        "local-ci: unit: waiting for the host gate slot"
+        " (slots 1: cores (16 cores, 64 GB, cost 16 cores 1 GB, reserve 16 GB))"
+    ) in capsys.readouterr().err
+
+
+def held_by_another_process(path: str) -> subprocess.Popen[str]:
+    """A process holding `path`'s exclusive flock until its stdin closes; it says `held` once it holds it."""
+    holder = subprocess.Popen(
+        [
+            sys.executable, "-c",
+            (
+                "import fcntl, os, sys\n"
+                "fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT)\n"
+                "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+                "print('held', flush=True)\n"
+                "sys.stdin.read()\n"
+            ),
+            path,
+        ],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    assert holder.stdout is not None and holder.stdout.readline() == "held\n"
+    return holder
+
+
+def test_gate_slots_off_runs_a_command_while_another_process_holds_gate_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The off switch takes no lock: a step, this repo's gate wrapper and mutate.py's short lane each run at once
+    though another process holds slot 1 (and the short lane), and a step's command is told it holds none."""
+    Path(approvals.slot_path()).parent.mkdir(parents=True, exist_ok=True)
+    holders = [held_by_another_process(approvals.slot_path(1))]
+    holders.append(held_by_another_process(approvals.slot_file("gate.short.lock")))
+    monkeypatch.setenv("GATE_SLOTS", "off")
+    try:
+        began = time.monotonic()
+        assert approvals.take_slot() == (None, "")
+        with approvals.heavy_slot("unit") as (path, waited):
+            assert (path, waited) == ("", 0)
+        step = {"name": "unit", "words": [sys.executable, "-c", "pass"], "sets": {}}
+        step |= {"legacy": False, "command": "pass"}
+        assert approvals.ran_step(step)[0] == 0
+        wrapper = Path(__file__).resolve().parents[2] / "tools" / "gate_slot.py"
+        probe = "import os; print(repr(os.environ['LOOP_GATE_SLOT_HELD']))"
+        ran = subprocess.run(
+            [sys.executable, str(wrapper), sys.executable, "-c", probe],
+            capture_output=True, text=True, timeout=10, check=False,
+        )  # fmt: skip
+        assert (ran.returncode, ran.stdout) == (0, "''\n"), ran.stderr
+        sys.path.insert(0, str(Path(approvals.__file__).resolve().parent))
+        import mutate
+
+        assert mutate.take_short(mutate.slot_path(), lambda: None) is None
+        assert time.monotonic() - began < 5.0
+    finally:
+        for holder in holders:
+            holder.communicate("")
+    assert "waiting" not in capsys.readouterr().err

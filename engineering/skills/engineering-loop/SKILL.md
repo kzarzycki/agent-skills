@@ -812,10 +812,19 @@ or the owner's private network.
   to start. So the project's test part runs behind a host-wide slot that every worktree
   shares: the template's `scripts/gate-slot`, or, in a project without it, a lock on a file
   of the same set, `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, around its heavy check (a lock
-  frees itself however the run exits). The host has `GATE_SLOTS` slots, `gate.1.lock` to `gate.<N>.lock`: the
-  variable when it is a whole number from 1, else a third of the host's cores, at least 1. A run takes the first
-  free one and waits, saying so once, only when every one is held; `GATE_SLOTS=1` keeps one heavy gate on the host
-  at a time, for a project whose gate needs the whole host. A parallel runner takes the `GATE_JOBS` it exports (the
+  frees itself however the run exits). The host has `<N>` slots, `gate.1.lock` to `gate.<N>.lock`: the smaller of
+  its cores over the cores one run takes and its total memory, less a reserve, over the memory one run takes, each
+  rounded down, at least 1. The project states that cost, measured on its heaviest gate, as one line of loop.md,
+  `Gate cost: <cores> cores, <GB> GB`, whole numbers, with an optional `, reserve <GB> GB` (default a quarter of the
+  memory, at least 4 GB); without the line a run costs 3 cores and no memory, a third of the cores. Memory is total,
+  never available, since a count that moves between runs strands a waiter on a slot that no longer exists.
+  `GATE_SLOTS=<n>`, a whole number from 1, overrides the count; `GATE_SLOTS=1` keeps one heavy gate on the host at a
+  time, for a project whose gate needs the whole host, and `GATE_SLOTS=off`, for a machine of one person's own,
+  takes no lock at all. `approvals.py heavy --plan` prints the count and the limit that set it, as the template's
+  `gate-slot --plan` does, `slots <n>: <cores|memory|GATE_SLOTS|off> (<cores> cores, <GB> GB, cost <c> cores <m>
+  GB, reserve <r> GB)`, and a wait for a slot names the same line; the two count from one table,
+  `engineering/tests/fixtures/gate-slots.tsv` in the pack's repo. A run takes the first free slot and waits, saying
+  so once, only when every one is held. A parallel runner takes the `GATE_JOBS` it exports (the
   cores free at start), never `-n auto` or a fixed count, and never more than the host's cores divided by `<N>`,
   since `<N>` gates load the host at once and a larger share each would oversubscribe it.
   A land's gate step holds the landing lock while it waits, which stops every other land, so it takes a freed slot

@@ -36,7 +36,8 @@ and a short-lane
 patch run past `short_seconds` adds an `overrun` line; the slot is held per run, so a gate can take it between two.
 The test command gets `LOOP_GATE_SLOT_HELD=<lock path>`: a wrapper that takes the same lock runs its command without
 taking it again, since it would otherwise wait on its own parent. A run already started under that variable naming
-the slot takes no lock. There is no option to skip the slot.
+the slot takes no lock. There is no option to skip the slot; `GATE_SLOTS=off`, the host owner's switch, runs every
+test run with no lock, the short lane's included.
 
 The log: line 1 is `git rev-parse HEAD`, line 2 this command line, line 3 the lane and why (`short: head run 6.5 s ≤
 120 s`, `heavy: head run 412.0 s > 120 s`, `heavy: head run failed (exit 1)`, `heavy: short_seconds is 0`, `heavy:
@@ -182,9 +183,9 @@ def digest(paths: list[str], head: bool = False) -> str:
 
 def take_short(path: str, waiting: Callable[[], None]) -> int | None:
     """Hold the short lane's exclusive flock and return its fd (closing it frees the lock, as does the process dying);
-    None when this run already runs under a holder of that same path. `waiting` is called when the wait begins and
-    again every approvals.SLOT_SAY_SECONDS."""
-    if os.environ.get(SLOT_HELD) == path:
+    None when this run already runs under a holder of that same path, or under `GATE_SLOTS=off`, which takes no lock
+    at all. `waiting` is called when the wait begins and again every approvals.SLOT_SAY_SECONDS."""
+    if os.environ.get(SLOT_HELD) == path or os.environ.get("GATE_SLOTS") == "off":
         return None
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
