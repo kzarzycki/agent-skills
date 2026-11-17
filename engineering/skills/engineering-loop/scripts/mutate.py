@@ -242,16 +242,21 @@ def lane(
 def run_command(command: str, slot: str) -> tuple[int, str]:
     # a heavy step (approvals.run_heavy): the shell's argv as shell=True builds it, under the host's heavy wrapper, in a
     # session of its own, so stopping it (Interrupted) reaches every process the shell started
-    return approvals().run_heavy(
-        ["/bin/sh", "-c", command],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        # a test may print bytes that aren't UTF-8; strict decoding would raise with the patch still applied
-        encoding="utf-8",
-        errors="replace",
-        # a .pyc written in the same second as its source hides the next same-sized patch of it
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", SLOT_HELD: slot},
-    )
+    try:
+        return approvals().run_heavy(
+            ["/bin/sh", "-c", command],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            # a test may print bytes that aren't UTF-8; strict decoding would raise with the patch still applied
+            encoding="utf-8",
+            errors="replace",
+            # a .pyc written in the same second as its source hides the next same-sized patch of it
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", SLOT_HELD: slot},
+        )
+    except (
+        approvals().Refused
+    ) as refusal:  # the host's policy forbids the command (approvals.host_forbids)
+        raise Refused(str(refusal)) from refusal
 
 
 def restore(top: Path, patch: Path) -> None:

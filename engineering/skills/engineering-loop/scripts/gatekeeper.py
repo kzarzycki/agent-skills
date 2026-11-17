@@ -6402,39 +6402,29 @@ def stops_raise() -> Any:
 
 
 HOST_COMMANDS = "~/.agents/host-commands"
-# words a command may start with that don't name what it runs
-LAUNCHERS = (["uv", "run"], ["python"], ["python3"])
+# words a command may start with that don't name what it runs; the Claude Code hook that reads the same file has this list
+LAUNCHERS = (["swiftly", "run"], ["uv", "run"], ["python3"], ["python"])
 
 
 def host_forbids(words: Sequence[str]) -> str | None:
     """The line of the host's policy file (HOST_COMMANDS, or the file `AGENT_HOST_COMMANDS` names; one command per
-    line, `#` comments) whose words begin `words`, once a launcher (LAUNCHERS) is stripped and path words are read by
-    their basename, as the Claude Code hook that reads the same file does for a typed command; None where the file is
-    absent or lists no such command, so a host without a policy runs everything."""
+    line, text after `#` is a comment) whose words begin `words`, as the Claude Code hook that reads the same file
+    matches a typed command: path words by their basename, then launchers (LAUNCHERS) stripped as often as they
+    lead. A shell's `-c <script>` is read as the script's own words. None where the file is absent or lists no such
+    command, so a host without a policy runs everything."""
     path = os.path.expanduser(os.environ.get("AGENT_HOST_COMMANDS") or HOST_COMMANDS)
     try:
         with open(path, encoding="utf-8", errors="replace") as text:
-            rules = [s.strip() for s in text if s.strip() and not s.lstrip().startswith("#")]
+            rules = [r for r in (line.split("#")[0].split() for line in text) if r]
     except OSError:
         return None
-
-    def bare(command: Sequence[str]) -> list[str]:
-        command = list(command)
-        for launcher in LAUNCHERS:
-            if command[: len(launcher)] == launcher:
-                command = command[len(launcher) :]
-                break
-        return [os.path.basename(w) if "/" in w else w for w in command]
-
-    ran = bare(words)
-    for rule in rules:
-        try:
-            wanted = bare(shlex.split(rule))
-        except ValueError:
-            continue
-        if wanted and ran[: len(wanted)] == wanted:
-            return rule
-    return None
+    command = [os.path.basename(w) if "/" in w else w for w in words]
+    if len(command) == 3 and command[0] in ("sh", "bash", "zsh") and command[1] == "-c":
+        with contextlib.suppress(ValueError):
+            command = [os.path.basename(w) if "/" in w else w for w in shlex.split(words[2])]
+    while launcher := next((x for x in LAUNCHERS if command[: len(x)] == x), None):
+        command = command[len(launcher) :]
+    return next((" ".join(r) for r in rules if command[: len(r)] == r), None)
 
 
 def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int, Any]:

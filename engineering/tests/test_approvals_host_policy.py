@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 from approvals_harness import (
+    SCRIPTS,
     added,  # noqa: F401
     approvals,
     assigned,  # noqa: F401
@@ -19,7 +21,7 @@ from approvals_harness import (
     required,  # noqa: F401
 )
 
-POLICY = "# heavy here\nmise run check\napprovals.py local-ci\nswift build\n"
+POLICY = "# heavy here\nmise run check  # whole suite\napprovals.py local-ci\nswift build\n"
 
 
 @pytest.fixture
@@ -37,6 +39,10 @@ def policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         ["uv", "run", "/x/y/approvals.py", "local-ci", "--run"],
         ["python3", "approvals.py", "local-ci"],
         ["swift", "build", "-c", "release"],
+        ["uv", "run", "python3", "approvals.py", "local-ci"],
+        ["/usr/bin/python3", "/x/approvals.py", "local-ci"],
+        ["swiftly", "run", "swift", "build"],
+        ["/bin/sh", "-c", "swift build -c release"],
     ],
 )
 def test_a_listed_command_is_refused(policy: Path, words: list[str]) -> None:
@@ -70,3 +76,13 @@ def test_a_host_without_a_policy_runs_everything(
     monkeypatch.setenv("AGENT_HOST_COMMANDS", str(tmp_path / "none"))
     assert approvals.host_forbids(["mise", "run", "check"]) is None
     assert approvals.run_heavy(["true"])[0] == 0
+
+
+def test_mutate_refuses_a_forbidden_test_command(
+    policy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sys.path.insert(0, str(SCRIPTS))
+    import mutate
+
+    with pytest.raises(mutate.Refused, match="gate it on an allowed host"):
+        mutate.run_command("swift build", "/dev/null")
