@@ -378,3 +378,34 @@ def test_a_head_tree_that_cannot_be_read_keeps_mains_rule(monkeypatch: pytest.Mo
     files = bump(monkeypatch)
     monkeypatch.setattr(approvals, "tree", lambda _sha: None)
     assert refused(gate(MID, files, monkeypatch))
+
+
+def test_a_lock_entry_that_names_no_file_anywhere_keeps_mains_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # a hand-edited lock lists a file neither the head tree nor the tag has
+    gone = VENDORED.replace("gatekeeper", "gone")
+    text = lock().replace(f"  - {VENDORED}\n", f"  - {VENDORED}\n  - {gone}\n")
+    files = bump(monkeypatch, head_lock=text)
+    assert refused(gate(MID, files, monkeypatch))
+
+
+def test_a_file_the_tag_ships_that_the_lock_does_not_list_keeps_mains_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # a lock that lists files one by one, omitting KEPT, which the tag ships and the head tree holds
+    text = lock().replace("  - .claude/skills/engineering-loop\n", "")
+    placed = {VENDORED: ("100644", BLOB), KEPT: ("100644", BLOB)}
+    files = bump(monkeypatch, head_lock=text, placed=placed)
+    shipped = {SOURCE: ("100644", BLOB), KEPT_SOURCE: ("100644", BLOB)}
+    monkeypatch.setattr(approvals, "tag_tree", lambda _repo, _tag: (TAGGED, shipped))
+    assert refused(gate(MID, files, monkeypatch))
+
+
+def test_a_skill_the_tag_adds_that_the_lock_does_not_deploy_keeps_mains_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files = bump(monkeypatch)
+    shipped = {SOURCE: ("100644", BLOB), "engineering/skills/brand-new/SKILL.md": ("100644", BLOB)}
+    monkeypatch.setattr(approvals, "tag_tree", lambda _repo, _tag: (TAGGED, shipped))
+    assert refused(gate(MID, files, monkeypatch))

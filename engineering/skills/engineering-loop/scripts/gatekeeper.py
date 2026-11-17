@@ -2539,7 +2539,7 @@ def deployed_is_tag(
     """Whether the head's deployed pack files, in the diff or not, are the tag's: every file under a `deployed_files`
     entry that maps to the pack (VENDORED) is in the tag at the same blob SHA, each such entry names a file in the
     head's tree, and every file the tag ships for those skills is in the head's tree under the entry's root and
-    covered by an entry. `tagged` is tag_tree()'s files, `placed` tree()'s. An entry outside the pack's skills is
+    covered by an entry (a skill the tag ships that no entry deploys fails). `tagged` is tag_tree()'s files, `placed` tree()'s. An entry outside the pack's skills is
     none of its files and is skipped."""
     entries = [(d, found) for d in deployed if (found := VENDORED.fullmatch(d))]
     roots: dict[
@@ -2557,8 +2557,10 @@ def deployed_is_tag(
                 return False
     for want in tagged:
         skill, _, rest = want.removeprefix(f"{virtual}/skills/").partition("/")
-        if not want.startswith(f"{virtual}/skills/") or not rest or skill not in roots:
+        if not want.startswith(f"{virtual}/skills/") or not rest:
             continue
+        if skill not in roots:  # a skill the tag ships and the lock does not deploy
+            return False
         for root in roots[skill]:
             path = f"{root}/skills/{skill}/{rest}"
             covered = any(path == d or path.startswith(f"{d}/") for d, _ in entries)
