@@ -1663,6 +1663,51 @@ def autocompact_args(
     return ["--autocompact", size]
 
 
+LEAD_TIERS = {"frontier": "fable", "top": "opus", "mid": "sonnet", "small": "haiku"}  # Claude's
+SIZES = ("XS", "S", "M", "L", "XL")
+
+
+def lead_model(
+    brief: str,
+    workspace: str,
+    og: Omnigent | None = None,
+    host_id: str | None = None,
+    local: bool = True,
+) -> str | None:
+    """The model alias for a top-level Claude lead when the project's ``Lead model: <tier> for
+    <condition>`` line matches the labels of the issues ``brief`` names (``#N`` or an issue URL);
+    else None. The condition is ``size:<S> or smaller`` (size order XS < S < M < L < XL) or a bare
+    label. It matches when some named issue meets it and none fails it: an issue with no size label
+    says nothing about a size condition. A tier or condition that doesn't parse fails the start."""
+    line = project_line(workspace, "Lead model", og, host_id)
+    if not line:
+        return None
+    tier, _, cond = (w.strip() for w in line.partition(" for "))
+    bad = f"{LOOP_FILE}: Lead model: {line} is not `<tier> for <condition>`"
+    if tier not in LEAD_TIERS:
+        raise Fail(f"{bad}: the tier is one of {', '.join(LEAD_TIERS)}")
+    sized = re.fullmatch(r"size:(\w+) or smaller", cond)
+    if sized and sized[1] not in SIZES:
+        raise Fail(f"{bad}: the size is one of {', '.join(SIZES)}")
+    if not sized and not re.fullmatch(r"[^\s,]+", cond):
+        raise Fail(f"{bad}: the condition is `size:<S> or smaller` or a label")
+    refs = re.findall(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)|(?<![\w/])#(\d+)", brief)
+    verdicts: list[bool | None] = []
+    for repo, number, bare in dict.fromkeys(refs):
+        n = number or bare
+        try:
+            slug = repo or repo_slug(Path(workspace) if local and workspace else None)
+            names = gh("api", f"repos/{slug}/issues/{n}", "--jq", ".labels[].name").splitlines()
+        except Fail as e:
+            print(f"Lead model: issue {n} unread, so it says nothing: {e}", file=sys.stderr)
+            continue
+        if not sized:
+            verdicts.append(True if cond in names else None)
+        elif have := [x[5:] for x in names if x.startswith("size:") and x[5:] in SIZES]:
+            verdicts.append(SIZES.index(have[0]) <= SIZES.index(sized[1]))
+    return LEAD_TIERS[tier] if True in verdicts and False not in verdicts else None
+
+
 def project_name() -> str:
     return os.environ.get("OMNIGENT_PROJECT") or repo_name()
 
@@ -3376,6 +3421,12 @@ def start(
         # the project's loop.md, once, on the host the session runs on: a host that can't be read
         # stops the start here, before a session exists
         og.loop_text(workspace or os.getcwd(), host_id)
+    if top_level and agent == "claude" and not model_for(agent, model)[0]:
+        # the one read of loop.md's Lead model line, on the lead's host, before any session exists;
+        # --model and OMNIGENT_MODEL_CLAUDE outrank it
+        model = lead_model(
+            brief, workspace or os.getcwd(), og, host_id, not host_id or host_id == og.host_id
+        )
     chosen, source = model_for(agent, model)
     if chosen:
         try:
