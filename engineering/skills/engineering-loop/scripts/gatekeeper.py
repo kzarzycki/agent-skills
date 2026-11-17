@@ -440,9 +440,11 @@ is named and changes nothing, nor does anyone else's. Over REST the last edit is
 edit moves (and any other change), so a label is recorded only when nothing changed the spec after it.
 
 GitHub is read through GraphQL, the fast path, and through REST where GraphQL answers 403, as a cloud session's proxy
-does: after one refused call a run reads REST alone, the same fields call by call. REST has no closing links, so a
-PR's issues are its body's `Closes`, `Part of` and `Implements` lines; its review threads come from the proxy's
-`pulls/<n>/ccr/review_threads` route, and where that route is missing the read fails rather than count none; a commit
+does, or marks fields FORBIDDEN, as a job token in a private organization repository gets: after one refused call a
+run reads REST alone, the same fields call by call. REST has no closing links, so a PR's issues are its body's
+`Closes`, `Part of` and `Implements` lines; its review threads come from the proxy's `pulls/<n>/ccr/review_threads`
+route, or, where GitHub itself answers 404 there, from GraphQL asked for the threads alone, and where neither answers
+the read fails rather than count none; a commit
 co-author, which only GraphQL resolves to an account, exempts no PR from review; and whether a PR is in a merge queue
 can't be read, so `land` refuses it there. The proxy refuses the collaborator lookup too, so there only the account
 running this counts as a writer, by its own permissions on the repo.

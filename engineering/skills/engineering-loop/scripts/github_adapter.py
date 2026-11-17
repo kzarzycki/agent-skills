@@ -60,10 +60,14 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 
 
+# a PR's review threads, which PULL reads and rest_threads() asks for alone where GitHub's REST has none
+THREADS = f"reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}"
+
+
 PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
-  reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}
+  {THREADS}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
@@ -458,10 +462,17 @@ def rest_checks(head: str) -> dict[str, Any]:
 
 def rest_threads(number: int) -> dict[str, Any]:
     """A PR's review threads, whether each is resolved, from the review-thread route a cloud session's GitHub proxy
-    serves (GitHub's own REST has none). Where it is missing, as on a host whose GraphQL refused for another reason,
-    the error raises: unresolved threads are never read as none. Each thread's comments, which that route names by id
-    alone, come from the PR's review comments, with no right to edit them (session_links())."""
-    threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
+    serves. GitHub's own REST has none and answers 404: there, as for a job token in a private organization repository,
+    whose GraphQL withholds other fields of PULL but not these, the threads come from GraphQL alone. Where that fails
+    too, the error raises: unresolved threads are never read as none. Each thread's comments, which the proxy's route
+    names by id alone, come from the PR's review comments, with no right to edit them (session_links())."""
+    try:
+        threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
+    except subprocess.CalledProcessError as exc:
+        if "HTTP 404" not in (exc.stderr or ""):
+            raise
+        found: dict[str, Any] = _graphql(_repository(f"pullRequest(number: $n) {{ {THREADS} }}"), n=number)
+        return found["pullRequest"]["reviewThreads"]
     listed = {found["id"]: found for found in rest_pages(f"pulls/{number}/comments?per_page=100")}
     nodes = [
         {
