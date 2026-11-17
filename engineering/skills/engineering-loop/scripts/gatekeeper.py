@@ -4134,6 +4134,11 @@ def judge_with_base(base: str, fetch: bool = False) -> None:
                 "git",
                 "-C",
                 str(toplevel()),
+                # through `gh`, so GH_TOKEN works where the checkout persisted no credentials
+                "-c",
+                "credential.helper=",
+                "-c",
+                "credential.helper=!gh auth git-credential",
                 "fetch",
                 "-q",
                 "origin",

@@ -182,8 +182,14 @@ def _repository(fields: str) -> str:
     return f"query($owner: String!, $name: String!, $n: Int!) {{ repository(owner: $owner, name: $name) {{ {fields} }} }}"
 
 
-# how GitHub, or a cloud session's proxy in front of it, refuses GraphQL: `gh` ends its error with it
-FORBIDDEN = "HTTP 403"
+# how GitHub, or a cloud session's proxy in front of it, refuses GraphQL: `gh` ends its error with a 403, or, for a job
+# token a private organization repository withholds fields from, prints GraphQL's FORBIDDEN message
+REFUSALS = ("HTTP 403", "Resource not accessible by integration")
+
+
+def refused(stderr: str | None) -> bool:
+    """Whether `gh`'s stderr says GitHub refused this token or path, as opposed to failing for another reason."""
+    return any(text in (stderr or "") for text in REFUSALS)
 
 
 # set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again
@@ -202,7 +208,7 @@ def fast(graphql: Callable[[], Answer], rest: Callable[[], Answer]) -> Answer:
         try:
             return graphql()
         except subprocess.CalledProcessError as exc:
-            if FORBIDDEN not in (exc.stderr or ""):
+            if not refused(exc.stderr):
                 raise
             _rest_only = True
     return rest()
@@ -668,7 +674,7 @@ def writer(login: str) -> bool:
     except subprocess.CalledProcessError as exc:
         # a cloud session's proxy refuses this path; the repo's own permissions answer it for the account running this
         # alone, and anyone else still can't, so a stranger never counts as a writer
-        if FORBIDDEN not in (exc.stderr or "") or login != viewer():
+        if not refused(exc.stderr) or login != viewer():
             return False
         try:
             mine = rest("repos/{owner}/{repo}").get("permissions") or {}
