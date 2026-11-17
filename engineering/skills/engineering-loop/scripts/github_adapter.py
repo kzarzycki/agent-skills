@@ -41,7 +41,7 @@ WRITE = {"admin", "maintain", "write"}
 NOTE = "id author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
 
 
-SPECCED = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
+SPECCED = f"number state body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
 
 
 ASSIGNEES = "assignees(first: 10) { nodes { login } }"
@@ -66,7 +66,7 @@ THREADS = f"reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments
 
 
 PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
-  files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
+  files(first: 100) {{ totalCount nodes {{ path changeType additions deletions }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
   {THREADS}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
@@ -354,6 +354,7 @@ def rest_specced(found: dict[str, Any]) -> dict[str, Any]:
     no edit time, so the spec's text names its version (versions)."""
     return {
         "number": found["number"],
+        "state": found["state"].upper(),
         "body": found.get("body") or "",
         "createdAt": found["created_at"],
         "updatedAt": found["updated_at"],
@@ -521,7 +522,12 @@ def rest_pull(pr: int) -> dict[str, Any]:
         for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
     ]
     files = [
-        {"path": file["filename"], "changeType": CHANGE_TYPES.get(file["status"], "MODIFIED")}
+        {
+            "path": file["filename"],
+            "changeType": CHANGE_TYPES.get(file["status"], "MODIFIED"),
+            "additions": file.get("additions"),
+            "deletions": file.get("deletions"),
+        }
         for file in pr_changes(pr)
     ]
     state = "MERGED" if found.get("merged") else found["state"].upper()

@@ -824,6 +824,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "levels": {
         level: {"spec": Choice(SPEC_ACTIONS), "merge": Choice(MERGE_ACTIONS)} for level in LEVELS
     },
+    "incubating": {"append_paths": list, "waive": list},
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
@@ -1113,6 +1114,68 @@ def matches(terms: dict[str, Any], labels: set[str], paths: list[str] | None) ->
         if any(fnmatch.fnmatch(path, glob) for path in paths or []):
             return f"path `{glob}`"
     return None if paths is None and terms.get("paths") else False
+
+
+# an incubating feature's PR and its tracking epic carry this label (SKILL.md § Incubating)
+INCUBATING = "incubating"
+# the body line naming the epic that tracks the feature an incubating PR belongs to
+INCUBATES = re.compile(r"^[ \t>*-]*Incubates:[ \t]+#(\d+)\b", re.MULTILINE | re.IGNORECASE)
+# the requirements `incubating.waive` may name; an eligible PR stops owing each (incubation)
+WAIVABLE = ("evidence", "proof_run", "verifier", "full_gate", "coverage")
+
+
+def incubation(
+    pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None
+) -> tuple[set[str], list[str]]:
+    """The requirements an incubating PR doesn't owe, and a line when its label can't stand. The label is a claim, like
+    SCOPED: without an `incubating` policy section it means nothing, and with one it holds only while the PR is eligible
+    (ineligible), else the PR owes the full loop. `incubating.waive` names the waived requirements (WAIVABLE; default all)."""
+    policy = settings(loop).get(INCUBATING)
+    if policy is None or INCUBATING not in names(pull):
+        return set(), []
+    waive = policy.get("waive", list(WAIVABLE))
+    if unknown := [name for name in waive if name not in WAIVABLE]:
+        raise Refused(
+            f"{source(loop)}'s `incubating.waive` names {', '.join(unknown)}; it may name {', '.join(WAIVABLE)}"
+        )
+    if why := ineligible(pull, issues, loop, policy.get("append_paths", [])):
+        return set(), [
+            f"PR #{pull['number']} is labelled `{INCUBATING}`, but {why}: it owes the full loop"
+        ]
+    return set(waive), []
+
+
+def ineligible(
+    pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None, appendable: list[str]
+) -> str | None:
+    """Why the PR can't be incubating, or None: its body names an open epic labelled `incubating` (`Incubates: #<n>`);
+    every file is added, or modified with no line deleted and matching `append_paths` (a file new features append to);
+    and the change doesn't rate high or critical (risk). A deleted or renamed file, a removed line, a file outside the
+    list, or a file list the gate can't read in full is existing code touched, which the full loop covers."""
+    found = INCUBATES.search(QUOTED.sub("", pull["body"] or ""))
+    if not found:
+        return "its body has no `Incubates: #<epic>` line"
+    try:
+        epic = issue_node(int(found[1]))
+    except (Refused, subprocess.CalledProcessError):
+        return f"epic #{found[1]} can't be read"
+    if INCUBATING not in names(epic) or epic.get("state") != "OPEN":
+        return f"#{found[1]} is not an open issue labelled `{INCUBATING}`"
+    files = pull["files"]
+    if (files.get("totalCount") or 0) > len(files["nodes"]):
+        return "GitHub can't give every file the PR changes"
+    for file in files["nodes"]:
+        kind, path = file.get("changeType"), file["path"]
+        if kind == "ADDED" or (
+            kind == "MODIFIED"
+            and file.get("deletions") == 0
+            and any(fnmatch.fnmatch(path, glob) for glob in appendable)
+        ):
+            continue
+        return f"it changes existing code (`{path}`, {str(kind).lower()})"
+    if why := risk(pull, issues, loop):
+        return f"it rates high or critical ({why})"
+    return None
 
 
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
@@ -2200,16 +2263,19 @@ def proofs(
         # where a lead hands the PR over, so a wrong keyword is fixed before the PR reaches the landing queue
         if loop is not None:
             found += linked(pull, issues, loop)
-    found += demo_form(pull)
+    waived, lapsed = incubation(pull, issues, loop) if point == "merge" else (set(), [])
+    found += lapsed
+    if "evidence" not in waived:
+        found += demo_form(pull)
     if point != "merge":
         return found
     where = f"PR #{pull['number']}"
     evidence = section(pull["body"] or "", "Evidence")
-    if not evidence.strip():
+    if "evidence" not in waived and not evidence.strip():
         found.append(f"{where}: its body has no `## Evidence` section with content")
     if loop is not None:
         found += linked(pull, issues, loop)
-    if revert is None and not exempt(pull, loop):
+    if revert is None and "verifier" not in waived and not exempt(pull, loop):
         verdicts = passes(pull)
         found += (unreviewed := reviewed(where, pull, loop, verdicts))
         # only on a verdict that would land, and tier first, since risk() reads the reviews again
