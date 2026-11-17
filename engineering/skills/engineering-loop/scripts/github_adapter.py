@@ -10,6 +10,7 @@ session's proxy does. Reads return GitHub's GraphQL node shapes (ISSUE, PULL), w
 from __future__ import annotations
 
 import json
+import random
 import re
 import subprocess
 import sys
@@ -177,6 +178,8 @@ def gh(*args: str, data: str | None = None) -> str:
                 pause := rate_limited(str(exc.stderr), backoff, args[:2] == ("api", "graphql"))
             ) is None:
                 raise
+            # jitter, so lands that waited on one reset do not all resume in the same second
+            pause += random.randint(0, JITTER)
             until = time.time() + pause
             if wait_until is None or time.monotonic() + pause > wait_until:
                 exc.stderr = f"{exc.stderr}\nGitHub rate limit, resets at {time.strftime('%H:%M UTC', time.gmtime(until))}"
@@ -193,6 +196,7 @@ def gh(*args: str, data: str | None = None) -> str:
 
 # land --wait sets this (time.monotonic) to the end of its ceiling: a rate limit then waits, else gh() fails with the reset time
 wait_until: float | None = None
+JITTER = 60  # most seconds of random delay added to a rate-limit wait
 SLICE = 60  # seconds between the lines a rate-limit wait prints
 
 

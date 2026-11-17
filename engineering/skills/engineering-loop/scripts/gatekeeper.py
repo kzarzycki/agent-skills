@@ -653,6 +653,8 @@ POLL, CEILING = 30, 2 * 60 * 60
 # a wait on a held lock whose ref is unchanged runs landing() (the GitHub calls) again only after this many seconds: the
 # lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
 RECHECK = 300
+# the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
+LOW_POLL, LOW_QUOTA = 300, 0.1
 # (lock ref, tip) of the last HELD lock locked() waited on; land() polls it without GitHub calls
 held_tip: tuple[str, str] | None = None
 # the signals that stop a land and release its lock (stopped)
@@ -4367,10 +4369,10 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
     if not wait:
         return landing(pr, only)[0]
     global held_tip
-    deadline, said, spoke, checked, heard = time.monotonic() + CEILING, "", 0.0, 0.0, ""
+    deadline, said, spoke, heard = time.monotonic() + CEILING, "", 0.0, ""
     github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
     while True:
-        held_tip, checked = None, time.monotonic()
+        held_tip = None
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
@@ -4385,21 +4387,41 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
             said, heard = state, out.getvalue()
         if not again:
             return code
-        if time.monotonic() + POLL > deadline:
+        nap = poll_seconds()
+        if time.monotonic() + nap > deadline:
             print(f"land --wait stopped after {CEILING // 3600} hours, still waiting")
             return WAITING
+        # a round asks GitHub again after `nap`, or RECHECK on a held lock; the sleep goes in POLL steps, so the log
+        # is never silent past wait-for's stall check and a lock that moved is seen at once (ls-remote costs no quota)
+        asleep = 0.0
         while time.monotonic() + POLL <= deadline:
             time.sleep(POLL)
+            asleep += POLL
             if (
                 heard and time.monotonic() - spoke >= SLOT_SAY_SECONDS
             ):  # wait-for's stall check reads silence as a hang
                 print(heard, end="", flush=True)
                 spoke = time.monotonic()
             # the lock still held at the same tip, and its holder checked lately: nothing to ask GitHub
-            if not held_tip or time.monotonic() - checked >= RECHECK:
+            if not held_tip:
+                if asleep >= nap:
+                    break
+            elif asleep >= max(nap, RECHECK) or git("ls-remote", "origin", held_tip[0]).split()[
+                :1
+            ] != [held_tip[1]]:
                 break
-            if git("ls-remote", "origin", held_tip[0]).split()[:1] != [held_tip[1]]:
-                break
+
+
+def poll_seconds() -> float:
+    """POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA. `gh api rate_limit` is not counted against the
+    quota; gh shows no response headers, so nothing is read for free. A failed read keeps POLL."""
+    try:
+        left, limit = github.gh(
+            "api", "rate_limit", "--jq", r'.resources.core|"\(.remaining) \(.limit)"'
+        ).split()
+        return LOW_POLL if int(left) < LOW_QUOTA * int(limit) else POLL
+    except (subprocess.CalledProcessError, ValueError):
+        return POLL
 
 
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:

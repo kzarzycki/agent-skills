@@ -11,10 +11,17 @@ import pytest
 from approvals_harness import approvals
 
 github = approvals.github
+real_poll_seconds = approvals.poll_seconds
 
 
 def refuse(stderr: str) -> subprocess.CalledProcessError:
     return subprocess.CalledProcessError(1, ["gh"], "", stderr)
+
+
+@pytest.fixture(autouse=True)
+def poll_unstretched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The quota read is a `gh` call: tests of the wait loop poll at POLL without it."""
+    monkeypatch.setattr(approvals, "poll_seconds", lambda: approvals.POLL)
 
 
 @pytest.fixture
@@ -33,6 +40,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     monkeypatch.setattr(github.subprocess, "run", run)
     monkeypatch.setattr(github.time, "sleep", seen["sleeps"].append)
+    monkeypatch.setattr(github.random, "randint", lambda low, high: 0)
     monkeypatch.setattr(github, "wait_until", time.monotonic() + 3600)
     return seen
 
@@ -177,3 +185,62 @@ def test_a_round_that_does_not_hold_the_lock_polls_no_stale_tip(
     monkeypatch.setattr(approvals, "git", lambda *a: listed.append(a) or "abc\trefs\n")
     approvals.land(1, wait=True)
     assert rounds[2] == rounds[1]  # round 2 held no lock, so nothing was listed after it
+
+
+def test_a_rest_limit_message_without_a_status_is_not_a_limit(calls: dict[str, Any]) -> None:
+    calls["replies"] = [refuse("gh: API rate limit exceeded for user ID 1.")]
+    with pytest.raises(subprocess.CalledProcessError):
+        github.gh("api", "repos/x")
+    assert calls["sleeps"] == []
+
+
+def test_a_rate_limit_wait_adds_bounded_jitter(
+    calls: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = []
+    monkeypatch.setattr(
+        github.random, "randint", lambda low, high: seen.append((low, high)) or high
+    )
+    calls["replies"] = [refuse("secondary rate limit (HTTP 403) Retry-After: 30"), "ok"]
+    github.gh("api", "x")
+    assert seen == [(0, github.JITTER)]
+    assert sum(calls["sleeps"]) == 30 + github.JITTER
+
+
+@pytest.mark.parametrize(("answer", "poll"), [("400 5000", 300), ("500 5000", 30), ("x", 30)])
+def test_a_low_quota_stretches_the_poll(
+    monkeypatch: pytest.MonkeyPatch, answer: str, poll: int
+) -> None:
+    monkeypatch.setattr(github, "gh", lambda *args: answer)
+    assert real_poll_seconds() == poll
+
+
+def test_a_low_quota_poll_still_says_the_wait_each_minute_and_asks_github_each_poll(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    now, ran = [0.0], []
+    monkeypatch.setattr(github, "wait_until", None)
+    monkeypatch.setattr(approvals, "poll_seconds", lambda: approvals.LOW_POLL)
+    monkeypatch.setattr(approvals.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        approvals.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)
+    )
+
+    def landing(pr: Any, only: bool = False) -> tuple[int, bool]:
+        ran.append(now[0])
+        print("checks pending")
+        return approvals.WAITING, True
+
+    monkeypatch.setattr(approvals, "landing", landing)
+    approvals.land(1, wait=True)
+    assert all(b - a == approvals.LOW_POLL for a, b in itertools.pairwise(ran))
+    # said again each SLOT_SAY_SECONDS, so wait-for's 300 s stall check never fires
+    assert capsys.readouterr().out.count("checks pending") >= approvals.CEILING // 120
+
+
+def test_a_failed_quota_read_keeps_the_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing(*args: str) -> str:
+        raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
+
+    monkeypatch.setattr(github, "gh", failing)
+    assert real_poll_seconds() == approvals.POLL
