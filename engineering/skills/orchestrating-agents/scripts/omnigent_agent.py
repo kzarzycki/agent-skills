@@ -4,7 +4,7 @@
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep|--no-keep] [--notify]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
-    python3 scripts/omnigent_agent.py cloud-env <checkout>
+    python3 scripts/omnigent_agent.py claude-cloud-env <checkout>   # alias: cloud-env
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
@@ -180,10 +180,11 @@ policy's gate, and ``Cloud worker: none`` means host workers (``cloud_worker``).
 (``GET /v1/environment_providers``), so loop.md holds no account-specific id; with no ``env``, a ``start`` keeps a
 pin already there (the workspace's, else its main checkout's), and otherwise both take the environment named after
 the repository, else the account's ``Default``. A name the login has no environment for is refused, naming
-``cloud-env``. ``cloud-env <checkout>`` makes that environment (the line's ``env``, else the repository's name) from
-the checkout's committed ``.claude/cloud-setup.sh``, or replaces the setup script of the one already there
-(``POST /v1/environment_providers/<id>``, ``config.init_script``, no ``kind``), leaving its variables as they are; it
-sends no secret and prints none.
+``claude-cloud-env`` (``cloud-env`` still works). ``claude-cloud-env <checkout>`` makes that environment (the line's
+``env``, else the repository's name) from the checkout's committed ``.claude/claude-cloud-setup.sh`` (the older
+``.claude/cloud-setup.sh`` is still read) and ``.claude/claude-cloud-environment.json``, or brings the one already
+there up to them (``POST /v1/environment_providers/<id>``, no ``kind``), leaving the variables they do not name as they
+are; it is ``claude_cloud.py setup`` without the secrets and the proof, sends no secret and prints none.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -2767,9 +2768,6 @@ def _load_environments() -> Any:
 
 
 ENVS = _load_environments()
-SETUP_SCRIPT = (
-    ".claude/cloud-setup.sh"  # the committed setup script `cloud-env` makes an environment from
-)
 
 
 class CloudWorker(NamedTuple):
@@ -3100,49 +3098,51 @@ def unmake_launch_dir(path: Path, main: Path | None) -> None:
 
 
 def cloud_env(checkout: Path) -> str:
-    """Make the claude.ai environment ``checkout``'s cloud sessions run in, or replace its setup script,
-    from the checkout's committed ``.claude/cloud-setup.sh``; the line it prints says which. The name is
-    the ``Cloud worker:`` line's ``env``, else the repository's. A new one has no variables; an update
-    sends the config it read with only ``init_script`` changed, so the variables there (a seeded login)
-    stay, and none of their values is printed. The login's token goes into request headers only."""
+    """Make the claude.ai environment ``checkout``'s cloud sessions run in, or bring it up to the committed
+    ``.claude/claude-cloud-setup.sh`` (the older ``.claude/cloud-setup.sh`` is still read) and, when there is one,
+    ``.claude/claude-cloud-environment.json``; the line it prints says which. It is ``claude_cloud.py setup``
+    without the secrets and the proof, through the same ``ENVS.apply``. The name is the ``Cloud worker:`` line's
+    ``env``, else the definition's, else the repository's. A new one has no variables but the definition's; an
+    update keeps every other variable (a seeded login), and none of their values is printed. The login's token goes
+    into request headers only."""
     root = checkout_root(str(checkout))
     if not root:
         raise Fail(f"cloud-env: {checkout} is not inside a checkout")
     head = subprocess.run(
         ["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, check=False
     ).stdout.strip()
-    script = committed(Path(root), "HEAD", SETUP_SCRIPT) if head else None
-    if script is None:
+    found = ENVS.committed_script(root) if head else None
+    if found is None:
         raise Fail(
-            f"cloud-env: {root} has no {SETUP_SCRIPT} committed at HEAD: commit the setup script"
+            f"cloud-env: {root} has no {ENVS.SETUP_SCRIPTS[0]} committed at HEAD, and no"
+            f" {ENVS.SETUP_SCRIPTS[1]} committed (the older name): commit the setup script"
             " the environment should run, since only a committed one is sent"
         )
+    path, script = found
+    try:
+        text = ENVS.committed(root, ENVS.DEFINITION) if head else None
+        definition = ENVS.definition_of(text) if text is not None else {}
+    except ENVS.Refused as e:
+        raise Fail(f"cloud-env: {e}") from None
     line = cloud_worker(committed(Path(root), "HEAD", LOOP_FILE) or "")
-    name = (line.env if line else "") or origin_name(Path(root))
+    name = (line.env if line else "") or definition.get("name") or origin_name(Path(root))
     if not name:
         raise Fail(
             f"cloud-env: {root} has no remote to name the environment after: add env <name> to loop.md's Cloud worker line"
         )
     try:
-        auth = ENVS.headers()
-        found = ENVS.named(ENVS.environments(auth), name)
-        if found is None:
-            made = ENVS.create(
-                auth, name, script, f"Cloud sessions of {name}, set up by {SETUP_SCRIPT}"
-            )
-            return (
-                f"created cloud environment {name} ({made.get('environment_id', '?')}) from"
-                f" {SETUP_SCRIPT} at {head[:12]}"
-            )
-        env = str(found["environment_id"])
-        current = ENVS.read(auth, env)
-        config = dict(current.get("config") or {})
-        if config.get("init_script") == script:
-            return f"cloud environment {name} ({env}): its setup script is {SETUP_SCRIPT} at {head[:12]} already"
-        ENVS.update(auth, env, current, {**config, "init_script": script})
+        action, env = ENVS.apply(
+            ENVS.headers(), name, script, f"Cloud sessions of {name}, set up by {path}", definition
+        )
     except ENVS.Refused as e:
         raise Fail(f"cloud-env {name}: {e}") from None
-    return f"updated cloud environment {name} ({env}): setup script {SETUP_SCRIPT} at {head[:12]}"
+    if action == "created":
+        return f"created cloud environment {name} ({env}) from {path} at {head[:12]}"
+    if action == "current":
+        return (
+            f"cloud environment {name} ({env}): its setup script is {path} at {head[:12]} already"
+        )
+    return f"updated cloud environment {name} ({env}): setup script {path} at {head[:12]}"
 
 
 def move_head(workspace: Path, pr: int, repo: str = "") -> None:
@@ -7552,9 +7552,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         "--clone", action="store_true", help="clone even inside a checkout of the repository"
     )
     p = sub.add_parser(
-        "cloud-env",
-        description="make the project's claude.ai environment, or replace its setup script, from the"
-        " checkout's committed .claude/cloud-setup.sh",
+        "claude-cloud-env",
+        aliases=["cloud-env"],
+        description="make the project's claude.ai environment, or bring it up to date, from the"
+        " checkout's committed .claude/claude-cloud-setup.sh (the older .claude/cloud-setup.sh is"
+        " still read) and .claude/claude-cloud-environment.json: `claude_cloud.py setup` without"
+        " its secrets and proof steps",
     )
     p.add_argument("checkout", type=Path)
     p = sub.add_parser(
@@ -7713,7 +7716,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         action="store_true",
         help="once it ends, run $LOOP_NOTIFY <outcome> (unset: nothing)",
     )
-    for p in sub.choices.values():
+    for p in dict.fromkeys(sub.choices.values()):  # an alias names the same parser
         if p.prog.split()[-1] in ("run", "start", "send", "wait"):
             p.add_argument(
                 "--pr",
@@ -7870,7 +7873,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         if args.cmd == "launch-dir":
             launch_dir(args.remote, args.branch, args.env, args.path, args.trust, clone=args.clone)
             return 0
-        if args.cmd == "cloud-env":
+        if args.cmd in ("claude-cloud-env", "cloud-env"):
             print(cloud_env(args.checkout))
             return 0
         if args.cmd == "capacity" and not args.host:
