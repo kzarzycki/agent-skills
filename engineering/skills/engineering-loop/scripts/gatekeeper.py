@@ -2459,7 +2459,7 @@ def pin_target(pull: dict[str, Any]) -> str | None:
     """The released pack tag (PACK_TAG of PACK_REPO) the PR pins, when its diff touches only the pin (PIN_FILES) and
     the pack's vendored skill files, and every vendored file in it equals the tag's byte for byte (by blob SHA, a hash
     of the bytes; a removed one is one the tag lacks, and one main's own lock lists), and so does every file the head's
-    lock deploys, in the diff or not, with every file the tag ships for those skills present (deployed_is_tag); else None. The lock at the head names the target: its pack
+    lock deploys, in the diff or not, with every skill the tag ships deployed and all its files present (deployed_is_tag); else None. The lock at the head names the target: its pack
     dependency's `resolved_ref`, whose `resolved_commit` must be the tag's commit, with apm.yml pinning that ref; a
     `resolved_ref` that is a full commit SHA names the release tag at that commit (sha_tag); a
     vendored file is one either side's lock lists among the pack's `deployed_files`. The tag is read from the pack's

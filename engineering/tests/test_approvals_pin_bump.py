@@ -409,3 +409,11 @@ def test_a_skill_the_tag_adds_that_the_lock_does_not_deploy_keeps_mains_rule(
     shipped = {SOURCE: ("100644", BLOB), "engineering/skills/brand-new/SKILL.md": ("100644", BLOB)}
     monkeypatch.setattr(approvals, "tag_tree", lambda _repo, _tag: (TAGGED, shipped))
     assert refused(gate(MID, files, monkeypatch))
+
+
+def test_a_stale_file_the_tag_dropped_keeps_mains_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the sync left a file the tag no longer ships under the lock's skill directory, outside the diff
+    stale = ".claude/skills/engineering-loop/scripts/old.py"
+    placed = {VENDORED: ("100644", BLOB), stale: ("100644", "a" * 40)}
+    files = bump(monkeypatch, placed=placed)
+    assert refused(gate(MID, files, monkeypatch))
