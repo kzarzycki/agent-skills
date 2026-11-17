@@ -8,21 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from approvals_harness import (
-    LOOP,
-    added,  # noqa: F401
-    approvals,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
-    others_open,  # noqa: F401
-    pull,
-    pushed,  # noqa: F401
-    refs,  # noqa: F401
-    required,  # noqa: F401
-)
+from approvals_harness import LOOP, approvals, pull
 
 ROLES = Path(__file__).resolve().parents[1] / "skills" / "engineering-loop"
 
