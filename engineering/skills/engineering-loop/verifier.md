@@ -69,7 +69,7 @@ yourself, keeping standards and spec as separate axes.
   and is waited on up to a total budget you state, in as few calls as you can: each call is
   `omnigent_agent.py wait-for --log <log> --pid <pid>`, which blocks close to a 10-minute tool
   call (`--budget` for another limit) and prints only the outcome, never short polls or a sleep
-  loop of your own, since every call re-reads the whole context. Where that script is not at hand,
+  loop of your own, since every call re-reads the whole context. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged. Where that script is not at hand,
   each call blocks close to the tool's limit (the longest yield the harness allows on a running
   command, or a sleep loop that checks the log for its exit line), never short polls. Where a
   foreground command stops at 10 minutes (a session in a hosted VM), the run is waited on within

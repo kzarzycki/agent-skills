@@ -7,7 +7,7 @@
     python3 scripts/omnigent_agent.py cloud-env <checkout>
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
-    python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--notify]
+    python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
@@ -80,7 +80,7 @@ tool call it answered; exit 1 when none was pending (naming any pending question
 approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
 seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for`` is how a role
 waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
-call), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change), and ends at the first of: the log's ``exit <n>`` line (the detached
+call), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change; a live ``--pid`` run not on the lock whose ``--log`` has not grown for ``--stall`` seconds (default 300, 0 off) is hung: its process group gets SIGTERM, then SIGKILL after 5 s, unless the pid is not the run's, and the outcome is ``stalled: no output in <log> for <n>s; killed pid <pid>'s group`` and the log's last 30 lines, exit 1), and ends at the first of: the log's ``exit <n>`` line (the detached
 recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
 exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
 which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
@@ -221,6 +221,7 @@ own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists i
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import errno
 import fcntl
@@ -575,6 +576,8 @@ WAIT_FOR_EVERY = 2.0  # a local read: a log or a pid
 WAIT_FOR_PR_EVERY = 30.0  # a GitHub call, so fewer
 LOCK_CEILING = 7200.0  # seconds a run may wait on the gate lock, as long as the landing lock's wait
 PID_SLACK = 5.0  # seconds a pid file may be written after its process starts (ps rounds down too)
+KILL_GRACE = 5.0  # seconds a stalled run gets after SIGTERM before SIGKILL
+WAIT_FOR_STALL = 300.0  # seconds of silence in a live run's log that wait-for calls a hang
 LOG_TAIL = 30  # the lines of a red run's log wait-for prints
 GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
@@ -784,9 +787,47 @@ def repo_name() -> str:
     return re.sub(r"\.git$", "", re.split(r"[/:]", url.rstrip("/"))[-1]) or Path.cwd().name
 
 
-def repo_slug() -> str:
-    """``owner/name`` of this checkout's GitHub repository (``gh repo view``); a failure is a ``Fail``."""
-    slug = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
+class PrRef(int):
+    """A PR number that may carry the repository it was named with (``owner/repo#N``, #1167)."""
+
+    repo = ""
+
+
+def pr_ref(text: str) -> PrRef:
+    """``--pr`` argument: ``N`` or ``owner/repo#N``."""
+    m = re.fullmatch(r"(?:([^/\s#]+/[^/\s#]+)#)?(\d+)", text.strip())
+    if not m:
+        raise argparse.ArgumentTypeError(f"{text!r} is not N or owner/repo#N")
+    ref = PrRef(int(m[2]))
+    ref.repo = m[1] or ""
+    return ref
+
+
+def pr_repo(pr: int, workspace: str | Path | None, local: bool = True) -> str:
+    """The repository of PR ``pr``: the slug it was named with, else that of ``workspace`` when it is a
+    local checkout on this host (``local``), else of the current directory. Refused, naming ``--pr owner/repo#N``, when none resolves."""
+    if repo := getattr(pr, "repo", ""):
+        return repo
+    here = Path(workspace) if local and workspace and (Path(workspace) / ".git").exists() else None
+    try:
+        return repo_slug(here) if here else repo_slug()
+    except Fail as e:
+        raise Fail(
+            f"--pr {pr}: no repository to read it from ({e}); name it as --pr owner/repo#{pr}"
+        ) from e
+
+
+def pr_slug(pr: int) -> str:
+    """The repository PR ``pr`` was named in (``owner/repo#N``), else this checkout's."""
+    return getattr(pr, "repo", "") or gh(
+        "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"
+    )
+
+
+def repo_slug(cwd: Path | None = None) -> str:
+    """``owner/name`` of the GitHub repository of ``cwd`` (default: this one) (``gh repo view``); a failure is a ``Fail``."""
+    args = ("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+    slug = (gh(*args, cwd=cwd) if cwd else gh(*args)).strip()
     if not re.fullmatch(r"[^/\s]+/[^/\s]+", slug):
         raise Fail(f"gh repo view named no repository: {slug[:80]!r}")
     return slug
@@ -2976,7 +3017,7 @@ def cloud_env(checkout: Path) -> str:
     return f"updated cloud environment {name} ({env}): setup script {SETUP_SCRIPT} at {head[:12]}"
 
 
-def move_head(workspace: Path, pr: int) -> None:
+def move_head(workspace: Path, pr: int, repo: str = "") -> None:
     """Point a launch dir's HEAD at PR ``pr``'s head branch (fetched from origin when needed) without checking
     files out, so a cloud session starts on it. A directory with a working tree (it has an index)
     is left alone: moving its HEAD under its files would corrupt it. It runs git where the launch dir
@@ -2990,7 +3031,7 @@ def move_head(workspace: Path, pr: int) -> None:
     ).stdout.strip()
     if not index or Path(index).exists():
         return
-    branch = pr_branch(pr, workspace)
+    branch = pr_branch(pr, workspace, repo) if repo else pr_branch(pr, workspace)
     dirs = git_dirs(workspace)
     own = ""  # a linked worktree moves its own branch: the PR's may be checked out in the main checkout
     if len(dirs) == 3 and dirs[0] != dirs[1]:
@@ -3013,10 +3054,24 @@ def move_head(workspace: Path, pr: int) -> None:
             raise Fail(f"git {cmd[0]} for {branch} in {workspace}: {done.stderr.strip()[-300:]}")
 
 
-def pr_head(pr: int, cwd: Path) -> str:
-    """The head commit of PR ``pr``, read through ``gh`` run in ``cwd``."""
+def repo_flag(repo: str) -> list[str]:
+    return ["--repo", repo] if repo else []
+
+
+def pr_head(pr: int, cwd: Path, repo: str = "") -> str:
+    """The head commit of PR ``pr``, read through ``gh`` run in ``cwd`` (of ``repo`` when named)."""
     out = subprocess.run(
-        ["gh", "pr", "view", str(pr), "--json", "headRefOid", "-q", ".headRefOid"],
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pr),
+            *repo_flag(repo),
+            "--json",
+            "headRefOid",
+            "-q",
+            ".headRefOid",
+        ],
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -3027,7 +3082,7 @@ def pr_head(pr: int, cwd: Path) -> str:
     return out.stdout.strip()
 
 
-def check_out_head(workspace: Path, pr: int) -> None:
+def check_out_head(workspace: Path, pr: int, repo: str = "") -> None:
     """Put ``workspace`` (a checkout on this host) at PR ``pr``'s head commit before a verifier's first turn,
     or refuse: a verifier that starts at the base reviews nothing the PR changed. A checkout already
     there is left alone; one with tracked changes is refused rather than moved under them."""
@@ -3039,7 +3094,7 @@ def check_out_head(workspace: Path, pr: int) -> None:
             raise Fail(f"git {cmd[0]} for PR {pr} in {workspace}: {done.stderr.strip()[-300:]}")
         return done.stdout.strip()
 
-    head = pr_head(pr, workspace)
+    head = pr_head(pr, workspace, repo) if repo else pr_head(pr, workspace)
     if run("rev-parse", "HEAD") == head:
         return
     if run("status", "--porcelain", "--untracked-files=no"):
@@ -3053,10 +3108,20 @@ def check_out_head(workspace: Path, pr: int) -> None:
     run("checkout", "-q", "--detach", head)
 
 
-def pr_branch(pr: int, workspace: Path) -> str:
-    """The head branch name of PR ``pr`` in the repository ``workspace`` is a clone of."""
+def pr_branch(pr: int, workspace: Path, repo: str = "") -> str:
+    """The head branch name of PR ``pr`` in ``repo``, else the repository ``workspace`` is a clone of."""
     out = subprocess.run(
-        ["gh", "pr", "view", str(pr), "--json", "headRefName", "-q", ".headRefName"],
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pr),
+            *repo_flag(repo),
+            "--json",
+            "headRefName",
+            "-q",
+            ".headRefName",
+        ],
         cwd=workspace,
         capture_output=True,
         text=True,
@@ -3389,6 +3454,12 @@ def start(
         left = f"; abandoned sessions survive: {', '.join(survivors)}" if survivors else ""
         return Fail(reason + left)
 
+    # the PR's repository, before any session exists: a failure here leaves nothing to abandon (#1167)
+    slug = (
+        pr_repo(pr, workspace, not host_id or host_id == og.host_id)
+        if pr and not reviews(role)
+        else ""
+    )
     # Omnigent refuses a sibling with a title an earlier child holds, archived or not, abandoned
     # here or left by an earlier run: each refusal and each abandon moves to the next <title>-r<n>.
     n = 0
@@ -3442,7 +3513,7 @@ def start(
             # the PR `reap` reads to hold this worker until it closes: an unlabelled one can be
             # neither held nor found by `reap --merged`, so a failed label fails the start
             try:
-                og.label(sid, {PR_LABEL: f"{repo_slug()}#{pr}"})
+                og.label(sid, {PR_LABEL: f"{slug}#{pr}"})
             except Fail as e:
                 abandon(sid)
                 raise failed(f"start failed: {sid}: not labelled with PR #{pr}: {e}") from e
@@ -3641,7 +3712,7 @@ def wait(
             # a re-attached wait finds the report it already posted
             if not (report.exists() and report.read_text() == body):
                 denied(body)
-                repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+                repo = pr_slug(pr)
                 url = gh(
                     "api",
                     f"repos/{repo.strip()}/issues/{pr}/comments",
@@ -4006,6 +4077,26 @@ def pr_outcome(pr: int, until: str, timeout: float) -> tuple[int, str] | None:
     return 0, f"PR #{pr} checks green ({len(checks)})"
 
 
+def kill_group(pid: int) -> None:
+    """SIGTERM ``pid``'s process group (the detached recipe's ``setsid`` makes the pid its leader;
+    any other pid gets the signal alone, never this process's own group), then SIGKILL after
+    ``KILL_GRACE`` seconds if it is still there."""
+    try:
+        group = os.getpgid(pid)
+        lone = group != pid or group == os.getpgrp()
+        send = (lambda sig: os.kill(pid, sig)) if lone else (lambda sig: os.killpg(group, sig))
+        send(signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    # once signalled, macOS answers EPERM, not ESRCH, for a group left with only zombies: it is gone
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        deadline = time.monotonic() + KILL_GRACE
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+            send(0)
+        send(signal.SIGKILL)
+
+
 def pr_rest(path: str, end: float, pages: bool = False) -> Any:
     """``repos/{owner}/{repo}/<path>`` through REST (``{owner}/{repo}`` from this clone, which a launch dir with no
     working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list."""
@@ -4097,12 +4188,14 @@ def wait_for(
     pr: int | None,
     until: str,
     budget: float,
+    stall: float = 0.0,
     since: float | None = None,
 ) -> tuple[int, str] | None:
     """Block up to ``budget`` seconds on a run's log exit line, its pid, or PR ``pr``'s ``until``
-    condition (a ``gate`` or ``verdict`` signal older than ``since`` ignored), printing nothing meanwhile; return the exit code and the outcome text: the run's own
-    code (0 or 1 for a PR, 1 for a pid gone with no exit line), or None once the budget passes,
-    since a run may itself exit ``LIMIT``."""
+    condition (a ``gate`` or ``verdict`` signal older than ``since`` ignored), printing nothing
+    meanwhile; return the exit code and the outcome text: the run's own code (0 or 1 for a PR, 1
+    for a pid gone with no exit line or killed for a ``stall`` of silence in its log, 0 turns that
+    off), or None once the budget passes, since a run may itself exit ``LIMIT``."""
     deadline = time.monotonic() + budget
     every = WAIT_FOR_PR_EVERY if pr is not None else WAIT_FOR_EVERY
     settled = {"gate": gate_outcome, "verdict": verdict_outcome}.get(until)
@@ -4115,24 +4208,35 @@ def wait_for(
             return None
         return code, log_outcome(log, code, run)
 
-    def gave_up() -> tuple[int, str] | None:
-        """A lock wait past ``LOCK_CEILING`` (the lock line is the log's last write): no verdict."""
-        if not log or lock_wait(log, run_of(pid) if pid else None) is None:
+    def silent() -> tuple[int, str] | None:
+        """The run's log age, read once, against two limits: a lock wait past ``LOCK_CEILING`` (the
+        lock line is the log's last write) has no verdict; a live run that is not on the lock
+        and has written nothing for ``stall`` seconds is hung, so its process group is killed."""
+        if not log:
             return None
+        run = run_of(pid) if pid else None
         try:
-            waited = time.time() - log.stat().st_mtime
+            age = time.time() - log.stat().st_mtime
         except OSError:
             return None
-        if waited > LOCK_CEILING:
-            return (
-                LIMIT,
-                f"gave up waiting on the gate lock after {waited:.0f}s: the check has not run",
-            )
-        return None
+        if lock_wait(log, run) is not None:
+            if age > LOCK_CEILING:
+                return (
+                    LIMIT,
+                    f"gave up waiting on the gate lock after {age:.0f}s: the check has not run",
+                )
+            return None
+        if not stall or not pid or age <= stall or (target := pid_of(pid)) is None:
+            return None
+        kill_group(target)
+        tail = (run_lines(log, run) or [])[-LOG_TAIL:]
+        return 1, "\n".join(
+            [f"stalled: no output in {log} for {age:.0f}s; killed pid {target}'s group", *tail]
+        )
 
     queued = False
     while True:
-        if outcome := ended() or gave_up():
+        if outcome := ended() or silent():
             return outcome
         waiting = bool(log) and lock_wait(log, run_of(pid) if pid else None) is not None
         if queued and not waiting:  # the lock came during this wait: the budget starts here
@@ -4180,7 +4284,7 @@ def pr_report(said: str, pr: int, since: int | None = None) -> str | None:
     links = [m for m in COMMENT_URL.finditer(said) if int(m[2]) == pr]
     if not links:
         return None
-    repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
+    repo = pr_slug(pr).strip()
     for m in links:
         if m[1].lower() != repo.lower():
             continue
@@ -4228,11 +4332,11 @@ def denied(text: str) -> None:
                 )
 
 
-def gh(*args: str, timeout: float = HTTP_SECONDS) -> str:
-    """``gh``'s output, run in this checkout with its login; a failure is a ``Fail``."""
+def gh(*args: str, timeout: float = HTTP_SECONDS, cwd: Path | None = None) -> str:
+    """``gh``'s output, run in this checkout (or ``cwd``) with its login; a failure is a ``Fail``."""
     try:
         return subprocess.run(
-            ["gh", *args], capture_output=True, text=True, timeout=timeout, check=True
+            ["gh", *args], capture_output=True, text=True, timeout=timeout, check=True, cwd=cwd
         ).stdout
     except (OSError, subprocess.SubprocessError) as e:
         why = (getattr(e, "stderr", "") or str(e)).strip()
@@ -4416,7 +4520,12 @@ def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
     found = []
     for s in page.get("data", []):
         label = pr_label((s.get("labels") or {}).get(PR_LABEL, ""))
-        if not s.get("archived") and label and (pr is None or label[1] == pr):
+        named = getattr(pr, "repo", "")
+        if (
+            not s.get("archived")
+            and label
+            and (pr is None or (label[1] == pr and (not named or label[0] == named)))
+        ):
             found.append(str(s["id"]))
     return found
 
@@ -7332,7 +7441,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         action="store_true",
         help="also finish every kept --pr worker whose PR is merged or closed",
     )
-    p.add_argument("--pr", type=int, help="with --merged, only the workers of this PR")
+    p.add_argument(
+        "--pr", type=pr_ref, help="with --merged, only the workers of this PR (N or owner/repo#N)"
+    )
     p = sub.add_parser("supervise")
     p.add_argument(
         "owed", nargs="*", metavar="SESSION=REPORT", help="a session and the report it owes"
@@ -7420,6 +7531,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         help=f"seconds before `still running`, exit {LIMIT} (default {WAIT_FOR_BUDGET:.0f})",
     )
     p.add_argument(
+        "--stall",
+        type=float,
+        default=WAIT_FOR_STALL,
+        help=f"with --log and --pid: kill a live run whose log is silent this many seconds, exit 1; 0 is off (default {WAIT_FOR_STALL:.0f})",
+    )
+    p.add_argument(
         "--notify",
         action="store_true",
         help="once it ends, run $LOOP_NOTIFY <outcome> (unset: nothing)",
@@ -7428,8 +7545,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         if p.prog.split()[-1] in ("run", "start", "send", "wait"):
             p.add_argument(
                 "--pr",
-                type=int,
-                help="a cloud worker's PR: it reports as a comment there, which wait writes to the report path",
+                type=pr_ref,
+                help="a cloud worker's PR (N, or owner/repo#N from outside a checkout): it reports as a comment there, which wait writes to the report path",
             )
         if p.prog.split()[-1] in ("run", "send", "wait"):
             p.add_argument(
@@ -7561,7 +7678,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     )
                     usage.code = 2
                     raise usage
-            ended = wait_for(args.log, args.pid, args.pr, args.until, args.budget, since)
+            ended = wait_for(
+                args.log, args.pid, args.pr, args.until, args.budget, args.stall, since
+            )
             if ended is None:
                 waiting = args.log and lock_text(args.log, run_of(args.pid) if args.pid else None)
                 progress = (
@@ -7899,15 +8018,20 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             pin_environment(workspace)
             refuse_untrusted_launch_dir(workspace)
             if args.pr:
-                move_head(workspace, args.pr)
+                named = getattr(args.pr, "repo", "")
+                move_head(workspace, args.pr, named) if named else move_head(workspace, args.pr)
         elif not remote:
             refuse_pinned_checkout(args.agent, workspace)
             if verifies:
-                check_out_head(workspace, verifies)
+                named = getattr(verifies, "repo", "")
+                check_out_head(workspace, verifies, named) if named else check_out_head(
+                    workspace, verifies
+                )
         elif verifies and not args.pr and args.cmd != "send":
             # nothing here can run git on that host, so the brief must pin the commit its verifier
             # checks out: a brief that names no head leaves the first turn to start at the base
-            head = pr_head(verifies, Path.cwd())
+            named = getattr(verifies, "repo", "")
+            head = pr_head(verifies, Path.cwd(), named) if named else pr_head(verifies, Path.cwd())
             if head[:12] not in brief:
                 raise Fail(
                     f"--pr {verifies}: the brief names no checkout of the PR's head {head[:12]}: a"
