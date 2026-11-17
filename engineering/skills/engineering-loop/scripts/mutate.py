@@ -241,7 +241,9 @@ def lane(
         return heavy, why, run_test(command, heavy, waiting)[1] if built else None
     code, output, seconds = run_test(command, slot_path(SHORT), waiting)
     if code in NOT_RUN:
-        raise Refused(f"the head run exited {code}, so `{command}` did not run any test: check --test")
+        raise Refused(
+            f"the head run exited {code}, so `{command}` did not run any test: check --test"
+        )
     if code:
         return heavy, f"heavy: head run failed (exit {code})", output
     if seconds <= limit:
