@@ -685,7 +685,7 @@ LOCK = "refs/heads/loop-landing/{}"
 HELD, FREE = "landing lock: held", "landing lock: free"
 # a land re-stamps its lock every BEAT seconds; a lock that says it beats (BEATS in its body) and has not been stamped for STALE
 # seconds was left by a land that died, and is broken. A lock without the word is a land of an earlier version's: CEILING.
-BEAT, STALE, BEATS = 300, 900, "beats"
+BEAT, STALE, BEATS, BEAT_PUSH = 300, 900, "beats", 120
 beating = (
     threading.Lock()
 )  # one push of the lock at a time: the heartbeat's, the repointing's, the release's
@@ -4938,19 +4938,32 @@ def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
                 return
             ours = held[-1]
             # the PR our newest commit names, so a land waiting on this lock still reads it as released once that merges
-            named = re.search(r"\bPR #(\d+)\b", git("log", "-1", "--format=%b", ours))
-            held.append(lock_commit(HELD, ours, int(named[1]) if named else None))
-            pushed = leased(base, held[-1], ours)
+            try:
+                named = re.search(r"\bPR #(\d+)\b", git("log", "-1", "--format=%b", ours))
+                held.append(lock_commit(HELD, ours, int(named[1]) if named else None))
+            except (
+                subprocess.CalledProcessError
+            ):  # git failed locally: no beat this time, the next one tries again
+                continue
+            try:
+                pushed = leased(
+                    base, held[-1], ours, timeout=BEAT_PUSH
+                )  # a hung push must not hold `beating` for ever
+            except subprocess.TimeoutExpired:
+                pushed = subprocess.CompletedProcess([], 1)
             if pushed.returncode:
                 tip = lock_tip(base)
                 if (
-                    tip == held[-1]
-                ):  # the push reached origin and only its answer was lost: the commit stays ours
+                    tip is None
+                ):  # unreadable (the network): the commit may have reached origin, so it stays ours
                     continue
-                held.pop()
-                if tip not in (None, ours):  # unreadable (the network) is not another land's tip
-                    held.clear()
-                    return
+                if (
+                    tip in held
+                ):  # a push reached origin and only its answer was lost: what came after it did not
+                    del held[held.index(tip) + 1 :]
+                    continue
+                held.clear()  # another land's tip
+                return
 
 
 def lock_tip(base: str) -> str | None:

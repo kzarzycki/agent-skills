@@ -144,7 +144,7 @@ def test_a_beat_lost_to_the_network_keeps_the_lock_and_tries_again(
 ) -> None:
     real_leased, real_git, calls = approvals.leased, approvals.git, []
 
-    def flaky(base: str, new: str, old: str) -> Any:
+    def flaky(base: str, new: str, old: str, **kw: Any) -> Any:
         calls.append(new)
         return (
             subprocess.CompletedProcess([], 1, "", "net")
@@ -171,7 +171,7 @@ def test_a_beat_that_reached_origin_but_reported_failure_stays_in_held(
     real_leased = approvals.leased
     seen: list[str] = []
 
-    def lost_answer(base: str, new: str, old: str) -> Any:
+    def lost_answer(base: str, new: str, old: str, **kw: Any) -> Any:
         real_leased(base, new, old)
         seen.append(new)
         return subprocess.CompletedProcess([], 1, "", "reset")
@@ -181,3 +181,66 @@ def test_a_beat_that_reached_origin_but_reported_failure_stays_in_held(
     while not seen and time.monotonic() < deadline:
         time.sleep(0.02)
     assert seen and seen[0] in held and held[-1] != held[0]
+
+
+def test_a_lost_answer_then_an_unreadable_tip_keeps_the_land_beating_and_its_lock_its_own(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_leased, real_git, seen = approvals.leased, approvals.git, []
+
+    def lost_answer(base: str, new: str, old: str, **kw: Any) -> Any:
+        if not seen:  # the first beat reaches origin, its answer and the read after it are lost
+            real_leased(base, new, old)
+            seen.append(new)
+            return subprocess.CompletedProcess([], 1, "", "reset")
+        return real_leased(base, new, old)
+
+    def down(*args: str) -> str:
+        if args[:2] == ("ls-remote", "origin") and len(seen) == 1 and not down.once:
+            down.once = True
+            raise subprocess.CalledProcessError(128, ["git", *args])
+        return real_git(*args)
+
+    down.once = False  # type: ignore[attr-defined]
+    monkeypatch.setattr(approvals, "git", down)
+    held, thread = run_beat(lands, monkeypatch, lost_answer)
+    deadline = time.monotonic() + 20
+    while len(held) < 4 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert thread.is_alive() and origin_tip(lands) in held and len(held) >= 4
+
+
+def test_a_beat_that_hangs_is_timed_out_and_gives_beating_back(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[Any] = []
+
+    def hangs(base: str, new: str, old: str, **kw: Any) -> Any:
+        seen.append(kw.get("timeout"))
+        raise subprocess.TimeoutExpired("git", kw["timeout"])
+
+    _, thread = run_beat(lands, monkeypatch, hangs)
+    deadline = time.monotonic() + 20
+    while not seen and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert seen[0] == approvals.BEAT_PUSH and thread.is_alive()
+    assert approvals.beating.acquire(timeout=5)
+    approvals.beating.release()
+
+
+def test_the_beat_thread_blocks_the_stop_signals(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import signal
+
+    masks: list[set[int]] = []
+
+    def peek(base: str, new: str, old: str, **kw: Any) -> Any:
+        masks.append(signal.pthread_sigmask(signal.SIG_BLOCK, []))
+        return subprocess.CompletedProcess([], 1)
+
+    run_beat(lands, monkeypatch, peek)
+    deadline = time.monotonic() + 20
+    while not masks and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert set(approvals.STOPS) <= masks[0]
