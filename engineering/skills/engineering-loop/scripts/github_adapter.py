@@ -1005,6 +1005,14 @@ def commit_tree(sha: str) -> str:
     return gh("api", f"repos/{{owner}}/{{repo}}/commits/{sha}", "--jq", ".commit.tree.sha").strip()
 
 
+def repo_tags(repo: str) -> dict[str, str]:
+    """Every tag of `repo`, by name: the commit each points at (an annotated tag's too), from one paged read."""
+    out = gh(
+        "api", "--paginate", f"repos/{repo}/tags?per_page=100", "--jq", ".[] | [.name, .commit.sha]"
+    )
+    return {name: sha for name, sha in map(json.loads, out.splitlines())}
+
+
 def tag_tree(repo: str, tag: str) -> tuple[str, dict[str, tuple[str, str]]] | None:
     """Tag `tag` of `repo`: its commit and the (mode, blob SHA) of every path in that commit's tree; None when the repo
     has no such tag, it names no commit, or GitHub truncates the tree."""
@@ -1086,6 +1094,7 @@ forge = Port(
     "commit_checks",
     "job_log",
     "commit_tree",
+    "repo_tags",
     "tag_tree",
     "file_at",
 )
