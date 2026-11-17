@@ -30,7 +30,9 @@ from approvals_harness import (
 TAG, TAGGED = "engineering-v0.99.0", "c" * 40
 VENDORED = ".claude/skills/engineering-loop/scripts/gatekeeper.py"
 SOURCE = "engineering/skills/engineering-loop/scripts/gatekeeper.py"
+OLD = ".claude/skills/engineering-loop/scripts/old.py"  # vendored by the base's pin, gone from TAG
 BLOB = "d" * 40
+MID = "codex/terra-6.1/med mid"
 # a tag whose rule counts a same-family pass as a lower tier, as releases before #1115 did
 STRICT = """\
 import re
@@ -45,11 +47,11 @@ def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
 LENIENT = "def lower(verdicts):\n    return None\n"
 
 
-def lock(ref: str = TAG, commit: str = TAGGED) -> str:
+def lock(ref: str = TAG, commit: str = TAGGED, repo: str = "kzarzycki/agent-skills") -> str:
     return f"""\
 lockfile_version: '1'
 dependencies:
-- repo_url: kzarzycki/agent-skills
+- repo_url: {repo}
   name: engineering
   host: github.com
   resolved_commit: {commit}
@@ -65,35 +67,39 @@ def manifest(ref: str = TAG) -> str:
     return f"dependencies:\n  apm:\n  - git: kzarzycki/agent-skills/engineering\n    ref: {ref}\n"
 
 
+def change(path: str, sha: str = "e" * 40, status: str = "modified", **more: str) -> dict[str, str]:
+    return {"filename": path, "status": status, "sha": sha, **more}
+
+
 def bump(
     monkeypatch: pytest.MonkeyPatch,
     *,
     rule: str = LENIENT,
     ref: str = TAG,
     blob: str = BLOB,
-    extra: tuple[str, ...] = (),
+    extra: tuple[dict[str, str], ...] = (),
+    pinned: str | None = None,
+    head_lock: str | None = None,
+    tags: dict[str, str] | None = None,
 ) -> tuple[str, ...]:
-    """A pin bump to `ref` as GitHub would show it: the pin files, the vendored gatekeeper at `blob` and `extra`
-    files; the pack's repository has TAG at TAGGED, its gatekeeper at BLOB with `rule` as its text."""
-    changed = ["apm.yml", "apm.lock.yaml", VENDORED, *extra]
-    sha = {VENDORED: blob}
-    monkeypatch.setattr(
-        approvals,
-        "pr_changes",
-        lambda _n: [
-            {"filename": path, "status": "modified", "sha": sha.get(path, "e" * 40)}
-            for path in changed
-        ],
+    """A pin bump to `ref` as GitHub would show it: the pin files, the vendored gatekeeper at `blob` and the `extra`
+    changes, with apm.yml pinning `pinned` (`ref` when None) and the head's lock `head_lock` (lock(ref) when None);
+    the pack's repository has each tag of `tags` (TAG alone when None) at TAGGED, its gatekeeper at BLOB with `rule`
+    as its text. The base's lock vendors VENDORED and OLD. Returns the changed paths, for the PR node."""
+    changed = [change("apm.yml"), change("apm.lock.yaml"), change(VENDORED, blob), *extra]
+    monkeypatch.setattr(approvals, "pr_changes", lambda _n: changed)
+    base = lock("engineering-v0.1.0", "f" * 40).replace(
+        f"  - {VENDORED}\n", f"  - {VENDORED}\n  - {OLD}\n"
     )
 
     def file_at(at: str, path: str, repo: str | None = None) -> str | None:
         if repo == approvals.PACK_REPO:
-            assert at == TAG, "the rule is read from the tag"
+            assert at in (tags or [TAG]), "the rule is read from the tag"
             return rule if path == SOURCE else None
-        return (
-            {"apm.lock.yaml": lock(ref), "apm.yml": manifest(ref)}.get(path)
-            if at == HEAD
-            else lock("engineering-v0.1.0", "f" * 40)
+        if at != HEAD:
+            return base if path == "apm.lock.yaml" else None
+        return {"apm.lock.yaml": head_lock or lock(ref), "apm.yml": manifest(pinned or ref)}.get(
+            path
         )
 
     monkeypatch.setattr(approvals, "file_at", file_at)
@@ -102,27 +108,30 @@ def bump(
         "tag_tree",
         lambda repo, tag: (
             (TAGGED, {SOURCE: ("100644", BLOB)})
-            if (repo, tag) == (approvals.PACK_REPO, TAG)
+            if repo == approvals.PACK_REPO and tag in (tags or [TAG])
             else None
         ),
     )
-    return tuple(changed)
+    paths = [found["filename"] for found in changed]
+    paths += [found["previous_filename"] for found in changed if "previous_filename" in found]
+    return tuple(paths)
 
 
-def gate(family: str, files: tuple[str, ...], monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """check merge's proofs on a high-risk PR whose one satisfied verdict came from `family`."""
+def gate(
+    family: str, files: tuple[str, ...], monkeypatch: pytest.MonkeyPatch, total: int = 0
+) -> list[str]:
+    """check merge's proofs on a high-risk PR changing `files` (of `total`, when more) whose one satisfied verdict
+    came from `family`."""
     monkeypatch.setattr(approvals, "writer", lambda _login: False)
     judged = add(loop_md("spec:\n  auto: true\n"), "risk", "verifier: true\n")
     heading = f"Verifier ({family}), pass 1"
     review: dict[str, Any] = verdict_on(HEAD, "0 blocker, 0 major, 0 minor", heading=heading) | {
         "body": f"{heading} on {HEAD[:7]}.\n\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: high — the pin\n"
     }
-    return approvals.proofs(
-        "merge",
-        pull(reviews=[review], labels=("approved:merge",), files=files),
-        [approved(1, "kind:bug")],
-        judged,
-    )
+    node = pull(reviews=[review], labels=("approved:merge",), files=files)
+    if total:
+        node["files"]["totalCount"] = total
+    return approvals.proofs("merge", node, [approved(1, "kind:bug")], judged)
 
 
 def refused(found: list[str]) -> str | None:
@@ -134,24 +143,68 @@ def test_a_pin_only_bump_is_judged_by_the_tags_rule_both_ways(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # main refuses a mid-tier pass on a high-risk change; the tag's rule names no tier, so it lands
-    assert refused(gate("codex/terra-6.1/med mid", ("src/app.py",), monkeypatch))
-    assert gate("codex/terra-6.1/med mid", bump(monkeypatch, rule=LENIENT), monkeypatch) == []
+    assert refused(gate(MID, ("src/app.py",), monkeypatch))
+    assert gate(MID, bump(monkeypatch, rule=LENIENT), monkeypatch) == []
     # main lands a same-family pass; the tag's rule counts it as a lower tier, so it is refused
     assert gate("claude, same-family", ("src/app.py",), monkeypatch) == []
     found = refused(gate("claude, same-family", bump(monkeypatch, rule=STRICT), monkeypatch))
     assert found and "lower tier (same-family)" in found
 
 
+def test_a_vendored_file_the_tag_dropped_may_go(monkeypatch: pytest.MonkeyPatch) -> None:
+    files = bump(monkeypatch, extra=(change(OLD, status="removed"),))
+    assert gate(MID, files, monkeypatch) == []
+
+
 def test_an_extra_file_keeps_mains_rule(monkeypatch: pytest.MonkeyPatch) -> None:
-    files = bump(monkeypatch, rule=LENIENT, extra=("src/app.py",))
-    assert refused(gate("codex/terra-6.1/med mid", files, monkeypatch))
+    files = bump(monkeypatch, extra=(change("src/app.py"),))
+    assert refused(gate(MID, files, monkeypatch))
 
 
-def test_an_extra_dotted_skill_file_the_lock_does_not_vendor_keeps_mains_rule(
-    monkeypatch: pytest.MonkeyPatch,
+def test_a_pr_touching_other_files_reads_nothing_more(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unread(*_args: Any) -> None:
+        raise AssertionError("no forge read for a PR that is no pin bump")
+
+    for name in ("pr_changes", "file_at", "tag_tree"):
+        monkeypatch.setattr(approvals, name, unread)
+    assert refused(gate(MID, ("apm.lock.yaml", "src/app.py"), monkeypatch))
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        # a skill of the project's own, not one the pack's lock vendors, though the tag holds no such file either
+        change(".claude/skills/own-skill/SKILL.md", status="removed"),
+        # a vendored file the tag still ships, removed
+        change(VENDORED.replace("gatekeeper", "kept"), status="removed"),
+        # a rename onto a vendored path whose old path the tag still ships
+        change(VENDORED, BLOB, "renamed", previous_filename=OLD),
+        # a pin file moved
+        change("apm.yml", status="renamed", previous_filename="apm.yaml"),
+    ],
+    ids=["not-vendored", "removed-but-shipped", "renamed-from-shipped", "pin-renamed"],
+)
+def test_a_change_the_tag_does_not_make_keeps_mains_rule(
+    monkeypatch: pytest.MonkeyPatch, extra: dict[str, str]
 ) -> None:
-    files = bump(monkeypatch, rule=LENIENT, extra=(".claude/skills/own-skill/SKILL.md",))
-    assert refused(gate("codex/terra-6.1/med mid", files, monkeypatch))
+    files = bump(monkeypatch, extra=(extra,))
+    shipped = {
+        SOURCE: ("100644", BLOB),
+        "engineering/skills/engineering-loop/scripts/kept.py": ("100644", BLOB),
+        "engineering/skills/engineering-loop/scripts/old.py": ("100644", BLOB),
+    }
+    base = approvals.file_at
+
+    def file_at(at: str, path: str, repo: str | None = None) -> str | None:
+        found = base(at, path, repo)
+        kept = VENDORED.replace("gatekeeper", "kept")
+        return (
+            found.replace(f"  - {VENDORED}\n", f"  - {VENDORED}\n  - {kept}\n") if found else found
+        )
+
+    monkeypatch.setattr(approvals, "file_at", file_at)
+    monkeypatch.setattr(approvals, "tag_tree", lambda _repo, _tag: (TAGGED, shipped))
+    assert refused(gate(MID, files, monkeypatch))
 
 
 @pytest.mark.parametrize("ref", ["9" * 40, "main", "engineering-v0.98.0"])
@@ -159,33 +212,62 @@ def test_a_target_that_is_not_a_released_tag_keeps_mains_rule(
     monkeypatch: pytest.MonkeyPatch, ref: str
 ) -> None:
     # an untagged commit, a branch, and a tag-shaped name the pack's repository has no tag for
-    assert refused(
-        gate("codex/terra-6.1/med mid", bump(monkeypatch, rule=LENIENT, ref=ref), monkeypatch)
-    )
+    assert refused(gate(MID, bump(monkeypatch, ref=ref), monkeypatch))
+
+
+def test_a_tag_of_another_package_keeps_mains_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    files = bump(monkeypatch, ref="research-v1.0.0", tags={"research-v1.0.0": TAGGED})
+    assert refused(gate(MID, files, monkeypatch))
+
+
+def test_a_manifest_pinning_another_ref_keeps_mains_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert refused(gate(MID, bump(monkeypatch, pinned="engineering-v0.1.0"), monkeypatch))
+
+
+def test_a_lock_of_another_repository_keeps_mains_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    files = bump(monkeypatch, head_lock=lock(repo="someone/agent-skills"))
+    assert refused(gate(MID, files, monkeypatch))
 
 
 def test_an_edited_vendored_file_keeps_mains_rule(monkeypatch: pytest.MonkeyPatch) -> None:
-    files = bump(monkeypatch, rule=LENIENT, blob="0" * 40)
-    assert refused(gate("codex/terra-6.1/med mid", files, monkeypatch))
+    files = bump(monkeypatch, blob="0" * 40)
+    assert refused(gate(MID, files, monkeypatch))
 
 
-def test_a_tag_without_the_rule_keeps_mains_rule(monkeypatch: pytest.MonkeyPatch) -> None:
-    # an old tag's file shape: no lower() to read, so main's rule judges
-    files = bump(monkeypatch, rule="def other():\n    return None\n")
-    assert refused(gate("codex/terra-6.1/med mid", files, monkeypatch))
+def test_a_file_list_past_what_rest_gives_keeps_mains_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert refused(gate(MID, bump(monkeypatch), monkeypatch, total=4000))
 
 
 def test_the_lock_must_name_the_tags_own_commit(monkeypatch: pytest.MonkeyPatch) -> None:
-    files = bump(monkeypatch, rule=LENIENT)
+    files = bump(monkeypatch)
     monkeypatch.setattr(
         approvals, "tag_tree", lambda _repo, _tag: ("1" * 40, {SOURCE: ("100644", BLOB)})
     )
-    assert refused(gate("codex/terra-6.1/med mid", files, monkeypatch))
+    assert refused(gate(MID, files, monkeypatch))
 
 
-def test_a_rule_read_from_a_real_release_shape_is_rebuilt() -> None:
-    # the module-level names lower() reads come with it, in the file's order, and annotations stay unevaluated
-    source = "import re\nA = 'x'\nB = re.compile(A)\n\ndef lower(verdicts: list[int] | str) -> str | None:\n    return B.pattern\n"
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "def other():\n    return None\n",  # an old tag's file shape: no lower() to read
+        "def lower(verdicts):\n    raise ValueError('a shape it reads no more')\n",
+        "def lower(verdicts):\n    return 3\n",
+    ],
+    ids=["no-rule", "raises", "not-a-tier"],
+)
+def test_a_tag_rule_that_cannot_judge_keeps_mains_rule(
+    monkeypatch: pytest.MonkeyPatch, rule: str
+) -> None:
+    assert refused(gate(MID, bump(monkeypatch, rule=rule), monkeypatch))
+
+
+def test_a_rule_is_rebuilt_from_the_names_it_reads() -> None:
+    # the module-level names lower() reads come with it, in the file's order, annotations stay unevaluated, and a
+    # name it does not read (C, which would fail) is left out
+    source = (
+        "import re\nA = 'x'\nB = re.compile(A)\nC = undefined_name\n\n"
+        "def lower(verdicts: list[int] | str) -> str | None:\n    return B.pattern\n"
+    )
     rule = approvals.rule_in(source)
     assert rule is not None and rule([]) == "x"
     assert approvals.rule_in("def lower(a, b):\n    return None\n") is None
