@@ -12940,3 +12940,16 @@ def test_reap_merged_takes_an_owner_repo_pr(monkeypatch):
     except SystemExit as e:
         code = e.code
     assert code != 2
+
+
+def test_a_session_the_lead_started_that_ended_is_news_though_its_wait_names_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(
+        tmp_path, "STILL WORKING: waiting on the check. Report: m.md", **{WORKER: gone}
+    )
+    og.histories[WORKER] = [ending("DONE: checked. Report: w.md", 1300)]
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    told_m = [t for s, t in og.inbox if s == "m" and "a session it started, ended DONE" in t]
+    assert len(told_m) == 1 and WORKER in told_m[0]  # once, not once per poll

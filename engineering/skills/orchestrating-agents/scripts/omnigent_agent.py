@@ -547,6 +547,22 @@ REPORT_WAIT_CHARS = 600
 # passed timer keeps its wait), else the earliest: a rule "until <time>" quoted first is not it.
 TIMED = re.compile(r"\b(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(:\d\d)?\s*(?:Z|UTC)\b")
 WAIT_WORD = re.compile(r"\bwait(?:s|ing|ed)?\b", re.IGNORECASE)
+# The structured wait a lead writes as the last line of a ``STILL WORKING`` message (lead.md): exactly
+# one of ``supervisor``, ``session <32 hex>``, ``#<pr>`` (or ``owner/repo#<pr>``), ``CI`` or ``until
+# <UTC time>``. Read first and exactly; the prose rules above are the fallback for a message without
+# one, or with a form this does not know.
+TRAILER = re.compile(r"^[\s*_>-]*Waits:[ \t]*(.+?)[\s*_]*$", re.MULTILINE | re.IGNORECASE)
+TRAILER_FORMS = re.compile(
+    rf"(?P<supervisor>supervisor)|session\s+`?(?P<session>[0-9a-f]{{32}})`?|"
+    rf"(?P<ref>\[?{REF}\]?)|(?P<ci>CI)|until\s+(?P<until>\d{{4}}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d)?)\s*(?:Z|UTC)?",
+    re.IGNORECASE,
+)
+# Supervisor words in prose ("waiting on the CoS spec approval"), and a ``CoS:`` request line.
+SUPERVISOR_WAIT = re.compile(
+    r"\bwait(?:s|ing)?\s+(?:on|for)\s+(?:the\s+)?(?:pm(?:'s)?|manager|you|cos(?:'s)?|chief\s+of\s+staff)\b",
+    re.IGNORECASE,
+)
+COS_LINE = re.compile(r"^[\s*_>-]*CoS:", re.MULTILINE | re.IGNORECASE)
 REPORT_PATH = re.compile(r"\s*\S+\.md\s*")  # a last message that is only a report's path
 STATE_SCHEMA = "cos-state/1"
 # The small model that routes what the rules can't settle, with its limits; any failure routes act.
@@ -5919,12 +5935,64 @@ def own_run_only(text: str) -> bool:
     return bool(tokens) and all(t.lower() in OWN_RUN_WORDS for t in tokens)
 
 
+def trailer_of(text: str) -> dict[str, str]:
+    """The last ``Waits:`` line of a ``STILL WORKING`` message, as the one form it names
+    (``supervisor``, ``session``, ``ref``, ``ci`` or ``until``: its value); empty when there is no
+    such line or it names none of them."""
+    if "STILL WORKING" not in text:
+        return {}
+    found = TRAILER.findall(text[text.find("STILL WORKING") :])
+    if not found or not (m := TRAILER_FORMS.fullmatch(found[-1].strip())):
+        return {}
+    form, value = next((k, v) for k, v in m.groupdict().items() if v)
+    return {form: value}
+
+
+def wait_line(words: list[str]) -> str:
+    """The ``Waits:`` line for ``words`` (``supervisor``, ``session <id>``, ``pr <n>``, ``ci`` or
+    ``until <UTC time>``), refusing any other with a ``Fail``: a lead pastes what this prints as the
+    last line of its ``STILL WORKING``, so the line is well-formed by construction."""
+    form, rest = (words[0].lower() if words else ""), " ".join(words[1:])
+    text = {"pr": f"#{rest.lstrip('#')}", "ci": "CI", "supervisor": "supervisor"}.get(
+        form, f"{form} {rest}".strip()
+    )
+    m = TRAILER_FORMS.fullmatch(text)
+    if not m or (form in ("ci", "supervisor") and rest) or (form == "pr" and not rest):
+        raise Fail(
+            "wait-on takes supervisor, session <32-hex id>, pr <n>, ci, or until <YYYY-MM-DDTHH:MMZ>"
+        )
+    if m.group("until"):
+        try:
+            datetime.fromisoformat(m.group("until").replace(" ", "T"))
+        except ValueError as e:
+            raise Fail(f"wait-on: not a time: {m.group('until')}") from e
+        text = "until " + m.group("until").replace(" ", "T") + "Z"
+    return f"Waits: {text}"
+
+
 def wait_of(text: str, at: float | None = None) -> str:
     """What a lead's message says it waits on: ``parked``, the wait its ``STILL WORKING`` names
     (``until <UTC time>`` for a timed one, ``TIMED`` says which, ``at`` being when the message was
     written), else ``unknown``."""
     if ending_of(text) == "PARKED":
         return "parked"
+    if tr := trailer_of(text):
+        form, value = next(iter(tr.items()))
+        if form == "until":
+            try:
+                due = datetime.fromisoformat(value.replace(" ", "T"))
+                return (
+                    "until "
+                    + due.strftime("%Y-%m-%dT%H:%M")
+                    + (f":{due:%S}" if due.second else "")
+                    + "Z"
+                )
+            except ValueError:
+                pass  # a mistyped time: the prose rules decide
+        else:
+            return {"supervisor": "supervisor", "ci": "CI", "ref": value.strip("[]")}.get(
+                form, value
+            )
     if (start := text.find("STILL WORKING")) >= 0:
         times = []  # (said with a wait, the time, as written)
         for sentence in re.split(r"(?<=[.!?])\s+|\n", text[start:]):
@@ -5947,18 +6015,23 @@ def wait_of(text: str, at: float | None = None) -> str:
             return f"until {pick[0][2]}"
     if m := WAIT.search(text):
         return m.group(1) if m.group(1) == "CI" else m.group(1).lower()
+    if (
+        len(ids := named_of(text)) == 1
+    ):  # a child's id anywhere in the wait, not only after "on <word>"
+        return ids[0]
     if m := NAMED.search(text):
         return m.group(1).lower()
     return "unknown"
 
 
 def named_of(text: str) -> list[str]:
-    """The full session ids (32 hex, in a link or bare) a message's ``STILL WORKING`` line names."""
+    """The full session ids (32 hex, in a link or bare) a message's ``STILL WORKING`` text names:
+    the paragraph it opens, so "waiting on cloud session <id>" names it as "on <id>" does."""
     start = text.find("STILL WORKING")
     if start < 0:
         return []
-    line = text[start:].split("\n", 1)[0]
-    return list(dict.fromkeys(re.findall(r"(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])", line)))
+    para = re.split(r"\n\s*\n", text[start:], maxsplit=1)[0]
+    return list(dict.fromkeys(re.findall(r"(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])", para)))
 
 
 def report_head(text: str) -> str:
@@ -5981,18 +6054,16 @@ def report_head(text: str) -> str:
 
 
 def waits_on(text: str, lead: dict, notify: str | None) -> bool:
-    """Whether a lead's ``STILL WORKING`` wait names the session the supervisor notifies: its full
-    id, or the words ``pm``, ``pm's``, ``manager`` or ``you``."""
+    """Whether a lead's ``STILL WORKING`` wait names the session the supervisor notifies: a
+    ``Waits: supervisor`` line, its full id, the words ``pm``, ``pm's``, ``manager``, ``you``,
+    ``CoS`` or ``chief of staff`` after "waiting on", or a ``CoS:`` request line in the turn. A
+    ``Waits:`` line naming anything else is exact: prose then decides nothing."""
+    if tr := trailer_of(text):
+        return "supervisor" in tr or bool(notify and tr.get("session") == notify)
     if notify and notify in (lead.get("named") or []):
         return True
     start = text.find("STILL WORKING")
-    return start >= 0 and bool(
-        re.search(
-            r"\bwait(?:s|ing)?\s+(?:on|for)\s+(?:the\s+)?(?:pm(?:'s)?|manager|you)\b",
-            text[start:],
-            re.IGNORECASE,
-        )
-    )
+    return start >= 0 and bool(SUPERVISOR_WAIT.search(text[start:]) or COS_LINE.search(text))
 
 
 def waits(wait: str) -> str:
@@ -7147,6 +7218,25 @@ def supervise_registry(
                 head = f"{sid} {lead['title']}".rstrip()
                 line = f"{head}: {other} ended {over['ending']} at {at}; your wait still names it"
                 say(line, sid, f"deadline:{sid}:{other}:{lead.get('turn')}", "news")
+        # a session it started (its children and subscriptions) that ended is news to it even when
+        # its wait names none: the lead cannot tell from its own words that the wait is over
+        try:
+            kin = [k for k in og.kin(sid) if k != notify and k not in quiet_named]
+        except Exception as e:  # noqa: BLE001 - unread: only the named sessions are told
+            log(("kin", sid), f"{sid}: children not read: {reason(e)}")
+            kin = []
+        for other in kin:
+            try:
+                over = lead_status(og.info(other), og.items(other))
+            except Exception as e:  # noqa: BLE001 - unread: not known to have ended
+                log(("kin", other), f"{other}: history not read: {reason(e)}")
+                continue
+            log(("kin", other), None)
+            if over["ending"] and over["state"] == "idle":
+                at = datetime.fromtimestamp(over["turn_at"], timezone.utc).strftime("%H:%MZ")
+                head = f"{sid} {lead['title']}".rstrip()
+                line = f"{head}: {other}, a session it started, ended {over['ending']} at {at}"
+                say(line, sid, f"deadline:{sid}:{other}:{lead.get('turn')}", "news")
         quiet = time.time() - lead["progress_at"]
         spent = lead.get("nudged_at") == lead["progress_at"]
         if due is not None and lead["progress_at"] < due:
@@ -7978,6 +8068,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("session")
     p.add_argument("report", type=Path)
     p = sub.add_parser(
+        "wait-on",
+        description="print the `Waits:` line a STILL WORKING ends with, refusing a malformed wait",
+    )
+    p.add_argument("wait", nargs="+", metavar="supervisor|session ID|pr N|ci|until UTC")
+    p = sub.add_parser(
         "wait-until",
         description=f"run CMD until it exits 0 (exit 0), or exit {LIMIT} once --limit passes",
     )
@@ -8133,6 +8228,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             except (Fail, OSError):
                 session = None
             print(running_signature(session=session))
+            return 0
+        if args.cmd == "wait-on":
+            print(wait_line(args.wait))
             return 0
         if args.cmd == "wait-until":
             cmd = args.until[1:] if args.until[:1] == ["--"] else args.until
