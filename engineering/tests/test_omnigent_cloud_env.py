@@ -144,8 +144,22 @@ def test_a_cloud_start_and_a_launch_dir_pin_the_environment_the_login_resolves(
     git("remote", "add", "local", url, cwd=plain)
     git("push", "-q", "local", "main:plain", cwd=plain)
     git("push", "-q", url, "main:side", cwd=unknown)
+    # ...but the checkout pins another environment, which a cloud session there would take (#1152):
+    # refused once resolved, naming both, and what it made is taken back
+    with pytest.raises(omnigent_agent.Fail, match=r"would pin environment env_repo.*'s own"):
+        omnigent_agent.launch_dir(url, "plain", None, tmp_path / "ld3", here=plain)
+    assert not (tmp_path / "ld3").exists()
+    assert git("branch", "--list", "launch/ld3", cwd=plain) == ""
+    (plain / ".claude/settings.local.json").write_text(
+        '{"remote": {"defaultEnvironmentId": "env_repo"}}'
+    )
     omnigent_agent.launch_dir(url, "plain", None, tmp_path / "ld3", here=plain)
     assert pin(tmp_path / "ld3") == "env_repo"
+    # a start in a worktree whose line names an environment its main checkout's pin shadows: refused
+    git("worktree", "add", "-q", "-b", "wt", str(tmp_path / "wt"), cwd=named)
+    (named / ".claude/settings.local.json").write_text('{"remote": {"defaultEnvironmentId": "x"}}')
+    with pytest.raises(omnigent_agent.Fail, match=r"would pin environment env_dev.*'s x"):
+        pin_environment(tmp_path / "wt")
 
     # an unknown name: the launch dir it made is taken back, a worktree's branch too
     with pytest.raises(omnigent_agent.Fail, match="cloud-env"):
