@@ -89,7 +89,7 @@ def cloud(
     monkeypatch.setattr(approvals, "git", git)
     monkeypatch.setattr(approvals, "ask_cloud_gate", ask)
     state["ended"] = lambda: False
-    monkeypatch.setattr(approvals, "gate_ended", lambda: state["ended"]())
+    monkeypatch.setattr(approvals, "gate_ended", lambda _tree: state["ended"]())
     state["record"] = record
     return state
 
@@ -246,7 +246,9 @@ if (sys.argv[1], mode) == ("start", "hang"):
     import time
     time.sleep(60)
 if sys.argv[1] == "status":
-    print("session-1 gate: " + ("turn ended" if mode == "ended" else "running"))
+    print("session-1 gate: " + ("turn ended" if mode.startswith("ended") else "running"))
+    if mode.startswith("ended "):
+        print("last message: DONE: " + mode[6:])
     sys.exit(4 if mode == "vanished" else 0)
 if sys.argv[1] == "start":
     print("session-" + str(len(log.read_text().splitlines())))
@@ -344,10 +346,31 @@ def test_a_start_that_times_out_leaves_no_launch_dir_and_says_why(
 
 def test_a_session_whose_turn_ended_or_is_gone_reads_as_ended(session: dict[str, Any]) -> None:
     assert approvals.ask_cloud_gate("t1") == ""
-    assert not approvals.gate_ended()
+    assert not approvals.gate_ended("t1")
     for mode in ("ended", "vanished"):
         session["mode"](mode)
-        assert approvals.gate_ended(), mode
+        assert approvals.gate_ended("t1") == "ended", mode
+
+
+def test_only_a_red_line_for_this_tree_reads_as_red(session: dict[str, Any]) -> None:
+    assert approvals.ask_cloud_gate("t1") == ""
+    for mode, kind in (
+        ("ended red t1", "red"),
+        ("ended red t12", "ended"),
+        ("ended red t2", "ended"),
+        ("ended red", "ended"),
+        ("ended recorded t1", "ended"),
+    ):
+        session["mode"](mode)
+        assert approvals.gate_ended("t1") == kind, mode
+
+
+def test_the_brief_names_the_tree_on_a_red_line_and_machine_exit_is_not_red(
+    session: dict[str, Any],
+) -> None:
+    assert approvals.ask_cloud_gate("t1") == ""
+    [task] = [c[3] for c in session["calls"]() if c[0] == "start"]
+    assert "`DONE: red t1`" in task and "`machine_exit`" in task and "not red" in task
 
 
 def test_a_session_that_ended_without_a_record_falls_back_before_the_timeout(
@@ -361,6 +384,18 @@ def test_a_session_that_ended_without_a_record_falls_back_before_the_timeout(
     assert (code, lands["merged"](), lands["runs"]()) == (0, ["7"], 1), lines
     assert sum(cloud["clock"].slept) < TIMEOUT
     assert any("ended its turn without a record" in line for line in lines), lines
+
+
+def test_a_red_line_for_the_tree_fails_it_at_once_with_no_host_gate(
+    lands: dict[str, Any], cloud: dict[str, Any]
+) -> None:
+    policy(lands, ON)
+    lands["open"](7, {"7.txt": "7\n"})
+    cloud["ended"] = lambda: "red" if cloud["clock"].now >= 40 else ""
+    code, lines = lands["land"]()
+    assert (lands["merged"](), lands["runs"]()) == ([], 0), lines
+    assert any("the cloud gate ran red" in line for line in lines), lines
+    assert code == 1 and lands["lock"]() == "", lines
 
 
 def test_a_record_that_lands_as_the_turn_ends_still_counts(

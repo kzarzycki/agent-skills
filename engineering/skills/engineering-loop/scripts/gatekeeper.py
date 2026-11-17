@@ -5481,7 +5481,8 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     commit, tree = run_in(work, "rev-parse", "HEAD"), run_in(work, "rev-parse", "HEAD^{tree}")
     command = gate()[0]
     log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
-    cloud_gate(commit, tree)
+    if cloud_gate(commit, tree):
+        return tree, ""
     for again in (False, True):
         with log.open("w") as out, saying(f"Tree {tree}: gating, log {public(str(log))}"):
             done = run_steps(
@@ -5540,50 +5541,65 @@ LAND_BRANCH = "refs/heads/loop-land/{}"
 # land.cloud_gate_timeout_seconds: the measured cloud gate took 1,200-1,650 s, so 2,400 s leaves room for the first
 # session's start and a slow run, and a cloud that never answers costs one wait, not a hung land
 CLOUD_GATE_SECONDS = 2400
+CLOUD_RED = "the cloud gate ran red"
 
 
-def cloud_gate(commit: str, tree: str) -> None:
+def cloud_gate(commit: str, tree: str) -> bool:
     """With loop.md's `land: gate_on: cloud`, ask the repo's standing cloud gate session to run `local-ci --record` on
     the batch commit `commit` (pushed as the branch `loop-land/<tree>`, deleted after) and wait up to
     `cloud_gate_timeout_seconds` for the record branches of exactly `tree` (step_pass, the one trust rule for a pass
     pushed by another clone), so gate_batch's run_steps then reuses them and runs nothing. A step that may run only
-    on a host (`where: host`) is not waited for. A refused start, a session that is gone or no record in time is one
-    printed line, and the gate then runs on this host as it does without the setting."""
+    on a host (`where: host`) is not waited for. True when the session's turn ended on `DONE: red <tree>` (its
+    `local-ci --record` failed): the tree is red at once, one printed line, and gate_batch runs nothing on the host,
+    since a red suite stays red. A refused start, a session that is gone, a turn that ended with no record and no
+    red line (a `machine_exit` fault is not red), or no record in time is one printed line, and the gate then runs on
+    this host as it does without the setting."""
     land = settings(project()[1]).get("land", {})
     if land.get("gate_on", "host") != "cloud":
-        return
+        return False
     steps = [step for step in gate_plan() if step["where"] != "host"]
     if all(step_pass(commit, tree, step, show=False) for step in steps):
-        return
+        return False
     ref = LAND_BRANCH.format(tree)
     timeout = land.get("cloud_gate_timeout_seconds", CLOUD_GATE_SECONDS)
     why = ""
     try:
         git("push", "-q", "--no-verify", "origin", f"{commit}:{ref}")
-        why = ask_cloud_gate(tree) or wait_records(commit, tree, steps, timeout, gate_ended)
+        why = ask_cloud_gate(tree) or wait_records(
+            commit, tree, steps, timeout, lambda: gate_ended(tree)
+        )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         why = " ".join((getattr(exc, "stderr", None) or str(exc)).split())
     finally:
         with contextlib.suppress(subprocess.CalledProcessError, OSError):
             git("push", "-q", "--no-verify", "origin", f":{ref}")
+    if why.startswith(CLOUD_RED):
+        print(f"Tree {tree}: {why}: red without a host run")
+        return True
     if why:
         print(f"Tree {tree}: no cloud gate ({why}): gating on this host")
+    return False
 
 
 def wait_records(
-    commit: str, tree: str, steps: list[dict[str, Any]], timeout: int, ended: Callable[[], bool]
+    commit: str, tree: str, steps: list[dict[str, Any]], timeout: int, ended: Callable[[], str]
 ) -> str:
     """Wait until every step of `steps` has a pass on `tree` (step_pass); the reason none came within `timeout`
-    seconds, or because the gate session's turn ended (a red run pushes no record) or the session is gone, else
-    empty. `ended` is read twice running before it counts, since a session just messaged can still read idle."""
+    seconds, or because the gate session's turn ended with no record or the session is gone, else empty. A turn that
+    ended on `DONE: red <tree>` gives CLOUD_RED (a red run pushes no record), which cloud_gate takes as the tree's
+    verdict. `ended` (gate_ended: "", "ended" or "red") is read twice running before it counts, since a session just
+    messaged can still read idle."""
     deadline, over = time.monotonic() + timeout, 0
     with saying(f"Tree {tree}: waiting for the cloud gate's record, up to {timeout} s"):
         while not all(step_pass(commit, tree, step, show=False) for step in steps):
             if (left := deadline - time.monotonic()) <= 0:
                 return f"no record for the tree within {timeout} s"
             time.sleep(min(POLL, left))
-            over = over + 1 if ended() else 0
+            kind = ended()
+            over = over + 1 if kind else 0
             if over >= 2 and not all(step_pass(commit, tree, step, show=False) for step in steps):
+                if kind == "red":
+                    return f"{CLOUD_RED}: its turn ended on `DONE: red {tree}`"
                 return "the cloud gate session ended its turn without a record"
     return ""
 
@@ -5620,16 +5636,22 @@ def gate_session() -> dict[str, str]:
     return {}
 
 
-def gate_ended() -> bool:
-    """Whether the standing gate session's turn has ended or it is gone: no record will come from it."""
+def gate_ended(tree: str) -> str:
+    """Whether the standing gate session's turn has ended or it is gone, so no record will come from it: "ended", or
+    "red" when its last message (in `status`'s output) has the line `DONE: red <tree>` for exactly this tree; else
+    empty. Another tree's line, no line or an unreadable status is never red."""
     try:
         sid = gate_session()["session"]
         read = run_agent("status", sid, seconds=120)
     except (KeyError, subprocess.TimeoutExpired, OSError, subprocess.CalledProcessError):
-        return False
-    return bool(read.returncode) or any(
+        return ""
+    if not read.returncode and not any(
         word in read.stdout for word in (": turn ended", ": archived", ": failed")
-    )
+    ):
+        return ""
+    said = read.stdout.partition("last message:")[2]
+    red = re.search(rf"(?:^|\s)DONE: red {re.escape(tree)}\s*$", said, re.MULTILINE)
+    return "red" if not read.returncode and red else "ended"
 
 
 def drop_session(sid: str) -> None:
@@ -5664,7 +5686,8 @@ def ask_cloud_gate(tree: str) -> str:
         f"Gate the branch {branch}: fetch it from origin, check it out, run `uv run"
         " <engineering-loop skill>/scripts/approvals.py local-ci --record` on it (the gate and its environment as the"
         " project's loop.md names them) and let the record branch be pushed. Touch no other branch. Then end the"
-        f" turn with `DONE: recorded {tree}` or `DONE: red`. More branches arrive as messages, each the same task."
+        f" turn with `DONE: recorded {tree}`, or `DONE: red {tree}` when the gate ran and failed (an exit that"
+        " loop.md's `machine_exit` names is a machine fault, not red: end with `DONE: no record` then). More branches arrive as messages, each the same task."
     )
     state, old = gate_state(), gate_session()
     if sid := old.get("session"):
