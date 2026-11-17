@@ -23,6 +23,7 @@
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
     uv run scripts/approvals.py affected-tests   # the worker's gate on a draft head: loop.md's `Affected tests:` command, else `check`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
+    uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
 
@@ -1125,6 +1126,8 @@ INCUBATING = "incubating"
 # the body line naming the epic that tracks the feature an incubating PR belongs to
 INCUBATES = re.compile(r"^[ \t>*-]*Incubates:[ \t]+#(\d+)\b", re.MULTILINE | re.IGNORECASE)
 GRADUATES = re.compile(r"^[ \t>*-]*Graduates:?[ \t]+#(\d+)\b", re.MULTILINE | re.IGNORECASE)
+# the first words of the comment that graduates an epic; the epic workflow (incubating-epic.yml) reads them
+GRADUATED = "Graduated by"
 # the requirements `incubating.waive` may name; an eligible PR stops owing each (incubation)
 WAIVABLE = ("evidence", "proof_run", "verifier", "full_gate", "coverage")
 
@@ -1856,6 +1859,29 @@ def release(number: int) -> int:
             print(f"#{number}: removed @{login}, whom the loop assigned")
         else:
             print(f"#{number}: kept @{login}, whose claim it is")
+    return 0
+
+
+def graduate(epic: int, pr: int) -> int:
+    """Graduate an `incubating` epic: PR #pr is merged and says `Graduates #epic` (graduation() keeps such a PR to the
+    full loop). A comment names the PR first, which the epic workflow reads as leave the label alone, then the label
+    comes off and the issue closes, in that order, since a closed issue still labelled is reopened."""
+    node = issue_node(epic)
+    if INCUBATING not in names(node) or node.get("state") != "OPEN":
+        raise Refused(f"#{epic} is not an open issue labelled `{INCUBATING}`")
+    merged = merged_pull(pr)
+    if not merged:
+        raise Refused(f"PR #{pr} is not merged, and graduating #{epic} takes its merge")
+    if (base := merged.get("base", {}).get("ref")) != default_branch():
+        raise Refused(
+            f"PR #{pr} merged into {base}, not the default branch: graduating takes the merge into main"
+        )
+    if epic not in {int(n) for n in GRADUATES.findall(QUOTED.sub("", merged.get("body") or ""))}:
+        raise Refused(f"PR #{pr}'s body has no `Graduates #{epic}` line")
+    comment(epic, f"{GRADUATED} #{pr}: the incubating label comes off and this epic closes.")
+    label(epic, INCUBATING, add=False)
+    close_issue(epic)
+    print(f"#{epic}: graduated by PR #{pr}")
     return 0
 
 
@@ -3913,8 +3939,8 @@ class MachineFault(Refused):
 # ponytail: GitHub's node shapes are the data model; give the ports their own when a second adapter needs them.
 PORTS = {
     # issue_node(n) (an issue, Refused for a PR), issues(numbers) (the issues among them), comment(n, body),
-    # label(n, name, add), assign(n, login, add)
-    "tracker": ("issue_node", "issues", "comment", "label", "assign"),
+    # label(n, name, add), assign(n, login, add), close_issue(n)
+    "tracker": ("issue_node", "issues", "comment", "label", "assign", "close_issue"),
     "forge": (
         "pull_request",  # (pr) -> the PR node, with its reviews, threads, checks, comments and closing issues
         "pull_status",  # (pr) -> {state, baseRefName, headRefOid, mergeable} alone, for a caller that reads no more
@@ -4029,6 +4055,7 @@ def through(name: str, operation: str) -> Callable[..., Any]:
 
 issue_node, issues_of = through("tracker", "issue_node"), through("tracker", "issues")
 label, assign = through("tracker", "label"), through("tracker", "assign")
+close_issue = through("tracker", "close_issue")
 pull_request, current_pr = through("forge", "pull_request"), through("forge", "current_pr")
 pull_status = through("forge", "pull_status")
 pr_changes, merged_pull = through("forge", "pr_changes"), through("forge", "merged_pull")
@@ -9033,6 +9060,9 @@ def main(argv: list[str]) -> int:
     briefing.add_argument("--proof", type=Path, action="append", default=[])
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
+    graduating = commands.add_parser("graduate")
+    graduating.add_argument("epic", type=int)
+    graduating.add_argument("--pr", type=int, required=True)
     hooking = commands.add_parser("commit-msg")
     hooking.add_argument("message", type=Path)
     commands.add_parser("affected-tests")
@@ -9131,6 +9161,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return brief(args.pr, args.priorities, args.proof, args.far, args.allow_conflict)
     if args.command == "release":
         return release(args.issue)
+    if args.command == "graduate":
+        return graduate(args.epic, args.pr)
     return verdict(args.pr, args.report)
 
 
