@@ -4727,12 +4727,11 @@ def merged_onto(
 
 def skip_conflict(pull: dict[str, Any], base: str, before: list[int], failed: set[int]) -> None:
     """Leave out a PR whose head conflicts with the batch, saying so once per head on the PR."""
-    where, head = f"PR #{pull['number']}", pull["headRefOid"]
+    where = f"PR #{pull['number']}"
     failed.add(pull["number"])
     ahead = f" plus {', '.join(f'#{n}' for n in before)} merged before it" if before else ""
     print(f"{where} conflicts with {base}{ahead}: skipped")
     conflict_note(pull, base, ahead)
-    return False
 
 
 def conflict_note(pull: dict[str, Any], base: str, ahead: str = "") -> None:
