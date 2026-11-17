@@ -5,7 +5,19 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from approvals_harness import approvals
+from approvals_harness import (
+    added,  # noqa: F401
+    approvals,
+    assigned,  # noqa: F401
+    attached,  # noqa: F401
+    board_risks,  # noqa: F401
+    graphql_answers,  # noqa: F401
+    hub,  # noqa: F401
+    others_open,  # noqa: F401
+    pushed,  # noqa: F401
+    refs,  # noqa: F401
+    required,  # noqa: F401
+)
 
 POLICY = "# heavy here\nmise run check\napprovals.py local-ci\nswift build\n"
 
@@ -28,11 +40,15 @@ def policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     ],
 )
 def test_a_listed_command_is_refused(policy: Path, words: list[str]) -> None:
-    with pytest.raises(approvals.Refused, match="no gate record.*gate it on an allowed host or in claude-cloud"):
+    with pytest.raises(
+        approvals.Refused, match="no gate record.*gate it on an allowed host or in claude-cloud"
+    ):
         approvals.run_heavy(words)
 
 
-def test_the_refusal_spawns_nothing(policy: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_refusal_spawns_nothing(
+    policy: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def boom(*_a: object, **_k: object) -> None:
         raise AssertionError("spawned")
 
@@ -48,7 +64,9 @@ def test_a_command_not_listed_runs(policy: Path) -> None:
     assert approvals.host_forbids(["mise", "run", "test"]) is None
 
 
-def test_a_host_without_a_policy_runs_everything(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_host_without_a_policy_runs_everything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("AGENT_HOST_COMMANDS", str(tmp_path / "none"))
     assert approvals.host_forbids(["mise", "run", "check"]) is None
     assert approvals.run_heavy(["true"])[0] == 0
