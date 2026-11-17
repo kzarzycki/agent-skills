@@ -258,7 +258,9 @@ def test_the_lock_must_name_the_tags_own_commit(monkeypatch: pytest.MonkeyPatch)
 def test_a_tag_rule_that_cannot_judge_keeps_mains_rule(
     monkeypatch: pytest.MonkeyPatch, rule: str
 ) -> None:
+    # main's rule both ways: a mid pass refused, a default-tier pass landing
     assert refused(gate(MID, bump(monkeypatch, rule=rule), monkeypatch))
+    assert gate("codex/terra-6.1/med", bump(monkeypatch, rule=rule), monkeypatch) == []
 
 
 def test_a_rule_is_rebuilt_from_the_names_it_reads() -> None:

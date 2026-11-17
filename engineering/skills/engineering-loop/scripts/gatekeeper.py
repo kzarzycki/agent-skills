@@ -2105,12 +2105,10 @@ def pin_target(pull: dict[str, Any]) -> str | None:
 
     for change in changes:
         path, status = change["filename"], change.get("status")
-        if old := change.get("previous_filename"):
-            # a rename removes its old path, which must be a vendored file the tag lacks; a pin file never moves
-            if old in PIN_FILES or path in PIN_FILES:
-                return None
-            if status == "renamed" and ((was := source(old)) is None or was in files):
-                return None
+        # a rename removes its old path, which must be a vendored file the tag lacks (a pin file is none)
+        old = change.get("previous_filename")
+        if old and status == "renamed" and ((was := source(old)) is None or was in files):
+            return None
         if path in PIN_FILES:
             continue
         if (want := source(path)) is None:
