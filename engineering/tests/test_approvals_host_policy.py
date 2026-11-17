@@ -43,6 +43,12 @@ def policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         ["/usr/bin/python3", "/x/approvals.py", "local-ci"],
         ["swiftly", "run", "swift", "build"],
         ["/bin/sh", "-c", "swift build -c release"],
+        ["bash", "-lc", "cd x && swift build"],
+        ["sh", "-c", "X=1 swift build"],
+        ["sh", "-c", "timeout 300 mise run check"],
+        ["timeout", "300", "mise", "run", "check"],
+        ["env", "A=1", "swift", "build"],
+        ["dash", "-c", "swift build", "name"],
     ],
 )
 def test_a_listed_command_is_refused(policy: Path, words: list[str]) -> None:
