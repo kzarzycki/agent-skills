@@ -244,3 +244,56 @@ def test_the_beat_thread_blocks_the_stop_signals(
     while not masks and time.monotonic() < deadline:
         time.sleep(0.02)
     assert set(approvals.STOPS) <= masks[0]
+
+
+def unreached_beat(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """A land whose newest beat commit never reached origin and stays in `held` (its push failed, the tip read failed)."""
+    monkeypatch.setattr(approvals, "BEAT", 3600)
+    held: list[str] = []
+    assert approvals.locked("main", held, 7)
+    held.append(approvals.lock_commit(approvals.HELD, held[-1], 7))
+    return held
+
+
+def test_a_repoint_after_an_unreached_beat_resyncs_and_goes_on(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held = unreached_beat(lands, monkeypatch)
+    first = held[0]
+    approvals.repointed("main", held, 8)
+    assert origin_tip(lands) == held[-1] and held[0] == first and len(held) == 2
+    assert "PR #8" in git_in(lands["origin"], "log", "-1", "--format=%b", held[-1])
+
+
+def test_a_release_after_an_unreached_beat_resyncs_and_frees_the_lock(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held = unreached_beat(lands, monkeypatch)
+    lands["open"](7, {"7.txt": "7\n"})
+    assert approvals.leased(
+        "main", approvals.lock_commit(approvals.FREE, held[-1]), held[-1]
+    ).returncode  # refused
+    assert approvals.resynced("main", held) and len(held) == 1
+    assert approvals.unlock("main", held[-1]).returncode == 0
+    assert "free" in git_in(lands["origin"], "log", "-1", "--format=%s", REF)
+
+
+def test_a_beat_after_an_unreached_one_stamps_again_from_origins_tip(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held = unreached_beat(lands, monkeypatch)
+    origin = held[0]
+    monkeypatch.setattr(approvals, "BEAT", 0.02)
+    stop = threading.Event()
+    thread = threading.Thread(target=approvals.heartbeat, args=("main", held, stop), daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 20
+    while origin_tip(lands) == origin and time.monotonic() < deadline:
+        time.sleep(0.02)
+    stop.set()
+    thread.join(5)
+    assert origin_tip(lands) != origin and origin_tip(lands) in held and unreached_ok(held, origin)
+
+
+def unreached_ok(held: list[str], origin: str) -> bool:
+    return origin in held and held.index(origin) == 0

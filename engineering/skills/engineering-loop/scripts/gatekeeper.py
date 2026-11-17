@@ -4757,6 +4757,10 @@ def landing_here(
             pass
         if held and taken is not False:
             released = unlock(base, held[-1])
+            if released.returncode and resynced(
+                base, held
+            ):  # an unreached beat of ours was the lease
+                released = unlock(base, held[-1])
             if released.returncode and taken:
                 print(
                     f"the landing lock {lock_name(base)} was not released: {' '.join(released.stderr.split())}"
@@ -4957,13 +4961,22 @@ def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
                     tip is None
                 ):  # unreadable (the network): the commit may have reached origin, so it stays ours
                     continue
-                if (
-                    tip in held
-                ):  # a push reached origin and only its answer was lost: what came after it did not
-                    del held[held.index(tip) + 1 :]
+                if resynced(
+                    base, held, tip
+                ):  # a push reached origin, only its answer was lost: what came after did not
                     continue
                 held.clear()  # another land's tip
                 return
+
+
+def resynced(base: str, held: list[str], tip: str | None = None) -> bool:
+    """After a refused push: where origin's lock tip is one of ours (`tip`, read again when not given), drop the
+    commits after it, which never arrived, and say so. False where the tip is unreadable or another land's."""
+    tip = tip or lock_tip(base)
+    if tip not in held:
+        return False
+    del held[held.index(tip) + 1 :]
+    return True
 
 
 def lock_tip(base: str) -> str | None:
@@ -5100,6 +5113,12 @@ def repointed(base: str, held: list[str], pr: int) -> None:
         ours = held[-1]
         held.append(lock_commit(HELD, ours, pr))
         pushed = leased(base, held[-1], ours)
+        if pushed.returncode and resynced(
+            base, held
+        ):  # an unreached beat of ours was the lease: once more from origin's
+            ours = held[-1]
+            held.append(lock_commit(HELD, ours, pr))
+            pushed = leased(base, held[-1], ours)
     if pushed.returncode:
         held.clear()
         raise Refused(
