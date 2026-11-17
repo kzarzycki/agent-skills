@@ -233,9 +233,9 @@ def test_a_land_whose_host_steps_all_reuse_takes_no_heavy_slot(
     real = approvals.heavy_slot
 
     @contextlib.contextmanager
-    def slot(name: str, out: Any = None) -> Any:
+    def slot(name: str, out: Any = None, land: bool = False) -> Any:
         taken.append(name)
-        with real(name, out) as held:
+        with real(name, out, land) as held:
             yield held
 
     assert approvals.main(["local-ci", "--record"]) == 0
