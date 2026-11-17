@@ -5342,7 +5342,7 @@ def local_queue(
         if landed and held:
             repointed(base, held, landed[-1][0]["number"])
         if landed:
-            merges(landed, base, tip, None, loop, failed, waited)
+            merges(landed, base, tip, None, loop, failed, waited, held)
     elif candidates:
         with batch_tree(base) as work:
             tip = run_in(work, "rev-parse", "HEAD")
@@ -5351,7 +5351,7 @@ def local_queue(
             if landed and held:
                 repointed(base, held, landed[-1][0]["number"])
             if landed:
-                merges(landed, base, tip, work, loop, failed, waited)
+                merges(landed, base, tip, work, loop, failed, waited, held)
     # each named PR's exit: its wait's, else 0 when it merged, else 1
     done = {pull["number"] for pull, *_ in landed} - failed
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
@@ -6521,15 +6521,22 @@ def merges(
     loop: str | None,
     failed: set[int],
     waited: str = "",
+    held: Sequence[str] = (),
 ) -> None:
     """Merge each PR through GitHub in the batch's order, pinned to its head (or, with loop.md's `land` section, as a
     signed squash of the tree it lands on the commit before it), stopping at the first one GitHub refuses or leaves
     open, then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
     the batch partial, or someone merged meanwhile) the tip is gated here, or with no worktree (`work` None) its pass
-    reused where one is recorded and the tree named where none is. Each landed PR gets a `Landed` comment."""
+    reused where one is recorded and the tree named where none is. Each landed PR gets a `Landed` comment. Right before
+    its merge call a PR's head gets the `land` status naming the nonce of the lock commit `held` ends with, which the
+    base's ruleset can require, so only a land merges (#1289); a merge GitHub then refuses, or leaves open, turns it to
+    an error."""
     local, command, done = signed(loop), gate()[0], []
+    nonce = (
+        git("log", "-1", "--format=%b", held[-1]).rsplit("nonce ", 1)[-1].strip() if held else ""
+    )
     for pull, tree, gated, how in landed:
-        where, head = f"PR #{pull['number']}", pull["headRefOid"]
+        where, head, posted = f"PR #{pull['number']}", pull["headRefOid"], False
         try:
             unlink_pull(pull)
             method = merge_method(pull, loop)
@@ -6542,6 +6549,10 @@ def merges(
                 # repo's delete_branch_on_merge removes the remote one
                 body = land_body(pull) if method == "squash" else None
                 print(f"{where} lands as a {method}")
+                post_status(
+                    head, "land", f"Landing under the lock {lock_name(base)}, nonce {nonce}"
+                )
+                posted = True
                 try:
                     port("forge").merge(pull["number"], method, body, head)
                 except subprocess.CalledProcessError as exc:
@@ -6560,6 +6571,15 @@ def merges(
             print(
                 f"{where}: the merge was refused, so it and every PR after it wait for the next land: {why}"
             )
+            if posted:
+                # GitHub keeps the newest status per context: an error replaces the success, so a later merge of
+                # this head made without land is refused again
+                try:
+                    post_status(head, "land", f"Not merged: {why}"[:140], "error")
+                except subprocess.CalledProcessError as failure:
+                    print(
+                        f"{where}: its `land` success could not be withdrawn: {stderr_of(failure)}"
+                    )
             failed.update(other["number"] for other, *_ in landed[len(done) :])
             break
         done.append((pull, tree, gated, how))

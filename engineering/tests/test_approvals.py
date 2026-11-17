@@ -4740,7 +4740,13 @@ def test_a_batch_tree_this_clone_passed_before_runs_no_gate(
     refused: list[str] = []
     refusing(monkeypatch, lambda args: not refused and not refused.append(args[2]))
     assert lands["land"]()[0] == 1
-    assert (lands["runs"](), lands["merged"](), hub) == (1, [], {})
+    # the refused head keeps only the `land` statuses (the success before its merge call, the error after the
+    # refusal): no gate result was published
+    assert (
+        lands["runs"](),
+        lands["merged"](),
+        [s["context"] for ss in hub.values() for s in ss],
+    ) == (1, [], ["land", "land"])
     assert lands["land"]()[0] == 0
     # neither head holds the batch's tree, and nothing was published: this clone's record is the pass
     assert (lands["runs"](), lands["merged"]()) == (1, ["7", "8"])
@@ -9695,7 +9701,7 @@ def test_a_landing_on_the_gated_tree_leaves_no_record_of_it_and_shows_the_pass_o
     )
     assert loop_gate_branches(origin) == set()
     assert f"published in origin as the record branch {branch_of(head)}" in capsys.readouterr().out
-    assert [found["context"] for found in hub[head]] == [approvals.PUBLISHED]
+    assert sorted(found["context"] for found in hub[head]) == sorted([approvals.PUBLISHED, "land"])
 
 
 def test_land_deletes_the_record_branches_of_the_prs_it_merged(
