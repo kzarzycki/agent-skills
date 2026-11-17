@@ -627,7 +627,9 @@ isolated (one PR at a time, or GitHub's per-entry groups). The local merge queue
 - Green: it merges each PR through GitHub in the same order, pinned to its head, and right before each
   merge call, under the lock, posts the commit status `land` on that head (success, its description naming
   the lock commit's nonce), so a base can require `land` and refuse a merge made without it; a land that
-  doesn't reach the merge call posts none. It then checks the
+  doesn't reach the merge call posts none, and a merge GitHub then refuses turns it to an error. Only this
+  GitHub merge posts it: a signed squash (`signed_squash_to`) and a GitHub merge queue post none, so a base
+  that lands either way must not require `land`. It then checks the
   base ended at the gated tree, publishes the pass on the new tip, and comments `Landed` on each.
 - Red: it lands one PR at a time on the last green commit (a one-PR batch's red run is its first run alone). A PR red alone twice is evicted
   (back to draft, with its log's tail), and when the first PR is red twice the bare base is
