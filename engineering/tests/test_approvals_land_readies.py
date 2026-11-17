@@ -331,3 +331,14 @@ def test_a_board_field_at_high_holds_a_draft_in_landable_and_land_writes_the_lab
     assert [n["name"] for n in lands["pulls"][7]["labels"]["nodes"]] == []
     assert lands["land"]("7")[0] == approvals.WAITING
     assert (readied(lands), writes) == ([], [(7, approvals.RISK_LABEL)])
+
+
+def test_a_held_lock_is_remembered_for_the_wait_to_poll_without_gh(
+    lands: dict[str, Any], one_wait: None
+) -> None:
+    approvals.held_tip = None
+    draft(lands, 7)
+    lock(lands, approvals.HELD)
+    lands["land"]("7")
+    tip = git_in(lands["origin"], "for-each-ref", "--format=%(objectname)", REF).strip()
+    assert approvals.held_tip == (REF, tip)

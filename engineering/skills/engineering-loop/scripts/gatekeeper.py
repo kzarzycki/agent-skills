@@ -648,6 +648,11 @@ ATTACHMENT = "https://github.com/user-attachments/"
 # land --wait: seconds between tries, and how long it waits in all before it exits 3; a landing lock older than the
 # ceiling is stale
 POLL, CEILING = 30, 2 * 60 * 60
+# a wait on a held lock whose ref is unchanged runs landing() (the GitHub calls) again only after this many seconds: the
+# lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
+RECHECK = 300
+# (lock ref, tip) of the last HELD lock locked() waited on; land() polls it without GitHub calls
+held_tip: tuple[str, str] | None = None
 # the signals that stop a land and release its lock (stopped)
 STOPS = (signal.SIGTERM, signal.SIGHUP)
 # the landing lock of a base: a branch that only moves forward, since a host may be allowed only to create and
@@ -4157,8 +4162,11 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
     new state once: until it ends, or exit 3 at CEILING."""
     if not wait:
         return landing(pr, only)[0]
-    deadline, said, spoke = time.monotonic() + CEILING, "", 0.0
+    global held_tip
+    deadline, said, spoke, checked, heard = time.monotonic() + CEILING, "", 0.0, 0.0, ""
+    github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
     while True:
+        held_tip, checked = None, time.monotonic()
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
@@ -4170,13 +4178,24 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
             if state != said or time.monotonic() - spoke >= SLOT_SAY_SECONDS:
                 print(out.getvalue(), end="", flush=True)
                 spoke = time.monotonic()
-            said = state
+            said, heard = state, out.getvalue()
         if not again:
             return code
         if time.monotonic() + POLL > deadline:
             print(f"land --wait stopped after {CEILING // 3600} hours, still waiting")
             return WAITING
-        time.sleep(POLL)
+        while time.monotonic() + POLL <= deadline:
+            time.sleep(POLL)
+            if (
+                heard and time.monotonic() - spoke >= SLOT_SAY_SECONDS
+            ):  # wait-for's stall check reads silence as a hang
+                print(heard, end="", flush=True)
+                spoke = time.monotonic()
+            # the lock still held at the same tip, and its holder checked lately: nothing to ask GitHub
+            if not held_tip or time.monotonic() - checked >= RECHECK:
+                break
+            if git("ls-remote", "origin", held_tip[0]).split()[:1] != [held_tip[1]]:
+                break
 
 
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
@@ -4518,6 +4537,8 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
                 if age <= CEILING and (done := released(base, holder)):
                     print(f"the landing lock {name} ({holder}) is released: {done}: broken")
                 elif age <= CEILING:
+                    global held_tip
+                    held_tip = (ref, tip)
                     print(
                         f"another land holds the landing lock {name} ({holder}), taken {age // 60} minutes ago"
                         f" ({time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(taken))}): land --wait waits for it"

@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
+import time
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -164,9 +166,70 @@ def gh(*args: str, data: str | None = None) -> str:
     if data is not None:  # every comment and review approvals.py posts goes as `data`
         for text in texts(data):
             denied(text)
-    return subprocess.run(
-        ["gh", *args], input=data, check=True, capture_output=True, text=True
-    ).stdout
+    backoff = 60
+    while True:
+        try:
+            return subprocess.run(
+                ["gh", *args], input=data, check=True, capture_output=True, text=True
+            ).stdout
+        except subprocess.CalledProcessError as exc:
+            if (
+                pause := rate_limited(str(exc.stderr), backoff, args[:2] == ("api", "graphql"))
+            ) is None:
+                raise
+            until = time.time() + pause
+            if wait_until is None or time.monotonic() + pause > wait_until:
+                exc.stderr = f"{exc.stderr}\nGitHub rate limit, resets at {time.strftime('%H:%M UTC', time.gmtime(until))}"
+                raise
+            said = (
+                f"GitHub rate limit, waiting until {time.strftime('%H:%M UTC', time.gmtime(until))}"
+            )
+            # in slices that each print, so wait-for's stall check (a log silent for 300 s) never kills the wait
+            for left in range(pause, 0, -SLICE):
+                print(said, file=sys.stderr, flush=True)
+                time.sleep(min(left, SLICE))
+            backoff = min(backoff * 2, 600)
+
+
+# land --wait sets this (time.monotonic) to the end of its ceiling: a rate limit then waits, else gh() fails with the reset time
+wait_until: float | None = None
+SLICE = 60  # seconds between the lines a rate-limit wait prints
+
+
+def rate_limited(stderr: str, backoff: int, graphql: bool = False) -> int | None:
+    """Seconds to wait when `stderr` is a GitHub rate-limit refusal (403 or 429), else None. The primary limit waits
+    to its reset (`gh api rate_limit`, which costs no quota); a secondary one waits for the `Retry-After` the error
+    shows, else `backoff` (60 s, doubling). ponytail: gh's error text shows no headers, so Retry-After is read only
+    where it appears in the message."""
+    # a GraphQL limit may come as HTTP 200 with the message alone, which gh prints with no status
+    if not graphql and not re.search(r"HTTP (403|429)", stderr):
+        return None
+    if (
+        re.search(r"secondary rate limit|abuse detection", stderr, re.IGNORECASE)
+        or "HTTP 429" in stderr
+    ):
+        found = re.search(r"retry[- ]after:? *(\d+)", stderr, re.IGNORECASE)
+        return int(found[1]) if found else backoff
+    if "API rate limit exceeded" not in stderr:
+        return None
+    try:
+        reset = int(
+            subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    "rate_limit",
+                    "--jq",
+                    f".resources.{'graphql' if graphql else 'core'}.reset",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        )
+        return max(reset - int(time.time()), 0) + 1
+    except (subprocess.CalledProcessError, ValueError):
+        return backoff
 
 
 def _graphql(query: str, **fields: object) -> Any:
