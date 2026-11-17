@@ -4,14 +4,14 @@
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep|--no-keep] [--notify]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
-    python3 scripts/omnigent_agent.py cloud-env <checkout>
+    python3 scripts/omnigent_agent.py claude-cloud-env <checkout>   # alias: cloud-env
     python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
-    python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
+    python3 scripts/omnigent_agent.py broadcast <message-file> [--stop | --decisions FILE] [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
     python3 scripts/omnigent_agent.py owner-said <session> <quote-file>
     python3 scripts/omnigent_agent.py status <session>...
@@ -67,7 +67,9 @@ even with ``--answer``; a plain relay sent as a message opens with ``[relayed by
 item, time, author) and the message, and 1 when it is only in a message an agent or Omnigent posted
 (a brief, a supervisor post, a relay) or nowhere: a lead checks a relayed owner decision with it.
 ``broadcast``
-relays one message to every followed lead in the registry (``--registry``, else
+posts only a stop order (``--stop``), which cannot wait for a lead's next turn; any other message
+is added to ``--decisions FILE`` and posted to no session, since each live post wakes every lead
+to re-read its whole context. It relays one message to every followed lead in the registry (``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``), ``--include``'s sessions and, with ``--active-hours N``, every
 top-level session of the caller's updated within N hours, all at once: never this session, an archived one or
 one in an automations project, nor one with a question or approval prompt pending, which a
@@ -184,10 +186,11 @@ policy's gate, and ``Cloud worker: none`` means host workers (``cloud_worker``).
 (``GET /v1/environment_providers``), so loop.md holds no account-specific id; with no ``env``, a ``start`` keeps a
 pin already there (the workspace's, else its main checkout's), and otherwise both take the environment named after
 the repository, else the account's ``Default``. A name the login has no environment for is refused, naming
-``cloud-env``. ``cloud-env <checkout>`` makes that environment (the line's ``env``, else the repository's name) from
-the checkout's committed ``.claude/cloud-setup.sh``, or replaces the setup script of the one already there
-(``POST /v1/environment_providers/<id>``, ``config.init_script``, no ``kind``), leaving its variables as they are; it
-sends no secret and prints none.
+``claude-cloud-env`` (``cloud-env`` still works). ``claude-cloud-env <checkout>`` makes that environment (the line's
+``env``, else the repository's name) from the checkout's committed ``.claude/claude-cloud-setup.sh`` (the older
+``.claude/cloud-setup.sh`` is still read) and ``.claude/claude-cloud-environment.json``, or brings the one already
+there up to them (``POST /v1/environment_providers/<id>``, no ``kind``), leaving the variables they do not name as they
+are; it is ``claude_cloud.py setup`` without the secrets and the proof, sends no secret and prints none.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -281,6 +284,8 @@ RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
 HTTP_SECONDS = 30.0
+START_CONFIRM_SECONDS = 300.0  # how long `start` waits for the brief to show in the history
+LATE_BRIEF_SECONDS = HTTP_SECONDS  # the grace a missed confirm gives a brief the server still holds
 ERROR_BODY_BYTES, ERROR_BODY_SECONDS = (
     2048,
     2.0,
@@ -1446,39 +1451,22 @@ class Omnigent:
         host = self.hosts().get(host_id, host_id)
 
         def listed(folder: str) -> list[str]:
-            path = "/v1/hosts/" + host_id + "/filesystem/" + quote(folder.strip("/"), safe="/")
-            try:
-                return [e["name"] for e in self.call("GET", path + "?limit=1000").get("data", [])]
-            except Fail as e:
-                cause = e.__cause__
-                missing = isinstance(cause, HTTPError) and cause.code == 404
-                if not missing:
-                    raise Fail(f"{LOOP_FILE}: host {host} unreadable at {folder}: {e}") from e
-                raise Gone(folder) from e
+            return host_listing(self, host_id, folder, str(LOOP_FILE))
 
-        root = Path(workspace)
-        try:
-            listed(workspace)
-        except Gone as e:
-            raise Fail(f"{LOOP_FILE}: workspace {workspace} is not on host {host}") from e
-        while ".git" not in listed(str(root)):
-            if root.parent == root:
-                return ""  # outside a checkout, as locally
-            root = root.parent
+        if (root := far_checkout_root(self, host_id, workspace, str(LOOP_FILE))) is None:
+            return ""  # outside a checkout, as locally
         target = str(root / LOOP_FILE)
         try:
             if LOOP_FILE.name not in listed(str(root / LOOP_FILE.parent)):
                 return ""
         except Gone:
             return ""
-        why = "no live session there to read it through"
-        for s in live_sessions(self, host_id)[:FAR_READS]:
-            try:
-                return self.read_file(str(s["id"]), target)
-            except Gone:  # listed, so an older host refusing the read, not "no line"
-                why = f"read answered 404 for a file the listing shows (session {s['id']})"
-            except Fail as e:
-                why = f"read failed: {e}"
+        try:
+            return read_on_host(self, host_id, target)
+        except Gone as e:  # listed, so an older host refusing the read, not "no line"
+            why = f"read answered 404 for a file the listing shows ({e})"
+        except Fail as e:
+            why = str(e)
         raise Fail(f"{LOOP_FILE}: host {host} can't read {target}: {why}")
 
     def interrupt(self, sid: str) -> None:
@@ -1691,6 +1679,51 @@ def autocompact_args(
             file=sys.stderr,
         )
     return ["--autocompact", size]
+
+
+LEAD_TIERS = {"frontier": "fable", "top": "opus", "mid": "sonnet", "small": "haiku"}  # Claude's
+SIZES = ("XS", "S", "M", "L", "XL")
+
+
+def lead_model(
+    brief: str,
+    workspace: str,
+    og: Omnigent | None = None,
+    host_id: str | None = None,
+    local: bool = True,
+) -> str | None:
+    """The model alias for a top-level Claude lead when the project's ``Lead model: <tier> for
+    <condition>`` line matches the labels of the issues ``brief`` names (``#N`` or an issue URL);
+    else None. The condition is ``size:<S> or smaller`` (size order XS < S < M < L < XL) or a bare
+    label. It matches when some named issue meets it and none fails it: an issue with no size label
+    says nothing about a size condition. A tier or condition that doesn't parse fails the start."""
+    line = project_line(workspace, "Lead model", og, host_id)
+    if not line:
+        return None
+    tier, _, cond = (w.strip() for w in line.partition(" for "))
+    bad = f"{LOOP_FILE}: Lead model: {line} is not `<tier> for <condition>`"
+    if tier not in LEAD_TIERS:
+        raise Fail(f"{bad}: the tier is one of {', '.join(LEAD_TIERS)}")
+    sized = re.fullmatch(r"size:(\w+) or smaller", cond)
+    if sized and sized[1] not in SIZES:
+        raise Fail(f"{bad}: the size is one of {', '.join(SIZES)}")
+    if not sized and not re.fullmatch(r"[^\s,]+", cond):
+        raise Fail(f"{bad}: the condition is `size:<S> or smaller` or a label")
+    refs = re.findall(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)|(?<![\w/])#(\d+)", brief)
+    verdicts: list[bool | None] = []
+    for repo, number, bare in dict.fromkeys(refs):
+        n = number or bare
+        try:
+            slug = repo or repo_slug(Path(workspace) if local and workspace else None)
+            names = gh("api", f"repos/{slug}/issues/{n}", "--jq", ".labels[].name").splitlines()
+        except Fail as e:
+            print(f"Lead model: issue {n} unread, so it says nothing: {e}", file=sys.stderr)
+            continue
+        if not sized:
+            verdicts.append(True if cond in names else None)
+        elif have := [x[5:] for x in names if x.startswith("size:") and x[5:] in SIZES]:
+            verdicts.append(SIZES.index(have[0]) <= SIZES.index(sized[1]))
+    return LEAD_TIERS[tier] if True in verdicts and False not in verdicts else None
 
 
 def project_name() -> str:
@@ -1932,6 +1965,31 @@ def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:
         print(f"{e}; confirming from the history", file=sys.stderr)
 
 
+def queued(info: dict, text: str) -> bool:
+    """Whether ``text`` waits in the session's pending inputs: sent, not yet an item."""
+    return any(text_of(p).strip() == text for p in info.get("pending_inputs") or [])
+
+
+def started_late(og: Omnigent, sid: str, text: str) -> bool:
+    """Whether a session whose brief missed the confirm window starts within one more
+    ``LATE_BRIEF_SECONDS`` (``HTTP_SECONDS``): a slow server takes a POST that timed out
+    client-side later, so at the deadline the brief is often neither an item nor pending yet.
+    True once the history holds an item past the opening ``resource_event`` (a real server puts
+    the brief first, so the brief itself is one; an ``error`` item, a runner that failed to
+    launch, is no start). While ``text`` waits in the pending inputs the grace restarts, as
+    ``send``'s confirm does, since the server can deliver it after the session is archived;
+    False only once it has been neither pending nor an item for a whole grace."""
+    deadline = time.monotonic() + LATE_BRIEF_SECONDS
+    while True:
+        if any(i.get("type") not in ("resource_event", "error") for i in og.items(sid)):
+            return True
+        if queued(og.info(sid), text):
+            deadline = time.monotonic() + LATE_BRIEF_SECONDS
+        elif time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL_SECONDS)
+
+
 def delivered(
     og: Omnigent,
     sid: str,
@@ -2024,7 +2082,7 @@ def send(
         ]
 
     def pending(info: dict) -> bool:
-        return any(text_of(p).strip() == text for p in info.get("pending_inputs") or [])
+        return queued(info, text)
 
     # ponytail: compares the server's item clock with the local question file's; a skewed server
     # clock can resend an answer that already landed. Upgrade: a client id, once Omnigent has one.
@@ -2469,6 +2527,51 @@ def host_limits(name: str) -> tuple[float, float | None]:
     )
 
 
+def host_listing(og: Omnigent, host_id: str, folder: str, what: str) -> list[str]:
+    """The entry names of ``folder`` on host ``host_id`` through the host's file API, which lists a
+    folder with no session. ``Gone`` when it is missing, else ``Fail`` naming ``what`` is read."""
+    path = "/v1/hosts/" + host_id + "/filesystem/" + quote(folder.strip("/"), safe="/")
+    try:
+        return [e["name"] for e in og.call("GET", path + "?limit=1000").get("data", [])]
+    except Fail as e:
+        cause = e.__cause__
+        if not (isinstance(cause, HTTPError) and cause.code == 404):
+            host = og.hosts().get(host_id, host_id)
+            raise Fail(f"{what}: host {host} unreadable at {folder}: {e}") from e
+        raise Gone(folder) from e
+
+
+def far_checkout_root(og: Omnigent, host_id: str, workspace: str, what: str) -> Path | None:
+    """The folder holding ``.git`` at or above ``workspace`` on host ``host_id``, found by listing;
+    None outside a checkout; a workspace that is not on the host is a ``Fail``."""
+    try:
+        host_listing(og, host_id, workspace, what)
+    except Gone as e:
+        host = og.hosts().get(host_id, host_id)
+        raise Fail(f"{what}: workspace {workspace} is not on host {host}") from e
+    root = Path(workspace)
+    while ".git" not in host_listing(og, host_id, str(root), what):
+        if root.parent == root:
+            return None
+        root = root.parent
+    return root
+
+
+def read_on_host(og: Omnigent, host_id: str, path: str) -> str:
+    """``path`` (absolute, on host ``host_id``) read through a live session there, since the host's
+    own file API lists a folder but gives no file's text. ``Gone`` when a session answered 404
+    (naming it), else ``Fail``: no live session, or the read failed."""
+    why: Exception = Fail("no live session there to read it through")
+    for s in live_sessions(og, host_id)[:FAR_READS]:
+        try:
+            return og.read_file(str(s["id"]), path)
+        except Gone:
+            why = Gone(f"session {s['id']}")
+        except Fail as e:
+            why = Fail(f"read failed: {e}")
+    raise why
+
+
 def live_sessions(og: Omnigent, host_id: str) -> list[dict]:
     """The live sessions (not archived, not failed) on host ``host_id``, sub-agents included."""
     path, found, after = "/v1/sessions?kind=any&limit=1000", [], ""
@@ -2642,6 +2745,36 @@ def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
         )
 
 
+def refuse_far_pinned_checkout(og: Omnigent, agent: str, workspace: Path, host_id: str) -> None:
+    """``refuse_pinned_checkout`` for a workspace on host ``host_id``: the checkout root is found by
+    listing, as ``read_loop`` does, and its files are read through a live session there. A main
+    checkout (``.git`` a folder, not a ``gitdir:`` file) whose settings pin an environment is
+    refused. A file the listing shows but the read can't give (a 404 from an older host included)
+    prints one line and the start goes on."""
+    what = f"pinned-checkout check for {agent}"
+    try:
+        if (root := far_checkout_root(og, host_id, str(workspace), what)) is None:
+            return
+        folder = root / SETTINGS.parent
+        try:
+            if SETTINGS.name not in host_listing(og, host_id, str(folder), what):
+                return  # no settings file: nothing pinned
+        except Gone:
+            return
+        pin = environment_pin(json.loads(read_on_host(og, host_id, str(root / SETTINGS))))
+        main = pin and not read_on_host(og, host_id, str(root / ".git")).startswith("gitdir:")
+    except (Fail, Gone, ValueError) as e:  # listed, so a refused read: not "no file"
+        host = og.hosts().get(host_id, host_id)
+        print(f"{workspace}: pinned-checkout check skipped on {host}: {e}", file=sys.stderr)
+        return
+    if main:
+        raise Fail(
+            f"{root} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
+            f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
+            " give the local agent a worktree of it (--workspace)"
+        )
+
+
 def _load_environments() -> Any:
     """``claude_environments.py`` beside this file, loaded by path under a name of this module's, so a project's
     copy and an installed one each load their own."""
@@ -2654,9 +2787,6 @@ def _load_environments() -> Any:
 
 
 ENVS = _load_environments()
-SETUP_SCRIPT = (
-    ".claude/cloud-setup.sh"  # the committed setup script `cloud-env` makes an environment from
-)
 
 
 class CloudWorker(NamedTuple):
@@ -2987,49 +3117,51 @@ def unmake_launch_dir(path: Path, main: Path | None) -> None:
 
 
 def cloud_env(checkout: Path) -> str:
-    """Make the claude.ai environment ``checkout``'s cloud sessions run in, or replace its setup script,
-    from the checkout's committed ``.claude/cloud-setup.sh``; the line it prints says which. The name is
-    the ``Cloud worker:`` line's ``env``, else the repository's. A new one has no variables; an update
-    sends the config it read with only ``init_script`` changed, so the variables there (a seeded login)
-    stay, and none of their values is printed. The login's token goes into request headers only."""
+    """Make the claude.ai environment ``checkout``'s cloud sessions run in, or bring it up to the committed
+    ``.claude/claude-cloud-setup.sh`` (the older ``.claude/cloud-setup.sh`` is still read) and, when there is one,
+    ``.claude/claude-cloud-environment.json``; the line it prints says which. It is ``claude_cloud.py setup``
+    without the secrets and the proof, through the same ``ENVS.apply``. The name is the ``Cloud worker:`` line's
+    ``env``, else the definition's, else the repository's. A new one has no variables but the definition's; an
+    update keeps every other variable (a seeded login), and none of their values is printed. The login's token goes
+    into request headers only."""
     root = checkout_root(str(checkout))
     if not root:
         raise Fail(f"cloud-env: {checkout} is not inside a checkout")
     head = subprocess.run(
         ["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, check=False
     ).stdout.strip()
-    script = committed(Path(root), "HEAD", SETUP_SCRIPT) if head else None
-    if script is None:
+    found = ENVS.committed_script(root) if head else None
+    if found is None:
         raise Fail(
-            f"cloud-env: {root} has no {SETUP_SCRIPT} committed at HEAD: commit the setup script"
+            f"cloud-env: {root} has no {ENVS.SETUP_SCRIPTS[0]} committed at HEAD, and no"
+            f" {ENVS.SETUP_SCRIPTS[1]} committed (the older name): commit the setup script"
             " the environment should run, since only a committed one is sent"
         )
+    path, script = found
+    try:
+        text = ENVS.committed(root, ENVS.DEFINITION) if head else None
+        definition = ENVS.definition_of(text) if text is not None else {}
+    except ENVS.Refused as e:
+        raise Fail(f"cloud-env: {e}") from None
     line = cloud_worker(committed(Path(root), "HEAD", LOOP_FILE) or "")
-    name = (line.env if line else "") or origin_name(Path(root))
+    name = (line.env if line else "") or definition.get("name") or origin_name(Path(root))
     if not name:
         raise Fail(
             f"cloud-env: {root} has no remote to name the environment after: add env <name> to loop.md's Cloud worker line"
         )
     try:
-        auth = ENVS.headers()
-        found = ENVS.named(ENVS.environments(auth), name)
-        if found is None:
-            made = ENVS.create(
-                auth, name, script, f"Cloud sessions of {name}, set up by {SETUP_SCRIPT}"
-            )
-            return (
-                f"created cloud environment {name} ({made.get('environment_id', '?')}) from"
-                f" {SETUP_SCRIPT} at {head[:12]}"
-            )
-        env = str(found["environment_id"])
-        current = ENVS.read(auth, env)
-        config = dict(current.get("config") or {})
-        if config.get("init_script") == script:
-            return f"cloud environment {name} ({env}): its setup script is {SETUP_SCRIPT} at {head[:12]} already"
-        ENVS.update(auth, env, current, {**config, "init_script": script})
+        action, env = ENVS.apply(
+            ENVS.headers(), name, script, f"Cloud sessions of {name}, set up by {path}", definition
+        )
     except ENVS.Refused as e:
         raise Fail(f"cloud-env {name}: {e}") from None
-    return f"updated cloud environment {name} ({env}): setup script {SETUP_SCRIPT} at {head[:12]}"
+    if action == "created":
+        return f"created cloud environment {name} ({env}) from {path} at {head[:12]}"
+    if action == "current":
+        return (
+            f"cloud environment {name} ({env}): its setup script is {path} at {head[:12]} already"
+        )
+    return f"updated cloud environment {name} ({env}): setup script {path} at {head[:12]}"
 
 
 def move_head(workspace: Path, pr: int, repo: str = "") -> None:
@@ -3535,6 +3667,12 @@ def start(
         # the project's loop.md, once, on the host the session runs on: a host that can't be read
         # stops the start here, before a session exists
         og.loop_text(workspace or os.getcwd(), host_id)
+    if top_level and agent == "claude" and not model_for(agent, model)[0]:
+        # the one read of loop.md's Lead model line, on the lead's host, before any session exists;
+        # --model and OMNIGENT_MODEL_CLAUDE outrank it
+        model = lead_model(
+            brief, workspace or os.getcwd(), og, host_id, not host_id or host_id == og.host_id
+        )
     chosen, source = model_for(agent, model)
     if chosen:
         try:
@@ -3770,7 +3908,8 @@ def start(
         try:
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
                 send_to_confirm(og, sid, text)
-            if delivered(og, sid, text, confirm_seconds):
+            # a slow server can miss the confirm window yet take the brief a moment later
+            if delivered(og, sid, text, confirm_seconds) or started_late(og, sid, text):
                 if not top_level:
                     held_of(report).parent.mkdir(parents=True, exist_ok=True)
                     held_of(report).write_text(json.dumps({"sid": sid, "brief": digest}))
@@ -5962,6 +6101,9 @@ def triage(event: str, decisions: str, prompt: str = ROUTING_PROMPT) -> tuple[st
     return "unsure", "small model: no route in its answer"
 
 
+COS_DECISIONS = "## Chief of staff decisions"
+
+
 def standing(path: Path | None) -> str:
     """The standing decisions in ``path``: the section under a ``## Standing decisions`` heading,
     else the whole file; none without a file, or when it can't be read. A project manager's board,
@@ -5972,12 +6114,34 @@ def standing(path: Path | None) -> str:
     except OSError as e:
         print(f"{path}: {reason(e)}; no standing decisions", file=sys.stderr)
         text = ""
+    text = re.sub(rf"^{COS_DECISIONS}\b.*?(?=^## |\Z)", "", text, flags=re.MULTILINE | re.DOTALL)
     m = re.search(r"^## Standing decisions\b.*?\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
     own = (m.group(1) if m else text).strip()
     node = path.resolve().parent if path and path.name == "board.md" else None
     if node and node.parent.name == "projects" and (node.parent.parent / "board.md").is_file():
         return "\n\n".join(x for x in (standing(node.parent.parent / "board.md"), own) if x)
     return own
+
+
+def add_standing(path: Path, text: str) -> None:
+    """Add ``text`` as a bullet to the ``## Chief of staff decisions`` section of ``path``, created
+    with the file when absent. It is never the ``## Standing decisions`` section, the owner's
+    only, which ``standing`` returns and routing treats as their authority; leads read both."""
+    bullet = "- " + " ".join(text.split())
+    try:
+        old = path.read_text() if path.exists() else ""
+        m = re.search(rf"^{COS_DECISIONS}\b.*?\n(.*?)(?=^## |\Z)", old, re.MULTILINE | re.DOTALL)
+        if m:
+            body = m.group(1).rstrip("\n")
+            new = old[: m.start(1)] + (body + "\n" if body else "") + bullet + "\n\n"
+            new += old[m.end(1) :].lstrip("\n")
+        else:
+            new = (
+                old.rstrip("\n") + "\n\n" if old.strip() else ""
+            ) + f"{COS_DECISIONS}\n{bullet}\n"
+        path.write_text(new)
+    except OSError as e:
+        raise Fail(f"{path}: {reason(e)}") from e
 
 
 def status_line(lead: dict, turn: bool = True) -> str:
@@ -7455,7 +7619,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument("brief", help="the task specifics: a file, or the text itself")
         p.add_argument("report", type=Path)
         p.add_argument("--role", help="worker/verifier role file the child reads first")
-        p.add_argument("--confirm-seconds", type=float, default=60.0)
+        p.add_argument("--confirm-seconds", type=float, default=START_CONFIRM_SECONDS)
         p.add_argument(
             "--model",
             help="model (default: $OMNIGENT_MODEL_<AGENT>, e.g. OMNIGENT_MODEL_CLAUDE_CLOUD, else"
@@ -7580,6 +7744,18 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     )
     p.add_argument("--host", action="append", default=[], metavar="NAME", help="only this host")
     p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
+    how = p.add_mutually_exclusive_group()
+    how.add_argument(
+        "--stop",
+        action="store_true",
+        help="a stop order: post it to the sessions now (default: only add it to --decisions)",
+    )
+    how.add_argument(
+        "--decisions",
+        type=Path,
+        metavar="FILE",
+        help="the file a message without --stop is added to, under Chief of staff decisions",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser(
         "launch-dir",
@@ -7613,9 +7789,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     )
     p.add_argument("run", nargs=argparse.REMAINDER, metavar="-- COMMAND")
     p = sub.add_parser(
-        "cloud-env",
-        description="make the project's claude.ai environment, or replace its setup script, from the"
-        " checkout's committed .claude/cloud-setup.sh",
+        "claude-cloud-env",
+        aliases=["cloud-env"],
+        description="make the project's claude.ai environment, or bring it up to date, from the"
+        " checkout's committed .claude/claude-cloud-setup.sh (the older .claude/cloud-setup.sh is"
+        " still read) and .claude/claude-cloud-environment.json: `claude_cloud.py setup` without"
+        " its secrets and proof steps",
     )
     p.add_argument("checkout", type=Path)
     p = sub.add_parser(
@@ -7774,7 +7953,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         action="store_true",
         help="once it ends, run $LOOP_NOTIFY <outcome> (unset: nothing)",
     )
-    for p in sub.choices.values():
+    for p in dict.fromkeys(sub.choices.values()):  # an alias names the same parser
         if p.prog.split()[-1] in ("run", "start", "send", "wait"):
             p.add_argument(
                 "--pr",
@@ -7942,7 +8121,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         if args.cmd == "launch-dir":
             launch_dir(args.remote, args.branch, args.env, args.path, args.trust, clone=args.clone)
             return 0
-        if args.cmd == "cloud-env":
+        if args.cmd in ("claude-cloud-env", "cloud-env"):
             print(cloud_env(args.checkout))
             return 0
         if args.cmd == "capacity" and not args.host:
@@ -8014,6 +8193,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             return 0
         if args.cmd == "broadcast":
             text = text_or_file(args.message)[0]
+            if not args.stop and not args.dry_run:
+                if not args.decisions:
+                    raise Fail(
+                        "broadcast posts only a stop order: give --stop, or --decisions FILE"
+                    )
+                add_standing(args.decisions, text)
+                print(f"added to {args.decisions}; posted to no session")
+                return 0
             targets, unsent = broadcast_targets(
                 og, registry, args.active_hours, args.include, args.project, args.host, args.exclude
             )
@@ -8257,7 +8444,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         )
         if launches and here:  # what ends it without a report writes FAILED there
             unreported = report
-        # The aliases are native harnesses; a workspace on another host is that host's to check.
+        if remote and (args.agent in AGENTS or og.harness(args.agent) != CLOUD_HARNESS):
+            refuse_far_pinned_checkout(og, args.agent, workspace, host)
+        # The aliases are native harnesses.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             pin_environment(workspace)
             refuse_untrusted_launch_dir(workspace)
