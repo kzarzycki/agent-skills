@@ -10,7 +10,7 @@
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
-    uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR as one gated batch; exit 0, 1 or 3
+    uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
     uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
     uv run scripts/approvals.py approve merge <pr> --head <sha> --by <owner|delegate> [--withdraw]  # a go on that head
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
@@ -21,6 +21,7 @@
     uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
+    uv run scripts/approvals.py affected-tests   # the worker's gate on a draft head: loop.md's `Affected tests:` command, else `check`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
@@ -77,14 +78,15 @@ public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
 commit after a verdict needs one of its own; on a high-risk change (below), that pass came from the default tier, not
 one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md), since a lower tier's review is enough
-only for a change it rates low (a fallback verifier's family, `agy`, `gemini` or `same-family`, is no tier); no unresolved
+only for a change it rates low (a fallback verifier's family, `agy`, `gemini` or `same-family`, is no tier), and on a PR
+that only bumps the pack's pin, the pin target's tier rule judges that pass instead (pin_target); no unresolved
 review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
 author posted one, that embeds its videos and screenshots as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
 `ci: false` in loop.md, a `local-ci` pass on the head's tree under today's gate command, read as `local-ci` reads
-it below, instead; its comment is the trace, never the proof), and, while the change is high risk, for the owner's
-go on that head: the newest commit status `owner` on the head commit by the account running this or a writer is
+it below, instead; its comment is the trace, never the proof), and, while the change's level asks a go of its merge
+(below), for the owner's go on that head: the newest commit status `owner` on the head commit by the account running this or a writer is
 green, and the PR holds the owner's record (`Approved by the owner.`, then `Approved: merge`, `By: owner`,
 `Head: <sha>`) naming that head. `approve merge <pr> --head <sha> --by owner` posts both on the owner's word, the
 record's every word the script writes, refusing a head other than the one named, which is the one the owner was
@@ -96,14 +98,22 @@ delegate's go on <sha>, under the owner's delegation`) and the record `Approved 
 refused unless loop.md's `delegate: all` under `loop` (default `feature`) lets the delegate's go cover that branch
 too, and a delegate's status there counts only while it does, so removing the setting withdraws those goes on open
 PRs; into a feature branch it counts either way. `check merge` and `land` print whose go, the owner's or the
-delegate's, a high-risk head has. Into the default branch these are the only go: a
+delegate's, a head whose level asks a go has. Into the default branch these are the only go: a
 label is anyone's with triage rights, the delegated approver's included, so `approved:merge` there is no go, nor is
-an `owner` status an older gate wrote from the label (marked as from it). On a change that is not high risk the
-label means nothing. High risk is `risk:high` on the
-PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, a path `risk.merge_paths` names
-(below), or a review at the cap or later not satisfied or
-with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
-failure to add it and carrying on. On a PR into a feature branch (any base but the repository's default branch)
+an `owner` status an older gate wrote from the label (marked as from it). On a change whose level asks no go the
+label means nothing. Risk is a rating, and the policy's `levels` say what each level asks (rating, levels): `high` is
+`risk:high` on the PR or an issue it names, a risk rule matching (below), or a review at the cap or later not
+satisfied or with a blocker or major open (`cap`, SKILL.md § The cap); `critical` a path `risk.critical_paths` names
+(below); `low` anything else. Each level asks `policy` or `owner` of the spec and `gates`, `go` (a person's go on the
+head, as above) or `owner` (the owner's own go on the head, into any branch, no delegate's go nor label counting) of
+the merge; the merge takes the strictest any of its terms asks. The defaults are `low` {policy, gates}, `high`
+{policy, go}, or under `spec.auto: true` {owner, gates}, and `critical` {policy, owner}. A term the spec's hold never
+reads (the label, a revert, the `verifier` term, the cap) rates the change only after its spec was approved, and asks
+`go` where its level asks `owner` of the spec and `gates` of the merge, since the owner never saw that rating.
+`check merge` and `land` print the level and the merge action on stderr (`PR #7: risk: high (<why>); merge: go`). When
+the gate rates a change high or critical, `check merge` and `land` add `risk:high` to the PR, reporting a failure to
+add it and carrying on, except for a term the label, read back as a `high` rating after the spec, would ask more of:
+by default a rule that held the spec under `spec.auto: true`, whose level is {owner, gates}. On a PR into a feature branch (any base but the repository's default branch)
 `approved:merge` added after the head was pushed is a go too, the push time being GitHub's repository activity for
 the head branch; a label added before the push is no go, and the approvals workflow removes it on `synchronize`. There
 the label may be the delegated approver's: `delegate <pr>` adds it, then a record (`Approved: merge`,
@@ -121,7 +131,12 @@ workflow posts success and its author merges it their usual way; `land` never ta
 prints the same line and exits 1, so the loop never merges it. Risk rules and `risk:high` hold no such PR. `check build` is
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land [<pr>... [--only]]` is the one way an agent merges. It lands every landable PR into one base, the first named PR's or else the
-repository's default branch, as one batch:
+repository's default branch, through one of two merge queues, picked by the base's rules (`required_checks`): the GitHub
+merge queue where they carry a `merge_queue` rule, else the local merge queue. Both take the same candidates (step 2) and
+differ in where the gate runs (GitHub's `merge_group` CI, or this host), when they run (continuously on GitHub, or within
+one `land` call) and how a red group is isolated (GitHub's per-entry groups, or the local one-at-a-time fallback, step
+6). One `land` runs one of them, never a mix, since one `land` gates its candidates in one place, so a PR never merges
+on a tree another path gated. The local merge queue lands its candidates as one batch:
 1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
 pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
 tip says the state: each lock commit holds the empty tree, its title says `landing lock: held` or `landing lock: free`
@@ -157,7 +172,14 @@ a wait for the owner or a pending required check 3, a red required check 1; with
 A named PR missing a required check, or a named draft, that GitHub reports conflicting exits 1 with the fix, `merge
 origin/<base> in` (a draft is not marked ready first), since GitHub runs no workflow on a conflicting PR, so the check
 would never come.
-3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
+3. With loop.md's `land: batch_wait_seconds` set (a whole number, default 0: no wait), and before the worktree below,
+it waits up to that long while another open PR into the same base is held by nothing but its required checks still
+running (its proofs and any owner go already hold: a red check, a draft, a proof gap or an owner wait never counts),
+polling every POLL seconds; each such PR that turns landable joins the batch and shares its one gate. It stops
+when none is pending or the time is up, so a lone PR gates at once; with PRs named by `--only` it never reads or waits
+on other PRs. It prints the wait and who joined, and the `Landed` comment's `Batch:` line adds `(waited N s, joined:
+...)`. The key is optional in `land`, which asks for signing keys only where `signed_squash_to` is set.
+   In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
 `pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
 (the PR's head) and `LAND_BASE` (that tip) set, so the base's tree holds the check and a PR never changes what judges
 it. A non-zero exit leaves that PR out of this batch, printing the check's last lines on every land, with a comment,
@@ -169,6 +191,10 @@ this clone's record, or a record branch in origin for a candidate's head with th
 date with the base runs no gate. GitHub's required checks never stand in for it, since the pass is then published as the gate
 command's. Otherwise it runs the gate there as `local-ci` does (below), its log under the git common dir, and records
 the pass by tree; a gate that leaves the worktree changed is red, since it no longer ran on the batch as merged.
+From a clone with no working tree (no index: a `--no-checkout` launch dir), where every command reads the policy files
+from origin's default branch (policy_ref), steps 3 and 4 make no worktree: the heads merge in objects (`git merge-tree
+--write-tree`), a recorded pass of every gate step on the batch's tree is reused, and with none `land` refuses naming
+the tree, as it refuses a `pre_land` it has no checkout to run in; it never runs the gate there.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
 --match-head-commit`), with the body the repo's squash default would write less every session link line (a
 `Claude-Session:` line, or a line that is only a claude.ai session link), since a cloud session's harness adds its link
@@ -177,7 +203,8 @@ comments on GitHub where it can edit them (`check merge` names any it can't): un
 body GitHub builds from the commits (one: its message after the subject, its co-author lines moved to the end;
 several: each message as a `* ` item, then `---------` and their co-authors), under the PR-description default the
 PR's body, and under the blank default none. A merge GitHub refuses, or leaves unmerged
-(a base requiring a merge queue only queues it, to merge later on a tree no gate saw), stops there: that PR and those
+(a merge queue the base's rules don't name, such as classic branch protection's, only queues it, to merge later on a
+tree no gate saw), stops there: that PR and those
 after it wait for the next land. Then it fetches and compares the base's tree with the gated tree. Equal: the pass is
 published (below) on the new tip. It then deletes the record branches no head needs: those of the trees it landed, and
 those over a day old whose tree is no open PR's head (a head replaced or never landed; the day spares a record pushed
@@ -198,6 +225,41 @@ Exit 0 when the named PR merged, or with no PR named when nothing landable faile
 eviction, a merge GitHub refused or a red base; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
 `land --wait` runs it again every 30 seconds while it waits on the lock or on CI, printing each new state once, for up
 to 2 hours, then exits 3; a wait for the owner ends it at once, since only the owner clears it.
+The GitHub merge queue takes no landing lock (GitHub orders the entries, and two lands enqueueing one PR change
+nothing), builds no local batch, runs no local gate, publishes no pass and deletes no record branch. Once it has fetched
+the base (the base-drift refusal below), each of step 2's candidates, oldest PR first, goes in with GraphQL
+`enqueuePullRequest`, `expectedHeadOid` the head the proofs judged, and GitHub drops an entry whose head moves, so no
+proof outlives a push. A PR already queued is left alone, unless its entry is in `AWAITING_CHECKS` with no check suite
+on its group's commit 10 minutes after that commit was made (GitHub lost its `merge_group` event): then it is dequeued
+and enqueued again. Else
+the queue's last removal of the head decides: the PR's `RemovedFromMergeQueueEvent`s since its head was pushed and since
+it last went ready, so a PR evicted and marked ready again counts anew. `merged`: it waits, since GitHub reports the
+merge a moment after the removal. A PR GitHub reports conflicting: step 3's conflict comment, once per head, and not
+enqueued (exit 1). A `merge_conflict` removal holds only that long, since the queue tests an entry on the entries ahead
+of it, so the conflict may have been with one of them: while GitHub works the PR's mergeability out again after the
+base moved, it waits (exit 3, `GitHub is still working out whether PR #<n> conflicts`), and once GitHub reports it
+mergeable it is enqueued again. `failed_checks`: first the checks the base requires are read on its tip; one red there stops
+the land (exit 1, `<base> itself is red`), counting nothing and evicting nobody. Then each such removal is placed on
+the base commit its group was built on (the merge base of the base and the group's commit): a required check that
+failed there (`FAILURE`, `TIMED_OUT`, `STARTUP_FAILURE` or `ERROR`; a run cancelled, stale or awaiting approval failed
+nothing, and the queue's own run on that commit went green) makes it the base's fault, so it never counts and gets no comment, and the PR is enqueued again; still running,
+nothing counts yet (exit 3, `<base>'s checks on <sha> are still running`). Of the removals that count, the head's first
+gets a `Red in the merge queue` comment naming the check that failed on the queue's commit, its run and
+its failed job log's last 30 lines, and is enqueued again; its second turns the PR back to draft with the same, as
+step 6 evicts (`Evicted from the merge queue`, exit 1). Any other removal (`checks_timed_out`, `manual`) counts for
+nothing, and the PR is enqueued again. The count lives in GitHub's timeline, so any land applies it and `land` keeps no
+state. A named PR enqueued or queued exits 3, naming its queue position and head; a bare `land` exits 0 once its
+candidates are in. `land --wait` polls the entry as above until the PR merges, then exits 0; the first land that reads
+a PR the queue merged (a `land <pr>` naming it, or a bare `land`, which reads every merged PR into the base that carries
+`loop:queued`, the label `land` puts on each PR before it enqueues it) comments `Landed` on it, `Base:` its merge commit, `Tree:` that commit's tree and `Gate: merge
+queue` with the links of the runs on that commit (the queue's `merge_group` CI), and finishes its worker sessions as
+step 5 does, then takes the label off, so a trail that failed (said, never failing the land) is written by the next
+land. The queue merges with its own `merge_method` and writes the squash message from the repo's squash
+default, which `land` neither sets nor overrides: session link lines stay out of commits through the `commit-msg`
+hook, and the PR's body and comments lose theirs before it is enqueued, as in step 5. A head matching
+`land.merge_commit_heads` is refused unless the queue's method is `MERGE`, since the queue merges every entry one way;
+`land.signed_squash_to` is refused, since GitHub signs the queue's commit; and so is a cloud session, since
+`enqueuePullRequest` is GraphQL, which its proxy refuses.
 With loop.md's `land` section (`signed_squash_to: <branch>`, `allowed_signers: <path>`), for a repo that trusts only
 commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the batch is the same, but each
 PR lands as a squash made in this checkout instead: one commit holding the tree it lands, on the base's tip the
@@ -224,7 +286,8 @@ user.signingkey=<file> -c gpg.ssh.program=ssh-keygen`, over the session's key an
 signed and verified with it. The batch's pass is published as below: GitHub refusing the status
 there, it goes to origin as a ref. There REST alone answers, and it says neither whether a PR is in a merge queue nor
 whether classic branch protection requires one, so a PR is a candidate there only with `merge_queue: false` in the
-section, the project's word that its base requires none (`required_checks` still refuses a ruleset that does); a draft is refused, and an evicted PR stays
+section, the project's word that its base requires none (a ruleset that does picks the GitHub merge queue, which a
+cloud session refuses); a draft is refused, and an evicted PR stays
 ready, each said, since GitHub changes a draft only over GraphQL. Off a cloud session only `where` is new.
 `land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip.
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
@@ -259,7 +322,7 @@ counts for nothing. A step without `paths`, with an empty list, or whose paths m
 the tree, as above; a change to `gate_steps` changes every keyed step's key. A cloud session runs no `host` step: `local-ci --record` there runs the rest, says
 which step it left and exits 0, with no head proof and no pass on the whole gate, which `local-ci <pr>` and `land` need
 and refuse there. Each step that runs, or the one gate, holds the host gate slot (an exclusive flock on
-`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock`) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
+`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, n up to `GATE_SLOTS`, a third of the cores by default) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
 path so a wrapper in it takes no lock of its own, and none when this process already runs under it; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
 nothing and exits with the check's code, so it is the gate while iterating too and its clean green run, the last one,
 records itself.
@@ -378,9 +441,11 @@ is named and changes nothing, nor does anyone else's. Over REST the last edit is
 edit moves (and any other change), so a label is recorded only when nothing changed the spec after it.
 
 GitHub is read through GraphQL, the fast path, and through REST where GraphQL answers 403, as a cloud session's proxy
-does: after one refused call a run reads REST alone, the same fields call by call. REST has no closing links, so a
-PR's issues are its body's `Closes`, `Part of` and `Implements` lines; its review threads come from the proxy's
-`pulls/<n>/ccr/review_threads` route, and where that route is missing the read fails rather than count none; a commit
+does, or marks fields FORBIDDEN, as a job token in a private organization repository gets: after one refused call a
+run reads REST alone, the same fields call by call. REST has no closing links, so a PR's issues are its body's
+`Closes`, `Part of` and `Implements` lines; its review threads come from the proxy's `pulls/<n>/ccr/review_threads`
+route, or, where GitHub itself answers 404 there, from GraphQL asked for the threads alone, and where neither answers
+the read fails rather than count none; a commit
 co-author, which only GraphQL resolves to an account, exempts no PR from review; and whether a PR is in a merge queue
 can't be read, so `land` refuses it there. The proxy refuses the collaborator lookup too, so there only the account
 running this counts as a writer, by its own permissions on the repo.
@@ -388,16 +453,19 @@ running this counts as a writer, by its own permissions on the repo.
 The policy block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
 the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue`, `owner`, `machine_exit`,
-`short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`.
+`short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`; `levels` holds `low`,
+`high` and `critical`, each with `spec` and `merge` (above).
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
 account GitHub's collaborator permission gives admin, maintain or write. A high-risk one is still built; its merge
-waits for the owner. `spec.auto: true` approves every spec the same
-way, epics included, except one the risk rule matches on the labels of the issue and the PR and the PR's files (at
-`check build` the files pushed so far), or one opened by an account without write access: those need the owner's
-record and label, and `check` says why. Under `spec.auto: true` the risk rule holds the spec instead of the merge, since
-the owner approved the change before it was built; `risk:high` and the cap still hold the merge. The list may also
+waits for what its level asks. `spec.auto: true` approves every spec the same
+way, epics included, except one opened by an account without write access, or one rated before the build at a level
+whose `spec` is `owner` (by default `high` there: the risk rule on the labels of the issue and the PR and the PR's
+files, at `check build` the files pushed so far): those need the owner's record and label, and `check` says why. A
+level asking `owner` of the spec holds a spec a `spec.auto` kind covers too. Under `spec.auto: true` the risk rule
+holds the spec instead of the merge by default, since the owner approved the change before it was built; `risk:high`,
+the `verifier` term and the cap still hold the merge. The list may also
 hold a `paths` term (`- paths: [mise.toml, docs/agents/**]`), globs as a rule's `paths` are: it approves by policy the
 spec of an issue labelled `spec:paths`, which the lead adds to declare that the change stays inside them, since the
 gate can't tell that from the spec alone and the setting alone would approve every spec until its merge. `check build`
@@ -407,12 +475,14 @@ as its new one, so a rename across the boundary either way voids it; GitHub give
 name; neither carries `risk:high` nor the risk rule holds (its `verifier` term too, once a review is read); and the
 issue's author can write to the repo. Otherwise the owner approves the spec, and `check` names why, the files outside
 the globs included. The label without the term approves nothing. Without `auto`, or
-with `false` or an empty list, the owner approves every spec, and the gates are the merge approval of a change that is not high risk.
+with `false` or an empty list, the owner approves every spec, and the gates are the merge approval of a change whose level
+asks `gates` of the merge.
 
 A rule (`risk`, `plan`, `signoff`) is a section of terms, any one of which matches: `always: true`; `labels`,
 label names matched exactly on the PR and its issues; `paths`, globs matched on the PR's files; and in `risk` alone
-`verifier: true`. `risk.merge_paths`, globs matched on the PR's files as `paths` are, is no term of the rule: a PR
-touching one is high risk whatever its labels, `spec.auto` and the verifier's `Risk:` line say, and only the owner's go
+`verifier: true`. `risk.critical_paths` (deprecated name `merge_paths`, read with a `deprecated:` line; both set is
+refused), globs matched on the PR's files as `paths` are, is no term of the rule: a PR touching one rates `critical`
+whatever its labels, `spec.auto` and the verifier's `Risk:` line say, and by default only the owner's go
 on its head lets it merge, into any branch, so `check merge`, `check queue` and `land` wait for it, `approve merge
 --by delegate` and `delegate` refuse it, and the label is no go; files it can't read hold. A list holds strings. The gate reads the keys, never the words of a rule, so a path or
 label can never read as a term. A glob matches every path the PR touches on either side of the change: a
@@ -443,6 +513,7 @@ block (SKILL.md § Settings says how it is delivered).
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import contextvars
 import fcntl
@@ -465,7 +536,8 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any, NamedTuple
@@ -580,6 +652,13 @@ ATTACHMENT = "https://github.com/user-attachments/"
 # land --wait: seconds between tries, and how long it waits in all before it exits 3; a landing lock older than the
 # ceiling is stale
 POLL, CEILING = 30, 2 * 60 * 60
+# a wait on a held lock whose ref is unchanged runs landing() (the GitHub calls) again only after this many seconds: the
+# lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
+RECHECK = 300
+# the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
+LOW_POLL, LOW_QUOTA = 300, 0.1
+# (lock ref, tip) of the last HELD lock locked() waited on; land() polls it without GitHub calls
+held_tip: tuple[str, str] | None = None
 # the signals that stop a land and release its lock (stopped)
 STOPS = (signal.SIGTERM, signal.SIGHUP)
 # the landing lock of a base: a branch that only moves forward, since a host may be allowed only to create and
@@ -654,7 +733,10 @@ class Table(dict):
 
 
 class Choice(tuple):
-    """A setting that is one of these names, such as `loop.delegate`."""
+    """A setting that is one of these names, such as `loop.delegate`, or one of its `aliases` (an old or a longer
+    name, mapped to the name it stands for)."""
+
+    aliases: dict[str, str]  # set where a setting has some; read through getattr
 
 
 class Rows(Table):
@@ -668,6 +750,10 @@ class Rows(Table):
 
 # where `land` may run (loop.md's `land.where`): a host, a cloud session (CLOUD), or either
 PLACES = ("host", "cloud", "both")
+LAND_WHERE = Choice(PLACES)
+LAND_WHERE.aliases = {
+    "claude-cloud": "cloud"
+}  # the name `cloud` had before it named only Claude's cloud
 # where a gate step may run (loop.md's `gate_steps`): any machine, or only a host, never a cloud session (CLOUD)
 STEP_PLACES = ("any", "host", "linux")
 # loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
@@ -675,6 +761,14 @@ STEP_PLACES = ("any", "host", "linux")
 STAGES = ("intent", "spec", "plan", "build", "review", "land")
 # the specs `spec.auto` may name: an issue that is a bug, a follow-up an agent raised, a sub-issue of an approved epic
 SPEC_KINDS = ("bug", "follow-up", "sub-issue")
+# the levels the risk rating gives a change, lowest first (gatekeeper.md's `levels`: what each asks of the spec and
+# the merge); `low` is every change nothing raises
+LEVELS = ("low", "high", "critical")
+# what a level asks of the spec: `policy`, spec.auto decides; `owner`, the owner's record and `approved:spec`
+SPEC_ACTIONS = ("policy", "owner")
+# what a level asks of the merge, weakest first: the gates alone; a person's go on the head (the owner's, or the
+# delegate's where delegation allows); the owner's own go on the head
+MERGE_ACTIONS = ("gates", "go", "owner")
 SCHEMA: dict[str, dict[str, Any]] = {
     "loop": {
         "cap": int,
@@ -702,17 +796,28 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "mutate": {"inconclusive_exit": int},
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
-    "risk": {"always": bool, "labels": list, "paths": list, "verifier": bool, "merge_paths": list},
+    "risk": {
+        "always": bool,
+        "labels": list,
+        "paths": list,
+        "verifier": bool,
+        "critical_paths": list,
+        "merge_paths": list,
+    },
+    "levels": {
+        level: {"spec": Choice(SPEC_ACTIONS), "merge": Choice(MERGE_ACTIONS)} for level in LEVELS
+    },
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
     "land": Table(
         signed_squash_to=str,
         allowed_signers=str,
-        where=Choice(PLACES),
+        where=LAND_WHERE,
         signing_key_env=str,
         merge_queue=bool,
         merge_commit_heads=list,
+        batch_wait_seconds=int,
         together=("signed_squash_to", "allowed_signers"),
         optional=(
             "signed_squash_to",
@@ -721,6 +826,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "signing_key_env",
             "merge_queue",
             "merge_commit_heads",
+            "batch_wait_seconds",
         ),
     ),
     "carry_over_main": Table({"except": list}),
@@ -825,7 +931,9 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
                 raise Refused(f"{file}'s {where} must be a section holding `{'`, `'.join(kind)}`")
             typed(value, kind, f"{name}.{key}", file)
         elif isinstance(kind, Choice):
-            if not (isinstance(value, str) and value in kind):
+            if not (
+                isinstance(value, str) and (value in kind or value in getattr(kind, "aliases", {}))
+            ):
                 raise Refused(f"{file}'s {where} must be one of {', '.join(kind)}, not {value!r}")
         elif isinstance(kind, tuple):  # true, false, or a list naming some of the tuple's values
             # `spec.auto`'s list may also hold a `paths` term, a list of globs (spec_paths)
@@ -903,8 +1011,20 @@ def settings(loop: str | None) -> dict[str, Any]:
                     deprecated(key)
         elif name in SCHEMA:
             data[name] = typed(section, SCHEMA[name], name, file)
+            if data[name].get("batch_wait_seconds", 0) < 0:
+                raise Refused(
+                    f"{file}'s `land.batch_wait_seconds` must be a whole number, 0 or more"
+                )
             if name == "carry_over_main":
                 deprecated(name)
+            if name == "risk" and "merge_paths" in section:
+                # two sources of one list would drift, so the old name is read only alone
+                if "critical_paths" in section:
+                    raise Refused(
+                        f"{file}'s `risk` sets both `critical_paths` and `merge_paths`, its deprecated name:"
+                        " keep `critical_paths`"
+                    )
+                deprecated("risk.merge_paths", "name its globs `risk.critical_paths`")
             for port_name, adapter in data[name].items() if name == "adapters" else ():
                 if adapter not in ADAPTERS:
                     raise Refused(unknown_adapter(file, port_name, adapter))
@@ -916,15 +1036,12 @@ def settings(loop: str | None) -> dict[str, Any]:
 DEPRECATED: set[str] = set()
 
 
-def deprecated(name: str) -> None:
-    """Say once per run, on stderr, that a command or setting goes in the next release: a project's own queue keeps
-    working until it adopts the batch `land`."""
+def deprecated(name: str, instead: str = "land batches every landable PR (#650)") -> None:
+    """Say once per run, on stderr, that a command or setting goes in the next release, and what replaces it: a
+    project's own queue keeps working until it adopts the batch `land`."""
     if name not in DEPRECATED:
         DEPRECATED.add(name)
-        print(
-            f"deprecated: {name} goes in the next release; land batches every landable PR (#650)",
-            file=sys.stderr,
-        )
+        print(f"deprecated: {name} goes in the next release; {instead}", file=sys.stderr)
 
 
 def tracker_settings(tracker: str) -> dict[str, dict[str, str]]:
@@ -1097,21 +1214,171 @@ def ruled(
     return None
 
 
-def owners_only(pull: dict[str, Any], loop: str | None) -> str | None:
-    """Why only the owner's go on the head lets the PR merge, or None: it touches a path loop.md's `risk.merge_paths`
-    names, whatever its labels, `spec.auto` and the verifier's `Risk:` line say, since the owner keeps the last look
-    at those paths. Files the gate can't read hold, as a risk rule's `paths` do."""
-    globs = settings(loop).get("risk", {}).get("merge_paths", [])
+def critical_globs(loop: str | None) -> tuple[str, list[str]]:
+    """The key naming the critical paths, `critical_paths` or its deprecated name `merge_paths` (settings() refuses
+    both), and its globs."""
+    terms = settings(loop).get("risk", {})
+    key = "merge_paths" if "merge_paths" in terms else "critical_paths"
+    return key, terms.get(key, [])
+
+
+def critical(pull: dict[str, Any], loop: str | None) -> str | None:
+    """Why the change rates `critical`, or None: it touches a path `risk.critical_paths` names, whatever its labels,
+    `spec.auto` and the verifier's `Risk:` line say. Files the gate can't read hold, as a risk rule's `paths` do."""
+    key, globs = critical_globs(loop)
     if not globs:
         return None
+    sole = levels(loop)["critical"]["merge"] == "owner"
     files = touched(pull)
     if files is None:
-        return "the gate can't read every file the PR changes, so `risk.merge_paths` holds until the owner judges them"
+        who = "the owner judges" if sole else "a person judges"
+        return (
+            f"the gate can't read every file the PR changes, so `risk.{key}` holds until {who} them"
+        )
     for glob in globs:
         for path in files:
             if fnmatch.fnmatch(path, glob):
-                return f"it touches `{path}`, which `risk.merge_paths` names (`{glob}`), so only the owner approves its merge"
+                why = f"it touches `{path}`, which `risk.{key}` names (`{glob}`)"
+                return why + ", so only the owner approves its merge" if sole else why
     return None
+
+
+def levels(loop: str | None) -> dict[str, dict[str, str]]:
+    """What each level (LEVELS) asks of the spec (SPEC_ACTIONS) and the merge (MERGE_ACTIONS): gatekeeper.md's
+    `levels`, each key it leaves out at its default, which is the rule before levels existed: `low` {policy, gates};
+    `high` {policy, go}, or under `spec.auto: true` {owner, gates}, since there the owner approved the change before it
+    was built; `critical` {policy, owner}."""
+    high = (
+        {"spec": "owner", "merge": "gates"}
+        if spec_auto(loop)
+        else {"spec": "policy", "merge": "go"}
+    )
+    table = {
+        "low": {"spec": "policy", "merge": "gates"},
+        "high": high,
+        "critical": {"spec": "policy", "merge": "owner"},
+    }
+    for level, actions in settings(loop).get("levels", {}).items():
+        table[level] = {**table[level], **actions}
+    return table
+
+
+def terms(
+    pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None
+) -> Iterator[tuple[str, bool, str]]:
+    """The risk terms that hold on the change, in the order the gate quotes them, each as (level, after, why): `high`
+    for `risk:high` on the PR or an issue it names (or, for a feature branch's merge to the default branch, on a PR
+    merged into it), an exact revert of a high-risk change, a risk rule's `always`, `labels` or `paths` (ruled) on the
+    labels of the PR and its issues and its files, its `verifier` term on the verifier's `Risk:` line (judged), and a
+    review at the cap not satisfied or with a blocker or major open (capped); `critical` for a path
+    `risk.critical_paths` names (critical). `after` marks a term the spec's own hold never reads (spec_owned), the
+    label, the revert, the verifier and the cap, so it rates the change only after its spec was approved. Lazy, so a
+    caller that needs the first term reads no more. An exact revert's issues (gated's `named`) count as its issues."""
+    issues = issues + pull.get("named", [])
+    marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
+        f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
+    ]
+    if not marked and default(pull) and not pull["isCrossRepository"]:
+        # a feature branch's merge to the default branch carries every high-risk PR that landed in it
+        marked = [
+            f"#{n}, merged into {pull['headRefName']}" for n in merged_high(pull["headRefName"])
+        ]
+    if marked:
+        yield "high", True, f"`{RISK_LABEL}` is on {', '.join(marked)}"
+    if why := pull.get("reverted"):
+        yield "high", True, why
+    if why := critical(pull, loop):
+        yield "critical", False, why
+    labels = names(pull).union(*(names(issue) for issue in issues))
+    if why := ruled(labels, touched(pull), loop):
+        yield "high", False, why
+    if settings(loop).get("risk", {}).get("verifier") and (why := judged(pull, loop)):
+        # spec_hold() read the paths and labels before the build; the verdict comes after it
+        if spec_auto(loop):
+            yield "high", True, f"it matches a risk rule's `verifier` term: {why}"
+        else:
+            yield "high", True, f"it matches a risk rule (verifier): {why}"
+    limit = cap(loop)
+    if capped(pull, limit):
+        yield (
+            "high",
+            True,
+            (
+                f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open,"
+                " so the owner decides"
+            ),
+        )
+
+
+def merge_for(level: str, after: bool, table: dict[str, dict[str, str]]) -> str:
+    """What a term at `level` asks of the merge (levels' `table`): the level's `merge`, but `go` for a term read only
+    after the spec was approved (`after`) where the level's `spec` is `owner` and its `merge` is `gates`, since the
+    owner's spec approval, which stood in for the go, never saw that rating."""
+    merge = table[level]["merge"]
+    if after and merge == "gates" and table[level]["spec"] == "owner":
+        return "go"
+    return merge
+
+
+class Rated(NamedTuple):
+    """The change's rating and the merge action it gets (rating): `level`, the highest it rates, and `why`, the first
+    term at that level (None for `low`); `merge`, the strictest action any of its terms asks, `low`'s when none holds,
+    with `source`, the level of the first term that asks it, and `because`, that term's why."""
+
+    level: str
+    why: str | None
+    merge: str
+    source: str
+    because: str
+
+    def line(self, pull: dict[str, Any]) -> str:
+        """The line `check merge` and `land` print: the level, why, and the action they applied."""
+        rated = f"{self.level} ({self.why})" if self.why else self.level
+        return f"PR #{pull['number']}: risk: {rated}; merge: {self.merge}"
+
+
+def rating(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> Rated:
+    """The change's level (terms) and what its merge needs (merge_for), the strictest any term asks; a change no term
+    raises is `low` and takes `levels.low.merge`."""
+    table = levels(loop)
+    found = list(terms(pull, issues, loop))
+    if not found:
+        merge = table["low"]["merge"]
+        because = "nothing rates it above low"
+        if merge == "owner":
+            because += ", and `levels.low.merge` is `owner`"
+        return Rated("low", None, merge, "low", because)
+    level = max((term[0] for term in found), key=LEVELS.index)
+    why = next(term[2] for term in found if term[0] == level)
+    asked = [(merge_for(lvl, after, table), lvl, because) for lvl, after, because in found]
+    merge = max((ask[0] for ask in asked), key=MERGE_ACTIONS.index)
+    _, source, because = next(ask for ask in asked if ask[0] == merge)
+    if merge == "owner" and source != "critical":
+        because += f", and `levels.{source}.merge` is `owner`"
+    return Rated(level, why, merge, source, because)
+
+
+def owners_only(
+    pull: dict[str, Any], loop: str | None, issues: list[dict[str, Any]] | None = None
+) -> str | None:
+    """Why only the owner's own go on the head lets the PR merge, into any branch, or None: its rating asks
+    `owner` of the merge (rating). Where only `critical` may ask it, as by default, the paths alone decide, so no
+    issue is read; otherwise the PR's issues are read when the caller has none (rated_issues)."""
+    table = levels(loop)
+    if all(table[level]["merge"] != "owner" for level in ("low", "high")):
+        return critical(pull, loop) if table["critical"]["merge"] == "owner" else None
+    found = rating(pull, rated_issues(pull) if issues is None else issues, loop)
+    return found.because if found.merge == "owner" else None
+
+
+def rated_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
+    """The issues the PR's rating reads, as gated() finds them, for a command that judges the merge without gating
+    it (approve merge, delegate); an exact revert's go to `named` and its original's risk to `reverted`."""
+    revert, _ = reverts(pull)
+    if revert:
+        pull["named"], pull["reverted"] = closing_issues(pull), reverted(revert)
+        return []
+    return closing_issues(pull)
 
 
 def head_passes(
@@ -1151,38 +1418,28 @@ def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
 
 
 def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
-    """Why the change is high risk, or None: `risk:high` on the PR or an issue it names; a risk rule (ruled) on the
-    labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under
-    `spec.auto: true`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
-    was built, while its `verifier` term still holds the merge; a path `risk.merge_paths` names (owners_only), under
-    `spec.auto` too; or a review at the cap was not satisfied or left a
-    blocker or major open (capped). An exact revert's issues (gated's `named`) count as its issues here."""
-    issues = issues + pull.get("named", [])
-    marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
-        f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
-    ]
-    if not marked and default(pull) and not pull["isCrossRepository"]:
-        # a feature branch's merge to the default branch carries every high-risk PR that landed in it
-        marked = [
-            f"#{n}, merged into {pull['headRefName']}" for n in merged_high(pull["headRefName"])
-        ]
-    if marked:
-        return f"`{RISK_LABEL}` is on {', '.join(marked)}"
-    if why := pull.get("reverted"):
-        return why
-    if why := owners_only(pull, loop):
-        return why
-    if not spec_auto(loop):
-        labels = names(pull).union(*(names(issue) for issue in issues))
-        if why := ruled(labels, touched(pull), loop, judged(pull, loop)):
+    """Why the change rates `high` or `critical` (terms), as the gate shows it with `risk:high` (flag) and as the
+    verifier's tier rule reads it, or None: the first term but one the spec's own hold answered, a term read before the
+    spec (`after` false) at a level whose `spec` is `owner` and `merge` is `gates`, since there the owner approved the
+    change before it was built, and the label, read back as a term after the spec, would ask for a go that approval
+    already made needless. By default that is a risk rule's `labels`, `paths` and `always` under `spec.auto: true`."""
+    table = levels(loop)
+    for level, after, why in terms(pull, issues, loop):
+        if merge_for(level, after, table) == merge_for(level, True, table):
             return why
-    elif settings(loop).get("risk", {}).get("verifier"):
-        # spec_hold() read the paths and labels before the build; the verdict comes after it, so it holds the merge
-        if why := judged(pull, loop):
-            return f"it matches a risk rule's `verifier` term: {why}"
-    limit = cap(loop)
-    if capped(pull, limit):
-        return f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open, so the owner decides"
+    return None
+
+
+def raises(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
+    """Why flag() adds `risk:high`, or None: the first term (terms) that asks of the merge (merge_for) no less than
+    the label itself, read back as a `high` term after the spec, would, since the gate's own label must never ask more
+    than the level it shows: not a rule that held the spec at a level on {owner, gates}, nor a `critical` level on
+    `gates` beside a `high` one on `go`. By default that is every term risk() shows."""
+    table = levels(loop)
+    label = MERGE_ACTIONS.index(merge_for("high", True, table))
+    for level, after, why in terms(pull, issues, loop):
+        if MERGE_ACTIONS.index(merge_for(level, after, table)) >= label:
+            return why
     return None
 
 
@@ -1270,7 +1527,7 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     shown = board_risk(pull["number"])
     if RISK_LABEL in names(pull):
         return unflag(pull, issues, loop) + boarded(pull, loop, shown)
-    if (why := risk(pull, issues, loop)) is not None:
+    if (why := raises(pull, issues, loop)) is not None:
         return raise_risk(pull, why, loop) + boarded(pull, loop, shown, high=True)
     if shown[1] != "High":
         return boarded(pull, loop, shown)
@@ -1312,7 +1569,7 @@ def raise_risk(pull: dict[str, Any], why: str, loop: str | None, mark: bool = Fa
     return found
 
 
-# approvals.py's module when it loaded this one, by path and out of sys.modules: the module its importers read
+# approvals.py's stand-in module when it ran this source by path and out of sys.modules: the module its importers read
 IMPORTER: ModuleType | None = None
 
 
@@ -1644,12 +1901,30 @@ def spec_policy(issue: dict[str, Any], kinds: set[str]) -> bool:
     return bool(login) and writer(login)
 
 
+def spec_owned(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str | None:
+    """Why the spec's rating leaves it to the owner whatever `spec.auto` says, or None: a level whose `spec` is `owner`
+    (levels) that the terms read before the build give it, a risk rule (ruled) on the labels of the issue and the PR
+    and the files pushed so far for `high`, `risk.critical_paths` (critical) for `critical`, or `low` when neither
+    holds, so a file the spec didn't foresee still reaches the owner. Only a level that asks it is judged. By default
+    that is `high` under `spec.auto: true`."""
+    table = levels(loop)
+    if table["high"]["spec"] == "owner" and (
+        why := ruled(names(issue) | names(pull), touched(pull), loop)
+    ):
+        return why
+    if table["critical"]["spec"] == "owner" and (why := critical(pull, loop)):
+        return why
+    if table["low"]["spec"] != "owner":
+        return None
+    raised = ruled(names(issue) | names(pull), touched(pull), loop) or critical(pull, loop)
+    return None if raised else "nothing rates it above low, and `levels.low.spec` is `owner`"
+
+
 def spec_hold(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str | None:
-    """Why `spec.auto: true` leaves the issue's spec to the owner, or None when the policy approves it: a risk rule (ruled)
-    on the labels of the issue and the PR and the files pushed so far, so a file the spec didn't foresee still reaches
-    the owner; or an author without write access, since anyone who can open an issue would otherwise have their own
-    spec approved."""
-    if why := ruled(names(issue) | names(pull), touched(pull), loop):
+    """Why `spec.auto: true` leaves the issue's spec to the owner, or None when the policy approves it: its rating
+    (spec_owned), by default a risk rule on the labels of the issue and the PR and the files pushed so far; or an
+    author without write access, since anyone who can open an issue would otherwise have their own spec approved."""
+    if why := spec_owned(pull, issue, loop):
         return why
     login = (issue.get("author") or {}).get("login")
     if not (login and writer(login)):
@@ -1690,9 +1965,18 @@ def scoped(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str
 
 def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
     """A line per issue whose spec `spec.auto: true` leaves to the owner (spec_hold), approved or not, so a gate run says
-    why that spec needed them and its merge waits for no `approved:merge`."""
+    why that spec needed them and its merge waits for no `approved:merge`; without it, per issue a kind `spec.auto`
+    names would cover but whose rating leaves to the owner (spec_owned)."""
     if not spec_auto(loop):
-        return []
+        kinds = spec_kinds(loop)
+        return [
+            f"#{issue['number']}: its spec is the owner's to approve, though `spec.auto` names its kind, since {why}"
+            for issue in issues
+            if kinds
+            and not any(label.startswith("wayfinder:") for label in names(issue))
+            and (why := spec_owned(pull, issue, loop))
+            and spec_policy(issue, kinds)
+        ]
     return [
         f"#{issue['number']}: its spec is the owner's to approve under `spec.auto: true`, since {why}"
         for issue in issues
@@ -1871,7 +2155,12 @@ def proofs(
             if READY not in labels:
                 found.append(f"{where} lacks the `{READY}` label")
             continue
-        covered = every and spec_hold(pull, issue, loop) is None or spec_policy(issue, kinds)
+        covered = (
+            every
+            and spec_hold(pull, issue, loop) is None
+            or spec_policy(issue, kinds)
+            and spec_owned(pull, issue, loop) is None
+        )
         if not covered and SCOPED in labels:
             why = scoped(pull, issue, loop)
             covered = why is None
@@ -1907,7 +2196,11 @@ def proofs(
         verdicts = passes(pull)
         found += (unreviewed := reviewed(where, pull, loop, verdicts))
         # only on a verdict that would land, and tier first, since risk() reads the reviews again
-        if not unreviewed and (tier := lower(verdicts)) and (why := risk(pull, issues, loop)):
+        if (
+            not unreviewed
+            and (tier := tiered(pull, verdicts))
+            and (why := risk(pull, issues, loop))
+        ):
             found.append(
                 f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier}): a"
                 " default-tier verifier pass on the head first"
@@ -1933,7 +2226,9 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:`/`Risk:`/`Logic change:` lines: a body
     starting `Verifier (<family>), pass <n>`, by the PR's author, the account running this or a writer (writer), since
     anyone can review a public repo, and a colleague (or their agent) verifying someone else's PR posts as themself.
-    A string names why none can be read."""
+    A verifier's newest review on a commit and pass replaces its earlier ones there (kin), since one that parked on a
+    question rewrites its verdict in the same pass; a mixed PR's two families both stay. A string names why none can
+    be read."""
     reviews = pull["reviews"]
     if (reviews.get("totalCount") or 0) > len(reviews["nodes"]):
         return f"has more than {len(reviews['nodes'])} reviews: the gate reads one page"
@@ -1942,7 +2237,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     trusted = {(pull.get("author") or {}).get("login"), viewer() if found else None} - {None}
     others = {(review.get("author") or {}).get("login") for review in found} - trusted - {None}
     trusted |= {login for login in others if writer(login)}
-    return [
+    read = [
         (
             ((review.get("commit") or {}).get("oid") or "").lower(),
             int(PASS.match(review["body"])[2]),
@@ -1960,6 +2255,16 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
         for review in found
         if (review.get("author") or {}).get("login") in trusted
     ]
+    keys = [(commit, number, kin(lines["Family"])) for commit, number, lines in read]
+    return [entry for i, entry in enumerate(read) if keys[i] not in keys[i + 1 :]]
+
+
+def kin(family: str) -> str:
+    """A review heading's verifier family: its harness word (`codex/terra-6.1/med mid` is `codex`), with Claude Code's
+    `cc` read as `claude`, so one verifier's reviews group whatever model, tier or qualifier each names. ponytail: two
+    verifiers of one harness in one pass count as one; key on the model too if a PR ever runs two such."""
+    word = re.match(r"[^/,\s]*", family)[0].lower()  # type: ignore[index]
+    return "claude" if word == "cc" else word
 
 
 def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
@@ -1977,6 +2282,201 @@ def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
         if number == last and (found := LOWER_TIER.search(lines["Family"]))
     ]
     return tiers[0].lower() if tiers else None
+
+
+# A PR that only bumps the engineering pack's pin (#1218): the pack's repository and release tags, the pin files apm
+# reads, and a skill file apm vendors (`.agents/skills/<skill>/...`, `.claude/skills/<skill>/...`) from the pack's
+# `<virtual_path>/skills/`. The tag's own copy of the rule sits in one of SCRIPTS, the gatekeeper's file or, before
+# the split, approvals.py's.
+PACK_REPO = "kzarzycki/agent-skills"
+PACK_TAG = re.compile(r"engineering-v\d+\.\d+\.\d+")
+PIN_FILES = ("apm.yml", "apm.lock.yaml")
+ANNOTATIONS = __import__("__future__").annotations.compiler_flag
+VENDORED = re.compile(r"\.[^/]+/skills/(.+)")
+RULE_FILES = tuple(
+    f"engineering/skills/engineering-loop/scripts/{name}"
+    for name in ("gatekeeper.py", "approvals.py")
+)
+
+
+def tiered(
+    pull: dict[str, Any], verdicts: list[tuple[str, int, dict[str, str]]] | str
+) -> str | None:
+    """lower() of the verdicts by the rule that judges this PR: the pin target's, read from its tag (pinned_rule), on
+    a PR that only bumps the pack to a released tag (pin_target), since the base's rule there is the one the pin
+    retires; main's otherwise, and wherever the tag's rule can't be read or fails."""
+    if isinstance(verdicts, str) or not verdicts or (tag := pin_target(pull)) is None:
+        return lower(verdicts)
+    rule = pinned_rule(tag)
+    if rule is None:
+        return lower(verdicts)
+    try:
+        found = rule(verdicts)
+    except Exception:  # noqa: BLE001 - a rule the tag ships that fails on these verdicts is no rule: main's judges
+        return lower(verdicts)
+    return found if found is None or isinstance(found, str) else lower(verdicts)
+
+
+def pin_target(pull: dict[str, Any]) -> str | None:
+    """The released pack tag (PACK_TAG of PACK_REPO) the PR pins, when its diff touches only the pin (PIN_FILES) and
+    the pack's vendored skill files, and every vendored file in it equals the tag's byte for byte (by blob SHA, a hash
+    of the bytes; a removed one is one the tag lacks, and one main's own lock lists); else None. The lock at the head names the target: its pack
+    dependency's `resolved_ref`, whose `resolved_commit` must be the tag's commit, with apm.yml pinning that ref; a
+    vendored file is one either side's lock lists among the pack's `deployed_files`. The tag is read from the pack's
+    repository, never from the PR's tree, which its author controls. Any read that fails, or a file list past the
+    one REST gives: None, so main's rule judges, as before."""
+    shaped = touched(pull)
+    if shaped is not None and (
+        not shaped or any(path not in PIN_FILES and not VENDORED.fullmatch(path) for path in shaped)
+    ):
+        return None  # most PRs, and one changing nothing: no call beyond the PR node
+    try:
+        changes = pr_changes(pull["number"])
+        total = pull["files"].get("totalCount") or 0
+        head = pinned_pack(file_at(pull["headRefOid"], "apm.lock.yaml"))
+        if head is None or total > len(changes):
+            return None
+        tag, commit, virtual, deployed = head
+        if not PACK_TAG.fullmatch(tag) or not pins(file_at(pull["headRefOid"], "apm.yml"), tag):
+            return None
+        base = pinned_pack(file_at(pull["baseRefOid"], "apm.lock.yaml"))
+        released = tag_tree(PACK_REPO, tag)
+    except (
+        subprocess.CalledProcessError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        yaml.YAMLError,
+    ):
+        return None
+    if released is None or released[0].lower() != str(commit).lower():
+        return None
+    files = released[1]
+    owned = set(base[3] if base else ())  # main's lock alone controls what a PR may remove
+    vendored = set(deployed) | owned
+
+    def source(path: str, removed: bool = False) -> str | None:
+        found = VENDORED.fullmatch(path)
+        return (
+            f"{virtual}/skills/{found[1]}"
+            if found and path in (owned if removed else vendored)
+            else None
+        )
+
+    for change in changes:
+        path, status = change["filename"], change.get("status")
+        # a rename removes its old path, which must be a vendored file the tag lacks (a pin file is none)
+        old = change.get("previous_filename")
+        if old and status == "renamed" and ((was := source(old, True)) is None or was in files):
+            return None
+        if path in PIN_FILES:
+            continue
+        if (want := source(path, status == "removed")) is None:
+            return None
+        if status == "removed":
+            if want in files:
+                return None
+        elif want not in files or files[want][1] != change.get("sha"):
+            return None
+    return tag
+
+
+def pinned_pack(lock: str | None) -> tuple[str, str, str, list[str]] | None:
+    """The pack's (resolved_ref, resolved_commit, virtual_path, deployed_files) in an apm.lock.yaml's text, or None
+    when it has no dependency on the pack from GitHub."""
+    data = yaml.safe_load(lock) if lock else None
+    if data is not None and not isinstance(data, dict):
+        raise ValueError("apm.lock.yaml is not a mapping")
+    for dep in (data or {}).get("dependencies") or []:
+        if (
+            isinstance(dep, dict)
+            and dep.get("repo_url") == PACK_REPO
+            and dep.get("host", "github.com") == "github.com"
+            and dep.get("virtual_path") == "engineering"
+        ):
+            ref, commit = dep.get("resolved_ref"), dep.get("resolved_commit")
+            if isinstance(ref, str) and isinstance(commit, str):
+                return (
+                    ref,
+                    commit,
+                    "engineering",
+                    [str(path) for path in dep.get("deployed_files") or []],
+                )
+    return None
+
+
+def pins(manifest: str | None, tag: str) -> bool:
+    """Whether an apm.yml's text pins the pack at `tag`: `{git: <repo>/engineering, ref: <tag>}` or
+    `<repo>/engineering#<tag>` among its apm dependencies."""
+    data = yaml.safe_load(manifest) if manifest else None
+    deps = data.get("dependencies") if isinstance(data, dict) else data
+    if deps is not None and not isinstance(deps, dict):
+        raise ValueError("apm.yml is not a mapping")
+    entries = (deps or {}).get("apm") or []
+    want = f"{PACK_REPO}/engineering"
+    return any(
+        entry == f"{want}#{tag}"
+        or (isinstance(entry, dict) and entry.get("git") == want and entry.get("ref") == tag)
+        for entry in entries
+    )
+
+
+def pinned_rule(tag: str) -> Callable[[Any], Any] | None:
+    """The tag's lower(), read from the pack's repository at `tag` (RULE_FILES, the first that defines it); None when
+    no file there defines it, so main's rule applies. Only that function runs, with the module-level names it reads,
+    each an assignment of the tag's file: the tier rule is a pure function of the verdicts, so no other code of the
+    tag (its I/O, its other checks) can change how this run judges."""
+    for path in RULE_FILES:
+        try:
+            text = file_at(tag, path, PACK_REPO)
+        except (subprocess.CalledProcessError, OSError):
+            return None
+        if text and (rule := rule_in(text)):
+            return rule
+    return None
+
+
+def rule_in(text: str) -> Callable[[Any], Any] | None:
+    """lower() of a gatekeeper source's text, built with only the module-level assignments it reads (and theirs); None
+    when the text defines no lower() of one argument or can't be built."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    defined = {
+        node.targets[0].id: node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    }
+    rule = next(
+        (node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "lower"),
+        None,
+    )
+    if rule is None or len(rule.args.args) != 1:
+        return None
+    pending: list[ast.AST] = [rule]
+    seen: set[str] = set()
+    while pending:
+        for node in ast.walk(pending.pop()):
+            if isinstance(node, ast.Name) and node.id in defined and node.id not in seen:
+                seen.add(node.id)
+                pending.append(defined[node.id])
+    # in the file's order, so a name is assigned before one that reads it
+    needed = [node for name, node in defined.items() if name in seen] + [rule]
+    space: dict[str, Any] = {"re": re, "Any": Any}
+    code = ast.Module(body=needed, type_ignores=[])
+    try:
+        # annotations stay unevaluated, as under the file's own `from __future__ import annotations`
+        exec(  # noqa: S102 - a released tag's own tier rule, the pack's code as main's copy is
+            compile(code, f"<{PACK_REPO} lower>", "exec", flags=ANNOTATIONS, dont_inherit=True),
+            space,
+        )
+    except Exception:  # noqa: BLE001 - a file shape this can't rebuild: main's rule
+        return None
+    return space["lower"]
 
 
 def counts(lines: dict[str, str]) -> tuple[int, int] | None:
@@ -2111,6 +2611,7 @@ def armoured(value: str) -> str:
     body = "".join(value.split())
     lines = [body[i : i + 70] for i in range(0, len(body), 70)]
     return "\n".join(
+        # pragma: allowlist nextline secret
         ["-----BEGIN OPENSSH PRIVATE KEY-----", *lines, "-----END OPENSSH PRIVATE KEY-----"]
     )
 
@@ -2131,6 +2632,7 @@ def placed(loop: str | None) -> Any:
             " the session's proxy refuses, and signs with GitHub's key"
         )
     where = (land or {}).get("where", "host")
+    where = LAND_WHERE.aliases.get(where, where)
     if where not in ("both", "cloud" if cloud else "host"):
         raise Refused(f"loop.md's `land.where` is `{where}`, so land does not run in {place}")
     if not cloud:
@@ -2220,7 +2722,7 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
     if pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]:
         return f"{where}: auto-merge or the merge queue would merge it with GitHub's signature: turn it off"
     # REST can't say whether a PR is queued, nor whether classic branch protection requires a queue (required_checks()
-    # refuses only a ruleset's): a cloud session, where only REST answers, takes the project's word in loop.md
+    # reports only a ruleset's): a cloud session, where only REST answers, takes the project's word in loop.md
     if pull["isInMergeQueue"] is None and not (
         in_cloud() and settings(project()[1]).get("land", {}).get("merge_queue") is False
     ):
@@ -2591,17 +3093,20 @@ def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] 
 
 def unforced(pull: dict[str, Any]) -> str | None:
     """The line check merge and brief print when every commit since the newest verdict's commit is a merge of the
-    base (base_merges) and land posted no CONFLICTS comment naming a head that walk passes, so nothing forced the
-    merge: land merges each head onto the base itself and gates that, and the merge only costs a gate and a verifier
-    pass. None otherwise, a head or base tip that one fetch (fetched, in base_merges) cannot bring included, since the
-    line is advice and blocks nothing."""
+    base (base_merges) whose parents merge cleanly (merged) and land posted no CONFLICTS comment naming a head that
+    walk passes, so nothing forced the merge: land merges each head onto the base itself and gates that, and the
+    merge only costs a gate and a verifier pass. None otherwise, a head or base tip that one fetch (fetched, in
+    base_merges) cannot bring included, since the line is advice and blocks nothing."""
     verdicts = passes(pull)
     if isinstance(verdicts, str) or not verdicts or not (verified := verdicts[-1][0]):
         return None
     if verified == pull["headRefOid"].lower():
         return None
     walked = base_merges(pull, verified)
-    if isinstance(walked, str):
+    # a merge whose parents conflict was forced, CONFLICTS comment or not
+    if isinstance(walked, str) or any(
+        isinstance(merged(first, second), str) for _, first, second in walked
+    ):
         return None
     earlier = {first for _, first, _ in walked}
     try:
@@ -2733,17 +3238,19 @@ def owner_waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """A line while the change is high risk (risk) and no go is on the head (owned): the owner's, or with
-    `loop.delegate: all` the delegate's. Into the default branch only such a head-pinned go counts, since a delegate
-    acting through the owner's account adds a label no differently from the owner; into a feature branch the `approved:merge` label, added after the head's push, counts too, the
-    owner's or the delegate's (delegate). `pushed(pull)` is when the head was pushed (default: GitHub's repository
-    activity). A path `risk.merge_paths` names (owners_only) takes the owner's own go on the head, into any branch.
+    """A line while the change's rating asks a go of its merge (rating: `go` or `owner`) and no go is on the head
+    (owned): the owner's, or with `loop.delegate: all` the delegate's. Into the default branch only such a head-pinned
+    go counts, since a delegate acting through the owner's account adds a label no differently from the owner; into a
+    feature branch the `approved:merge` label, added after the head's push, counts too, the owner's or the delegate's
+    (delegate). `pushed(pull)` is when the head was pushed (default: GitHub's repository activity). A rating that asks
+    `owner`, by default a path `risk.critical_paths` names, takes the owner's own go on the head, into any branch.
     """
     where, found = f"PR #{pull['number']}", []
-    why = risk(pull, issues, loop)
-    if why is None:
+    rated = rating(pull, issues, loop)
+    if rated.merge == "gates":
         return found
-    carry, sole = carried_go(pull, loop), owners_only(pull, loop)
+    why = rated.because
+    carry, sole = carried_go(pull, loop), why if rated.merge == "owner" else None
     by = carry[0] if isinstance(carry, tuple) else None
     if by == "owner" or by and not sole:
         return found
@@ -2762,15 +3269,15 @@ def owner_waits(
         return [
             (
                 f"{where} waits for the owner's go on its head ({command}; into {pull['baseRefName']} `{MERGE_LABEL}`"
-                f" is no go), since it is high risk: {why}"
+                f" is no go), since it is {rated.source} risk: {why}"
             ),
             *stale,
         ]
     if MERGE_LABEL not in names(pull):
         return [
             (
-                f"{where} waits for the owner's go on its head ({command}, or `{MERGE_LABEL}`), since it is high"
-                f" risk: {why}"
+                f"{where} waits for the owner's go on its head ({command}, or `{MERGE_LABEL}`), since it is"
+                f" {rated.source} risk: {why}"
             ),
             *stale,
         ]
@@ -2909,7 +3416,8 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
     refused, since the approver saw the one they were asked about. The delegate's go into the default branch is
     refused unless `delegate` is `all` in the policy on `origin/<base>` (base_policy), since without it only the owner's
     go covers that branch and a branch's own edit is not the owner's, and on a PR
-    touching a path `risk.merge_paths` names (owners_only) into any branch, since that merge is the owner's alone."""
+    whose rating asks the owner's own go of its merge (owners_only; by default a path `risk.critical_paths` names) into
+    any branch, since that merge is the owner's alone."""
     pull = pull_request(number)
     if pull["state"] != "OPEN":
         raise Refused(f"PR #{number} is {pull['state'].lower()}: nothing to approve")
@@ -3284,7 +3792,8 @@ PORTS = {
         "merged_labelled",  # (branch, name) -> the merged PRs into branch carrying the label
         "open_pulls",  # (limit) -> up to limit open PRs, each with its number, branches, draft, body and closing issues
         "open_heads",  # () -> the head commit of every open PR
-        "required_checks",  # (base) -> the checks the base requires; Refused where its rules need a merge queue
+        "required_checks",  # (base) -> the checks the base requires, `queue` the merge method of a merge queue its
+        # rules require (None, or no such attribute, without one)
         "default_branch",  # () -> the repository's default branch
         "squash_message",  # () -> what a squash's body holds: COMMIT_MESSAGES, PR_BODY or BLANK
         "pull_commits",  # (pr) -> the PR's commits, each with its message and author
@@ -3295,6 +3804,13 @@ PORTS = {
         "ready",  # (pr, undo=False) -> marks a draft ready, or a ready PR a draft
         "merge",  # (pr, method, body, head) -> merges pinned to head, `body` None for the forge's default
         "edit_text",  # (method, path, body) -> replaces the body of a PR, comment or review at the forge's route
+        "enqueue_pull",  # (node, head) -> puts the PR in its base's merge queue pinned to head; its position, or None
+        "dequeue_pull",  # (node) -> takes the PR out of the merge queue
+        "commit_checks",  # (ref) -> {name: {conclusion, url, id}} of the newest run of each check on the commit
+        "job_log",  # (job) -> a check run's job log
+        "commit_tree",  # (sha) -> the commit's tree SHA
+        "tag_tree",  # (repo, tag) -> (commit, {path: (mode, blob)}) of tag `tag` of `repo`, or None when it has none
+        "file_at",  # (ref, path, repo=None) -> the file's text at ref, of `repo` or this one, or None when absent
     ),
     # a commit's statuses, newest first, each with its context, state, description, creator and creation time
     # (statuses(sha)); one set (post_status(sha, context, description, state="success")); a verdict posted as a review
@@ -3378,6 +3894,7 @@ issue_node, issues_of = through("tracker", "issue_node"), through("tracker", "is
 label, assign = through("tracker", "label"), through("tracker", "assign")
 pull_request, current_pr = through("forge", "pull_request"), through("forge", "current_pr")
 pr_changes, merged_pull = through("forge", "pr_changes"), through("forge", "merged_pull")
+tag_tree, file_at = through("forge", "tag_tree"), through("forge", "file_at")
 merge_base, diff_lines = through("forge", "merge_base"), through("forge", "diff_lines")
 tree, head_pushed = through("forge", "tree"), through("forge", "head_pushed")
 required_checks, default_branch = (
@@ -3388,6 +3905,9 @@ squash_message, pull_commits = through("forge", "squash_message"), through("forg
 viewer, writer = through("forge", "viewer"), through("forge", "writer")
 github_repo, one_repo = through("forge", "github_repo"), through("forge", "one_repo")
 open_heads = through("forge", "open_heads")
+enqueue_pull, dequeue_pull = through("forge", "enqueue_pull"), through("forge", "dequeue_pull")
+commit_checks, job_log = through("forge", "commit_checks"), through("forge", "job_log")
+commit_tree = through("forge", "commit_tree")
 statuses, post_status = through("evidence", "statuses"), through("evidence", "post_status")
 post_review, minimize = through("evidence", "post_review"), through("evidence", "minimize")
 
@@ -3421,6 +3941,82 @@ def toplevel() -> Path:
         return Path(git("rev-parse", "--show-toplevel").strip())
     except subprocess.CalledProcessError as exc:
         raise Refused("not in a git checkout: run from the repo's checkout") from exc
+
+
+def working_tree(root: Path) -> bool:
+    """Whether the clone at `root` has its files checked out: False when HEAD names a commit and there is no index, as
+    in a `--no-checkout` clone or worktree that a host keeps only to launch cloud sessions from."""
+    index = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-path", "index"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    born = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", "-q", "HEAD^{commit}"],
+        capture_output=True,
+        check=False,
+    )
+    return born.returncode != 0 or not index or Path(index).exists()
+
+
+@functools.cache
+def policy_ref(root: Path) -> str | None:
+    """Where the policy files are read: None in a clone with a working tree, whose files they are (judge_with_base
+    refuses a land or merge check where they differ from the base's); in one without, origin's default branch's
+    remote-tracking ref, fetched once per run, since its files are the ones main holds and the host needs no checkout.
+    A failed fetch is refused, since the ref as last fetched may hold an older policy than main's now."""
+    if working_tree(root):
+        return None
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, text=True, check=False
+        )
+
+    # origin/HEAD as the clone recorded it, else as origin says now
+    name = run("symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD").stdout.strip()
+    name = name.removeprefix("origin/") or "".join(
+        re.findall(
+            r"^ref: refs/heads/(\S+)\tHEAD$",
+            run("ls-remote", "--symref", "origin", "HEAD").stdout,
+            re.MULTILINE,
+        )[:1]
+    )
+    if not name:
+        raise Refused(
+            f"{root} has no working tree and origin names no default branch, so there is no policy to read:"
+            " run where the files are checked out"
+        )
+    ref = f"refs/remotes/origin/{name}"
+    if run("fetch", "-q", "origin", f"+refs/heads/{name}:{ref}").returncode:
+        raise Refused(
+            f"{root} has no working tree and origin/{name} could not be fetched, so the policy would be the last"
+            " fetched one: retry, or run where the files are checked out"
+        )
+    return ref
+
+
+def shown_at(root: Path, ref: str, path: Path) -> bytes | None:
+    """`path`'s bytes at `ref`, None where the ref holds no such file."""
+    found = subprocess.run(
+        ["git", "-C", str(root), "show", f"{ref}:{path.as_posix()}"],
+        capture_output=True,
+        check=False,
+    )
+    return found.stdout if found.returncode == 0 else None
+
+
+def policy_bytes(root: Path, path: Path) -> bytes | None:
+    """A policy file's bytes as this run reads it (policy_ref): the working tree's, else origin's default branch's."""
+    if (ref := policy_ref(root)) is not None:
+        return shown_at(root, ref, path)
+    try:
+        return (root / path).read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise Refused(f"{root / path}: {exc.strerror}") from exc
 
 
 # the base the PR a command acts on merges onto, which project() reads the policy from (policy_from); None: the
@@ -3463,9 +4059,17 @@ def policy_file(root: Path, path: Path, base: str | None = None) -> str | None:
     """`path` as project() reads it: from `origin/<base>` (policy_base), None where the base lacks it, printing
     `differs` once when the working tree's copy is another; from the working tree, printing `unbased` once, when there
     is no such ref."""
+    policy_ref(
+        root
+    )  # a clone with no working tree: origin's default branch fetched once, a failed fetch refused
     found = policy_base(str(root), base)
     held = read(root / path) if (root / path).exists() else None
     if found is None:
+        if not working_tree(root):  # no files to fall back to: empty policy would judge by defaults
+            raise Refused(
+                f"{root} has no working tree and no origin/{base or default_base(str(root))} ref, so there is no"
+                " policy to read: fetch that base, or run where the files are checked out"
+            )
         unbased(str(root))
         return held
     ref, tip = found
@@ -3476,7 +4080,7 @@ def policy_file(root: Path, path: Path, base: str | None = None) -> str | None:
         check=False,
     )
     based = shown.stdout if shown.returncode == 0 else None
-    if held != based:
+    if held != based and working_tree(root):  # with no working tree there is no copy to differ
         head = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "HEAD"],
             capture_output=True,
@@ -3734,9 +4338,13 @@ def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
     waiting = waits(pull, issues, loop) if point == "merge" else []
+    rated = rating(pull, issues, loop) if point == "merge" else None
+    if rated is not None:
+        # on stderr, so the lines a workflow or a lead reads as the gate's answer stay what holds the merge
+        print(rated.line(pull), file=sys.stderr)
     used = (
         whose(pull, loop)
-        if point == "merge" and not found and not waiting and risk(pull, issues, loop)
+        if rated is not None and not found and not waiting and rated.merge != "gates"
         else []
     )
     # advice, so it prints whatever else holds the merge and changes no exit code
@@ -3787,30 +4395,69 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
     new state once: until it ends, or exit 3 at CEILING."""
     if not wait:
         return landing(pr, only)[0]
-    deadline, said = time.monotonic() + CEILING, ""
+    global held_tip
+    deadline, said, spoke, heard = time.monotonic() + CEILING, "", 0.0, ""
+    github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
     while True:
+        held_tip = None
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
                 code, again = landing(pr, only)
         finally:
-            # a background command's log: each state once, not every 30 seconds; a held lock's age is no new state
-            if (state := re.sub(r"\d+ minutes? ago", "", out.getvalue())) != said:
+            # a background command's log: each state once, not every 30 seconds, a held lock's age being no new
+            # state; again every SLOT_SAY_SECONDS, so wait-for's stall check never reads a long wait as a hang
+            state = re.sub(r"\d+ minutes? ago", "", out.getvalue())
+            if state != said or time.monotonic() - spoke >= SLOT_SAY_SECONDS:
                 print(out.getvalue(), end="", flush=True)
-            said = state
+                spoke = time.monotonic()
+            said, heard = state, out.getvalue()
         if not again:
             return code
-        if time.monotonic() + POLL > deadline:
+        nap = poll_seconds()
+        if time.monotonic() + nap > deadline:
             print(f"land --wait stopped after {CEILING // 3600} hours, still waiting")
             return WAITING
-        time.sleep(POLL)
+        # a round asks GitHub again after `nap`, or RECHECK on a held lock; the sleep goes in POLL steps, so the log
+        # is never silent past wait-for's stall check and a lock that moved is seen at once (ls-remote costs no quota)
+        asleep = 0.0
+        while time.monotonic() + POLL <= deadline:
+            time.sleep(POLL)
+            asleep += POLL
+            if (
+                heard and time.monotonic() - spoke >= SLOT_SAY_SECONDS
+            ):  # wait-for's stall check reads silence as a hang
+                print(heard, end="", flush=True)
+                spoke = time.monotonic()
+            # the lock still held at the same tip, and its holder checked lately: nothing to ask GitHub
+            if not held_tip:
+                if asleep >= nap:
+                    break
+            elif asleep >= max(nap, RECHECK) or git("ls-remote", "origin", held_tip[0]).split()[
+                :1
+            ] != [held_tip[1]]:
+                break
+
+
+def poll_seconds() -> float:
+    """POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA. `gh api rate_limit` is not counted against the
+    quota; gh shows no response headers, so nothing is read for free. A failed read keeps POLL."""
+    try:
+        left, limit = github.gh(
+            "api", "rate_limit", "--jq", r'.resources.core|"\(.remaining) \(.limit)"'
+        ).split()
+        return LOW_POLL if int(left) < LOW_QUOTA * int(limit) else POLL
+    except (subprocess.CalledProcessError, ValueError):
+        return POLL
 
 
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
-    """Land every landable PR into the base (the first named PR's, else the default branch) as one gated batch, under
-    the landing lock, where loop.md lets land run (placed) (`only`: the named PRs alone); the exit, and whether a wait
-    would end it (lock, CI on a head), so land --wait runs it again. Every decision is the policy of the base the PRs
-    merge onto (policy_from): the named PRs' base is read first (land_base, which changes no PR), the base fetched,
+    """Land every landable PR into the base (the first named PR's, else the default branch) through its merge queue,
+    the GitHub merge queue where its rules require one, else the local merge queue, where loop.md lets land run (placed)
+    (`only`: the named PRs alone); the exit, and whether a wait would end it (lock, CI on a head, a queue entry), so
+    land --wait runs it again. Every decision is the policy of the base the PRs
+    merge onto (policy_from): the named PRs' base is read first (land_base, which changes no open PR, and gives one the GitHub merge queue merged its
+    `Landed` comment: queue_landed), the base fetched,
     and its policy read to place the land (placed: where it may run and the key it signs with) and to ready drafts,
     then read again after the fetch under the lock for the batch (landing_here)."""
     named, base, worst = land_base(pr)
@@ -3846,6 +4493,7 @@ def land_base(
         pull = pull_request(number)
         if pull["state"] == "MERGED":
             print(f"PR #{number} is merged")
+            queue_landed(pull)
         elif pull["state"] != "OPEN":
             if len(numbers) == 1:
                 raise Refused(f"PR #{number} is closed: nothing to land")
@@ -3881,9 +4529,15 @@ def landing_here(
     excludes this place, and signed with its key), every PR is judged under it, a draft this land readied that it would
     not have readied goes back to draft (unreadied), and a verdict readied() kept for a draft it refused is reused only
     when the policy is unchanged."""
+    # the base's rules pick the merge queue: GitHub's where they require one, else the local one, never a mix of the two;
+    # `loop:approvals` and `gatekeeper` are check merge's own statuses, on the proofs land reads itself
+    rules = required_checks(base)
+    required = rules - OWN
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
     if ready:
-        named = readied(named, base, tracker, loop)
+        named = readied(named, required, tracker, loop)
+    if method := getattr(rules, "queue", None):
+        return github_queue(named, base, tracker, loop, required, method, only, worst)
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
     stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
     # every lock commit pushed, each before its push; taken stays None while the last one's push may have reached origin
@@ -3906,7 +4560,7 @@ def landing_here(
                 [{k: v for k, v in pull.items() if k != "verdict"} for pull in named], base, *fresh
             )
         with placed(fresh[1]):
-            return batched(named, base, *fresh, only, held, worst)
+            return local_queue(named, base, *fresh, required, only, held, worst)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
@@ -3930,11 +4584,18 @@ def landing_here(
             sys.exit(128 + min(waiting))
 
 
+# the script files running here: this one, and the gatekeeper beside it when this is the approvals.py shim that runs
+# the gatekeeper's source (the same file, once, when the gatekeeper runs directly)
+RUNNING = tuple(dict.fromkeys((__file__, str(Path(__file__).with_name("gatekeeper.py")))))
+
+
 def base_drift(base: str) -> list[str]:
     """The running gatekeeper.py and github_adapter.py and the three policy files (tracker, loop.md, gatekeeper.md) whose text here differs from
     `origin/<base>`'s, as repo paths, since a PR's own edit of the code or rules that judge it must not judge it. Reads
     the ref as fetched (a land has just fetched it); a script inside the checkout that the base lacks (a PR adds or moves it) differs; only one
-    installed outside the checkout, or a ref that is missing, has nothing to compare and counts as equal."""
+    installed outside the checkout, or a ref that is missing, has nothing to compare and counts as equal. A policy file
+    is compared as this run reads it (policy_bytes): with no working tree, origin's default branch's, so a land into
+    the default branch finds no drift by construction, and one into another base still compares with that base's."""
     root = toplevel()
     ref = f"refs/remotes/origin/{base}"
     if subprocess.run(
@@ -3943,25 +4604,23 @@ def base_drift(base: str) -> list[str]:
         check=False,
     ).returncode:
         return []
-    paths = [TRACKER, LOOP, POLICY]
+    paths: list[Path] = []
     # the gatekeeper and its GitHub adapter, the code that judges
-    for running_file in reversed((__file__, github.__file__ or "")):
+    for running_file in reversed(dict.fromkeys((*RUNNING, github.__file__ or ""))):
         try:
             paths.insert(0, Path(running_file).resolve().relative_to(root.resolve()))
         except ValueError:
             pass
     differ = []
-    for path in paths:
-        shown = subprocess.run(
-            ["git", "-C", str(root), "show", f"{ref}:{path.as_posix()}"],
-            capture_output=True,
-            check=False,
-        )
-        theirs = shown.stdout if shown.returncode == 0 else None
-        try:
-            ours = (root / path).read_bytes()
-        except OSError:
-            ours = None
+    for path in [*paths, TRACKER, LOOP, POLICY]:
+        theirs = shown_at(root, ref, path)
+        if path in (TRACKER, LOOP, POLICY):
+            ours = policy_bytes(root, path)
+        else:
+            try:
+                ours = (root / path).read_bytes()
+            except OSError:
+                ours = None
         if ours != theirs:
             differ.append(path.as_posix())
     return differ
@@ -3976,6 +4635,11 @@ def judge_with_base(base: str, fetch: bool = False) -> None:
                 "git",
                 "-C",
                 str(toplevel()),
+                # through `gh`, so GH_TOKEN works where the checkout persisted no credentials
+                "-c",
+                "credential.helper=",
+                "-c",
+                "credential.helper=!gh auth git-credential",
                 "fetch",
                 "-q",
                 "origin",
@@ -4126,6 +4790,8 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
                 if age <= CEILING and (done := released(base, holder)):
                     print(f"the landing lock {name} ({holder}) is released: {done}: broken")
                 elif age <= CEILING:
+                    global held_tip
+                    held_tip = (ref, tip)
                     print(
                         f"another land holds the landing lock {name} ({holder}), taken {age // 60} minutes ago"
                         f" ({time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(taken))}): land --wait waits for it"
@@ -4248,18 +4914,17 @@ class Verdict(NamedTuple):
 
 def readied(
     named: list[dict[str, Any]],
-    base: str,
+    required: set[str],
     tracker: str | None,
     loop: str | None,
 ) -> list[dict[str, Any]]:
     """The named PRs, each draft `landable` finds ready to mark flagged and marked ready (and read again) before the
     wait for the lock, so the holder's next batch includes it. A draft it refuses is returned with its verdict in
-    `verdict`, which `batched` reuses instead of asking again; a readied one with `readied`, and `waiting` for what its
+    `verdict`, which `candidates_of` reuses instead of asking again; a readied one with `readied`, and `waiting` for what its
     start of CI means for this pass."""
     drafts = [pull for pull in named if pull["isDraft"]]
     if not drafts:
         return named
-    required = required_checks(base) - OWN
     found: dict[int, dict[str, Any]] = {}
     for pull in drafts:
         verdict = landable(pull, tracker, loop, required, named=True)
@@ -4365,31 +5030,31 @@ def landable(
         wait = (1, False) if red or any(line.endswith(PAGED) for line in lines) else (WAITING, True)
         return Verdict(wait, issues=issues)
     # after CI, so the owner is never asked about a head CI could still reject
+    rated = rating(pull, issues, loop)
+    print(rated.line(pull), file=sys.stderr)
     if owner := owner_waits(pull, issues, loop):
         for line in owner:
             print(line)
         return Verdict((WAITING, False), issues=issues)  # the owner is asked, not polled
-    if risk(pull, issues, loop):
+    if rated.merge != "gates":
         for line in whose(pull, loop):
             print(line)
     return Verdict(None, issues=issues)
 
 
-def batched(
+def candidates_of(
     named: list[dict[str, Any]],
     base: str,
     tracker: str | None,
     loop: str | None,
-    only: bool = False,
-    held: list[str] | None = None,
-    worst: int = 0,
-) -> tuple[int, bool]:
-    """Under the lock (`held`, its commits): merge every candidate's head onto `base` locally, oldest PR first, gate
-    the result's tree once (or reuse a pass on it), move the lock to name the last PR to land (repointed), and merge each
-    through GitHub in that order; a red batch lands one PR at a time."""
-    # `loop:approvals` is check merge's own status, on the proofs land reads itself
-    required = required_checks(base) - OWN
+    required: set[str],
+    only: bool,
+) -> tuple[list[dict[str, Any]], dict[int, tuple[int, bool]], dict[int, Any]]:
+    """Both merge queues' candidates, oldest PR first: every open PR into `base` that is no draft, and the named ones
+    (`only`: those alone), each judged by `landable` (its risk flagged once its proofs hold); with the exit each other
+    one means for a named PR, and each waiting one's linked issues (batch_wait's owner check)."""
     waits: dict[int, tuple[int, bool]] = {}
+    issues: dict[int, Any] = {}  # each waiting PR's linked issues, for batch_wait's owner check
     candidates = []
     listed = {
         other["number"]
@@ -4410,10 +5075,67 @@ def batched(
             candidates.append(pull)
         else:
             waits[number] = verdict.exit
+            issues[number] = verdict.issues
+    return candidates, waits, issues
+
+
+def outcome(
+    named: list[dict[str, Any]],
+    exits: dict[int, tuple[int, bool]],
+    worst: int,
+    failed: set[int],
+) -> tuple[int, bool]:
+    """A land's exit, and whether a wait would change it: with PRs named the worst of theirs (`exits`, else 1), 1 over 3
+    over 0; with none 1 when one `failed`, else 3 while a wait would clear one of `exits`, else 0."""
+    if named:
+        found = [exits.get(pull["number"], (1, False)) for pull in named]
+        code = max((c for c, _ in found), key=lambda c: {1: 2, WAITING: 1}.get(c, 0), default=0)
+        code = 1 if worst else code
+        return code, code == WAITING and any(again for c, again in found if c == WAITING)
+    if failed:
+        return 1, False
+    return (WAITING, True) if any(again for _, again in exits.values()) else (0, False)
+
+
+def local_queue(
+    named: list[dict[str, Any]],
+    base: str,
+    tracker: str | None,
+    loop: str | None,
+    required: set[str],
+    only: bool = False,
+    held: list[str] | None = None,
+    worst: int = 0,
+) -> tuple[int, bool]:
+    """The local merge queue, under the lock (`held`, its commits): merge every candidate's head onto `base` locally,
+    oldest PR first, gate the result's tree once on this host (or reuse a pass on it), move the lock to name the last PR
+    to land (repointed), and merge each through GitHub in that order; a red batch lands one PR at a time."""
+    candidates, waits, issues = candidates_of(named, base, tracker, loop, required, only)
+    waited = ""
+    if (
+        candidates
+        and not only
+        and (seconds := settings(loop).get("land", {}).get("batch_wait_seconds", 0))
+    ):
+        pulls = {pull["number"]: pull for pull in named}
+        waited = batch_wait(seconds, pulls, issues, candidates, waits, tracker, loop, required)
     failed: set[int] = set()
     # each PR to land, the tree it lands, the tree gated with it, and how that passed
     landed: list[tuple[dict[str, Any], str, str, str]] = []
-    if candidates:
+    if candidates and policy_ref(toplevel()) is not None:
+        # no working tree here: the batch is computed in objects and gated only by a recorded pass, never run here
+        if settings(loop).get("pre_land"):
+            raise Refused(
+                f"loop.md's `pre_land` runs in a checkout of {base}'s tip, and this clone has no working tree:"
+                " land where the files are checked out"
+            )
+        tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
+        landed = merged_trees(candidates, base, tip, failed)
+        if landed and held:
+            repointed(base, held, landed[-1][0]["number"])
+        if landed:
+            merges(landed, base, tip, None, loop, failed, waited)
+    elif candidates:
         with batch_tree(base) as work:
             tip = run_in(work, "rev-parse", "HEAD")
             candidates = [pull for pull in candidates if pre_landed(pull, base, work, loop, failed)]
@@ -4421,20 +5143,83 @@ def batched(
             if landed and held:
                 repointed(base, held, landed[-1][0]["number"])
             if landed:
-                merges(landed, base, tip, work, loop, failed)
-    if named:
-        # each named PR's exit: its wait's, else 0 when it merged, else 1; the worst of them, 1 over 3 over 0
-        done = {pull["number"] for pull, *_ in landed} - failed
-        exits = [
-            waits[p["number"]] if p["number"] in waits else (0 if p["number"] in done else 1, False)
-            for p in named
-        ]
-        code = max((c for c, _ in exits), key=lambda c: {1: 2, WAITING: 1}.get(c, 0), default=0)
-        code = 1 if worst else code
-        return code, code == WAITING and any(again for c, again in exits if c == WAITING)
-    if failed:
-        return 1, False
-    return (WAITING, True) if any(again for _, again in waits.values()) else (0, False)
+                merges(landed, base, tip, work, loop, failed, waited)
+    # each named PR's exit: its wait's, else 0 when it merged, else 1
+    done = {pull["number"] for pull, *_ in landed} - failed
+    return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
+
+
+def check_never_comes(pull: dict[str, Any], required: set[str]) -> bool:
+    """Whether a required check of the PR's head will not come on its own, so waiting for it is pointless: GitHub runs no
+    workflow on a conflicting PR missing one (landable ends a named PR's wait the same way), and a required check whose
+    only run is the draft's skip waits for good where the workflow lacks the `ready_for_review` type (ci()'s line)."""
+    checks, _, drafts = head_checks(pull, required)
+    conflicting = pull.get("mergeable") == "CONFLICTING"
+    return bool(required & drafts) or (
+        conflicting and bool(required - {name for name, _ in checks})
+    )
+
+
+def batch_wait(
+    seconds: int,
+    pulls: dict[int, dict[str, Any]],
+    issues: dict[int, Any],
+    candidates: list[dict[str, Any]],
+    waits: dict[int, tuple[int, bool]],
+    tracker: str | None,
+    loop: str | None,
+    required: set[str],
+) -> str:
+    """Under the lock, before the batch tree: wait up to `seconds` (loop.md's `batch_wait_seconds`) while another PR is
+    held by nothing but its required checks still running (landable's (WAITING, True), no owner wait behind it, and no
+    check that never comes: check_never_comes), so
+    it rides this batch's one gate instead of paying one of its own. Each one that turns landable joins `candidates`
+    (oldest first) and leaves `waits`; one that turns red, or asks the owner, is dropped from the wait. Returns the
+    text for the Landed comment's `Batch:` line, empty when nothing was waited for."""
+    near = {
+        number
+        for number, exit in waits.items()
+        if exit == (WAITING, True)
+        and not check_never_comes(pulls.get(number) or pull_request(number), required)
+        and not owner_waits(pulls.get(number) or pull_request(number), issues[number] or [], loop)
+    }
+    if not near:
+        return ""
+    start = time.monotonic()
+    deadline = start + seconds
+    print(
+        f"land waits up to {seconds} s for the required checks of "
+        + ", ".join(f"#{n}" for n in sorted(near))
+        + " before it gates the batch"
+    )
+    joined: list[int] = []
+    while near and time.monotonic() < deadline:
+        time.sleep(min(POLL, max(0.0, deadline - time.monotonic())))
+        for number in sorted(near):
+            pull = pull_request(number)
+            with contextlib.redirect_stdout(
+                io.StringIO()
+            ):  # why a PR still waits is no news every poll
+                verdict = landable(pull, tracker, loop, required, number in pulls)
+            if verdict.exit is None:
+                candidates.append(pull)
+                waits.pop(number)
+                joined.append(number)
+                near.remove(number)
+                print(f"PR #{number} turned landable and joins the batch")
+            elif not (
+                verdict.exit == (WAITING, True)
+                and not check_never_comes(pull, required)
+                and not owner_waits(pull, verdict.issues or [], loop)
+            ):
+                waits[number] = verdict.exit
+                near.remove(number)
+                print(f"PR #{number} no longer waits only on its checks: left out of the wait")
+    candidates.sort(key=lambda pull: pull["number"])
+    spent = round(time.monotonic() - start)
+    who = ", ".join(f"#{n}" for n in joined) or "none"
+    print(f"land waited {spent} s for the batch; joined: {who}")
+    return f" (waited {spent} s, joined: {who})"
 
 
 @contextlib.contextmanager
@@ -4543,9 +5328,23 @@ def merged_onto(
         subprocess.run(
             ["git", "-C", str(work), "merge", "--abort"], capture_output=True, check=False
         )
+    skip_conflict(pull, base, before, failed)
+    return False
+
+
+def skip_conflict(pull: dict[str, Any], base: str, before: list[int], failed: set[int]) -> None:
+    """Leave out a PR whose head conflicts with the batch, saying so once per head on the PR."""
+    where = f"PR #{pull['number']}"
     failed.add(pull["number"])
     ahead = f" plus {', '.join(f'#{n}' for n in before)} merged before it" if before else ""
     print(f"{where} conflicts with {base}{ahead}: skipped")
+    conflict_note(pull, base, ahead)
+
+
+def conflict_note(pull: dict[str, Any], base: str, ahead: str = "") -> None:
+    """Say on the PR, once per head, that it conflicts with `base` (`ahead`: and the PRs merged before it), so it needs
+    the base merged in: both merge queues' comment."""
+    head = pull["headRefOid"]
     if not any(
         note["body"].startswith(CONFLICTS) and f"Head: {head}" in note["body"]
         for note in notes(pull)
@@ -4555,7 +5354,64 @@ def merged_onto(
             f"{CONFLICTS}\nHead: {head}\n\nIt conflicts with {base}{ahead}: merge origin/{base} in, rerun the gates,"
             " get a verdict on the merge (lead.md step 8), then land again.\n",
         )
-    return False
+
+
+def merged_trees(
+    candidates: list[dict[str, Any]], base: str, tip: str, failed: set[int]
+) -> list[tuple[dict[str, Any], str, str, str]]:
+    """merge_batch for a clone with no working tree: each candidate's head merged onto `tip` (origin's `base`) in
+    objects alone, `git merge-tree --write-tree` and `git commit-tree`, so no file is checked out, then the batch's tree
+    reused from a recorded pass of every gate step on it (step_pass), since no gate runs here. With none it refuses,
+    naming the tree, so a session with a working tree passes it (`local-ci --record` on a head with that tree)."""
+    commit, merged, trees = tip, [], []
+    for pull in candidates:
+        head = pull["headRefOid"]
+        if not fetched(head):
+            print(
+                f"PR #{pull['number']}: its head {head} is not on origin: push it, then land again"
+            )
+            failed.add(pull["number"])
+            continue
+        made = subprocess.run(
+            ["git", "merge-tree", "--write-tree", "--no-messages", commit, head],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if made.returncode == 1:
+            skip_conflict(pull, base, [p["number"] for p in merged], failed)
+            continue
+        if made.returncode:
+            raise Refused(
+                f"git merge-tree {commit} {head}: {made.stderr.strip() or made.returncode}"
+            )
+        tree = made.stdout.split()[0]
+        commit = git(
+            "-c",
+            "commit.gpgsign=false",
+            "commit-tree",
+            tree,
+            "-p",
+            commit,
+            "-p",
+            head,
+            "-m",
+            f"Merge {head}",
+        ).strip()
+        merged.append(pull)
+        trees.append(tree)
+    if not merged:
+        return []
+    missing = [step["name"] for step in gate_plan() if step_pass(commit, tree, step) is None]
+    if missing:
+        numbers = ", ".join(f"#{pull['number']}" for pull in merged)
+        raise Refused(
+            f"Tree {tree} (the batch of {numbers} on {base} at {tip}): {', '.join(f'`{m}`' for m in missing)} has no"
+            " recorded pass on it, and land runs no gate in a clone with no working tree: pass it where the files are"
+            " checked out (`approvals.py local-ci --record` on a head with this tree), then land again"
+        )
+    print(f"Tree {tree}: `{gate()[0]}` passed on it before, reused")
+    return [(pull, own, tree, "reused") for pull, own in zip(merged, trees, strict=True)]
 
 
 def pre_landed(
@@ -4628,7 +5484,7 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     command = gate()[0]
     log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
     for again in (False, True):
-        with log.open("w") as out:
+        with log.open("w") as out, saying(f"Tree {tree}: gating, log {public(str(log))}"):
             done = run_steps(
                 commit,
                 tree,
@@ -4643,6 +5499,7 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
                 ),
                 work,
                 out,
+                land=True,
             )
         code = done["code"]
         if done["left"]:
@@ -4700,14 +5557,29 @@ def landed_pass(tip: str, tree: str) -> dict[str, Any]:
 
 
 def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
-    """Take a PR red alone, twice, out of the batch: back to draft, so the next land leaves it out until `land <pr>`
-    marks it ready again, and a comment holding its gate log's last LOG_TAIL lines."""
-    where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
-    print(f"{where} is red alone on {base} at {green}, twice: evicted")
+    """Take a PR red alone, twice, out of the local merge queue's batch (evicted), with its gate log's last lines."""
     try:
         tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
     except OSError:
         tail = []
+    evicted(
+        pull,
+        EVICTED,
+        f"is red alone on {base} at {green}, twice",
+        f"`{gate()[0]}` failed twice on it merged alone onto {base} at {green}",
+        tail,
+        "The gate's last lines",
+    )
+
+
+def evicted(
+    pull: dict[str, Any], title: str, said: str, why: str, tail: list[str], what: str
+) -> None:
+    """Take a PR red twice out of either merge queue: back to draft, so the next land leaves it out until `land <pr>`
+    marks it ready again, and a comment headed `title` saying `why` it failed, holding `tail`, the last LOG_TAIL lines
+    of the log `what` names."""
+    where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
+    print(f"{where} {said}: evicted")
     # GitHub turns a PR back to draft only over GraphQL, which a cloud session's proxy refuses
     if in_cloud():
         print(
@@ -4717,11 +5589,335 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
         port("forge").ready(number, undo=True)
     comment(
         number,
-        f"{EVICTED}\nHead: {head}\n\n`{gate()[0]}` failed twice on it merged alone onto {base} at {green}: fix it,"
-        f" then `land {number}` marks it ready again.\n\n<details><summary>The gate's last lines</summary>\n\n````\n"
-        + "\n".join(tail)
-        + "\n````\n</details>\n",
+        f"{title}\nHead: {head}\n\n{why}: fix it, then `land {number}` marks it ready again.\n\n"
+        + folded(what, tail),
     )
+
+
+def folded(what: str, lines: list[str]) -> str:
+    """A comment's closing block of log `lines`, folded under `what`."""
+    return (
+        f"<details><summary>{what}</summary>\n\n````\n" + "\n".join(lines) + "\n````\n</details>\n"
+    )
+
+
+# how long an entry may wait for checks with no check suite on its commit: GitHub lost the merge_group event (#404)
+STUCK = 10 * 60
+# RemovedFromMergeQueueEvent.reason, a String in GitHub's schema: these values are read off real removals, beside
+# `checks_timed_out` and `manual`, which count for nothing
+FAILED_CHECKS, MERGE_CONFLICT, QUEUE_MERGED = "failed_checks", "merge_conflict", "merged"
+QUEUE_RED = "Red in the merge queue"
+QUEUE_EVICTED = "Evicted from the merge queue"
+LANDED = "Landed"
+# the label land puts on each PR it enqueues, and takes off once the PR's `Landed` comment is posted (queue_landed)
+QUEUED = "loop:queued"
+
+
+def github_queue(
+    named: list[dict[str, Any]],
+    base: str,
+    tracker: str | None,
+    loop: str | None,
+    required: set[str],
+    method: str,
+    only: bool = False,
+    worst: int = 0,
+) -> tuple[int, bool]:
+    """The GitHub merge queue, which `base`'s rules require (merging with `method`): no landing lock, local batch or
+    local gate, since GitHub's queue orders the entries, gates each group with its `merge_group` CI run and isolates a
+    red one. Every candidate (candidates_of), oldest PR first, goes in pinned to its head (queue_step). A named PR in
+    the queue waits (exit 3) until it merges; a bare land is done once its candidates are in."""
+    if in_cloud():
+        raise Refused(
+            f"{base}'s rules require GitHub's merge queue, and a cloud session can't enqueue: enqueuePullRequest is"
+            " GraphQL, which its proxy refuses. Land on a host"
+        )
+    if signed(loop):
+        raise Refused(
+            f"{base}'s rules require GitHub's merge queue, which merges with GitHub's signature, but loop.md's"
+            " `land.signed_squash_to` asks for this checkout's: unset it, or drop the queue from the ruleset"
+        )
+    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+    judge_with_base(base)
+    # GitHub's queue batches the PRs itself, so no batch_wait
+    candidates, exits, _ = candidates_of(named, base, tracker, loop, required, only)
+    numbers, failed = {pull["number"] for pull in named}, set()
+    for pull in candidates:
+        code, again = queue_step(pull, base, method, loop, required)
+        if code == 1:
+            failed.add(pull["number"])
+        if pull["number"] in numbers or code != WAITING:
+            exits[pull["number"]] = (code, again)
+    if not named:
+        queue_trail(base)
+    return outcome(named, exits, worst, failed)
+
+
+def queue_trail(base: str) -> None:
+    """A bare land's `Landed` comments (queue_landed) on the merged PRs into `base` that still carry QUEUED, since no
+    `land <pr>` may ever read them merged. A PR whose trail fails keeps the label, says why and is tried again on the
+    next land; it never fails this one, whose candidates are already in."""
+    try:
+        listed: list[int] = port("forge").merged_labelled(base, QUEUED)
+    except subprocess.CalledProcessError as exc:
+        print(f"land could not list the PRs merged into {base}: {stderr_of(exc)}")
+        return
+    for number in listed:
+        try:
+            queue_landed(pull_request(number))
+        except (Refused, subprocess.CalledProcessError) as exc:
+            print(f"PR #{number}: land could not write its `{LANDED}` comment: {stderr_of(exc)}")
+
+
+def stderr_of(exc: Exception) -> str:
+    """A failed call's error on one line: a gh call's stderr, else the exception's text."""
+    return " ".join((getattr(exc, "stderr", None) or str(exc)).split())
+
+
+def queue_step(
+    pull: dict[str, Any], base: str, method: str, loop: str | None, required: set[str]
+) -> tuple[int, bool]:
+    """One candidate in the GitHub merge queue, and the exit it means for a named PR. In the queue: left alone, or,
+    stuck (stuck), dequeued and enqueued again. Out of it, by the queue's last removal of its head (queue_removals):
+    merged, waited on; a conflict GitHub still reports (or one it reports with no removal), commented once per head and
+    not enqueued; a red group, after a check that `base`'s tip is green (main_red), counted only when built on a green
+    commit of `base` (own_reds), then commented once and enqueued again, or evicted on the second red of the head; any
+    other removal, or none, enqueued."""
+    where, head = f"PR #{pull['number']}", pull["headRefOid"]
+    # the queue merges every entry its one way
+    if merge_method(pull, loop) == "merge" and method != "MERGE":
+        print(
+            f"{where}'s head `{pull['headRefName']}` matches `land.merge_commit_heads`, but {base}'s merge queue"
+            f" merges every entry with {method}, not a merge commit: set the queue's merge method to MERGE"
+        )
+        return 1, False
+    if entry := pull.get("mergeQueueEntry"):
+        if not stuck(entry):
+            print(f"{where} is in the merge queue at {head}, position {entry.get('position')}")
+            return WAITING, True
+        dequeue_pull(pull["id"])
+        print(
+            f"{where}: its merge-queue entry waited {STUCK // 60} minutes for checks GitHub never started:"
+            " dequeued, to enqueue it again"
+        )
+        return enqueue(pull)
+    removals = queue_removals(pull)
+    reason = removals[-1].get("reason") if removals else None
+    # GitHub takes a PR out of the queue a moment before it reports the merge
+    if reason == QUEUE_MERGED:
+        print(f"{where} left the merge queue merged at {head}")
+        return WAITING, True
+    # the queue tests an entry on top of those ahead of it, so its conflict may be with one of them, not with the base:
+    # it holds only while GitHub reports one, and waits while GitHub works it out again after the base moved
+    mergeable = pull.get("mergeable")
+    if reason == MERGE_CONFLICT and mergeable not in ("CONFLICTING", "MERGEABLE"):
+        print(f"GitHub is still working out whether {where} conflicts with {base}")
+        return WAITING, True
+    if mergeable == "CONFLICTING":
+        print(f"{where} conflicts with {base}: merge `origin/{base}` in")
+        conflict_note(pull, base)
+        return 1, False
+    if reason == FAILED_CHECKS:
+        main_red(base, required)
+        reds = own_reds(where, base, removals, required)
+        if reds is None:
+            return WAITING, True
+        group = group_of(removals[-1])
+        if not reds or reds[-1] != group:
+            print(
+                f"{where} was red in the merge queue on a red {base}: it counts for nothing, enqueued again"
+            )
+            return enqueue(pull)
+        name, run, tail = failing_check(group, required)
+        why = f"`{name}` failed on the merge queue's commit {group} (run {run})"
+        if len(reds) > 1:
+            evicted(
+                pull,
+                QUEUE_EVICTED,
+                f"is red in the merge queue twice at {head}",
+                why + ", its second red on this head",
+                tail,
+                "The failed job's last lines",
+            )
+            return 1, False
+        print(
+            f"{where} is red in the merge queue at {head} ({name}): once more, in case it was a flake"
+        )
+        if not any(
+            note["body"].startswith(QUEUE_RED) and f"Group: {group}" in note["body"]
+            for note in notes(pull)
+        ):
+            comment(
+                pull["number"],
+                f"{QUEUE_RED}\nHead: {head}\nGroup: {group}\n\n{why}: enqueued once more, in case it was a flake."
+                " A second red on this head turns it back to draft.\n\n"
+                + folded("The failed job's last lines", tail),
+            )
+    return enqueue(pull)
+
+
+def stuck(entry: dict[str, Any]) -> bool:
+    """Whether a merge-queue entry has waited STUCK seconds for checks with no check suite on its commit, timed from
+    that commit, so an entry long `QUEUED` behind others isn't stuck the moment its group is built. ponytail: takes
+    `headCommit` to be the group's commit, which only a live queue proves; were it the PR's head, nothing is stuck."""
+    commit = entry.get("headCommit") or {}
+    if entry.get("state") != "AWAITING_CHECKS" or not commit.get("committedDate"):
+        return False
+    suites = (commit.get("checkSuites") or {}).get("totalCount") or 0
+    built = datetime.fromisoformat(commit["committedDate"].replace("Z", "+00:00")).timestamp()
+    return not suites and time.time() - built >= STUCK
+
+
+def queue_removals(pull: dict[str, Any]) -> list[dict[str, Any]]:
+    """The merge queue's removals of the PR's current head, oldest first: those after its push, since GitHub drops an
+    entry whose head moves, and after it last went ready, so a PR evicted and marked ready again starts its count anew.
+    ponytail: a head whose push GitHub's activity no longer lists counts each removal since it last went ready; read
+    the head commit's date if a long-lived head ever needs it."""
+    ready = [
+        event.get("createdAt") or ""
+        for event in pull["timelineItems"]["nodes"]
+        if event.get("__typename") == "ReadyForReviewEvent"
+    ]
+    since = max([head_pushed(pull) or "", *ready])
+    return [removal for removal in queue_events(pull) if (removal.get("createdAt") or "") > since]
+
+
+def queue_events(pull: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every removal of the PR from the merge queue GitHub lists, oldest first."""
+    return [removal for removal in (pull.get("removals") or {}).get("nodes") or [] if removal]
+
+
+def group_of(removal: dict[str, Any]) -> str:
+    """The merge queue's commit a removal's group was built as."""
+    return (removal.get("beforeCommit") or {}).get("oid") or "unknown"
+
+
+def own_reds(
+    where: str, base: str, removals: list[dict[str, Any]], required: set[str]
+) -> list[str] | None:
+    """The groups of the `failed_checks` removals that count against the PR: each built on a commit of `base` whose
+    required checks are green, since one built on a red commit failed for `base`'s fault, and one GitHub can't place
+    counts. None while a group's base commit is still running them: whose fault it was isn't known yet."""
+    reds = []
+    for removal in removals:
+        if removal.get("reason") != FAILED_CHECKS:
+            continue
+        group = group_of(removal)
+        if under := built_on(base, group):
+            red, running = required_state(under, required, MAIN_FAULT)
+            if running:
+                print(f"{where}: {base}'s checks on {under} are still running")
+                return None
+            if red:
+                continue
+        reds.append(group)
+    return reds
+
+
+def built_on(base: str, group: str) -> str | None:
+    """The commit of `base` the merge queue built its commit `group` on (their merge base), None where GitHub can't
+    compare them."""
+    try:
+        return merge_base(base, group) or None
+    except subprocess.CalledProcessError:
+        return None
+
+
+# the conclusions that make a red group main's fault on the commit it was built on: a run cancelled there (by a newer
+# push's cancel-in-progress, say), gone stale or waiting for approval failed nothing, and the queue's own run on it
+# went green, or GitHub wouldn't have merged it
+MAIN_FAULT = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR"}
+
+
+def required_state(
+    ref: str, required: set[str], red: set[str] = RED
+) -> tuple[list[str], list[str]]:
+    """The checks a base requires (every check, where it requires none) on `ref`: those whose conclusion is in `red`,
+    and those still running."""
+    mine = {
+        name: run["conclusion"]
+        for name, run in commit_checks(ref).items()
+        if not required or name in required
+    }
+    return sorted(name for name, done in mine.items() if done in red), sorted(
+        name for name, done in mine.items() if not done
+    )
+
+
+def enqueue(pull: dict[str, Any]) -> tuple[int, bool]:
+    """Put the PR in the GitHub merge queue pinned to the head the proofs judged, its session link lines dropped first
+    (unlink_pull): exit 3 while it waits there, 1 when GitHub refuses."""
+    where, head = f"PR #{pull['number']}", pull["headRefOid"]
+    unlink_pull(pull)
+    # before the enqueue, so no PR the queue merges lacks it: the bare land's trail follows it (queue_trail)
+    label(pull["number"], QUEUED, add=True)
+    try:
+        position = enqueue_pull(pull["id"], head)
+    except subprocess.CalledProcessError as exc:
+        print(f"{where}: GitHub refused to enqueue it at {head}: {stderr_of(exc)}")
+        return 1, False
+    print(f"{where} enqueued at {head}, position {position}")
+    return WAITING, True
+
+
+def run_link(url: str) -> str:
+    """An Actions job's link as its run's."""
+    return re.sub(r"/job/\d+$", "", url)
+
+
+def main_red(base: str, required: set[str]) -> None:
+    """Refuse while a check `base` requires (every check, where it requires none) is red on its tip: every queue entry
+    would fail on it, so no removal counts as red and nobody is evicted until it is fixed."""
+    if red := required_state(base, required)[0]:
+        raise Refused(
+            f"{base} itself is red ({', '.join(f'`{name}`' for name in red)} on its tip): no merge-queue removal counts"
+            " as red and nobody is evicted until it is fixed"
+        )
+
+
+def failing_check(group: str, required: set[str]) -> tuple[str, str, list[str]]:
+    """The check that failed on the merge queue's commit `group` (a required one first), its run's link, and its failed
+    job log's last LOG_TAIL lines (none where GitHub has no log)."""
+    checks = commit_checks(group)
+    red = sorted(name for name, run in checks.items() if run["conclusion"] in RED)
+    name = next((name for name in red if name in required), red[0] if red else None)
+    if name is None:
+        return "a required check", "not found", []
+    try:
+        log = job_log(checks[name]["id"])
+    except subprocess.CalledProcessError:
+        log = ""
+    return name, run_link(checks[name]["url"]), log.splitlines()[-LOG_TAIL:]
+
+
+def queue_landed(pull: dict[str, Any]) -> None:
+    """A PR the GitHub merge queue merged gets its `Landed` comment, from the first land that reads it merged: `Base:`
+    its merge commit, `Tree:` that commit's tree, `Gate: merge queue` with the links of the runs on it, the queue's
+    `merge_group` CI; and its worker sessions finished. Nothing for a PR it did not merge, or one already commented."""
+    merged = [removal for removal in queue_events(pull) if removal.get("reason") == QUEUE_MERGED]
+    if merged and not any(note["body"].startswith(f"{LANDED}\n") for note in notes(pull)):
+        landed_comment(pull, merged[-1])
+    # off once the trail is written, or where there is none to write (merged outside the queue)
+    if QUEUED in {each["name"] for each in pull["labels"]["nodes"]}:
+        label(pull["number"], QUEUED, add=False)
+
+
+def landed_comment(pull: dict[str, Any], merged: dict[str, Any]) -> None:
+    """queue_landed's `Landed` comment on the commit the queue's `merged` removal names, and the worker sessions."""
+    commit = (merged.get("beforeCommit") or {}).get("oid")
+    tree = commit_tree(commit)
+    runs = sorted(
+        {
+            run_link(run["url"])
+            for run in commit_checks(commit).values()
+            if "/actions/runs/" in run["url"]
+        }
+    )
+    comment(
+        pull["number"],
+        f"{LANDED}\nBase: {commit}\nTree: {tree}\nGate: merge queue, {', '.join(runs) or 'no run on the commit'}\n",
+    )
+    archive_workers(pull["number"])
 
 
 # a cloud session's link, which its harness adds to every commit message as a `Claude-Session:` line and to every PR
@@ -4910,14 +6106,16 @@ def merges(
     landed: list[tuple[dict[str, Any], str, str, str]],
     base: str,
     tip: str,
-    work: Path,
+    work: Path | None,
     loop: str | None,
     failed: set[int],
+    waited: str = "",
 ) -> None:
     """Merge each PR through GitHub in the batch's order, pinned to its head (or, with loop.md's `land` section, as a
     signed squash of the tree it lands on the commit before it), stopping at the first one GitHub refuses or leaves
     open, then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
-    the batch partial, or someone merged meanwhile) the tip is gated here. Each landed PR gets a `Landed` comment."""
+    the batch partial, or someone merged meanwhile) the tip is gated here, or with no worktree (`work` None) its pass
+    reused where one is recorded and the tree named where none is. Each landed PR gets a `Landed` comment."""
     local, command, done = signed(loop), gate()[0], []
     for pull, tree, gated, how in landed:
         where, head = f"PR #{pull['number']}", pull["headRefOid"]
@@ -4941,7 +6139,8 @@ def merges(
                         f"{where}: the merge call failed, but the PR is merged at {head} as {merge}"
                     )
                 else:
-                    # a base requiring a merge queue only queues it, to merge later on a tree this batch never gated
+                    # a merge queue the base's rules don't name (classic branch protection's) only queues it, to
+                    # merge later on a tree this batch never gated
                     if (state := pull_request(pull["number"])["state"]) != "MERGED":
                         raise Refused(f"GitHub left it {state}, not merged")
                     print(f"{where} merged at {head}")
@@ -4968,19 +6167,29 @@ def merges(
             else f"{base}'s tree is {actual} after the merges, not the {tree} they make: someone merged meanwhile,"
             f" so {tip} is gated now"
         )
-        reset(work, tip)
-        try:
-            if gate_batch(work, [])[1]:
+        if work is None:
+            if all(step_pass(tip, actual, step) is not None for step in gate_plan()):
+                print(f"Tree {actual}: `{command}` passed on it before, reused")
                 publish(tip, landed_pass(tip, actual))
-        except MachineFault as exc:  # the PRs landed: each still gets its comment
-            print(exc)
+            else:
+                print(
+                    f"Tree {actual}: no recorded pass, and land runs no gate in a clone with no working tree: pass {tip}"
+                    " where the files are checked out (`approvals.py local-ci --record`)"
+                )
+        else:
+            reset(work, tip)
+            try:
+                if gate_batch(work, [])[1]:
+                    publish(tip, landed_pass(tip, actual))
+            except MachineFault as exc:  # the PRs landed: each still gets its comment
+                print(exc)
     # after every publication above, which pushes the landed tree's record again when it is the heads' tree
     drop_records([pull["headRefOid"] for pull, *_ in done])
     numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
     for pull, tree, gated, how in done:
         comment(
             pull["number"],
-            f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}\n",
+            f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}{waited}\n",
         )
         archive_workers(pull["number"])
 
@@ -5046,8 +6255,8 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
 def delegate(number: int) -> int:
     """The delegated approver's `approved:merge` on a PR into a feature branch, under the owner's standing rule: the
     label, then the record that names it the delegate's. Into the default branch, where a label is no go, it is
-    refused: there the go is pinned to a head (go). So is a PR touching a path `risk.merge_paths` names, whose merge
-    only the owner's go on the head allows (owners_only)."""
+    refused: there the go is pinned to a head (go). So is a PR whose rating asks the owner's own go on the head
+    (owners_only; by default a path `risk.critical_paths` names)."""
     pull = pull_request(number)
     with policy_from(pull["baseRefName"]):
         loop = project()[1]
@@ -5445,18 +6654,77 @@ def heavy(words: list[str]) -> int:
     return 128 - code if code < 0 else code
 
 
+def pr_base_of_head() -> str | None:
+    """The base of the open PR whose branch is the checkout's (open_pulls), else None: a detached HEAD, no PR for it
+    yet, or a forge that doesn't answer is no PR, and the caller falls back to the default branch."""
+    with contextlib.suppress(subprocess.CalledProcessError, OSError, Refused):
+        branch = git("branch", "--show-current").strip()
+        for pull in open_pulls() if branch else []:
+            if pull.get("headRefName") == branch and pull.get("baseRefName"):
+                return str(pull["baseRefName"])
+    return None
+
+
+def gate_base_variable() -> str:
+    """The variable loop.md's line `Gate base:` names, else `GATE_BASE`; refused when it is no variable name."""
+    text = policy_file(toplevel(), LOOP, POLICY_BASE.get()) or ""
+    named = re.search(r"^Gate base:[ \t]*`?([^\s`]+)", text, re.MULTILINE)
+    variable = named.group(1) if named else "GATE_BASE"
+    if not re.fullmatch(r"[A-Za-z_]\w*", variable):
+        raise Refused(f"loop.md's `Gate base:` names {variable!r}, which is no variable name")
+    return variable
+
+
+def affected_tests() -> int:
+    """`affected-tests`: the worker's test run on a head, from loop.md's line `Affected tests: <command>` (the command
+    selects and runs the tests a change affects against the base it reads from the variable the line `Gate base:`
+    names, else `GATE_BASE`). The base is `git merge-base origin/<base> HEAD`, `<base>` being the base of the open PR
+    for the checked-out branch, else the default branch; a shallow clone is deepened first (deepened), as `local-ci`
+    does. Without the line it runs `mise run check`, with the variable unset, so a project that names no selector runs
+    its whole suite. Either runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its
+    exit passes through: a selector that selects nothing exits 0 itself. Only this verb sets the variable: `land` and
+    `local-ci` never do, and gate_env clears it from their environment, apart from a head proof's own `env` names."""
+    root = toplevel()
+    text = policy_file(root, LOOP, POLICY_BASE.get()) or ""
+    found = re.search(r"^Affected tests:[ \t]*(.+?)[ \t]*$", text, re.MULTILINE)
+    variable = gate_base_variable()
+    env = {name: value for name, value in os.environ.items() if name != variable}
+    if found is None:
+        words, sets = [*LOCAL_CI[:-1], "check"], {}
+    else:
+        _, words, sets = command_line(found.group(1).strip().strip("`"), "Affected tests")
+        base = pr_base_of_head() or base_branch(None)
+        if base is None:
+            raise Refused("no default branch to select the affected tests against: fetch origin")
+        with policy_from(base):
+            deepened(None)
+        try:
+            env[variable] = git("merge-base", f"origin/{base}", "HEAD").strip()
+        except subprocess.CalledProcessError as exc:
+            raise Refused(
+                f"no merge base of origin/{base} and HEAD: fetch origin/{base} deeper"
+            ) from exc
+    print(f"affected-tests: {shlex.join(words)}", file=sys.stderr, flush=True)
+    try:
+        with heavy_slot("affected-tests") as (slot, _):
+            return run_heavy(words, env=env | sets | {SLOT_HELD: slot}, cwd=root)[0]
+    except OSError as exc:
+        raise Refused(f"`{words[0]}` can't run: {exc}") from None
+
+
 def ran_step(
     step: dict[str, Any],
     cwd: Path | None = None,
     out: Any = None,
     load: dict[str, Any] | None = None,
+    land: bool = False,
 ) -> tuple[int, int, int]:
     """Run one gate step (gate_plan) in its environment (gate_env) under the host gate slot (heavy_slot), in `cwd`
     with its output to `out` when given: its exit, the seconds it ran and the seconds it waited for the slot; `load`,
     when given, gets the host's load at the step's start, once it holds the slot (host_load). A command that isn't
     there is refused, naming the gate, since loop.md is hand-written."""
     where = {"cwd": cwd, "stdout": out, "stderr": subprocess.STDOUT} if cwd else {}
-    with heavy_slot(step["name"], out) as (slot, waited):
+    with heavy_slot(step["name"], out, land) as (slot, waited):
         if load is not None:
             load.update(host_load())
         began = time.monotonic()
@@ -5501,9 +6769,18 @@ def swap_used_mb() -> int | None:
 
 
 def gate_env(step: dict[str, Any]) -> dict[str, str]:
-    """The environment a gate step runs in: this process's, without the names `local_ci_env` lists unless the step's
-    command sets them, or a head proof's `passed` takes them from this process's (gate)."""
-    cleared = set(local_ci_env())
+    """The environment a gate step runs in: this process's, without the names `local_ci_env` lists and without the
+    `Gate base:` variable (gate_base_variable), unless the step's command sets them, or a head proof's `passed` takes
+    them from this process's (gate): a caller's base never narrows a plain pass."""
+    cleared = set(local_ci_env()) | {"GATE_BASE"}
+    with contextlib.suppress(Refused, OSError):  # the working tree's loop.md, read with no git call
+        held = toplevel() / LOOP
+        named = (
+            re.search(r"^Gate base:[ \t]*`?([A-Za-z_]\w*)\b", held.read_text(), re.MULTILINE)
+            if held.exists()
+            else None
+        )
+        cleared |= {named.group(1)} if named else set()
     return {name: value for name, value in os.environ.items() if name not in cleared} | step["sets"]
 
 
@@ -5512,10 +6789,100 @@ def gate_env(step: dict[str, Any]) -> dict[str, str]:
 SLOT_HELD = "LOOP_GATE_SLOT_HELD"
 
 
-def slot_path() -> str:
-    """The host gate slot's lock file, the one SKILL.md, mutate.py and the project's gate wrapper name."""
+def slot_file(name: str) -> str:
+    """A lock file of the host's gate, by name, in the cache every worktree and clone of the host shares."""
     cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.environ.get("HOME", "~"), ".cache")
-    return os.path.join(cache, "engineering-loop", "gate.1.lock")
+    return os.path.join(cache, "engineering-loop", name)
+
+
+def gate_slots() -> int:
+    """How many heavy gates the host runs at once: `GATE_SLOTS` when it is a whole number from 1, else a third of the
+    host's cores, at least 1 (the template's `scripts/gate-slot` reads the same variable). `GATE_SLOTS=1` keeps one
+    gate at a time. A runner under a slot takes at most the host's cores divided by this number as its `GATE_JOBS`,
+    since this many gates load the host at once and a larger share would oversubscribe it."""
+    said = os.environ.get("GATE_SLOTS", "")
+    if said.isdigit() and int(said) >= 1:
+        return int(said)
+    return max(1, (os.cpu_count() or 1) // 3)
+
+
+def slot_path(number: int = 1) -> str:
+    """The lock file of heavy gate slot `number` (1..gate_slots()), the one SKILL.md, mutate.py and the project's gate
+    wrapper name."""
+    return slot_file(f"gate.{number}.lock")
+
+
+def held_slot() -> str | None:
+    """The heavy slot this process already runs under (SLOT_HELD names its lock file), else None: any `gate.<n>.lock`
+    of the slot directory, whatever `GATE_SLOTS` this process reads, since its parent may have taken a slot under
+    another count."""
+    held = os.environ.get(SLOT_HELD) or ""
+    same = os.path.dirname(held) == os.path.dirname(slot_path())
+    return held if same and re.fullmatch(r"gate\.\d+\.lock", os.path.basename(held)) else None
+
+
+def land_waiting() -> bool:
+    """Whether a land's gate step waits for a slot on this host (take_slot's `land`): it holds a shared flock on the
+    `gate.land.lock` file while it waits, so an exclusive try on that file fails exactly then."""
+    fd = os.open(slot_file("gate.land.lock"), os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
+
+def take_slot(
+    waiting: Callable[[], None] = lambda: None, land: bool = False
+) -> tuple[int | None, str]:
+    """Hold the first free heavy slot's exclusive flock and return (its fd, its path); closing the fd frees the lock,
+    as does the process dying. A run already under a holder of a slot (held_slot) takes none: (None, that path), since
+    it would wait on its own parent. With every slot held, `waiting` is called, again every SLOT_SAY_SECONDS, and the slots
+    are tried again until one frees. A land's gate step (`land`) holds the landing lock of its base while it waits, which blocks every other
+    land, so it takes a freed slot ahead of any PR gate: flock has no priority, so a waiting land marks itself (a shared
+    flock on `gate.land.lock`, held only while it waits) and a PR gate that finds the mark takes no slot, trying again
+    until no land waits."""
+    if (held := held_slot()) is not None:
+        return None, held
+    os.makedirs(os.path.dirname(slot_path()), exist_ok=True)
+    mark = os.open(slot_file("gate.land.lock"), os.O_WRONLY | os.O_CREAT, 0o644) if land else None
+    if mark is not None:
+        fcntl.flock(mark, fcntl.LOCK_SH)
+    said = None  # when the wait is next said
+    try:
+        if land and gate_slots() == 1:
+            # one slot: block in the kernel, as a gate wrapper's own flock does, so a land competes evenly with a
+            # wrapper waiter instead of losing every race to it by polling; PR gates poll and yield to the mark
+            fd = os.open(slot_path(), os.O_WRONLY | os.O_CREAT, 0o644)
+            try:
+                flock_saying(fd, waiting)
+            except BaseException:
+                os.close(fd)
+                raise
+            return fd, slot_path()
+        while True:
+            if land or not land_waiting():
+                for number in range(1, gate_slots() + 1):
+                    path = slot_path(number)
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        os.close(fd)
+                        continue
+                    except BaseException:
+                        os.close(fd)
+                        raise
+                    return fd, path
+            if said is None or time.monotonic() >= said:
+                said = time.monotonic() + SLOT_SAY_SECONDS
+                waiting()
+            time.sleep(0.2)
+    finally:
+        if mark is not None:
+            os.close(mark)
 
 
 # the heavy wrapper (SKILL.md, One heavy gate per host slot): a command prefix a host sets in a file outside every repo,
@@ -5634,6 +7001,71 @@ def stops_raise() -> Any:
             signal.signal(sig, handler)
 
 
+HOST_COMMANDS = "~/.agents/host-commands"
+# what the Claude Code hook that reads the same file strips before it matches: launchers, wrappers, shells
+LAUNCHERS = (["swiftly", "run"], ["uv", "run"], ["python3"], ["python"])
+WRAPPERS = {
+    "env",
+    "exec",
+    "command",
+    "nohup",
+    "time",
+    "sudo",
+    "nice",
+    "setsid",
+    "timeout",
+    "xargs",
+    "stdbuf",
+}
+SHELLS = {"sh", "bash", "zsh", "dash"}
+
+
+def host_forbids(words: Sequence[str]) -> str | None:
+    """The line of the host's policy file (HOST_COMMANDS, or the file `AGENT_HOST_COMMANDS` names; one command per
+    line, text after `#` is a comment) whose words begin `words`, as the Claude Code hook that reads the same file
+    matches a typed command: path words by their basename, `VAR=` words and wrappers (WRAPPERS, with their options and
+    a count) dropped, then launchers (LAUNCHERS) stripped as often as they lead. A shell's `-c <script>` is read
+    segment by segment (`&&`, `;`, `|`). None where the file is absent or lists no such command, so a host without a
+    policy runs everything."""
+    path = os.path.expanduser(os.environ.get("AGENT_HOST_COMMANDS") or HOST_COMMANDS)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as text:
+            rules = [r for r in (line.split("#")[0].split() for line in text) if r]
+    except OSError:
+        return None
+
+    def forbidden(command: list[str]) -> str | None:
+        command = [os.path.basename(w) if "/" in w else w for w in command]
+        while command and (re.match(r"\w+=", command[0]) or command[0] in WRAPPERS):
+            wrapper = command[0] in WRAPPERS
+            command = command[1:]
+            while (
+                wrapper
+                and command
+                and (command[0].startswith("-") or re.fullmatch(r"[\d.]+[smhd]?", command[0]))
+            ):
+                command = command[1:]
+        if len(command) > 2 and command[0] in SHELLS and re.fullmatch(r"-\w*c\w*", command[1]):
+            lexer = shlex.shlex(command[2], posix=True, punctuation_chars=True)
+            lexer.whitespace_split, lexer.commenters = True, ""
+            try:
+                parts = list(lexer)
+            except ValueError:
+                parts = []
+            segments, now = [], []
+            for part in parts:
+                if set(part) <= set("();<>|&"):
+                    segments, now = [*segments, now], []
+                else:
+                    now.append(part)
+            return next((hit for seg in [*segments, now] if seg and (hit := forbidden(seg))), None)
+        while launcher := next((x for x in LAUNCHERS if command[: len(x)] == x), None):
+            command = command[len(launcher) :]
+        return next((" ".join(r) for r in rules if command[: len(r)] == r), None)
+
+    return forbidden(list(words))
+
+
 def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int, Any]:
     """Run one heavy step (a gate step, a `pre_land` check, a mutate.py test run, `heavy`) under the host's heavy
     wrapper (heavy_argv), with `popen` as Popen's other arguments: its exit code and what communicate() read from its
@@ -5641,6 +7073,11 @@ def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int,
     process group is killed before the exception goes on, so neither the step nor what it started outlives a stopped
     run: a wrapper (systemd-run --scope) puts the step in a group of its own, which a stop of the caller's group would
     never reach. A wrapped step's environment carries HEAVY_WRAPPED."""
+    if rule := host_forbids(words):
+        raise Refused(
+            f"no gate record for this tree: `{shlex.join(words)}` is on this host's {HOST_COMMANDS} ({rule!r}): "
+            "gate it on an allowed host or in claude-cloud"
+        )
     prefix = heavy_prefix(env)
     if prefix:
         env = {**(os.environ if env is None else env), HEAVY_WRAPPED: "1"}
@@ -5658,30 +7095,63 @@ def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int,
     return step.returncode, output
 
 
-@contextlib.contextmanager
-def heavy_slot(name: str, out: Any = None) -> Any:
-    """Hold the host gate slot, an exclusive flock on slot_path(), for one gate step: (its path, the whole seconds
-    waited for it). A run already under a holder of that path (SLOT_HELD) takes none and waits 0, since it would wait
-    on its own parent. A wait is said once, as `local-ci: <step>: waiting for the host gate slot`."""
-    path, began = slot_path(), time.monotonic()
-    if os.environ.get(SLOT_HELD) == path:
-        yield path, 0
-        return
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
+# how often a run queued on a host gate slot says it still waits: wait-for kills a run whose log is silent for 300 s
+SLOT_SAY_SECONDS = 60.0
+
+
+def flock_saying(fd: int, said: Callable[[], None]) -> None:
+    """Take fd's exclusive flock, blocking in the kernel. A wait calls `said` when it begins and again every
+    SLOT_SAY_SECONDS, so a log that shows the wait never goes silent long enough for wait-for's stall check to read
+    the queue as a hang."""
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print(
-                f"local-ci: {name}: waiting for the host gate slot",
-                file=out or sys.stderr,
-                flush=True,
-            )
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        said()
+        with repeating(said):
             fcntl.flock(fd, fcntl.LOCK_EX)
-        yield path, round(time.monotonic() - began)
+
+
+@contextlib.contextmanager
+def repeating(call: Callable[[], None]) -> Any:
+    """Call `call` every SLOT_SAY_SECONDS from a thread of its own while the block runs."""
+    stop = threading.Event()
+
+    def again() -> None:
+        while not stop.wait(SLOT_SAY_SECONDS):
+            call()
+
+    caller = threading.Thread(target=again, daemon=True)
+    caller.start()
+    try:
+        yield
     finally:
-        os.close(fd)
+        stop.set()
+        caller.join()
+
+
+def saying(text: str) -> Any:
+    """Print `text` every SLOT_SAY_SECONDS while the block runs, to the process's own stdout, since `land --wait`
+    captures sys.stdout until landing returns: a run whose output goes to a log of its own (a batch gate) then never
+    reads as a hang to wait-for's stall check."""
+    return repeating(lambda: print(text, file=sys.__stdout__, flush=True))
+
+
+@contextlib.contextmanager
+def heavy_slot(name: str, out: Any = None, land: bool = False) -> Any:
+    """Hold a host gate slot (take_slot, `land` as it takes it) for one gate step: (its path, the whole seconds
+    waited for it). A wait is said as `local-ci: <step>: waiting for the host gate slot`, again every SLOT_SAY_SECONDS."""
+    began = time.monotonic()
+    fd, path = take_slot(
+        lambda: print(
+            f"local-ci: {name}: waiting for the host gate slot", file=out or sys.stderr, flush=True
+        ),
+        land,
+    )
+    try:
+        yield path, 0 if fd is None else round(time.monotonic() - began)
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def local_ci_dir() -> Path:
@@ -5886,6 +7356,7 @@ def run_steps(
     cwd: Path | None = None,
     out: Any = None,
     passed: list[str] | tuple[str, ...] = (),
+    land: bool = False,
 ) -> dict[str, Any]:
     """Run each gate step (gate_plan, with `passed`) that has no pass on `tree` (step_pass) and may run here (here),
     in order, each under the host gate slot (ran_step), and record each that passes as run on `commit`, with the
@@ -5921,7 +7392,7 @@ def run_steps(
             done["left"].append(step["name"])
             continue
         load: dict[str, Any] = {}
-        code, seconds, waited = ran_step(step, cwd, out, load)
+        code, seconds, waited = ran_step(step, cwd, out, load, land)
         done["ran"].append(step["name"])
         if code or (changed := changes()):
             return done | {"code": code, "step": step, "changed": "" if code else changed}
@@ -5958,10 +7429,18 @@ def head_moved(commit: str, tree: str, now: str, now_tree: str) -> str:
 
 
 def stored(record: dict[str, Any]) -> None:
-    """Write a pass this clone ran to its record file (recorded)."""
+    """Write a pass this clone ran to its record file (recorded), whole or not at all: two gates on one tree and command
+    run at once on two slots (gate_slots), and a plain write truncates the file first, so a reader between the two
+    would find it empty. The record goes to a file of this process's own, then replaces the shared one in one step."""
     where = recorded(record["tree"], record["command"])
     where.parent.mkdir(parents=True, exist_ok=True)
-    where.write_text(json.dumps(record, indent=2) + "\n")
+    partial = where.with_name(f"{where.name}.{os.getpid()}.partial")
+    try:
+        partial.write_text(json.dumps(record, indent=2) + "\n")
+        os.replace(partial, where)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
 
 
 def origin_of(record: dict[str, Any]) -> str:
@@ -7119,6 +8598,7 @@ def main(argv: list[str]) -> int:
     releasing.add_argument("issue", type=int)
     hooking = commands.add_parser("commit-msg")
     hooking.add_argument("message", type=Path)
+    commands.add_parser("affected-tests")
     wrapping = commands.add_parser("heavy")
     wrapping.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
     args = parser.parse_args(aliased(argv))
@@ -7141,7 +8621,7 @@ def main(argv: list[str]) -> int:
 
 def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.ArgumentParser) -> int:
     """The verb `args` names; a refusal raises."""
-    if stale := pack_behind(__file__):
+    if stale := next(filter(None, map(pack_behind, RUNNING)), None):
         print(stale, file=sys.stderr)
         if refuses_stale():
             return 1
@@ -7149,6 +8629,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return report_json(args.report) if args.json else report_check(args.report)
     if args.command == "commit-msg":  # the same: git hands the hook its message file
         return commit_msg(args.message)
+    if args.command == "affected-tests":
+        return affected_tests()
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
         return heavy(args.words)
     one_repo()

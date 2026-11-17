@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
@@ -56,6 +57,7 @@ def loop_md(settings: str = "") -> str:
     return f"# Loop facts\n\n## Settings\n\n```yaml\n{settings}```\n\nThe prose for people.\n"
 
 
+CAP = approvals.cap(None)  # SKILL.md § The cap: the default these tests pin
 BARE = loop_md()  # a loop.md with no settings, so no rules
 
 
@@ -90,81 +92,10 @@ COMMENT = approvals.comment
 OPEN_PULLS = getattr(approvals, "open_pulls", list)
 
 
-@pytest.fixture(autouse=True)
-def attached(monkeypatch: pytest.MonkeyPatch) -> None:
-    """local-ci runs in the test's process, as in a session of its own; the detached tests run the script."""
-    monkeypatch.setattr(approvals, "leads_its_session", lambda: True)
-
-
-@pytest.fixture(autouse=True)
-def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The head was pushed at PUSHED, before the PR's labels were added (LABELED), and the directory a test runs in
-    is the checkout's root; a test says otherwise."""
-    monkeypatch.setattr(approvals, "head_pushed", lambda _pull: PUSHED)
-    monkeypatch.setattr(approvals, "toplevel", Path.cwd)
-    monkeypatch.setattr(approvals, "viewer", lambda: "loop")
-    monkeypatch.setattr(approvals, "merged_high", lambda _branch: [])
-    # the checkout under test is not the one judged against origin/<base>: test_approvals_base_judges.py covers it
-    monkeypatch.setattr(approvals, "judge_with_base", lambda _base, fetch=False: None)
-
-
-@pytest.fixture(autouse=True)
-def others_open(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """The repo's open PRs `check build` compares a PR with: none, unless a test adds one."""
-    found: list[dict[str, Any]] = []
-    monkeypatch.setattr(approvals, "open_pulls", lambda: found, raising=False)
-    return found
-
-
-@pytest.fixture(autouse=True)
-def hub(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]:
-    """GitHub's commit statuses by commit, newest first: what statuses() reads and post_status() writes as `loop`."""
-    found: dict[str, list[dict[str, Any]]] = {}
-
-    def post(head: str, context: str, description: str, state: str = "success") -> None:
-        found.setdefault(head, []).insert(0, status(context, description, state=state))
-
-    monkeypatch.setattr(approvals, "statuses", lambda head: found.get(head, []))
-    monkeypatch.setattr(approvals, "post_status", post)
-    return found
-
-
 RECORD_REF = approvals.record_ref
 PUSH_RECORD = approvals.push_record
 PUSHED_COMMANDS = approvals.pushed_commands
 DROP_RECORDS = approvals.drop_records
-
-
-@pytest.fixture(autouse=True)
-def refs(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, Any]]:
-    """origin's record branches as publish() pushes a pass to them, by name, and record_ref() reads them: a record
-    counts for the tree, command and env it was pushed with. The ref tests put the real functions back on real
-    repos."""
-    pushed: dict[str, dict[str, Any]] = {}
-
-    def push(record: dict[str, Any]) -> str:
-        name = approvals.record_name(record["tree"], record["command"])
-        pushed[name] = {**record, "env": record.get("env", approvals.gate()[2])}
-        return approvals.RECORD_BRANCH.format(name)
-
-    def read(
-        held: str, command: str, env: dict[str, str], _why: list[str] | None = None
-    ) -> dict[str, Any] | None:
-        found = pushed.get(approvals.record_name(held, command))
-        if found is None or (found["tree"], found["command"], found["env"]) != (held, command, env):
-            return None
-        ref = approvals.RECORD_BRANCH.format(approvals.record_name(held, command))
-        return {**found, "exit": 0, "published": True, "ref": ref}
-
-    monkeypatch.setattr(approvals, "record_ref", read)
-    monkeypatch.setattr(approvals, "push_record", push)
-    monkeypatch.setattr(
-        approvals,
-        "pushed_commands",
-        lambda held: {found["command"] for found in pushed.values() if found["tree"] == held},
-    )
-    monkeypatch.setattr(approvals, "drop_records", lambda _heads: None)
-    return pushed
 
 
 def pushed_pass(
@@ -189,85 +120,6 @@ def status(
         "creator": {"login": by},
         "created_at": "2026-01-01T00:00:00Z",
     }
-
-
-@pytest.fixture(autouse=True)
-def required(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """The base branch requires no checks, instead of reading its rules; the list holds each base asked about."""
-    asked: list[str] = []
-    monkeypatch.setattr(approvals, "required_checks", lambda base: asked.append(base) or set())
-    return asked
-
-
-@pytest.fixture(autouse=True)
-def added(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, str, bool]]:
-    """Every label approvals.py adds or removes, instead of making the call; `github` records them with the rest."""
-    calls: list[tuple[int, str, bool]] = []
-    monkeypatch.setattr(
-        approvals, "label", lambda number, name, add: calls.append((number, name, add))
-    )
-    return calls
-
-
-@pytest.fixture(autouse=True)
-def board_risks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """The repo's board as board.py reads and sets it over gh, instead of GitHub: a `Risk` field whose option for
-    each PR on the board is in `values`, every option set in `set` (which leaves `values`, so a test that checks
-    a PR twice reads the board it set up), no linked board once `linked` is False, and `refused` the stderr each gh
-    call fails with."""
-    state: dict[str, Any] = {"values": {}, "set": [], "linked": True, "refused": None}
-    items: dict[str, int] = {}
-
-    def graphql(query: str, **values: Any) -> Any:
-        if state["refused"]:
-            raise subprocess.CalledProcessError(1, "gh", stderr=state["refused"])
-        if query == board.LOOKUP:
-            number, said = values["issue"], state["values"].get(values["issue"])
-            on = (
-                []
-                if said is None
-                else [{"project": {"id": "P"}, "fieldValueByName": {"name": said}}]
-            )
-            field = {
-                "id": "F",
-                "options": [{"id": f"o-{o}", "name": o} for o in ("Low", "Medium", "High")],
-            }
-            boards = [{"id": "P", "field": field}] if state["linked"] else []
-            return {
-                "repository": {
-                    "issueOrPullRequest": {"id": f"N{number}", "projectItems": {"nodes": on}},
-                    "projectsV2": {"nodes": boards},
-                }
-            }
-        if query == board.ADD:
-            items[f"I-{values['issue']}"] = int(values["issue"][1:])
-            return {"addProjectV2ItemById": {"item": {"id": f"I-{values['issue']}"}}}
-        assert query == board.SET, query
-        state["set"].append((items[values["item"]], values["option"].removeprefix("o-")))
-        return {}
-
-    monkeypatch.setattr(board, "_graphql", graphql)
-    monkeypatch.setattr(approvals, "board", lambda: board)
-    return state
-
-
-@pytest.fixture(autouse=True)
-def assigned(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
-    """Every assignee approvals.py adds or removes, and the record claim() comments, instead of making the call."""
-    calls: list[tuple[Any, ...]] = []
-    monkeypatch.setattr(
-        approvals, "assign", lambda number, login, add: calls.append((number, login, add))
-    )
-    real = approvals.comment
-
-    def comment(number: int, body: str) -> None:
-        if body.startswith(approvals.ASSIGNED):
-            calls.append((number, body))
-        else:
-            real(number, body)
-
-    monkeypatch.setattr(approvals, "comment", comment)
-    return calls
 
 
 def problems(issues: list[dict[str, Any]]) -> list[str]:
@@ -3064,15 +2916,15 @@ def capped(*reviews: dict[str, Any], loop: str = BARE, **fields: Any) -> list[st
 def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfied_pass(
     hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    """Pass 5 left a major open: only the owner decides the fix, so the scoped pass 6 lands on their go."""
+    """The cap pass left a major open: only the owner decides the fix, so the scoped pass after it lands on their go."""
     open_at_cap = verdict_on(
-        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 5"
+        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading=f"Verifier (claude), pass {CAP}"
     )
-    pass6 = verdict_on(HEAD, heading="Verifier (claude), pass 6")
+    pass6 = verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")
     assert verified(open_at_cap, pass6) == []
     assert capped(open_at_cap, pass6) == [
         (
-            HELD + "a verifier review at the cap (pass 5) or later"
+            HELD + f"a verifier review at the cap (pass {CAP}) or later"
             " was not satisfied or left a blocker or major open, so the owner decides"
         )
     ]
@@ -3087,32 +2939,40 @@ def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfi
 def test_a_review_at_the_cap_holds_on_a_core_finding_or_on_not_being_satisfied(
     counts: str, satisfied: str
 ) -> None:
-    at_cap = verdict_on(OLD, counts, satisfied=satisfied, heading="Verifier (claude), pass 5")
-    assert capped(at_cap, verdict_on(HEAD, heading="Verifier (claude), pass 6")) != []
+    at_cap = verdict_on(OLD, counts, satisfied=satisfied, heading=f"Verifier (claude), pass {CAP}")
+    assert capped(at_cap, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")) != []
 
 
 def test_minors_only_at_the_cap_or_core_findings_before_it_need_no_owner() -> None:
-    minors = verdict_on(HEAD, "0 blocker, 0 major, 3 minor", heading="Verifier (claude), pass 5")
+    minors = verdict_on(
+        HEAD, "0 blocker, 0 major, 3 minor", heading=f"Verifier (claude), pass {CAP}"
+    )
     assert capped(minors) == []
     early = verdict_on(
-        OLD, "1 blocker, 0 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 4"
+        OLD,
+        "1 blocker, 0 major, 0 minor",
+        satisfied="no",
+        heading=f"Verifier (claude), pass {CAP - 1}",
     )
-    assert capped(early, verdict_on(HEAD, heading="Verifier (claude), pass 5")) == []
+    assert capped(early, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP}")) == []
 
 
 def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() -> None:
-    assert approvals.cap(None) == approvals.cap(BARE) == 5  # SKILL.md § The cap
-    assert approvals.cap(loop_md("loop:\n  cap: 3\n")) == 3
+    assert approvals.cap(None) == approvals.cap(BARE) == 3  # SKILL.md § The cap
+    assert approvals.cap(loop_md("loop:\n  cap: 4\n")) == 4
     with pytest.raises(approvals.Refused, match="`loop.cap` must be a whole number"):
         approvals.cap(loop_md("loop:\n  cap: 3 passes\n"))
     major = verdict_on(
-        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 3"
+        OLD,
+        "0 blocker, 1 major, 0 minor",
+        satisfied="no",
+        heading=f"Verifier (claude), pass {CAP - 1}",
     )
-    later = verdict_on(HEAD, heading="Verifier (claude), pass 4")
+    later = verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP}")
     assert capped(major, later) == []
-    assert capped(major, later, loop=loop_md("loop:\n  cap: 3\n")) == [
+    assert capped(major, later, loop=loop_md(f"loop:\n  cap: {CAP - 1}\n")) == [
         (
-            HELD + "a verifier review at the cap (pass 3) or later"
+            HELD + f"a verifier review at the cap (pass {CAP - 1}) or later"
             " was not satisfied or left a blocker or major open, so the owner decides"
         )
     ]
@@ -3419,13 +3279,6 @@ def test_any_other_rules_error_fails(
         approvals.required_checks("main")
 
 
-def test_a_base_whose_rules_require_a_merge_queue_is_refused(landing: dict[str, Any]) -> None:
-    """GitHub's queue would merge a PR later, on a merge-group tree land never gated."""
-    landing.update(rulesets=["check", ":merge_queue"])
-    with pytest.raises(approvals.Refused, match="require GitHub's merge queue"):
-        approvals.required_checks("main")
-
-
 def test_the_required_checks_are_the_rulesets_and_the_branch_protections(
     landing: dict[str, Any],
 ) -> None:
@@ -3600,6 +3453,8 @@ def lands(
                     "merge_commit_sha": state.get("squashes", {}).get(number),
                 }
             )
+        if args[:2] == ("api", "rate_limit"):  # land --wait's poll_seconds: plenty of quota
+            return "5000 5000"
         raise AssertionError(args)
 
     def comment(number: int, body: str) -> None:
@@ -4049,7 +3904,9 @@ def test_a_machine_fault_twice_on_the_tip_after_the_merges_still_says_landed(
     refusing(monkeypatch, lambda args: args[2] == "8")
     codes = iter([0, 78, 78])
     monkeypatch.setattr(
-        approvals, "ran_step", lambda _step, cwd=None, out=None, load=None: (next(codes), 0, 0)
+        approvals,
+        "ran_step",
+        lambda _step, cwd=None, out=None, load=None, land=False: (next(codes), 0, 0),
     )
     code, lines = lands["land"]()
     assert (code, lands["merged"]()) == (1, ["7"])
@@ -4591,6 +4448,31 @@ def test_the_batch_starts_from_the_base_origin_has_once_the_lock_is_taken(
     assert (lands["runs"](), lands["main"]("~1")) == (1, moved[0])
 
 
+def stop_this_thread(sig: int) -> None:
+    """Stop this process with `sig` as a stop reaches the land, whose CLI runs one thread: to the whole process
+    (os.kill) in a serial run, as in CI, and to the thread running the test in a pytest-xdist worker
+    (PYTEST_XDIST_WORKER set). A signal sent to the whole process goes to any thread that doesn't block it, and an
+    xdist worker runs a second one (execnet's, started with `_thread`, so `threading` doesn't count it), which would
+    take a stop the land holds blocked while it releases its lock."""
+    if not os.environ.get("PYTEST_XDIST_WORKER"):
+        os.kill(os.getpid(), sig)
+    else:
+        signal.pthread_kill(threading.get_ident(), sig)
+
+
+@pytest.mark.parametrize("worker, sent", [("", "process"), ("gw0", "thread")])
+def test_a_test_stop_goes_to_the_process_serially_and_to_the_test_thread_in_an_xdist_worker(
+    monkeypatch: pytest.MonkeyPatch, worker: str, sent: str
+) -> None:
+    calls: list[tuple[str, int, int]] = []
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", worker)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: calls.append(("process", pid, sig)))
+    monkeypatch.setattr(signal, "pthread_kill", lambda tid, sig: calls.append(("thread", tid, sig)))
+    stop_this_thread(signal.SIGTERM)
+    target = os.getpid() if sent == "process" else threading.get_ident()
+    assert calls == [(sent, target, signal.SIGTERM)]
+
+
 @pytest.fixture
 def stoppable() -> Iterator[None]:
     """SIGTERM and SIGHUP at their defaults for the test, since a runner started under nohup passes SIGHUP ignored."""
@@ -4610,7 +4492,7 @@ def test_a_land_stopped_by_sigterm_or_sighup_releases_its_lock_and_exits_128_plu
 
     def stopped(*_args: Any) -> None:
         held.append(lands["lock"]())
-        os.kill(os.getpid(), sig)
+        stop_this_thread(sig)
 
     monkeypatch.setattr(approvals, "merges", stopped)
     before = {s: signal.getsignal(s) for s in approvals.STOPS}
@@ -4646,15 +4528,15 @@ def test_a_stop_while_the_lock_is_pushed_still_releases_it(
         )
         taking, releasing = state.startswith(approvals.HELD), state.startswith(approvals.FREE)
         if (when == "before taking" and taking) or (when.startswith("releasing") and releasing):
-            os.kill(os.getpid(), signal.SIGTERM)
+            stop_this_thread(signal.SIGTERM)
         done = run(args, *rest, **kw)
         if when == "taking" and taking:
-            os.kill(os.getpid(), signal.SIGTERM)
+            stop_this_thread(signal.SIGTERM)
         return done
 
     monkeypatch.setattr(approvals.subprocess, "run", pushing)
     if when == "releasing":
-        monkeypatch.setattr(approvals, "merges", lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+        monkeypatch.setattr(approvals, "merges", lambda *_: stop_this_thread(signal.SIGTERM))
     with pytest.raises(SystemExit) as stop:
         lands["land"]("7")
     assert (stop.value.code, lands["lock"]()) == (143, "")
@@ -4692,11 +4574,11 @@ def test_a_second_stop_while_the_batch_worktree_is_removed_leaves_no_worktree(
     def removing(args: Any, *rest: Any, **kw: Any) -> Any:
         if isinstance(args, list) and args[:3] == ["git", "worktree", "remove"]:
             removed.append(args[-1])
-            os.kill(os.getpid(), signal.SIGTERM)
+            stop_this_thread(signal.SIGTERM)
         return run(args, *rest, **kw)
 
     monkeypatch.setattr(approvals.subprocess, "run", removing)
-    monkeypatch.setattr(approvals, "merges", lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+    monkeypatch.setattr(approvals, "merges", lambda *_: stop_this_thread(signal.SIGTERM))
     with pytest.raises(SystemExit) as stop:
         lands["land"]("7")
     assert (stop.value.code, lands["lock"]()) == (143, "")
@@ -4713,7 +4595,7 @@ def test_a_land_that_inherits_sighup_ignored_outlives_a_hangup(
     merges = approvals.merges
 
     def hangup(*args: Any) -> Any:
-        os.kill(os.getpid(), signal.SIGHUP)
+        stop_this_thread(signal.SIGHUP)
         return merges(*args)
 
     monkeypatch.setattr(approvals, "merges", hangup)
@@ -5135,6 +5017,7 @@ OUTSIDE = (
 )
 
 
+@pytest.mark.needs_tool("ssh-keygen")
 def test_a_green_signed_batch_gives_each_pr_a_commit_of_its_own_change(
     lands: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -7267,10 +7150,11 @@ def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reporte
     added: list[tuple[int, str, bool]],
 ) -> None:
     at_cap = verdict_on(
-        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 5"
+        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading=f"Verifier (claude), pass {CAP}"
     )
     pr = pull(
-        reviews=(at_cap, verdict_on(HEAD, heading="Verifier (claude), pass 6")), files=("app.py",)
+        reviews=(at_cap, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")),
+        files=("app.py",),
     )
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
     comments: list[tuple[int, str]] = []
@@ -7279,7 +7163,7 @@ def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reporte
     monkeypatch.chdir(PROJECT)
     capped_line = (
         HELD
-        + "a verifier review at the cap (pass 5) or later was not satisfied or left a blocker or major open, so the owner decides"
+        + f"a verifier review at the cap (pass {CAP}) or later was not satisfied or left a blocker or major open, so the owner decides"
     )
     assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
     assert capsys.readouterr().out.splitlines() == [capped_line]
@@ -10300,12 +10184,6 @@ REFUSED_GRAPHQL = "gh: GitHub GraphQL is not available from Claude Code sessions
 NAME_WITH_OWNER = "kzarzycki/scratch-gate-revert"
 
 
-@pytest.fixture(autouse=True)
-def graphql_answers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every test starts as a run that has not seen GraphQL refused."""
-    monkeypatch.setattr(approvals.github, "_rest_only", False)
-
-
 def user(login: str, kind: str = "User") -> dict[str, Any]:
     return {"login": login, "type": kind}
 
@@ -10554,13 +10432,14 @@ def test_without_graphql_check_merge_still_fails_a_missing_proof(
     )
 
 
-def test_review_threads_a_host_cannot_read_over_rest_fail_closed(cloud: Cloud) -> None:
-    """GitHub's own REST API has no review threads: where the proxy's route is missing, the read raises rather than
-    count none unresolved."""
+def test_review_threads_a_host_cannot_read_over_rest_or_graphql_fail_closed(cloud: Cloud) -> None:
+    """GitHub's own REST API has no review threads: where the proxy's route is missing and GraphQL refuses the threads
+    too, the read raises rather than count none unresolved."""
     del cloud.routes["repos/{owner}/{repo}/pulls/7/ccr/review_threads"]
     with pytest.raises(subprocess.CalledProcessError) as raised:
         approvals.pull_request(7)
-    assert "ccr/review_threads: Not Found" in raised.value.stderr
+    assert raised.value.stderr == REFUSED_GRAPHQL
+    assert "reviewThreads" in " ".join(cloud.calls[-1])
 
 
 def test_where_graphql_answers_it_is_the_one_read(monkeypatch: pytest.MonkeyPatch) -> None:

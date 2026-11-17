@@ -246,6 +246,7 @@ def test_built_runs_a_head_run_under_a_holder_of_the_heavy_slot_too(
     env = {
         **os.environ,
         "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        "GATE_SLOTS": "1",
         "LOOP_GATE_SLOT_HELD": str(held),
     }
     result = run_built(repo, f"{STALE} && {CHECK}", ("build",), patched, env=env)
@@ -264,3 +265,62 @@ def test_a_file_renamed_with_the_same_bytes_is_a_change(repo: Path) -> None:
     result = run_built(repo, f"{build}; true", ("build/App",), patched)
     assert result.returncode == 1
     assert f"{patched}: exit 0 survived" in log(repo)
+
+
+@pytest.mark.parametrize(
+    "code, command", [(127, "no-such-command-xyz"), (126, "tmp/loop/notexec"), (5, "exit 5")]
+)
+def test_a_test_command_that_never_ran_is_refused_on_the_head_run_not_counted_as_a_kill(
+    repo: Path, code: int, command: str
+) -> None:
+    (repo / "tmp/loop/notexec").write_text("echo hi\n")  # no execute bit: sh exits 126
+    patched = patch(repo, "add.patch", "a + b", "a - b")
+    result = mutate(repo, patched, test=command)
+    assert result.returncode == 2, result.stderr
+    assert f"exited {code}" in result.stderr and command in result.stderr
+    assert not any("killed" in line for line in result.stdout.splitlines())
+    assert (repo / "calc.py").read_text() == MODULE
+
+
+@pytest.mark.parametrize("code", [126, 127, 5])
+def test_a_patch_that_stops_the_test_command_running_is_inconclusive_not_killed(
+    repo: Path, code: int
+) -> None:
+    patched = patch(repo, "add.patch", "a + b", "a - b")
+    result = mutate(repo, patched, test=f"if grep -q 'a - b' calc.py; then exit {code}; fi")
+    assert result.returncode == 3, result.stderr
+    assert f"{patched}: exit {code} inconclusive: test command did not run" in log(repo)
+    assert clean(repo) and (repo / "calc.py").read_text() == MODULE
+
+
+def test_a_real_failing_test_still_kills(repo: Path) -> None:
+    patched = patch(repo, "add.patch", "a + b", "a - b")
+    result = mutate(repo, patched, test="if grep -q 'a - b' calc.py; then exit 1; fi")
+    assert result.returncode == 0, result.stderr
+    assert f"{patched}: exit 1 killed" in log(repo)
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_a_heavy_lane_head_run_that_never_ran_is_refused_too(
+    repo: Path, held: bool, tmp_path: Path
+) -> None:
+    # --built makes the head run happen where the lane would run none: short_seconds 0, or a holder of the heavy slot
+    ignore_build(repo)
+    patched = patch(repo, "add.patch", "a + b", "a - b")
+    env = None
+    if held:
+        # the slot must be a gate.<n>.lock in the slot directory, or the run isn't under a holder and takes the short lane
+        slot = tmp_path / "cache" / "engineering-loop" / "gate.1.lock"
+        slot.parent.mkdir(parents=True)
+        env = {
+            **os.environ,
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            "GATE_SLOTS": "1",
+            "LOOP_GATE_SLOT_HELD": str(slot),
+        }
+    else:
+        policy(repo, "loop:\n  short_seconds: 0\n")
+        patched = patch(repo, "add2.patch", "a + b", "a - b")
+    result = run_built(repo, "no-such-command-xyz", ("build",), patched, env=env)
+    assert result.returncode == 2, result.stderr
+    assert "exited 127" in result.stderr

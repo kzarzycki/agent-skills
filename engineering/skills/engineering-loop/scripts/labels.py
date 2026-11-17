@@ -41,6 +41,7 @@ from approvals import (  # the label names, defined once
     MERGE_LABEL,
     NEEDS_OWNER,
     POINTS,
+    QUEUED,
     READY,
     RISK_LABEL,
     SIZE_ORDER,
@@ -67,6 +68,10 @@ LOOP_LABELS = {
     },
     MERGE_LABEL: ("0e8a16", "The owner's merge approval of a high-risk PR"),
     RISK_LABEL: ("b60205", "Its consequences need the owner at merge"),
+    QUEUED: (
+        "fbca04",
+        "land put it in GitHub's merge queue; off once its Landed comment is written or it merged elsewhere",
+    ),
     EPIC: ("8250df", "An outcome the owner tracks; its work items are sub-issues"),
     BUG: ("d73a4a", "Something a user or the pipeline hits is wrong"),
     "kind:enhancement": ("a2eeef", "New or improved behaviour"),
