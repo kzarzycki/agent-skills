@@ -552,9 +552,10 @@ class LateBrief(FakeOmnigent):
     """Session s0's brief is taken late: it lands as an item on the ``land_at``-th history read,
     and waits in ``pending_inputs`` until then when ``queued``."""
 
-    def __init__(self, land_at: int | None, queued: bool) -> None:
+    def __init__(self, land_at: int | None, queued: bool, brief: bool = True) -> None:
         super().__init__(deaf={0})
         self.land_at, self.queued, self.reads, self.text = land_at, queued, 0, ""
+        self.brief = brief  # False: only an agent item arrives, not the brief
 
     def send(self, sid: str, text: str) -> None:
         super().send(sid, text)
@@ -565,7 +566,10 @@ class LateBrief(FakeOmnigent):
         if sid == "s0" and self.text and self.land_at is not None:
             self.reads += 1
             if self.reads == self.land_at:
-                self.land(sid, self.text)
+                if self.brief:
+                    self.land(sid, self.text)
+                else:
+                    self.sessions[sid].append({"id": "t1", "type": "function_call"})
         return super().items(sid)
 
     def info(self, sid: str) -> dict:
@@ -609,13 +613,28 @@ def test_a_brief_landing_late_exits_0_through_main_with_one_session(
     assert list(og.sessions) == ["s0"] and og.archived == []
 
 
-def test_start_abandons_a_session_whose_brief_never_arrives(
+def test_start_keeps_a_queued_session_that_shows_an_item_during_the_grace(
     tmp_path: Path, quick_grace: None
 ) -> None:
+    og = LateBrief(3, True, brief=False)
+    assert omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)[0] == "s0"
+    assert og.archived == []
+
+
+def test_start_abandons_a_session_whose_brief_never_arrives(
+    tmp_path: Path, quick_grace: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     og = FakeOmnigent(deaf={0, 1})  # nothing pending, history empty: no grace
+    waits: list[float] = []
+    real = omnigent_agent.delivered
+    monkeypatch.setattr(
+        omnigent_agent,
+        "delivered",
+        lambda o, sid, t, sec, *a: waits.append(sec) or real(o, sid, t, sec, *a),
+    )
     with pytest.raises(omnigent_agent.Fail, match="s0: brief not in history"):
         omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
-    assert og.archived == ["s0", "s1"]
+    assert og.archived == ["s0", "s1"] and waits == [0, 0]
 
 
 def test_start_abandons_a_queued_brief_that_never_lands_after_the_grace(
