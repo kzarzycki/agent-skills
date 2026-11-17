@@ -26,12 +26,13 @@ leaves no mutation in the tree. The test command runs with PYTHONDONTWRITEBYTECO
 same second as its source would hide the next same-sized patch of that file.
 
 Each test run takes a host gate slot (SKILL.md, One heavy gate per host slot): the heavy slot, an exclusive flock on
-`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock` (the file a project's gate takes), or the short lane,
+`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock` (the first free one of the host's `GATE_SLOTS`, as a project's gate takes), or the short lane,
 `gate.short.lock` beside it, which waits only for another short job. Before any patch, the test command runs once on
 the unmutated head in the short lane, timed: when it passes within the policy's `short_seconds` (default 120), every
 patch runs in the short lane too, and otherwise, or when it fails, each takes the heavy slot. `short_seconds: 0` runs
 no head run, and neither does a run already under a holder of the heavy slot: every patch takes the heavy slot. A run
-waits for its slot with a `waiting for the host gate slot` (or `short gate slot`) line in the log, and a short-lane
+waits for its slot with a `waiting for the host gate slot` (or `short gate slot`) line in the log, repeated every minute,
+and a short-lane
 patch run past `short_seconds` adds an `overrun` line; the slot is held per run, so a gate can take it between two.
 The test command gets `LOOP_GATE_SLOT_HELD=<lock path>`: a wrapper that takes the same lock runs its command without
 taking it again, since it would otherwise wait on its own parent. A run already started under that variable naming
@@ -41,7 +42,8 @@ The log: line 1 is `git rev-parse HEAD`, line 2 this command line, line 3 the la
 120 s`, `heavy: head run 412.0 s > 120 s`, `heavy: head run failed (exit 1)`, `heavy: short_seconds is 0`, `heavy:
 run under a holder of the heavy slot`), then `<patch>: exit <n> killed|survived|inconclusive: ...` per patch, then the head run's
 output under `== head ==` and each patch's test output under a `== <patch> ==` header. It is rewritten after every
-run, so a stopped run keeps what it finished. Exit 0 when every patch was killed, 1 when one survived (the log names it),
+run, so a stopped run keeps what it finished. Each log line is also printed to stdout as it is added, so a detached run's recipe log (what
+`wait-for --stall` watches) advances with it. Exit 0 when every patch was killed, 1 when one survived (the log names it),
 else 3 when one was inconclusive, 2 when it refuses, a patch doesn't apply, or the tree can't be restored (stderr names the paths). The log goes outside the
 checkout or to an ignored path, never a tracked file or a patch, since writing it would destroy that file. Standard
 library and git, and approvals.py, beside it, to read the policy and run each test command under the host's heavy wrapper (so PyYAML).
@@ -50,7 +52,6 @@ library and git, and approvals.py, beside it, to read the policy and run each te
 from __future__ import annotations
 
 import argparse
-import fcntl
 import glob
 import hashlib
 import os
@@ -73,7 +74,16 @@ class Refused(Exception):
 
 
 def git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
+    # a session of its own: wait-for's SIGTERM reaches mutate's whole group, and a git killed mid-restore would leave
+    # the mutation in the tree
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+        start_new_session=True,
+    )
 
 
 def changes() -> str:
@@ -98,8 +108,9 @@ def on_signal(signum: int, _frame: object) -> None:
     raise Interrupted(signum)
 
 
-# the host's two gate slots (SKILL.md, One heavy gate per host slot): the heavy one, and the short lane
-HEAVY, SHORT = "gate.1.lock", "gate.short.lock"
+# the host's gate slots (SKILL.md, One heavy gate per host slot): the heavy ones, which approvals.py's take_slot picks
+# from, and the short lane
+SHORT = "gate.short.lock"
 # the policy's `short_seconds` when it sets none
 SHORT_SECONDS = 120
 SLOT_HELD = "LOOP_GATE_SLOT_HELD"
@@ -108,10 +119,9 @@ SLOT_HELD = "LOOP_GATE_SLOT_HELD"
 INCONCLUSIVE_EXIT = 75
 
 
-def slot_path(name: str = HEAVY) -> str:
-    """A host gate slot's lock file, the one SKILL.md and the project's gate wrapper name."""
-    cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.environ.get("HOME", "~"), ".cache")
-    return os.path.join(cache, "engineering-loop", name)
+def slot_path(name: str = SHORT) -> str:
+    """The short lane's lock file (a heavy slot is approvals.take_slot's to pick)."""
+    return approvals().slot_file(name)
 
 
 def approvals() -> Any:
@@ -170,19 +180,16 @@ def digest(paths: list[str], head: bool = False) -> str:
     return whole.hexdigest()
 
 
-def take_slot(path: str, waiting: Callable[[], None]) -> int | None:
-    """Hold the slot's exclusive flock and return its fd (closing it frees the lock, as does the process dying);
-    None when this run already runs under a holder of that same path. `waiting` is called once, before blocking."""
+def take_short(path: str, waiting: Callable[[], None]) -> int | None:
+    """Hold the short lane's exclusive flock and return its fd (closing it frees the lock, as does the process dying);
+    None when this run already runs under a holder of that same path. `waiting` is called when the wait begins and
+    again every approvals.SLOT_SAY_SECONDS."""
     if os.environ.get(SLOT_HELD) == path:
         return None
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            waiting()
-            fcntl.flock(fd, fcntl.LOCK_EX)
+        approvals().flock_saying(fd, waiting)
     except BaseException:
         os.close(fd)
         raise
@@ -193,8 +200,12 @@ def run_test(
     command: str, slot: str, waiting: Callable[[], None] = lambda: None
 ) -> tuple[int, str, float]:
     """The test command's exit code, output and seconds (the wait for the slot not counted), run under the gate slot
-    whose lock file is `slot`; on a signal its whole process group is stopped first."""
-    fd = take_slot(slot, waiting)
+    whose lock file is `slot`, the short lane's, else the first free heavy slot (approvals.take_slot); on a signal its
+    whole process group is stopped first."""
+    if slot == slot_path(SHORT):
+        fd = take_short(slot, waiting)
+    else:
+        fd, slot = approvals().take_slot(waiting)
     try:
         began = time.monotonic()
         code, output = run_command(command, slot)
@@ -211,10 +222,10 @@ def lane(
     short lane when the test command passes on the unmutated head, in the short lane, within `limit` seconds. With
     `built` a head run is needed whatever the lane, since its outputs are what each patch's are compared to: one that
     would run none runs once in the heavy slot."""
-    heavy = slot_path(HEAVY)
+    heavy = approvals().slot_path()
     # its holder is this run's parent: a short-lane run would hand its children a variable that no longer names the
     # heavy slot, and a heavy wrapper under them would wait on that parent
-    if os.environ.get(SLOT_HELD) == heavy:
+    if approvals().held_slot() is not None:
         why = "heavy: run under a holder of the heavy slot"
         return heavy, why, run_test(command, heavy, waiting)[1] if built else None
     if limit <= 0:
@@ -313,8 +324,14 @@ def main(argv: list[str]) -> int:
     def write_log() -> None:
         args.log.write_text("\n".join(lines + outputs) + "\n")
 
+    def say(line: str) -> None:
+        """A line of the log, also on stdout: a detached run's recipe log sees nothing of --log, and wait-for kills a
+        run whose log is silent for its --stall."""
+        lines.append(line)
+        print(line, flush=True)
+
     def refused(refusal: Refused) -> int:
-        lines.append(f"refused: {str(refusal).splitlines()[0]}")
+        say(f"refused: {str(refusal).splitlines()[0]}")
         write_log()
         print(f"mutate: {refusal}", file=sys.stderr)
         return 2
@@ -339,7 +356,7 @@ def main(argv: list[str]) -> int:
 
         def waiting(name: object, slot: str) -> Callable[[], None]:
             def said() -> None:
-                lines.append(
+                say(
                     f"{name}: waiting for the {'short' if slot == slot_path(SHORT) else 'host'} gate slot"
                 )
                 write_log()
@@ -349,7 +366,7 @@ def main(argv: list[str]) -> int:
         slot, why, head_output = lane(
             args.test, limit, waiting("head", slot_path(SHORT)), bool(args.built)
         )
-        lines.append(why)
+        say(why)
         if head_output is not None:
             outputs += ["", "== head ==", head_output.rstrip("\n")]
         write_log()
@@ -374,9 +391,9 @@ def main(argv: list[str]) -> int:
             survived |= verdict == "survived"
             inconclusive |= "inconclusive" in verdict
             # logged before the restore, so a restore that refuses keeps the result it followed
-            lines.append(f"{name}: exit {code} {verdict}")
+            say(f"{name}: exit {code} {verdict}")
             if slot == slot_path(SHORT) and seconds > limit:
-                lines.append(f"{name}: overrun: {seconds:.1f} s > {limit} s in the short lane")
+                say(f"{name}: overrun: {seconds:.1f} s > {limit} s in the short lane")
             outputs += ["", f"== {name} ==", output.rstrip("\n")]
             write_log()
             restore(top, path)
@@ -387,7 +404,7 @@ def main(argv: list[str]) -> int:
                 restore(top, current)
             except Refused as refusal:
                 return refused(refusal)
-        lines.append(f"stopped by {signal.Signals(stop.signum).name}")
+        say(f"stopped by {signal.Signals(stop.signum).name}")
         write_log()
         signal.signal(stop.signum, signal.SIG_DFL)
         os.kill(os.getpid(), stop.signum)

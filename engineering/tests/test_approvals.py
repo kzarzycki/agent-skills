@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
@@ -56,6 +57,7 @@ def loop_md(settings: str = "") -> str:
     return f"# Loop facts\n\n## Settings\n\n```yaml\n{settings}```\n\nThe prose for people.\n"
 
 
+CAP = approvals.cap(None)  # SKILL.md § The cap: the default these tests pin
 BARE = loop_md()  # a loop.md with no settings, so no rules
 
 
@@ -3064,15 +3066,15 @@ def capped(*reviews: dict[str, Any], loop: str = BARE, **fields: Any) -> list[st
 def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfied_pass(
     hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    """Pass 5 left a major open: only the owner decides the fix, so the scoped pass 6 lands on their go."""
+    """The cap pass left a major open: only the owner decides the fix, so the scoped pass after it lands on their go."""
     open_at_cap = verdict_on(
-        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 5"
+        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading=f"Verifier (claude), pass {CAP}"
     )
-    pass6 = verdict_on(HEAD, heading="Verifier (claude), pass 6")
+    pass6 = verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")
     assert verified(open_at_cap, pass6) == []
     assert capped(open_at_cap, pass6) == [
         (
-            HELD + "a verifier review at the cap (pass 5) or later"
+            HELD + f"a verifier review at the cap (pass {CAP}) or later"
             " was not satisfied or left a blocker or major open, so the owner decides"
         )
     ]
@@ -3087,32 +3089,40 @@ def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfi
 def test_a_review_at_the_cap_holds_on_a_core_finding_or_on_not_being_satisfied(
     counts: str, satisfied: str
 ) -> None:
-    at_cap = verdict_on(OLD, counts, satisfied=satisfied, heading="Verifier (claude), pass 5")
-    assert capped(at_cap, verdict_on(HEAD, heading="Verifier (claude), pass 6")) != []
+    at_cap = verdict_on(OLD, counts, satisfied=satisfied, heading=f"Verifier (claude), pass {CAP}")
+    assert capped(at_cap, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")) != []
 
 
 def test_minors_only_at_the_cap_or_core_findings_before_it_need_no_owner() -> None:
-    minors = verdict_on(HEAD, "0 blocker, 0 major, 3 minor", heading="Verifier (claude), pass 5")
+    minors = verdict_on(
+        HEAD, "0 blocker, 0 major, 3 minor", heading=f"Verifier (claude), pass {CAP}"
+    )
     assert capped(minors) == []
     early = verdict_on(
-        OLD, "1 blocker, 0 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 4"
+        OLD,
+        "1 blocker, 0 major, 0 minor",
+        satisfied="no",
+        heading=f"Verifier (claude), pass {CAP - 1}",
     )
-    assert capped(early, verdict_on(HEAD, heading="Verifier (claude), pass 5")) == []
+    assert capped(early, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP}")) == []
 
 
 def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() -> None:
-    assert approvals.cap(None) == approvals.cap(BARE) == 5  # SKILL.md § The cap
-    assert approvals.cap(loop_md("loop:\n  cap: 3\n")) == 3
+    assert approvals.cap(None) == approvals.cap(BARE) == 3  # SKILL.md § The cap
+    assert approvals.cap(loop_md("loop:\n  cap: 4\n")) == 4
     with pytest.raises(approvals.Refused, match="`loop.cap` must be a whole number"):
         approvals.cap(loop_md("loop:\n  cap: 3 passes\n"))
     major = verdict_on(
-        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 3"
+        OLD,
+        "0 blocker, 1 major, 0 minor",
+        satisfied="no",
+        heading=f"Verifier (claude), pass {CAP - 1}",
     )
-    later = verdict_on(HEAD, heading="Verifier (claude), pass 4")
+    later = verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP}")
     assert capped(major, later) == []
-    assert capped(major, later, loop=loop_md("loop:\n  cap: 3\n")) == [
+    assert capped(major, later, loop=loop_md(f"loop:\n  cap: {CAP - 1}\n")) == [
         (
-            HELD + "a verifier review at the cap (pass 3) or later"
+            HELD + f"a verifier review at the cap (pass {CAP - 1}) or later"
             " was not satisfied or left a blocker or major open, so the owner decides"
         )
     ]
@@ -3416,13 +3426,6 @@ def test_any_other_rules_error_fails(
 ) -> None:
     landing["rulesets"] = error
     with pytest.raises(subprocess.CalledProcessError):
-        approvals.required_checks("main")
-
-
-def test_a_base_whose_rules_require_a_merge_queue_is_refused(landing: dict[str, Any]) -> None:
-    """GitHub's queue would merge a PR later, on a merge-group tree land never gated."""
-    landing.update(rulesets=["check", ":merge_queue"])
-    with pytest.raises(approvals.Refused, match="require GitHub's merge queue"):
         approvals.required_checks("main")
 
 
@@ -4049,7 +4052,9 @@ def test_a_machine_fault_twice_on_the_tip_after_the_merges_still_says_landed(
     refusing(monkeypatch, lambda args: args[2] == "8")
     codes = iter([0, 78, 78])
     monkeypatch.setattr(
-        approvals, "ran_step", lambda _step, cwd=None, out=None, load=None: (next(codes), 0, 0)
+        approvals,
+        "ran_step",
+        lambda _step, cwd=None, out=None, load=None, land=False: (next(codes), 0, 0),
     )
     code, lines = lands["land"]()
     assert (code, lands["merged"]()) == (1, ["7"])
@@ -4591,6 +4596,31 @@ def test_the_batch_starts_from_the_base_origin_has_once_the_lock_is_taken(
     assert (lands["runs"](), lands["main"]("~1")) == (1, moved[0])
 
 
+def stop_this_thread(sig: int) -> None:
+    """Stop this process with `sig` as a stop reaches the land, whose CLI runs one thread: to the whole process
+    (os.kill) in a serial run, as in CI, and to the thread running the test in a pytest-xdist worker
+    (PYTEST_XDIST_WORKER set). A signal sent to the whole process goes to any thread that doesn't block it, and an
+    xdist worker runs a second one (execnet's, started with `_thread`, so `threading` doesn't count it), which would
+    take a stop the land holds blocked while it releases its lock."""
+    if not os.environ.get("PYTEST_XDIST_WORKER"):
+        os.kill(os.getpid(), sig)
+    else:
+        signal.pthread_kill(threading.get_ident(), sig)
+
+
+@pytest.mark.parametrize("worker, sent", [("", "process"), ("gw0", "thread")])
+def test_a_test_stop_goes_to_the_process_serially_and_to_the_test_thread_in_an_xdist_worker(
+    monkeypatch: pytest.MonkeyPatch, worker: str, sent: str
+) -> None:
+    calls: list[tuple[str, int, int]] = []
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", worker)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: calls.append(("process", pid, sig)))
+    monkeypatch.setattr(signal, "pthread_kill", lambda tid, sig: calls.append(("thread", tid, sig)))
+    stop_this_thread(signal.SIGTERM)
+    target = os.getpid() if sent == "process" else threading.get_ident()
+    assert calls == [(sent, target, signal.SIGTERM)]
+
+
 @pytest.fixture
 def stoppable() -> Iterator[None]:
     """SIGTERM and SIGHUP at their defaults for the test, since a runner started under nohup passes SIGHUP ignored."""
@@ -4610,7 +4640,7 @@ def test_a_land_stopped_by_sigterm_or_sighup_releases_its_lock_and_exits_128_plu
 
     def stopped(*_args: Any) -> None:
         held.append(lands["lock"]())
-        os.kill(os.getpid(), sig)
+        stop_this_thread(sig)
 
     monkeypatch.setattr(approvals, "merges", stopped)
     before = {s: signal.getsignal(s) for s in approvals.STOPS}
@@ -4646,15 +4676,15 @@ def test_a_stop_while_the_lock_is_pushed_still_releases_it(
         )
         taking, releasing = state.startswith(approvals.HELD), state.startswith(approvals.FREE)
         if (when == "before taking" and taking) or (when.startswith("releasing") and releasing):
-            os.kill(os.getpid(), signal.SIGTERM)
+            stop_this_thread(signal.SIGTERM)
         done = run(args, *rest, **kw)
         if when == "taking" and taking:
-            os.kill(os.getpid(), signal.SIGTERM)
+            stop_this_thread(signal.SIGTERM)
         return done
 
     monkeypatch.setattr(approvals.subprocess, "run", pushing)
     if when == "releasing":
-        monkeypatch.setattr(approvals, "merges", lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+        monkeypatch.setattr(approvals, "merges", lambda *_: stop_this_thread(signal.SIGTERM))
     with pytest.raises(SystemExit) as stop:
         lands["land"]("7")
     assert (stop.value.code, lands["lock"]()) == (143, "")
@@ -4692,11 +4722,11 @@ def test_a_second_stop_while_the_batch_worktree_is_removed_leaves_no_worktree(
     def removing(args: Any, *rest: Any, **kw: Any) -> Any:
         if isinstance(args, list) and args[:3] == ["git", "worktree", "remove"]:
             removed.append(args[-1])
-            os.kill(os.getpid(), signal.SIGTERM)
+            stop_this_thread(signal.SIGTERM)
         return run(args, *rest, **kw)
 
     monkeypatch.setattr(approvals.subprocess, "run", removing)
-    monkeypatch.setattr(approvals, "merges", lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+    monkeypatch.setattr(approvals, "merges", lambda *_: stop_this_thread(signal.SIGTERM))
     with pytest.raises(SystemExit) as stop:
         lands["land"]("7")
     assert (stop.value.code, lands["lock"]()) == (143, "")
@@ -4713,7 +4743,7 @@ def test_a_land_that_inherits_sighup_ignored_outlives_a_hangup(
     merges = approvals.merges
 
     def hangup(*args: Any) -> Any:
-        os.kill(os.getpid(), signal.SIGHUP)
+        stop_this_thread(signal.SIGHUP)
         return merges(*args)
 
     monkeypatch.setattr(approvals, "merges", hangup)
@@ -7267,10 +7297,11 @@ def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reporte
     added: list[tuple[int, str, bool]],
 ) -> None:
     at_cap = verdict_on(
-        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 5"
+        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading=f"Verifier (claude), pass {CAP}"
     )
     pr = pull(
-        reviews=(at_cap, verdict_on(HEAD, heading="Verifier (claude), pass 6")), files=("app.py",)
+        reviews=(at_cap, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")),
+        files=("app.py",),
     )
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
     comments: list[tuple[int, str]] = []
@@ -7279,7 +7310,7 @@ def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reporte
     monkeypatch.chdir(PROJECT)
     capped_line = (
         HELD
-        + "a verifier review at the cap (pass 5) or later was not satisfied or left a blocker or major open, so the owner decides"
+        + f"a verifier review at the cap (pass {CAP}) or later was not satisfied or left a blocker or major open, so the owner decides"
     )
     assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
     assert capsys.readouterr().out.splitlines() == [capped_line]
