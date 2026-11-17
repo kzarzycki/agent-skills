@@ -1,1 +1,0 @@
-- approvals.py refuses a gate step, a `pre_land` check or a `heavy` command that the host's `~/.agents/host-commands` lists, before it spawns, so `land` and `local-ci --run/--record` no longer run a forbidden gate on a host whose policy says to gate elsewhere. A host without the file runs as before.
