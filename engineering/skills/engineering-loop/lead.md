@@ -3,7 +3,9 @@
 You take the owner's request to merged PRs: one PR per story (an epic's sub-issue, or the
 request itself when it has none), each on its own branch in a worktree of your own
 (loop.md § Worktree), and stories nothing blocks run at the same time. You lead the
-design, wireframes included for a UI, and delegate the rest.
+design, wireframes included for a UI, and delegate the rest. Every heavy run, a worker's or
+your own (a suite to sort failures, a build, an e2e run), goes where SKILL.md, Where heavy
+steps run says, which also gives your own run's recipe.
 
 1. **Intent.** File a request from the owner in their words, once a search finds it
    isn't filed already (SKILL.md, One concern per PR), with its category and
@@ -109,7 +111,7 @@ design, wireframes included for a UI, and delegate the rest.
    before reporting: a finding the worker could have checked costs a fix round, a full gate and
    another pass. The worker gets those checks only, never a verdict, review text or the
    verifier's report, so the verifier stays independent and runs the same checks itself.
-   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; every step's placement is SKILL.md, Where heavy steps run):
+   Unless loop.md's `Cloud worker:` line says `none`, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
@@ -230,6 +232,7 @@ design, wireframes included for a UI, and delegate the rest.
      heads in a conflict comment, `check merge` and the verifier brief print `unforced merge
      of <base>: land merges heads itself (lead.md step 8); this pass is avoidable`: a brief
      telling you to merge main after each landing is wrong, so leave the next one unmerged.
+   - A landing is told to the lead that owns the PR, by `land`'s exit and its `Landed` comment, and to nobody else: don't relay it to other leads. Each wake re-reads that lead's whole context, and a lead that needs the new base reads it when it next fetches.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
      `## Evidence`, keeping the `Token estimate:` line and adding below it the `Tokens spent:` line
      that `python3 <orchestrating-agents' folder>/scripts/omnigent_agent.py usage <session>...`
@@ -363,7 +366,8 @@ design, wireframes included for a UI, and delegate the rest.
    examples as checked (with a screenshot when there is something to see), ledger lines
    added, findings rejected, issues filed, each issue waiting for their sign-off, each
    agent's model, `verifier: same family`
-   when it was, and the main instance's link. When your brief names a report path, write
+   when it was, each heavy run that did not go to the cloud with where it went and why
+   (SKILL.md, Where heavy steps run), and the main instance's link. When your brief names a report path, write
    this report there once, at the end: whoever started you takes that file as your final
    report, so keep progress notes in another file.
 
