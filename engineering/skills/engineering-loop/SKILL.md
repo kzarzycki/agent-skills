@@ -624,7 +624,10 @@ isolated (one PR at a time, or GitHub's per-entry groups). The local merge queue
   a recorded pass on the batch's tree and, with none, refuses naming the tree, so a session with
   the files checked out runs `local-ci --record` on a head with it. It never runs the gate or
   `pre_land` there, refusing a project with `pre_land` set.
-- Green: it merges each PR through GitHub in the same order, pinned to its head, checks the
+- Green: it merges each PR through GitHub in the same order, pinned to its head, and right before each
+  merge call, under the lock, posts the commit status `land` on that head (success, its description naming
+  the lock commit's nonce), so a base can require `land` and refuse a merge made without it; a land that
+  doesn't reach the merge call posts none. It then checks the
   base ended at the gated tree, publishes the pass on the new tip, and comments `Landed` on each.
 - Red: it lands one PR at a time on the last green commit (a one-PR batch's red run is its first run alone). A PR red alone twice is evicted
   (back to draft, with its log's tail), and when the first PR is red twice the bare base is
