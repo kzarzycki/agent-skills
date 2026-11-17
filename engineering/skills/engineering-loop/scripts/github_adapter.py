@@ -201,7 +201,8 @@ def rate_limited(stderr: str, backoff: int, graphql: bool = False) -> int | None
     to its reset (`gh api rate_limit`, which costs no quota); a secondary one waits for the `Retry-After` the error
     shows, else `backoff` (60 s, doubling). ponytail: gh's error text shows no headers, so Retry-After is read only
     where it appears in the message."""
-    if not re.search(r"HTTP (403|429)", stderr):
+    # a GraphQL limit may come as HTTP 200 with the message alone, which gh prints with no status
+    if not graphql and not re.search(r"HTTP (403|429)", stderr):
         return None
     if (
         re.search(r"secondary rate limit|abuse detection", stderr, re.IGNORECASE)
