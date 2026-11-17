@@ -234,13 +234,16 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   push;
 - `.github/check-paths.yml`: each part's path filter;
 - the test runner's retry of a failed test, once (Rules for every role, Flaky tests);
-- `.github/rulesets/main.json`: a ruleset on main allowing squash merges only, with no merge
-  queue, requiring exactly two checks, `check` and `loop:approvals`. `land` merges its PRs
-  directly once it has gated them merged on top of main itself, so the ruleset needs no
-  up-to-date branch, and must not require a merge queue: GitHub would only queue each PR, to
-  merge later on a tree `land` never gated, so `land` and `check merge` refuse a base whose
-  rules require one, and `land` stops at any PR GitHub leaves unmerged.
-  Where the template still renders a merge queue, drop it before applying. A private repo on
+- `.github/rulesets/main.json`: a ruleset on main allowing squash merges only, requiring
+  exactly two checks, `check` and `loop:approvals`, and no up-to-date branch, since `land`
+  gates every PR on top of main. The ruleset picks `land`'s merge queue. Without a
+  `merge_queue` rule it is the local merge queue: `land` gates the batch on the host within
+  one call and merges each PR directly. With one it is the GitHub merge queue: `land`
+  enqueues each landable PR, and the queue's `merge_group` CI gates and merges it, so
+  nothing heavy runs on a laptop and no CI job runs twice. It suits a project whose CI is
+  long or that has code built around the queue. CI then needs `merge_group` triggers and
+  `loop:approvals` success on the queue's commit, and PR-time CI may run only what changed,
+  since the queue runs everything. A private repo on
   GitHub's free plan has no rulesets, branch protection or auto-merge, so the ruleset can't be
   applied: `land` reads no required checks there, merges directly once its proofs hold, and
   says GitHub enforces no rules there, since its proofs are the only gate. `mise run
@@ -510,9 +513,12 @@ policy's `adapters` names (Settings); `scripts/github_adapter.py` is GitHub's, t
 read when a GitHub call misbehaves. Its own commit status counts under `loop:approvals` and,
 for one release line, under `gatekeeper`: a ruleset may require either, and the gate waits
 for neither. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land [<pr>...]` (the
-project's `loop:land` task). It lands every landable PR into the base as one batch, so a base
-that moved costs one gate, not a merge, a gate and a verdict per PR, and no PR lands on a base
-it was never gated on:
+project's `loop:land` task). It lands every landable PR through the base's merge queue, the
+local one or GitHub's where the ruleset requires it (Adopting the loop), so a base that moved
+costs one gate, not a merge, a gate and a verdict per PR, and no PR lands on a base it was
+never gated on. The two take the same candidates and differ in where the gate runs (the host,
+or GitHub's CI), when (within one `land` call, or continuously) and how a red group is
+isolated (one PR at a time, or GitHub's per-entry groups). The local merge queue:
 - It takes a lock any host sees, the branch `loop-landing/<base>` on `origin`, so two lands never
   run at once; it only moves forward, so a host that may only create and fast-forward branches
   (a cloud session) takes and releases it too. The lock names the last PR its land
@@ -540,9 +546,18 @@ it was never gated on:
   (back to draft, with its log's tail), and when the first PR is red twice the bare base is
   gated: red there stops the run and evicts nobody, since the fault is on the base.
 
+The GitHub merge queue takes no lock and runs no local gate: `land` enqueues each candidate,
+oldest first, pinned to the head its proofs judged, and GitHub orders, groups, gates and merges
+them. An entry the queue removes for a red check gets a comment with that check's log tail and
+goes in once more; a second red on the same head turns it back to draft. A red main counts
+nothing and evicts nobody, nor does a red group built on a main commit where a required check
+failed, a conflict gets the local queue's conflict comment while GitHub still reports one (and
+waits while GitHub works it out), and a lost `merge_group`
+event costs a dequeue and an enqueue after 10 minutes. `approvals.py`'s docstring has each rule.
+
 `land <pr>... --only` lands those PRs alone and leaves every other PR untouched, for a lead that must not land another lead's work.
-With `--wait` it is one background command that ends when the batch landed or needs someone
-(exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction). Never run `gh pr
+With `--wait` it is one background command that ends when the PR landed or needs someone
+(exit 3 while it waits on the lock, CI or GitHub's queue, 1 for a refusal or an eviction). Never run `gh pr
 ready` or `gh pr merge` by hand, because `land` is what refuses a PR whose proof is missing. A repo with
 neither `docs/agents/gatekeeper.md` nor `docs/agents/loop.md` has no rules: `land` there needs each named issue to carry
 `approved:spec` and not `needs-owner`, and the PR's own proofs. A post that names a private project, its repo or a host can't be taken back, since
