@@ -347,6 +347,6 @@ def test_a_land_with_no_working_tree_names_the_wait_in_its_landed_comment(
     monkeypatch.setattr(approvals, "toplevel", lambda: None)
     monkeypatch.setattr(approvals, "git", lambda *_a: "b" * 40)
     monkeypatch.setattr(approvals, "merged_trees", lambda *_a: [(pull, "t", "t", "pass")])
-    monkeypatch.setattr(approvals, "merges", lambda *a: seen.append(a[-1]))
+    monkeypatch.setattr(approvals, "merges", lambda *a, **_k: seen.append(a[-1]))
     approvals.local_queue([pull], "main", None, None, {"check"})
     assert seen == [" (waited 60 s, joined: none)"]

@@ -5245,7 +5245,7 @@ def local_queue(
         if landed and held:
             repointed(base, held, landed[-1][0]["number"])
         if landed:
-            merges(landed, base, tip, None, loop, failed, waited, held)
+            merges(landed, base, tip, None, loop, failed, waited, held=held)
     elif candidates:
         with batch_tree(base) as work:
             tip = run_in(work, "rev-parse", "HEAD")
@@ -5254,7 +5254,7 @@ def local_queue(
             if landed and held:
                 repointed(base, held, landed[-1][0]["number"])
             if landed:
-                merges(landed, base, tip, work, loop, failed, waited, held)
+                merges(landed, base, tip, work, loop, failed, waited, held=held)
     # each named PR's exit: its wait's, else 0 when it merged, else 1
     done = {pull["number"] for pull, *_ in landed} - failed
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
