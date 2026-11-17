@@ -1,0 +1,124 @@
+"""approvals.py: a land that holds the landing lock re-stamps it, and a lock no land stamps any more is broken (#1260)."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import threading
+import time
+from datetime import UTC, datetime
+from typing import Any
+
+import pytest
+from approvals_harness import (
+    approvals,
+    git_in,
+    lands,  # noqa: F401
+)
+
+REF = approvals.LOCK.format("main")
+
+
+def lock_aged(lands: dict[str, Any], minutes: int, body: str) -> str:
+    """Another land's HELD lock commit, made `minutes` ago, pushed onto the lock branch."""
+    when = f"@{int(datetime.now(UTC).timestamp()) - minutes * 60} +0000"
+    tip = git_in(lands["origin"], "for-each-ref", "--format=%(objectname)", REF).strip()
+    tree = git_in(lands["work"], "hash-object", "-t", "tree", "-w", os.devnull).strip()
+    commit = subprocess.run(
+        [
+            "git",
+            "commit-tree",
+            *(["-p", tip] if tip else []),
+            "-m",
+            f"{approvals.HELD} [skip ci]\n\n{body}",
+            tree,
+        ],
+        cwd=lands["work"],
+        env={**os.environ, "GIT_COMMITTER_DATE": when},
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git_in(lands["work"], "push", "-q", "origin", f"{commit}:{REF}")
+    return commit
+
+
+def origin_tip(lands: dict[str, Any]) -> str:
+    return git_in(lands["origin"], "for-each-ref", "--format=%(objectname)", REF).strip()
+
+
+def test_a_lock_that_beats_and_is_past_the_stale_limit_is_broken_naming_its_age(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lock_aged(lands, 20, "pid 1, PR #99, beats, nonce a")
+    code, lines = lands["land"]("7")
+    assert code == 0, lines
+    assert any(
+        "was last stamped 20 minutes ago, past 15: its land is gone, broken as stale" in x
+        for x in lines
+    )
+
+
+def test_a_lock_without_the_beat_word_is_an_earlier_versions_and_waits_for_the_ceiling(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lock_aged(lands, 20, "pid 1, nonce a")
+    code, lines = lands["land"]("7")
+    assert code == approvals.WAITING
+    assert any("another land holds the landing lock" in x for x in lines)
+
+
+def test_a_young_beating_lock_is_waited_on(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lock_aged(lands, 5, "pid 1, beats, nonce a")
+    assert lands["land"]("7")[0] == approvals.WAITING
+
+
+def beating(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> tuple[list[str], threading.Event, threading.Thread]:
+    monkeypatch.setattr(approvals, "BEAT", 0.02)
+    held: list[str] = []
+    assert approvals.locked("main", held, 7)
+    stop = threading.Event()
+    thread = threading.Thread(target=approvals.heartbeat, args=("main", held, stop), daemon=True)
+    thread.start()
+    return held, stop, thread
+
+
+def test_a_live_holders_heartbeat_moves_the_lock_and_keeps_the_pr_it_names(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held, stop, thread = beating(lands, monkeypatch)
+    first = held[0]
+    deadline = time.monotonic() + 20
+    while len(held) < 3 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    stop.set()
+    thread.join(5)
+    assert len(held) >= 3
+    assert origin_tip(lands) == held[-1]
+    parents = git_in(lands["origin"], "rev-list", "--first-parent", held[-1]).split()
+    assert parents[: len(held)] == held[::-1]  # a chain of our own commits from the first
+    body = git_in(lands["origin"], "log", "-1", "--format=%b", held[-1])
+    assert "PR #7" in body and f", {approvals.BEATS}," in body
+    assert first in parents
+
+
+def test_a_holder_whose_lock_was_taken_stops_beating_and_refuses_to_merge(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "BEAT", 3600)  # no beat until the test moves the lock
+    held: list[str] = []
+    assert approvals.locked("main", held, 7)
+    lock_aged(lands, 0, "pid 2, PR #8, beats, nonce b")  # another land took it
+    monkeypatch.setattr(approvals, "BEAT", 0.02)
+    stop = threading.Event()
+    thread = threading.Thread(target=approvals.heartbeat, args=("main", held, stop), daemon=True)
+    thread.start()
+    thread.join(20)
+    assert not thread.is_alive() and held == []
+    with pytest.raises(approvals.Refused, match="took the landing lock"):
+        approvals.repointed("main", held, 7)
