@@ -21,19 +21,9 @@ import pytest
 from approvals_harness import (
     Cloud,
     add,
-    added,  # noqa: F401
     approvals,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
     cloud,  # noqa: F401
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
     lands,  # noqa: F401
-    others_open,  # noqa: F401
-    pushed,  # noqa: F401
-    refs,  # noqa: F401
-    required,  # noqa: F401
 )
 from test_approvals import REFUSED_GRAPHQL, cloud_land  # noqa: F401
 from test_approvals_github_queue import LOG, notes_on, queue, red_group, run  # noqa: F401

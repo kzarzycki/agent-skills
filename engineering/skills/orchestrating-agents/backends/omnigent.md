@@ -122,6 +122,14 @@ not checked. A chief of staff the owner starts in the UI gets no flag. To give i
 `autoCompactWindow` in its project's `.claude/settings.json`: it outranks the user's
 `autoCompactWindow`, though not the environment variable.
 
+**Lead model.** `start --top-level` of a Claude lead reads the project's `Lead model: <tier> for
+<condition>` line (under the engineering loop, in loop.md) once, on the lead's host, with the
+`Lead autocompact:` line. When the issues the brief names (`#N` or an issue URL; their labels come
+from `gh`) match the condition (`size:<S> or smaller`, or a bare label), the lead starts on the
+tier's alias: `frontier` Fable, `top` Opus, `mid` Sonnet, `small` Haiku. `--model` and
+`OMNIGENT_MODEL_CLAUDE` outrank it; a brief naming no issue, a size-less issue, a Codex lead or no
+line starts as configured. A tier or condition it can't parse fails the start before a session exists.
+
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
 agent's name or id starts that agent, found among the server's agents, then the caller's own
 (`scope=user`). `claude` and `codex` take the server's native agent, though the UI may register a
@@ -213,9 +221,10 @@ id, replacing another pin; with no `env` it keeps the workspace's pin, else copi
 checkout's, else pins the environment named after the repository (its `origin` remote), else the
 account's `Default`. `launch-dir` given no id resolves the same way from the branch's committed
 loop.md and the remote's name, and takes back what it made when nothing resolves. A name with no
-environment is refused before any session exists, naming `cloud-env`. `cloud-env <checkout>` makes
+environment is refused before any session exists, naming `claude-cloud:setup` and `claude-cloud-env`. `claude-cloud-env <checkout>` (alias `cloud-env`) makes
 that environment (the line's `env`, else the repository's name) with the checkout's committed
-`.claude/cloud-setup.sh` as its setup script, or, when it exists, replaces only its setup script
+`.claude/claude-cloud-setup.sh` (else the older `.claude/cloud-setup.sh`) as its setup script and the committed
+`.claude/claude-cloud-environment.json`'s network and variables, or, when it exists, replaces only those (`native.md` has `claude_cloud.py setup`, the same step with secrets and a proof)
 (`POST /v1/environment_providers/<id>` with the config it read and `config.init_script` changed,
 no `kind`), so its variables, a seeded login among them, stay as they are. It sends no secret,
 and the login's token goes into request headers only, never an argument list, a log or the
@@ -359,6 +368,7 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
 - A send answers `queued`/`launching` even when the brief never arrives. The script
   counts a start only once that one line is a user message in the history, and otherwise
   abandons the session and retries once with a fresh one, titled `<title>-r<n>`.
+  Before abandoning it, it polls one more `HTTP_SECONDS` (a slow server takes a POST that timed out client-side later, so at the deadline the brief is often neither an item nor pending yet) and keeps the session if the brief, or any item other than `resource_event` and `error`, shows up; one still empty after that is abandoned. While the brief sits in the session's pending inputs the grace restarts, so a pending brief holds the session. `start`'s `--confirm-seconds` defaults to 300 s (`send`'s stays 60): a busy host can take that long to show the brief.
   A signal (a caller's `timeout`) while it confirms leaves the session unarchived, since the
   brief may be in: it prints the session id on stdout and exits with the signal's code, and
   `status <sid>` says whether to wait on that session or start another.
@@ -481,7 +491,7 @@ is only in a posted message, or nowhere. The server stamps an API post with the 
 agent that posts an unmarked message into the session on purpose; that needs the server to stamp
 each item's origin.
 
-**Broadcasting.** `python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE]
+**Broadcasting.** Only a stop order is posted live: a rule change is added with `broadcast <message-file> --decisions FILE` as a bullet under `## Chief of staff decisions` in that file (the project file loop.md's `Standing decisions:` line names, which leads read each turn) and posted to no session, since each live post is a wake turn re-reading about 150k tokens of context per lead; `--stop` and `--decisions` exclude each other. `python3 scripts/omnigent_agent.py broadcast <message-file> --stop [--registry FILE]
 [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...]
 [--dry-run]` relays one message to every followed lead in the registry (default
 `$OMNIGENT_SUPERVISE_REGISTRY`), each `--include` session and, with `--active-hours`, every

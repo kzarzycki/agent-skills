@@ -9,21 +9,11 @@ from typing import Any
 
 import pytest
 from approvals_harness import (
-    added,  # noqa: F401
     approvals,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
     git_in,
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
     lands,  # noqa: F401
     note,
-    others_open,  # noqa: F401
-    pushed,  # noqa: F401
     record,
-    refs,  # noqa: F401
-    required,  # noqa: F401
     status,
 )
 
@@ -331,3 +321,14 @@ def test_a_board_field_at_high_holds_a_draft_in_landable_and_land_writes_the_lab
     assert [n["name"] for n in lands["pulls"][7]["labels"]["nodes"]] == []
     assert lands["land"]("7")[0] == approvals.WAITING
     assert (readied(lands), writes) == ([], [(7, approvals.RISK_LABEL)])
+
+
+def test_a_held_lock_is_remembered_for_the_wait_to_poll_without_gh(
+    lands: dict[str, Any], one_wait: None
+) -> None:
+    approvals.held_tip = None
+    draft(lands, 7)
+    lock(lands, approvals.HELD)
+    lands["land"]("7")
+    tip = git_in(lands["origin"], "for-each-ref", "--format=%(objectname)", REF).strip()
+    assert approvals.held_tip == (REF, tip)

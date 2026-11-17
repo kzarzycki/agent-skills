@@ -8,20 +8,10 @@ from typing import Any
 import pytest
 from approvals_harness import (
     GITHUB_RULE,
-    added,  # noqa: F401
     approvals,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
     git_in,
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
     lands,  # noqa: F401
     loop_md,
-    others_open,  # noqa: F401
-    pushed,  # noqa: F401
-    refs,  # noqa: F401
-    required,  # noqa: F401
 )
 
 
@@ -48,6 +38,7 @@ class Clock:
 def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
     stub = Clock()
     monkeypatch.setattr(approvals, "time", stub)
+    monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)  # these tests count 30 s rounds
     return stub
 
 
