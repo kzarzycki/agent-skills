@@ -3,7 +3,7 @@
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep|--no-keep] [--notify]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
-    python3 scripts/omnigent_agent.py launch-dir <remote> <branch> <env-id> <path> [--trust]
+    python3 scripts/omnigent_agent.py launch-dir <remote> <branch> <env-id> <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--notify]
@@ -2558,9 +2558,9 @@ def git_dirs(workspace: Path) -> list[str]:
 def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
     """A main checkout pinned for cloud sessions is where they are launched from: a local agent
     working there switched its branch under every later start, and carried another worker's
-    uncommitted edits along. A worktree's pin, copied in by ``pin_environment``, is its own. A
-    folder inside the main checkout is the checkout, so the pin is read at its root, which git
-    names even when its git dir lives elsewhere (``--separate-git-dir``)."""
+    uncommitted edits along. A linked worktree is not the checkout, whatever it pins. A folder
+    inside the main checkout is the checkout, so the pin is read at its root, which git names
+    even when its git dir lives elsewhere (``--separate-git-dir``)."""
     dirs = git_dirs(workspace)
     if len(dirs) == 3 and dirs[0] == dirs[1] and environment_pin(own_settings(Path(dirs[2]))):
         raise Fail(
@@ -2570,15 +2570,30 @@ def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
         )
 
 
+def refuse_shadowed_pin(workspace: Path, env: str, main: Path | None) -> None:
+    """``claude --cloud`` in a linked worktree takes its main checkout's pin when that checkout has
+    one, so a different pin of the worktree's own never applies and the session would run the other
+    environment's setup script and variables (#1152): fail, naming both, before any session exists."""
+    theirs = environment_pin(own_settings(main)) if main else ""
+    if theirs and theirs != env:
+        raise Fail(
+            f"{workspace} would pin environment {env}, but a cloud session launched there takes"
+            f" {main / SETTINGS}'s {theirs}: repin that file to {env}, or launch from a clone"
+            " (`launch-dir --clone`; folder trust is the user's call, --trust)"
+        )
+
+
 def pin_environment(workspace: Path) -> None:
     """Make sure a cloud session started in ``workspace`` gets the repo's claude.ai environment: it
     takes ``remote.defaultEnvironmentId`` from the workspace's untracked settings file, which a new
     worktree lacks, and without it lands in the account's default environment. A worktree missing
-    the pin takes its main checkout's; with neither, fail before any session exists."""
+    the pin takes its main checkout's; with neither, fail before any session exists, as with a
+    pin of its own that its main checkout's shadows."""
     own = own_settings(workspace)
-    if environment_pin(own):
-        return
     main = main_worktree(workspace)  # no checkout: no main to copy from
+    if env := environment_pin(own):
+        refuse_shadowed_pin(workspace, env, main)
+        return
     if main and (env := environment_pin(own_settings(main))):
         remote = own.get("remote") if isinstance(own.get("remote"), dict) else {}
         own["remote"] = {**remote, "defaultEnvironmentId": env}
@@ -2602,8 +2617,12 @@ def main_worktree(path: Path) -> Path | None:
     --separate-git-dir`` (or for a bare repository) git and Claude Code name the git dir itself,
     since nothing in it records where the checkout is."""
     dirs = git_dirs(path)
-    if len(dirs) != 3 or dirs[0] == dirs[1]:
-        return None
+    return listed_main(path) if len(dirs) == 3 and dirs[0] != dirs[1] else None
+
+
+def listed_main(path: Path) -> Path | None:
+    """The worktree git lists first for the repository ``path`` is in, whether ``path`` is that
+    worktree or a linked one (``main_worktree``); None outside a checkout."""
     first = subprocess.run(
         ["git", "-C", str(path), "worktree", "list", "--porcelain", "-z"],
         capture_output=True,
@@ -2690,21 +2709,24 @@ def launch_dir(
     trust: bool = False,
     config: Path | None = None,
     here: Path | None = None,
+    clone: bool = False,
 ) -> None:
     """A directory cloud sessions launch from, with no working tree: nothing on the cloud path reads
     its files (the bridge checks for a git repo, the CLI bundles it and reads the pin), so a
     ``--no-checkout`` stand-in with HEAD on ``branch`` replaces a full checkout. Run inside a checkout
     of the same repository (``here``, default the current directory) it is a worktree of that
-    checkout, which inherits the checkout's folder trust; otherwise a blobless clone, which Claude
-    Code does not trust. It holds the pin (``remote.defaultEnvironmentId``) and the ``tmp/loop/``
+    checkout, which inherits the checkout's folder trust; otherwise, or with ``clone``, a blobless
+    clone, which Claude Code does not trust. It holds the pin (``remote.defaultEnvironmentId``) and the ``tmp/loop/``
     that briefs and reports use. The folder-trust entry in the user's Claude config (``config``,
     default ``~/.claude.json``) is written only with ``trust``: trust is the user's decision, never
     this script's. It prints whether the folder is trusted."""
     if path.exists() and any(path.iterdir()):
         raise Fail(f"{path} is not empty")
-    source = same_repo_checkout(remote, here or Path.cwd())
+    source = None if clone else same_repo_checkout(remote, here or Path.cwd())
     if source:
         main, name = source
+        # the main worktree the new worktree's pin_environment will read, so the two agree
+        refuse_shadowed_pin(path, env, listed_main(main))
         # the checkout's own remote, by name: its settings (a partial clone's among them) apply
         steps = [
             ["git", "-C", str(main), "fetch", "-q", name, branch],
@@ -6964,6 +6986,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument(
         "--trust", action="store_true", help="also write the folder-trust entry (the user's call)"
     )
+    p.add_argument(
+        "--clone", action="store_true", help="clone even inside a checkout of the repository"
+    )
     p = sub.add_parser(
         "capacity", description="exit 0 when this host, or --host, has room for another session"
     )
@@ -7265,7 +7290,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 notify(outcome)
             return code
         if args.cmd == "launch-dir":
-            launch_dir(args.remote, args.branch, args.env, args.path, args.trust)
+            launch_dir(args.remote, args.branch, args.env, args.path, args.trust, clone=args.clone)
             return 0
         if args.cmd == "capacity" and not args.host:
             ok, line = capacity()
