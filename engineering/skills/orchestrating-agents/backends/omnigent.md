@@ -221,9 +221,10 @@ id, replacing another pin; with no `env` it keeps the workspace's pin, else copi
 checkout's, else pins the environment named after the repository (its `origin` remote), else the
 account's `Default`. `launch-dir` given no id resolves the same way from the branch's committed
 loop.md and the remote's name, and takes back what it made when nothing resolves. A name with no
-environment is refused before any session exists, naming `cloud-env`. `cloud-env <checkout>` makes
+environment is refused before any session exists, naming `claude-cloud:setup` and `claude-cloud-env`. `claude-cloud-env <checkout>` (alias `cloud-env`) makes
 that environment (the line's `env`, else the repository's name) with the checkout's committed
-`.claude/cloud-setup.sh` as its setup script, or, when it exists, replaces only its setup script
+`.claude/claude-cloud-setup.sh` (else the older `.claude/cloud-setup.sh`) as its setup script and the committed
+`.claude/claude-cloud-environment.json`'s network and variables, or, when it exists, replaces only those (`native.md` has `claude_cloud.py setup`, the same step with secrets and a proof)
 (`POST /v1/environment_providers/<id>` with the config it read and `config.init_script` changed,
 no `kind`), so its variables, a seeded login among them, stay as they are. It sends no secret,
 and the login's token goes into request headers only, never an argument list, a log or the
@@ -367,6 +368,7 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
 - A send answers `queued`/`launching` even when the brief never arrives. The script
   counts a start only once that one line is a user message in the history, and otherwise
   abandons the session and retries once with a fresh one, titled `<title>-r<n>`.
+  Before abandoning it, it polls one more `HTTP_SECONDS` (a slow server takes a POST that timed out client-side later, so at the deadline the brief is often neither an item nor pending yet) and keeps the session if the brief, or any item other than `resource_event` and `error`, shows up; one still empty after that is abandoned.
   A signal (a caller's `timeout`) while it confirms leaves the session unarchived, since the
   brief may be in: it prints the session id on stdout and exits with the signal's code, and
   `status <sid>` says whether to wait on that session or start another.
