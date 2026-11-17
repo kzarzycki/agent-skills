@@ -1906,18 +1906,17 @@ def queued(info: dict, text: str) -> bool:
     return any(text_of(p).strip() == text for p in info.get("pending_inputs") or [])
 
 
-def started_late(og: Omnigent, sid: str, text: str) -> bool:
+def started_late(og: Omnigent, sid: str) -> bool:
     """Whether a session whose brief missed the confirm window starts within one more
-    ``LATE_BRIEF_SECONDS`` (``HTTP_SECONDS``): a slow server takes a POST that timed out client-side later, so at the
-    deadline the brief is often neither an item nor pending yet. True once the brief shows up, or
-    the history holds an item past the opening ``resource_event`` (a real server puts the brief
-    first; an ``error`` item, a runner that failed to launch, is no start); False when none of
-    that happened by the end, however long the brief sat in the pending inputs."""
+    ``LATE_BRIEF_SECONDS`` (``HTTP_SECONDS``): a slow server takes a POST that timed out
+    client-side later, so at the deadline the brief is often neither an item nor pending yet.
+    True once the history holds an item past the opening ``resource_event`` (a real server puts
+    the brief first, so the brief itself is one; an ``error`` item, a runner that failed to
+    launch, is no start); False when none appeared by the end, however long the brief sat in the
+    pending inputs."""
     deadline = time.monotonic() + LATE_BRIEF_SECONDS
     while True:
-        if delivered(og, sid, text, 0) or any(
-            i.get("type") not in ("resource_event", "error") for i in og.items(sid)
-        ):
+        if any(i.get("type") not in ("resource_event", "error") for i in og.items(sid)):
             return True
         if time.monotonic() >= deadline:
             return False
@@ -3632,7 +3631,7 @@ def start(
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
                 send_to_confirm(og, sid, text)
             # a slow server can miss the confirm window yet take the brief a moment later
-            if delivered(og, sid, text, confirm_seconds) or started_late(og, sid, text):
+            if delivered(og, sid, text, confirm_seconds) or started_late(og, sid):
                 if not top_level:
                     held_of(report).parent.mkdir(parents=True, exist_ok=True)
                     held_of(report).write_text(json.dumps({"sid": sid, "brief": digest}))
