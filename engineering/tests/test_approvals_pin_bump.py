@@ -14,7 +14,7 @@ from approvals_harness import (
     loop_md,
     pull,
     verdict_on,
-    writers,
+    writers,  # noqa: F401
 )
 
 TAG, TAGGED = "engineering-v0.99.0", "c" * 40

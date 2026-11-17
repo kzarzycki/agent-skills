@@ -12,11 +12,11 @@ from approvals_harness import (
     approvals,
     approved,
     by,
-    gating,
+    gating,  # noqa: F401
     issue,
     judged_pr,
     judging,
-    lands,
+    lands,  # noqa: F401
     loop_md,
     note,
     pull,
