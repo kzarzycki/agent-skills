@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import itertools
 import json
 import subprocess
+import textwrap
 import time
 from typing import Any
 
@@ -289,3 +292,18 @@ def test_a_failed_quota_read_keeps_the_poll(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(github, "gh", failing)
     assert real_poll_seconds() == max(approvals.POLL, approvals.QUEUE_POLL)
+
+
+@pytest.mark.parametrize("site", ["batch", "merges", "base_branch", "settled_head"])
+def test_a_status_only_read_asks_pull_status_not_the_whole_pull(site: str) -> None:
+    """The conftest fake answers pull_status from pull_request, so no behaviour test tells the two apart; the
+    function's own calls do (#1271)."""
+    calls = {
+        node.func.id
+        for node in ast.walk(
+            ast.parse(textwrap.dedent(inspect.getsource(getattr(approvals, site))))
+        )
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "pull_status" in calls
+    assert "pull_request" not in calls
