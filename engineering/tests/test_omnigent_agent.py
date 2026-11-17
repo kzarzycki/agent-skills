@@ -3912,17 +3912,22 @@ def test_a_far_pinned_main_checkout_is_refused_before_any_session_exists(
     files["/there/repo/engineering/x"] = ""
     sub = [*far_start("claude", "oz"), "--workspace", "/there/repo/engineering"]
     assert omnigent_agent.main(sub) == 1 and og.sessions == {}
-    capsys.readouterr()
+    assert "/there/repo is the main checkout" in capsys.readouterr().err  # the root it found
     started = 0
-    for settings_text, git in (
-        (pin, "gitdir: /there/main/.git/worktrees/repo"),  # a worktree
-        ('{"permissions": {}}', "HEAD\nconfig"),  # settings with no pin
-        (None, "HEAD\nconfig"),  # no settings file at all
+    other = "/there/repo/.claude/settings.json"
+    for settings_text, git, also in (
+        (pin, "gitdir: /there/main/.git/worktrees/repo", None),  # a worktree
+        ('{"permissions": {}}', "HEAD\nconfig", None),  # settings with no pin
+        (None, "HEAD\nconfig", "{}"),  # .claude holds another file, not the settings
+        (None, "HEAD\nconfig", None),  # no .claude folder at all
     ):
         files["/there/repo/.git"] = git
         files.pop(settings, None)
+        files.pop(other, None)
         if settings_text:
             files[settings] = settings_text
+        if also:
+            files[other] = also
         assert omnigent_agent.main(argv) == 0
         started += 1
         assert len(og.sessions) == started and "skipped" not in capsys.readouterr().err
