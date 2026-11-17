@@ -96,7 +96,7 @@ def test_a_limit_past_the_ceiling_fails(
 def test_a_held_lock_at_an_unchanged_tip_is_polled_without_gh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ran, listed = [], []
+    now, ran, listed = [0.0], [], []  # a fake clock, so the counts do not depend on machine load
 
     def landing(pr: Any, only: bool = False) -> tuple[int, bool]:
         ran.append(1)
@@ -107,13 +107,16 @@ def test_a_held_lock_at_an_unchanged_tip_is_polled_without_gh(
         listed.append(args)
         return "abc\trefs/heads/loop-landing/main\n"
 
+    monkeypatch.setattr(github, "wait_until", None)
+    monkeypatch.setattr(approvals.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        approvals.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)
+    )
     monkeypatch.setattr(approvals, "landing", landing)
     monkeypatch.setattr(approvals, "git", git)
-    monkeypatch.setattr(approvals, "POLL", 0.01)
-    monkeypatch.setattr(approvals, "CEILING", 1)
-    monkeypatch.setattr(approvals, "RECHECK", 0.3)
     assert approvals.land(1, wait=True) == approvals.WAITING
-    assert 1 <= len(ran) <= 6  # one landing() per RECHECK, not one per 0.01 s poll
+    # one landing() per RECHECK, and POLL / RECHECK lock reads (which cost no API call) between two of them
+    assert abs(len(ran) - approvals.CEILING // approvals.RECHECK) <= 1
     assert len(listed) > len(ran) * 3
 
 
