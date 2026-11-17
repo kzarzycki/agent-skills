@@ -3,7 +3,9 @@
 You take the owner's request to merged PRs: one PR per story (an epic's sub-issue, or the
 request itself when it has none), each on its own branch in a worktree of your own
 (loop.md § Worktree), and stories nothing blocks run at the same time. You lead the
-design, wireframes included for a UI, and delegate the rest.
+design, wireframes included for a UI, and delegate the rest. Every heavy run, a worker's or
+your own (a suite to sort failures, a build, an e2e run), goes where SKILL.md, Where heavy
+steps run says, which also gives your own run's recipe.
 
 1. **Intent.** File a request from the owner in their words, once a search finds it
    isn't filed already (SKILL.md, One concern per PR), with its category and
@@ -112,7 +114,7 @@ design, wireframes included for a UI, and delegate the rest.
    before reporting: a finding the worker could have checked costs a fix round, a full gate and
    another pass. The worker gets those checks only, never a verdict, review text or the
    verifier's report, so the verifier stays independent and runs the same checks itself.
-   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; every step's placement is SKILL.md, Where heavy steps run):
+   Unless loop.md's `Cloud worker:` line says `none`, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
@@ -220,8 +222,9 @@ design, wireframes included for a UI, and delegate the rest.
 8. **Land** once the last verdict is triaged with no core finding open; the merge itself
    waits for the landing rule (SKILL.md):
    - Merge `origin/main` into the PR only when `land` comments that it conflicts with main
-     (`Conflicts in the landing batch`): `land` merges every head onto main itself and gates
-     the result, so a PR behind main lands without a merge. When you do merge it in, rerun the
+     (`Conflicts in the landing batch`): both merge queues test each head on top of main (the
+     local one on the host, GitHub's in its `merge_group` CI), so a PR behind main lands
+     without a merge. When you do merge it in, rerun the
      gates and get a verifier pass on the merge (step 7), since `land` merges only a head with
      a verdict of its own. A head with an earlier head's tree (`git rev-parse <sha>^{tree}`), as
      after a reword of commit messages only, keeps that head's verdict (unsatisfied or with
@@ -260,21 +263,24 @@ design, wireframes included for a UI, and delegate the rest.
      newest verifier review, satisfied with no core finding open, covers it, and every review
      thread is resolved (SKILL.md, Review trail on the PR). Start it as a background
      command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work
-     on other items meanwhile. It lands every landable PR into main as one gated batch, not
-     only yours (SKILL.md, Approvals and proof; `approvals.py`'s docstring has each step), and
+     on other items meanwhile. It lands every landable PR into main through main's merge
+     queue, the local one or GitHub's, not only yours (SKILL.md, Approvals and proof;
+     `approvals.py`'s docstring has each step), and
      exit 0 means your PR merged, with a `Landed` comment naming the base commit, the tree and
      the gate, and its kept `--pr` worker sessions finishing in the background (its log is named; `reap --merged
      --pr <n>` finishes them again). Exit 1 names what stopped your PR, and the fix is yours:
      - a missing proof, with nothing on the PR changed: add the proof;
      - a conflict with main or the PRs merged before it: merge `origin/main` in, as the first
        bullet says;
-     - an eviction, red alone twice: the PR is a draft again with its gate log's tail in a
-       comment; fix it like a check red after ready, and `land <pr>` marks it ready again;
+     - an eviction, red alone twice in the local queue or red twice on one head in GitHub's:
+       the PR is a draft again with the failing log's tail in a comment; fix it like a check
+       red after ready, and `land <pr>` marks it ready again;
      - `main itself is red`: nobody is evicted, since the fault is on main; fix main first
        (Rules for every role, Revert first);
      - a merge GitHub refused: as the bullet below says.
      Exit 3 is what `--wait` doesn't clear: the owner's go, or 2 hours of another land's lock
-     (one whose PR already merged is broken at once) or of pending required checks. With gatekeeper.md's `land` section it squashes, signs and pushes
+     (one whose PR already merged is broken at once), of pending required checks, of your PR
+     in GitHub's queue or of main's checks on the commit its red group was built on. With gatekeeper.md's `land` section it squashes, signs and pushes
      each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what
@@ -284,9 +290,10 @@ design, wireframes included for a UI, and delegate the rest.
      owner's go carries over only merges of the base whose verdict says `Logic change: none`
      (SKILL.md, Approvals and proof), and after the verdict on the new head `land` runs again.
    - Land every approved PR at once: start `land --wait` on each as soon as its proofs hold,
-     never after another PR's merge. Whichever runs first takes the lock and lands every
-     landable PR in one batch; the others wait for the lock and find their PR merged (exit 0)
-     or land what is left. Host load is no reason to serialize: one gate covers the batch.
+     never after another PR's merge. In the local queue whichever runs first takes the lock and
+     lands every landable PR in one batch; the others wait for the lock and find their PR merged
+     (exit 0) or land what is left. In GitHub's each enqueues what is landable, and the queue
+     groups the entries. Host load is no reason to serialize: one gate covers the batch.
    - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge
      go on a head), which the owner's `approve merge --by owner` removes: a question card
      alone holds nothing, since `land` batches every PR that is ready.
@@ -363,7 +370,8 @@ design, wireframes included for a UI, and delegate the rest.
    examples as checked (with a screenshot when there is something to see), ledger lines
    added, findings rejected, issues filed, each issue waiting for their sign-off, each
    agent's model, `verifier: same family`
-   when it was, and the main instance's link. When your brief names a report path, write
+   when it was, each heavy run that did not go to the cloud with where it went and why
+   (SKILL.md, Where heavy steps run), and the main instance's link. When your brief names a report path, write
    this report there once, at the end: whoever started you takes that file as your final
    report, so keep progress notes in another file.
 

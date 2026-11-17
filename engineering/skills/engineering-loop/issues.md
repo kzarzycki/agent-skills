@@ -56,6 +56,9 @@ read as approved.
   was reached with a core finding open. It names consequences, not urgency: how soon a
   thing matters is the tracker's priority (its realization file says where it lives), which the
   gate never reads.
+- **Queue**, `loop:queued` on a PR: `land` added it when it put the PR in GitHub's merge queue, and
+  takes it off once the PR's `Landed` comment is written, or once it merged outside the queue, so a later `land` finds every PR the queue
+  merged; nobody sets it by hand.
 
 A wayfinder map or ticket carries its `wayfinder:` label instead of a category, and no
 component or size: it resolves a decision, not a change.

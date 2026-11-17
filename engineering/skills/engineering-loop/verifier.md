@@ -8,7 +8,8 @@ report path, so ask for nothing. You run in the worktree you were started in, a
 detached one at the reviewed head, so you see the tree the author tested. Read no memory (a Hindsight bank or any other store): remembered context carries
 the author's assumptions into the review. Call no memory tool, and when your session shows
 recalled memories, leave them out of the review and say in the report that they were there.
-With loop.md's `Cloud worker:` line, name your evidence files for the PR (SKILL.md, Cloud worker).
+Where your test and mutation runs go is SKILL.md, Where heavy steps run. Unless loop.md's
+`Cloud worker:` line says `none`, name your evidence files for the PR (SKILL.md, Cloud worker).
 
 Check the tree first:
 

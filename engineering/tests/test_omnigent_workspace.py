@@ -184,7 +184,10 @@ def test_a_launch_dir_holds_no_files_but_the_pin_and_a_loop_folder(
     }
 
 
-def test_a_clone_without_a_pin_is_refused_naming_the_helper(tmp_path: Path, bare: Path) -> None:
+def test_a_clone_without_a_pin_is_refused_naming_the_helper(
+    tmp_path: Path, bare: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "cloud_environments", list)  # nothing to resolve
     dest = tmp_path / "clone"
     git("clone", "-q", f"file://{bare}", str(dest), cwd=tmp_path)
     with pytest.raises(omnigent_agent.Fail, match="launch-dir"):
