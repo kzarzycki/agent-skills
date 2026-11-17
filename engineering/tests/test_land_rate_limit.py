@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import subprocess
 import time
 from typing import Any
@@ -222,7 +223,39 @@ def test_a_low_quota_stretches_the_poll(
     monkeypatch: pytest.MonkeyPatch, answer: str, poll: int
 ) -> None:
     monkeypatch.setattr(github, "gh", lambda *args: answer)
+    monkeypatch.setattr(github.random, "randint", lambda low, high: 0)
     assert real_poll_seconds() == poll
+
+
+def test_the_poll_adds_bounded_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[int, int]] = []
+    monkeypatch.setattr(github, "gh", lambda *args: "5000 5000")
+    monkeypatch.setattr(
+        github.random, "randint", lambda low, high: seen.append((low, high)) or high
+    )
+    assert real_poll_seconds() == approvals.QUEUE_POLL + approvals.POLL_JITTER
+    assert seen == [(0, approvals.POLL_JITTER)]
+
+
+def test_the_waits_status_reads_go_through_rest(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[tuple[str, ...]] = []
+    found = {
+        "number": 7,
+        "state": "closed",
+        "merged": True,
+        "mergeable": None,
+        "base": {"ref": "main"},
+        "head": {"sha": "abc"},
+    }
+    monkeypatch.setattr(github, "gh", lambda *args, **_k: asked.append(args) or json.dumps(found))
+    assert github.pull_status(7) == {
+        "number": 7,
+        "state": "MERGED",
+        "baseRefName": "main",
+        "headRefOid": "abc",
+        "mergeable": "UNKNOWN",
+    }
+    assert asked == [("api", "repos/{owner}/{repo}/pulls/7")]  # no GraphQL
 
 
 def test_a_low_quota_poll_still_says_the_wait_each_minute_and_asks_github_each_poll(
@@ -251,6 +284,7 @@ def test_a_low_quota_poll_still_says_the_wait_each_minute_and_asks_github_each_p
 def test_a_failed_quota_read_keeps_the_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     def failing(*args: str) -> str:
         raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
+    monkeypatch.setattr(github.random, "randint", lambda low, high: 0)
 
     monkeypatch.setattr(github, "gh", failing)
     assert real_poll_seconds() == max(approvals.POLL, approvals.QUEUE_POLL)

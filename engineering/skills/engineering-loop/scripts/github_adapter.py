@@ -563,6 +563,22 @@ def rest_pull(pr: int) -> dict[str, Any]:
     }
 
 
+def pull_status(pr: int) -> dict[str, Any]:
+    """What a caller that only reads a PR's status needs (`state`, `baseRefName`, `headRefOid`, `mergeable`), from one
+    REST call in PULL's shape. GraphQL's PULL is dozens of fields and counts toward the shared GraphQL limit; REST's
+    `pulls/N` has these four. Anything else (comments, reviews, labels, checks) stays on pull_request()."""
+    found = rest(f"repos/{{owner}}/{{repo}}/pulls/{pr}")
+    return {
+        "number": found["number"],
+        "state": "MERGED" if found.get("merged") else found["state"].upper(),
+        "baseRefName": found["base"]["ref"],
+        "headRefOid": found["head"]["sha"],
+        "mergeable": {True: "MERGEABLE", False: "CONFLICTING"}.get(
+            found.get("mergeable"), "UNKNOWN"
+        ),
+    }
+
+
 def pull_request(pr: int) -> dict[str, Any]:
     return fast(
         lambda: _graphql(_repository(f"pullRequest(number: $n) {{ {PULL} }}"), n=pr)["pullRequest"],
@@ -1070,6 +1086,7 @@ class Port:
 tracker = Port("issue_node", "issues", "comment", "label", "assign")
 forge = Port(
     "pull_request",
+    "pull_status",
     "current_pr",
     "pr_changes",
     "merged_pull",
