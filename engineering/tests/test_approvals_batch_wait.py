@@ -339,3 +339,23 @@ def test_a_pr_whose_check_can_no_longer_come_during_the_wait_ends_it(
     clock.tick = lambda _now: never_comes(lands, "conflicting")
     lands["land"]()
     assert (lands["merged"](), len(clock.slept)) == (["7"], 1)
+
+
+def test_a_land_with_no_working_tree_names_the_wait_in_its_landed_comment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The batch computed in objects lands through `merges` too, so its Landed comment says what was waited for."""
+    pull = {"number": 7, "headRefOid": "a" * 40}
+    seen: list[str] = []
+    monkeypatch.setattr(
+        approvals, "candidates_of", lambda *_a: ([pull], {8: (approvals.WAITING, True)}, {8: []})
+    )
+    monkeypatch.setattr(approvals, "settings", lambda _loop: {"land": {"batch_wait_seconds": 60}})
+    monkeypatch.setattr(approvals, "batch_wait", lambda *_a: " (waited 60 s, joined: none)")
+    monkeypatch.setattr(approvals, "policy_ref", lambda _top: "refs/remotes/origin/main")
+    monkeypatch.setattr(approvals, "toplevel", lambda: None)
+    monkeypatch.setattr(approvals, "git", lambda *_a: "b" * 40)
+    monkeypatch.setattr(approvals, "merged_trees", lambda *_a: [(pull, "t", "t", "pass")])
+    monkeypatch.setattr(approvals, "merges", lambda *a: seen.append(a[-1]))
+    approvals.local_queue([pull], "main", None, None, {"check"})
+    assert seen == [" (waited 60 s, joined: none)"]
