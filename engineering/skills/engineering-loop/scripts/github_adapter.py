@@ -199,7 +199,10 @@ def rate_limited(stderr: str, backoff: int) -> int | None:
     where it appears in the message."""
     if not re.search(r"HTTP (403|429)", stderr):
         return None
-    if re.search(r"secondary rate limit|abuse detection", stderr, re.IGNORECASE) or "HTTP 429" in stderr:
+    if (
+        re.search(r"secondary rate limit|abuse detection", stderr, re.IGNORECASE)
+        or "HTTP 429" in stderr
+    ):
         found = re.search(r"retry[- ]after:? *(\d+)", stderr, re.IGNORECASE)
         return int(found[1]) if found else backoff
     if "API rate limit exceeded" not in stderr:
