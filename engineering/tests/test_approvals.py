@@ -4740,12 +4740,13 @@ def test_a_batch_tree_this_clone_passed_before_runs_no_gate(
     refused: list[str] = []
     refusing(monkeypatch, lambda args: not refused and not refused.append(args[2]))
     assert lands["land"]()[0] == 1
-    # the refused head keeps only the `land` status posted before its merge call: no gate result was published
+    # the refused head keeps only the `land` statuses (the success before its merge call, the error after the
+    # refusal): no gate result was published
     assert (
         lands["runs"](),
         lands["merged"](),
         [s["context"] for ss in hub.values() for s in ss],
-    ) == (1, [], ["land"])
+    ) == (1, [], ["land", "land"])
     assert lands["land"]()[0] == 0
     # neither head holds the batch's tree, and nothing was published: this clone's record is the pass
     assert (lands["runs"](), lands["merged"]()) == (1, ["7", "8"])

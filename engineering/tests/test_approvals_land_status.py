@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from typing import Any
 
 import pytest
 from approvals_harness import (
     approvals,
+    git_in,
     lands,  # noqa: F401
 )
 
@@ -33,6 +35,9 @@ def test_a_land_that_merges_posts_land_on_the_head_before_the_merge_call(
     [(sha, context, description, state, merges_before)] = [p for p in posted if p[1] == "land"]
     assert (sha, context, state) == (head, "land", "success")
     assert re.search(r"nonce [0-9a-f]{16}$", description), description
+    # the nonce is the one in the lock commit this land pushed
+    nonce = description.rsplit(" ", 1)[-1]
+    assert f"nonce {nonce}" in git_in(lands["origin"], "log", "--format=%b", "loop-landing/main")
     assert not any(call[:2] == ("pr", "merge") for call in lands["calls"][:merges_before])
     assert lands["calls"][merges_before][:2] == ("pr", "merge")
 
@@ -45,3 +50,35 @@ def test_a_land_that_does_not_merge_posts_no_land_status(
     assert code == 1, lines
     assert not any(call[:2] == ("pr", "merge") for call in lands["calls"])
     assert [p for p in posted if p[1] == "land"] == []
+
+
+def test_a_merge_github_refuses_turns_the_land_status_to_an_error(
+    lands: dict[str, Any], posted: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = lands["open"](7, {"7.txt": "7\n"})
+    fake = approvals.github.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("pr", "merge"):
+            raise subprocess.CalledProcessError(1, args, stderr="Review required")
+        return fake(*args, data=data)
+
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    code, lines = lands["land"]()
+    assert code == 1, lines
+    assert [(p[0], p[3]) for p in posted if p[1] == "land"] == [(head, "success"), (head, "error")]
+
+
+def test_a_land_status_that_cannot_be_posted_stops_the_merge(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+
+    def post(head: str, context: str, description: str, state: str = "success") -> None:
+        if context == "land":
+            raise subprocess.CalledProcessError(1, ("gh",), stderr="HTTP 403")
+
+    monkeypatch.setattr(approvals, "post_status", post)
+    code, lines = lands["land"]()
+    assert code == 1, lines
+    assert not any(call[:2] == ("pr", "merge") for call in lands["calls"])
