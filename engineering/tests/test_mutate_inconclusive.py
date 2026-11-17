@@ -246,6 +246,7 @@ def test_built_runs_a_head_run_under_a_holder_of_the_heavy_slot_too(
     env = {
         **os.environ,
         "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        "GATE_SLOTS": "1",
         "LOOP_GATE_SLOT_HELD": str(held),
     }
     result = run_built(repo, f"{STALE} && {CHECK}", ("build",), patched, env=env)
