@@ -7040,7 +7040,73 @@ def broadcast(
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
     (tmp_path / "m.md").write_text(text)
-    return omnigent_agent.main(["broadcast", str(tmp_path / "m.md"), *args])
+    live = [] if "--decisions" in args else ["--stop"]
+    return omnigent_agent.main(["broadcast", str(tmp_path / "m.md"), *live, *args])
+
+
+def test_a_broadcast_without_stop_writes_the_decisions_file_and_posts_to_no_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    board = tmp_path / "board.md"
+    board.write_text("# Board\n\n## Standing decisions\n- merge on green\n\n## Closed\n- x\n")
+    before = list(og.sessions[lead])
+    args = ("--include", lead, "--decisions", str(board))
+    assert broadcast(og, tmp_path, monkeypatch, *args, text="pause\nto save tokens") == 0
+    assert "posted to no session" in capsys.readouterr().out
+    assert og.sessions[lead] == before
+    assert omnigent_agent.standing(board) == "- merge on green"  # the owner's section, unchanged
+    text = board.read_text()
+    assert "## Chief of staff decisions\n- pause to save tokens\n" in text
+    assert "## Standing decisions\n- merge on green\n\n## Closed\n- x" in text
+    fresh = tmp_path / "fresh.md"
+    assert broadcast(og, tmp_path, monkeypatch, "--decisions", str(fresh)) == 0
+    assert "- rule" in fresh.read_text()
+    assert omnigent_agent.standing(fresh) == ""  # not the owner's section
+
+
+def test_a_dry_run_without_stop_writes_nothing_and_no_flag_is_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    board = tmp_path / "board.md"
+    args = ("--include", lead, "--decisions", str(board), "--dry-run")
+    assert broadcast(og, tmp_path, monkeypatch, *args) == 0
+    assert not board.exists()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "m.md").write_text("rule")
+    assert omnigent_agent.main(["broadcast", str(tmp_path / "m.md"), "--include", lead]) == 1
+    assert "only a stop order" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        omnigent_agent.main(["broadcast", "x", "--stop", "--decisions", str(board)])
+
+
+def test_the_loop_contract_names_the_file_a_lead_reads_and_a_decisions_target_is_that_file() -> (
+    None
+):
+    skills = Path(omnigent_agent.__file__).resolve().parents[2]
+    for doc in ("engineering-loop/SKILL.md", "engineering-loop/lead.md", "chief-of-staff/SKILL.md"):
+        assert "Standing decisions:" in (skills / doc).read_text()
+    # only the new text has these: the lead reads the remote copy, the chief of staff writes its own section
+    assert (
+        "git show origin/<default branch>:<path>"
+        in (skills / "engineering-loop/lead.md").read_text()
+    )
+    cos = (skills / "chief-of-staff/SKILL.md").read_text()
+    assert "git show origin/<default branch>:<path>" in cos
+    assert "under `## Chief of staff decisions`" in cos
+
+
+def test_a_stop_order_still_posts_to_the_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    assert broadcast(og, tmp_path, monkeypatch, "--include", lead, text="STOP") == 0
+    assert "delivered" in capsys.readouterr().out
+    assert omnigent_agent.text_of(og.sessions[lead][-1]).endswith("STOP")
 
 
 def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_archived_or_automations(

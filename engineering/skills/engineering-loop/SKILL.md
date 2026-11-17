@@ -38,6 +38,8 @@ question for the owner, not a guess:
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
+loop.md's optional line `Standing decisions: <path>` names a file in the project where the chief of staff writes its rule changes (under `## Chief of staff decisions`); lead.md reads it at the start of each real turn, so a rule change needs no live broadcast.
+
 Every agent reads loop.md on every step, like a system prompt, so it holds only what agents act
 on, each with a short reason only where the reason changes a decision. History, undo steps,
 evidence and anything this skill already states go in the PR or issue that set the line.

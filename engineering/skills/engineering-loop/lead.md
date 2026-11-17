@@ -14,6 +14,8 @@ a hand-off costs about $0.30 in wakes: a one-line check, or reading a failing ga
 decide what to do, which needs your judgement. Starting a worker and then doing its work
 yourself is the one failure to avoid: your context then holds it twice.
 
+When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read that file with `git show origin/<default branch>:<path>` at the start of each real turn, both its sections (the owner's and the chief of staff's; a fetch doesn't update your checkout or your story branch, so read the remote copy): a rule change reaches you there, and only a stop order is posted to your session, since each live post is a wake turn re-reading about 150k tokens of your context.
+
 1. **Intent.** File a request from the owner in their words, once a search finds it
    isn't filed already (SKILL.md, One concern per PR), with its category and
    component labels and no state label: that is its intent issue. Act on an issue you are
