@@ -226,7 +226,7 @@ def test_a_run_refused_graphql_reads_no_board(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     board_risks["values"][7] = "High"
-    monkeypatch.setattr(approvals, "_rest_only", True)
+    monkeypatch.setattr(approvals.github, "_rest_only", True)
     assert approvals.flag(pull(), [approved(1)], None) == []
     assert (added, board_risks["set"]) == ([], [])
 

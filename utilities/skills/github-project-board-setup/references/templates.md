@@ -50,7 +50,10 @@ Bug only, required. What went wrong first and what led to it, with evidence: for
 What becomes true after the change. Not how.
 
 ## Acceptance
-Checklist, literally checkable. Includes the test that fails before the change and passes after.
+### Before merge
+Checklist, literally checkable, run on the branch before review. Includes the test that fails before the change and passes after.
+### After merge
+Only the checks that need the merged default branch or a deployed environment, or `none`.
 
 ## Proof
 What evidence goes on the PR: unit test, live run log, screenshot, recording.
