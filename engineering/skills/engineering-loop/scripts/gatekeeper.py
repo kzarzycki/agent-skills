@@ -2070,10 +2070,10 @@ def pin_target(pull: dict[str, Any]) -> str | None:
     repository, never from the PR's tree, which its author controls. Any read that fails, or a file list past the
     one REST gives: None, so main's rule judges, as before."""
     shaped = touched(pull)
-    if shaped is not None and any(
-        path not in PIN_FILES and not VENDORED.fullmatch(path) for path in shaped
+    if shaped is not None and (
+        not shaped or any(path not in PIN_FILES and not VENDORED.fullmatch(path) for path in shaped)
     ):
-        return None  # most PRs: no call beyond the PR node
+        return None  # most PRs, and one changing nothing: no call beyond the PR node
     try:
         changes = pr_changes(pull["number"])
         total = pull["files"].get("totalCount") or 0

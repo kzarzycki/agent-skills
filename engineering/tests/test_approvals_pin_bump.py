@@ -168,6 +168,7 @@ def test_a_pr_touching_other_files_reads_nothing_more(monkeypatch: pytest.Monkey
     for name in ("pr_changes", "file_at", "tag_tree"):
         monkeypatch.setattr(approvals, name, unread)
     assert refused(gate(MID, ("apm.lock.yaml", "src/app.py"), monkeypatch))
+    assert refused(gate(MID, (), monkeypatch))
 
 
 @pytest.mark.parametrize(
