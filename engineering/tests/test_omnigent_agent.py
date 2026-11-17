@@ -19,6 +19,7 @@ from datetime import datetime
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
@@ -942,10 +943,20 @@ def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_
     assert capsys.readouterr().out == "still running\nrunning\n"  # with its progress line
     # the lock arrives mid-wait: the full budget runs from `locked`, not from entry
     log.write_text(f"run 1\nlock {lock}\n")
-    threading.Timer(0.2, lambda: log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")).start()
+    locked_at: list[float] = []
+
+    def take_the_lock() -> None:
+        log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")
+        locked_at.append(time.monotonic())
+
+    # a loaded or niced host fires the timer late, so the budget is measured from the write
+    threading.Timer(0.05, take_the_lock).start()
     began = time.monotonic()
     assert omnigent_agent.main(["wait-for", "--log", str(log), "--budget", "0.3"]) == 6
-    assert time.monotonic() - began >= 0.45
+    ended = time.monotonic()
+    # the lock came inside the entry's budget (else nothing is proven), and the budget ran on from it
+    assert locked_at and locked_at[0] - began < 0.3
+    assert ended - locked_at[0] >= 0.29
     assert capsys.readouterr().out == "still running\nrunning\n"
     log.write_text(f"lock {lock}\n")  # waiting past the lock ceiling: no verdict
     os.utime(log, (time.time() - 7300, time.time() - 7300))
@@ -2654,6 +2665,21 @@ def test_outside_a_session_the_server_is_named_or_the_one_login_never_config_yam
     assert omnigent_agent.Omnigent("https://a.example").base == "https://a.example"
 
 
+def test_a_prefixed_host_id_in_config_is_held_bare_so_this_host_s_sessions_are_local(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("host:\n  host_id: host_ab12\n")
+    monkeypatch.setattr(omnigent_agent, "CONFIG", config)
+    monkeypatch.setenv("RUNNER_SERVER_URL", "https://work.example")
+    og = omnigent_agent.Omnigent()
+    assert og.host_id == "ab12"  # the server's form (#1133)
+    assert not omnigent_agent.elsewhere(og, {"host_id": "ab12"})
+    assert omnigent_agent.elsewhere(og, {"host_id": "cd34"})
+    config.write_text("host:\n  host_id: ab12\n")
+    assert omnigent_agent.Omnigent().host_id == "ab12"  # a bare one stays as it is
+
+
 def test_a_session_acts_on_its_own_server_over_the_config_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3390,10 +3416,11 @@ def test_a_cloud_start_from_a_worktree_takes_its_main_checkout_s_environment_pin
     settings = tree / ".claude" / "settings.local.json"
     assert json.loads(settings.read_text()) == {"remote": {"defaultEnvironmentId": "env_a"}}
     assert "env_a" in capsys.readouterr().err and len(og.sessions) == 1
-    # a worktree already pinned keeps its own pin
+    # a worktree pinned to another environment is refused: its main checkout's pin would apply
     settings.write_text(json.dumps({"remote": {"defaultEnvironmentId": "env_b"}}))
-    assert start_cloud(og, tree, title="t2") == 0
-    assert json.loads(settings.read_text()) == {"remote": {"defaultEnvironmentId": "env_b"}}
+    assert start_cloud(og, tree, title="t2") == 1
+    err = capsys.readouterr().err
+    assert "env_b" in err and "env_a" in err and len(og.sessions) == 1
 
 
 def test_a_worktree_s_other_settings_stay_when_it_gains_the_pin(
@@ -3420,12 +3447,14 @@ def test_a_cloud_start_with_no_environment_pin_is_refused_before_a_session_exist
     og = FakeOmnigent()
     og.harnesses = {"claude-cloud": "acp:claude-cloud"}
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    # the login holds no environment named after the repository, nor Default
+    monkeypatch.setattr(omnigent_agent, "cloud_environments", list)
     main, tree = checkout_with_worktree(tmp_path, None)
     for workspace in (tree, main):  # a worktree, then a checkout that is no worktree
         monkeypatch.chdir(workspace)
         assert start_cloud(og, workspace) == 1
         err = capsys.readouterr().err
-        assert "default environment" in err and "defaultEnvironmentId" in err
+        assert "defaultEnvironmentId" in err and "'Default'" in err and "cloud-env" in err
         assert not (workspace / ".claude" / "settings.local.json").exists()
     assert og.sessions == {}
 
@@ -9528,7 +9557,7 @@ def test_a_lead_the_owner_drives_directly_gets_no_deadline_and_no_nudge(
     assert state_of(registry)["leads"]["a"]["direct"] is True
 
 
-def test_a_direct_lead_still_reports_done_and_records_a_quiet_end() -> None:
+def test_a_direct_lead_s_done_tells_its_waiters_and_a_quiet_end_is_recorded() -> None:
     def route(last: str) -> tuple[str, str, str]:
         event = {"kind": "ended", "last": last, "direct": True, "decisions": True}
         return omnigent_agent.route(event, lambda: pytest.fail("no small model for it"))
@@ -9544,8 +9573,8 @@ def test_a_direct_lead_s_question_and_quiet_report_stay_with_the_owner() -> None
     no_model = lambda: pytest.fail("no model call")
     question = {"kind": "blocked", "question": True, "direct": True}
     assert omnigent_agent.route(question, no_model)[1] == "record"
-    prompt = {"kind": "blocked", "direct": True}
-    assert omnigent_agent.route(prompt, no_model)[1] == "owner"
+    prompt = {"kind": "blocked", "direct": True}  # the owner sees it in its session (#1163)
+    assert omnigent_agent.route(prompt, no_model)[1] == "record"
     quiet = {"kind": "ended", "direct": True, "last": "/tmp/f.md", "head": "Here is what I found."}
     assert omnigent_agent.route(quiet, no_model)[1] == "record"
     done = {"kind": "ended", "direct": True, "last": "/tmp/f.md", "head": "DONE: shipped"}
@@ -10468,6 +10497,22 @@ def test_a_cloud_worker_s_delivered_brief_freezes_its_branch_after_hand_off(
         assert "a follow-up goes in a new PR" in brief
 
 
+def test_the_lead_preamble_points_heavy_runs_to_the_placement_rule() -> None:
+    """A lead brief naming a host worktree for a test run is read against the one rule (#1119)."""
+    rule = (
+        "Every heavy run (a test suite, a build, an e2e, a gate, a mutation or proof run) goes"
+        " where engineering-loop's SKILL.md, Where heavy steps run says, by default a Claude cloud"
+        " session: a host worktree this brief names for a test run says where the code is, not"
+        " where the run goes.\n"
+    )
+    lead = omnigent_agent.LEAD_PREAMBLE.format(report="r.md", role="")
+    assert lead.count(rule) == 1
+    assert rule in omnigent_agent.cloud_preamble(omnigent_agent.LEAD_PREAMBLE, None)
+    assert "Where heavy steps run" not in omnigent_agent.PREAMBLE  # a child's brief says its run
+    skill = (VERIFIER_MD.parent / "SKILL.md").read_text()
+    assert "\n## Where heavy steps run\n" in skill  # the section the line names
+
+
 def test_the_lead_preamble_asks_for_the_ending_line_with_the_report_path() -> None:
     """One ending contract: the ending word and the report path on one line, which routes as is."""
     text = omnigent_agent.LEAD_PREAMBLE.format(report="r.md", role="")
@@ -10832,7 +10877,8 @@ def in_checkout(og: Fleet) -> None:
 
 def github(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> list[tuple[str, ...]]:
     """``gh`` faked: the default branch's head is ``head[0]``, which a test moves between polls;
-    a comparison lists two merges. Each call is recorded."""
+    a comparison lists two merges, both PRs opened by the login it runs as. Each call is
+    recorded."""
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 0)
     calls: list[tuple[str, ...]] = []
 
@@ -10840,6 +10886,8 @@ def github(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> list[tuple[str, 
         calls.append(args)
         if args[1] == "repos/o/r/commits/HEAD":
             return head[0] + "\n"
+        if args[1] == "user" or args[1].startswith("repos/o/r/pulls/"):
+            return "me\n"
         if args[1] == f"repos/o/r/compare/{OLD}...{NEW}":
             return "Fix the gate (#12)\nSupervisor: one more (#781) (#13)\nchore: bump\n"
         raise AssertionError(args)
@@ -10942,11 +10990,17 @@ def test_a_landing_the_lead_wrote_under_a_named_wait_reaches_the_manager(
     assert f"[act] {line} (its default branch moved: a step owed after a landing)" in post
 
 
+FAR = "until 2099-01-01T00:00Z"  # a timed wait's end: the supervisor raises no deadline before it
+
+
 def heads_moving(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> None:
-    """``gh`` faked: the default branch's head is ``head[0]``, any comparison one merge."""
+    """``gh`` faked: the default branch's head is ``head[0]``, any comparison one merge of a PR the
+    login it runs as opened."""
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 0)
 
     def gh(*args: str, timeout: float = 0) -> str:
+        if args[1] == "user" or args[1].startswith("repos/o/r/pulls/"):
+            return "me\n"
         return head[0] + "\n" if args[1] == "repos/o/r/commits/HEAD" else "Fix the gate (#12)\n"
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
@@ -10957,9 +11011,10 @@ def test_a_turn_end_from_before_the_run_is_in_no_post_though_its_label_shows_it(
 ) -> None:
     """#877's first case: a lead that never settles, its last message weeks old, is the row of
     two landings' posts; neither gives that message as its turn end."""
-    registry = direct_lead(tmp_path)  # the owner drives it: no deadline, so it never settles
+    registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    old = "STILL WORKING: waiting on the verifier; an outage notice from weeks ago"
+    # a wait timed far ahead: no deadline, so it never settles
+    old = f"STILL WORKING: waiting on the verifier {FAR}; an outage notice from weeks ago"
     og = Lead(told("brief", 30 * 86400), ending(old, 29 * 86400))
     in_checkout(og)
     head = ["1" * 40]
@@ -11050,9 +11105,9 @@ def test_a_state_kept_before_seen_from_reports_no_old_turn_end(
 ) -> None:
     """A state file written before ``seen_from`` was kept starts the lead's cutoff at the run that
     reads it, so its old last message is not the turn end of the next post."""
-    registry = direct_lead(tmp_path)  # the owner drives it: no deadline, so it never settles
+    registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    old = "STILL WORKING: waiting on the verifier since last month"
+    old = f"STILL WORKING: waiting on the verifier {FAR}, since last month"  # it never settles
     og = Lead(told("brief", 30 * 86400), ending(old, 29 * 86400))
     in_checkout(og)
     head = ["1" * 40]
@@ -11993,3 +12048,57 @@ def test_call_allows_each_request_the_timeout_it_is_given_else_thirty_seconds(
     og.call("GET", "/v1/x")
     og.call("GET", "/v1/x", timeout=180.0)
     assert seen == [30.0, 180.0]
+
+
+def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    modes: list[str | None] = []
+
+    class Starter(FakeOmnigent):
+        launch: ClassVar[list[str]] = []
+        harness_of_starter = "claude-native"
+
+        def info(self, sid: str) -> dict:
+            if sid == "starter":
+                return {"harness": self.harness_of_starter, "terminal_launch_args": self.launch}
+            return super().info(sid)
+
+        def create(self, agent: str, title: str, model: str | None = None, *rest: object) -> str:
+            modes.append(rest[2] if len(rest) > 2 else None)  # permission_mode
+            return super().create(agent, title, model, *rest)
+
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "starter")
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
+    og = Starter()
+    og.harnesses = {"agy": "antigravity-native", "claude-cloud": omnigent_agent.CLOUD_HARNESS}
+    bypass = ["--permission-mode", "bypassPermissions"]
+    n = 0
+
+    def child(agent: str, starter: list[str], **kw: object) -> tuple[str | None, str]:
+        nonlocal n
+        n += 1
+        Starter.launch = starter
+        omnigent_agent.start(og, agent, f"t{n}", "do X", tmp_path / "r.md", None, 0, **kw)
+        return modes[-1], capsys.readouterr().err
+
+    mode, err = child("claude", bypass)
+    assert mode == "bypassPermissions" and "bypassPermissions inherited" in err
+    assert child("claude", []) == (None, "")  # a starter with no mode: the harness default
+    Starter.harness_of_starter = "codex-native"
+    assert child("claude", bypass) == (None, "")  # only a Claude starter lends its mode
+    Starter.harness_of_starter = "claude-native"
+    mode, err = child("claude", bypass, permission_mode="plan")  # the flag wins
+    assert mode == "plan" and "inherited" not in err
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "acceptEdits")  # so does the variable
+    mode, err = child("claude", bypass)
+    assert mode is None and "inherited" not in err  # create reads the variable itself
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE")
+    # Another harness's child never inherits: Codex takes no mode, claude-cloud and agy keep
+    # their own opt-in.
+    assert child("codex", bypass) == (None, "")
+    mode, err = child("claude-cloud", bypass)
+    assert mode is None and "inherited" not in err and "not applied" not in err
+    with pytest.raises(omnigent_agent.Fail, match="a --role child blocks unattended"):
+        Starter.launch = bypass
+        omnigent_agent.start(og, "agy", "t-agy", "x", tmp_path / "r.md", "worker.md", 0)

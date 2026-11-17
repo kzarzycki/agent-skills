@@ -88,6 +88,7 @@ def _own_gate_slot(
     if request.module.__name__.startswith("test_approvals"):
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("cache")))
         monkeypatch.delenv("LOOP_GATE_SLOT_HELD", raising=False)
+        monkeypatch.setenv("GATE_SLOTS", "1")  # one slot, so a held slot 1 is a full host (#1138)
 
 
 @pytest.fixture(autouse=True)

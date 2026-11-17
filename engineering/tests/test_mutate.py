@@ -63,6 +63,7 @@ def own_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     suite, or, started under a held slot, on its parent for good (#818)."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.delenv("LOOP_GATE_SLOT_HELD", raising=False)
+    monkeypatch.setenv("GATE_SLOTS", "1")  # one slot, so a held slot 1 is a full host (#1138)
 
 
 def mutate(

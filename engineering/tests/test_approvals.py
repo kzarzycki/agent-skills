@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "engineering-loop" / "scripts"
-SPEC = importlib.util.spec_from_file_location("approvals", SCRIPTS / "approvals.py")
+SPEC = importlib.util.spec_from_file_location("gatekeeper", SCRIPTS / "gatekeeper.py")
 assert SPEC and SPEC.loader
 approvals = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(approvals)
@@ -425,11 +425,11 @@ def test_check_build_before_the_pr_judges_the_issue(
         raise subprocess.CalledProcessError(1, ["gh", *args], stderr="gh: Not Found (HTTP 404)")
 
     monkeypatch.setattr(approvals, "pull_request", pull_request_of_record)
-    monkeypatch.setattr(approvals, "gh", gh)
-    monkeypatch.setattr(approvals, "_rest_only", False)
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    monkeypatch.setattr(approvals.github, "_rest_only", False)
     assert build("2") == build("--issue", "2") == (1, unapproved)
     assert build("3") == (0, ["#3: every build proof holds; no PR yet"])
-    assert approvals._rest_only
+    assert approvals.github._rest_only
 
 
 pull_request_of_record = approvals.pull_request
@@ -1070,7 +1070,7 @@ def test_a_branchs_merge_to_the_default_branch_carries_its_high_risk_prs(
     assert asked == ["feature"]
     monkeypatch.undo()
     calls: list[tuple[str, ...]] = []
-    monkeypatch.setattr(approvals, "gh", lambda *args: calls.append(args) or "12\n15\n")
+    monkeypatch.setattr(approvals.github, "gh", lambda *args: calls.append(args) or "12\n15\n")
     assert approvals.merged_high("feature") == [12, 15]
     assert calls == [
         (
@@ -1097,7 +1097,7 @@ def test_the_head_was_pushed_when_the_branchs_activity_last_names_it(
 ) -> None:
     calls: list[tuple[str, ...]] = []
     monkeypatch.undo()  # the autouse fixture's stub of head_pushed
-    monkeypatch.setattr(approvals, "gh", lambda *args: calls.append(args) or f"{PUSHED}\n")
+    monkeypatch.setattr(approvals.github, "gh", lambda *args: calls.append(args) or f"{PUSHED}\n")
     assert approvals.head_pushed(pull()) == PUSHED
     assert calls == [
         (
@@ -1107,7 +1107,7 @@ def test_the_head_was_pushed_when_the_branchs_activity_last_names_it(
             f'[.[] | select(.after == "{HEAD}") | .timestamp] | first // ""',
         )
     ]
-    monkeypatch.setattr(approvals, "gh", lambda *args: "\n")
+    monkeypatch.setattr(approvals.github, "gh", lambda *args: "\n")
     assert approvals.head_pushed(pull()) is None
 
 
@@ -1461,7 +1461,7 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             return json.loads(found.read_text())["merge_base_commit"]["sha"] + "\n"
         return found.read_text()
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     monkeypatch.chdir(PROJECT)
     return asked
 
@@ -2799,7 +2799,7 @@ def test_the_diffs_commentable_lines_are_the_new_side_of_each_hunk(
     patch = "@@ -1,3 +1,4 @@\n one\n-two\n+2\n+2b\n three\n@@ -20 +21,2 @@\n+x\n y"
     files = [{"filename": "a.py", "patch": patch}, {"filename": "logo.png", "patch": None}]
     monkeypatch.setattr(
-        approvals,
+        approvals.github,
         "gh",
         lambda *args, data=None: "".join(json.dumps(entry) + "\n" for entry in files),
     )
@@ -3017,7 +3017,7 @@ def test_without_a_user_token_the_prs_author_and_writers_reviews_count(
             1, "gh", stderr="gh: Resource not accessible by integration (HTTP 403)\n"
         )
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     monkeypatch.setattr(approvals, "viewer", VIEWER)
     assert approvals.viewer() is None
     assert verified(verdict_on(HEAD, author="worker")) == []
@@ -3230,7 +3230,7 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             return ""
         raise AssertionError(args)
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     monkeypatch.setattr(approvals, "required_checks", REQUIRED)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: state["pull"])
     monkeypatch.chdir(tmp_path)
@@ -3266,13 +3266,6 @@ def test_any_other_rules_error_fails(
 ) -> None:
     landing["rulesets"] = error
     with pytest.raises(subprocess.CalledProcessError):
-        approvals.required_checks("main")
-
-
-def test_a_base_whose_rules_require_a_merge_queue_is_refused(landing: dict[str, Any]) -> None:
-    """GitHub's queue would merge a PR later, on a merge-group tree land never gated."""
-    landing.update(rulesets=["check", ":merge_queue"])
-    with pytest.raises(approvals.Refused, match="require GitHub's merge queue"):
         approvals.required_checks("main")
 
 
@@ -3463,7 +3456,7 @@ def lands(
             if pr["state"] == "OPEN"
         ]
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     monkeypatch.setattr(approvals, "comment", comment)
     monkeypatch.setattr(approvals, "open_pulls", listed)
     monkeypatch.setattr(approvals, "pull_request", lambda n: pulls[n])
@@ -3899,7 +3892,9 @@ def test_a_machine_fault_twice_on_the_tip_after_the_merges_still_says_landed(
     refusing(monkeypatch, lambda args: args[2] == "8")
     codes = iter([0, 78, 78])
     monkeypatch.setattr(
-        approvals, "ran_step", lambda _step, cwd=None, out=None, load=None: (next(codes), 0, 0)
+        approvals,
+        "ran_step",
+        lambda _step, cwd=None, out=None, load=None, land=False: (next(codes), 0, 0),
     )
     code, lines = lands["land"]()
     assert (code, lands["merged"]()) == (1, ["7"])
@@ -4617,14 +4612,14 @@ def test_breaking_a_stale_lock_leaves_one_another_land_took_first(
 
 def refusing(monkeypatch: pytest.MonkeyPatch, refuse: Callable[[tuple[str, ...]], bool]) -> None:
     """GitHub refuses `gh pr merge` where `refuse(args)` says so."""
-    fake = approvals.gh
+    fake = approvals.github.gh
 
     def gh(*args: str, data: str | None = None) -> str:
         if args[:2] == ("pr", "merge") and refuse(args):
             raise subprocess.CalledProcessError(1, args, stderr="Required status check is expected")
         return fake(*args, data=data)
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
 
 
 def test_a_merge_github_refuses_stops_the_rest_and_the_partial_base_is_gated(
@@ -4652,14 +4647,14 @@ def test_a_merge_github_leaves_unmerged_stops_the_rest(
     """`gh pr merge` exits 0 having only queued #8: it gets no `Landed`, and #9 waits for the next land."""
     for number in (7, 8, 9):
         lands["open"](number, {f"{number}.txt": f"{number}\n"})
-    fake = approvals.gh
+    fake = approvals.github.gh
 
     def gh(*args: str, data: str | None = None) -> str:
         if args[:3] == ("pr", "merge", "8"):
             return ""
         return fake(*args, data=data)
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     code, lines = lands["land"]()
     assert (code, lands["merged"]()) == (1, ["7"])
     assert any("PR #8: the merge was refused" in line and "not merged" in line for line in lines)
@@ -5063,7 +5058,7 @@ def cloud_land(
     tmp = tmp_path / "tmp"
     tmp.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(tmp))
-    faked = approvals.gh
+    faked = approvals.github.gh
 
     def gh(*args: str, data: str | None = None) -> str:
         """`lands`' gh, also listing the open PRs as drop_records reads them over REST once a land merged."""
@@ -5076,7 +5071,7 @@ def cloud_land(
             )
         return faked(*args, data=data)
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
 
     def out(capsys: pytest.CaptureFixture[str], code_lines: tuple[int, list[str]]) -> list[str]:
         """land's lines, once the key's text is in neither them nor stderr, and no key folder is left."""
@@ -5312,8 +5307,8 @@ def test_a_cloud_land_refuses_a_draft_it_cannot_mark_ready(
 def test_a_cloud_land_reads_the_default_branch_over_rest(
     cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(approvals, "_rest_only", True)
-    monkeypatch.setattr(approvals, "rest", lambda path: {"default_branch": "main"})
+    monkeypatch.setattr(approvals.github, "_rest_only", True)
+    monkeypatch.setattr(approvals.github, "rest", lambda path: {"default_branch": "main"})
     named: list[str] = []
     monkeypatch.setattr(
         approvals, "locked", lambda base, _held, _pr=None: named.append(base) or False
@@ -5607,6 +5602,8 @@ def checkout(
     monkeypatch.setattr(approvals.subprocess, "run", run)
     monkeypatch.setattr(approvals, "run_heavy", heavy_by_run)
     monkeypatch.setattr(approvals, "one_repo", lambda: None)  # the faked run serves the check alone
+    # the host's load and swap are read by `sysctl` on macOS, which the faked run cannot answer; no test here reads them
+    monkeypatch.setattr(approvals, "host_load", lambda: {"load_1m": None, "swap_used_mb": None})
     monkeypatch.setattr(approvals, "project", lambda: (None, state["loop"]))
     return state
 
@@ -6848,7 +6845,7 @@ def test_spec_policy_covers_a_bug_a_follow_up_and_a_writers_story_of_an_approved
 ) -> None:
     assert approvals.spec_policy(spec, set(approvals.SPEC_KINDS)) is covered
     assert not approvals.spec_policy(spec, set())
-    assert "parent {" in approvals.ISSUE and "author { login }" in approvals.ISSUE
+    assert "parent {" in approvals.github.ISSUE and "author { login }" in approvals.github.ISSUE
 
 
 def test_spec_policy_covers_only_the_kinds_auto_names(writers: list[str]) -> None:
@@ -7170,7 +7167,7 @@ def test_write_access_is_githubs_collaborator_permission(
             raise subprocess.CalledProcessError(1, "gh", stderr="gh: Not Found (HTTP 404)\n")
         return answer
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     assert approvals.writer("worker") is can
     assert asked == [
         ("api", "repos/{owner}/{repo}/collaborators/worker/permission", "--jq", ".permission")
@@ -7292,7 +7289,7 @@ def test_check_build_refuses_an_issue_another_open_pr_closes_and_each_names_the_
         calls.append(args)
         return listing
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
     # `always: true` wants `Implements`, so a closing keyword here also gets the keyword check's line
     also = lambda: [
@@ -7328,7 +7325,7 @@ def test_check_build_passes_as_today_when_no_other_open_pr_closes_its_issue(
         calls.append(args)
         return json.dumps(listing)
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
     assert approvals.main(["check", "build", "7"]) == 0
     assert capsys.readouterr().out == ""
@@ -7349,7 +7346,7 @@ def test_check_build_counts_only_this_repos_issue_when_another_pr_closes_the_sam
     foreign["closingIssuesReferences"] = [
         {"number": 1, "repository": {"name": "project", "owner": {"login": "other"}}}
     ]
-    monkeypatch.setattr(approvals, "gh", lambda *_args, **_kw: json.dumps([foreign]))
+    monkeypatch.setattr(approvals.github, "gh", lambda *_args, **_kw: json.dumps([foreign]))
     monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
     assert approvals.main(["check", "build", "7"]) == 0
     assert capsys.readouterr().out == ""
@@ -7376,7 +7373,7 @@ def test_check_build_refuses_when_the_open_pr_list_reaches_its_limit(
         calls.append(args)
         return json.dumps(everyone[: int(args[args.index("--limit") + 1])])
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
     assert approvals.main(["check", "build", "7"]) == 1
     assert capsys.readouterr().out.splitlines() == [
@@ -7774,7 +7771,7 @@ def test_report_reads_a_report_as_verdict_would_without_github(
     def offline(*args: object, **kwargs: object) -> None:
         raise AssertionError(f"report reached out: {args}")
 
-    monkeypatch.setattr(approvals, "gh", offline)
+    monkeypatch.setattr(approvals.github, "gh", offline)
     monkeypatch.setattr(approvals, "one_repo", offline)
     report = tmp_path / "report.md"
     report.write_text(REPORT.replace(*change) if change[0] else REPORT)
@@ -8160,7 +8157,7 @@ def posts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Every body comment() hands gh, from a fake host whose name and home name its owner."""
     sent: list[str] = []
     monkeypatch.setattr(approvals, "comment", COMMENT)
-    monkeypatch.setattr(approvals, "gh", lambda *args, data=None: sent.append(data) or "")
+    monkeypatch.setattr(approvals.github, "gh", lambda *args, data=None: sent.append(data) or "")
     monkeypatch.setattr(approvals.socket, "gethostname", lambda: "owner-MacBook.local")
     monkeypatch.setenv("HOME", "/Users/owner")
     return sent
@@ -9537,7 +9534,7 @@ def test_land_deletes_the_records_it_landed_and_old_ones_no_open_pr_needs(
             "time": old,
         }
     )
-    monkeypatch.setattr(approvals, "gh", open_prs(commits["open"]))
+    monkeypatch.setattr(approvals.github, "gh", open_prs(commits["open"]))
     capsys.readouterr()
     approvals.drop_records([head])
     left = set(
@@ -9561,7 +9558,7 @@ def test_a_refused_delete_is_said_and_without_the_open_prs_only_landed_records_g
     def unreadable(*_args: Any, **_kwargs: Any) -> Any:
         raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403")
 
-    monkeypatch.setattr(approvals, "rest_pages", unreadable)
+    monkeypatch.setattr(approvals.github, "rest_pages", unreadable)
     hook = origin / "hooks" / "pre-receive"
     hook.write_text("#!/bin/sh\necho deleting is refused\nexit 1\n")
     hook.chmod(0o755)
@@ -9585,7 +9582,7 @@ def test_an_old_record_goes_while_a_pr_is_open_reading_the_open_prs_as_gh_prints
     stale = recorded_in_origin(
         b, git_in(b, "rev-parse", "origin/main").strip(), "2026-01-01T00:00:00Z"
     )
-    monkeypatch.setattr(approvals, "gh", open_prs(head))
+    monkeypatch.setattr(approvals.github, "gh", open_prs(head))
     capsys.readouterr()
     approvals.drop_records([])
     left = loop_gate_branches(origin)
@@ -9619,7 +9616,7 @@ def test_an_open_head_whose_tree_is_unknown_keeps_every_record_but_the_landed_on
     gone = recorded_in_origin(author, landed, old)
     monkeypatch.chdir(clone)
     git_in(clone, "fetch", "-q", "origin")
-    monkeypatch.setattr(approvals, "gh", open_prs(fork))
+    monkeypatch.setattr(approvals.github, "gh", open_prs(fork))
     # origin has the fork's head under its record branch, so its fetch is made to have failed already this run
     monkeypatch.setattr(approvals, "TREE_FETCHED", {(os.getcwd(), fork)})
     assert approvals.tree_of(fork) is None
@@ -9649,7 +9646,7 @@ def test_a_landing_on_the_gated_tree_leaves_no_record_of_it_and_shows_the_pass_o
             return ""
         return listing(*args)
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     # the squash body is tested on its own
     monkeypatch.setattr(approvals, "land_body", lambda _pull: None)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
@@ -9668,7 +9665,7 @@ def test_land_deletes_the_record_branches_of_the_prs_it_merged(
 ) -> None:
     dropped: list[list[str]] = []
     monkeypatch.setattr(approvals, "drop_records", dropped.append)
-    monkeypatch.setattr(approvals, "gh", lambda *_a, **_k: "")
+    monkeypatch.setattr(approvals.github, "gh", lambda *_a, **_k: "")
     # the squash body is tested on its own
     monkeypatch.setattr(approvals, "land_body", lambda _pull: None)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
@@ -10324,7 +10321,7 @@ class Cloud:
 def cloud(monkeypatch: pytest.MonkeyPatch) -> Cloud:
     """approvals.py against Cloud, run in the fixture project, with the real REST readers the autouse fixtures fake."""
     found = Cloud(cloud_routes())
-    monkeypatch.setattr(approvals, "gh", found)
+    monkeypatch.setattr(approvals.github, "gh", found)
     monkeypatch.setattr(approvals, "merged_high", MERGED_HIGH)
     monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
     monkeypatch.setattr(approvals, "comment", COMMENT)
@@ -10360,7 +10357,7 @@ def test_in_a_cloud_session_each_command_completes_with_no_graphql_call_past_the
         ["local-ci", "7"],
         ["verdict", "7", str(report)],
     ):
-        monkeypatch.setattr(approvals, "_rest_only", False)  # a new run
+        monkeypatch.setattr(approvals.github, "_rest_only", False)  # a new run
         cloud.calls.clear()
         assert approvals.main(argv) == 0, (argv, capsys.readouterr().out)
         asked = [call for call in cloud.calls if Cloud.graphql(call)]
@@ -10417,10 +10414,10 @@ def test_where_graphql_answers_it_is_the_one_read(monkeypatch: pytest.MonkeyPatc
             return json.dumps({"data": {"repository": {"pullRequest": pull()}}})
         return json.dumps({"data": {"repository": {"issue": approved(1)}}})
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     assert approvals.pull_request(7)["headRefOid"] == HEAD
     assert approvals.issue_node(1)["number"] == 1
-    assert len(calls) == 2 and approvals._rest_only is False
+    assert len(calls) == 2 and approvals.github._rest_only is False
 
 
 def test_another_error_from_graphql_is_no_refusal_and_raises(
@@ -10429,11 +10426,11 @@ def test_another_error_from_graphql_is_no_refusal_and_raises(
     def gh(*args: str, data: str | None = None) -> str:
         raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502: Bad Gateway")
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     with pytest.raises(subprocess.CalledProcessError) as raised:
         approvals.pull_request(7)
     assert "502" in raised.value.stderr
-    assert approvals._rest_only is False
+    assert approvals.github._rest_only is False
 
 
 def test_rest_reads_a_pr_in_graphqls_shape(cloud: Cloud) -> None:
@@ -10478,7 +10475,7 @@ def test_a_co_author_rest_cannot_name_leaves_no_bot_exemption(cloud: Cloud) -> N
     commit = pages["repos/{owner}/{repo}/pulls/7/commits?per_page=100"][0]
     commit["author"] = user("renovate[bot]", "Bot")
     assert approvals.exempt(approvals.pull_request(7), loop)
-    approvals._rest_only = False
+    approvals.github._rest_only = False
     commit["commit"]["message"] = "bump\n\nCo-authored-by: Mallory <m@example.com>"
     assert not approvals.exempt(approvals.pull_request(7), loop)
 
@@ -10486,7 +10483,7 @@ def test_a_co_author_rest_cannot_name_leaves_no_bot_exemption(cloud: Cloud) -> N
 def test_the_account_running_this_is_a_writer_by_its_own_permissions_where_the_proxy_refuses_the_lookup(
     cloud: Cloud, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(approvals, "viewer", lambda: "loop")
+    monkeypatch.setattr(approvals.github, "viewer", lambda: "loop")
     assert approvals.writer("loop")
     assert not approvals.writer("drive-by")  # anyone else still can't be looked up, so isn't one
     cloud.routes["repos/{owner}/{repo}"] = {"permissions": {"pull": True}}

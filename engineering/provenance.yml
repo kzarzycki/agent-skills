@@ -178,7 +178,7 @@ owned_overlays:
   sha256: 5856f3ae8aec742f1499c640aecdd5f1d6af5fa210a7c6ec794de8263a6f733f
   mode: '100644'
 - path: overlays/skills/to-spec/SKILL.md
-  sha256: f46af6ae77aaf44e121baa7b32b6d67c97afa25c3f151b7c30ce487b82a38129
+  sha256: 7933655cb653761758f33741977b90d10992eeb963111b1c8719defa67e22988
   mode: '100644'
 - path: overlays/skills/to-spec/agents/openai.yaml
   sha256: 1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb
@@ -220,7 +220,7 @@ owned_overlays:
   sha256: 98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83
   mode: '100644'
 - path: overlays/skills/wizard/template.sh
-  sha256: a4d9b05dffbbe0604dec0a5e0a106d946e9c97090d890d54fa675342692bbcfe
+  sha256: 2b9bceab14f71bf05d54847155b37c466065f2e86d83b348a70dacc0bff0a01f
   mode: '100644'
 source_mappings:
 - source_repository: https://github.com/mattpocock/skills.git
@@ -685,7 +685,7 @@ output_files:
   sha256: 5856f3ae8aec742f1499c640aecdd5f1d6af5fa210a7c6ec794de8263a6f733f
   mode: '100644'
 - path: skills/to-spec/SKILL.md
-  sha256: f46af6ae77aaf44e121baa7b32b6d67c97afa25c3f151b7c30ce487b82a38129
+  sha256: 7933655cb653761758f33741977b90d10992eeb963111b1c8719defa67e22988
   mode: '100644'
 - path: skills/to-spec/agents/openai.yaml
   sha256: 1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb
@@ -727,5 +727,5 @@ output_files:
   sha256: 98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83
   mode: '100644'
 - path: skills/wizard/template.sh
-  sha256: a4d9b05dffbbe0604dec0a5e0a106d946e9c97090d890d54fa675342692bbcfe
+  sha256: 2b9bceab14f71bf05d54847155b37c466065f2e86d83b348a70dacc0bff0a01f
   mode: '100644'

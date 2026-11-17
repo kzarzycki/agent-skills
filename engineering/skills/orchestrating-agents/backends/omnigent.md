@@ -77,7 +77,8 @@ backoff on the same model, never on another, which would leave the work on a mod
 chose.
 
 **Permission mode.** A Claude child starts in `--permission-mode <mode>`, else
-`OMNIGENT_PERMISSION_MODE`, else the harness default; the mode is the project's or owner's
+`OMNIGENT_PERMISSION_MODE`, else the `--permission-mode` its Claude starter was launched with
+(named on stderr; none there, none here), else the harness default; the mode is the project's or owner's
 choice, set in the environment once. Omnigent applies it as the session's
 `terminal_launch_args` when it launches the terminal, so `info` shows it. A Codex child takes
 none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
@@ -149,12 +150,12 @@ and end its turn with only the comment's URL. A cloud session can't create a rel
 `acp:claude-cloud`, naming `claude-cloud`, before any session exists: a native worker given it
 would run its build on this host, where a heavy one starves every other session. A cloud session (harness `acp:claude-cloud`)
 runs in the environment its workspace's untracked `.claude/settings.local.json` names in
-`remote.defaultEnvironmentId`, so before creating one on this host `start` and `run` copy a
-worktree's missing pin from its main checkout (keeping the file's other settings) and refuse
-when neither has one. They refuse a local agent in a main checkout whose own file names the pin, naming
+`remote.defaultEnvironmentId`, so before creating one on this host `start` and `run` pin it
+(keeping the file's other settings) as Cloud environments, below, says, and refuse when no
+environment resolves. They refuse a local agent in a main checkout whose own file names the pin, naming
 `claude-cloud` and a worktree as the routes: that checkout is where cloud sessions launch from,
-and a local agent working there switches its branch under every later start. A worktree's copied
-pin is its own, so a local agent there is accepted. A launch dir needs no checked-out files: nothing on the cloud path reads them (the bridge checks for a git repo, the CLI bundles it and reads the pin and the folder trust). `launch-dir <remote> <branch> <env-id> <path>` makes one with the pin and a `tmp/loop/`, a few dozen MB instead of a full checkout: run inside a checkout of the same repository (a remote with the same host, in any case, and the same path, in the same case) it is a `git worktree add --no-checkout` of that checkout (on a branch of its own, `launch/<folder>`), which inherits the checkout's folder trust (Claude Code keys a worktree's trust on the main worktree git lists first, which for a `--separate-git-dir` checkout is the git dir, not the checkout), since Claude Code trusts by path and a separate clone, even inside a trusted folder, is untrusted; anywhere else it is a blobless `--no-checkout` clone with HEAD on the branch. It prints whether the new folder is trusted. `--trust` also writes the folder-trust entry in the user's Claude config, which is the user's call and never done otherwise. `start` for a `claude-cloud` agent refuses an untrusted launch dir before any session exists, naming the folder and the two ways out (re-run `launch-dir` from a trusted checkout, or `launch-dir --trust` as the user's decision), since the bridge fails with "has not trusted" only after the session is created. `pin_environment` accepts such a clone with its own pin and refuses one without, naming the helper. `start --pr <n>` on a `claude-cloud` agent points the launch dir's HEAD at the PR's branch (fetching it) without checking files out, and leaves a directory with a working tree alone. It fetches the PR's own ref (`refs/pull/<n>/head`, so a fork's branch works), reads the PR from the launch dir's repository, and runs git where the launch dir is: a `start` for a workspace on another host leaves its HEAD to that host's own `start`.
+and a local agent working there switches its branch under every later start. A worktree is not that
+checkout, so a local agent there is accepted. In a worktree, though, `claude --cloud` takes the main checkout's pin when that checkout has one, so a worktree pinned to another environment would silently run that one's setup script and variables: `start`, `run` and `launch-dir` refuse such a worktree before any session exists, naming both pins and the two ways out (repin the main checkout, or launch from a clone, `launch-dir --clone`). A launch dir needs no checked-out files: nothing on the cloud path reads them (the bridge checks for a git repo, the CLI bundles it and reads the pin and the folder trust). `launch-dir <remote> <branch> [<env-id>] <path>` makes one with the pin (an id given, else the one Cloud environments resolves) and a `tmp/loop/`, a few dozen MB instead of a full checkout: run inside a checkout of the same repository (a remote with the same host, in any case, and the same path, in the same case) it is a `git worktree add --no-checkout` of that checkout (on a branch of its own, `launch/<folder>`), which inherits the checkout's folder trust (Claude Code keys a worktree's trust on the main worktree git lists first, which for a `--separate-git-dir` checkout is the git dir, not the checkout), since Claude Code trusts by path and a separate clone, even inside a trusted folder, is untrusted; anywhere else, or with `--clone`, it is a blobless `--no-checkout` clone with HEAD on the branch. It prints whether the new folder is trusted. `--trust` also writes the folder-trust entry in the user's Claude config, which is the user's call and never done otherwise. `start` for a `claude-cloud` agent refuses an untrusted launch dir before any session exists, naming the folder and the two ways out (re-run `launch-dir` from a trusted checkout, or `launch-dir --trust` as the user's decision), since the bridge fails with "has not trusted" only after the session is created. `pin_environment` accepts such a clone with its own pin, and one without when an environment resolves; else it refuses, naming the helper. `start --pr <n>` on a `claude-cloud` agent points the launch dir's HEAD at the PR's branch (fetching it) without checking files out, and leaves a directory with a working tree alone. It fetches the PR's own ref (`refs/pull/<n>/head`, so a fork's branch works), reads the PR from the launch dir's repository, and runs git where the launch dir is: a `start` for a workspace on another host leaves its HEAD to that host's own `start`.
 `wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
 report path, so whatever reads the report reads a file as for any child. The worker pushes
@@ -201,6 +202,27 @@ never to write under `.git/`, since a write there waits on a permission prompt n
 cloud answers, and that `tmp/loop/` is scratch, never committed: a fresh clone lacks the host's
 `.git/info/exclude`, so the project's own `.gitignore` names `tmp/loop/`, and a session that
 sees its report untracked has nothing to "fix".
+
+**Cloud environments.** Which claude.ai environment a cloud session runs in is the project's
+loop.md line `Cloud worker: <agent>, gate <task>, env <name>`; an environment id belongs to one
+claude.ai account, so loop.md names it and each host resolves the name. No `Cloud worker:` line
+means `claude-cloud` with the policy's gate, `Cloud worker: none` (a reason may follow) means host
+workers, and a line keeps the meaning it had; `env <name>` is optional. A cloud `start` resolves
+the line's `env` on this host's Claude Code login (`GET /v1/environment_providers`) and pins its
+id, replacing another pin; with no `env` it keeps the workspace's pin, else copies its main
+checkout's, else pins the environment named after the repository (its `origin` remote), else the
+account's `Default`. `launch-dir` given no id resolves the same way from the branch's committed
+loop.md and the remote's name, and takes back what it made when nothing resolves. A name with no
+environment is refused before any session exists, naming `cloud-env`. `cloud-env <checkout>` makes
+that environment (the line's `env`, else the repository's name) with the checkout's committed
+`.claude/cloud-setup.sh` as its setup script, or, when it exists, replaces only its setup script
+(`POST /v1/environment_providers/<id>` with the config it read and `config.init_script` changed,
+no `kind`), so its variables, a seeded login among them, stay as they are. It sends no secret,
+and the login's token goes into request headers only, never an argument list, a log or the
+output, which masks the environment's variables in a refusal the server echoes. Run it once on a
+host whose login has no environment for the project, and again after the setup script changes.
+The client is `scripts/claude_environments.py`, which engineering-loop's `cloud_verifier.py seed`
+also uses.
 
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
@@ -421,6 +443,8 @@ there and copies it to `tmp/loop/<name>` here, printing that path for `approvals
 the check that a child left no tracked change is skipped, with a line saying so, since the file
 API runs no git and the verifier's worktree is its own.
 
+A verifier `start` (`--role verifier.md`) whose brief has a `- Reviewed head: <sha>` line refuses, before any session exists, a `--workspace` whose HEAD is another commit, naming both and `git -C <ws> checkout --detach <sha>`. On another host the HEAD is read through the file API of a live session on that host; a HEAD that can't be read there or here (no live session, not a checkout) prints one stderr line saying the check was skipped, never a silent pass. With `--pr` the workspace was already moved to the PR's current head, so a mismatch asks for a new brief (`approvals.py brief <pr>`) instead. A brief with no such line, or a `--far` brief (it makes its own worktree), starts as before.
+
 **Relaying to a lead.** `python3 scripts/omnigent_agent.py relay <session> <message-file>`
 posts a message that owes no report, such as the owner's words for a top-level lead, and
 returns at once. It reads no file but the message, so the lead may run on another host.
@@ -609,18 +633,21 @@ at once; each once per occurrence; and `archived`, which is the
 only event that drops the line, so a relay needs no re-arm. Each is posted once per message.
 A restart posts an end it finds again.
 
-The supervisor also watches the default branch of each repo a followed lead's workspace is a
-checkout of, since a lead that lands a PR between two turn ends, or writes the landing under a
+The supervisor also watches the default branch of each repo the workspace of a followed lead not
+marked `direct` is a checkout of (a direct lead's owner reads its landings in its session), since a lead that lands a PR between two turn ends, or writes the landing under a
 `STILL WORKING` wait, tells no one, and a step owed after a landing (a restart, a rebuild, a board
 update) then waits. It reads each lead's origin once through the file API (`.git/config`, or a
 worktree's common dir), so on any host, and the head with `gh api repos/<owner>/<name>/commits/HEAD`
 at most once a minute per repo. A head that moved raises one `landed` event per repo and new head,
-on the repo's first lead in the registry: `<owner>/<name>: its default branch moved to <sha>; merged
-since <old sha>: #12, #13` (the `(#N)` ending each commit's subject, or a `Merge pull request #N`).
+on the repo's first such lead in the registry: `<owner>/<name>: its default branch moved to <sha>; merged
+since <old sha>: #12, #13` (the `(#N)` ending each commit's subject, or a `Merge pull request #N`), naming
+only the PRs the GitHub login the supervisor runs as opened, the one leads open theirs with. A move with
+none (a release bot's bump, a teammate's merge, a commit naming no PR) only stores the head; a PR whose
+author can't be read counts, named so, since a missed landing costs more than one extra post.
 The first head seen for a repo is only stored, so a start reports no old merge; with `--console` it
 is kept in the state (`heads`), so a restart reports a landing made while it was down, and only
 that one. A workspace outside a checkout is not watched; a failed read is logged once and tried
-again. The lead's words play no part, so `route` and `lead.md` stay as they are.
+again. The event is for whoever owes the step after a landing (the chief of staff under `--console`), not for other leads: they read the new base on their next fetch, since a notice wakes each with its whole context. The lead's words play no part, so `route` and `lead.md` stay as they are.
 
 **`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
 state file, an events log, status labels, a progress deadline, settled events kept across
@@ -672,16 +699,19 @@ session titled so) leave the deadline as above. Each deadline is one event per
 lead and `progress_at`, so new progress starts a new chain. A lead whose registry line has the
 `direct` field (`start --top-level --direct` writes it at launch, `omnigent_agent.py direct <session>`
 later, `--off` clears it), one the owner drives in
-its own session, has no deadline at all: its quiet ends and `USER NEEDED` are recorded, not
-routed, since the owner reads them there, and the `no event in <n>s` log line leaves it out; its
-`DONE`, failures and prompts route as any lead's.
+its own session, has no deadline at all, and nothing about it is posted: its turn ends, `DONE`
+included, its questions, prompts and failures are recorded, since the owner sees them there, and
+the `no event in <n>s` log line leaves it out. Its `DONE` still tells the leads registered `after=`
+it, and a failed turn that lost its runner (offline, or an error naming a lost runner or host)
+routes as any lead's, since the owner can't see why in that session. A direct lead that goes
+offline while idle raises nothing.
 
 **Routing.** With `--console` an event is not posted as a line: the supervisor routes it, by
 `route`'s table (the design's § Routing an event), and settles what needs no decision itself.
 
 | Event | Settled by | What happens |
 |---|---|---|
-| `landed`: the default branch of a repo the followed leads work in moved | rule | act, one per repo and new head, naming the new sha and the PRs merged since |
+| `landed`: the default branch of a repo the followed, non-direct leads work in moved with a PR of theirs | rule | act, one per repo and new head, naming the new sha and the PRs merged since |
 | `archived` | rule | its line and state entry dropped; no post |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |

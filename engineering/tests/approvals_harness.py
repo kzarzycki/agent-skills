@@ -236,7 +236,7 @@ def assigned(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
 @pytest.fixture
 def graphql_answers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every test starts as a run that has not seen GraphQL refused."""
-    monkeypatch.setattr(approvals, "_rest_only", False)
+    monkeypatch.setattr(approvals.github, "_rest_only", False)
 
 
 __all__ = [

@@ -91,17 +91,17 @@ def test_rest_reads_mergeable_as_graphql_names_it(
     def read(path: str) -> Any:
         return found if path.endswith("/pulls/7") else {"commit": {"sha": "b"}}
 
-    monkeypatch.setattr(approvals, "rest", read)
+    monkeypatch.setattr(approvals.github, "rest", read)
     for name in ("pr_changes", "rest_pages", "rest_latest"):
-        monkeypatch.setattr(approvals, name, lambda *_args: [])
+        monkeypatch.setattr(approvals.github, name, lambda *_args: [])
     for name in ("rest_notes", "rest_threads", "rest_authored", "rest_timeline", "rest_checks"):
-        monkeypatch.setattr(approvals, name, lambda *_args: {})
-    assert approvals.rest_pull(7)["mergeable"] == graphql
+        monkeypatch.setattr(approvals.github, name, lambda *_args: {})
+    assert approvals.github.rest_pull(7)["mergeable"] == graphql
 
 
 def test_graphql_reads_whether_the_pr_conflicts() -> None:
     """The host reads the PR over GraphQL, whose `mergeable` the stop reads."""
-    assert " mergeable " in approvals.PULL
+    assert " mergeable " in approvals.github.PULL
 
 
 @pytest.fixture

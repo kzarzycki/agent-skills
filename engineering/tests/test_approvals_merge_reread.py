@@ -29,7 +29,7 @@ def test_a_merge_call_failing_after_github_merged_lands_and_any_other_failure_is
     """#7's merge call is cut off after GitHub merged it at its head; #8's fails and its re-read finds it still open,
     merged at a head other than the pinned one, or fails itself."""
     heads = {number: lands["open"](number, {f"{number}.txt": f"{number}\n"}) for number in (7, 8)}
-    fake = approvals.gh
+    fake = approvals.github.gh
 
     def gh(*args: str, data: str | None = None) -> str:
         if args[:3] == ("pr", "merge", "7"):
@@ -45,7 +45,7 @@ def test_a_merge_call_failing_after_github_merged_lands_and_any_other_failure_is
             )
         return fake(*args, data=data)
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     code, lines = lands["land"]()
     assert code == 1, lines
     assert (
