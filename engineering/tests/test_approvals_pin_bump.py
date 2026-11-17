@@ -287,7 +287,7 @@ def test_a_removal_only_the_head_lock_lists_keeps_mains_rule(
     listed = lock().replace(f"  - {VENDORED}\n", f"  - {VENDORED}\n  - {OWN}\n")
     files = bump(monkeypatch, head_lock=listed, extra=(change(OWN, status="removed"),))
     assert refused(gate(MID, files, monkeypatch))
-    renamed = change(VENDORED, status="renamed", previous_filename=OWN)
+    renamed = change(VENDORED, BLOB, status="renamed", previous_filename=OWN)
     files = bump(monkeypatch, head_lock=listed, extra=(renamed,))
     assert refused(gate(MID, files, monkeypatch))
 
