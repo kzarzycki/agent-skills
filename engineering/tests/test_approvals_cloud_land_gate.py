@@ -9,22 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from approvals_harness import (
-    GITHUB_RULE,
-    added,  # noqa: F401
-    approvals,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
-    git_in,
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
-    lands,  # noqa: F401
-    others_open,  # noqa: F401
-    pushed,  # noqa: F401
-    refs,  # noqa: F401
-    required,  # noqa: F401
-)
+from approvals_harness import GITHUB_RULE, approvals, git_in, lands  # noqa: F401
 
 TIMEOUT = 100
 
@@ -381,6 +366,10 @@ def test_a_message_never_passes_for_a_state(session: dict[str, Any]) -> None:
     ):
         session["mode"](mode)
         assert approvals.gate_ended("t1") == "", mode
+    session["mode"](
+        "failed|DONE: red t1"
+    )  # a failed session's last message may be an earlier turn's red line
+    assert approvals.gate_ended("t1") == "ended"
     session["mode"]("failed|pytest step: failed")  # a failed state is read from the first line
     assert approvals.gate_ended("t1") == "ended"
 

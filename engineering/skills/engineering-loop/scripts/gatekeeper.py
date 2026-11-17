@@ -5638,8 +5638,10 @@ def gate_session() -> dict[str, str]:
 
 def gate_ended(tree: str) -> str:
     """Whether the standing gate session's turn has ended or it is gone, so no record will come from it: "ended", or
-    "red" when its last message (after `status`'s first line, which alone names the state) has the line `DONE: red <tree>` for exactly this tree; else
-    empty. Another tree's line, no line or an unreadable status is never red."""
+    "red" when its state (`status`'s first line, which alone names it) is `turn ended` or `archived` and its last message has
+    the line `DONE: red <tree>` for exactly this tree; else empty. A `failed` state reads "ended" even then, since its
+    last message can be an earlier turn's red line for the same tree; another tree's line, no line or an unreadable
+    status is never red."""
     try:
         sid = gate_session()["session"]
         read = run_agent("status", sid, seconds=120)
@@ -5653,7 +5655,8 @@ def gate_ended(tree: str) -> str:
     ):
         return ""
     red = re.search(rf"(?:^|\s)DONE: red {re.escape(tree)}\s*$", said, re.MULTILINE)
-    return "red" if not read.returncode and red else "ended"
+    over = ": turn ended" in state or ": archived" in state
+    return "red" if not read.returncode and over and red else "ended"
 
 
 def drop_session(sid: str) -> None:
