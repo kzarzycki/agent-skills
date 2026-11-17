@@ -1900,6 +1900,26 @@ def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:
         print(f"{e}; confirming from the history", file=sys.stderr)
 
 
+def queued(info: dict, text: str) -> bool:
+    """Whether ``text`` waits in the session's pending inputs: sent, not yet an item."""
+    return any(text_of(p).strip() == text for p in info.get("pending_inputs") or [])
+
+
+def started_late(og: Omnigent, sid: str, text: str) -> bool:
+    """Whether a session whose brief missed the confirm window started anyway: the brief waits in
+    its pending inputs, or its history holds an item past the opening ``resource_event`` (a real
+    server puts the brief first). Then it gets one more ``HTTP_SECONDS`` (a slow server takes a
+    POST that timed out client-side later) for the brief to appear; one that shows an item past
+    ``resource_event`` is kept. A session with neither is left to be abandoned at once."""
+
+    def past() -> bool:
+        return any(i.get("type") != "resource_event" for i in og.items(sid))
+
+    if not (queued(og.info(sid), text) or past()):
+        return False
+    return delivered(og, sid, text, HTTP_SECONDS) or past()
+
+
 def delivered(
     og: Omnigent,
     sid: str,
@@ -1992,7 +2012,7 @@ def send(
         ]
 
     def pending(info: dict) -> bool:
-        return any(text_of(p).strip() == text for p in info.get("pending_inputs") or [])
+        return queued(info, text)
 
     # ponytail: compares the server's item clock with the local question file's; a skewed server
     # clock can resend an answer that already landed. Upgrade: a client id, once Omnigent has one.
@@ -3607,12 +3627,8 @@ def start(
         try:
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
                 send_to_confirm(og, sid, text)
-            # a slow server can miss the confirm window yet have started the session: any item
-            # in its history (the brief, a later turn, a tool call) means it did, so keep it; the
-            # `resource_event` a fresh session opens with is no sign of a start
-            if delivered(og, sid, text, confirm_seconds) or any(
-                i.get("type") != "resource_event" for i in og.items(sid)
-            ):
+            # a slow server can miss the confirm window yet take the brief a moment later
+            if delivered(og, sid, text, confirm_seconds) or started_late(og, sid, text):
                 if not top_level:
                     held_of(report).parent.mkdir(parents=True, exist_ok=True)
                     held_of(report).write_text(json.dumps({"sid": sid, "brief": digest}))

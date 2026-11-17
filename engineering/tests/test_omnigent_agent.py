@@ -548,17 +548,48 @@ def test_an_interrupt_while_confirming_a_found_session_keeps_it_and_prints_its_i
     assert "status s0" in out.err
 
 
-def test_start_keeps_a_session_whose_history_shows_it_started_after_a_missed_confirm(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+class LateBrief(FakeOmnigent):
+    """Session s0's brief is taken late: it lands as an item on the ``land_at``-th history read,
+    and waits in ``pending_inputs`` until then when ``queued``."""
+
+    def __init__(self, land_at: int | None, queued: bool) -> None:
+        super().__init__(deaf={0})
+        self.land_at, self.queued, self.reads, self.text = land_at, queued, 0, ""
+
+    def send(self, sid: str, text: str) -> None:
+        super().send(sid, text)
+        if sid == "s0":
+            self.text = text
+
+    def items(self, sid: str) -> list[dict]:
+        if sid == "s0" and self.text and self.land_at is not None:
+            self.reads += 1
+            if self.reads == self.land_at:
+                self.land(sid, self.text)
+        return super().items(sid)
+
+    def info(self, sid: str) -> dict:
+        info = super().info(sid)
+        if sid == "s0" and self.queued and self.text and self.land_at != 0:
+            landed = any(i.get("role") == "user" for i in self.sessions[sid])
+            info["pending_inputs"] = [] if landed else [{"content": [{"text": self.text}]}]
+        return info
+
+
+@pytest.fixture
+def quick_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(omnigent_agent, "HTTP_SECONDS", 0.5)
+    monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0.01)
+
+
+@pytest.mark.parametrize(
+    ("land_at", "queued"),
+    [(3, True), (4, True), (2, False)],  # pending at the deadline then an item; an item at once
+)
+def test_start_keeps_a_session_whose_brief_lands_within_the_grace(
+    tmp_path: Path, quick_grace: None, land_at: int, queued: bool
 ) -> None:
-    og = FakeOmnigent(deaf={0})  # the brief never lands, but the history shows a tool call
-    monkeypatch.setattr(omnigent_agent, "delivered", lambda *_a, **_k: False)  # confirm times out
-    real_items = og.items
-
-    def items(sid: str) -> list[dict]:
-        return [{"id": "t1", "type": "function_call"}] if sid == "s0" else real_items(sid)
-
-    monkeypatch.setattr(og, "items", items)
+    og = LateBrief(land_at, queued)
     assert omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0) == (
         "s0",
         [],
@@ -566,33 +597,33 @@ def test_start_keeps_a_session_whose_history_shows_it_started_after_a_missed_con
     assert og.archived == [] and list(og.sessions) == ["s0"]
 
 
-def test_start_abandons_only_attempts_with_an_empty_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_brief_landing_late_exits_0_through_main_with_one_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_grace: None
 ) -> None:
-    og = FakeOmnigent(deaf={0, 1})
-    monkeypatch.setattr(omnigent_agent, "delivered", lambda *_a, **_k: False)
-    with pytest.raises(omnigent_agent.Fail, match="s0: brief not in history"):
-        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
-    assert og.archived == ["s0", "s1"]
-
-
-def test_a_started_session_after_a_missed_confirm_exits_0_through_main(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    og = FakeOmnigent(deaf={0})
+    og = LateBrief(3, True)
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
-    monkeypatch.setattr(omnigent_agent, "delivered", lambda *_a, **_k: False)
-    real_items = og.items
-    monkeypatch.setattr(
-        og,
-        "items",
-        lambda sid: [{"id": "t1", "type": "function_call"}] if sid == "s0" else real_items(sid),
-    )
     monkeypatch.chdir(tmp_path)
     (tmp_path / "brief.md").write_text("do X")
     argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
     assert omnigent_agent.main(argv) == 0
     assert list(og.sessions) == ["s0"] and og.archived == []
+
+
+def test_start_abandons_a_session_whose_brief_never_arrives(
+    tmp_path: Path, quick_grace: None
+) -> None:
+    og = FakeOmnigent(deaf={0, 1})  # nothing pending, history empty: no grace
+    with pytest.raises(omnigent_agent.Fail, match="s0: brief not in history"):
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert og.archived == ["s0", "s1"]
+
+
+def test_start_abandons_a_queued_brief_that_never_lands_after_the_grace(
+    tmp_path: Path, quick_grace: None
+) -> None:
+    og = LateBrief(None, True)  # pending for the whole grace, never an item
+    assert omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)[0] == "s1"
+    assert og.archived == ["s0"]
 
 
 def test_a_failed_start_with_no_attempt_started_exits_non_zero_through_main(
