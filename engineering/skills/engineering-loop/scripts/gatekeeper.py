@@ -4943,7 +4943,9 @@ def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
             pushed = leased(base, held[-1], ours)
             if pushed.returncode:
                 tip = lock_tip(base)
-                if tip == held[-1]:  # the push reached origin and only its answer was lost: the commit stays ours
+                if (
+                    tip == held[-1]
+                ):  # the push reached origin and only its answer was lost: the commit stays ours
                     continue
                 held.pop()
                 if tip not in (None, ours):  # unreadable (the network) is not another land's tip

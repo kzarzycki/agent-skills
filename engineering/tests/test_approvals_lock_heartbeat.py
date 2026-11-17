@@ -124,13 +124,17 @@ def test_a_holder_whose_lock_was_taken_stops_beating_and_refuses_to_merge(
         approvals.repointed("main", held, 7)
 
 
-def run_beat(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, failing: Any) -> tuple[list[str], threading.Thread]:
+def run_beat(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, failing: Any
+) -> tuple[list[str], threading.Thread]:
     monkeypatch.setattr(approvals, "BEAT", 3600)
     held: list[str] = []
     assert approvals.locked("main", held, 7)
     monkeypatch.setattr(approvals, "BEAT", 0.02)
     monkeypatch.setattr(approvals, "leased", failing)
-    thread = threading.Thread(target=approvals.heartbeat, args=("main", held, threading.Event()), daemon=True)
+    thread = threading.Thread(
+        target=approvals.heartbeat, args=("main", held, threading.Event()), daemon=True
+    )
     thread.start()
     return held, thread
 
@@ -142,7 +146,11 @@ def test_a_beat_lost_to_the_network_keeps_the_lock_and_tries_again(
 
     def flaky(base: str, new: str, old: str) -> Any:
         calls.append(new)
-        return subprocess.CompletedProcess([], 1, "", "net") if len(calls) == 1 else real_leased(base, new, old)
+        return (
+            subprocess.CompletedProcess([], 1, "", "net")
+            if len(calls) == 1
+            else real_leased(base, new, old)
+        )
 
     def down(*args: str) -> str:
         if args[:2] == ("ls-remote", "origin") and len(calls) == 1:
