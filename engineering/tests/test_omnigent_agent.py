@@ -12953,3 +12953,18 @@ def test_a_session_the_lead_started_that_ended_is_news_though_its_wait_names_non
     supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
     told_m = [t for s, t in og.inbox if s == "m" and "a session it started, ended DONE" in t]
     assert len(told_m) == 1 and WORKER in told_m[0]  # once, not once per poll
+
+
+def test_a_pr_a_lead_waits_on_that_merged_is_news_to_it_from_github_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    reads = []
+    monkeypatch.setattr(
+        omnigent_agent,
+        "pr_outcome",
+        lambda pr, until, timeout, repo="": reads.append((pr, until)) or (0, f"PR #{pr} merged"),
+    )
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    told_m = [t for s, t in og.inbox if s == "m" and "PR #976 merged; your wait names it" in t]
+    assert len(told_m) == 1 and reads == [(976, "closed")]  # once; read once within the throttle

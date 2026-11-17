@@ -512,6 +512,7 @@ FOLLOW_QUIET_SECONDS = 300.0
 # A followed lead with no progress (its own history, its live children) this long: a ``deadline``
 # event, whatever its status reads; this much more once it was nudged.
 DEADLINE_SECONDS = 1200.0
+PR_POLL_SECONDS = 60.0  # a lead's named PR is read from GitHub at most this often
 NUDGED_SECONDS = 600.0
 # What a lead's ``STILL WORKING`` message says it waits on, for its status and its deadline: the
 # wait word, a child's full session id (32 hex: a commit is 40 or a short 7-12) or a harness's
@@ -4422,11 +4423,19 @@ def log_outcome(log: Path, code: int, run: str | None = None) -> str:
     return "\n".join([f"exit {code}", *(body[-LOG_TAIL:] if code else body[-1:])])
 
 
-def pr_outcome(pr: int, until: str, timeout: float) -> tuple[int, str] | None:
+def pr_outcome(pr: int, until: str, timeout: float, repo: str = "") -> tuple[int, str] | None:
     """PR ``pr``'s ``until`` condition, once it is settled: 0 and a line when it holds, 1 and a line
     when it never will (closed unmerged, a check red); None while it is pending. The query gets
     ``timeout`` seconds."""
-    view = gh("pr", "view", str(pr), "--json", "state,statusCheckRollup", timeout=timeout)
+    view = gh(
+        "pr",
+        "view",
+        str(pr),
+        *(["-R", repo] if repo else []),
+        "--json",
+        "state,statusCheckRollup",
+        timeout=timeout,
+    )
     data = json.loads(view)
     state = data["state"]
     if until in ("merged", "closed") and state != "OPEN":
@@ -7260,6 +7269,31 @@ def supervise_registry(
                     line += f"\nquiet: {', '.join(quiet_named)}"
                 say(line, sid, f"deadline:{sid}:{lead['progress_at']:.0f}{nudged}", "deadline")
 
+    def pr_news(sid: str, lead: dict) -> None:
+        """A PR a lead's wait names (``#n`` or ``owner/repo#n``) that merged, closed or finished its
+        checks is news to the lead, read from GitHub and not from its words: once per lead turn and
+        outcome, at most one read per ``PR_POLL_SECONDS``. Only while the lead's turn has ended."""
+        m = re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", lead.get("wait") or "")
+        if not m or lead.get("state") != "idle" or lead.get("direct"):
+            return
+        now = time.time()
+        if now - float(lead.get("pr_at") or 0) < PR_POLL_SECONDS:
+            return
+        lead["pr_at"] = now
+        repo, pr = m.group(1) or "", int(m.group(2))
+        try:
+            found = pr_outcome(pr, "closed", HTTP_SECONDS, repo) or pr_outcome(
+                pr, "checks", HTTP_SECONDS, repo
+            )
+        except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
+            log(("pr", sid), f"{sid}: PR #{pr} not read: {reason(e)}")
+            return
+        log(("pr", sid), None)
+        if found:
+            head = f"{sid} {lead['title']}".rstrip()
+            line = f"{head}: {found[1]}; your wait names it"
+            say(line, sid, f"pr:{sid}:{lead.get('turn')}:{pr}:{found[1]}", "news")
+
     def due(sid: str, lead: dict) -> None:
         """Send a transient failure's revive once its backoff (``retrying.at``) has passed, through
         the same intent as the first revive; none when the lead no longer reads failed."""
@@ -7396,6 +7430,7 @@ def supervise_registry(
                             window = time.monotonic()
                             say(event, sid, eid, kind)
                         if console:
+                            pr_news(sid, lead)
                             overdue(sid, lead)
                             due(sid, lead)
                         continue
