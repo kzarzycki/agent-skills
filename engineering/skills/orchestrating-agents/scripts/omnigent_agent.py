@@ -4239,6 +4239,75 @@ def gh(*args: str, timeout: float = HTTP_SECONDS) -> str:
         raise Fail(f"gh {' '.join(args)}: {why}") from e
 
 
+def workspace_head(og: Omnigent, sid: str, workspace: str) -> str:
+    """The commit ``workspace`` (absolute, on ``sid``'s host) has checked out, resolved from its
+    ``.git`` through the file API (a worktree's ``.git`` is a file naming its gitdir); a branch is
+    read from the gitdir, else its common dir. Raises ``Gone`` when a file is not there."""
+    top = og.read_file(sid, f"{workspace}/.git")
+    gitdir = (
+        posixpath.join(workspace, top.split(":", 1)[1].strip())
+        if top.startswith("gitdir:")
+        else f"{workspace}/.git"
+    )
+    head = og.read_file(sid, f"{gitdir}/HEAD").strip()
+    if not head.startswith("ref:"):
+        return head
+    ref = head.split(":", 1)[1].strip()
+    try:
+        return og.read_file(sid, f"{gitdir}/{ref}").strip()
+    except Gone:
+        common = og.read_file(sid, f"{gitdir}/commondir").strip()
+        return og.read_file(sid, posixpath.normpath(posixpath.join(gitdir, common, ref))).strip()
+
+
+def refuse_stale_workspace(
+    og: Omnigent, brief: str, workspace: Path, remote: bool, host_id: str, pr: int | None = None
+) -> None:
+    """A verifier's brief names the head it reviews (``- Reviewed head: <sha>``): refuse, before any
+    session exists, a ``workspace`` whose HEAD is another commit, since the verifier would review
+    what it sees. No such line, or a brief that makes its own worktree (``--far``'s ``- Worktree:``
+    line), starts as before. A workspace on another host is read through a live session there, and
+    a head that can't be read is said to be skipped, never passed silently."""
+    if not (m := re.search(r"^- Reviewed head: ([0-9a-f]{7,40})\s*$", brief, re.MULTILINE)):
+        return
+    if re.search(r"^- Worktree: ", brief, re.MULTILINE):
+        return
+    want, have, why = m[1], "", ""
+    if remote:
+        try:
+            sid = next(str(s["id"]) for s in live_sessions(og, host_id))
+            have = workspace_head(og, sid, str(workspace))
+        except (StopIteration, Fail) as e:
+            why = str(e) or "no live session there"
+    else:
+        done = subprocess.run(
+            ["git", "-C", str(workspace), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        have = done.stdout.strip() if done.returncode == 0 else ""
+        why = done.stderr.strip()[-200:] or "git rev-parse HEAD failed"
+    if not re.fullmatch(r"[0-9a-f]{40}", have):  # never a pass by reading nothing
+        print(
+            f"workspace {workspace}: HEAD not read ({why or 'no commit'}), so the brief's"
+            " Reviewed head is not checked against it",
+            file=sys.stderr,
+        )
+        return
+    if not have.startswith(want):
+        # a --pr start moved the workspace to the PR's current head: that is what moved past the brief
+        fix = (
+            f"the PR has moved past it: write a new brief for the current head (`approvals.py brief {pr}`)"
+            if pr
+            else f"put it there first (`git -C {workspace} checkout --detach {want}`, or a fresh"
+            f" `git worktree add --detach <dir> {want}`)"
+        )
+        raise Fail(
+            f"workspace {workspace} is at {have[:12]}, not the brief's Reviewed head {want[:12]}: {fix}"
+        )
+
+
 def workspace_repo(og: Omnigent, sid: str) -> str:
     """``owner/name`` of the origin remote of ``sid``'s workspace checkout, read through its file
     API, so on whichever host it runs; empty when the workspace holds no checkout or its config
@@ -7851,6 +7920,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 " the session starts on the branch that dir holds; name the PR's branch in the brief",
                 file=sys.stderr,
             )
+        if verifier:
+            refuse_stale_workspace(og, brief, workspace, remote, host, verifies)
         if here:  # a remote lead's report is written on its host, never read here
             report.parent.mkdir(parents=True, exist_ok=True)
         # what the child's tree held before it ran: wait fails only on a change it made
