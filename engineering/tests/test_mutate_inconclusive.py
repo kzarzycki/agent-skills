@@ -309,9 +309,15 @@ def test_a_heavy_lane_head_run_that_never_ran_is_refused_too(
     patched = patch(repo, "add.patch", "a + b", "a - b")
     env = None
     if held:
-        slot = tmp_path / "held.lock"
-        slot.touch()
-        env = {**os.environ, "LOOP_GATE_SLOT_HELD": str(slot)}
+        # the slot must be a gate.<n>.lock in the slot directory, or the run isn't under a holder and takes the short lane
+        slot = tmp_path / "cache" / "engineering-loop" / "gate.1.lock"
+        slot.parent.mkdir(parents=True)
+        env = {
+            **os.environ,
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            "GATE_SLOTS": "1",
+            "LOOP_GATE_SLOT_HELD": str(slot),
+        }
     else:
         policy(repo, "loop:\n  short_seconds: 0\n")
         patched = patch(repo, "add2.patch", "a + b", "a - b")
