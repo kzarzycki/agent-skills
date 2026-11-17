@@ -25,7 +25,7 @@ branch's merge to main waits for the owner.
 
 ## Cloud worker
 
-Cloud worker: claude-cloud, gate test
+Cloud worker: claude-cloud, gate test, env agent-skills-dev
 
 Cloud verifier: worker session, else codex thread
 

@@ -65,6 +65,9 @@ PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSI
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
+  mergeQueueEntry {{ state position headCommit {{ committedDate checkSuites {{ totalCount }} }} }}
+  removals: timelineItems(last: 50, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {{ nodes {{
+    ... on RemovedFromMergeQueueEvent {{ reason createdAt beforeCommit {{ oid }} }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ workflow {{ name }} }} }} }}
     ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
@@ -179,8 +182,14 @@ def _repository(fields: str) -> str:
     return f"query($owner: String!, $name: String!, $n: Int!) {{ repository(owner: $owner, name: $name) {{ {fields} }} }}"
 
 
-# how GitHub, or a cloud session's proxy in front of it, refuses GraphQL: `gh` ends its error with it
-FORBIDDEN = "HTTP 403"
+# how GitHub, or a cloud session's proxy in front of it, refuses GraphQL: `gh` ends its error with a 403, or, for a job
+# token a private organization repository withholds fields from, prints GraphQL's FORBIDDEN message
+REFUSALS = ("HTTP 403", "Resource not accessible by integration")
+
+
+def refused(stderr: str | None) -> bool:
+    """Whether `gh`'s stderr says GitHub refused this token or path, as opposed to failing for another reason."""
+    return any(text in (stderr or "") for text in REFUSALS)
 
 
 # set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again
@@ -199,7 +208,7 @@ def fast(graphql: Callable[[], Answer], rest: Callable[[], Answer]) -> Answer:
         try:
             return graphql()
         except subprocess.CalledProcessError as exc:
-            if FORBIDDEN not in (exc.stderr or ""):
+            if not refused(exc.stderr):
                 raise
             _rest_only = True
     return rest()
@@ -513,17 +522,24 @@ def merge_base(base: str, head: str) -> str:
 PLAN_LIMIT = "Upgrade to GitHub Pro"
 
 
-def required_checks(base: str) -> set[str]:
-    """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's. A private
-    repo on GitHub's free plan has no rulesets: that 403 reads as none, and any other error raises. A base whose rules
-    require GitHub's merge queue is refused: GitHub would merge each PR later, on a tree land never gated."""
+class Required(set):
+    """The checks a base requires (required_checks), and `queue`: the merge method (`MERGE`, `SQUASH` or `REBASE`) of
+    the GitHub merge queue its rules require, None without one, which picks land's local merge queue."""
+
+    queue: str | None = None
+
+
+def required_checks(base: str) -> Required:
+    """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's, with the
+    merge method of a `merge_queue` rule as `queue`, which picks land's GitHub merge queue. A private repo on GitHub's
+    free plan has no rulesets: that 403 reads as none, and any other error raises."""
     try:
         rulesets = gh(
             "api",
             "--paginate",
             f"repos/{{owner}}/{{repo}}/rules/branches/{base}",
             "--jq",
-            '.[] | if .type == "merge_queue" then ":merge_queue"'
+            '.[] | if .type == "merge_queue" then ":merge_queue:" + (.parameters.merge_method // "MERGE")'
             ' elif .type == "required_status_checks" then .parameters.required_status_checks[].context else empty end',
         )
     except subprocess.CalledProcessError as error:
@@ -533,18 +549,17 @@ def required_checks(base: str) -> set[str]:
             f"GitHub enforces no rules on {base} here (its plan has none): land's proofs are the only gate"
         )
         rulesets = ""
-    if ":merge_queue" in rulesets.split():
-        raise Refused(
-            f"{base}'s rules require GitHub's merge queue, which would merge each PR later on a tree land never gated:"
-            " drop it from the ruleset (SKILL.md, Adopting the loop)"
-        )
     protection = gh(
         "api",
         f"repos/{{owner}}/{{repo}}/branches/{base}",
         "--jq",
         ".protection.required_status_checks.contexts // [] | .[]",
     )
-    return set((rulesets + protection).split())
+    queue = [word for word in rulesets.split() if word.startswith(":merge_queue")]
+    found = Required(set((rulesets + protection).split()) - set(queue))
+    if queue:
+        found.queue = queue[0].rpartition(":")[2]
+    return found
 
 
 def tree(sha: str) -> dict[str, tuple[str, str]] | None:
@@ -659,7 +674,7 @@ def writer(login: str) -> bool:
     except subprocess.CalledProcessError as exc:
         # a cloud session's proxy refuses this path; the repo's own permissions answer it for the account running this
         # alone, and anyone else still can't, so a stranger never counts as a writer
-        if FORBIDDEN not in (exc.stderr or "") or login != viewer():
+        if not refused(exc.stderr) or login != viewer():
             return False
         try:
             mine = rest("repos/{owner}/{repo}").get("permissions") or {}
@@ -861,6 +876,55 @@ def open_heads() -> list[str]:
     return [pull["head"]["sha"] for pull in rest_pages("pulls?state=open&per_page=100")]
 
 
+# the GitHub merge queue's calls: enqueue pinned to the head the proofs judged, dequeue a stuck entry
+ENQUEUE = (
+    "mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head})"
+    " { mergeQueueEntry { position } } }"
+)
+DEQUEUE = "mutation($id: ID!) { dequeuePullRequest(input: {id: $id}) { clientMutationId } }"
+
+
+def enqueue_pull(node: str, head: str) -> int | None:
+    """Put the PR (its GraphQL node id) in its base's merge queue pinned to `head`, so GitHub refuses it once the head
+    moved: its position, None where GitHub names none. A refusal raises."""
+    out = gh("api", "graphql", "-f", f"query={ENQUEUE}", "-f", f"id={node}", "-f", f"head={head}")
+    entry = ((json.loads(out or "{}").get("data") or {}).get("enqueuePullRequest") or {}).get(
+        "mergeQueueEntry"
+    )
+    position: int | None = (entry or {}).get("position")
+    return position
+
+
+def dequeue_pull(node: str) -> None:
+    """Take the PR (its GraphQL node id) out of the merge queue."""
+    gh("api", "graphql", "-f", f"query={DEQUEUE}", "-f", f"id={node}")
+
+
+def commit_checks(ref: str) -> dict[str, dict[str, Any]]:
+    """The newest run of each check on commit (or branch) `ref`, by name: its conclusion as GraphQL spells it, link and
+    id, which for an Actions job is the job's. ponytail: check runs only, one per name; read status contexts and
+    workflow names when a queue's required check is a status or one name runs in two workflows."""
+    runs = rest_pages(f"commits/{ref}/check-runs?filter=latest&per_page=100", ".check_runs[]")
+    return {
+        run["name"]: {
+            "conclusion": (run.get("conclusion") or "").upper(),
+            "url": run.get("html_url") or "",
+            "id": run.get("id"),
+        }
+        for run in runs
+    }
+
+
+def job_log(job: int) -> str:
+    """An Actions job's log, by its id, which is its check run's."""
+    return gh("api", f"repos/{{owner}}/{{repo}}/actions/jobs/{job}/logs")
+
+
+def commit_tree(sha: str) -> str:
+    """Commit `sha`'s tree SHA."""
+    return gh("api", f"repos/{{owner}}/{{repo}}/commits/{sha}", "--jq", ".commit.tree.sha").strip()
+
+
 class Port:
     """One port's operations, each this module's function of that name, looked up at the call, so a stub set on the
     module (a test's) is the one called."""
@@ -899,5 +963,10 @@ forge = Port(
     "ready",
     "merge",
     "edit_text",
+    "enqueue_pull",
+    "dequeue_pull",
+    "commit_checks",
+    "job_log",
+    "commit_tree",
 )
 evidence = Port("statuses", "post_status", "post_review", "minimize")

@@ -6,7 +6,8 @@ Read the notes, the spec, [coding-standards.md](coding-standards.md) and the pro
 `docs/agents/coding-standards.md` first. Run every command in your worktree, never in the
 main checkout. A lead that builds an item itself follows this file on its own PR
 branch: it pushes that branch, merges nothing, and writes the report into its notes.
-A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, Cloud worker.
+Where your build, gate and proof runs go is SKILL.md, Where heavy steps run; a worker in a
+cloud session (the default unless loop.md's `Cloud worker:` line says `none`) follows SKILL.md, Cloud worker.
 
 1. **Build**, with the Build skill when gatekeeper.md's `practice` names one, under these rules.
    On a branch with no PR yet, run `approvals.py check build --issue <n>` first (the
@@ -24,17 +25,23 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
-2. **Gates and push.** Run `mise run test:changed` while iterating and `mise run check`
-   before each push, or after it on a fix round (below) (with `ci: false`, `approvals.py local-ci --record` on the committed
-   head, SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
+2. **Gates and push.** Run `mise run test:changed` while iterating. Lint runs at commit, in the hook's `lint:` tasks on
+   the staged files, so the gate adds none. Before each push (after it on a fix round, below), where loop.md has an
+   `Affected tests:` line, run `uv run <this skill's folder>/scripts/approvals.py affected-tests` on every head, a fix
+   round's too: it runs that selection against `git merge-base origin/<base> HEAD` (the base of the branch's open PR,
+   else the default branch; a shallow clone is deepened) in the variable `Gate base:` names (else `GATE_BASE`), under the
+   host gate slot, in place of the full `mise run check`; without the line, run `mise run check` as today. A selector
+   that selects nothing exits 0. With `ci: false` the draft heads run `affected-tests` too, but the gate of record on the ready head is the full
+   `approvals.py local-ci --record` on the committed head, run once when the PR goes ready (again only if the head
+   moves after that), since `check merge` needs a plain pass on the head (SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
    file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report with
    the run it came from (a CI run's id, else the time the gate started), since that run and
    the head are what make it one occurrence.
    When your brief opens with a `LOOP_HEAVY_LOCK=<path>` line, run each gate or full test run
-   under that lock, around the host's heavy wrapper (SKILL.md, One heavy gate per host slot), since your lead may run another
+   under that lock, around the host's heavy wrapper (SKILL.md, One heavy gate per host slot; `affected-tests` and `local-ci` take the slot themselves, so the lock is for `mise run check` and other bare commands), since your lead may run another
    worker beside you and the host's slot counts every caller: `perl -MFcntl=:flock -e '$^F =
    1023; open(F, ">>", shift) or die "$!\n"; flock(F, LOCK_EX) or die "$!\n"; exec @ARGV'
-   <path> uv run <this skill's folder>/scripts/approvals.py heavy mise run check` (perl, since macOS has no `flock`).
+   <path> uv run <this skill's folder>/scripts/approvals.py heavy mise run check`, or, with an `Affected tests:` line, `<path> uv run <this skill's folder>/scripts/approvals.py affected-tests` (perl, since macOS has no `flock`).
    Once it exits 0, commit and push with `git push -u origin <branch>` as
    its own command, since a pre-tool hook may scan the whole command text. Commit and push
    after each step whose gates are green, not only at the end, so a worker killed mid-task
@@ -42,23 +49,24 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    its gate, since the lead starts the next verifier on that head while the gate runs: once
    `test:changed` and the mutation check (Report) pass, commit and push, start the gate
    detached on the pushed head (below), and report its log and pid in place of its exit code,
-   never waiting on it. When the brief names the last green head (the newest head whose gate
+   never waiting on it. With an `Affected tests:` line the gate is `affected-tests` again, which
+   replaces the delta form below. Without it, when the brief names the last green head (the newest head whose gate
    passed) and `git merge-base --is-ancestor <it> HEAD` exits 0, put `GATE_BASE=<it>` (or the
    variable loop.md's `Gate base:` line names) in front of `mise run check`, so a check that
    reads it selects only what changed since that head; with `ci: false` run the check that way,
    never `local-ci --record`, which clears the variable. The head that lands keeps the full selection, since `land`, CI
-   and `local-ci` never set it. The lead merges your branch and opens the PR: a
+   and `local-ci` never set it (the merge queue and `land`'s batch gate run full). The lead merges your branch and opens the PR: a
    brief that asks for a PR means push the branch and report it. A spec or plan the brief
    asks for goes in a file under `tmp/loop/`, and you report its path: the lead
    posts it, since the spec lives on the issue. Your job ends at the push, and once the head is handed to the queue or for approval the branch is frozen: PR events (review comments, checks) are read-only to you, and a follow-up goes in a new PR. Don't wait for
    CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
-   the worktree you are given, then `mise run check` and push the same way. A command that
+   the worktree you are given, then the gate of step 2 (`affected-tests` with an `Affected tests:` line, else `mise run check`) and push the same way. A command that
    may outlast one tool call (a gate, a held lock, a queue) starts detached (verifier.md, A long or locked run is detached),
    with its log, pid and exit code in files, and is waited on with orchestrating-agents'
    `scripts/omnigent_agent.py wait-for --log <log> --pid <pid>` (a PR's checks: `wait-for --pr
    <n>`), which blocks close to the tool limit and prints only the outcome, since a foreground
    call times out and Claude Code's low-memory reaper stops in-session background shells; never
-   end a turn saying you are waiting, since nothing wakes you and the lead reads silence as work.
+   end a turn saying you are waiting, since nothing wakes you and the lead reads silence as work. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged.
    Any other pending condition (a queued run, a free device, an unlocked screen) is waited on the
    same way, in the foreground, with `scripts/omnigent_agent.py wait-until
    --every <s> --limit <s> -- <check>`, each call under the tool timeout: the

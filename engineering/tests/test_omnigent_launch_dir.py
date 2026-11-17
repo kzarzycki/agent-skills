@@ -308,3 +308,75 @@ def test_start_pr_leaves_the_pr_branch_and_any_checkout_of_it_alone(
         assert git("symbolic-ref", "--short", "HEAD", cwd=other) == "pr-branch"
         assert git("rev-parse", "HEAD", cwd=other) == held
         assert git("status", "--porcelain", cwd=other) == ""
+
+
+def pin(folder: Path, env: str) -> None:
+    (folder / ".claude").mkdir(exist_ok=True)
+    (folder / ".claude" / "settings.local.json").write_text(
+        json.dumps({"remote": {"defaultEnvironmentId": env}})
+    )
+
+
+def test_a_worktree_pin_its_main_checkouts_pin_shadows_is_refused_naming_both(
+    tmp_path: Path, bare: Path, real_trust: Path
+) -> None:
+    main = checkout(bare, tmp_path / "main")
+    pin(main, "env_A")
+    with pytest.raises(omnigent_agent.Fail, match="env_B.*env_A"):
+        omnigent_agent.launch_dir(f"file://{bare}", "main", "env_B", tmp_path / "b", here=main)
+    assert not (tmp_path / "b").exists()  # refused before git made anything
+    dest = tmp_path / "a"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", "env_A", dest, here=main)
+    omnigent_agent.pin_environment(dest)  # the same pin as its checkout's passes
+    pin(dest, "env_B")
+    with pytest.raises(omnigent_agent.Fail, match="env_B.*env_A"):
+        omnigent_agent.pin_environment(dest)
+    (main / ".claude" / "settings.local.json").unlink()
+    omnigent_agent.pin_environment(dest)  # an unpinned checkout leaves the worktree's own pin
+
+
+def test_launch_dir_run_from_a_linked_worktree_reads_the_main_checkouts_pin(
+    tmp_path: Path, bare: Path, real_trust: Path
+) -> None:
+    main = checkout(bare, tmp_path / "main")
+    pin(main, "env_A")
+    tree = tmp_path / "tree"
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "-q", "-b", "w", str(tree)], check=True
+    )
+    with pytest.raises(omnigent_agent.Fail, match="env_B.*env_A"):
+        omnigent_agent.launch_dir(f"file://{bare}", "main", "env_B", tmp_path / "b", here=tree)
+    assert not (tmp_path / "b").exists()
+
+
+def test_launch_dir_clone_is_the_way_out_of_a_shadowing_pin(
+    tmp_path: Path, bare: Path, real_trust: Path
+) -> None:
+    main = checkout(bare, tmp_path / "main")
+    pin(main, "env_A")
+    dest = tmp_path / "b"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", "env_B", dest, here=main, clone=True)
+    assert omnigent_agent.main_worktree(dest) is None
+    omnigent_agent.pin_environment(dest)  # a clone's own pin is the one that applies
+
+
+def test_launch_dir_and_start_read_the_same_pin_in_a_separate_git_dir_checkout(
+    tmp_path: Path, bare: Path, real_trust: Path
+) -> None:
+    main, _ = separate_checkout(bare, tmp_path)
+    pin(main, "env_A")  # the checkout root's pin, which the worktree's start does not read
+    dest = tmp_path / "b"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", "env_B", dest, here=main)
+    omnigent_agent.pin_environment(dest)  # the two agree: both accept
+
+
+def test_launch_dir_clone_flag_reaches_the_command(
+    tmp_path: Path, bare: Path, real_trust: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = checkout(bare, tmp_path / "main")
+    pin(main, "env_A")
+    monkeypatch.chdir(main)
+    dest = tmp_path / "b"
+    argv = ["launch-dir", f"file://{bare}", "main", "env_B", str(dest), "--clone"]
+    assert omnigent_agent.main(argv) == 0
+    assert omnigent_agent.main_worktree(dest) is None
