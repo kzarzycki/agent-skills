@@ -36,6 +36,7 @@ def _own_gate_slot(
     if request.module.__name__.startswith("test_approvals"):
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("cache")))
         monkeypatch.delenv("LOOP_GATE_SLOT_HELD", raising=False)
+        monkeypatch.setenv("GATE_SLOTS", "1")  # one slot, so a held slot 1 is a full host (#1138)
 
 
 @pytest.fixture(autouse=True)
@@ -63,3 +64,13 @@ def _brief_head_merges(request: pytest.FixtureRequest, monkeypatch: pytest.Monke
     module = request.module
     if module.__name__ != "test_approvals_brief_conflict" and hasattr(module, "approvals"):
         monkeypatch.setattr(module.approvals, "conflicted", lambda _pr, _base, _head: [])
+
+
+@pytest.fixture(autouse=True)
+def _host_has_room(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A start reads this host's CPU and memory and waits up to 600 s while either is short, so a test's start on a
+    host busy with the gate running it waits and fails. Every module that loads omnigent_agent gets a host with room,
+    whether or not it imports test_omnigent_agent's fixtures; a test of the real check calls `monkeypatch.undo()`."""
+    agent = getattr(request.module, "omnigent_agent", None)
+    if agent is not None:
+        monkeypatch.setattr(agent, "capacity", lambda **_: (True, ""))
