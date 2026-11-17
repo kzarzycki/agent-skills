@@ -653,3 +653,12 @@ def test_unread_memory_limits_by_the_cores_alone(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(approvals, "open", broken, raising=False)
     assert approvals.total_memory() is None
     assert approvals.plan_number(None) == "?"
+
+
+def test_heavy_plan_with_a_command_is_refused_and_runs_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = tmp_path / "ran"
+    assert approvals.main(["heavy", "--plan", "touch", str(ran)]) == 1
+    assert "heavy --plan takes no command" in capsys.readouterr().out
+    assert not ran.exists()
