@@ -221,9 +221,10 @@ id, replacing another pin; with no `env` it keeps the workspace's pin, else copi
 checkout's, else pins the environment named after the repository (its `origin` remote), else the
 account's `Default`. `launch-dir` given no id resolves the same way from the branch's committed
 loop.md and the remote's name, and takes back what it made when nothing resolves. A name with no
-environment is refused before any session exists, naming `cloud-env`. `cloud-env <checkout>` makes
+environment is refused before any session exists, naming `claude-cloud:setup` and `claude-cloud-env`. `claude-cloud-env <checkout>` (alias `cloud-env`) makes
 that environment (the line's `env`, else the repository's name) with the checkout's committed
-`.claude/cloud-setup.sh` as its setup script, or, when it exists, replaces only its setup script
+`.claude/claude-cloud-setup.sh` (else the older `.claude/cloud-setup.sh`) as its setup script and the committed
+`.claude/claude-cloud-environment.json`'s network and variables, or, when it exists, replaces only those (`native.md` has `claude_cloud.py setup`, the same step with secrets and a proof)
 (`POST /v1/environment_providers/<id>` with the config it read and `config.init_script` changed,
 no `kind`), so its variables, a seeded login among them, stay as they are. It sends no secret,
 and the login's token goes into request headers only, never an argument list, a log or the

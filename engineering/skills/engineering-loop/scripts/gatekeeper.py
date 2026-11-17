@@ -731,7 +731,10 @@ class Table(dict):
 
 
 class Choice(tuple):
-    """A setting that is one of these names, such as `loop.delegate`."""
+    """A setting that is one of these names, such as `loop.delegate`, or one of its `aliases` (an old or a longer
+    name, mapped to the name it stands for)."""
+
+    aliases: dict[str, str]  # set where a setting has some; read through getattr
 
 
 class Rows(Table):
@@ -745,6 +748,10 @@ class Rows(Table):
 
 # where `land` may run (loop.md's `land.where`): a host, a cloud session (CLOUD), or either
 PLACES = ("host", "cloud", "both")
+LAND_WHERE = Choice(PLACES)
+LAND_WHERE.aliases = {
+    "claude-cloud": "cloud"
+}  # the name `cloud` had before it named only Claude's cloud
 # where a gate step may run (loop.md's `gate_steps`): any machine, or only a host, never a cloud session (CLOUD)
 STEP_PLACES = ("any", "host", "linux")
 # loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
@@ -804,7 +811,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "land": Table(
         signed_squash_to=str,
         allowed_signers=str,
-        where=Choice(PLACES),
+        where=LAND_WHERE,
         signing_key_env=str,
         merge_queue=bool,
         merge_commit_heads=list,
@@ -922,7 +929,9 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
                 raise Refused(f"{file}'s {where} must be a section holding `{'`, `'.join(kind)}`")
             typed(value, kind, f"{name}.{key}", file)
         elif isinstance(kind, Choice):
-            if not (isinstance(value, str) and value in kind):
+            if not (
+                isinstance(value, str) and (value in kind or value in getattr(kind, "aliases", {}))
+            ):
                 raise Refused(f"{file}'s {where} must be one of {', '.join(kind)}, not {value!r}")
         elif isinstance(kind, tuple):  # true, false, or a list naming some of the tuple's values
             # `spec.auto`'s list may also hold a `paths` term, a list of globs (spec_paths)
@@ -2621,6 +2630,7 @@ def placed(loop: str | None) -> Any:
             " the session's proxy refuses, and signs with GitHub's key"
         )
     where = (land or {}).get("where", "host")
+    where = LAND_WHERE.aliases.get(where, where)
     if where not in ("both", "cloud" if cloud else "host"):
         raise Refused(f"loop.md's `land.where` is `{where}`, so land does not run in {place}")
     if not cloud:

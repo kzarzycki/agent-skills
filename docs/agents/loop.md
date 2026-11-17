@@ -47,6 +47,6 @@ When it says no login is usable, the owner logs in to Codex on the host, or runs
 
 The live-agent suites (`test-engineering-agents`, `test-chief-of-staff-live`) need
 logged-in harnesses and Omnigent, so they stay with the host lead. A cloud session clones the
-pushed branch, so push before starting a worker. `.claude/cloud-setup.sh` is the
+pushed branch, so push before starting a worker. `.claude/claude-cloud-setup.sh` (the older `.claude/cloud-setup.sh` is still read) is the
 environment's setup script; the environment keeps its own copy, so apply a change with
 `POST /v1/environment_providers/<id>`, `config.init_script` set to the file.
