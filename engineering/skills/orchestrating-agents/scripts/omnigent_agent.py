@@ -784,9 +784,47 @@ def repo_name() -> str:
     return re.sub(r"\.git$", "", re.split(r"[/:]", url.rstrip("/"))[-1]) or Path.cwd().name
 
 
-def repo_slug() -> str:
-    """``owner/name`` of this checkout's GitHub repository (``gh repo view``); a failure is a ``Fail``."""
-    slug = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
+class PrRef(int):
+    """A PR number that may carry the repository it was named with (``owner/repo#N``, #1167)."""
+
+    repo = ""
+
+
+def pr_ref(text: str) -> PrRef:
+    """``--pr`` argument: ``N`` or ``owner/repo#N``."""
+    m = re.fullmatch(r"(?:([^/\s#]+/[^/\s#]+)#)?(\d+)", text.strip())
+    if not m:
+        raise argparse.ArgumentTypeError(f"{text!r} is not N or owner/repo#N")
+    ref = PrRef(int(m[2]))
+    ref.repo = m[1] or ""
+    return ref
+
+
+def pr_repo(pr: int, workspace: str | Path | None, local: bool = True) -> str:
+    """The repository of PR ``pr``: the slug it was named with, else that of ``workspace`` when it is a
+    local checkout on this host (``local``), else of the current directory. Refused, naming ``--pr owner/repo#N``, when none resolves."""
+    if repo := getattr(pr, "repo", ""):
+        return repo
+    here = Path(workspace) if local and workspace and (Path(workspace) / ".git").exists() else None
+    try:
+        return repo_slug(here) if here else repo_slug()
+    except Fail as e:
+        raise Fail(
+            f"--pr {pr}: no repository to read it from ({e}); name it as --pr owner/repo#{pr}"
+        ) from e
+
+
+def pr_slug(pr: int) -> str:
+    """The repository PR ``pr`` was named in (``owner/repo#N``), else this checkout's."""
+    return getattr(pr, "repo", "") or gh(
+        "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"
+    )
+
+
+def repo_slug(cwd: Path | None = None) -> str:
+    """``owner/name`` of the GitHub repository of ``cwd`` (default: this one) (``gh repo view``); a failure is a ``Fail``."""
+    args = ("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+    slug = (gh(*args, cwd=cwd) if cwd else gh(*args)).strip()
     if not re.fullmatch(r"[^/\s]+/[^/\s]+", slug):
         raise Fail(f"gh repo view named no repository: {slug[:80]!r}")
     return slug
@@ -2976,7 +3014,7 @@ def cloud_env(checkout: Path) -> str:
     return f"updated cloud environment {name} ({env}): setup script {SETUP_SCRIPT} at {head[:12]}"
 
 
-def move_head(workspace: Path, pr: int) -> None:
+def move_head(workspace: Path, pr: int, repo: str = "") -> None:
     """Point a launch dir's HEAD at PR ``pr``'s head branch (fetched from origin when needed) without checking
     files out, so a cloud session starts on it. A directory with a working tree (it has an index)
     is left alone: moving its HEAD under its files would corrupt it. It runs git where the launch dir
@@ -2990,7 +3028,7 @@ def move_head(workspace: Path, pr: int) -> None:
     ).stdout.strip()
     if not index or Path(index).exists():
         return
-    branch = pr_branch(pr, workspace)
+    branch = pr_branch(pr, workspace, repo) if repo else pr_branch(pr, workspace)
     dirs = git_dirs(workspace)
     own = ""  # a linked worktree moves its own branch: the PR's may be checked out in the main checkout
     if len(dirs) == 3 and dirs[0] != dirs[1]:
@@ -3013,10 +3051,24 @@ def move_head(workspace: Path, pr: int) -> None:
             raise Fail(f"git {cmd[0]} for {branch} in {workspace}: {done.stderr.strip()[-300:]}")
 
 
-def pr_head(pr: int, cwd: Path) -> str:
-    """The head commit of PR ``pr``, read through ``gh`` run in ``cwd``."""
+def repo_flag(repo: str) -> list[str]:
+    return ["--repo", repo] if repo else []
+
+
+def pr_head(pr: int, cwd: Path, repo: str = "") -> str:
+    """The head commit of PR ``pr``, read through ``gh`` run in ``cwd`` (of ``repo`` when named)."""
     out = subprocess.run(
-        ["gh", "pr", "view", str(pr), "--json", "headRefOid", "-q", ".headRefOid"],
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pr),
+            *repo_flag(repo),
+            "--json",
+            "headRefOid",
+            "-q",
+            ".headRefOid",
+        ],
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -3027,7 +3079,7 @@ def pr_head(pr: int, cwd: Path) -> str:
     return out.stdout.strip()
 
 
-def check_out_head(workspace: Path, pr: int) -> None:
+def check_out_head(workspace: Path, pr: int, repo: str = "") -> None:
     """Put ``workspace`` (a checkout on this host) at PR ``pr``'s head commit before a verifier's first turn,
     or refuse: a verifier that starts at the base reviews nothing the PR changed. A checkout already
     there is left alone; one with tracked changes is refused rather than moved under them."""
@@ -3039,7 +3091,7 @@ def check_out_head(workspace: Path, pr: int) -> None:
             raise Fail(f"git {cmd[0]} for PR {pr} in {workspace}: {done.stderr.strip()[-300:]}")
         return done.stdout.strip()
 
-    head = pr_head(pr, workspace)
+    head = pr_head(pr, workspace, repo) if repo else pr_head(pr, workspace)
     if run("rev-parse", "HEAD") == head:
         return
     if run("status", "--porcelain", "--untracked-files=no"):
@@ -3053,10 +3105,20 @@ def check_out_head(workspace: Path, pr: int) -> None:
     run("checkout", "-q", "--detach", head)
 
 
-def pr_branch(pr: int, workspace: Path) -> str:
-    """The head branch name of PR ``pr`` in the repository ``workspace`` is a clone of."""
+def pr_branch(pr: int, workspace: Path, repo: str = "") -> str:
+    """The head branch name of PR ``pr`` in ``repo``, else the repository ``workspace`` is a clone of."""
     out = subprocess.run(
-        ["gh", "pr", "view", str(pr), "--json", "headRefName", "-q", ".headRefName"],
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pr),
+            *repo_flag(repo),
+            "--json",
+            "headRefName",
+            "-q",
+            ".headRefName",
+        ],
         cwd=workspace,
         capture_output=True,
         text=True,
@@ -3389,6 +3451,12 @@ def start(
         left = f"; abandoned sessions survive: {', '.join(survivors)}" if survivors else ""
         return Fail(reason + left)
 
+    # the PR's repository, before any session exists: a failure here leaves nothing to abandon (#1167)
+    slug = (
+        pr_repo(pr, workspace, not host_id or host_id == og.host_id)
+        if pr and not reviews(role)
+        else ""
+    )
     # Omnigent refuses a sibling with a title an earlier child holds, archived or not, abandoned
     # here or left by an earlier run: each refusal and each abandon moves to the next <title>-r<n>.
     n = 0
@@ -3442,7 +3510,7 @@ def start(
             # the PR `reap` reads to hold this worker until it closes: an unlabelled one can be
             # neither held nor found by `reap --merged`, so a failed label fails the start
             try:
-                og.label(sid, {PR_LABEL: f"{repo_slug()}#{pr}"})
+                og.label(sid, {PR_LABEL: f"{slug}#{pr}"})
             except Fail as e:
                 abandon(sid)
                 raise failed(f"start failed: {sid}: not labelled with PR #{pr}: {e}") from e
@@ -3641,7 +3709,7 @@ def wait(
             # a re-attached wait finds the report it already posted
             if not (report.exists() and report.read_text() == body):
                 denied(body)
-                repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+                repo = pr_slug(pr)
                 url = gh(
                     "api",
                     f"repos/{repo.strip()}/issues/{pr}/comments",
@@ -4180,7 +4248,7 @@ def pr_report(said: str, pr: int, since: int | None = None) -> str | None:
     links = [m for m in COMMENT_URL.finditer(said) if int(m[2]) == pr]
     if not links:
         return None
-    repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
+    repo = pr_slug(pr).strip()
     for m in links:
         if m[1].lower() != repo.lower():
             continue
@@ -4228,11 +4296,11 @@ def denied(text: str) -> None:
                 )
 
 
-def gh(*args: str, timeout: float = HTTP_SECONDS) -> str:
-    """``gh``'s output, run in this checkout with its login; a failure is a ``Fail``."""
+def gh(*args: str, timeout: float = HTTP_SECONDS, cwd: Path | None = None) -> str:
+    """``gh``'s output, run in this checkout (or ``cwd``) with its login; a failure is a ``Fail``."""
     try:
         return subprocess.run(
-            ["gh", *args], capture_output=True, text=True, timeout=timeout, check=True
+            ["gh", *args], capture_output=True, text=True, timeout=timeout, check=True, cwd=cwd
         ).stdout
     except (OSError, subprocess.SubprocessError) as e:
         why = (getattr(e, "stderr", "") or str(e)).strip()
@@ -4416,7 +4484,12 @@ def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
     found = []
     for s in page.get("data", []):
         label = pr_label((s.get("labels") or {}).get(PR_LABEL, ""))
-        if not s.get("archived") and label and (pr is None or label[1] == pr):
+        named = getattr(pr, "repo", "")
+        if (
+            not s.get("archived")
+            and label
+            and (pr is None or (label[1] == pr and (not named or label[0] == named)))
+        ):
             found.append(str(s["id"]))
     return found
 
@@ -7332,7 +7405,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         action="store_true",
         help="also finish every kept --pr worker whose PR is merged or closed",
     )
-    p.add_argument("--pr", type=int, help="with --merged, only the workers of this PR")
+    p.add_argument(
+        "--pr", type=pr_ref, help="with --merged, only the workers of this PR (N or owner/repo#N)"
+    )
     p = sub.add_parser("supervise")
     p.add_argument(
         "owed", nargs="*", metavar="SESSION=REPORT", help="a session and the report it owes"
@@ -7428,8 +7503,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         if p.prog.split()[-1] in ("run", "start", "send", "wait"):
             p.add_argument(
                 "--pr",
-                type=int,
-                help="a cloud worker's PR: it reports as a comment there, which wait writes to the report path",
+                type=pr_ref,
+                help="a cloud worker's PR (N, or owner/repo#N from outside a checkout): it reports as a comment there, which wait writes to the report path",
             )
         if p.prog.split()[-1] in ("run", "send", "wait"):
             p.add_argument(
@@ -7899,15 +7974,20 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             pin_environment(workspace)
             refuse_untrusted_launch_dir(workspace)
             if args.pr:
-                move_head(workspace, args.pr)
+                named = getattr(args.pr, "repo", "")
+                move_head(workspace, args.pr, named) if named else move_head(workspace, args.pr)
         elif not remote:
             refuse_pinned_checkout(args.agent, workspace)
             if verifies:
-                check_out_head(workspace, verifies)
+                named = getattr(verifies, "repo", "")
+                check_out_head(workspace, verifies, named) if named else check_out_head(
+                    workspace, verifies
+                )
         elif verifies and not args.pr and args.cmd != "send":
             # nothing here can run git on that host, so the brief must pin the commit its verifier
             # checks out: a brief that names no head leaves the first turn to start at the base
-            head = pr_head(verifies, Path.cwd())
+            named = getattr(verifies, "repo", "")
+            head = pr_head(verifies, Path.cwd(), named) if named else pr_head(verifies, Path.cwd())
             if head[:12] not in brief:
                 raise Fail(
                     f"--pr {verifies}: the brief names no checkout of the PR's head {head[:12]}: a"
