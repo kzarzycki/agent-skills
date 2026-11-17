@@ -21,7 +21,7 @@ from test_approvals_pin_bump import (
     refused,
 )
 
-UNTAGGED = "9" * 40
+UNTAGGED = "b" * 40  # letters: YAML reads an all-digit SHA as a number
 
 
 def test_a_sha_pin_at_a_tags_commit_is_judged_by_the_tags_rule_both_ways(
