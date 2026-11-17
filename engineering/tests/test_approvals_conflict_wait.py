@@ -1,4 +1,4 @@
-"""approvals.py: `land --wait` stops at once on a conflicting PR its required checks never reach (#998)."""
+"""approvals.py: `land --wait` stops at once on a conflicting PR its required checks never reach (#998, #1023)."""
 
 from __future__ import annotations
 
@@ -58,13 +58,48 @@ def test_a_land_naming_no_pr_still_waits_on_a_conflicting_one(
     assert lines == [NO_QUALIFY, "land --wait stopped after 0 hours, still waiting"]
 
 
-def test_a_conflicting_pr_with_its_required_check_red_is_red_not_a_conflict(
+def test_a_conflicting_pr_with_its_required_check_red_says_it_conflicts(
     lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Only a missing check is one the conflict explains: a red one ran, and says so."""
+    """The red run is from before the PR conflicted and no new one comes, so the CI line alone sends the lead
+    nowhere: it is followed by the fix (#1023)."""
     monkeypatch.setattr(approvals, "required_checks", lambda _base: {"qualify"})
     lands["open"](7, {"7.txt": "7\n"}, checks=(("qualify", "FAILURE"),))
     lands["pulls"][7]["mergeable"] = "CONFLICTING"
+    code, lines = lands["land"]("7")
+    assert code == 1, lines
+    assert lines == [
+        "PR #7: `qualify` is FAILURE on the head commit",
+        "PR #7 conflicts with main: merge `origin/main` in",
+    ]
+
+
+def test_a_conflicting_pr_with_its_required_check_pending_stops_the_wait_with_the_fix(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"qualify"})
+    lands["open"](7, {"7.txt": "7\n"}, checks=(("qualify", "IN_PROGRESS"),))
+    lands["pulls"][7]["mergeable"] = "CONFLICTING"
+
+    def slept(_seconds: float) -> None:
+        raise AssertionError("land --wait waited on a check of a PR that conflicts")
+
+    monkeypatch.setattr(approvals.time, "sleep", slept)
+    code, lines = lands["land"]("7", "--wait")
+    assert code == 1, lines
+    assert lines == [
+        "PR #7: `qualify` is IN_PROGRESS on the head commit",
+        "PR #7 conflicts with main: merge `origin/main` in",
+    ]
+    assert lands["merged"]() == []
+
+
+def test_a_mergeable_pr_with_its_required_check_red_prints_only_the_ci_line(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"qualify"})
+    lands["open"](7, {"7.txt": "7\n"}, checks=(("qualify", "FAILURE"),))
+    lands["pulls"][7]["mergeable"] = "MERGEABLE"
     code, lines = lands["land"]("7")
     assert code == 1, lines
     assert lines == ["PR #7: `qualify` is FAILURE on the head commit"]

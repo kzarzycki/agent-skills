@@ -175,7 +175,7 @@ would never come.
 3. With loop.md's `land: batch_wait_seconds` set (a whole number, default 0: no wait), and before the worktree below,
 it waits up to that long while another open PR into the same base is held by nothing but its required checks still
 running (its proofs and any owner go already hold: a red check, a draft, a proof gap or an owner wait never counts),
-polling every POLL seconds; each such PR that turns landable joins the batch and shares its one gate. It stops
+polling every QUEUE_POLL seconds; each such PR that turns landable joins the batch and shares its one gate. It stops
 when none is pending or the time is up, so a lone PR gates at once; with PRs named by `--only` it never reads or waits
 on other PRs. It prints the wait and who joined, and the `Landed` comment's `Batch:` line adds `(waited N s, joined:
 ...)`. The key is optional in `land`, which asks for signing keys only where `signed_squash_to` is set.
@@ -652,11 +652,28 @@ ATTACHMENT = "https://github.com/user-attachments/"
 # land --wait: seconds between tries, and how long it waits in all before it exits 3; a landing lock older than the
 # ceiling is stale
 POLL, CEILING = 30, 2 * 60 * 60
+# land --wait runs landing() (a GraphQL read of every named PR's PULL, 5 points each, and more) again only this many
+# seconds after the last run, unless it holds a lock (RECHECK): a merge queue or a check takes minutes to move, so
+# 30 s polls spend the account's quota, and its per-minute limit, on answers that did not change. POLL is the step
+# the sleep goes in, so the log is never silent and a lock that moved is seen at once
+QUEUE_POLL = 120
 # a wait on a held lock whose ref is unchanged runs landing() (the GitHub calls) again only after this many seconds: the
 # lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
 RECHECK = 300
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
 LOW_POLL, LOW_QUOTA = 300, 0.1
+# a wait that meets this many network failures in a row (NETWORK) fails with the last one
+MISSES = 3
+# what git and gh print when the network, not the request, failed: a name that did not resolve, a dropped or timed-out
+# connection, a ref listing cut short; an HTTP refusal (`unable to access … error: 403`, `RPC failed; HTTP 404`) is no
+# network failure, so a revoked token or a renamed repo fails at once
+NETWORK = re.compile(
+    r"Could not resolve host|RPC failed; curl \d+|Recv failure|expected flush|Operation timed out"
+    r"|Connection (?:timed out|reset|refused)|Failed to connect|early EOF|Network is unreachable"
+    # gh's own client words a failed connection differently from git's curl
+    r"|error connecting to|dial tcp|no such host|i/o timeout|connection reset by peer",
+    re.IGNORECASE,
+)
 # (lock ref, tip) of the last HELD lock locked() waited on; land() polls it without GitHub calls
 held_tip: tuple[str, str] | None = None
 # the signals that stop a land and release its lock (stopped)
@@ -4408,14 +4425,26 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
     deadline = float(os.environ.pop(DEADLINE_ENV, "0")) or time.monotonic() + CEILING
     said, spoke, heard = "", 0.0, ""
     github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
+    missed = 0  # network failures in a row, of landing() and of the lock poll
     while True:
         held_tip = None
         out, drifted = io.StringIO(), None
         try:
             with contextlib.redirect_stdout(out):
                 code, again = landing(pr, only)
+            missed = 0
         except Drifted as exc:
             drifted = exc
+        except subprocess.CalledProcessError as exc:
+            # one dropped connection is no reason to give up a wait that may have been hours long
+            missed += 1
+            if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
+                raise
+            print(
+                f"land --wait: network failure {missed}/{MISSES}, trying again: {stderr_of(exc)}",
+                flush=True,
+            )
+            code, again = WAITING, True
         finally:
             # a background command's log: each state once, not every 30 seconds, a held lock's age being no new
             # state; again every SLOT_SAY_SECONDS, so wait-for's stall check never reads a long wait as a hang
@@ -4447,10 +4476,23 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
             if not held_tip:
                 if asleep >= nap:
                     break
-            elif asleep >= max(nap, RECHECK) or git("ls-remote", "origin", held_tip[0]).split()[
-                :1
-            ] != [held_tip[1]]:
+            elif asleep >= max(nap, RECHECK):
                 break
+            else:
+                try:
+                    tip = git("ls-remote", "origin", held_tip[0]).split()[:1]
+                except subprocess.CalledProcessError as exc:
+                    missed += 1
+                    if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
+                        raise
+                    print(
+                        f"land --wait: network failure {missed}/{MISSES}, polling again: {stderr_of(exc)}",
+                        flush=True,
+                    )
+                    continue
+                missed = 0
+                if tip != [held_tip[1]]:
+                    break
 
 
 DEADLINE_ENV = "LOOP_LAND_DEADLINE"
@@ -4487,15 +4529,15 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
 
 
 def poll_seconds() -> float:
-    """POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA. `gh api rate_limit` is not counted against the
-    quota; gh shows no response headers, so nothing is read for free. A failed read keeps POLL."""
+    """QUEUE_POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA. `gh api rate_limit` is not counted against the
+    quota; gh shows no response headers, so nothing is read for free. A failed read keeps QUEUE_POLL."""
     try:
         left, limit = github.gh(
             "api", "rate_limit", "--jq", r'.resources.core|"\(.remaining) \(.limit)"'
         ).split()
-        return LOW_POLL if int(left) < LOW_QUOTA * int(limit) else POLL
+        return LOW_POLL if int(left) < LOW_QUOTA * int(limit) else max(POLL, QUEUE_POLL)
     except (subprocess.CalledProcessError, ValueError):
-        return POLL
+        return max(POLL, QUEUE_POLL)
 
 
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
@@ -5031,7 +5073,8 @@ def landable(
     checks green on its head; a signed squash possible where loop.md asks for one), or a draft that holds all that and is
     ready to mark, or why not, said once on stdout. The PR is judged as `flag` leaves it (a `risk:high` the gate added
     that `unflag` would take off no longer holds it); `land` writes the label and the ready mark itself. The `named` PR
-    missing a required check, or a draft, that GitHub reports conflicting ends the wait, since no workflow runs on it."""
+    with a required check missing, red or pending, or a draft, that GitHub reports conflicting prints its CI lines and
+    the fix (merge the base in) and ends the wait: no workflow runs on it, so the check never turns green."""
     where = f"PR #{pull['number']}"
     lines, issues = proof_gaps(pull, tracker, loop)
     if lines:
@@ -5039,13 +5082,17 @@ def landable(
             print(line)
         return Verdict((1, False))
     pull = flagged_as(pull, issues, loop)
-    # GitHub runs no workflow on a conflicting PR, so a required check it lacks never comes, nor do a draft's once
-    # it is ready: before the draft is marked ready, since that would start nothing
+    # GitHub runs no workflow on a conflicting PR, so a required check it lacks or has red or pending from before it
+    # conflicted never turns green, nor do a draft's once it is ready: before the draft is marked ready, since that
+    # would start nothing
     if (
         named
         and required
         and pull.get("mergeable") == "CONFLICTING"
-        and (pull["isDraft"] or required - {name for name, _ in head_checks(pull, required)[0]})
+        and (
+            pull["isDraft"]
+            or required - {name for name, state in head_checks(pull, required)[0] if state in GREEN}
+        )
     ):
         for line in ci(where, pull, required):
             print(line)
@@ -5237,7 +5284,7 @@ def batch_wait(
     )
     joined: list[int] = []
     while near and time.monotonic() < deadline:
-        time.sleep(min(POLL, max(0.0, deadline - time.monotonic())))
+        time.sleep(min(QUEUE_POLL, max(0.0, deadline - time.monotonic())))
         for number in sorted(near):
             pull = pull_request(number)
             with contextlib.redirect_stdout(
