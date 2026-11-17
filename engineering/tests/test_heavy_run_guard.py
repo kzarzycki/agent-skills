@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -334,3 +335,63 @@ def test_a_cd_into_another_checkout_is_judged_and_run_there(repo: Path, tmp_path
 def test_a_cd_it_cannot_follow_allows_what_comes_after(repo: Path) -> None:
     for command in ("cd $WORK && pytest", "cd - && pytest", "cd && pytest", "cd `pwd` && pytest"):
         assert refused(command, repo) is None, command
+
+
+def suggested(reason: str | None) -> tuple[str, str]:
+    """The ``--checkout`` and the command of the refusal's ``claude-cloud-run`` call."""
+    assert reason is not None
+    line = next(x for x in reason.splitlines() if "claude-cloud-run --checkout" in x)
+    words = shlex.split(line.strip())
+    return words[words.index("--checkout") + 1], words[words.index("--") + 1]
+
+
+@pytest.mark.parametrize(
+    ("command", "where", "run"),
+    [
+        ("git pull && cd {other} && pytest", "other", "git pull && pytest"),
+        (
+            "git fetch && cd .worktrees/pr-7 && mise run check",
+            "tree",
+            "git fetch && mise run check",
+        ),
+        ("bash -c 'cd {other} && uv run pytest'", "other", "bash -c 'uv run pytest'"),
+        ("cd {other} && git pull && cd pkg && pytest", "other", "git pull && cd pkg && pytest"),
+        ("git pull && cd {other}/pkg && pytest", "other", "git pull && cd pkg && pytest"),
+        ("cd {other}/pkg && cd sub && pytest", "other", "cd pkg && cd sub && pytest"),
+        ("sh -c 'cd {other} && cd pkg && pytest'", "other", "sh -c 'cd pkg && pytest'"),
+    ],
+)
+def test_every_cd_of_the_suggested_command_runs_inside_the_cloud_clone(
+    repo: Path, tmp_path: Path, command: str, where: str, run: str
+) -> None:
+    """The verifier's pass-2 M1: a cd anywhere in the chain, or in a sh -c string, names a host path
+    the clone lacks, so the call gets it relative to the checkout, or without it on the root."""
+    other = loop_checkout(tmp_path / "other")
+    tree = repo / ".worktrees" / "pr-7"
+    tree.mkdir(parents=True)
+    (tree / ".git").write_text("gitdir: elsewhere\n")
+    (tree / "docs" / "agents").mkdir(parents=True)
+    (tree / "docs" / "agents" / "loop.md").write_text("Cloud worker: claude-cloud\n")
+    checkout, cloud = suggested(refused(command.format(other=other), repo))
+    assert checkout == str(other if where == "other" else tree)
+    assert cloud == run
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd {outside} && cd {other} && pytest",
+        "cd {other} && cd .. && cd {other} && pytest",
+        "bash -c 'cd {outside} && cd {other} && uv run pytest'",
+    ],
+)
+def test_a_cd_outside_the_checkout_gets_the_fallback_alone(
+    repo: Path, tmp_path: Path, command: str
+) -> None:
+    """No call is suggested that would fail on its cd and read as the suite failing."""
+    other = loop_checkout(tmp_path / "other")
+    command = command.format(other=other, outside=tmp_path.parent)
+    reason = refused(command, repo)
+    assert reason is not None and "claude-cloud-run --checkout" not in reason
+    assert f"goes outside {other}" in reason
+    assert reason.endswith(f"LOOP_HOST_RUN=<reason> {command}")

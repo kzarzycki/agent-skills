@@ -57,7 +57,13 @@ SHELLS = {"bash", "sh", "zsh", "dash"}
 SHELL_DEPTH = 3  # nested ``sh -c`` strings judged; deeper ones are allowed
 # pytest's reruns of the last failures read .pytest_cache, which a cloud clone has none of
 LAST_FAILED = {"--lf", "--last-failed", "--ff", "--failed-first"}
-LEADING_CD = re.compile(r"[ \t]*cd[ \t]+((?:'[^']*'|\"[^\"]*\"|[^\s;&|'\"])+)[ \t]*(?:&&|;)[ \t]*")
+# a ``cd <dir>`` step anywhere a command starts: the line's start, after an operator or a grouping
+# character, after ``then``/``do``/``else``, or as the first word of a ``sh -c '...'`` string
+CD_STEP = re.compile(
+    r"(?:^|(?<=[;&|(){\n])|(?<=c ')|(?<=c \")|(?<=\bthen)|(?<=\bdo)|(?<=\belse))[ \t]*"
+    r"(cd)[ \t]+((?:'[^']*'|\"[^\"]*\"|[^\s;&|'\"()])+)"
+)
+SEP_AFTER = re.compile(r"[ \t]*(?:&&|;)[ \t]*")
 # pytest options that take the next word as their value, so it is no test path
 PYTEST_VALUED = {
     "-k",
@@ -333,20 +339,44 @@ def find_heavy(command: str, cwd: Path, depth: int = 0) -> Path | None:
     return None
 
 
-def leading_cds(command: str, cwd: Path) -> tuple[str, Path]:
-    """``command`` without its leading ``cd <dir> &&`` (or ``;``) steps, and the directory they
-    end in, starting from ``cwd``."""
-    here = cwd
-    while found := LEADING_CD.match(command):
+def cloud_command(command: str, cwd: Path, root: Path) -> str | None:
+    """``command`` as the cloud session runs it from the checkout's root ``root``: every ``cd`` step,
+    nested ``sh -c`` strings included, made relative to where the session is at that point (the
+    first one to ``root``), and dropped when it moves nowhere; a command that starts in a
+    subdirectory of ``root`` gets a ``cd`` there first. None when a ``cd`` can't be followed or leaves
+    ``root``: the host path it names is not in the cloud clone, so the ``cd`` would fail there and
+    its exit code would read as the command's own failure."""
+    text = command.strip()
+    host, vm = (
+        cwd,
+        root,
+    )  # each cd is followed from where the host's shell is; the session starts at root
+    prefix = ""
+    if not CD_STEP.match(text) and cwd != root and cwd.is_relative_to(root):
+        # it starts where the call is, which the clone has too
+        prefix = f"cd {shlex.quote(os.path.relpath(cwd, root))} && "
+        vm = cwd
+    out: list[str] = []
+    pos = 0
+    for found in CD_STEP.finditer(text):
+        if found.start(1) < pos:
+            continue
         try:
-            target = shlex.split(found.group(1))[0]
-        except ValueError:  # an unclosed quote: the cd stays in the command
-            break
-        moved = chdir(here, target)
-        if moved is None:
-            break
-        here, command = moved, command[found.end() :]
-    return command, here
+            target = shlex.split(found.group(2))[0]
+        except (ValueError, IndexError):
+            return None
+        moved = chdir(host, target)
+        if moved is None or not (moved == root or moved.is_relative_to(root)):
+            return None
+        step = os.path.relpath(moved, vm)
+        host = vm = moved
+        out.append(text[pos : found.start(1)])
+        pos = found.end()
+        if step == "." and (sep := SEP_AFTER.match(text, pos)):
+            pos = sep.end()  # a cd that moves nowhere goes, with its separator
+        else:
+            out.append(f"cd {shlex.quote(step)}")
+    return prefix + "".join(out) + text[pos:]
 
 
 def launcher(root: Path) -> str:
@@ -366,29 +396,35 @@ def launcher(root: Path) -> str:
 
 def refusal(command: str, cwd: Path, root: Path) -> str:
     """The reason the hook prints: the ``claude-cloud-run`` call for this exact command on the
-    checkout ``root`` its heavy run lands in, and the fallback. The cloud session runs at the
-    checkout's root, so a leading ``cd`` goes, and one into a subdirectory of ``root`` stays as a
-    relative one."""
-    rest, start = leading_cds(command.strip(), cwd)
-    run = rest.strip()
-    if start != root and start.is_relative_to(root):
-        run = f"cd {shlex.quote(os.path.relpath(start, root))} && {run}"
-    call = (
-        f"python3 {shlex.quote(launcher(root))} claude-cloud-run --checkout {shlex.quote(str(root))}"
-        f" -- {shlex.quote(run)}"
-    )
-    return (
-        "Heavy run refused on this host: engineering-loop's SKILL.md, Where heavy steps run, sends"
-        " a test or check run to a Claude cloud session. Run it there (commit and push first; it"
-        " exits with the command's own code):\n"
-        f"  {call}\n"
-        f"If claude-cloud-run fails, or the run needs this host (a device, a `host` gate step), run it with"
-        f" the reason as a prefix: {HOST_RUN}=<reason> {command.strip()}"
-        + (
-            "\nThe cloud clone has no `.pytest_cache`, so `--lf` or `--ff` there runs the full selection."
-            if LAST_FAILED & set(re.findall(r"--[\w-]+", command))
-            else ""
+    checkout ``root`` its heavy run lands in (its ``cd`` steps rewritten by ``cloud_command``), and
+    the fallback; with a ``cd`` no cloud session can follow, the fallback alone, since a suggested
+    call would fail as the command's own failure."""
+    run = cloud_command(command, cwd, root)
+    if run is None:
+        head = (
+            "Heavy run refused on this host: engineering-loop's SKILL.md, Where heavy steps run, sends"
+            f" a test or check run to a Claude cloud session, but a `cd` in it goes outside {root} or"
+            " can't be followed, so no claude-cloud-run call runs it as written. Rewrite it to run"
+            f" inside that checkout, or, when it needs this host, run it with the reason as a prefix:"
+            f" {HOST_RUN}=<reason> {command.strip()}"
         )
+    else:
+        call = (
+            f"python3 {shlex.quote(launcher(root))} claude-cloud-run --checkout {shlex.quote(str(root))}"
+            f" -- {shlex.quote(run)}"
+        )
+        head = (
+            "Heavy run refused on this host: engineering-loop's SKILL.md, Where heavy steps run, sends"
+            " a test or check run to a Claude cloud session. Run it there (commit and push first; it"
+            " exits with the command's own code):\n"
+            f"  {call}\n"
+            f"If claude-cloud-run fails, or the run needs this host (a device, a `host` gate step), run it with"
+            f" the reason as a prefix: {HOST_RUN}=<reason> {command.strip()}"
+        )
+    return head + (
+        "\nThe cloud clone has no `.pytest_cache`, so `--lf` or `--ff` there runs the full selection."
+        if LAST_FAILED & set(re.findall(r"--[\w-]+", command))
+        else ""
     )
 
 
