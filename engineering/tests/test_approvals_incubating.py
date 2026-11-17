@@ -138,3 +138,38 @@ def test_a_quoted_incubates_line_counts_for_nothing(body: str) -> None:
 def test_a_waived_verifier_still_reads_a_request_for_changes() -> None:
     found = merge([new_file("x.md")], latest=("CHANGES_REQUESTED",))
     assert any("requested changes" in line for line in found)
+
+
+def closes_epic(body: str, labels: tuple[str, ...] = ()) -> list[str]:
+    """`proofs` at merge for a PR whose body is `body`, with epic #9 (labelled `incubating`) among its issues."""
+    pr = pull(body=body, labels=labels)
+    pr["files"] = {"nodes": [new_file("new/skill.md")]}
+    issues = [
+        approved(1, "area:web", "kind:enhancement"),
+        approved(9, "incubating", "epic", "area:web", "kind:enhancement"),
+    ]
+    return [
+        line
+        for line in approvals.proofs("merge", pr, issues, POLICY)
+        if "graduat" in line or "Graduates" in line
+    ]
+
+
+@pytest.mark.parametrize("keyword", ["Closes", "Fixes", "Resolves"])
+def test_a_pr_that_closes_an_incubating_issue_must_graduate_it(keyword: str) -> None:
+    (line,) = closes_epic(f"{keyword} #9\n")
+    assert "labelled `incubating`" in line and "Graduates #9" in line
+
+
+def test_part_of_and_a_graduates_line_let_the_merge_through() -> None:
+    assert closes_epic("Part of #9\n") == []
+    assert closes_epic("Closes #9\nGraduates #9\n") == []
+
+
+def test_a_quoted_graduates_line_graduates_nothing() -> None:
+    assert closes_epic("Closes #9\n```\nGraduates #9\n```\n")
+
+
+def test_a_graduating_pr_owes_the_full_loop_even_when_labelled_incubating() -> None:
+    lines = closes_epic("Incubates: #9\nCloses #9\nGraduates #9\n", labels=("incubating",))
+    assert any("owes the full loop" in line for line in lines)

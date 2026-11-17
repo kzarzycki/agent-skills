@@ -424,6 +424,9 @@ change doesn't rate `high` or `critical`. A PR that fails owes the full loop, an
 form), and `verifier` (the verifier's review on the head). Nothing here forbids them, and a review thread or a
 `CHANGES_REQUESTED` review still blocks. The other three names (`proof_run`, `full_gate`, `coverage`) are accepted and
 read by later slices of #1288. Without an `incubating` section the label means nothing.
+An `incubating` issue stays open while the feature incubates: `check merge` refuses a PR that would close one unless its
+body also says `Graduates #<n>`, and a PR that says it owes the full loop, labelled `incubating` or not. A slice uses
+`Part of #<n>`.
 
 ### Approvals and proof
 
