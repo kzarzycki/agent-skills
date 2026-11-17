@@ -1655,7 +1655,7 @@ def heavy_lock() -> str:
     """The lock a lead's children on this host share around each heavy step, so a lead running
     two workers holds one heavy slot, not two (the host's slot counts every caller): the caller's
     ``LOOP_HEAVY_LOCK`` when set, else one per runner's primary session (the lead, in its children
-    and theirs too) beside the host's gate slot (``gate.1.lock``), since one lead starts children
+    and theirs too) beside the host's gate slots (``gate.<n>.lock``), since one lead starts children
     from several worktrees; ``""`` outside a session. A session gets no environment from its starter, so the
     path goes atop the brief, as ``AGENT_SIGNATURE`` does."""
     if path := os.environ.get("LOOP_HEAVY_LOCK"):

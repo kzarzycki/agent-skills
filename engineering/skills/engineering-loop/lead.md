@@ -36,9 +36,13 @@ steps run says, which also gives your own run's recipe.
 2. **Spec.** Write the spec into the intent's issue with the Spec skill (SKILL.md,
    Practice). The default, `to-spec`, you follow by reading its `SKILL.md`: the model
    cannot invoke it, and its template keeps every section, one line each for a small
-   change. Choose the test seams yourself and state them, with the acceptance examples for
-   step 9 and the reference each one checks against, in the order of loop.md § Acceptance
-   references. Where gatekeeper.md has a `signoff` rule, end the spec with a line `Sign-off:
+   change. Choose the test seams yourself and state them, with the acceptance examples in
+   the spec's `## Acceptance` as two lists, each line naming the reference it checks against,
+   in the order of loop.md § Acceptance references: `### Before merge`, what the proof (step 6)
+   and the verifier run on the PR branch, and `### After merge`, only the checks that need the
+   merged default branch or a deployed environment (step 9), or `none`. A spec with one flat
+   `## Acceptance` list reads as all Before merge, since a spec written before the split needs
+   no rewrite. Where gatekeeper.md has a `signoff` rule, end the spec with a line `Sign-off:
    owner` or `Sign-off: none`: `owner` where a rule matches or the change needs a person to
    try it in use. Add the size label, then check who approves it (SKILL.md, Approvals and
    proof). A spec gatekeeper.md's `spec.auto` list covers (`bug`, a `Found while #n`
@@ -114,7 +118,7 @@ steps run says, which also gives your own run's recipe.
    abort), push it, start what the merge unblocked, and tell the live workers the new
    head, plus any step loop.md § Proof on a branch says a schema or build change needs.
 6. **Prove** before review: a worker drives the real thing on the PR branch the way
-   loop.md § Proof on a branch says, runs the spec's acceptance examples there as far as a worktree can, and
+   loop.md § Proof on a branch says, runs the spec's Before merge list there, and
    reports; you read the report. Each proof log names the commit it ran on (worker.md,
    Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
 7. **Verify** (board: `Verify`). A worker report or fix-round gate log naming a test that passed only on its
@@ -334,11 +338,13 @@ steps run says, which also gives your own run's recipe.
    (SKILL.md, Revert first): `git revert --no-edit <merge sha>` on a new branch off a
    freshly fetched `origin/main`, then a PR whose body says `Reverts #<pr>` and
    `Part of #<spec>`, so `approvals.py` finds the spec, through this loop; reopen every issue
-   the PR closed with `gh issue reopen <n> --comment "Reverted in #<revert pr>: <why>."`. Then accept on
-   the owner's instance, through a worker whose report you read: bring the
-   instance up on the merged main the way loop.md § Proof on a branch says, then check each new result on
-   real data against a reference the code did not produce, in the order of loop.md § Acceptance references. The
-   spec's acceptance examples name which. A failure is reverted the same way, and the fix
+   the PR closed with `gh issue reopen <n> --comment "Reverted in #<revert pr>: <why>."`. Then run only
+   the spec's After merge list, since the proof and the verifier already ran the Before merge
+   list on the head the merge carries: each line against the reference it names, in the order of loop.md §
+   Acceptance references, through a worker whose report you read when a line needs an
+   environment brought up (loop.md § Proof on a branch) or a long run, else yourself. An After
+   merge list of `none`, or none at all, means no acceptance runs here, and your report says
+   `After merge: none`. A failure is reverted the same way, and the fix
    forward is a new change through this loop, never a patch on main.
 10. **Clean up** once acceptance has run, pass or fail. Close the agents, and stop only the
    processes you started, as worker.md, Report says, since a shared pattern kills other

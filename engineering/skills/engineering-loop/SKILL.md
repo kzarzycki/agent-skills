@@ -20,7 +20,7 @@ it (Approvals and proof); no step runs for their changes.
 | **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
 | **Build.** Workers, or the lead when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
 | **Gates.** `mise run check` before every push (on a fix round, beside the review: worker.md, Gates and push), its test part behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot); GitHub runs every `check:` part. | a broken change |
-| **Proof.** On the PR branch before review, then on the owner's instance after landing: each new result against a reference the code did not produce. | works in tests, not in use |
+| **Proof.** The spec's Before merge list on the PR branch before review, then its After merge list (checks that need the merged default branch or a deployed environment) after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
 
@@ -350,7 +350,7 @@ produces what this table says:
 | Stage | Must produce | Default skill |
 |---|---|---|
 | Intent | open questions settled, or asked in the issue | `grilling` |
-| Spec | the spec in the issue, or linked from it, with acceptance examples and the reference each checks against | `to-spec` |
+| Spec | the spec in the issue, or linked from it, with acceptance examples as a Before merge and an After merge list and the reference each checks against | `to-spec` |
 | Plan, only when gatekeeper.md's `practice` names a `plan` skill | ordered slices, each with its check, as a `## Plan` comment on the issue | none |
 | Build | commits on the branch, with `check` green | the worker role |
 | Review | findings with path, cost and repro, then the verdict lines | `code-review`, run by the verifier |
@@ -713,6 +713,8 @@ or the owner's private network.
 - **Verifier in the worker's VM.** With `Placement: same machine` (or the old `Cloud verifier: worker session`), the verifier of a
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host.
+  A Codex-written PR gets Claude there (`verify --harness claude`), as does a Claude-written one when Codex can't
+  run (same-family, named so in the verdict); it runs on the session's own Claude login, so `seed` stays Codex-only.
   `scripts/cloud_verifier.py` does it, and its docstring has each command. On the host, `login` once, then
   `seed` before starting the worker: it stores a copy without the refresh token in the cloud environment,
   of the host's own Codex login when that has a day left, else of a login of its own that it keeps fresh, so no VM
@@ -786,13 +788,28 @@ or the owner's private network.
 - **One heavy gate per host slot.** Leads on one host share its cores, and gates run at
   once slow every one of them several times over and starve new sessions of the capacity
   to start. So the project's test part runs behind a host-wide slot that every worktree
-  shares: the template's `scripts/gate-slot` (`GATE_SLOTS` slots, default 1; a lock frees
-  itself however the run exits), or, in a project without it, a lock on the same file,
-  `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock`, around its heavy check. A parallel runner takes the
-  `GATE_JOBS` it exports (the cores free at start), never `-n auto` or a fixed count.
+  shares: the template's `scripts/gate-slot`, or, in a project without it, a lock on a file
+  of the same set, `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, around its heavy check (a lock
+  frees itself however the run exits). The host has `GATE_SLOTS` slots, `gate.1.lock` to `gate.<N>.lock`: the
+  variable when it is a whole number from 1, else a third of the host's cores, at least 1. A run takes the first
+  free one and waits, saying so once, only when every one is held; `GATE_SLOTS=1` keeps one heavy gate on the host
+  at a time, for a project whose gate needs the whole host. A parallel runner takes the `GATE_JOBS` it exports (the
+  cores free at start), never `-n auto` or a fixed count, and never more than the host's cores divided by `<N>`,
+  since `<N>` gates load the host at once and a larger share each would oversubscribe it.
+  A land's gate step holds the landing lock while it waits, which stops every other land, so it takes a freed slot
+  ahead of a waiting PR gate: a waiting land holds a shared lock on `gate.land.lock`, and a PR gate that finds it
+  takes no slot until no land waits. A project's own wrapper takes the same care: it skips its lock when
+  `LOOP_GATE_SLOT_HELD` names any `gate.<n>.lock` of that directory, not only `gate.1.lock`, since a gate under slot 2
+  would otherwise hold two; one that waits in a plain blocking `flock` is woken by the kernel ahead of a polling
+  gate, so a project that wants a land to go first has its wrapper take its slot the way `approvals.take_slot` does
+  (this repo's `tools/gate_slot.py`). With one slot a land blocks in the kernel too, so it competes evenly with a
+  wrapper's `flock`.
+  The cost of polling is that a gate waiting in a plain `flock` on the same file is woken by the kernel ahead of a
+  `local-ci` or `mutate.py` run that polls, so on a host shared with a project whose wrapper blocks that way, its
+  runs go first; a project that minds has its wrapper take its slot as `take_slot` does.
   `test:changed` while iterating and the lint parts stay outside the slot. `approvals.py`'s
-  `local-ci` and `land` take that file's lock around each gate step they run and set
-  `LOOP_GATE_SLOT_HELD` to its path, as `mutate.py` does, so a wrapper under them that finds
+  `local-ci` and `land` take a slot's lock around each gate step they run and set
+  `LOOP_GATE_SLOT_HELD` to its path, as `mutate.py` does (both through one function, `approvals.take_slot`), so a wrapper under them that finds
   the variable naming its lock takes none, since it would wait on its own parent.
   Beside it runs a short lane, a lock on `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.short.lock`, which
   a job expected to finish within the policy's `short_seconds` (Settings, default 120) takes instead of the
