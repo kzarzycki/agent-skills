@@ -37,6 +37,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(github.subprocess, "run", run)
     monkeypatch.setattr(github.time, "sleep", seen["sleeps"].append)
     monkeypatch.setattr(github, "wait_until", time.monotonic() + 3600)
+    monkeypatch.setattr(github.random, "randint", lambda low, high: 0)  # no jitter: sums are exact
     return seen
 
 
@@ -72,7 +73,7 @@ def test_a_bucket_with_calls_left_waits_backoff_doubling(calls: dict[str, Any]) 
     calls["bucket"] = "3600"
     calls["replies"] = [refuse(GRAPHQL), refuse(GRAPHQL), "ok"]
     assert github.gh("pr", "view", "1") == "ok"
-    assert sum(calls["sleeps"]) == 60 + 120
+    assert sum(calls["sleeps"]) == 60 + 120  # 60 s, then 120 s: it doubles
 
 
 def test_an_empty_bucket_waits_for_its_reset(calls: dict[str, Any]) -> None:

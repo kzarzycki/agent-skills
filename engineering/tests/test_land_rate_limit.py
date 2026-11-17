@@ -197,11 +197,11 @@ def test_a_round_that_does_not_hold_the_lock_polls_no_stale_tip(
     assert rounds[2] == rounds[1]  # round 2 held no lock, so nothing was listed after it
 
 
-def test_a_rest_limit_message_without_a_status_is_not_a_limit(calls: dict[str, Any]) -> None:
-    calls["replies"] = [refuse("gh: API rate limit exceeded for user ID 1.")]
-    with pytest.raises(subprocess.CalledProcessError):
-        github.gh("api", "repos/x")
-    assert calls["sleeps"] == []
+def test_a_rest_limit_message_without_a_status_is_a_limit(calls: dict[str, Any]) -> None:
+    # GitHub's refusal of `gh api` carries no HTTP status (#1266); the bucket read decides how long it waits
+    calls["replies"] = [refuse("gh: API rate limit exceeded for user ID 1."), "ok"]
+    assert github.gh("api", "repos/x") == "ok"
+    assert calls["sleeps"]
 
 
 def test_a_rate_limit_wait_adds_bounded_jitter(
@@ -217,7 +217,7 @@ def test_a_rate_limit_wait_adds_bounded_jitter(
     assert sum(calls["sleeps"]) == 30 + github.JITTER
 
 
-@pytest.mark.parametrize(("answer", "poll"), [("400 5000", 300), ("500 5000", 30), ("x", 30)])
+@pytest.mark.parametrize(("answer", "poll"), [("400 5000", 300), ("500 5000", 120), ("x", 120)])
 def test_a_low_quota_stretches_the_poll(
     monkeypatch: pytest.MonkeyPatch, answer: str, poll: int
 ) -> None:
@@ -253,4 +253,4 @@ def test_a_failed_quota_read_keeps_the_poll(monkeypatch: pytest.MonkeyPatch) -> 
         raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
 
     monkeypatch.setattr(github, "gh", failing)
-    assert real_poll_seconds() == approvals.POLL
+    assert real_poll_seconds() == approvals.QUEUE_POLL
