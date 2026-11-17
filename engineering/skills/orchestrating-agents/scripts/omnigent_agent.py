@@ -7363,6 +7363,11 @@ def supervise_registry(
         failed = ""
         pending = False
 
+        def said_of(over: dict) -> str:
+            """The first line of the session's last message, so the lead reads the answer a child
+            put in its final message and not in a report file."""
+            return f": {over['last_line'][:160]}" if over["last_line"] else ""
+
         def session_end(other: str, named: bool = True) -> tuple[str, bool] | None:
             """How ``other`` ended: a line and whether it failed; None while it has not. A session
             idle with a last message that is no ``STILL WORKING`` and has no ending word (a
@@ -7380,7 +7385,9 @@ def supervise_registry(
             if over["state"] in ("failed", "archived"):
                 return f"{other} {over['state']}", True
             if over["state"] == "idle" and over["ending"]:
-                return f"{other} ended {over['ending']} at {at}", over["ending"] != "DONE"
+                return f"{other} ended {over['ending']} at {at}{said_of(over)}", over[
+                    "ending"
+                ] != "DONE"
             if (
                 over["state"] == "idle"
                 and over["turn"]
@@ -7388,7 +7395,7 @@ def supervise_registry(
                 and not over["asked"]
                 and (named or over["turn_at"] > float(lead.get("turn_at") or 0))
             ):
-                return f"{other} went idle at {at}", False
+                return f"{other} went idle at {at}{said_of(over)}", False
             return None
 
         for item in items:

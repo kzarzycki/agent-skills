@@ -13102,3 +13102,33 @@ def test_a_failed_github_read_is_asked_again_only_after_a_minute(
     monkeypatch.setattr(omnigent_agent, "gh", down)
     supervised(og, registry, monkeypatch, 6, notify=COS, console=True, fyi="post")
     assert len(calls) <= 2  # one for the news read, at most one for the moving check
+
+
+def test_a_wait_on_a_pr_whose_github_read_failed_is_not_moving_for_that_minute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976", m=gone)
+
+    def down(*a, **k):
+        raise omnigent_agent.Fail("gh: HTTP 502")
+
+    monkeypatch.setattr(omnigent_agent, "gh", down)
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    assert stalls(og)  # unread is not "open and pending": the quiet lead is still flagged
+
+
+def test_a_childs_news_carries_the_first_line_of_its_last_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a worker that put its report in its final message, not in the report file
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(
+        tmp_path,
+        f"STILL WORKING: waiting on session {WORKER}",
+        m={"status": "idle"},
+        **{WORKER: gone},
+    )
+    og.histories[WORKER] = [ending("Report: all 12 checks pass, nothing to fix.", 100)]
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert "all 12 checks pass" in told_idle(og)[0]
