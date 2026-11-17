@@ -7,6 +7,13 @@ design, wireframes included for a UI, and delegate the rest. Every heavy run, a 
 your own (a suite to sort failures, a build, an e2e run), goes where SKILL.md, Where heavy
 steps run says, which also gives your own run's recipe.
 
+Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
+edits and commits go to a Sonnet worker: your context is re-read on every call (about 150k
+tokens), a worker's is short. A piece too small to justify a hand-off stays with you, since
+a hand-off costs about $0.30 in wakes: a one-line check, or reading a failing gate to
+decide what to do, which needs your judgement. Starting a worker and then doing its work
+yourself is the one failure to avoid: your context then holds it twice.
+
 1. **Intent.** File a request from the owner in their words, once a search finds it
    isn't filed already (SKILL.md, One concern per PR), with its category and
    component labels and no state label: that is its intent issue. Act on an issue you are
