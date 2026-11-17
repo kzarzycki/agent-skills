@@ -234,6 +234,7 @@ log = pathlib.Path(sys.argv[0]).with_name("calls.log")
 log.open("a").write(json.dumps(sys.argv[1:]) + "\\n")
 mode = pathlib.Path(sys.argv[0]).parent.joinpath("mode").read_text()
 if (sys.argv[1], mode) in (("relay", "gone"), ("start", "refuse"), ("launch-dir", "nolaunch")):
+    print("session-x")  # a refused start may still have printed an id
     print("no capacity", file=sys.stderr)
     sys.exit(4)
 if sys.argv[1] == "start":
