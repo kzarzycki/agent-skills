@@ -177,3 +177,10 @@ def test_a_round_that_does_not_hold_the_lock_polls_no_stale_tip(
     monkeypatch.setattr(approvals, "git", lambda *a: listed.append(a) or "abc\trefs\n")
     approvals.land(1, wait=True)
     assert rounds[2] == rounds[1]  # round 2 held no lock, so nothing was listed after it
+
+
+def test_a_rest_limit_message_without_a_status_is_not_a_limit(calls: dict[str, Any]) -> None:
+    calls["replies"] = [refuse("gh: API rate limit exceeded for user ID 1.")]
+    with pytest.raises(subprocess.CalledProcessError):
+        github.gh("api", "repos/x")
+    assert calls["sleeps"] == []
