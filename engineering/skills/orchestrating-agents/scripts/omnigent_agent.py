@@ -277,6 +277,7 @@ RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
 HTTP_SECONDS = 30.0
+LATE_BRIEF_SECONDS = HTTP_SECONDS  # the grace a missed confirm gives a brief the server still holds
 ERROR_BODY_BYTES, ERROR_BODY_SECONDS = (
     2048,
     2.0,
@@ -1947,6 +1948,28 @@ def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:
         print(f"{e}; confirming from the history", file=sys.stderr)
 
 
+def queued(info: dict, text: str) -> bool:
+    """Whether ``text`` waits in the session's pending inputs: sent, not yet an item."""
+    return any(text_of(p).strip() == text for p in info.get("pending_inputs") or [])
+
+
+def started_late(og: Omnigent, sid: str) -> bool:
+    """Whether a session whose brief missed the confirm window starts within one more
+    ``LATE_BRIEF_SECONDS`` (``HTTP_SECONDS``): a slow server takes a POST that timed out
+    client-side later, so at the deadline the brief is often neither an item nor pending yet.
+    True once the history holds an item past the opening ``resource_event`` (a real server puts
+    the brief first, so the brief itself is one; an ``error`` item, a runner that failed to
+    launch, is no start); False when none appeared by the end, however long the brief sat in the
+    pending inputs."""
+    deadline = time.monotonic() + LATE_BRIEF_SECONDS
+    while True:
+        if any(i.get("type") not in ("resource_event", "error") for i in og.items(sid)):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL_SECONDS)
+
+
 def delivered(
     og: Omnigent,
     sid: str,
@@ -2039,7 +2062,7 @@ def send(
         ]
 
     def pending(info: dict) -> bool:
-        return any(text_of(p).strip() == text for p in info.get("pending_inputs") or [])
+        return queued(info, text)
 
     # ponytail: compares the server's item clock with the local question file's; a skewed server
     # clock can resend an answer that already landed. Upgrade: a client id, once Omnigent has one.
@@ -3660,7 +3683,8 @@ def start(
         try:
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
                 send_to_confirm(og, sid, text)
-            if delivered(og, sid, text, confirm_seconds):
+            # a slow server can miss the confirm window yet take the brief a moment later
+            if delivered(og, sid, text, confirm_seconds) or started_late(og, sid):
                 if not top_level:
                     held_of(report).parent.mkdir(parents=True, exist_ok=True)
                     held_of(report).write_text(json.dumps({"sid": sid, "brief": digest}))
