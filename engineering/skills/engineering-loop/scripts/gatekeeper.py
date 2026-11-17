@@ -6401,6 +6401,42 @@ def stops_raise() -> Any:
             signal.signal(sig, handler)
 
 
+HOST_COMMANDS = "~/.agents/host-commands"
+# words a command may start with that don't name what it runs
+LAUNCHERS = (["uv", "run"], ["python"], ["python3"])
+
+
+def host_forbids(words: Sequence[str]) -> str | None:
+    """The line of the host's policy file (HOST_COMMANDS, or the file `AGENT_HOST_COMMANDS` names; one command per
+    line, `#` comments) whose words begin `words`, once a launcher (LAUNCHERS) is stripped and path words are read by
+    their basename, as the Claude Code hook that reads the same file does for a typed command; None where the file is
+    absent or lists no such command, so a host without a policy runs everything."""
+    path = os.path.expanduser(os.environ.get("AGENT_HOST_COMMANDS") or HOST_COMMANDS)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as text:
+            rules = [s.strip() for s in text if s.strip() and not s.lstrip().startswith("#")]
+    except OSError:
+        return None
+
+    def bare(command: Sequence[str]) -> list[str]:
+        command = list(command)
+        for launcher in LAUNCHERS:
+            if command[: len(launcher)] == launcher:
+                command = command[len(launcher) :]
+                break
+        return [os.path.basename(w) if "/" in w else w for w in command]
+
+    ran = bare(words)
+    for rule in rules:
+        try:
+            wanted = bare(shlex.split(rule))
+        except ValueError:
+            continue
+        if wanted and ran[: len(wanted)] == wanted:
+            return rule
+    return None
+
+
 def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int, Any]:
     """Run one heavy step (a gate step, a `pre_land` check, a mutate.py test run, `heavy`) under the host's heavy
     wrapper (heavy_argv), with `popen` as Popen's other arguments: its exit code and what communicate() read from its
@@ -6408,6 +6444,11 @@ def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int,
     process group is killed before the exception goes on, so neither the step nor what it started outlives a stopped
     run: a wrapper (systemd-run --scope) puts the step in a group of its own, which a stop of the caller's group would
     never reach. A wrapped step's environment carries HEAVY_WRAPPED."""
+    if rule := host_forbids(words):
+        raise Refused(
+            f"no gate record for this tree: `{shlex.join(words)}` is on this host's {HOST_COMMANDS} ({rule!r}): "
+            "gate it on an allowed host or in claude-cloud"
+        )
     prefix = heavy_prefix(env)
     if prefix:
         env = {**(os.environ if env is None else env), HEAVY_WRAPPED: "1"}
