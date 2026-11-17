@@ -2215,7 +2215,9 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:`/`Risk:`/`Logic change:` lines: a body
     starting `Verifier (<family>), pass <n>`, by the PR's author, the account running this or a writer (writer), since
     anyone can review a public repo, and a colleague (or their agent) verifying someone else's PR posts as themself.
-    A string names why none can be read."""
+    A verifier's newest review on a commit and pass replaces its earlier ones there (kin), since one that parked on a
+    question rewrites its verdict in the same pass; a mixed PR's two families both stay. A string names why none can
+    be read."""
     reviews = pull["reviews"]
     if (reviews.get("totalCount") or 0) > len(reviews["nodes"]):
         return f"has more than {len(reviews['nodes'])} reviews: the gate reads one page"
@@ -2224,7 +2226,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     trusted = {(pull.get("author") or {}).get("login"), viewer() if found else None} - {None}
     others = {(review.get("author") or {}).get("login") for review in found} - trusted - {None}
     trusted |= {login for login in others if writer(login)}
-    return [
+    read = [
         (
             ((review.get("commit") or {}).get("oid") or "").lower(),
             int(PASS.match(review["body"])[2]),
@@ -2242,6 +2244,16 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
         for review in found
         if (review.get("author") or {}).get("login") in trusted
     ]
+    keys = [(commit, number, kin(lines["Family"])) for commit, number, lines in read]
+    return [entry for i, entry in enumerate(read) if keys[i] not in keys[i + 1 :]]
+
+
+def kin(family: str) -> str:
+    """A review heading's verifier family: its harness word (`codex/terra-6.1/med mid` is `codex`), with Claude Code's
+    `cc` read as `claude`, so one verifier's reviews group whatever model, tier or qualifier each names. ponytail: two
+    verifiers of one harness in one pass count as one; key on the model too if a PR ever runs two such."""
+    word = re.match(r"[^/,\s]*", family)[0].lower()  # type: ignore[index]
+    return "claude" if word == "cc" else word
 
 
 def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
@@ -3069,17 +3081,20 @@ def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] 
 
 def unforced(pull: dict[str, Any]) -> str | None:
     """The line check merge and brief print when every commit since the newest verdict's commit is a merge of the
-    base (base_merges) and land posted no CONFLICTS comment naming a head that walk passes, so nothing forced the
-    merge: land merges each head onto the base itself and gates that, and the merge only costs a gate and a verifier
-    pass. None otherwise, a head or base tip that one fetch (fetched, in base_merges) cannot bring included, since the
-    line is advice and blocks nothing."""
+    base (base_merges) whose parents merge cleanly (merged) and land posted no CONFLICTS comment naming a head that
+    walk passes, so nothing forced the merge: land merges each head onto the base itself and gates that, and the
+    merge only costs a gate and a verifier pass. None otherwise, a head or base tip that one fetch (fetched, in
+    base_merges) cannot bring included, since the line is advice and blocks nothing."""
     verdicts = passes(pull)
     if isinstance(verdicts, str) or not verdicts or not (verified := verdicts[-1][0]):
         return None
     if verified == pull["headRefOid"].lower():
         return None
     walked = base_merges(pull, verified)
-    if isinstance(walked, str):
+    # a merge whose parents conflict was forced, CONFLICTS comment or not
+    if isinstance(walked, str) or any(
+        isinstance(merged(first, second), str) for _, first, second in walked
+    ):
         return None
     earlier = {first for _, first, _ in walked}
     try:

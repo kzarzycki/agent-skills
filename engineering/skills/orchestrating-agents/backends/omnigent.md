@@ -122,6 +122,14 @@ not checked. A chief of staff the owner starts in the UI gets no flag. To give i
 `autoCompactWindow` in its project's `.claude/settings.json`: it outranks the user's
 `autoCompactWindow`, though not the environment variable.
 
+**Lead model.** `start --top-level` of a Claude lead reads the project's `Lead model: <tier> for
+<condition>` line (under the engineering loop, in loop.md) once, on the lead's host, with the
+`Lead autocompact:` line. When the issues the brief names (`#N` or an issue URL; their labels come
+from `gh`) match the condition (`size:<S> or smaller`, or a bare label), the lead starts on the
+tier's alias: `frontier` Fable, `top` Opus, `mid` Sonnet, `small` Haiku. `--model` and
+`OMNIGENT_MODEL_CLAUDE` outrank it; a brief naming no issue, a size-less issue, a Codex lead or no
+line starts as configured. A tier or condition it can't parse fails the start before a session exists.
+
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
 agent's name or id starts that agent, found among the server's agents, then the caller's own
 (`scope=user`). `claude` and `codex` take the server's native agent, though the UI may register a
