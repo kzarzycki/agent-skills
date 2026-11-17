@@ -40,6 +40,16 @@ The decisions made: modules built or modified and their changed interfaces, arch
 
 What makes a good test here (external behaviour, not implementation details), which modules get tested, and prior art for those tests in the codebase.
 
+## Acceptance
+
+### Before merge
+
+The examples run on the change's branch before review, each a check with its expected result and the reference it checks against (a fixture, a spec, the output of a tool the change did not write).
+
+### After merge
+
+Only the checks that need the merged default branch or a deployed environment, each with its reference, or `none`.
+
 ## Out of Scope
 
 What this spec does not cover.
