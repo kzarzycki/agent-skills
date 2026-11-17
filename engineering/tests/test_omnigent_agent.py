@@ -905,9 +905,11 @@ def test_wait_takes_no_report_older_than_the_sessions_last_message_until_it_is_r
     os.utime(report, (past, past))
     og.land(sid, "second brief")  # a later message the old report does not answer
     og.sessions[sid][-1]["created_at"] = time.time() - 300
-    assert omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1  # the old one is not taken
+    assert (
+        omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1
+    )  # the old one is not taken
     info = og.info
-    og.info = lambda s: ((report.write_text("new run"), info(s))[1])  # type: ignore[method-assign]
+    og.info = lambda s: (report.write_text("new run"), info(s))[1]  # type: ignore[method-assign]
     assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
     assert report.read_text() == "new run"
 

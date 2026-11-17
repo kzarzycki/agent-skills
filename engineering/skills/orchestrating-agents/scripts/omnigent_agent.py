@@ -8028,8 +8028,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             far = not args.pr and elsewhere(og, og.info(args.session))
             report = args.report if far else args.report.resolve()
             try:
-                # --pr reads a comment, not a file; a report file there never counts
-                since = None if args.pr else told_at(og, args.session, og.info(args.session), report)
+                # --pr reads a comment, not a file; a far host's file time is on its own clock,
+                # not the server's that stamps the messages, so neither takes a floor
+                since = (
+                    None
+                    if args.pr or far
+                    else told_at(og, args.session, og.info(args.session), report)
+                )
                 got = wait(
                     og, args.session, report, args.timeout, args.verdict, since=since, pr=args.pr
                 )
