@@ -5235,6 +5235,59 @@ def aged(path: Path, ago: float) -> Path:
     return path
 
 
+class Paged(Owing):
+    """Owing whose history is longer than the newest 100 items ``items`` returns."""
+
+    def __init__(self, history: list[dict], *infos: dict) -> None:
+        super().__init__(history[-100:], *infos)
+        self.history = history
+
+    def older(self, sid: str, after: str = "") -> dict:
+        newest = list(reversed(self.history))
+        ids = [str(i.get("id")) for i in newest]
+        start = ids.index(after) + 1 if after else 0
+        data = newest[start : start + 100]
+        last = data[-1]["id"] if data else None
+        return {"data": data, "last_id": last, "has_more": start + 100 < len(newest)}
+
+
+def steps(n: int, ago: float) -> list[dict]:
+    return [
+        {**said("assistant", f"s{k}", f"a{k}"), "created_at": time.time() - ago} for k in range(n)
+    ]
+
+
+def test_check_counts_a_report_written_after_an_instruction_behind_the_page(tmp_path: Path) -> None:
+    report = aged(tmp_path / "r.md", 300)  # after the brief, before the page's oldest item
+    og = Paged([told("brief", 600), *steps(150, 100)], {})
+    event, since = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert event == f"a coord: report written: {report}"
+    assert abs(since - (time.time() - 600)) < 5
+
+
+def test_check_refuses_a_report_older_than_an_instruction_behind_the_page(tmp_path: Path) -> None:
+    report = aged(tmp_path / "r.md", 900)
+    og = Paged([told("brief", 600), *steps(150, 100)], {})
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert event == ""
+
+
+def test_check_with_no_instruction_in_the_history_floors_at_the_pages_oldest_item(
+    tmp_path: Path,
+) -> None:
+    report = aged(tmp_path / "r.md", 150)
+    og = Paged(steps(150, 100), {})
+    _, since = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert abs(since - (time.time() - 100)) < 5
+
+
+def test_a_page_short_of_100_items_is_read_without_a_page_back(tmp_path: Path) -> None:
+    og = Paged([told("brief", 600), *steps(5, 100)], {})
+    og.older = lambda *a, **k: pytest.fail("read back a whole history")  # type: ignore[method-assign]
+    assert omnigent_agent.last_instruction(og, "a", og.items("a"), "") is not None
+    assert omnigent_agent.last_instruction(og, "a", steps(5, 1), "") is None
+
+
 def test_supervise_returns_a_report_written_since_the_last_instruction(tmp_path: Path) -> None:
     report = aged(tmp_path / "r.md", 60)
     og = Owing([told("brief", 120)], {})

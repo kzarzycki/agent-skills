@@ -4924,29 +4924,30 @@ def instruction(item: dict, resume: str) -> bool:
 
 def last_instruction(og: Omnigent, sid: str, items: list[dict], resume: str) -> float | None:
     """When ``sid`` was last given an instruction (``instruction``): the newest of ``items``
-    (its newest page, oldest first), else read back a page at a time from the newest, as
-    ``in_history`` does, so one behind the newest 100 items is found. None when the history
-    holds none; each caller keeps its own fallback."""
+    (its newest page, oldest first), else read back a page at a time behind the page, as
+    ``told_park`` does, so one behind the newest 100 items is found. A page short of 100 is the
+    whole history. None when the history holds none; each caller keeps its own fallback."""
     for i in reversed(items):
         if instruction(i, resume):
             return float(i.get("created_at") or 0)
-    after = ""
-    while True:
+    # ponytail: one extra page read per call for a session with 100+ items and no instruction on
+    # its newest page, never cached; upgrade: keep the time in the caller's state once found.
+    after = str(items[0].get("id")) if len(items) >= 100 else ""
+    while after:
         page = og.older(sid, after)
         data = page.get("data") or []
         for i in data:
             if instruction(i, resume):
                 return float(i.get("created_at") or 0)
-        if not data or not page.get("has_more"):
-            return None
-        after = str(page.get("last_id") or data[-1].get("id"))
+        after = str(page.get("last_id") or "") if data and page.get("has_more") else ""
+    return None
 
 
 def instructed(og: Omnigent, sid: str, items: list[dict], resume: str) -> tuple[float, float]:
     """When the session was last told to write its report, and when the resume line was sent
     since (0.0 when it was not). The instruction is its newest user message other than the resume
-    or revive line (``last_instruction``, behind the page too), else the oldest item on the page,
-    since the instruction is older still. The
+    or revive line (``last_instruction``, behind the page too), else, when the whole history holds
+    none, the oldest item on the page. The
     resume line is read from the history, so a supervisor restarted after sending one sends no
     second."""
     since = last_instruction(og, sid, items, resume)
