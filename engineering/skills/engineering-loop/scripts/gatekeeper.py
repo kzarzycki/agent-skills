@@ -8,7 +8,7 @@
     uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
     uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
-    uv run scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
+    uv run --python 3.11 scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
@@ -4088,6 +4088,18 @@ def mise_files(root: Path) -> list[Path]:
     return sorted(configs | tasks)
 
 
+def flat(body: object) -> str:
+    """A mise task's text (a string, or a table or list holding strings) as lines."""
+    if isinstance(body, dict):
+        body = list(body.values())
+    return "\n".join(map(flat, body)) if isinstance(body, list) else str(body)
+
+
+def runs_task(text: str, task: str) -> bool:
+    """Whether a `mise run` command in the text names the task; a command ends at a newline or a shell operator."""
+    return bool(re.search(rf"mise run\b[^\n;&|]*[ '\"]{re.escape(task)}\b", text))
+
+
 def pack_tasks(root: Path) -> set[str]:
     """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does:
     `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named by their path, `/` as `:`).
@@ -4102,7 +4114,7 @@ def pack_tasks(root: Path) -> set[str]:
             except tomllib.TOMLDecodeError:
                 continue
             for task, body in tasks.items():
-                bodies[task] = bodies.get(task, "") + json.dumps(body)
+                bodies[task] = bodies.get(task, "") + flat(body)
         else:
             folder = next(d for d in MISE_TASK_DIRS if (root / d) in path.parents)
             task = ":".join(path.relative_to(root / folder).parts)
@@ -4112,12 +4124,7 @@ def pack_tasks(root: Path) -> set[str]:
         task
         for task, body in bodies.items()
         if task not in named
-        and (
-            PACK_SCRIPT.search(body)
-            or any(
-                re.search(rf"mise run\b[^\n]*[ '\"]{re.escape(other)}\b", body) for other in named
-            )
-        )
+        and (PACK_SCRIPT.search(body) or any(runs_task(body, other) for other in named))
     }:
         named |= grew
     return named
@@ -4132,9 +4139,11 @@ def setup_problems(root: Path) -> list[str]:
     try:
         tasks = pack_tasks(root)
     except ImportError:
-        return [
-            "reading the mise tasks needs Python 3.11 or later: run `uv run --python 3.11 <script> check setup`"
-        ]
+        refusal = (
+            "check setup reads mise's TOML with tomllib, which needs Python 3.11 or later: "
+            "run `uv run --python 3.11 <path to>/approvals.py check setup`"
+        )
+        return [refusal]
     found = []
     workflows = sorted((root / ".github" / "workflows").glob("*.y*ml"))
     for path in mise_files(root) + workflows:
@@ -4162,9 +4171,7 @@ def setup_problems(root: Path) -> list[str]:
                 for w in withs
             )
             runs = "\n".join(str(step.get("run", "")) for step in steps)
-            runs_pack = PACK_SCRIPT.search(runs) or any(
-                re.search(rf"mise run\b[^\n]*[ '\"]{re.escape(task)}\b", runs) for task in tasks
-            )
+            runs_pack = PACK_SCRIPT.search(runs) or any(runs_task(runs, task) for task in tasks)
             # another step that installs uv (mise install, setup-uv) makes the skip harmless; step order is not read
             installs_uv = any(
                 "setup-uv" in str(step.get("uses", ""))

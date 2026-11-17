@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -190,3 +191,27 @@ def test_a_mise_run_of_another_task_does_not_make_a_later_step_a_pack_task(
     )
     repo_with(tmp_path, monkeypatch, {POLICY: FENCED, "mise.toml": VIA_TASK, FLOW: flow})
     assert run_setup(capsys)[0] == 0
+
+
+def test_a_mise_run_of_another_task_before_a_shell_operator_is_not_a_pack_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`mise run lint && cargo check` runs the task `lint`; `check` there is cargo's, in a step or in a task body."""
+    flow = (WORKFLOW % "install: false").replace(
+        "mise run loop:approvals merge 1", "mise run lint && cargo check"
+    )
+    ci = '[tasks.ci]\nrun = "mise run lint && cargo check"\n'
+    repo = repo_with(tmp_path, monkeypatch, {POLICY: FENCED, "mise.toml": VIA_TASK, FLOW: flow})
+    assert run_setup(capsys)[0] == 0
+    (repo / "mise.toml").write_text(VIA_TASK + ci)
+    (repo / FLOW).write_text((WORKFLOW % "install: false").replace("loop:approvals merge 1", "ci"))
+    assert run_setup(capsys)[0] == 0
+
+
+def test_check_setup_refuses_on_a_python_without_tomllib_and_names_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setitem(sys.modules, "tomllib", None)  # `import tomllib` then raises ImportError
+    repo_with(tmp_path, monkeypatch, {POLICY: FENCED, "mise.toml": UV_TASK})
+    code, out = run_setup(capsys)
+    assert code == 1 and "Python 3.11" in out and "uv run --python 3.11" in out
