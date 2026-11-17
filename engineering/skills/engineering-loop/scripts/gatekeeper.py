@@ -163,7 +163,14 @@ a wait for the owner or a pending required check 3, a red required check 1; with
 A named PR missing a required check, or a named draft, that GitHub reports conflicting exits 1 with the fix, `merge
 origin/<base> in` (a draft is not marked ready first), since GitHub runs no workflow on a conflicting PR, so the check
 would never come.
-3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
+3. With loop.md's `land: batch_wait_seconds` set (a whole number, default 0: no wait), and before the worktree below,
+it waits up to that long while another open PR into the same base is held by nothing but its required checks still
+running (its proofs and any owner go already hold: a red check, a draft, a proof gap or an owner wait never counts),
+polling every POLL seconds; each such PR that turns landable joins the batch and shares its one gate. It stops
+when none is pending or the time is up, so a lone PR gates at once; with PRs named by `--only` it never reads or waits
+on other PRs. It prints the wait and who joined, and the `Landed` comment's `Batch:` line adds `(waited N s, joined:
+...)`. The key is optional in `land`, which asks for signing keys only where `signed_squash_to` is set.
+   In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
 `pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
 (the PR's head) and `LAND_BASE` (that tip) set, so the base's tree holds the check and a PR never changes what judges
 it. A non-zero exit leaves that PR out of this batch, printing the check's last lines on every land, with a comment,
@@ -761,6 +768,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         signing_key_env=str,
         merge_queue=bool,
         merge_commit_heads=list,
+        batch_wait_seconds=int,
         together=("signed_squash_to", "allowed_signers"),
         optional=(
             "signed_squash_to",
@@ -769,6 +777,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "signing_key_env",
             "merge_queue",
             "merge_commit_heads",
+            "batch_wait_seconds",
         ),
     ),
     "carry_over_main": Table({"except": list}),
@@ -951,6 +960,10 @@ def settings(loop: str | None) -> dict[str, Any]:
                     deprecated(key)
         elif name in SCHEMA:
             data[name] = typed(section, SCHEMA[name], name, file)
+            if data[name].get("batch_wait_seconds", 0) < 0:
+                raise Refused(
+                    f"{file}'s `land.batch_wait_seconds` must be a whole number, 0 or more"
+                )
             if name == "carry_over_main":
                 deprecated(name)
             for port_name, adapter in data[name].items() if name == "adapters" else ():
@@ -4539,11 +4552,12 @@ def candidates_of(
     loop: str | None,
     required: set[str],
     only: bool,
-) -> tuple[list[dict[str, Any]], dict[int, tuple[int, bool]]]:
+) -> tuple[list[dict[str, Any]], dict[int, tuple[int, bool]], dict[int, Any]]:
     """Both merge queues' candidates, oldest PR first: every open PR into `base` that is no draft, and the named ones
     (`only`: those alone), each judged by `landable` (its risk flagged once its proofs hold); with the exit each other
-    one means for a named PR."""
+    one means for a named PR, and each waiting one's linked issues (batch_wait's owner check)."""
     waits: dict[int, tuple[int, bool]] = {}
+    issues: dict[int, Any] = {}  # each waiting PR's linked issues, for batch_wait's owner check
     candidates = []
     listed = {
         other["number"]
@@ -4564,7 +4578,8 @@ def candidates_of(
             candidates.append(pull)
         else:
             waits[number] = verdict.exit
-    return candidates, waits
+            issues[number] = verdict.issues
+    return candidates, waits, issues
 
 
 def outcome(
@@ -4598,7 +4613,15 @@ def local_queue(
     """The local merge queue, under the lock (`held`, its commits): merge every candidate's head onto `base` locally,
     oldest PR first, gate the result's tree once on this host (or reuse a pass on it), move the lock to name the last PR
     to land (repointed), and merge each through GitHub in that order; a red batch lands one PR at a time."""
-    candidates, waits = candidates_of(named, base, tracker, loop, required, only)
+    candidates, waits, issues = candidates_of(named, base, tracker, loop, required, only)
+    waited = ""
+    if (
+        candidates
+        and not only
+        and (seconds := settings(loop).get("land", {}).get("batch_wait_seconds", 0))
+    ):
+        pulls = {pull["number"]: pull for pull in named}
+        waited = batch_wait(seconds, pulls, issues, candidates, waits, tracker, loop, required)
     failed: set[int] = set()
     # each PR to land, the tree it lands, the tree gated with it, and how that passed
     landed: list[tuple[dict[str, Any], str, str, str]] = []
@@ -4614,7 +4637,7 @@ def local_queue(
         if landed and held:
             repointed(base, held, landed[-1][0]["number"])
         if landed:
-            merges(landed, base, tip, None, loop, failed)
+            merges(landed, base, tip, None, loop, failed, waited)
     elif candidates:
         with batch_tree(base) as work:
             tip = run_in(work, "rev-parse", "HEAD")
@@ -4623,10 +4646,83 @@ def local_queue(
             if landed and held:
                 repointed(base, held, landed[-1][0]["number"])
             if landed:
-                merges(landed, base, tip, work, loop, failed)
+                merges(landed, base, tip, work, loop, failed, waited)
     # each named PR's exit: its wait's, else 0 when it merged, else 1
     done = {pull["number"] for pull, *_ in landed} - failed
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
+
+
+def check_never_comes(pull: dict[str, Any], required: set[str]) -> bool:
+    """Whether a required check of the PR's head will not come on its own, so waiting for it is pointless: GitHub runs no
+    workflow on a conflicting PR missing one (landable ends a named PR's wait the same way), and a required check whose
+    only run is the draft's skip waits for good where the workflow lacks the `ready_for_review` type (ci()'s line)."""
+    checks, _, drafts = head_checks(pull, required)
+    conflicting = pull.get("mergeable") == "CONFLICTING"
+    return bool(required & drafts) or (
+        conflicting and bool(required - {name for name, _ in checks})
+    )
+
+
+def batch_wait(
+    seconds: int,
+    pulls: dict[int, dict[str, Any]],
+    issues: dict[int, Any],
+    candidates: list[dict[str, Any]],
+    waits: dict[int, tuple[int, bool]],
+    tracker: str | None,
+    loop: str | None,
+    required: set[str],
+) -> str:
+    """Under the lock, before the batch tree: wait up to `seconds` (loop.md's `batch_wait_seconds`) while another PR is
+    held by nothing but its required checks still running (landable's (WAITING, True), no owner wait behind it, and no
+    check that never comes: check_never_comes), so
+    it rides this batch's one gate instead of paying one of its own. Each one that turns landable joins `candidates`
+    (oldest first) and leaves `waits`; one that turns red, or asks the owner, is dropped from the wait. Returns the
+    text for the Landed comment's `Batch:` line, empty when nothing was waited for."""
+    near = {
+        number
+        for number, exit in waits.items()
+        if exit == (WAITING, True)
+        and not check_never_comes(pulls.get(number) or pull_request(number), required)
+        and not owner_waits(pulls.get(number) or pull_request(number), issues[number] or [], loop)
+    }
+    if not near:
+        return ""
+    start = time.monotonic()
+    deadline = start + seconds
+    print(
+        f"land waits up to {seconds} s for the required checks of "
+        + ", ".join(f"#{n}" for n in sorted(near))
+        + " before it gates the batch"
+    )
+    joined: list[int] = []
+    while near and time.monotonic() < deadline:
+        time.sleep(min(POLL, max(0.0, deadline - time.monotonic())))
+        for number in sorted(near):
+            pull = pull_request(number)
+            with contextlib.redirect_stdout(
+                io.StringIO()
+            ):  # why a PR still waits is no news every poll
+                verdict = landable(pull, tracker, loop, required, number in pulls)
+            if verdict.exit is None:
+                candidates.append(pull)
+                waits.pop(number)
+                joined.append(number)
+                near.remove(number)
+                print(f"PR #{number} turned landable and joins the batch")
+            elif not (
+                verdict.exit == (WAITING, True)
+                and not check_never_comes(pull, required)
+                and not owner_waits(pull, verdict.issues or [], loop)
+            ):
+                waits[number] = verdict.exit
+                near.remove(number)
+                print(f"PR #{number} no longer waits only on its checks: left out of the wait")
+    candidates.sort(key=lambda pull: pull["number"])
+    spent = round(time.monotonic() - start)
+    who = ", ".join(f"#{n}" for n in joined) or "none"
+    print(f"land waited {spent} s for the batch; joined: {who}")
+    return f" (waited {spent} s, joined: {who})"
 
 
 @contextlib.contextmanager
@@ -5046,7 +5142,8 @@ def github_queue(
         )
     git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
     judge_with_base(base)
-    candidates, exits = candidates_of(named, base, tracker, loop, required, only)
+    # GitHub's queue batches the PRs itself, so no batch_wait
+    candidates, exits, _ = candidates_of(named, base, tracker, loop, required, only)
     numbers, failed = {pull["number"] for pull in named}, set()
     for pull in candidates:
         code, again = queue_step(pull, base, method, loop, required)
@@ -5515,6 +5612,7 @@ def merges(
     work: Path | None,
     loop: str | None,
     failed: set[int],
+    waited: str = "",
 ) -> None:
     """Merge each PR through GitHub in the batch's order, pinned to its head (or, with loop.md's `land` section, as a
     signed squash of the tree it lands on the commit before it), stopping at the first one GitHub refuses or leaves
@@ -5594,7 +5692,7 @@ def merges(
     for pull, tree, gated, how in done:
         comment(
             pull["number"],
-            f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}\n",
+            f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}{waited}\n",
         )
         archive_workers(pull["number"])
 
