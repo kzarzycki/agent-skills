@@ -1011,7 +1011,7 @@ or the owner's private network.
 - **Models.** Every start names a model fit for the job, never the harness default. The owner's named model wins; else loop.md's `Worker model:
   <tier> for <condition>` line names a tier for a worker whose issue matches the condition
   (on the issue's labels), so the choice sits in one file the owner can change; else the lead
-  picks: `frontier` for hard design, root-cause work, risky reviews; `top` or `mid` for routine work by size; effort high or below. A `Verifier model:` line does the same for a verifier whose PR
+  picks by design complexity times risk, for a worker and a verifier alike: `small` for mechanical work (a rename, a generated file, a docs fix); `mid` for the usual range and when unsure; `top` for high complexity or high risk; `frontier` only for very high complexity or very high risk, since "high" is common and `frontier` costs several times `top`. Effort high or below. A `Verifier model:` line does the same for a verifier whose PR
   matches, judged as `check merge` judges risk: on the labels of the PR and its issues and
   on the PR's files, so a PR that `check merge` rates high never gets a lower tier. The
   verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
@@ -1020,7 +1020,7 @@ or the owner's private network.
   reads the tier from the verdict's `Verifier:` line (verifier.md) and refuses until then. It applies within the verifier's own family: it lowers the tier, never the family, which
   stays the other one from the author's (Independent verification). The tier is `frontier`, `top`, `mid` or `small` (Claude's Fable, Opus, Sonnet, Haiku;
   Codex's Astra, Sol, Terra, Luna; each family names its own), so one line holds for every family
-  and outlives a release. `frontier` costs several times `top`: use it only when the job needs it. Resolve the tier
+  and outlives a release. Resolve the tier
   at launch from the newest generation of the family's tier models only: its model of that
   tier, else its closest higher tier (its highest when none is higher), never an older
   generation's model, which the family has already superseded. A lead that can't read the
