@@ -631,6 +631,8 @@ When a launch fails, for any reason, take the next option on this list: a cloud 
 
 A brief that names a host worktree for a test run says where the code is, not where the run goes: the run still takes the first option above that can make it. A lead's own heavy run takes the cloud route this way, with no worker or PR needed: orchestrating-agents' `omnigent_agent.py launch-dir` for the branch (its Omnigent backend has the arguments), then `run claude-cloud <title> <brief> <launch dir>/tmp/loop/<report> --workspace <launch dir> --no-keep`, whose brief names the branch, the commands to run and asks for a `REPORT` last message holding each command's exit code, the summary line and every failure; `run` writes that message to the report path, so the lead reads a file on the host as for any child.
 
+With a cloud worker, a host makes no gate pass, since the worker's VM already holds the checkout and build and the host's cores run the sessions. When `local-ci <pr>` on a host finds no pass for the head, have the worker run `local-ci --record` on that head and push its record, then run `local-ci <pr>` again; never `--run` it, or `--record` it, on the host. Two steps stay on the host because no cloud pass can cover them: a `host` step of `gate_steps`, and `land`'s gate of a batch tree that no recorded pass covers.
+
 ## Cloud worker
 
 With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead runs on
