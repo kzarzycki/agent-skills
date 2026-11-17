@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time as real_time
 from pathlib import Path
 from typing import Any
@@ -87,6 +88,8 @@ def cloud(
 
     monkeypatch.setattr(approvals, "git", git)
     monkeypatch.setattr(approvals, "ask_cloud_gate", ask)
+    state["ended"] = lambda: False
+    monkeypatch.setattr(approvals, "gate_ended", lambda: state["ended"]())
     state["record"] = record
     return state
 
@@ -237,6 +240,14 @@ if (sys.argv[1], mode) in (("relay", "gone"), ("start", "refuse"), ("launch-dir"
     print("session-x")  # a refused start may still have printed an id
     print("no capacity", file=sys.stderr)
     sys.exit(4)
+if (sys.argv[1], mode) == ("relay", "queued"):
+    sys.exit(5)
+if (sys.argv[1], mode) == ("start", "hang"):
+    import time
+    time.sleep(60)
+if sys.argv[1] == "status":
+    print("session-1 gate: " + ("turn ended" if mode == "ended" else "running"))
+    sys.exit(4 if mode == "vanished" else 0)
 if sys.argv[1] == "start":
     print("session-" + str(len(log.read_text().splitlines())))
 """
@@ -272,21 +283,95 @@ def test_one_standing_session_is_started_once_and_messaged_for_later_batches(
     first, second, third = session["calls"]()
     assert (first[0], second[0], third[:2]) == ("launch-dir", "start", ["relay", "session-2"])
     assert "loop-land/t1" in second[3] and "loop-land/t2" in third[2]
+    # the cloud VM has its own skill install: the brief names no path or interpreter of this host
+    assert "uv run <engineering-loop skill>/scripts/approvals.py local-ci --record" in second[3]
+    assert sys.executable not in second[3] and str(Path(approvals.__file__).parent) not in second[3]
     kept = json.loads((session["repo"] / ".git" / "approvals" / "cloud-gate.json").read_text())
-    assert kept == {"session": "session-2"}
+    assert kept["session"] == "session-2"
 
 
 def test_a_session_that_is_gone_is_replaced(session: dict[str, Any]) -> None:
     assert approvals.ask_cloud_gate("t1") == ""
     session["mode"]("gone")
     assert approvals.ask_cloud_gate("t2") == ""
-    assert [call[0] for call in session["calls"]()] == [
+    calls = session["calls"]()
+    # the dropped session is closed, with the launch dir it held; the replacement's launch dir is a new name
+    assert [call[0] for call in calls] == [
         "launch-dir",
         "start",
         "relay",
         "launch-dir",
         "start",
+        "reap",
     ]
+    assert calls[-1][1] == "session-2"
+    first, second = calls[0][-1], calls[3][-1]
+    assert (
+        Path(first).name != Path(second).name and not Path(first).exists() and Path(second).exists()
+    )
+
+
+def test_replacements_never_reuse_a_launch_branch_name(session: dict[str, Any]) -> None:
+    """launch-dir makes the branch `launch/<dir name>` in this clone, so a repeated name fails the second one."""
+    names = set()
+    for _ in range(3):
+        session["mode"]("gone")
+        assert approvals.ask_cloud_gate("t1") == ""
+    names = {Path(c[-1]).name for c in session["calls"]() if c[0] == "launch-dir"}
+    assert len(names) == 3
+
+
+def test_a_session_mid_turn_takes_the_message_queued_and_is_not_replaced(
+    session: dict[str, Any],
+) -> None:
+    assert approvals.ask_cloud_gate("t1") == ""
+    session["mode"]("queued")
+    assert approvals.ask_cloud_gate("t2") == ""
+    assert [call[0] for call in session["calls"]()] == ["launch-dir", "start", "relay"]
+
+
+def test_a_start_that_times_out_leaves_no_launch_dir_and_says_why(
+    session: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session["mode"]("hang")
+    real = approvals.run_agent
+    monkeypatch.setattr(approvals, "run_agent", lambda *a, **k: real(*a, **{**k, "seconds": 1}))
+    with pytest.raises(approvals.subprocess.TimeoutExpired):
+        approvals.ask_cloud_gate("t1")
+    [made] = [c for c in session["calls"]() if c[0] == "launch-dir"]
+    assert not Path(made[-1]).exists()
+
+
+def test_a_session_whose_turn_ended_or_is_gone_reads_as_ended(session: dict[str, Any]) -> None:
+    assert approvals.ask_cloud_gate("t1") == ""
+    assert not approvals.gate_ended()
+    for mode in ("ended", "vanished"):
+        session["mode"](mode)
+        assert approvals.gate_ended(), mode
+
+
+def test_a_session_that_ended_without_a_record_falls_back_before_the_timeout(
+    lands: dict[str, Any], cloud: dict[str, Any]
+) -> None:
+    """A red cloud gate pushes no record: land must not wait the whole timeout for it."""
+    policy(lands, ON)
+    lands["open"](7, {"7.txt": "7\n"})
+    cloud["ended"] = lambda: cloud["clock"].now >= 40
+    code, lines = lands["land"]()
+    assert (code, lands["merged"](), lands["runs"]()) == (0, ["7"], 1), lines
+    assert sum(cloud["clock"].slept) < TIMEOUT
+    assert any("ended its turn without a record" in line for line in lines), lines
+
+
+def test_a_record_that_lands_as_the_turn_ends_still_counts(
+    lands: dict[str, Any], cloud: dict[str, Any]
+) -> None:
+    policy(lands, ON)
+    lands["open"](7, {"7.txt": "7\n"})
+    cloud["ended"] = lambda: cloud["clock"].now >= 60
+    cloud["clock"].tick = lambda now: cloud["record"](cloud["asked"][0]) if now >= 60 else None
+    code, lines = lands["land"]()
+    assert (code, lands["merged"](), lands["runs"]()) == (0, ["7"], 0), lines
 
 
 def test_a_start_that_fails_says_why(
@@ -306,6 +391,11 @@ def test_a_refused_launch_or_start_says_why_and_keeps_no_session(
     session["mode"](mode)
     assert approvals.ask_cloud_gate("t1") == said
     assert not (session["repo"] / ".git" / "approvals" / "cloud-gate.json").exists()
+    calls = session["calls"]()
+    made = Path(next(c for c in calls if c[0] == "launch-dir")[-1])
+    assert not made.exists()  # no session uses it
+    # a start that printed an id may have made a session: it is closed
+    assert (["reap", "session-x", "--force"] in calls) == (mode == "refuse")
 
 
 @pytest.mark.parametrize("bad", ["-1", "'600'", "true"])

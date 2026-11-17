@@ -5560,7 +5560,7 @@ def cloud_gate(commit: str, tree: str) -> None:
     why = ""
     try:
         git("push", "-q", "--no-verify", "origin", f"{commit}:{ref}")
-        why = ask_cloud_gate(tree) or wait_records(commit, tree, steps, timeout)
+        why = ask_cloud_gate(tree) or wait_records(commit, tree, steps, timeout, gate_ended)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         why = " ".join((getattr(exc, "stderr", None) or str(exc)).split())
     finally:
@@ -5570,73 +5570,143 @@ def cloud_gate(commit: str, tree: str) -> None:
         print(f"Tree {tree}: no cloud gate ({why}): gating on this host")
 
 
-def wait_records(commit: str, tree: str, steps: list[dict[str, Any]], timeout: int) -> str:
+def wait_records(
+    commit: str, tree: str, steps: list[dict[str, Any]], timeout: int, ended: Callable[[], bool]
+) -> str:
     """Wait until every step of `steps` has a pass on `tree` (step_pass); the reason none came within `timeout`
-    seconds, else empty."""
-    deadline = time.monotonic() + timeout
+    seconds, or because the gate session's turn ended (a red run pushes no record) or the session is gone, else
+    empty. `ended` is read twice running before it counts, since a session just messaged can still read idle."""
+    deadline, over = time.monotonic() + timeout, 0
     with saying(f"Tree {tree}: waiting for the cloud gate's record, up to {timeout} s"):
         while not all(step_pass(commit, tree, step, show=False) for step in steps):
             if (left := deadline - time.monotonic()) <= 0:
                 return f"no record for the tree within {timeout} s"
             time.sleep(min(POLL, left))
+            over = over + 1 if ended() else 0
+            if over >= 2 and not all(step_pass(commit, tree, step, show=False) for step in steps):
+                return "the cloud gate session ended its turn without a record"
     return ""
+
+
+GATE_SESSION = "cloud-gate.json"
+# omnigent_agent.py's exit code for a relay that found the session mid-turn: the message is queued, so it is taken
+QUEUED_EXIT = 5
+
+
+def run_agent(*args: str | Path, seconds: int = 600) -> subprocess.CompletedProcess[str]:
+    """One omnigent_agent.py command, its exit code and output returned."""
+    return subprocess.run(
+        [sys.executable, str(agent_script()), *map(str, args)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=seconds,
+    )
+
+
+def gate_state() -> Path:
+    """The per-clone folder (under the git common dir) that holds the standing gate session and its launch dirs."""
+    state = (
+        Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip()) / "approvals"
+    )
+    state.mkdir(parents=True, exist_ok=True)
+    return state
+
+
+def gate_session() -> dict[str, str]:
+    """The standing gate session's `session` id and `launch` dir, else empty."""
+    with contextlib.suppress(OSError, ValueError, TypeError):
+        return {k: str(v) for k, v in json.loads((gate_state() / GATE_SESSION).read_text()).items()}
+    return {}
+
+
+def gate_ended() -> bool:
+    """Whether the standing gate session's turn has ended or it is gone: no record will come from it."""
+    try:
+        sid = gate_session()["session"]
+        read = run_agent("status", sid, seconds=120)
+    except (KeyError, subprocess.TimeoutExpired, OSError, subprocess.CalledProcessError):
+        return False
+    return bool(read.returncode) or any(
+        word in read.stdout for word in (": turn ended", ": archived", ": failed")
+    )
+
+
+def drop_session(sid: str) -> None:
+    """Finish a gate session this land no longer uses (omnigent_agent.py reap); it may already be gone."""
+    with contextlib.suppress(subprocess.SubprocessError, OSError):
+        run_agent("reap", sid, "--force", seconds=120)
+
+
+def drop_launch(path: str | Path) -> None:
+    """Remove a launch dir (a worktree of this clone, with its `launch/<name>` branch) that no session uses."""
+    path = Path(path)
+    for cmd in (
+        ["worktree", "remove", "--force", str(path)],
+        ["branch", "-D", f"launch/{path.name}"],
+    ):
+        with contextlib.suppress(subprocess.CalledProcessError, OSError):
+            git(*cmd)
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def ask_cloud_gate(tree: str) -> str:
     """Ask the repo's standing gate session to gate the branch `loop-land/<tree>`: a message to the session whose id
     `approvals/cloud-gate.json` (under the git common dir, beside land's other per-clone state) holds, else a new
-    one, started through orchestrating-agents' omnigent_agent.py (`relay`, `launch-dir`, `start`). The reason it
-    could not be asked, else empty."""
+    one, started through orchestrating-agents' omnigent_agent.py (`relay`, `launch-dir`, `start`). A session that
+    is mid-turn takes the message queued. One that is gone, or a start that fails, is closed and its launch dir
+    removed. The reason it could not be asked, else empty."""
     script, branch = agent_script(), LAND_BRANCH.format(tree).removeprefix("refs/heads/")
     if not script.is_file():
         return f"{script.name} is not installed"
-    me = Path(__file__).resolve().with_name("approvals.py")
+    # the command as worker.md names it: the cloud VM has its own skill install, never this host's paths
     task = (
-        f"Gate the branch {branch}: fetch it from origin, check it out, run `{sys.executable} {me}"
-        " local-ci --record` on it (the gate and its environment as the project's loop.md names them) and let the"
-        f" record branch be pushed. Touch no other branch. Then end the turn with `DONE: recorded {tree}` or"
-        " `DONE: red`. More branches arrive as messages, each the same task."
+        f"Gate the branch {branch}: fetch it from origin, check it out, run `uv run"
+        " <engineering-loop skill>/scripts/approvals.py local-ci --record` on it (the gate and its environment as the"
+        " project's loop.md names them) and let the record branch be pushed. Touch no other branch. Then end the"
+        f" turn with `DONE: recorded {tree}` or `DONE: red`. More branches arrive as messages, each the same task."
     )
-    common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
-    state = common / "approvals"
-    state.mkdir(parents=True, exist_ok=True)
-
-    def agent(*args: str | Path, seconds: int = 600) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, str(script), *map(str, args)],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=seconds,
-        )
-
-    kept = state / "cloud-gate.json"
-    with contextlib.suppress(OSError, ValueError, KeyError):
-        sid = json.loads(kept.read_text())["session"]
-        if not (told := agent("relay", sid, task, "--from", "land")).returncode:
+    state, old = gate_state(), gate_session()
+    if sid := old.get("session"):
+        told = run_agent("relay", sid, task, "--from", "land")
+        if told.returncode in (0, QUEUED_EXIT):
             return ""
         print(
             f"cloud gate session {sid} did not take the message ({told.stderr.strip()[-200:]}): starting one"
         )
     dirs = state / "cloud-gate-dirs"
     dirs.mkdir(exist_ok=True)
-    launch = Path(tempfile.mkdtemp(dir=dirs)) / "launch"
-    made = agent("launch-dir", git("remote", "get-url", "origin").strip(), branch, launch)
+    launch = Path(
+        tempfile.mkdtemp(dir=dirs, prefix="gate-")
+    )  # its name is the branch `launch/<name>`: unique
+    made = run_agent("launch-dir", git("remote", "get-url", "origin").strip(), branch, launch)
     if made.returncode:
+        drop_launch(launch)
         return f"no launch dir: {made.stderr.strip()[-200:]}"
-    started = agent(
-        "start",
-        "claude-cloud",
-        "gate loop-land",
-        task,
-        launch / "tmp/loop/gate.md",
-        "--workspace",
-        launch,
-    )
+    try:
+        started = run_agent(
+            "start",
+            "claude-cloud",
+            "gate loop-land",
+            task,
+            launch / "tmp/loop/gate.md",
+            "--workspace",
+            launch,
+        )
+    except subprocess.TimeoutExpired:
+        drop_launch(launch)
+        raise
     sid = (started.stdout.split() or [""])[-1]
     if started.returncode or not sid:
+        if sid:
+            drop_session(sid)
+        drop_launch(launch)
         return f"start refused: {(started.stderr.strip() or started.stdout.strip())[-200:]}"
-    kept.write_text(json.dumps({"session": sid}) + "\n")
+    (state / GATE_SESSION).write_text(json.dumps({"session": sid, "launch": str(launch)}) + "\n")
+    if old.get("session"):
+        drop_session(old["session"])
+    if old.get("launch"):
+        drop_launch(old["launch"])
     return ""
 
 
