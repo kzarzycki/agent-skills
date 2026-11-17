@@ -158,3 +158,40 @@ def test_a_bare_label_needs_one_issue_to_carry_it_and_a_codex_lead_is_unchanged(
         og, "codex", "t", "build #1", tmp_path / "r.md", None, 0, top_level=True, workspace=str(repo)
     )  # fmt: skip
     assert og.overrides[sid] is None  # the tiers are Claude's aliases
+
+
+def test_a_remote_lead_reads_the_line_on_its_own_host(
+    tmp_path: Path, labels: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    labels["1"] = ["size:S"]
+    slugs: list[object] = []
+    monkeypatch.setattr(omnigent_agent, "repo_slug", lambda cwd=None: slugs.append(cwd) or "o/r")
+
+    class Remote(FakeOmnigent):
+        def loop_text(self, workspace: str, host_id: str) -> str:
+            return LINE + "\n" if host_id == "far" else ""
+
+    og = Remote()
+    og.listed = ["fable", "opus", "sonnet", "haiku"]
+    og.host_names = {"far": "far"}
+    sid, _ = omnigent_agent.start(
+        og, "claude", "t", "build #1", tmp_path / "r.md", None, 0,
+        top_level=True, workspace=str(tmp_path / "remote"), host_id="far",
+    )  # fmt: skip
+    assert og.overrides[sid] == "sonnet"  # the caller's side has no loop.md
+    assert slugs == [None]  # a bare #N resolves against the caller's repo, not a remote path
+
+
+@pytest.mark.parametrize(
+    ("line", "names"),
+    [
+        ("Lead model: mid for wanted", ["help wanted"]),  # one word of a label is not the label
+        (LINE, ["size:XXL"]),  # a size outside XS..XL says nothing
+        (LINE, ["size:s"]),
+    ],
+)
+def test_a_label_matches_whole_and_an_unknown_size_says_nothing(
+    tmp_path: Path, repo: Path, labels: dict[str, list[str]], line: str, names: list[str]
+) -> None:
+    labels["1"] = names
+    assert lead(tmp_path, repo, line, "build #1") is None

@@ -1695,7 +1695,7 @@ def lead_model(
         n = number or bare
         try:
             slug = repo or repo_slug(Path(workspace) if local and workspace else None)
-            names = gh("api", f"repos/{slug}/issues/{n}", "--jq", ".labels[].name").split()
+            names = gh("api", f"repos/{slug}/issues/{n}", "--jq", ".labels[].name").splitlines()
         except Fail as e:
             print(f"Lead model: issue {n} unread, so it says nothing: {e}", file=sys.stderr)
             continue
