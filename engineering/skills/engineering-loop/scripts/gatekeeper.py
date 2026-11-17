@@ -8,6 +8,7 @@
     uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
     uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
+    uv run scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
@@ -850,7 +851,9 @@ def block(text: str, file: str, heading: str = "Settings") -> dict[str, Any]:
     found = SETTINGS.search(section(text, heading))
     if found is None:
         raise Refused(
-            f"{file} has no ```yaml settings block under ## {heading}: SKILL.md § Settings has its keys"
+            f"{file} has no ```yaml settings block under ## {heading}: the bullet form is no longer read. Write the "
+            f"policy as a fenced yaml block under ## {heading} in docs/agents/{file} (SKILL.md § Settings has its "
+            "keys) and land that migration on the base before the pin bump, since the policy is read from origin/<base>"
         )
     try:
         once(yaml.compose(found[1], Loader=yaml.SafeLoader), file)
@@ -4059,6 +4062,106 @@ def reverted(number: int) -> str | None:
 
 # what GitHub says of a PR number no PR has: GraphQL's refusal, REST's 404
 NO_PULL = ("Could not resolve to a PullRequest", "Not Found")
+
+
+# the pack's scripts as a repo's mise tasks and workflows name them, and the one way each must not be run: a bare
+# python, which has no PyYAML; `uv run` (or the script's own shebang) installs it
+PACK_SCRIPT = re.compile(r"\b(?:approvals|gatekeeper|labels|board)\.py\b")
+BARE_PYTHON = re.compile(
+    r"\bpython[\d.]*\s+(?:-\S+\s+)*\S*(?:approvals|gatekeeper|labels|board)\.py\b"
+)
+MISE_FILES = (
+    "mise.toml",
+    ".mise.toml",
+    ".config/mise.toml",
+    "mise/config.toml",
+    ".mise/config.toml",
+)
+TASK_HEADER = re.compile(r'^\[tasks\.("?)([^\]"]+)\1\]', re.MULTILINE)
+
+
+def pack_tasks(root: Path) -> set[str]:
+    """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does."""
+    bodies: dict[str, str] = {}
+    for name in MISE_FILES:
+        if (root / name).is_file():
+            text = read(root / name)
+            marks = list(TASK_HEADER.finditer(text)) + [None]
+            for here, after in zip(marks, marks[1:]):
+                end = after.start() if after else len(text)
+                bodies[here[2]] = bodies.get(here[2], "") + text[here.end() : end]
+    named: set[str] = set()
+    while grew := {
+        task
+        for task, body in bodies.items()
+        if task not in named
+        and (
+            PACK_SCRIPT.search(body)
+            or any(
+                re.search(rf"mise run\b[^\n]*[ '\"]{re.escape(other)}\b", body) for other in named
+            )
+        )
+    }:
+        named |= grew
+    return named
+
+
+def setup_problems(root: Path) -> list[str]:
+    """Where the repo's own loop steps would exit non-zero for a reason the policy parse can't show: a pack script run
+    by a bare python in a mise config or workflow (no PyYAML), and a workflow job that runs one through a mise task
+    after `jdx/mise-action` was told not to install (`install: false`, or `install_args` without uv), so there is no
+    `uv`. ponytail: a text scan of mise.toml and .github/workflows, not a run of each step, which needs the forge;
+    the upgrade is `check setup --run`, executing each task against a stub forge."""
+    found, tasks = [], pack_tasks(root)
+    workflows = sorted((root / ".github" / "workflows").glob("*.y*ml"))
+    for path in [root / name for name in MISE_FILES if (root / name).is_file()] + workflows:
+        for number, line in enumerate(read(path).splitlines(), 1):
+            if BARE_PYTHON.search(line):
+                found.append(
+                    f"{path.relative_to(root)}:{number}: `{line.strip()}` runs a pack script with a bare python, "
+                    "which has no PyYAML: run it with `uv run <script>`"
+                )
+    for path in workflows:
+        try:
+            jobs = (yaml.safe_load(read(path)) or {}).get("jobs") or {}
+        except yaml.YAMLError:
+            continue
+        for job, body in jobs.items():
+            steps = body.get("steps") or [] if isinstance(body, dict) else []
+            withs = [
+                step.get("with") or {}
+                for step in steps
+                if "mise-action" in str(step.get("uses", ""))
+            ]
+            skipped = any(
+                str(w.get("install", True)).lower() == "false"
+                or ("install_args" in w and not re.search(r"\buv\b", str(w["install_args"])))
+                for w in withs
+            )
+            runs = " ".join(str(step.get("run", "")) for step in steps)
+            runs_pack = PACK_SCRIPT.search(runs) or any(
+                re.search(rf"\b{re.escape(task)}\b", runs) for task in tasks
+            )
+            if skipped and runs_pack:
+                found.append(
+                    f"{path.relative_to(root)}: job `{job}` runs a pack script but mise-action installs no uv "
+                    "(`install: false`, or `install_args` without uv): set `install_args: uv`"
+                )
+    return found
+
+
+def setup() -> int:
+    """`check setup`, the gate a consumer runs on a pack upgrade: reads the policy as the loop steps do
+    (project(): refused when it is the bullet form or off its schema), then the repo's own invocations
+    (setup_problems). Exit 0 when every loop step would start, else 1 with one line per problem."""
+    root = toplevel()
+    project()
+    problems = setup_problems(root)
+    for line in problems:
+        print(line)
+    if not problems:
+        print("setup: the policy parses and the repo's loop steps run the pack's scripts with uv")
+    return 1 if problems else 0
 
 
 def check(point: str, pr: int | None, head: str | None = None, issue: int | None = None) -> int:
@@ -8219,7 +8322,7 @@ def main(argv: list[str]) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser("check")
-    checking.add_argument("point", choices=("build", "merge", "queue"))
+    checking.add_argument("point", choices=("build", "merge", "queue", "setup"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--head")
     checking.add_argument("--issue", type=int)
@@ -8317,6 +8420,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused("--issue goes with check build and no PR number")
         if args.point == "queue":
             deprecated("check queue")
+        if args.point == "setup":
+            return setup()
         return check(args.point, args.pr, args.head, args.issue)
     if args.command == "batch":
         deprecated("batch")

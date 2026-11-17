@@ -49,7 +49,8 @@ gatekeeper.md holds the gatekeeper's policy, a fenced `yaml` block under `## Pol
 keeps the prose for people and agents: why a path is critical, how to judge a finding, the
 risk criteria in words. A project without gatekeeper.md may keep the block under loop.md's
 `## Settings` for now: `approvals.py` reads it there with a deprecation line, and refuses a
-project with both, since two sources of the bar would drift. `approvals.py` reads these files,
+project with both, since two sources of the bar would drift. `approvals.py check setup` is a consumer's gate on a pack upgrade: it reads the policy this way and
+scans the repo's mise config and workflows for a pack script run without `uv run` (README § Upgrading the pack). `approvals.py` reads these files,
 and issue-tracker.md, from the base's copy on `origin/<base>`, never the checkout's: the base the
 PR a command acts on merges onto, the ref `land` builds on (`check`, `land`, `local-ci <pr>`,
 `approve merge`, `delegate`, `brief`), else the default branch. `land` fetches the base before
