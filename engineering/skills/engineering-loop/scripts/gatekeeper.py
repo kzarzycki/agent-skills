@@ -2306,7 +2306,8 @@ def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
 # `<virtual_path>/skills/`. The tag's own copy of the rule sits in one of SCRIPTS, the gatekeeper's file or, before
 # the split, approvals.py's.
 PACK_REPO = "kzarzycki/agent-skills"
-PACK_TAG = re.compile(r"engineering-v\d+\.\d+\.\d+")
+PACK_TAG = re.compile(r"engineering-v(\d+)\.(\d+)\.(\d+)")
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
 PIN_FILES = ("apm.yml", "apm.lock.yaml")
 ANNOTATIONS = __import__("__future__").annotations.compiler_flag
 VENDORED = re.compile(r"\.[^/]+/skills/(.+)")
@@ -2339,6 +2340,7 @@ def pin_target(pull: dict[str, Any]) -> str | None:
     the pack's vendored skill files, and every vendored file in it equals the tag's byte for byte (by blob SHA, a hash
     of the bytes; a removed one is one the tag lacks, and one main's own lock lists); else None. The lock at the head names the target: its pack
     dependency's `resolved_ref`, whose `resolved_commit` must be the tag's commit, with apm.yml pinning that ref; a
+    `resolved_ref` that is a full commit SHA names the release tag at that commit (sha_tag); a
     vendored file is one either side's lock lists among the pack's `deployed_files`. The tag is read from the pack's
     repository, never from the PR's tree, which its author controls. Any read that fails, or a file list past the
     one REST gives: None, so main's rule judges, as before."""
@@ -2353,8 +2355,11 @@ def pin_target(pull: dict[str, Any]) -> str | None:
         head = pinned_pack(file_at(pull["headRefOid"], "apm.lock.yaml"))
         if head is None or total > len(changes):
             return None
-        tag, commit, virtual, deployed = head
-        if not PACK_TAG.fullmatch(tag) or not pins(file_at(pull["headRefOid"], "apm.yml"), tag):
+        ref, commit, virtual, deployed = head
+        tag = sha_tag(ref) if COMMIT_SHA.fullmatch(ref) else ref
+        if tag is None or not PACK_TAG.fullmatch(tag):
+            return None
+        if not pins(file_at(pull["headRefOid"], "apm.yml"), ref):
             return None
         base = pinned_pack(file_at(pull["baseRefOid"], "apm.lock.yaml"))
         released = tag_tree(PACK_REPO, tag)
@@ -2397,6 +2402,17 @@ def pin_target(pull: dict[str, Any]) -> str | None:
         elif want not in files or files[want][1] != change.get("sha"):
             return None
     return tag
+
+
+def sha_tag(sha: str) -> str | None:
+    """The release tag (PACK_TAG) of PACK_REPO whose commit is `sha`, the highest version when several are, or None
+    when none is: one read of the pack's tag list."""
+    found = [
+        (tuple(int(part) for part in match.groups()), name)
+        for name, commit in repo_tags(PACK_REPO).items()
+        if (match := PACK_TAG.fullmatch(name)) and commit.lower() == sha.lower()
+    ]
+    return max(found)[1] if found else None
 
 
 def pinned_pack(lock: str | None) -> tuple[str, str, str, list[str]] | None:
@@ -3826,6 +3842,7 @@ PORTS = {
         "commit_checks",  # (ref) -> {name: {conclusion, url, id}} of the newest run of each check on the commit
         "job_log",  # (job) -> a check run's job log
         "commit_tree",  # (sha) -> the commit's tree SHA
+        "repo_tags",  # (repo) -> {name: commit} of every tag of `repo`
         "tag_tree",  # (repo, tag) -> (commit, {path: (mode, blob)}) of tag `tag` of `repo`, or None when it has none
         "file_at",  # (ref, path, repo=None) -> the file's text at ref, of `repo` or this one, or None when absent
     ),
@@ -3912,6 +3929,7 @@ label, assign = through("tracker", "label"), through("tracker", "assign")
 pull_request, current_pr = through("forge", "pull_request"), through("forge", "current_pr")
 pr_changes, merged_pull = through("forge", "pr_changes"), through("forge", "merged_pull")
 tag_tree, file_at = through("forge", "tag_tree"), through("forge", "file_at")
+repo_tags = through("forge", "repo_tags")
 merge_base, diff_lines = through("forge", "merge_base"), through("forge", "diff_lines")
 tree, head_pushed = through("forge", "tree"), through("forge", "head_pushed")
 required_checks, default_branch = (

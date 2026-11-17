@@ -102,6 +102,11 @@ def bump(
             else None
         ),
     )
+    monkeypatch.setattr(
+        approvals,
+        "repo_tags",
+        lambda repo: dict(tags or {TAG: TAGGED}) if repo == approvals.PACK_REPO else {},
+    )
     paths = [found["filename"] for found in changed]
     paths += [found["previous_filename"] for found in changed if "previous_filename" in found]
     return tuple(paths)
@@ -155,7 +160,7 @@ def test_a_pr_touching_other_files_reads_nothing_more(monkeypatch: pytest.Monkey
     def unread(*_args: Any) -> None:
         raise AssertionError("no forge read for a PR that is no pin bump")
 
-    for name in ("pr_changes", "file_at", "tag_tree"):
+    for name in ("pr_changes", "file_at", "tag_tree", "repo_tags"):
         monkeypatch.setattr(approvals, name, unread)
     assert refused(gate(MID, ("apm.lock.yaml", "src/app.py"), monkeypatch))
     assert refused(gate(MID, (), monkeypatch))
