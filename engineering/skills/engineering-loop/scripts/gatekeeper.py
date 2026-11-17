@@ -2380,6 +2380,7 @@ def armoured(value: str) -> str:
     body = "".join(value.split())
     lines = [body[i : i + 70] for i in range(0, len(body), 70)]
     return "\n".join(
+        # pragma: allowlist nextline secret
         ["-----BEGIN OPENSSH PRIVATE KEY-----", *lines, "-----END OPENSSH PRIVATE KEY-----"]
     )
 
