@@ -12212,3 +12212,40 @@ def test_start_for_another_host_never_reads_a_local_checkout_at_its_path(
         host_id="far", pr=7,
     )  # fmt: skip
     assert ran == [None]
+
+
+def test_an_unposted_report_of_a_named_repo_worker_posts_to_that_repo(tmp_path, monkeypatch):
+    """Outside a checkout, a worker started with ``--pr a/b#7`` that replies UNPOSTED REPORT gets its
+    report posted on a/b's PR #7, never on the cwd's repository."""
+    og = FakeOmnigent(reply="UNPOSTED REPORT\nHead: abc\n")
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def gh(*args, **kw):
+        calls.append(args)
+        if args[:2] == ("repo", "view"):
+            raise omnigent_agent.Fail("gh repo view: fatal: not a git repository")
+        if args[0] == "api" and any(str(a).startswith("body=") for a in args):
+            return "https://github.com/a/b/pull/7#issuecomment-9\n"
+        return "{}"
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    pr = omnigent_agent.pr_ref("a/b#7")
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r", None, 0, pr=pr)
+    omnigent_agent.wait(og, sid, tmp_path / "r.md", pr=pr)
+    posts = [c for c in calls if any(str(a).startswith("body=") for a in c)]
+    assert posts and posts[0][1] == "repos/a/b/issues/7/comments", calls
+
+
+def test_reap_merged_takes_an_owner_repo_pr(monkeypatch):
+    """``reap --merged --pr a/b#7`` gets past argument parsing (exit 2 is argparse's refusal)."""
+    monkeypatch.setattr(
+        omnigent_agent, "Omnigent", lambda: (_ for _ in ()).throw(omnigent_agent.Fail("parsed"))
+    )
+    try:
+        code = omnigent_agent.main(["reap", "--merged", "--pr", "a/b#7"])
+    except SystemExit as e:
+        code = e.code
+    assert code != 2
