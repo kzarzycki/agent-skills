@@ -647,7 +647,7 @@ author can't be read counts, named so, since a missed landing costs more than on
 The first head seen for a repo is only stored, so a start reports no old merge; with `--console` it
 is kept in the state (`heads`), so a restart reports a landing made while it was down, and only
 that one. A workspace outside a checkout is not watched; a failed read is logged once and tried
-again. The lead's words play no part, so `route` and `lead.md` stay as they are.
+again. The event is for whoever owes the step after a landing (the chief of staff under `--console`), not for other leads: they read the new base on their next fetch, since a notice wakes each with its whole context. The lead's words play no part, so `route` and `lead.md` stay as they are.
 
 **`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
 state file, an events log, status labels, a progress deadline, settled events kept across

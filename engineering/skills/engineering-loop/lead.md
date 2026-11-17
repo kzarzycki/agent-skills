@@ -232,6 +232,7 @@ steps run says, which also gives your own run's recipe.
      heads in a conflict comment, `check merge` and the verifier brief print `unforced merge
      of <base>: land merges heads itself (lead.md step 8); this pass is avoidable`: a brief
      telling you to merge main after each landing is wrong, so leave the next one unmerged.
+   - A landing is told to the lead that owns the PR, by `land`'s exit and its `Landed` comment, and to nobody else: don't relay it to other leads. Each wake re-reads that lead's whole context, and a lead that needs the new base reads it when it next fetches.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
      `## Evidence`, keeping the `Token estimate:` line and adding below it the `Tokens spent:` line
      that `python3 <orchestrating-agents' folder>/scripts/omnigent_agent.py usage <session>...`
