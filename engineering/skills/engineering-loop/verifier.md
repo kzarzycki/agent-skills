@@ -127,9 +127,10 @@ yourself, keeping standards and spec as separate axes.
   itself; it changes CI permissions, secrets, branch protection or the loop's own approval
   rules; or it changes what users see in a significant way the spec did not ask for, or
   asked for only vaguely, so the owner would be surprised. loop.md § Risk criteria, where it
-  has one, adds the project's own. Anything else is low. `verifier: true` in the policy's
-  `risk` (docs/agents/gatekeeper.md) lets a low change merge without the owner, so judge it on the diff, not on
-  how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
+  has one, adds the project's own. Anything else is low. With `verifier: true` in the policy's
+  `risk` (docs/agents/gatekeeper.md) your `Risk:` line rates the change, and the policy's `levels` say what each
+  rating needs at merge (by default a high change waits for the owner's go, a low one for the gates alone), so
+  judge it on the diff, not on how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls.
 - **A run the sandbox refuses.** A gate, mutation or instance run the sandbox won't let you
   make (a lock or path it can't write, such as a read-only heavy-slot lock) ends in a question
