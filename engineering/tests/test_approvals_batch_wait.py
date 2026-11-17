@@ -10,7 +10,6 @@ from approvals_harness import (
     GITHUB_RULE,
     approvals,
     git_in,
-    lands,
     loop_md,
 )
 
