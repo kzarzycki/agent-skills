@@ -42,8 +42,22 @@ NOTICE = (
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 SEPARATORS = {"&&", "||", ";", "|", "&", "|&", ";;", "(", ")", "\n"}
 HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\1")
-# the leading words a segment's real command follows (as the issue lists them)
-PREFIXES = {"nohup", "exec"}
+# words a segment's real command follows: shell keywords and grouping, and wrappers that run the
+# rest of the line as it is
+KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "nohup", "exec"}
+# wrappers that run the command after their own options, by the options that take a value
+WRAPPERS = {
+    "env": {"-u", "--unset", "-C", "--chdir"},
+    "time": {"-f", "--format", "-o", "--output"},
+    "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T", "--user", "--group"},
+    "xargs": {"-n", "-I", "-P", "-L", "-d", "-a", "-s", "-E", "--max-args", "--max-procs"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"},
+}
+SHELLS = {"bash", "sh", "zsh", "dash"}
+SHELL_DEPTH = 3  # nested ``sh -c`` strings judged; deeper ones are allowed
+# pytest's reruns of the last failures read .pytest_cache, which a cloud clone has none of
+LAST_FAILED = {"--lf", "--last-failed", "--ff", "--failed-first"}
+LEADING_CD = re.compile(r"[ \t]*cd[ \t]+((?:'[^']*'|\"[^\"]*\"|[^\s;&|'\"])+)[ \t]*(?:&&|;)[ \t]*")
 # pytest options that take the next word as their value, so it is no test path
 PYTEST_VALUED = {
     "-k",
@@ -83,8 +97,8 @@ UV_VALUED = {
     "--env-file",
     "--package",
     "--index",
+    "--from",
 }
-TIMEOUT_VALUED = {"-s", "--signal", "-k", "--kill-after"}
 LAUNCHER = Path("skills") / "orchestrating-agents" / "scripts" / "omnigent_agent.py"
 
 
@@ -148,10 +162,22 @@ def segments(command: str) -> list[list[str]]:
     return [p for p in parts if p]
 
 
-def strip_leading(words: list[str]) -> tuple[list[str], bool]:
-    """The words after a segment's leading ``cd <dir>``, env assignments, ``timeout`` (with its
-    options and duration), ``nohup`` and ``exec``, and whether a ``LOOP_HOST_RUN=<reason>``
-    assignment was among them."""
+def chdir(here: Path | None, target: str | None) -> Path | None:
+    """The directory ``cd <target>`` moves to from ``here``; None when it can't be known (no
+    target, ``-``, a variable or a substitution), and then nothing after it is judged."""
+    if here is None or not target or target == "-" or "$" in target or "`" in target:
+        return None
+    path = Path(os.path.expanduser(target))
+    if str(path).startswith("~"):
+        return None
+    return Path(os.path.normpath(path if path.is_absolute() else here / path))
+
+
+def strip_leading(words: list[str], here: Path | None) -> tuple[list[str], bool, Path | None]:
+    """The words after a segment's leading ``cd <dir>``, env assignments, shell keywords (``if``,
+    ``then``, ``do``, ``!``, ``{`` and the like), ``nohup``, ``exec``, ``command`` and the wrappers
+    in ``WRAPPERS`` with their options (and ``timeout``'s duration); whether a
+    ``LOOP_HOST_RUN=<reason>`` assignment was among them; and the directory the rest runs in."""
     host = False
     i = 0
     while i < len(words):
@@ -161,17 +187,40 @@ def strip_leading(words: list[str]) -> tuple[list[str], bool]:
             host |= name == HOST_RUN and bool(value.strip())
             i += 1
         elif word == "cd":
+            here = chdir(here, words[i + 1] if i + 1 < len(words) else None)
             i += 2
-        elif word in PREFIXES:
+        elif word in KEYWORDS:
             i += 1
-        elif word == "timeout":
+        elif word == "command":  # ``command -v`` leaves ``-v`` first, which is no run
             i += 1
-            while i < len(words) and words[i].startswith("-"):
-                i += 2 if words[i] in TIMEOUT_VALUED else 1
-            i += 1  # the duration
+            while i < len(words) and words[i] == "-p":
+                i += 1
+        elif word in WRAPPERS:
+            valued = WRAPPERS[word]
+            i += 1
+            while i < len(words) and words[i].startswith("-") and words[i] != "-":
+                if words[i] == "--":
+                    i += 1
+                    break
+                i += 2 if words[i] in valued else 1
+            if word == "timeout":
+                i += 1  # the duration
         else:
             break
-    return words[i:], host
+    return words[i:], host, here
+
+
+def shell_string(words: list[str]) -> str | None:
+    """The command string of ``bash|sh|zsh|dash [options] -c <string>``, else None."""
+    if not words or Path(words[0]).name not in SHELLS:
+        return None
+    i = 1
+    while i < len(words) and words[i][:1] in "-+":
+        word = words[i]
+        if not word.startswith("--") and "c" in word[1:]:
+            return words[i + 1] if i + 1 < len(words) else None
+        i += 2 if word in ("-o", "+o") else 1
+    return None
 
 
 def is_test_path(word: str) -> bool:
@@ -179,22 +228,28 @@ def is_test_path(word: str) -> bool:
     return word.split("::", 1)[0].endswith(".py")
 
 
-def heavy_pytest(args: list[str]) -> bool:
-    """A pytest run is heavy unless every argument names a test file or node id (options aside)
-    and there is no ``-n`` (xdist), which only a suite needs."""
-    paths: list[str] = []
+def heavy_pytest(args: list[str], here: Path) -> bool:
+    """A pytest run is heavy when no word names a test file or node id, when a word is an existing
+    directory (a suite), or with ``-n`` (xdist) or a rerun of the last failures (``--lf``, ``--ff``).
+    An option's value never counts either way."""
+    named = False
     i = 0
     while i < len(args):
         word = args[i]
         if word == "-n" or word.startswith("--numprocesses") or re.fullmatch(r"-n\S+", word):
             return True
+        if word in LAST_FAILED:
+            return True
         if word in PYTEST_VALUED:
             i += 2
             continue
         if not word.startswith("-"):
-            paths.append(word)
+            if is_test_path(word):
+                named = True
+            elif (here / word).is_dir():
+                return True
         i += 1
-    return not paths or not all(is_test_path(p) for p in paths)
+    return not named
 
 
 def python_m_pytest(words: list[str]) -> list[str] | None:
@@ -204,10 +259,16 @@ def python_m_pytest(words: list[str]) -> list[str] | None:
 
 
 def after_uv_run(words: list[str]) -> list[str]:
-    """The command ``uv run [options] <cmd>`` runs, else ``words`` unchanged."""
-    if len(words) < 2 or Path(words[0]).name != "uv" or words[1] != "run":
+    """The command ``uv run``, ``uv tool run`` or ``uvx`` runs (past their options), else ``words``."""
+    name = Path(words[0]).name if words else ""
+    if name == "uv" and words[1:2] == ["run"]:
+        i = 2
+    elif name == "uv" and words[1:3] == ["tool", "run"]:
+        i = 3
+    elif name == "uvx":
+        i = 1
+    else:
         return words
-    i = 2
     while i < len(words) and words[i].startswith("-"):
         if words[i] == "--":
             i += 1
@@ -216,18 +277,19 @@ def after_uv_run(words: list[str]) -> list[str]:
     return words[i:]
 
 
-def heavy(words: list[str]) -> bool:
-    """Whether one segment's command (its leading words already stripped) is a heavy run."""
+def heavy(words: list[str], here: Path) -> bool:
+    """Whether one segment's command (its leading words already stripped), run in ``here``, is a
+    heavy run."""
     words = after_uv_run(words)
     if not words:
         return False
     prog = Path(words[0]).name
     args = words[1:]
     if (pytest_args := python_m_pytest(words)) is not None:
-        return heavy_pytest(pytest_args)
+        return heavy_pytest(pytest_args, here)
     if prog == "pytest" or prog == "py.test":
-        return heavy_pytest(args)
-    if prog == "mise" and args[:1] == ["run"]:
+        return heavy_pytest(args, here)
+    if prog == "mise" and args[:1] in (["run"], ["r"]):
         tasks = [a for a in args[1:] if not a.startswith("-")]
         return any(t.startswith(("check", "test")) for t in tasks)
     if prog == "make":
@@ -253,6 +315,40 @@ def heavy(words: list[str]) -> bool:
     return False
 
 
+def find_heavy(command: str, cwd: Path, depth: int = 0) -> Path | None:
+    """The directory a heavy segment of ``command`` runs in, inside a loop repo (``loop_repo``),
+    following each ``cd`` from ``cwd`` and judging a ``sh -c`` string as a command of its own; None
+    when there is none. A segment after a ``cd`` it can't follow is not judged."""
+    here: Path | None = cwd
+    for words in segments(command):
+        rest, host, here = strip_leading(words, here)
+        if host or here is None or not rest:
+            continue
+        if (inner := shell_string(rest)) is not None:
+            if depth < SHELL_DEPTH and (found := find_heavy(inner, here, depth + 1)):
+                return found
+            continue
+        if heavy(rest, here) and loop_repo(here) is not None:
+            return here
+    return None
+
+
+def leading_cds(command: str, cwd: Path) -> tuple[str, Path]:
+    """``command`` without its leading ``cd <dir> &&`` (or ``;``) steps, and the directory they
+    end in, starting from ``cwd``."""
+    here = cwd
+    while found := LEADING_CD.match(command):
+        try:
+            target = shlex.split(found.group(1))[0]
+        except ValueError:  # an unclosed quote: the cd stays in the command
+            break
+        moved = chdir(here, target)
+        if moved is None:
+            break
+        here, command = moved, command[found.end() :]
+    return command, here
+
+
 def launcher(root: Path) -> str:
     """Where orchestrating-agents' launcher is for this repository: the consumer's deployed skill,
     this pack's own copy beside the hook, else a placeholder naming it."""
@@ -269,10 +365,14 @@ def launcher(root: Path) -> str:
 
 
 def refusal(command: str, cwd: Path, root: Path) -> str:
-    """The reason the hook prints: the ``claude-cloud-run`` call for this exact command, and the fallback."""
-    run = command.strip()
-    if cwd != root:  # the cloud session runs at the checkout's root
-        run = f"cd {shlex.quote(os.path.relpath(cwd, root))} && {run}"
+    """The reason the hook prints: the ``claude-cloud-run`` call for this exact command on the
+    checkout ``root`` its heavy run lands in, and the fallback. The cloud session runs at the
+    checkout's root, so a leading ``cd`` goes, and one into a subdirectory of ``root`` stays as a
+    relative one."""
+    rest, start = leading_cds(command.strip(), cwd)
+    run = rest.strip()
+    if start != root and start.is_relative_to(root):
+        run = f"cd {shlex.quote(os.path.relpath(start, root))} && {run}"
     call = (
         f"python3 {shlex.quote(launcher(root))} claude-cloud-run --checkout {shlex.quote(str(root))}"
         f" -- {shlex.quote(run)}"
@@ -284,6 +384,11 @@ def refusal(command: str, cwd: Path, root: Path) -> str:
         f"  {call}\n"
         f"If claude-cloud-run fails, or the run needs this host (a device, a `host` gate step), run it with"
         f" the reason as a prefix: {HOST_RUN}=<reason> {command.strip()}"
+        + (
+            "\nThe cloud clone has no `.pytest_cache`, so `--lf` or `--ff` there runs the full selection."
+            if LAST_FAILED & set(re.findall(r"--[\w-]+", command))
+            else ""
+        )
     )
 
 
@@ -298,19 +403,16 @@ def verdict(payload: dict, env: dict[str, str]) -> tuple[int, str]:
     if not isinstance(command, str) or not command.strip():
         return 0, ""
     cwd = Path(payload.get("cwd") or os.getcwd())
-    root = loop_repo(cwd)
-    if root is None:
-        return 0, ""
     parts = segments(command)
     if parts and parts[0][0].startswith(HOST_RUN + "=") and parts[0][0].partition("=")[2].strip():
         return 0, ""  # the whole command starts with the fallback prefix
-    for words in parts:
-        rest, host = strip_leading(words)
-        if not host and heavy(rest):
-            if not env.get(RUNNER):
-                return 0, NOTICE
-            return 2, refusal(command, cwd, root)
-    return 0, ""
+    place = find_heavy(command, cwd)
+    root = loop_repo(place) if place else None
+    if root is None:
+        return 0, ""
+    if not env.get(RUNNER):
+        return 0, NOTICE
+    return 2, refusal(command, cwd, root)
 
 
 def main() -> int:

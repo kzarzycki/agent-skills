@@ -79,6 +79,7 @@ def test_it_refuses_tracked_changes_and_an_unpushed_head_before_any_session_exis
     err = capsys.readouterr().err
     assert "git push" in err
     assert ("is not on origin/main" if unpushed else "has tracked changes (a.txt)") in err
+    assert "LOOP_HOST_RUN=<reason> pytest" in err  # the host fallback too (verifier m4)
     assert og.sessions == {}  # no session was made
     assert not (checkout / ".worktrees").exists()
 
@@ -177,3 +178,26 @@ def test_a_host_child_is_told_the_prefix_and_a_cloud_child_or_a_lead_is_not(
     og = CloudFake()
     sid, _ = omnigent_agent.start(og, "claude-cloud", "c", "do X", tmp_path / "c.md", None, 0)
     assert note not in omnigent_agent.text_of(og.sessions[sid][1])
+
+
+@pytest.mark.parametrize("where", ["client", "launch"])
+def test_any_failure_of_the_route_exits_with_its_own_code_and_the_fallback(
+    checkout: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    where: str,
+) -> None:
+    """The verifier's m3: an exception that is no Fail (a missing Omnigent config, a write that
+    fails) is still the route's failure, never read as the command's exit 1."""
+
+    def broken(*_a: object, **_k: object) -> None:
+        raise FileNotFoundError("~/.omnigent/config.yaml")
+
+    if where == "client":
+        monkeypatch.setattr(omnigent_agent, "Omnigent", broken)
+    else:
+        cloud(monkeypatch, "REPORT\nEXIT: 0")
+        monkeypatch.setattr(omnigent_agent, "cloud_run_brief", broken)
+    assert cloud_run(checkout, "pytest") == FAILED
+    err = capsys.readouterr().err
+    assert "FileNotFoundError" in err and "LOOP_HOST_RUN=<reason> pytest" in err

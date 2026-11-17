@@ -3192,24 +3192,27 @@ def git_out(root: Path, *args: str) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
-def run_head(checkout: Path) -> tuple[Path, str, str, str, str]:
+def run_head(checkout: Path, command: str = "") -> tuple[Path, str, str, str, str]:
     """The checkout's root, branch, remote, remote branch and HEAD a cloud run clones, refusing
     before any session exists what a cloud session can't see: tracked changes, a detached HEAD, or a
-    HEAD its branch's remote doesn't hold, since the session clones from the remote."""
+    HEAD its branch's remote doesn't hold, since the session clones from the remote. Each refusal
+    names the host fallback for ``command``, as any other failed route does."""
     root = checkout_root(str(checkout))
     if not root:
-        raise cloud_run_failed(f"claude-cloud-run: {checkout} is not inside a checkout")
+        raise cloud_run_failed(f"claude-cloud-run: {checkout} is not inside a checkout", command)
     path = Path(root)
     if changed := tracked_changes(path):
         listed = ", ".join(line.split("\t")[0][3:] for line in changed[:5])
         raise cloud_run_failed(
             f"claude-cloud-run: {path} has tracked changes ({listed}), which a cloud session never sees:"
-            " commit them, `git push`, and run it again"
+            " commit them, `git push`, and run it again",
+            command,
         )
     branch = git_out(path, "symbolic-ref", "--short", "HEAD")
     if not branch:
         raise cloud_run_failed(
-            f"claude-cloud-run: {path} has a detached HEAD: check out a branch, `git push` it, and run it again"
+            f"claude-cloud-run: {path} has a detached HEAD: check out a branch, `git push` it, and run it again",
+            command,
         )
     remote = git_out(path, "config", f"branch.{branch}.remote") or "origin"
     merge = git_out(path, "config", f"branch.{branch}.merge").removeprefix("refs/heads/") or branch
@@ -3231,7 +3234,8 @@ def run_head(checkout: Path) -> tuple[Path, str, str, str, str]:
     if not on_remote:
         raise cloud_run_failed(
             f"claude-cloud-run: HEAD {head[:12]} is not on {remote}/{merge}, which the cloud session clones:"
-            f" `git push {remote} {branch}`, and run it again"
+            f" `git push {remote} {branch}`, and run it again",
+            command,
         )
     return path, branch, remote, merge, head
 
@@ -3277,7 +3281,31 @@ def cloud_run(
     """Run ``command`` in a Claude cloud session on ``checkout``'s HEAD and return its exit code,
     else ``CLOUD_RUN_FAILED`` with the reason and the host fallback. ``launch`` runs the launcher's
     own ``run`` (``command``'s argv), which writes the session's report to the report path."""
-    root, branch, remote, merge, head = run_head(checkout)
+    root, branch, remote, merge, head = run_head(checkout, command)
+    try:
+        return cloud_run_route(root, branch, remote, merge, head, command, timeout, launch, server)
+    except Interrupted:
+        raise  # the caller stopped it: no route failure
+    except Exception as e:  # any failure of the route is the route's, never the command's
+        if isinstance(e, Fail) and e.code == CLOUD_RUN_FAILED:
+            raise
+        raise cloud_run_failed(
+            f"claude-cloud-run: the cloud route failed: {reason(e)}", command
+        ) from e
+
+
+def cloud_run_route(
+    root: Path,
+    branch: str,
+    remote: str,
+    merge: str,
+    head: str,
+    command: str,
+    timeout: float,
+    launch: Callable[[list[str]], int],
+    server: str,
+) -> int:
+    """``cloud_run`` past its refusals: the launch dir, the brief, the ``run`` and the ``EXIT:`` line."""
     try:
         place = cloud_run_dir(root, branch, remote, merge)
     except Fail as e:

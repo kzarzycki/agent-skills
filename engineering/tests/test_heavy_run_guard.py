@@ -66,6 +66,31 @@ HEAVY = [
     "exec cargo test",
     "git status\npytest -q",
     "(cd x && pytest)",
+    # a rerun of the last failures, which a cloud clone has no cache for, and xdist
+    "pytest --lf",
+    "pytest --ff tests/test_a.py",
+    # wrappers, keywords and nested shells it sees through (#1234 verifier m2)
+    "env FOO=1 pytest",
+    "env -u HOME pytest",
+    "time pytest",
+    "time -p mise run check",
+    "command pytest",
+    "sudo pytest",
+    "sudo -u ci cargo test",
+    "uvx pytest",
+    "uvx --from pytest pytest",
+    "uv tool run pytest",
+    "! pytest",
+    "{ pytest; }",
+    "if true; then pytest; fi",
+    "while true; do pytest; done",
+    "mise r check",
+    "xargs pytest",
+    "xargs -n 1 pytest",
+    'bash -c "pytest"',
+    "sh -c 'uv run pytest'",
+    "zsh -lc 'cd x && pytest'",
+    "bash -c \"sh -c 'pytest'\"",
 ]
 LIGHT = [
     "pytest tests/test_a.py",
@@ -89,6 +114,18 @@ LIGHT = [
     "grep -rn 'mise run check' docs",
     "cat > x.sh <<'EOF'\npytest\nmise run check\nEOF",
     "ls # pytest",
+    # a plugin option's value is no test path (#1234 verifier m1)
+    "pytest tests/test_a.py --timeout 30",
+    "pytest tests/test_a.py --log-cli-level INFO",
+    "pytest tests/test_a.py --reruns 2",
+    "pytest tests/test_a.py --html report.html",
+    "pytest tests/test_a.py no-such-dir",
+    # a wrapper or a shell string around a light run stays light
+    "command -v pytest",
+    "env pytest tests/test_a.py",
+    "bash -c 'git status'",
+    "sh -c 'pytest tests/test_a.py'",
+    "bash -c",
 ]
 
 
@@ -238,3 +275,62 @@ def test_the_pack_registers_the_hook_on_bash_for_claude() -> None:
     # no plugin.json "hooks" field: APM would then deploy the hook to every target, Codex too
     plugin = json.loads((HOOKS.parent / ".claude-plugin" / "plugin.json").read_text())
     assert "hooks" not in plugin
+
+
+def test_the_hook_parses_on_the_oldest_python3_a_consumer_has() -> None:
+    """It runs on the consumer's own ``python3`` (macOS ships 3.9), not this repo's 3.14."""
+    import ast
+
+    ast.parse(SCRIPT.read_text(), feature_version=(3, 9))
+
+
+def test_a_word_that_is_an_existing_directory_makes_a_pytest_run_heavy(repo: Path) -> None:
+    (repo / "tests").mkdir()
+    assert refused("pytest tests/test_a.py tests", repo) is not None
+    assert refused("pytest tests/test_a.py --basetemp tests", repo) is None  # a value never counts
+
+
+def test_a_last_failed_rerun_says_the_cloud_clone_has_no_cache(repo: Path) -> None:
+    for command in ("pytest --lf", "pytest --ff tests/test_a.py", "pytest --last-failed"):
+        reason = refused(command, repo)
+        assert reason is not None and "no `.pytest_cache`" in reason, command
+    assert "pytest_cache" not in (refused("pytest", repo) or "")
+
+
+def loop_checkout(path: Path, loop: bool = True) -> Path:
+    path.mkdir(parents=True)
+    (path / ".git").mkdir()
+    if loop:
+        (path / "docs" / "agents").mkdir(parents=True)
+        (path / "docs" / "agents" / "loop.md").write_text("Cloud worker: claude-cloud\n")
+    return path
+
+
+def test_a_cd_into_another_checkout_is_judged_and_run_there(repo: Path, tmp_path: Path) -> None:
+    """The verifier's M1: the cd's target picks the repo for both the loop.md check and --checkout."""
+    plain = loop_checkout(tmp_path / "plain", loop=False)
+    assert refused(f"cd {plain} && uv run pytest", repo) is None
+    other = loop_checkout(tmp_path / "other")
+    reason = refused(f"cd {other} && uv run pytest", repo)
+    assert reason is not None and f"--checkout {other} -- 'uv run pytest'" in reason
+    (other / "pkg").mkdir()
+    reason = refused(f"cd {other}/pkg && pytest", repo)
+    assert reason is not None and f"--checkout {other} -- 'cd pkg && pytest'" in reason
+    # from outside any loop repo, a cd into one is refused
+    assert refused(f"cd {other} && pytest", plain) is not None
+    # a relative cd into a linked worktree (a .git file) runs on that worktree, with no cd
+    tree = repo / ".worktrees" / "pr-7"
+    tree.mkdir(parents=True)
+    (tree / ".git").write_text("gitdir: elsewhere\n")
+    (tree / "docs" / "agents").mkdir(parents=True)
+    (tree / "docs" / "agents" / "loop.md").write_text("Cloud worker: claude-cloud\n")
+    reason = refused("cd .worktrees/pr-7 && mise run check", repo)
+    assert reason is not None and f"--checkout {tree} -- 'mise run check'" in reason
+    # a cd into the checkout's own root goes from the call, as the session runs there
+    reason = refused(f"cd {repo} && pytest", repo / "pkg")
+    assert reason is not None and f"--checkout {repo} -- pytest" in reason
+
+
+def test_a_cd_it_cannot_follow_allows_what_comes_after(repo: Path) -> None:
+    for command in ("cd $WORK && pytest", "cd - && pytest", "cd && pytest", "cd `pwd` && pytest"):
+        assert refused(command, repo) is None, command
