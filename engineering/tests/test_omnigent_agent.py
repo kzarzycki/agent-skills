@@ -648,6 +648,23 @@ def test_a_brief_landing_in_the_grace_with_nothing_pending_at_the_deadline_is_ke
     assert list(og.sessions) == ["s0"] and og.archived == []
 
 
+def test_a_host_over_capacity_past_the_wait_exits_1_through_main_and_makes_no_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "capacity", lambda **_: (False, "cpu 2% idle"))
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0.05)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    assert "over capacity for 0s: cpu 2% idle" in capsys.readouterr().err
+    assert og.sessions == {}
+
+
 def test_a_runner_launch_error_is_no_start_and_is_abandoned_after_the_grace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_grace: None
 ) -> None:
