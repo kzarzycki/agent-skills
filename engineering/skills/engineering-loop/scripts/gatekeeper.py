@@ -289,7 +289,7 @@ whether classic branch protection requires one, so a PR is a candidate there onl
 section, the project's word that its base requires none (a ruleset that does picks the GitHub merge queue, which a
 cloud session refuses); a draft is refused, and an evicted PR stays
 ready, each said, since GitHub changes a draft only over GraphQL. Off a cloud session only `where` is new.
-`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip.
+`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip. `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its 2-hour ceiling; any other checkout keeps the refusal.
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
 printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
@@ -544,7 +544,7 @@ from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, NoReturn
 
 try:
     import yaml
@@ -828,6 +828,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "levels": {
         level: {"spec": Choice(SPEC_ACTIONS), "merge": Choice(MERGE_ACTIONS)} for level in LEVELS
     },
+    "incubating": {"append_paths": list, "waive": list},
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
@@ -1120,6 +1121,68 @@ def matches(terms: dict[str, Any], labels: set[str], paths: list[str] | None) ->
         if any(fnmatch.fnmatch(path, glob) for path in paths or []):
             return f"path `{glob}`"
     return None if paths is None and terms.get("paths") else False
+
+
+# an incubating feature's PR and its tracking epic carry this label (SKILL.md § Incubating)
+INCUBATING = "incubating"
+# the body line naming the epic that tracks the feature an incubating PR belongs to
+INCUBATES = re.compile(r"^[ \t>*-]*Incubates:[ \t]+#(\d+)\b", re.MULTILINE | re.IGNORECASE)
+# the requirements `incubating.waive` may name; an eligible PR stops owing each (incubation)
+WAIVABLE = ("evidence", "proof_run", "verifier", "full_gate", "coverage")
+
+
+def incubation(
+    pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None
+) -> tuple[set[str], list[str]]:
+    """The requirements an incubating PR doesn't owe, and a line when its label can't stand. The label is a claim, like
+    SCOPED: without an `incubating` policy section it means nothing, and with one it holds only while the PR is eligible
+    (ineligible), else the PR owes the full loop. `incubating.waive` names the waived requirements (WAIVABLE; default all)."""
+    policy = settings(loop).get(INCUBATING)
+    if policy is None or INCUBATING not in names(pull):
+        return set(), []
+    waive = policy.get("waive", list(WAIVABLE))
+    if unknown := [name for name in waive if name not in WAIVABLE]:
+        raise Refused(
+            f"{source(loop)}'s `incubating.waive` names {', '.join(unknown)}; it may name {', '.join(WAIVABLE)}"
+        )
+    if why := ineligible(pull, issues, loop, policy.get("append_paths", [])):
+        return set(), [
+            f"PR #{pull['number']} is labelled `{INCUBATING}`, but {why}: it owes the full loop"
+        ]
+    return set(waive), []
+
+
+def ineligible(
+    pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None, appendable: list[str]
+) -> str | None:
+    """Why the PR can't be incubating, or None: its body names an open epic labelled `incubating` (`Incubates: #<n>`);
+    every file is added, or modified with no line deleted and matching `append_paths` (a file new features append to);
+    and the change doesn't rate high or critical (risk). A deleted or renamed file, a removed line, a file outside the
+    list, or a file list the gate can't read in full is existing code touched, which the full loop covers."""
+    found = INCUBATES.search(QUOTED.sub("", pull["body"] or ""))
+    if not found:
+        return "its body has no `Incubates: #<epic>` line"
+    try:
+        epic = issue_node(int(found[1]))
+    except (Refused, subprocess.CalledProcessError):
+        return f"epic #{found[1]} can't be read"
+    if INCUBATING not in names(epic) or epic.get("state") != "OPEN":
+        return f"#{found[1]} is not an open issue labelled `{INCUBATING}`"
+    files = pull["files"]
+    if (files.get("totalCount") or 0) > len(files["nodes"]):
+        return "GitHub can't give every file the PR changes"
+    for file in files["nodes"]:
+        kind, path = file.get("changeType"), file["path"]
+        if kind == "ADDED" or (
+            kind == "MODIFIED"
+            and file.get("deletions") == 0
+            and any(fnmatch.fnmatch(path, glob) for glob in appendable)
+        ):
+            continue
+        return f"it changes existing code (`{path}`, {str(kind).lower()})"
+    if why := risk(pull, issues, loop):
+        return f"it rates high or critical ({why})"
+    return None
 
 
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
@@ -2207,16 +2270,19 @@ def proofs(
         # where a lead hands the PR over, so a wrong keyword is fixed before the PR reaches the landing queue
         if loop is not None:
             found += linked(pull, issues, loop)
-    found += demo_form(pull)
+    waived, lapsed = incubation(pull, issues, loop) if point == "merge" else (set(), [])
+    found += lapsed
+    if "evidence" not in waived:
+        found += demo_form(pull)
     if point != "merge":
         return found
     where = f"PR #{pull['number']}"
     evidence = section(pull["body"] or "", "Evidence")
-    if not evidence.strip():
+    if "evidence" not in waived and not evidence.strip():
         found.append(f"{where}: its body has no `## Evidence` section with content")
     if loop is not None:
         found += linked(pull, issues, loop)
-    if revert is None and not exempt(pull, loop):
+    if revert is None and "verifier" not in waived and not exempt(pull, loop):
         verdicts = passes(pull)
         found += (unreviewed := reviewed(where, pull, loop, verdicts))
         # only on a verdict that would land, and tier first, since risk() reads the reviews again
@@ -3805,6 +3871,14 @@ class Refused(Exception):
     """A reason to stop with exit 1, printed as is."""
 
 
+class Drifted(Refused):
+    """judge_with_base's refusal of code or policy here that is not `origin/<base>`'s, which `land --wait` can catch up on."""
+
+    def __init__(self, message: str, base: str) -> None:
+        super().__init__(message)
+        self.base = base
+
+
 class MachineFault(Refused):
     """The gate exited with loop.md's `machine_exit` twice on one tree in `land`: the machine isn't ready."""
 
@@ -4438,16 +4512,20 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
     if not wait:
         return landing(pr, only)[0]
     global held_tip
-    deadline, said, spoke, heard = time.monotonic() + CEILING, "", 0.0, ""
+    # a land run again on the base's new code (caught_up) keeps the first run's ceiling; the clock is system-wide
+    deadline = float(os.environ.pop(DEADLINE_ENV, "0")) or time.monotonic() + CEILING
+    said, spoke, heard = "", 0.0, ""
     github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
     missed = 0  # network failures in a row, of landing() and of the lock poll
     while True:
         held_tip = None
-        out = io.StringIO()
+        out, drifted = io.StringIO(), None
         try:
             with contextlib.redirect_stdout(out):
                 code, again = landing(pr, only)
             missed = 0
+        except Drifted as exc:
+            drifted = exc
         except subprocess.CalledProcessError as exc:
             # one dropped connection is no reason to give up a wait that may have been hours long
             missed += 1
@@ -4466,6 +4544,8 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
                 print(out.getvalue(), end="", flush=True)
                 spoke = time.monotonic()
             said, heard = state, out.getvalue()
+        if drifted:
+            caught_up(drifted, deadline)
         if not again:
             return code
         nap = poll_seconds()
@@ -4504,6 +4584,39 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
                 missed = 0
                 if tip != [held_tip[1]]:
                     break
+
+
+DEADLINE_ENV = "LOOP_LAND_DEADLINE"
+
+
+def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
+    """A waiting land whose base moved its code or policy (another land merged a change to them): fast-forward a clean
+    checkout of the base to the fetched `origin/<base>` and run this land again from that code, in place (#1280), since
+    the wait was the point and nobody reads its log. Any other checkout (another branch, a detached head, an edit of a
+    tracked file, a fast-forward refused or one that moves nothing) keeps the refusal, since a PR's own copy must never judge it."""
+    base, root = drifted.base, toplevel()
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, text=True, check=False
+        )
+
+    before = run("rev-parse", "HEAD").stdout.strip()
+    if (
+        run("symbolic-ref", "-q", "HEAD").stdout.strip() != f"refs/heads/{base}"
+        or run("status", "--porcelain", "--untracked-files=no").stdout.strip()
+        or run("merge", "-q", "--ff-only", f"refs/remotes/origin/{base}").returncode
+        # a drift the fast-forward left in place (a running script the base doesn't track) would re-run land forever
+        or run("rev-parse", "HEAD").stdout.strip() == before
+    ):
+        raise drifted
+    tip = run("rev-parse", "--short=12", "HEAD").stdout.strip()
+    print(
+        f"{drifted} -- this checkout fast-forwarded to origin/{base} ({tip}): land runs again from its code",
+        flush=True,
+    )
+    os.environ[DEADLINE_ENV] = repr(deadline)
+    os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
 def poll_seconds() -> float:
@@ -4742,9 +4855,10 @@ def judge_with_base(base: str, fetch: bool = False) -> None:
                 " it by its own rules; check out the base"
             )
     if differ := base_drift(base):
-        raise Refused(
+        raise Drifted(
             f"{', '.join(differ)} differ{'s' * (len(differ) == 1)} from origin/{base}'s: a PR's own copy would judge it;"
-            f" run from the base's code (a checkout of origin/{base})"
+            f" run from the base's code (a checkout of origin/{base})",
+            base,
         )
 
 

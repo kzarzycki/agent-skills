@@ -6,6 +6,9 @@ request itself when it has none), each on its own branch in a worktree of your o
 design, wireframes included for a UI, and delegate the rest. Every heavy run, a worker's or
 your own (a suite to sort failures, a build, an e2e run), goes where SKILL.md, Where heavy
 steps run says, which also gives your own run's recipe.
+Your own test or check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
+refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
+`claude-cloud-run` could not make or one that needs this host.
 
 Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
 edits and commits go to a Sonnet worker: your context is re-read on every call (about 150k
@@ -377,6 +380,16 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    merge list of `none`, or none at all, means no acceptance runs here, and your report says
    `After merge: none`. A failure is reverted the same way, and the fix
    forward is a new change through this loop, never a patch on main.
+   With loop.md's `Verifier session: reuse`, send the spec's After merge list to the kept
+   verifier right after the merge, before you finish its session, since that session already
+   knows the change and a new agent would learn it again: it runs each line on the merged
+   default branch and reports each result, and you read that report as a worker's.
+   Otherwise, or once that verifier's session has ended, run the list as above.
+   **Epic handoff note.** When the merge closed an epic's last open sub-issue (step 8), once the
+   After merge list has run, comment on the epic: each story's PR and merge commit, each spec's
+   acceptance checks (the acceptance command with its issue, SKILL.md, Acceptance checks), the
+   After merge results, and what the next nightly must confirm (SKILL.md, Nightly), so the owner
+   reads one note on what landed and what is still to be confirmed. The epic closes as step 8 says.
 10. **Clean up** once acceptance has run, pass or fail. Close the agents, and stop only the
    processes you started, as worker.md, Report says, since a shared pattern kills other
    agents' runs too. For every
