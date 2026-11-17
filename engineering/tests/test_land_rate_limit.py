@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import subprocess
 import time
 from typing import Any
@@ -39,7 +40,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 def test_a_primary_limit_waits_for_the_reset_then_carries_on(calls: dict[str, Any]) -> None:
     calls["replies"] = [refuse("gh: API rate limit exceeded (HTTP 403)"), "ok"]
     assert github.gh("api", "x") == "ok"
-    assert 100 < calls["sleeps"][0] <= 125
+    assert 100 < sum(calls["sleeps"]) <= 125 and max(calls["sleeps"]) <= 60
 
 
 def test_a_secondary_limit_waits_for_retry_after(calls: dict[str, Any]) -> None:
@@ -54,7 +55,7 @@ def test_a_secondary_limit_waits_for_retry_after(calls: dict[str, Any]) -> None:
 def test_a_secondary_limit_without_retry_after_backs_off_from_60(calls: dict[str, Any]) -> None:
     calls["replies"] = [refuse("secondary rate limit (HTTP 403)")] * 2 + ["ok"]
     assert github.gh("api", "x") == "ok"
-    assert calls["sleeps"] == [60, 120]
+    assert calls["sleeps"] == [60, 60, 60]
 
 
 def test_another_403_fails_at_once(calls: dict[str, Any]) -> None:
@@ -106,3 +107,46 @@ def test_a_held_lock_at_an_unchanged_tip_is_polled_without_gh(
     assert approvals.land(1, wait=True) == approvals.WAITING
     assert 1 <= len(ran) <= 6  # one landing() per RECHECK, not one per 0.01 s poll
     assert len(listed) > len(ran) * 3
+
+
+def test_land_wait_turns_the_rate_limit_wait_on_and_sleeps_in_printing_slices(
+    calls: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(github, "wait_until", None)  # land() alone sets it
+    calls["replies"] = [refuse("secondary rate limit (HTTP 403) Retry-After: 150"), "ok"]
+    monkeypatch.setattr(
+        approvals, "landing", lambda pr, only=False: (int(github.gh("api", "x") != "ok"), False)
+    )
+    assert approvals.land(1, wait=True) == 0
+    assert calls["sleeps"] == [60, 60, 30]  # none of them silent past wait-for's 300 s
+    assert capsys.readouterr().err.count("GitHub rate limit, waiting until") == 3
+
+
+def test_a_graphql_limit_waits_for_the_graphql_reset(calls: dict[str, Any]) -> None:
+    calls["replies"] = [refuse("API rate limit exceeded (HTTP 403)"), "ok"]
+    github.gh("api", "graphql", "-f", "query=x")
+    assert ["gh", "api", "rate_limit", "--jq", ".resources.graphql.reset"] in calls["gh"]
+
+
+def test_a_held_lock_is_asked_of_github_again_after_recheck_and_said_each_minute(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    now, ran = [0.0], []
+    monkeypatch.setattr(approvals.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        approvals.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)
+    )
+
+    def landing(pr: Any, only: bool = False) -> tuple[int, bool]:
+        ran.append(now[0])
+        approvals.held_tip = ("refs/heads/loop-landing/main", "abc")
+        print("another land holds the landing lock")
+        return approvals.WAITING, True
+
+    monkeypatch.setattr(approvals, "landing", landing)
+    monkeypatch.setattr(approvals, "git", lambda *a: "abc\trefs/heads/loop-landing/main\n")
+    assert approvals.land(1, wait=True) == approvals.WAITING
+    assert all(b - a == approvals.RECHECK for a, b in itertools.pairwise(ran))
+    assert len(ran) > 2
+    # the log is never silent for wait-for's 300 s: the held state is said again every SLOT_SAY_SECONDS
+    assert capsys.readouterr().out.count("another land holds") >= approvals.CEILING // 120

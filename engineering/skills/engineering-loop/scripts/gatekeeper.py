@@ -3933,7 +3933,7 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
     if not wait:
         return landing(pr, only)[0]
     global held_tip
-    deadline, said, spoke, checked = time.monotonic() + CEILING, "", 0.0, 0.0
+    deadline, said, spoke, checked, heard = time.monotonic() + CEILING, "", 0.0, 0.0, ""
     github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
     while True:
         held_tip, checked = None, time.monotonic()
@@ -3948,7 +3948,7 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
             if state != said or time.monotonic() - spoke >= SLOT_SAY_SECONDS:
                 print(out.getvalue(), end="", flush=True)
                 spoke = time.monotonic()
-            said = state
+            said, heard = state, out.getvalue()
         if not again:
             return code
         if time.monotonic() + POLL > deadline:
@@ -3956,6 +3956,11 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
             return WAITING
         while time.monotonic() + POLL <= deadline:
             time.sleep(POLL)
+            if (
+                heard and time.monotonic() - spoke >= SLOT_SAY_SECONDS
+            ):  # wait-for's stall check reads silence as a hang
+                print(heard, end="", flush=True)
+                spoke = time.monotonic()
             # the lock still held at the same tip, and its holder checked lately: nothing to ask GitHub
             if not held_tip or time.monotonic() - checked >= RECHECK:
                 break
