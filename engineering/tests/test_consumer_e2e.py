@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -145,6 +146,7 @@ def _write_manifest(path: Path, dependency: dict[str, str]) -> None:
     )
 
 
+@pytest.mark.needs_tool("apm")
 def test_local_package_packs_and_installs_for_claude_and_codex(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path)
     package_copy = tmp_path / "engineering"
@@ -170,6 +172,7 @@ def test_local_package_packs_and_installs_for_claude_and_codex(tmp_path: Path) -
     _assert_deployed_inventory(consumer)
 
 
+@pytest.mark.needs_tool("apm")
 def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path)
     source = tmp_path / "source"

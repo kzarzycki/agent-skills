@@ -6,23 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from approvals_harness import (
-    HEAD,
-    TREE,
-    added,  # noqa: F401
-    approvals,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
-    loop_md,
-    others_open,  # noqa: F401
-    pull,
-    pushed,  # noqa: F401
-    refs,  # noqa: F401
-    required,  # noqa: F401
-)
+from approvals_harness import HEAD, TREE, approvals, loop_md, pull
 
 SYNC = loop_md("land:\n  merge_commit_heads:\n    - sync/*\n")
 BOTH = loop_md(

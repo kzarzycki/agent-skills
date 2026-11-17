@@ -13,23 +13,13 @@ from approvals_harness import (
     LOOP,
     TRACKER,
     add,
-    added,  # noqa: F401
     approvals,
     approved,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
     git_in,
-    graphql_answers,  # noqa: F401
     held,
-    hub,  # noqa: F401
     labelled,
     lands,  # noqa: F401
-    others_open,  # noqa: F401
     pull,
-    pushed,  # noqa: F401
-    refs,  # noqa: F401
-    required,  # noqa: F401
 )
 
 RULE = "labels:\n  - area:web\npaths:\n  - app/**\n"

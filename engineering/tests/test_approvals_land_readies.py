@@ -9,21 +9,11 @@ from typing import Any
 
 import pytest
 from approvals_harness import (
-    added,  # noqa: F401
     approvals,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
     git_in,
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
     lands,  # noqa: F401
     note,
-    others_open,  # noqa: F401
-    pushed,  # noqa: F401
     record,
-    refs,  # noqa: F401
-    required,  # noqa: F401
     status,
 )
 
