@@ -7029,10 +7029,15 @@ def test_the_loop_contract_names_the_file_a_lead_reads_and_a_decisions_target_is
 ):
     skills = Path(omnigent_agent.__file__).resolve().parents[2]
     for doc in ("engineering-loop/SKILL.md", "engineering-loop/lead.md", "chief-of-staff/SKILL.md"):
-        assert (
-            "`Standing decisions:" in (skills / doc).read_text()
-            or "Standing decisions:" in (skills / doc).read_text()
-        )
+        assert "Standing decisions:" in (skills / doc).read_text()
+    # only the new text has these: the lead reads the remote copy, the chief of staff writes its own section
+    assert (
+        "git show origin/<default branch>:<path>"
+        in (skills / "engineering-loop/lead.md").read_text()
+    )
+    cos = (skills / "chief-of-staff/SKILL.md").read_text()
+    assert "git show origin/<default branch>:<path>" in cos
+    assert "under `## Chief of staff decisions`" in cos
 
 
 def test_a_stop_order_still_posts_to_the_sessions(
