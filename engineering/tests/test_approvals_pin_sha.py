@@ -46,6 +46,14 @@ def test_a_sha_no_release_tag_points_at_keeps_mains_rule(monkeypatch: pytest.Mon
     assert refused(gate(MID, files, monkeypatch))
 
 
+def test_a_sha_ref_other_than_the_tags_commit_keeps_mains_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # the lock's resolved_commit is the tag's, but the ref it pins is a SHA no release tag points at
+    files = bump(monkeypatch, ref=UNTAGGED, head_lock=lock(UNTAGGED, TAGGED))
+    assert refused(gate(MID, files, monkeypatch))
+
+
 def test_a_sha_only_another_packages_tag_points_at_keeps_mains_rule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
