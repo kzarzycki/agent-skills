@@ -34,9 +34,13 @@ design, wireframes included for a UI, and delegate the rest.
 2. **Spec.** Write the spec into the intent's issue with the Spec skill (SKILL.md,
    Practice). The default, `to-spec`, you follow by reading its `SKILL.md`: the model
    cannot invoke it, and its template keeps every section, one line each for a small
-   change. Choose the test seams yourself and state them, with the acceptance examples for
-   step 9 and the reference each one checks against, in the order of loop.md § Acceptance
-   references. Where gatekeeper.md has a `signoff` rule, end the spec with a line `Sign-off:
+   change. Choose the test seams yourself and state them, with the acceptance examples in
+   the spec's `## Acceptance` as two lists, each line naming the reference it checks against,
+   in the order of loop.md § Acceptance references: `### Before merge`, what the proof (step 6)
+   and the verifier run on the PR branch, and `### After merge`, only the checks that need the
+   merged default branch or a deployed environment (step 9), or `none`. A spec with one flat
+   `## Acceptance` list reads as all Before merge, since a spec written before the split needs
+   no rewrite. Where gatekeeper.md has a `signoff` rule, end the spec with a line `Sign-off:
    owner` or `Sign-off: none`: `owner` where a rule matches or the change needs a person to
    try it in use. Add the size label, then check who approves it (SKILL.md, Approvals and
    proof). A spec gatekeeper.md's `spec.auto` list covers (`bug`, a `Found while #n`
@@ -69,10 +73,13 @@ design, wireframes included for a UI, and delegate the rest.
    that closes the spec (`Implements` where the owner signs it off, SKILL.md, Approvals and
    proof) with the branch's first push, made when you cut it (an empty commit when nothing
    is written yet), since the open PR is the claim another lead's search finds
-   (github.md, Review trail; board: `Build`), and run `uv run <this skill's folder>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
+   (github.md, Review trail; board: `Build`). Its body carries your guess at the run's spend,
+   `Token estimate: ~<N> (<basis>)`, e.g. `~2M, mostly two verifier passes`: the lead, its
+   workers and verifiers together, cache reads included. It is for the owner's information and
+   nothing reads it, so a rough number beats a careful one. Then run `uv run <this skill's folder>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
    that exit it assigns the issue's approver where no one is assigned, and the PR its
    issue's assignee (github.md, Assignee). Keep one scratchpad markdown for the run: the work items and what
-   blocks what, environment facts, gates, the model of each agent, and every worktree and
+   blocks what, environment facts, gates, the model and session id of each agent, and every worktree and
    branch the run creates (step 10 removes them). Agents get its path, never its content.
    The spec is the only issue for the work itself; SKILL.md, Triage places what the PR
    leaves unfixed, and the PR says `Part of` instead of `Closes` when that leaves the spec
@@ -109,7 +116,7 @@ design, wireframes included for a UI, and delegate the rest.
    abort), push it, start what the merge unblocked, and tell the live workers the new
    head, plus any step loop.md § Proof on a branch says a schema or build change needs.
 6. **Prove** before review: a worker drives the real thing on the PR branch the way
-   loop.md § Proof on a branch says, runs the spec's acceptance examples there as far as a worktree can, and
+   loop.md § Proof on a branch says, runs the spec's Before merge list there, and
    reports; you read the report. Each proof log names the commit it ran on (worker.md,
    Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
 7. **Verify** (board: `Verify`). A worker report or fix-round gate log naming a test that passed only on its
@@ -208,8 +215,9 @@ design, wireframes included for a UI, and delegate the rest.
 8. **Land** once the last verdict is triaged with no core finding open; the merge itself
    waits for the landing rule (SKILL.md):
    - Merge `origin/main` into the PR only when `land` comments that it conflicts with main
-     (`Conflicts in the landing batch`): `land` merges every head onto main itself and gates
-     the result, so a PR behind main lands without a merge. When you do merge it in, rerun the
+     (`Conflicts in the landing batch`): both merge queues test each head on top of main (the
+     local one on the host, GitHub's in its `merge_group` CI), so a PR behind main lands
+     without a merge. When you do merge it in, rerun the
      gates and get a verifier pass on the merge (step 7), since `land` merges only a head with
      a verdict of its own. A head with an earlier head's tree (`git rev-parse <sha>^{tree}`), as
      after a reword of commit messages only, keeps that head's verdict (unsatisfied or with
@@ -223,7 +231,14 @@ design, wireframes included for a UI, and delegate the rest.
      of <base>: land merges heads itself (lead.md step 8); this pass is avoidable`: a brief
      telling you to merge main after each landing is wrong, so leave the next one unmerged.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
-     `## Evidence`. Where the change is high risk, the merge approval is also the owner's
+     `## Evidence`, keeping the `Token estimate:` line and adding below it the `Tokens spent:` line
+     that `python3 <orchestrating-agents' folder>/scripts/omnigent_agent.py usage <session>...`
+     prints last, naming each top-level session your notes list (a verifier on another host, a
+     worker started outside your tree), since your session's record totals only its own tree,
+     children included. A
+     session Omnigent has no usage for is named as uncounted rather than guessed, since a guess
+     would read as a measurement. Information only, like the estimate; on another backend, write
+     `Tokens spent: not counted (<backend>)`. Where the change is high risk, the merge approval is also the owner's
      go on the head that lands (SKILL.md, Approvals and proof): `approvals.py approve merge
      <pr> --head <sha> --by owner` naming the head you showed them, when they say it in your
      session; you never give it, and `approved:merge` into the default branch is none. Into a
@@ -241,21 +256,24 @@ design, wireframes included for a UI, and delegate the rest.
      newest verifier review, satisfied with no core finding open, covers it, and every review
      thread is resolved (SKILL.md, Review trail on the PR). Start it as a background
      command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work
-     on other items meanwhile. It lands every landable PR into main as one gated batch, not
-     only yours (SKILL.md, Approvals and proof; `approvals.py`'s docstring has each step), and
+     on other items meanwhile. It lands every landable PR into main through main's merge
+     queue, the local one or GitHub's, not only yours (SKILL.md, Approvals and proof;
+     `approvals.py`'s docstring has each step), and
      exit 0 means your PR merged, with a `Landed` comment naming the base commit, the tree and
      the gate, and its kept `--pr` worker sessions finishing in the background (its log is named; `reap --merged
      --pr <n>` finishes them again). Exit 1 names what stopped your PR, and the fix is yours:
      - a missing proof, with nothing on the PR changed: add the proof;
      - a conflict with main or the PRs merged before it: merge `origin/main` in, as the first
        bullet says;
-     - an eviction, red alone twice: the PR is a draft again with its gate log's tail in a
-       comment; fix it like a check red after ready, and `land <pr>` marks it ready again;
+     - an eviction, red alone twice in the local queue or red twice on one head in GitHub's:
+       the PR is a draft again with the failing log's tail in a comment; fix it like a check
+       red after ready, and `land <pr>` marks it ready again;
      - `main itself is red`: nobody is evicted, since the fault is on main; fix main first
        (Rules for every role, Revert first);
      - a merge GitHub refused: as the bullet below says.
      Exit 3 is what `--wait` doesn't clear: the owner's go, or 2 hours of another land's lock
-     (one whose PR already merged is broken at once) or of pending required checks. With gatekeeper.md's `land` section it squashes, signs and pushes
+     (one whose PR already merged is broken at once), of pending required checks, of your PR
+     in GitHub's queue or of main's checks on the commit its red group was built on. With gatekeeper.md's `land` section it squashes, signs and pushes
      each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what
@@ -265,9 +283,10 @@ design, wireframes included for a UI, and delegate the rest.
      owner's go carries over only merges of the base whose verdict says `Logic change: none`
      (SKILL.md, Approvals and proof), and after the verdict on the new head `land` runs again.
    - Land every approved PR at once: start `land --wait` on each as soon as its proofs hold,
-     never after another PR's merge. Whichever runs first takes the lock and lands every
-     landable PR in one batch; the others wait for the lock and find their PR merged (exit 0)
-     or land what is left. Host load is no reason to serialize: one gate covers the batch.
+     never after another PR's merge. In the local queue whichever runs first takes the lock and
+     lands every landable PR in one batch; the others wait for the lock and find their PR merged
+     (exit 0) or land what is left. In GitHub's each enqueues what is landable, and the queue
+     groups the entries. Host load is no reason to serialize: one gate covers the batch.
    - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge
      go on a head), which the owner's `approve merge --by owner` removes: a question card
      alone holds nothing, since `land` batches every PR that is ready.
@@ -322,11 +341,13 @@ design, wireframes included for a UI, and delegate the rest.
    (SKILL.md, Revert first): `git revert --no-edit <merge sha>` on a new branch off a
    freshly fetched `origin/main`, then a PR whose body says `Reverts #<pr>` and
    `Part of #<spec>`, so `approvals.py` finds the spec, through this loop; reopen every issue
-   the PR closed with `gh issue reopen <n> --comment "Reverted in #<revert pr>: <why>."`. Then accept on
-   the owner's instance, through a worker whose report you read: bring the
-   instance up on the merged main the way loop.md § Proof on a branch says, then check each new result on
-   real data against a reference the code did not produce, in the order of loop.md § Acceptance references. The
-   spec's acceptance examples name which. A failure is reverted the same way, and the fix
+   the PR closed with `gh issue reopen <n> --comment "Reverted in #<revert pr>: <why>."`. Then run only
+   the spec's After merge list, since the proof and the verifier already ran the Before merge
+   list on the head the merge carries: each line against the reference it names, in the order of loop.md §
+   Acceptance references, through a worker whose report you read when a line needs an
+   environment brought up (loop.md § Proof on a branch) or a long run, else yourself. An After
+   merge list of `none`, or none at all, means no acceptance runs here, and your report says
+   `After merge: none`. A failure is reverted the same way, and the fix
    forward is a new change through this loop, never a patch on main.
 10. **Clean up** once acceptance has run, pass or fail. Close the agents, and stop only the
    processes you started, as worker.md, Report says, since a shared pattern kills other
@@ -357,6 +378,11 @@ inbox notice, so watch your children as your backend's file in orchestrating-age
 and for a child that still owes its report a detached `supervise --registry` that `run` and
 `send` arm). Supervise with a process the host runs, not an in-session background command or
 session cron, which die with your session and lose every wake they owed.
+A child under a background `run --notify`, `send --notify` or `wait --notify` wakes you once when
+it ends its turn with its report in: by Omnigent's notice when the child is your own sub-agent or you
+subscribe to it, else by the command's `--notify` line, which also reports every other ending (a
+timeout, a failure) (orchestrating-agents' backends/omnigent.md, One wake per child). Don't poll or
+`watch` it for the other. Without `--notify`, expect Omnigent's notice and the command's exit both.
 Your own long runs (a gate, a land, a live check) start detached the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, since Claude Code's low-memory reaper stops
 in-session background shells. Start each with `LOOP_NOTIFY` naming your session (orchestrating-agents'

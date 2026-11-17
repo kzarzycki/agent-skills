@@ -60,7 +60,9 @@ yourself, keeping standards and spec as separate axes.
   and lead's too. A gate, repro or e2e run that may wait on a lock
   or a queue, or outlast one tool call, starts detached (in its own session) with its pid, output and exit code
   in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; echo "run $$" > <log>; echo "lock <lock>" >> <log>; flock <lock> sh -c "echo \$\$ > <lock>; echo locked; exec \"\$@\"" sh <cmd> >> <log> 2>&1; echo "exit $?" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --pid $$ --notify' >/dev/null 2>&1`
-  (Perl's `setsid`, since macOS has no `setsid` command; the `run <pid>` line marks where this
+  (a build, test or mutation `<cmd>` on a host is `uv run <this skill's folder>/scripts/approvals.py heavy <cmd>`,
+  so it runs under the host's heavy wrapper: SKILL.md, One heavy gate per host slot;
+  Perl's `setsid`, since macOS has no `setsid` command; the `run <pid>` line marks where this
   run's log starts, so `wait-for --pid` never takes a previous run's `exit` line from a reused
   log path; `lock` and `locked` bracket the wait on the lock, so `wait-for` reads a run still queued behind another's gate as waiting, not as out of budget: its own budget starts at `locked`, and past 2 hours of waiting it ends "gave up waiting on the gate lock", which is no verdict on the change, so report the check as not yet run; the last step tells the session in `$LOOP_NOTIFY`, when set, how it ended),
   and is waited on up to a total budget you state, in as few calls as you can: each call is
@@ -83,7 +85,7 @@ yourself, keeping standards and spec as separate axes.
   on a run still pending, since nothing wakes an idle session and a run left queued can apply
   its mutation after you have gone.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
-  run the spec's acceptance examples on it: the UI in a headless browser (worker.md, Report,
+  run the spec's Before merge list on it: the UI in a headless browser (worker.md, Report,
   says how: your own headless browser, never one attached over CDP unless the check needs its logins), the API with its client,
   each result checked against the reference the spec names. Then read the server's log
   for the time you drove it; a traceback or error there is a finding even when the page
@@ -146,9 +148,13 @@ yourself, keeping standards and spec as separate axes.
   necessary, such as a log that shows a new failure, with a `New in the answer: <the log>` line
   naming that log; the verifier script hands no later question to the lead without that line
   (exit 1).
-- **An acceptance line you did not run** through the path a user takes (the spec's acceptance
-  examples, on the instance when one is up) blocks `SATISFIED: yes`, whatever the reason:
-  mark each acceptance line run (with its evidence), failing or not run. A line not run ends
+- **An acceptance line you did not run** through the path a user takes (the spec's Before
+  merge list, on the instance when one is up; a flat `## Acceptance` list is all Before merge)
+  blocks `SATISFIED: yes`, whatever the reason:
+  mark each Before merge line run (with its evidence), failing or not run. List each After
+  merge line under an `After merge:` line in the report (`After merge: none` when the spec has
+  none), never counted as run or not run, since it needs the merged default branch or a
+  deployed environment and the lead runs it after landing (lead.md step 9). A line not run ends
   the turn as a run the sandbox refuses does, in `<report>.question` naming the run the lead
   must make, and every other run the pass needs, listed as above (after an answer, only a run it
   made necessary, under a `New in the answer:` line); `approvals.py` refuses a satisfied report with a `Not run:` line. Probing a
