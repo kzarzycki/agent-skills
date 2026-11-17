@@ -144,6 +144,24 @@ def test_no_record_before_the_timeout_gates_on_the_host_and_lands(
     assert cloud["pushes"][-1] == f":refs/heads/loop-land/{tree_of_asked(cloud)}"
 
 
+def test_a_tree_that_already_has_its_passes_asks_no_session_and_pushes_nothing(
+    lands: dict[str, Any], cloud: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy(lands, ON)
+    monkeypatch.setattr(approvals, "step_pass", lambda *_a, **_k: {"exit": 0})
+    approvals.cloud_gate("a" * 40, "b" * 40)
+    assert (cloud["pushes"], cloud["asked"]) == ([], [])
+
+
+def test_the_timeout_defaults_to_the_measured_gate_with_room_for_the_first_start(
+    lands: dict[str, Any], cloud: dict[str, Any]
+) -> None:
+    policy(lands, "land:\n  gate_on: cloud")
+    lands["open"](7, {"7.txt": "7\n"})
+    assert lands["land"]()[0] == 0
+    assert sum(cloud["clock"].slept) == 2400 and approvals.CLOUD_GATE_SECONDS == 2400
+
+
 def test_a_refused_start_gates_on_the_host_at_once(
     lands: dict[str, Any], cloud: dict[str, Any]
 ) -> None:
@@ -214,7 +232,9 @@ def test_a_host_only_step_still_runs_on_the_host(
 FAKE = """import json, pathlib, sys
 log = pathlib.Path(sys.argv[0]).with_name("calls.log")
 log.open("a").write(json.dumps(sys.argv[1:]) + "\\n")
-if sys.argv[1] == "relay" and "gone" in pathlib.Path(sys.argv[0]).parent.joinpath("mode").read_text():
+mode = pathlib.Path(sys.argv[0]).parent.joinpath("mode").read_text()
+if (sys.argv[1], mode) in (("relay", "gone"), ("start", "refuse"), ("launch-dir", "nolaunch")):
+    print("no capacity", file=sys.stderr)
     sys.exit(4)
 if sys.argv[1] == "start":
     print("session-" + str(len(log.read_text().splitlines())))
@@ -273,6 +293,18 @@ def test_a_start_that_fails_says_why(
 ) -> None:
     monkeypatch.setattr(approvals, "agent_script", lambda: session["repo"] / "missing.py")
     assert "is not installed" in approvals.ask_cloud_gate("t1")
+
+
+@pytest.mark.parametrize(
+    ("mode", "said"),
+    [("refuse", "start refused: no capacity"), ("nolaunch", "no launch dir: no capacity")],
+)
+def test_a_refused_launch_or_start_says_why_and_keeps_no_session(
+    session: dict[str, Any], mode: str, said: str
+) -> None:
+    session["mode"](mode)
+    assert approvals.ask_cloud_gate("t1") == said
+    assert not (session["repo"] / ".git" / "approvals" / "cloud-gate.json").exists()
 
 
 @pytest.mark.parametrize("bad", ["-1", "'600'", "true"])
