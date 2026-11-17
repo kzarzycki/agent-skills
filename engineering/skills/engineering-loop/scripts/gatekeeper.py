@@ -21,6 +21,7 @@
     uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
+    uv run scripts/approvals.py affected-tests [--base]   # the worker's gate on a draft head: loop.md's `Affected tests:` command, else `check`; --base prints the base variable for `local-ci --record --head-proof`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
@@ -5869,6 +5870,64 @@ def heavy(words: list[str]) -> int:
     return 128 - code if code < 0 else code
 
 
+def pr_base_of_head() -> str | None:
+    """The base of the open PR whose branch is the checkout's (open_pulls), else None: a detached HEAD, no PR for it
+    yet, or a forge that doesn't answer is no PR, and the caller falls back to the default branch."""
+    with contextlib.suppress(subprocess.CalledProcessError, OSError, Refused):
+        branch = git("branch", "--show-current").strip()
+        for pull in open_pulls() if branch else []:
+            if pull.get("headRefName") == branch and pull.get("baseRefName"):
+                return str(pull["baseRefName"])
+    return None
+
+
+def affected_tests(show_base: bool = False) -> int:
+    """`affected-tests`: the worker's test run on a head, from loop.md's line `Affected tests: <command>` (the command
+    selects and runs the tests a change affects against the base it reads from the variable the line `Gate base:`
+    names, else `GATE_BASE`). The base is `git merge-base origin/<base> HEAD`, `<base>` being the base of the open PR
+    for the checked-out branch, else the default branch; a shallow clone is deepened first (deepened), as `local-ci`
+    does. Without the line it runs `mise run check`, with the variable unset, so a project that names no selector runs
+    its whole suite. Either runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its
+    exit passes through: a selector that selects nothing exits 0 itself. `--base` prints `<variable>=<merge base>`
+    and runs nothing, for `env "$(approvals.py affected-tests --base)" approvals.py local-ci --record --head-proof`,
+    the `ci: false` gate of record whose head proof's `env` names that variable. Only this verb sets the variable:
+    `land` and `local-ci` never do (gate_env), apart from a head proof's own `env` names."""
+    root = toplevel()
+    text = policy_file(root, LOOP, POLICY_BASE.get()) or ""
+    found = re.search(r"^Affected tests:[ \t]*(.+?)[ \t]*$", text, re.MULTILINE)
+    named = re.search(r"^Gate base:[ \t]*`?([^\s`]+)", text, re.MULTILINE)
+    variable = named.group(1) if named else "GATE_BASE"
+    if not re.fullmatch(r"[A-Za-z_]\w*", variable):
+        raise Refused(f"loop.md's `Gate base:` names {variable!r}, which is no variable name")
+    env = {name: value for name, value in os.environ.items() if name != variable}
+    if found is None:
+        if show_base:
+            raise Refused("loop.md has no `Affected tests:` line: there is no base to name")
+        words, sets = [*LOCAL_CI[:-1], "check"], {}
+    else:
+        _, words, sets = command_line(found.group(1).strip().strip("`"), "Affected tests")
+        base = pr_base_of_head() or base_branch(None)
+        if base is None:
+            raise Refused("no default branch to select the affected tests against: fetch origin")
+        with policy_from(base):
+            deepened(None)
+        try:
+            env[variable] = git("merge-base", f"origin/{base}", "HEAD").strip()
+        except subprocess.CalledProcessError as exc:
+            raise Refused(
+                f"no merge base of origin/{base} and HEAD: fetch origin/{base} deeper"
+            ) from exc
+        if show_base:
+            print(f"{variable}={env[variable]}")
+            return 0
+    print(f"affected-tests: {shlex.join(words)}", file=sys.stderr, flush=True)
+    try:
+        with heavy_slot("affected-tests") as (slot, _):
+            return run_heavy(words, env=env | sets | {SLOT_HELD: slot}, cwd=root)[0]
+    except OSError as exc:
+        raise Refused(f"`{words[0]}` can't run: {exc}") from None
+
+
 def ran_step(
     step: dict[str, Any],
     cwd: Path | None = None,
@@ -7639,6 +7698,7 @@ def main(argv: list[str]) -> int:
     releasing.add_argument("issue", type=int)
     hooking = commands.add_parser("commit-msg")
     hooking.add_argument("message", type=Path)
+    commands.add_parser("affected-tests").add_argument("--base", action="store_true")
     wrapping = commands.add_parser("heavy")
     wrapping.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
     args = parser.parse_args(aliased(argv))
@@ -7669,6 +7729,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return report_json(args.report) if args.json else report_check(args.report)
     if args.command == "commit-msg":  # the same: git hands the hook its message file
         return commit_msg(args.message)
+    if args.command == "affected-tests":
+        return affected_tests(args.base)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
         return heavy(args.words)
     one_repo()
