@@ -73,3 +73,6 @@ def test_a_pass_at_the_cap_that_turned_satisfied_is_not_capped() -> None:
     # a later review on another commit replaces nothing: the older commit's unsatisfied pass at the cap stays
     older = verdict_on("c" * 40, satisfied="no", heading="Verifier (claude), pass 2")
     assert approvals.capped(pull(reviews=(older, review("claude", "yes"))), 2)
+    # nor does a later pass on the same commit: its pass 2 stays unsatisfied at the cap
+    later = verdict_on(HEAD, satisfied="yes", heading="Verifier (claude), pass 3")
+    assert approvals.capped(pull(reviews=(review("claude", "no"), later)), 2)
