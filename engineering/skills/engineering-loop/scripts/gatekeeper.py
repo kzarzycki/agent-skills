@@ -2639,17 +2639,20 @@ def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] 
 
 def unforced(pull: dict[str, Any]) -> str | None:
     """The line check merge and brief print when every commit since the newest verdict's commit is a merge of the
-    base (base_merges) and land posted no CONFLICTS comment naming a head that walk passes, so nothing forced the
-    merge: land merges each head onto the base itself and gates that, and the merge only costs a gate and a verifier
-    pass. None otherwise, a head or base tip that one fetch (fetched, in base_merges) cannot bring included, since the
-    line is advice and blocks nothing."""
+    base (base_merges) whose parents merge cleanly (merged) and land posted no CONFLICTS comment naming a head that
+    walk passes, so nothing forced the merge: land merges each head onto the base itself and gates that, and the
+    merge only costs a gate and a verifier pass. None otherwise, a head or base tip that one fetch (fetched, in
+    base_merges) cannot bring included, since the line is advice and blocks nothing."""
     verdicts = passes(pull)
     if isinstance(verdicts, str) or not verdicts or not (verified := verdicts[-1][0]):
         return None
     if verified == pull["headRefOid"].lower():
         return None
     walked = base_merges(pull, verified)
-    if isinstance(walked, str):
+    # a merge whose parents conflict was forced, CONFLICTS comment or not
+    if isinstance(walked, str) or any(
+        isinstance(merged(first, second), str) for _, first, second in walked
+    ):
         return None
     earlier = {first for _, first, _ in walked}
     try:
