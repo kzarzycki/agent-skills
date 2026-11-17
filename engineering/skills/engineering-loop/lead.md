@@ -475,8 +475,11 @@ supervisor|session <id>|pr <n>|ci|until <UTC time>`, pasted as printed (`Waits: 
 `Waits: #<pr>`, `Waits: CI`, `Waits: until 2026-10-21T23:17Z`): it refuses a malformed wait, and the supervisor reads
 that line exactly, where prose such as "waiting on the CoS spec approval" or "cloud session <id>" is only a fallback it
 can misread. `supervisor` is any wait on the chief of staff or project manager (a spec to approve, a decision), which
-they act on at once; for a wait on a session, name its full id. A child you started that ends also reaches you as news
-without a `Waits:` line, but only after the supervisor's deadline, so the line is what makes it prompt.
+they act on at once; for a wait on a session, name its full id. The line may name a set (`Waits: #12, #13 and session <id>`): the supervisor wakes you on the first failure, or when
+every member has ended, and records the successes between. A child you started that reaches a final state (`DONE`,
+`USER NEEDED`, `PARKED`, failed, archived) reaches you as news within a minute of its end, named or not, and a PR your
+wait names that merged, closed or finished its checks the same, read from GitHub; an intermediate `STILL WORKING` turn of a
+child is no end, so the line only has to name what you wait on.
 A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
 supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline
