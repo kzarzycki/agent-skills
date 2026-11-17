@@ -275,6 +275,7 @@ RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
 HTTP_SECONDS = 30.0
+LATE_BRIEF_SECONDS = HTTP_SECONDS  # the grace a missed confirm gives a brief the server still holds
 ERROR_BODY_BYTES, ERROR_BODY_SECONDS = (
     2048,
     2.0,
@@ -1906,18 +1907,21 @@ def queued(info: dict, text: str) -> bool:
 
 
 def started_late(og: Omnigent, sid: str, text: str) -> bool:
-    """Whether a session whose brief missed the confirm window started anyway: the brief waits in
-    its pending inputs, or its history holds an item past the opening ``resource_event`` (a real
-    server puts the brief first; an ``error`` item, a runner that failed to launch, is no start). Then it gets one more ``HTTP_SECONDS`` (a slow server takes a
-    POST that timed out client-side later) for the brief to appear; one that shows an item past
-    ``resource_event`` is kept. A session with neither is left to be abandoned at once."""
-
-    def past() -> bool:
-        return any(i.get("type") not in ("resource_event", "error") for i in og.items(sid))
-
-    if not (queued(og.info(sid), text) or past()):
-        return False
-    return delivered(og, sid, text, HTTP_SECONDS) or past()
+    """Whether a session whose brief missed the confirm window starts within one more
+    ``LATE_BRIEF_SECONDS`` (``HTTP_SECONDS``): a slow server takes a POST that timed out client-side later, so at the
+    deadline the brief is often neither an item nor pending yet. True once the brief shows up, or
+    the history holds an item past the opening ``resource_event`` (a real server puts the brief
+    first; an ``error`` item, a runner that failed to launch, is no start); False when none of
+    that happened by the end, however long the brief sat in the pending inputs."""
+    deadline = time.monotonic() + LATE_BRIEF_SECONDS
+    while True:
+        if delivered(og, sid, text, 0) or any(
+            i.get("type") not in ("resource_event", "error") for i in og.items(sid)
+        ):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL_SECONDS)
 
 
 def delivered(

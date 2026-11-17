@@ -359,7 +359,7 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
 - A send answers `queued`/`launching` even when the brief never arrives. The script
   counts a start only once that one line is a user message in the history, and otherwise
   abandons the session and retries once with a fresh one, titled `<title>-r<n>`.
-  Before abandoning it, if the brief waits in the session's pending inputs or the history holds an item past the opening `resource_event`, it polls once more for `HTTP_SECONDS` (a slow server takes a timed-out POST later) and keeps the session if the brief, or any item past `resource_event`, shows up; a session with an empty history and nothing pending is abandoned at once.
+  Before abandoning it, it polls one more `HTTP_SECONDS` (a slow server takes a POST that timed out client-side later, so at the deadline the brief is often neither an item nor pending yet) and keeps the session if the brief, or any item other than `resource_event` and `error`, shows up; one still empty after that is abandoned.
   A signal (a caller's `timeout`) while it confirms leaves the session unarchived, since the
   brief may be in: it prints the session id on stdout and exits with the signal's code, and
   `status <sid>` says whether to wait on that session or start another.
