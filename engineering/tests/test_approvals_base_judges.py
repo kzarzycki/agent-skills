@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +11,14 @@ import pytest
 from approvals_harness import approvals, git_in, lands  # noqa: F401
 
 LOOP = "docs/agents/loop.md"
+REAL_SCRIPTS = Path(approvals.__file__).parent  # before the fixture moves the running script
 REAL = approvals.judge_with_base  # the shared fixtures replace it per test
+
+
+def running_at(monkeypatch: pytest.MonkeyPatch, script: Path) -> None:
+    """The script file running here (RUNNING, computed at import) as `script`."""
+    monkeypatch.setattr(approvals, "__file__", str(script))
+    monkeypatch.setattr(approvals, "RUNNING", (str(script),))
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +35,7 @@ def judging(monkeypatch: pytest.MonkeyPatch, lands: dict[str, Any], pushed: None
         Path(approvals.__file__).parent.parent / "SKILL.md"
     )  # which the script reads beside itself
     (work / "SKILL.md").write_text(skill.read_text())
-    monkeypatch.setattr(approvals, "__file__", str(script))
+    running_at(monkeypatch, script)
     git_in(work, "add", "-A")
     git_in(work, "commit", "-qm", "adopt the loop")
     git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
@@ -143,7 +152,7 @@ def moved_script(judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> st
     """The running script, now at a path inside the checkout that origin's main has no file at (a PR adds or moves it)."""
     moved = judging["work"] / "scripts" / "moved_approvals.py"
     moved.write_text((judging["work"] / "scripts" / "approvals.py").read_text())
-    monkeypatch.setattr(approvals, "__file__", str(moved))
+    running_at(monkeypatch, moved)
     return "scripts/moved_approvals.py"
 
 
@@ -171,7 +180,7 @@ def test_land_and_check_merge_refuse_a_script_the_base_lacks_naming_it(
 def test_a_script_installed_outside_the_checkout_has_nothing_to_compare(
     judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(approvals, "__file__", str(tmp_path / "elsewhere" / "approvals.py"))
+    running_at(monkeypatch, tmp_path / "elsewhere" / "approvals.py")
     assert approvals.base_drift("main") == []
 
 
@@ -183,3 +192,30 @@ def test_check_merge_stops_when_it_cannot_fetch_the_base_naming_the_ref(
     git_in(judging["work"], "remote", "set-url", "origin", str(tmp_path / "gone.git"))
     with pytest.raises(approvals.Refused, match="could not fetch origin/main"):
         approvals.check("merge", 7)
+
+
+def shim_in(work: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """approvals.py loaded by path from a copy of the scripts committed to origin's main, as a checkout runs it."""
+    scripts = work / "scripts"
+    for source in REAL_SCRIPTS.glob("*.py"):
+        shutil.copy(source, scripts / source.name)
+    git_in(work, "add", "-A")
+    git_in(work, "commit", "-qm", "the scripts")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(work, "fetch", "-q", "origin")
+    monkeypatch.chdir(work)
+    spec = importlib.util.spec_from_file_location("approvals_by_path", scripts / "approvals.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_pr_that_edits_gatekeeper_py_is_judged_with_the_bases_copy(
+    judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """approvals.py runs the gatekeeper's source from the file beside it, so that file is a running file as well."""
+    shim = shim_in(judging["work"], monkeypatch)
+    assert shim.base_drift("main") == []
+    edit(judging["work"], "scripts/gatekeeper.py")
+    assert shim.base_drift("main") == ["scripts/gatekeeper.py"]
