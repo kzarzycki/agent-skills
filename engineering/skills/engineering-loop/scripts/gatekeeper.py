@@ -77,7 +77,8 @@ public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
 commit after a verdict needs one of its own; on a high-risk change (below), that pass came from the default tier, not
 one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md), since a lower tier's review is enough
-only for a change it rates low (a fallback verifier's family, `agy`, `gemini` or `same-family`, is no tier); no unresolved
+only for a change it rates low (a fallback verifier's family, `agy`, `gemini` or `same-family`, is no tier), and on a PR
+that only bumps the pack's pin, the pin target's tier rule judges that pass instead (pin_target); no unresolved
 review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
 author posted one, that embeds its videos and screenshots as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
@@ -485,6 +486,7 @@ block (SKILL.md § Settings says how it is delivered).
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import contextvars
 import fcntl
@@ -1950,7 +1952,11 @@ def proofs(
         verdicts = passes(pull)
         found += (unreviewed := reviewed(where, pull, loop, verdicts))
         # only on a verdict that would land, and tier first, since risk() reads the reviews again
-        if not unreviewed and (tier := lower(verdicts)) and (why := risk(pull, issues, loop)):
+        if (
+            not unreviewed
+            and (tier := tiered(pull, verdicts))
+            and (why := risk(pull, issues, loop))
+        ):
             found.append(
                 f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier}): a"
                 " default-tier verifier pass on the head first"
@@ -2020,6 +2026,191 @@ def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
         if number == last and (found := LOWER_TIER.search(lines["Family"]))
     ]
     return tiers[0].lower() if tiers else None
+
+
+# A PR that only bumps the engineering pack's pin (#1218): the pack's repository and release tags, the pin files apm
+# reads, and a skill file apm vendors (`.agents/skills/<skill>/...`, `.claude/skills/<skill>/...`) from the pack's
+# `<virtual_path>/skills/`. The tag's own copy of the rule sits in one of SCRIPTS, the gatekeeper's file or, before
+# the split, approvals.py's.
+PACK_REPO = "kzarzycki/agent-skills"
+PACK_TAG = re.compile(r"engineering-v\d+\.\d+\.\d+")
+PIN_FILES = ("apm.yml", "apm.lock.yaml")
+ANNOTATIONS = __import__("__future__").annotations.compiler_flag
+VENDORED = re.compile(r"\.[^/]+/skills/(.+)")
+RULE_FILES = tuple(
+    f"engineering/skills/engineering-loop/scripts/{name}"
+    for name in ("gatekeeper.py", "approvals.py")
+)
+
+
+def tiered(
+    pull: dict[str, Any], verdicts: list[tuple[str, int, dict[str, str]]] | str
+) -> str | None:
+    """lower() of the verdicts by the rule that judges this PR: the pin target's, read from its tag (pinned_rule), on
+    a PR that only bumps the pack to a released tag (pin_target), since the base's rule there is the one the pin
+    retires; main's otherwise, and wherever the tag's rule can't be read or fails."""
+    if isinstance(verdicts, str) or not verdicts or (tag := pin_target(pull)) is None:
+        return lower(verdicts)
+    rule = pinned_rule(tag)
+    if rule is None:
+        return lower(verdicts)
+    try:
+        found = rule(verdicts)
+    except Exception:  # noqa: BLE001 - a rule the tag ships that fails on these verdicts is no rule: main's judges
+        return lower(verdicts)
+    return found if found is None or isinstance(found, str) else lower(verdicts)
+
+
+def pin_target(pull: dict[str, Any]) -> str | None:
+    """The released pack tag (PACK_TAG of PACK_REPO) the PR pins, when its diff touches only the pin (PIN_FILES) and
+    the pack's vendored skill files, and every vendored file in it equals the tag's byte for byte (by blob SHA, a hash
+    of the bytes; a removed one is one the tag lacks); else None. The lock at the head names the target: its pack
+    dependency's `resolved_ref`, whose `resolved_commit` must be the tag's commit, with apm.yml pinning that ref; a
+    vendored file is one either side's lock lists among the pack's `deployed_files`. The tag is read from the pack's
+    repository, never from the PR's tree, which its author controls. Any read that fails, or a file list past the
+    one REST gives: None, so main's rule judges, as before."""
+    shaped = touched(pull)
+    if shaped is not None and (
+        not shaped or any(path not in PIN_FILES and not VENDORED.fullmatch(path) for path in shaped)
+    ):
+        return None  # most PRs, and one changing nothing: no call beyond the PR node
+    try:
+        changes = pr_changes(pull["number"])
+        total = pull["files"].get("totalCount") or 0
+        head = pinned_pack(file_at(pull["headRefOid"], "apm.lock.yaml"))
+        if head is None or total > len(changes):
+            return None
+        tag, commit, virtual, deployed = head
+        if not PACK_TAG.fullmatch(tag) or not pins(file_at(pull["headRefOid"], "apm.yml"), tag):
+            return None
+        base = pinned_pack(file_at(pull["baseRefOid"], "apm.lock.yaml"))
+        released = tag_tree(PACK_REPO, tag)
+    except (
+        subprocess.CalledProcessError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        yaml.YAMLError,
+    ):
+        return None
+    if released is None or released[0].lower() != str(commit).lower():
+        return None
+    files = released[1]
+    vendored = set(deployed) | set(base[3] if base else ())
+
+    def source(path: str) -> str | None:
+        found = VENDORED.fullmatch(path)
+        return f"{virtual}/skills/{found[1]}" if found and path in vendored else None
+
+    for change in changes:
+        path, status = change["filename"], change.get("status")
+        # a rename removes its old path, which must be a vendored file the tag lacks (a pin file is none)
+        old = change.get("previous_filename")
+        if old and status == "renamed" and ((was := source(old)) is None or was in files):
+            return None
+        if path in PIN_FILES:
+            continue
+        if (want := source(path)) is None:
+            return None
+        if status == "removed":
+            if want in files:
+                return None
+        elif want not in files or files[want][1] != change.get("sha"):
+            return None
+    return tag
+
+
+def pinned_pack(lock: str | None) -> tuple[str, str, str, list[str]] | None:
+    """The pack's (resolved_ref, resolved_commit, virtual_path, deployed_files) in an apm.lock.yaml's text, or None
+    when it has no dependency on the pack from GitHub."""
+    data = yaml.safe_load(lock) if lock else None
+    for dep in (data or {}).get("dependencies") or []:
+        if (
+            isinstance(dep, dict)
+            and dep.get("repo_url") == PACK_REPO
+            and dep.get("host", "github.com") == "github.com"
+            and dep.get("virtual_path") == "engineering"
+        ):
+            ref, commit = dep.get("resolved_ref"), dep.get("resolved_commit")
+            if isinstance(ref, str) and isinstance(commit, str):
+                return (
+                    ref,
+                    commit,
+                    "engineering",
+                    [str(path) for path in dep.get("deployed_files") or []],
+                )
+    return None
+
+
+def pins(manifest: str | None, tag: str) -> bool:
+    """Whether an apm.yml's text pins the pack at `tag`: `{git: <repo>/engineering, ref: <tag>}` or
+    `<repo>/engineering#<tag>` among its apm dependencies."""
+    data = yaml.safe_load(manifest) if manifest else None
+    entries = ((data or {}).get("dependencies") or {}).get("apm") or []
+    want = f"{PACK_REPO}/engineering"
+    return any(
+        entry == f"{want}#{tag}"
+        or (isinstance(entry, dict) and entry.get("git") == want and entry.get("ref") == tag)
+        for entry in entries
+    )
+
+
+def pinned_rule(tag: str) -> Callable[[Any], Any] | None:
+    """The tag's lower(), read from the pack's repository at `tag` (RULE_FILES, the first that defines it); None when
+    no file there defines it, so main's rule applies. Only that function runs, with the module-level names it reads,
+    each an assignment of the tag's file: the tier rule is a pure function of the verdicts, so no other code of the
+    tag (its I/O, its other checks) can change how this run judges."""
+    for path in RULE_FILES:
+        try:
+            text = file_at(tag, path, PACK_REPO)
+        except (subprocess.CalledProcessError, OSError):
+            return None
+        if text and (rule := rule_in(text)):
+            return rule
+    return None
+
+
+def rule_in(text: str) -> Callable[[Any], Any] | None:
+    """lower() of a gatekeeper source's text, built with only the module-level assignments it reads (and theirs); None
+    when the text defines no lower() of one argument or can't be built."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    defined = {
+        node.targets[0].id: node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    }
+    rule = next(
+        (node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "lower"),
+        None,
+    )
+    if rule is None or len(rule.args.args) != 1:
+        return None
+    pending: list[ast.AST] = [rule]
+    seen: set[str] = set()
+    while pending:
+        for node in ast.walk(pending.pop()):
+            if isinstance(node, ast.Name) and node.id in defined and node.id not in seen:
+                seen.add(node.id)
+                pending.append(defined[node.id])
+    # in the file's order, so a name is assigned before one that reads it
+    needed = [node for name, node in defined.items() if name in seen] + [rule]
+    space: dict[str, Any] = {"re": re, "Any": Any}
+    code = ast.Module(body=needed, type_ignores=[])
+    try:
+        # annotations stay unevaluated, as under the file's own `from __future__ import annotations`
+        exec(  # noqa: S102 - a released tag's own tier rule, the pack's code as main's copy is
+            compile(code, f"<{PACK_REPO} lower>", "exec", flags=ANNOTATIONS, dont_inherit=True),
+            space,
+        )
+    except Exception:  # noqa: BLE001 - a file shape this can't rebuild: main's rule
+        return None
+    return space["lower"]
 
 
 def counts(lines: dict[str, str]) -> tuple[int, int] | None:
@@ -3344,6 +3535,8 @@ PORTS = {
         "commit_checks",  # (ref) -> {name: {conclusion, url, id}} of the newest run of each check on the commit
         "job_log",  # (job) -> a check run's job log
         "commit_tree",  # (sha) -> the commit's tree SHA
+        "tag_tree",  # (repo, tag) -> (commit, {path: (mode, blob)}) of tag `tag` of `repo`, or None when it has none
+        "file_at",  # (ref, path, repo=None) -> the file's text at ref, of `repo` or this one, or None when absent
     ),
     # a commit's statuses, newest first, each with its context, state, description, creator and creation time
     # (statuses(sha)); one set (post_status(sha, context, description, state="success")); a verdict posted as a review
@@ -3427,6 +3620,7 @@ issue_node, issues_of = through("tracker", "issue_node"), through("tracker", "is
 label, assign = through("tracker", "label"), through("tracker", "assign")
 pull_request, current_pr = through("forge", "pull_request"), through("forge", "current_pr")
 pr_changes, merged_pull = through("forge", "pr_changes"), through("forge", "merged_pull")
+tag_tree, file_at = through("forge", "tag_tree"), through("forge", "file_at")
 merge_base, diff_lines = through("forge", "merge_base"), through("forge", "diff_lines")
 tree, head_pushed = through("forge", "tree"), through("forge", "head_pushed")
 required_checks, default_branch = (
