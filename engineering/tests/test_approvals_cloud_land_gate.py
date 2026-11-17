@@ -38,7 +38,7 @@ class Clock:
         return self.now
 
     def sleep(self, seconds: float) -> None:
-        assert sum(self.slept) < 10_000, "the wait never ends"
+        assert 0 < seconds and sum(self.slept) < 10_000, "the wait never ends"
         self.slept.append(seconds)
         self.now += seconds
         self.tick(self.now)
