@@ -5,7 +5,7 @@ request itself when it has none), each on its own branch in a worktree of your o
 (loop.md § Worktree), and stories nothing blocks run at the same time. You lead the
 design, wireframes included for a UI, and delegate the rest.
 
-When the project names a standing-decisions file (the chief of staff's board), read it at the start of each real turn: a rule change reaches you there, and only a stop order is posted to your session, since each live post is a wake turn re-reading about 150k tokens of your context.
+When loop.md has a `Standing decisions: <path>` line, fetch and read that file in your checkout at the start of each real turn, both its sections (the owner's and the chief of staff's): a rule change reaches you there, and only a stop order is posted to your session, since each live post is a wake turn re-reading about 150k tokens of your context.
 
 1. **Intent.** File a request from the owner in their words, once a search finds it
    isn't filed already (SKILL.md, One concern per PR), with its category and

@@ -458,7 +458,7 @@ is only in a posted message, or nowhere. The server stamps an API post with the 
 agent that posts an unmarked message into the session on purpose; that needs the server to stamp
 each item's origin.
 
-**Broadcasting.** Only a stop order is posted live: a rule change goes to the standing-decisions file with `broadcast <message-file> --decisions FILE`, which posts to no session, since each live post is a wake turn re-reading about 150k tokens of context per lead, and an idle lead reads the file on its next real turn. `python3 scripts/omnigent_agent.py broadcast <message-file> --stop [--registry FILE]
+**Broadcasting.** Only a stop order is posted live: a rule change is added with `broadcast <message-file> --decisions FILE` as a bullet under `## Chief of staff decisions` in that file (the project file loop.md's `Standing decisions:` line names, which leads read each turn) and posted to no session, since each live post is a wake turn re-reading about 150k tokens of context per lead; `--stop` and `--decisions` exclude each other. `python3 scripts/omnigent_agent.py broadcast <message-file> --stop [--registry FILE]
 [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...]
 [--dry-run]` relays one message to every followed lead in the registry (default
 `$OMNIGENT_SUPERVISE_REGISTRY`), each `--include` session and, with `--active-hours`, every

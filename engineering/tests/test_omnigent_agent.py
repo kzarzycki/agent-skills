@@ -6997,12 +6997,42 @@ def test_a_broadcast_without_stop_writes_the_decisions_file_and_posts_to_no_sess
     assert broadcast(og, tmp_path, monkeypatch, *args, text="pause\nto save tokens") == 0
     assert "posted to no session" in capsys.readouterr().out
     assert og.sessions[lead] == before
-    assert omnigent_agent.standing(board) == "- merge on green\n- pause to save tokens"
-    assert "## Closed\n- x" in board.read_text()
+    assert omnigent_agent.standing(board) == "- merge on green"  # the owner's section, unchanged
+    text = board.read_text()
+    assert "## Chief of staff decisions\n- pause to save tokens\n" in text
+    assert "## Standing decisions\n- merge on green\n\n## Closed\n- x" in text
     fresh = tmp_path / "fresh.md"
     assert broadcast(og, tmp_path, monkeypatch, "--decisions", str(fresh)) == 0
-    assert omnigent_agent.standing(fresh) == "- rule"
-    assert broadcast(og, tmp_path, monkeypatch, "--include", lead, "--decisions", "") == 1
+    assert "- rule" in fresh.read_text()
+    assert omnigent_agent.standing(fresh) == ""  # not the owner's section
+
+
+def test_a_dry_run_without_stop_writes_nothing_and_no_flag_is_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    board = tmp_path / "board.md"
+    args = ("--include", lead, "--decisions", str(board), "--dry-run")
+    assert broadcast(og, tmp_path, monkeypatch, *args) == 0
+    assert not board.exists()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "m.md").write_text("rule")
+    assert omnigent_agent.main(["broadcast", str(tmp_path / "m.md"), "--include", lead]) == 1
+    assert "only a stop order" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        omnigent_agent.main(["broadcast", "x", "--stop", "--decisions", str(board)])
+
+
+def test_the_loop_contract_names_the_file_a_lead_reads_and_a_decisions_target_is_that_file() -> (
+    None
+):
+    skills = Path(omnigent_agent.__file__).resolve().parents[2]
+    for doc in ("engineering-loop/SKILL.md", "engineering-loop/lead.md", "chief-of-staff/SKILL.md"):
+        assert (
+            "`Standing decisions:" in (skills / doc).read_text()
+            or "Standing decisions:" in (skills / doc).read_text()
+        )
 
 
 def test_a_stop_order_still_posts_to_the_sessions(

@@ -5336,6 +5336,9 @@ def triage(event: str, decisions: str, prompt: str = ROUTING_PROMPT) -> tuple[st
     return "unsure", "small model: no route in its answer"
 
 
+COS_DECISIONS = "## Chief of staff decisions"
+
+
 def standing(path: Path | None) -> str:
     """The standing decisions in ``path``: the section under a ``## Standing decisions`` heading,
     else the whole file; none without a file, or when it can't be read. A project manager's board,
@@ -5346,6 +5349,7 @@ def standing(path: Path | None) -> str:
     except OSError as e:
         print(f"{path}: {reason(e)}; no standing decisions", file=sys.stderr)
         text = ""
+    text = re.sub(rf"^{COS_DECISIONS}\b.*?(?=^## |\Z)", "", text, flags=re.MULTILINE | re.DOTALL)
     m = re.search(r"^## Standing decisions\b.*?\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
     own = (m.group(1) if m else text).strip()
     node = path.resolve().parent if path and path.name == "board.md" else None
@@ -5355,27 +5359,21 @@ def standing(path: Path | None) -> str:
 
 
 def add_standing(path: Path, text: str) -> None:
-    """Add ``text`` as a bullet to the ``## Standing decisions`` section of ``path``, the section
-    ``standing`` reads, creating the file or the section when absent."""
+    """Add ``text`` as a bullet to the ``## Chief of staff decisions`` section of ``path``, created
+    with the file when absent. It is never the ``## Standing decisions`` section, the owner's
+    only, which ``standing`` returns and routing treats as their authority; leads read both."""
     bullet = "- " + " ".join(text.split())
     try:
         old = path.read_text() if path.exists() else ""
-        m = re.search(
-            r"^## Standing decisions\b.*?\n(.*?)(?=^## |\Z)", old, re.MULTILINE | re.DOTALL
-        )
+        m = re.search(rf"^{COS_DECISIONS}\b.*?\n(.*?)(?=^## |\Z)", old, re.MULTILINE | re.DOTALL)
         if m:
             body = m.group(1).rstrip("\n")
-            new = (
-                old[: m.start(1)]
-                + (body + "\n" if body else "")
-                + bullet
-                + "\n\n"
-                + old[m.end(1) :].lstrip("\n")
-            )
+            new = old[: m.start(1)] + (body + "\n" if body else "") + bullet + "\n\n"
+            new += old[m.end(1) :].lstrip("\n")
         else:
             new = (
                 old.rstrip("\n") + "\n\n" if old.strip() else ""
-            ) + f"## Standing decisions\n{bullet}\n"
+            ) + f"{COS_DECISIONS}\n{bullet}\n"
         path.write_text(new)
     except OSError as e:
         raise Fail(f"{path}: {reason(e)}") from e
@@ -6981,16 +6979,17 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     )
     p.add_argument("--host", action="append", default=[], metavar="NAME", help="only this host")
     p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
-    p.add_argument(
+    how = p.add_mutually_exclusive_group()
+    how.add_argument(
         "--stop",
         action="store_true",
         help="a stop order: post it to the sessions now (default: only add it to --decisions)",
     )
-    p.add_argument(
+    how.add_argument(
         "--decisions",
         type=Path,
         metavar="FILE",
-        help="the standing-decisions file a message without --stop is added to",
+        help="the file a message without --stop is added to, under Chief of staff decisions",
     )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser(
