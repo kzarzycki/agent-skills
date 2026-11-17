@@ -166,3 +166,13 @@ def test_the_refusal_exits_non_zero_only_when_set(
     assert "git pull" in capsys.readouterr().err
     monkeypatch.setattr(approvals, "refuses_stale", lambda: True)
     assert approvals.main(["report", str(report)]) == 1
+
+
+def test_running_the_gatekeeper_directly_probes_its_one_file() -> None:
+    """RUNNING names the gatekeeper once when it is the running script, so `gatekeeper.py` probes one file, not two."""
+    path = Path(approvals.__file__).with_name("gatekeeper.py")
+    spec = importlib.util.spec_from_file_location("gatekeeper_by_path", path)
+    assert spec and spec.loader
+    gatekeeper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gatekeeper)
+    assert gatekeeper.RUNNING == (gatekeeper.__file__,)

@@ -29,10 +29,10 @@ REAL_SCRIPTS = Path(approvals.__file__).parent  # before the fixture moves the r
 REAL = approvals.judge_with_base  # the shared fixtures replace it per test
 
 
-def running_at(monkeypatch: pytest.MonkeyPatch, script: Path, *beside: Path) -> None:
-    """The script files running here (RUNNING, computed at import) as `script`, then the files `beside` it."""
+def running_at(monkeypatch: pytest.MonkeyPatch, script: Path) -> None:
+    """The script file running here (RUNNING, computed at import) as `script`."""
     monkeypatch.setattr(approvals, "__file__", str(script))
-    monkeypatch.setattr(approvals, "RUNNING", tuple(str(path) for path in (script, *beside)))
+    monkeypatch.setattr(approvals, "RUNNING", (str(script),))
 
 
 @pytest.fixture(autouse=True)
