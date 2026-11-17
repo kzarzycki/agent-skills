@@ -71,11 +71,12 @@ def bump(
     pinned: str | None = None,
     head_lock: str | None = None,
     tags: dict[str, str] | None = None,
+    placed: dict[str, tuple[str, str]] | None = None,
 ) -> tuple[str, ...]:
     """A pin bump to `ref` as GitHub would show it: the pin files, the vendored gatekeeper at `blob` and the `extra`
     changes, with apm.yml pinning `pinned` (`ref` when None) and the head's lock `head_lock` (lock(ref) when None);
     the pack's repository has each tag of `tags` (TAG alone when None) at TAGGED, its gatekeeper at BLOB with `rule`
-    as its text. The base's lock vendors VENDORED and OLD. Returns the changed paths, for the PR node."""
+    as its text, and the head's tree `placed` (the vendored gatekeeper at `blob` alone when None). The base's lock vendors VENDORED and OLD. Returns the changed paths, for the PR node."""
     changed = [change("apm.yml"), change("apm.lock.yaml"), change(VENDORED, blob), *extra]
     monkeypatch.setattr(approvals, "pr_changes", lambda _n: changed)
     base = lock("engineering-v0.1.0", "f" * 40).replace(
@@ -101,6 +102,11 @@ def bump(
             if repo == approvals.PACK_REPO and tag in (tags or [TAG])
             else None
         ),
+    )
+    monkeypatch.setattr(
+        approvals,
+        "tree",
+        lambda sha: placed if placed is not None else {VENDORED: ("100644", blob)},
     )
     monkeypatch.setattr(
         approvals,
@@ -160,7 +166,7 @@ def test_a_pr_touching_other_files_reads_nothing_more(monkeypatch: pytest.Monkey
     def unread(*_args: Any) -> None:
         raise AssertionError("no forge read for a PR that is no pin bump")
 
-    for name in ("pr_changes", "file_at", "tag_tree", "repo_tags"):
+    for name in ("pr_changes", "file_at", "tag_tree", "tree", "repo_tags"):
         monkeypatch.setattr(approvals, name, unread)
     assert refused(gate(MID, ("apm.lock.yaml", "src/app.py"), monkeypatch))
     assert refused(gate(MID, (), monkeypatch))
@@ -200,6 +206,11 @@ def test_a_change_the_tag_does_not_make_keeps_mains_rule(
 
     monkeypatch.setattr(approvals, "file_at", file_at)
     monkeypatch.setattr(approvals, "tag_tree", lambda _repo, _tag: (TAGGED, shipped))
+    # the head holds every file the lock lists, so the diff's own change is what keeps main's rule
+    kept = VENDORED.replace("gatekeeper", "kept")
+    monkeypatch.setattr(
+        approvals, "tree", lambda _sha: {VENDORED: ("100644", BLOB), kept: ("100644", BLOB)}
+    )
     assert refused(gate(MID, files, monkeypatch))
 
 
@@ -315,4 +326,55 @@ def test_a_pin_file_that_is_not_a_mapping_keeps_mains_rule(
         return real(at, path, repo)
 
     monkeypatch.setattr(approvals, "file_at", file_at)
+    assert refused(gate(MID, files, monkeypatch))
+
+
+KEPT = VENDORED.replace("gatekeeper", "kept")
+KEPT_SOURCE = SOURCE.replace("gatekeeper", "kept")
+
+
+def whole_lock(
+    monkeypatch: pytest.MonkeyPatch, *, head: str | None, tag: bool = True, listed: bool = True
+) -> tuple[str, ...]:
+    """A bump whose diff is the gatekeeper alone, the lock listing KEPT (when `listed`), a file the diff leaves out:
+    the head's tree holds it at `head` (absent when None), the tag ships it (when `tag`) at BLOB."""
+    text = lock().replace(
+        f"  - {VENDORED}\n", f"  - {VENDORED}\n" + (f"  - {KEPT}\n" if listed else "")
+    )
+    placed = {VENDORED: ("100644", BLOB)} | ({KEPT: ("100644", head)} if head else {})
+    files = bump(monkeypatch, head_lock=text, placed=placed)
+    shipped = {SOURCE: ("100644", BLOB)} | ({KEPT_SOURCE: ("100644", BLOB)} if tag else {})
+    monkeypatch.setattr(approvals, "tag_tree", lambda _repo, _tag: (TAGGED, shipped))
+    return files
+
+
+def test_a_deployed_file_outside_the_diff_that_is_the_tags_keeps_the_pin_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert gate(MID, whole_lock(monkeypatch, head=BLOB), monkeypatch) == []
+
+
+def test_a_deployed_file_outside_the_diff_that_differs_from_the_tag_keeps_mains_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # a half-applied sync: the file stayed at the old tag's bytes, so it is not in the diff
+    assert refused(gate(MID, whole_lock(monkeypatch, head="1" * 40), monkeypatch))
+
+
+def test_a_deployed_file_the_head_tree_lacks_keeps_mains_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert refused(gate(MID, whole_lock(monkeypatch, head=None), monkeypatch))
+
+
+def test_a_file_the_tag_adds_that_the_head_lacks_keeps_mains_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # the tag ships KEPT; the lock does not list it and the head tree does not hold it
+    assert refused(gate(MID, whole_lock(monkeypatch, head=None, listed=False), monkeypatch))
+
+
+def test_a_head_tree_that_cannot_be_read_keeps_mains_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    files = bump(monkeypatch)
+    monkeypatch.setattr(approvals, "tree", lambda _sha: None)
     assert refused(gate(MID, files, monkeypatch))
