@@ -277,6 +277,7 @@ RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
 HTTP_SECONDS = 30.0
+START_CONFIRM_SECONDS = 300.0  # how long `start` waits for the brief to show in the history
 LATE_BRIEF_SECONDS = HTTP_SECONDS  # the grace a missed confirm gives a brief the server still holds
 ERROR_BODY_BYTES, ERROR_BODY_SECONDS = (
     2048,
@@ -1953,19 +1954,22 @@ def queued(info: dict, text: str) -> bool:
     return any(text_of(p).strip() == text for p in info.get("pending_inputs") or [])
 
 
-def started_late(og: Omnigent, sid: str) -> bool:
+def started_late(og: Omnigent, sid: str, text: str) -> bool:
     """Whether a session whose brief missed the confirm window starts within one more
     ``LATE_BRIEF_SECONDS`` (``HTTP_SECONDS``): a slow server takes a POST that timed out
     client-side later, so at the deadline the brief is often neither an item nor pending yet.
     True once the history holds an item past the opening ``resource_event`` (a real server puts
     the brief first, so the brief itself is one; an ``error`` item, a runner that failed to
-    launch, is no start); False when none appeared by the end, however long the brief sat in the
-    pending inputs."""
+    launch, is no start). While ``text`` waits in the pending inputs the grace restarts, as
+    ``send``'s confirm does, since the server can deliver it after the session is archived;
+    False only once it has been neither pending nor an item for a whole grace."""
     deadline = time.monotonic() + LATE_BRIEF_SECONDS
     while True:
         if any(i.get("type") not in ("resource_event", "error") for i in og.items(sid)):
             return True
-        if time.monotonic() >= deadline:
+        if queued(og.info(sid), text):
+            deadline = time.monotonic() + LATE_BRIEF_SECONDS
+        elif time.monotonic() >= deadline:
             return False
         time.sleep(POLL_SECONDS)
 
@@ -3684,7 +3688,7 @@ def start(
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
                 send_to_confirm(og, sid, text)
             # a slow server can miss the confirm window yet take the brief a moment later
-            if delivered(og, sid, text, confirm_seconds) or started_late(og, sid):
+            if delivered(og, sid, text, confirm_seconds) or started_late(og, sid, text):
                 if not top_level:
                     held_of(report).parent.mkdir(parents=True, exist_ok=True)
                     held_of(report).write_text(json.dumps({"sid": sid, "brief": digest}))
@@ -7394,7 +7398,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument("brief", help="the task specifics: a file, or the text itself")
         p.add_argument("report", type=Path)
         p.add_argument("--role", help="worker/verifier role file the child reads first")
-        p.add_argument("--confirm-seconds", type=float, default=60.0)
+        p.add_argument("--confirm-seconds", type=float, default=START_CONFIRM_SECONDS)
         p.add_argument(
             "--model",
             help="model (default: $OMNIGENT_MODEL_<AGENT>, e.g. OMNIGENT_MODEL_CLAUDE_CLOUD, else"

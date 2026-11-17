@@ -679,12 +679,55 @@ def test_a_runner_launch_error_is_no_start_and_is_abandoned_after_the_grace(
     assert og.archived == ["s0", "s1"]
 
 
-def test_start_abandons_a_queued_brief_that_never_lands_after_the_grace(
-    tmp_path: Path, quick_grace: None
+def test_start_abandons_a_brief_that_stops_pending_without_landing_after_a_whole_grace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_grace: None
 ) -> None:
-    og = LateBrief(None, True)  # pending for the whole grace, never an item
+    og = LateBrief(None, True)  # pending, then gone without ever being an item
+    real_info, calls = og.info, [0]
+
+    def info(sid: str) -> dict:
+        calls[0] += 1
+        out = real_info(sid)
+        if sid == "s0" and calls[0] > 80:  # past one grace (0.5 s / 0.01 s): the grace restarted
+            out["pending_inputs"] = []
+        return out
+
+    monkeypatch.setattr(og, "info", info)
+    began = time.monotonic()
     assert omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)[0] == "s1"
     assert og.archived == ["s0"]
+    assert time.monotonic() - began >= 0.9  # the pending time plus a whole grace after it
+
+
+def test_a_brief_pending_past_the_grace_then_landing_is_kept_through_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_grace: None
+) -> None:
+    og = LateBrief(200, True)  # pending ~2 s, four graces, then an item
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    assert list(og.sessions) == ["s0"] and og.archived == []
+
+
+@pytest.mark.parametrize(("flags", "seconds"), [([], 300.0), (["--confirm-seconds", "7"], 7.0)])
+def test_start_confirms_for_300_seconds_unless_the_flag_overrides_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], seconds: float
+) -> None:
+    og = FakeOmnigent()
+    waits: list[float] = []
+
+    def delivered(_og: object, _sid: str, _text: str, secs: float, *_a: object) -> bool:
+        waits.append(secs)
+        return True
+
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "delivered", delivered)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    assert omnigent_agent.main(["start", "claude", "t", "brief.md", "r.md", *flags]) == 0
+    assert waits[-1] == seconds
 
 
 def test_a_failed_start_with_no_attempt_started_exits_non_zero_through_main(
