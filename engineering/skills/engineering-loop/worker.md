@@ -59,7 +59,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    `scripts/omnigent_agent.py wait-for --log <log> --pid <pid>` (a PR's checks: `wait-for --pr
    <n>`), which blocks close to the tool limit and prints only the outcome, since a foreground
    call times out and Claude Code's low-memory reaper stops in-session background shells; never
-   end a turn saying you are waiting, since nothing wakes you and the lead reads silence as work.
+   end a turn saying you are waiting, since nothing wakes you and the lead reads silence as work. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged.
    Any other pending condition (a queued run, a free device, an unlocked screen) is waited on the
    same way, in the foreground, with `scripts/omnigent_agent.py wait-until
    --every <s> --limit <s> -- <check>`, each call under the tool timeout: the

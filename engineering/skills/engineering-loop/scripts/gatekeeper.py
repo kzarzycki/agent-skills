@@ -3927,16 +3927,19 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
     new state once: until it ends, or exit 3 at CEILING."""
     if not wait:
         return landing(pr, only)[0]
-    deadline, said = time.monotonic() + CEILING, ""
+    deadline, said, spoke = time.monotonic() + CEILING, "", 0.0
     while True:
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
                 code, again = landing(pr, only)
         finally:
-            # a background command's log: each state once, not every 30 seconds; a held lock's age is no new state
-            if (state := re.sub(r"\d+ minutes? ago", "", out.getvalue())) != said:
+            # a background command's log: each state once, not every 30 seconds, a held lock's age being no new
+            # state; again every SLOT_SAY_SECONDS, so wait-for's stall check never reads a long wait as a hang
+            state = re.sub(r"\d+ minutes? ago", "", out.getvalue())
+            if state != said or time.monotonic() - spoke >= SLOT_SAY_SECONDS:
                 print(out.getvalue(), end="", flush=True)
+                spoke = time.monotonic()
             said = state
         if not again:
             return code
@@ -4882,7 +4885,7 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     command = gate()[0]
     log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
     for again in (False, True):
-        with log.open("w") as out:
+        with log.open("w") as out, saying(f"Tree {tree}: gating, log {public(str(log))}"):
             done = run_steps(
                 commit,
                 tree,
@@ -6168,8 +6171,8 @@ def take_slot(
 ) -> tuple[int | None, str]:
     """Hold the first free heavy slot's exclusive flock and return (its fd, its path); closing the fd frees the lock,
     as does the process dying. A run already under a holder of a slot (held_slot) takes none: (None, that path), since
-    it would wait on its own parent. With every slot held, `waiting` is called once and the slots are tried again until
-    one frees. A land's gate step (`land`) holds the landing lock of its base while it waits, which blocks every other
+    it would wait on its own parent. With every slot held, `waiting` is called, again every SLOT_SAY_SECONDS, and the slots
+    are tried again until one frees. A land's gate step (`land`) holds the landing lock of its base while it waits, which blocks every other
     land, so it takes a freed slot ahead of any PR gate: flock has no priority, so a waiting land marks itself (a shared
     flock on `gate.land.lock`, held only while it waits) and a PR gate that finds the mark takes no slot, trying again
     until no land waits."""
@@ -6179,18 +6182,14 @@ def take_slot(
     mark = os.open(slot_file("gate.land.lock"), os.O_WRONLY | os.O_CREAT, 0o644) if land else None
     if mark is not None:
         fcntl.flock(mark, fcntl.LOCK_SH)
-    said = False
+    said = None  # when the wait is next said
     try:
         if land and gate_slots() == 1:
             # one slot: block in the kernel, as a gate wrapper's own flock does, so a land competes evenly with a
             # wrapper waiter instead of losing every race to it by polling; PR gates poll and yield to the mark
             fd = os.open(slot_path(), os.O_WRONLY | os.O_CREAT, 0o644)
             try:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    waiting()
-                    fcntl.flock(fd, fcntl.LOCK_EX)
+                flock_saying(fd, waiting)
             except BaseException:
                 os.close(fd)
                 raise
@@ -6209,8 +6208,8 @@ def take_slot(
                         os.close(fd)
                         raise
                     return fd, path
-            if not said:
-                said = True
+            if said is None or time.monotonic() >= said:
+                said = time.monotonic() + SLOT_SAY_SECONDS
                 waiting()
             time.sleep(0.2)
     finally:
@@ -6358,10 +6357,51 @@ def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int,
     return step.returncode, output
 
 
+# how often a run queued on a host gate slot says it still waits: wait-for kills a run whose log is silent for 300 s
+SLOT_SAY_SECONDS = 60.0
+
+
+def flock_saying(fd: int, said: Callable[[], None]) -> None:
+    """Take fd's exclusive flock, blocking in the kernel. A wait calls `said` when it begins and again every
+    SLOT_SAY_SECONDS, so a log that shows the wait never goes silent long enough for wait-for's stall check to read
+    the queue as a hang."""
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        said()
+        with repeating(said):
+            fcntl.flock(fd, fcntl.LOCK_EX)
+
+
+@contextlib.contextmanager
+def repeating(call: Callable[[], None]) -> Any:
+    """Call `call` every SLOT_SAY_SECONDS from a thread of its own while the block runs."""
+    stop = threading.Event()
+
+    def again() -> None:
+        while not stop.wait(SLOT_SAY_SECONDS):
+            call()
+
+    caller = threading.Thread(target=again, daemon=True)
+    caller.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        caller.join()
+
+
+def saying(text: str) -> Any:
+    """Print `text` every SLOT_SAY_SECONDS while the block runs, to the process's own stdout, since `land --wait`
+    captures sys.stdout until landing returns: a run whose output goes to a log of its own (a batch gate) then never
+    reads as a hang to wait-for's stall check."""
+    return repeating(lambda: print(text, file=sys.__stdout__, flush=True))
+
+
 @contextlib.contextmanager
 def heavy_slot(name: str, out: Any = None, land: bool = False) -> Any:
     """Hold a host gate slot (take_slot, `land` as it takes it) for one gate step: (its path, the whole seconds
-    waited for it). A wait is said once, as `local-ci: <step>: waiting for the host gate slot`."""
+    waited for it). A wait is said as `local-ci: <step>: waiting for the host gate slot`, again every SLOT_SAY_SECONDS."""
     began = time.monotonic()
     fd, path = take_slot(
         lambda: print(

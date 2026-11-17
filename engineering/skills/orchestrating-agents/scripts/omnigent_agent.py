@@ -7,7 +7,7 @@
     python3 scripts/omnigent_agent.py cloud-env <checkout>
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
-    python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--notify]
+    python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
@@ -80,7 +80,7 @@ tool call it answered; exit 1 when none was pending (naming any pending question
 approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
 seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for`` is how a role
 waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
-call), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change), and ends at the first of: the log's ``exit <n>`` line (the detached
+call), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change; a live ``--pid`` run not on the lock whose ``--log`` has not grown for ``--stall`` seconds (default 300, 0 off) is hung: its process group gets SIGTERM, then SIGKILL after 5 s, unless the pid is not the run's, and the outcome is ``stalled: no output in <log> for <n>s; killed pid <pid>'s group`` and the log's last 30 lines, exit 1), and ends at the first of: the log's ``exit <n>`` line (the detached
 recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
 exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
 which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
@@ -221,6 +221,7 @@ own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists i
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import errno
 import fcntl
@@ -575,6 +576,8 @@ WAIT_FOR_EVERY = 2.0  # a local read: a log or a pid
 WAIT_FOR_PR_EVERY = 30.0  # a GitHub call, so fewer
 LOCK_CEILING = 7200.0  # seconds a run may wait on the gate lock, as long as the landing lock's wait
 PID_SLACK = 5.0  # seconds a pid file may be written after its process starts (ps rounds down too)
+KILL_GRACE = 5.0  # seconds a stalled run gets after SIGTERM before SIGKILL
+WAIT_FOR_STALL = 300.0  # seconds of silence in a live run's log that wait-for calls a hang
 LOG_TAIL = 30  # the lines of a red run's log wait-for prints
 GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
@@ -4074,6 +4077,26 @@ def pr_outcome(pr: int, until: str, timeout: float) -> tuple[int, str] | None:
     return 0, f"PR #{pr} checks green ({len(checks)})"
 
 
+def kill_group(pid: int) -> None:
+    """SIGTERM ``pid``'s process group (the detached recipe's ``setsid`` makes the pid its leader;
+    any other pid gets the signal alone, never this process's own group), then SIGKILL after
+    ``KILL_GRACE`` seconds if it is still there."""
+    try:
+        group = os.getpgid(pid)
+        lone = group != pid or group == os.getpgrp()
+        send = (lambda sig: os.kill(pid, sig)) if lone else (lambda sig: os.killpg(group, sig))
+        send(signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    # once signalled, macOS answers EPERM, not ESRCH, for a group left with only zombies: it is gone
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        deadline = time.monotonic() + KILL_GRACE
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+            send(0)
+        send(signal.SIGKILL)
+
+
 def pr_rest(path: str, end: float, pages: bool = False) -> Any:
     """``repos/{owner}/{repo}/<path>`` through REST (``{owner}/{repo}`` from this clone, which a launch dir with no
     working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list."""
@@ -4165,12 +4188,14 @@ def wait_for(
     pr: int | None,
     until: str,
     budget: float,
+    stall: float = 0.0,
     since: float | None = None,
 ) -> tuple[int, str] | None:
     """Block up to ``budget`` seconds on a run's log exit line, its pid, or PR ``pr``'s ``until``
-    condition (a ``gate`` or ``verdict`` signal older than ``since`` ignored), printing nothing meanwhile; return the exit code and the outcome text: the run's own
-    code (0 or 1 for a PR, 1 for a pid gone with no exit line), or None once the budget passes,
-    since a run may itself exit ``LIMIT``."""
+    condition (a ``gate`` or ``verdict`` signal older than ``since`` ignored), printing nothing
+    meanwhile; return the exit code and the outcome text: the run's own code (0 or 1 for a PR, 1
+    for a pid gone with no exit line or killed for a ``stall`` of silence in its log, 0 turns that
+    off), or None once the budget passes, since a run may itself exit ``LIMIT``."""
     deadline = time.monotonic() + budget
     every = WAIT_FOR_PR_EVERY if pr is not None else WAIT_FOR_EVERY
     settled = {"gate": gate_outcome, "verdict": verdict_outcome}.get(until)
@@ -4183,24 +4208,35 @@ def wait_for(
             return None
         return code, log_outcome(log, code, run)
 
-    def gave_up() -> tuple[int, str] | None:
-        """A lock wait past ``LOCK_CEILING`` (the lock line is the log's last write): no verdict."""
-        if not log or lock_wait(log, run_of(pid) if pid else None) is None:
+    def silent() -> tuple[int, str] | None:
+        """The run's log age, read once, against two limits: a lock wait past ``LOCK_CEILING`` (the
+        lock line is the log's last write) has no verdict; a live run that is not on the lock
+        and has written nothing for ``stall`` seconds is hung, so its process group is killed."""
+        if not log:
             return None
+        run = run_of(pid) if pid else None
         try:
-            waited = time.time() - log.stat().st_mtime
+            age = time.time() - log.stat().st_mtime
         except OSError:
             return None
-        if waited > LOCK_CEILING:
-            return (
-                LIMIT,
-                f"gave up waiting on the gate lock after {waited:.0f}s: the check has not run",
-            )
-        return None
+        if lock_wait(log, run) is not None:
+            if age > LOCK_CEILING:
+                return (
+                    LIMIT,
+                    f"gave up waiting on the gate lock after {age:.0f}s: the check has not run",
+                )
+            return None
+        if not stall or not pid or age <= stall or (target := pid_of(pid)) is None:
+            return None
+        kill_group(target)
+        tail = (run_lines(log, run) or [])[-LOG_TAIL:]
+        return 1, "\n".join(
+            [f"stalled: no output in {log} for {age:.0f}s; killed pid {target}'s group", *tail]
+        )
 
     queued = False
     while True:
-        if outcome := ended() or gave_up():
+        if outcome := ended() or silent():
             return outcome
         waiting = bool(log) and lock_wait(log, run_of(pid) if pid else None) is not None
         if queued and not waiting:  # the lock came during this wait: the budget starts here
@@ -7495,6 +7531,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         help=f"seconds before `still running`, exit {LIMIT} (default {WAIT_FOR_BUDGET:.0f})",
     )
     p.add_argument(
+        "--stall",
+        type=float,
+        default=WAIT_FOR_STALL,
+        help=f"with --log and --pid: kill a live run whose log is silent this many seconds, exit 1; 0 is off (default {WAIT_FOR_STALL:.0f})",
+    )
+    p.add_argument(
         "--notify",
         action="store_true",
         help="once it ends, run $LOOP_NOTIFY <outcome> (unset: nothing)",
@@ -7636,7 +7678,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     )
                     usage.code = 2
                     raise usage
-            ended = wait_for(args.log, args.pid, args.pr, args.until, args.budget, since)
+            ended = wait_for(
+                args.log, args.pid, args.pr, args.until, args.budget, args.stall, since
+            )
             if ended is None:
                 waiting = args.log and lock_text(args.log, run_of(args.pid) if args.pid else None)
                 progress = (
