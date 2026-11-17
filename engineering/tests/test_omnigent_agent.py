@@ -243,6 +243,14 @@ class FakeOmnigent:
     def items(self, sid: str) -> list[dict]:
         return self.sessions[sid]
 
+    def older(self, sid: str, after: str = "") -> dict:  # a page of 100, newest first
+        newest = list(reversed(self.sessions[sid]))
+        ids = [str(i.get("id")) for i in newest]
+        start = ids.index(after) + 1 if after else 0
+        data = newest[start : start + 100]
+        more = start + 100 < len(newest)
+        return {"data": data, "last_id": data[-1].get("id") if data else None, "has_more": more}
+
     def info(self, sid: str) -> dict:
         for held in list(self.held):
             self.held.remove(held)
@@ -922,6 +930,94 @@ def test_wait_takes_a_report_written_after_the_sessions_last_message(
     og.sessions[sid][-1]["created_at"] = time.time() - 300
     (repo / "r.md").write_text("ok")
     assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+
+
+def stale_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, og: FakeOmnigent
+) -> tuple[str, Path]:
+    """A session and its report file, written ten minutes ago."""
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    report = repo / "r.md"
+    report.write_text("old run")
+    past = time.time() - 600
+    os.utime(report, (past, past))
+    return sid, report
+
+
+def say(og: FakeOmnigent, sid: str, role: str, text: str, ago: float, **more: object) -> None:
+    kind = "output_text" if role == "assistant" else "input_text"
+    og.sessions[sid].append(
+        {
+            "id": f"m{len(og.sessions[sid])}",
+            "type": "message",
+            "role": role,
+            "created_at": time.time() - ago,
+            "content": [{"type": kind, "text": text}],
+            **more,
+        }
+    )
+
+
+def test_wait_floors_at_the_newest_of_two_messages_not_the_oldest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, _ = stale_report(tmp_path, monkeypatch, og)
+    og.sessions[sid][:] = []
+    say(og, sid, "user", "brief", 900)  # before the report
+    say(og, sid, "user", "follow-up", 300)  # after it
+    assert omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1
+
+
+def test_wait_does_not_floor_at_the_supervisors_nudge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, report = stale_report(tmp_path, monkeypatch, og)
+    og.sessions[sid][:] = []
+    say(og, sid, "user", "brief", 900)
+    nudge = omnigent_agent.NUDGE.format(report=report.resolve())
+    say(og, sid, "user", nudge, 10)  # after the report: it does not make it stale
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+
+
+def test_wait_floors_at_the_sessions_creation_when_no_message_is_in_the_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, _ = stale_report(tmp_path, monkeypatch, og)
+    og.sessions[sid][:] = []
+    info = og.info
+    og.info = lambda s: {**info(s), "created_at": time.time() - 300}  # type: ignore[method-assign]
+    assert omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1
+
+
+def test_wait_finds_a_message_behind_the_newest_page_of_the_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, _ = stale_report(tmp_path, monkeypatch, og)
+    og.sessions[sid][:] = []
+    say(og, sid, "user", "second brief", 300)
+    for n in range(100):  # the turn's steps since: the real items() page holds only these
+        say(og, sid, "assistant", f"step {n}", 200)
+    og.items = lambda s: og.sessions[s][-100:]  # type: ignore[method-assign]
+    assert omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1
+
+
+def test_wait_takes_a_far_report_only_if_written_after_the_brief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: box, mac\n")
+    assert omnigent_agent.main([*VERIFY_FAR, "--file", "gate.log"]) == 0
+    path = "/there/repo/tmp/loop/pr7-v1.md"
+    og.files[path] = "VERDICT: 0 blocker\nSATISFIED: yes\n"
+    og.times[path] = time.time() - 600  # an earlier pass's, before this brief
+    argv = ["wait", "s0", path, "--verdict", "--timeout", "1"]
+    assert omnigent_agent.main(argv) == 1
+    og.sessions["s0"][-1]["created_at"] = time.time() - 300
+    og.times[path] = time.time() - 60  # the verifier wrote it after its brief
+    assert omnigent_agent.main(argv) == 0
 
 
 def test_run_notify_tells_loop_notify_once_the_report_is_in(
@@ -6864,7 +6960,7 @@ def test_send_arms_only_once_its_message_is_in_the_history(
 
     def reporting(s: str) -> dict:
         if not stale and f"{sid}=" in (registry.read_text() if registry.exists() else ""):
-            since, _ = omnigent_agent.instructed(og.items(sid), "")
+            since, _ = omnigent_agent.instructed(og, sid, og.items(sid), "")
             stale.append(report.stat().st_mtime > since)  # the supervisor's view once armed
             report.write_text("fixed")
         return info(s)
@@ -11761,6 +11857,7 @@ def test_a_verifier_starts_on_a_host_loop_md_lists_with_its_files_there_and_repo
     assert og.files["/there/repo/tmp/loop/gate.log"] == "abc\nok\n"
     report = "VERDICT: 0 blocker\nSATISFIED: yes\n"
     og.files["/there/repo/tmp/loop/pr7-v1.md"] = report
+    og.times["/there/repo/tmp/loop/pr7-v1.md"] = time.time()  # written after the brief
     capsys.readouterr()
     argv = ["wait", "s0", "/there/repo/tmp/loop/pr7-v1.md", "--verdict", "--timeout", "5"]
     assert omnigent_agent.main(argv) == 0

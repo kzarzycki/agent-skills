@@ -26,7 +26,7 @@ refuses a brief left with an empty `` `` `` span. Exit 0 prints the report path.
 prints the reason and the child's last message; for a session that failed, also its
 `last_task_error` and its runner log. With a verifier's role file, the report
 counts only once it has its `SATISFIED:` line, so a report written in stages does not end
-the wait early. `wait` takes only a report written after the newest message the session was given (its brief, a `send` or relay; a local session only, since another host keeps its own clock), so a file left by an earlier run is not returned at once. Any report counts only once the child's turn has ended and the file is
+the wait early. `wait` takes only a report written after the newest message the session was given (its brief, a `send` or relay), so a file left by an earlier run is not returned at once. Any report counts only once the child's turn has ended and the file is
 unchanged since, which takes 30 seconds out of its turn at every look (a session can read idle
 mid-turn), and is read again before `run` returns it: until then a child can rewrite it (a
 verifier revising its verdict). Omnigent can lose a turn end and leave the session
