@@ -894,6 +894,34 @@ def test_wait_notify_tells_loop_notify_once_the_report_is_in(
     assert calls.read_text().splitlines() == [f"exit 0: {repo / 'r.md'}"]
 
 
+def test_wait_takes_no_report_older_than_the_sessions_last_message_until_it_is_rewritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    report = repo / "r.md"
+    report.write_text("old run")
+    past = time.time() - 600
+    os.utime(report, (past, past))
+    og.land(sid, "second brief")  # a later message the old report does not answer
+    og.sessions[sid][-1]["created_at"] = time.time() - 300
+    assert omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1  # the old one is not taken
+    info = og.info
+    og.info = lambda s: ((report.write_text("new run"), info(s))[1])  # type: ignore[method-assign]
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+    assert report.read_text() == "new run"
+
+
+def test_wait_takes_a_report_written_after_the_sessions_last_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    og.sessions[sid][-1]["created_at"] = time.time() - 300
+    (repo / "r.md").write_text("ok")
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+
+
 def test_run_notify_tells_loop_notify_once_the_report_is_in(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

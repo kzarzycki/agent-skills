@@ -4940,6 +4940,16 @@ def instructed(items: list[dict], resume: str) -> tuple[float, float]:
     return since, max(resent, default=0.0)
 
 
+def told_at(og: Omnigent, sid: str, info: dict, report: Path) -> int | None:
+    """The ``st_mtime_ns`` floor for ``sid``'s report: when it was last given a message (its
+    brief, or a later ``send`` or relay; not the supervisor's nudge), else its ``created_at``,
+    None when neither is known. A report from before it is the turn before's."""
+    resume = CLOUD_NUDGE if cloud_session(og, info) else NUDGE.format(report=report)
+    told = [float(i.get("created_at") or 0) for i in og.items(sid) if instruction(i, resume)]
+    at = told[-1] if told else float(info.get("created_at") or 0)
+    return int(at * 1e9) if at else None
+
+
 def settled(
     stamp: int | None, info: dict, items: list[dict], ended: dict[str, float], sid: str
 ) -> bool:
@@ -8018,7 +8028,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             far = not args.pr and elsewhere(og, og.info(args.session))
             report = args.report if far else args.report.resolve()
             try:
-                got = wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr)
+                # --pr reads a comment, not a file; a report file there never counts
+                since = None if args.pr else told_at(og, args.session, og.info(args.session), report)
+                got = wait(
+                    og, args.session, report, args.timeout, args.verdict, since=since, pr=args.pr
+                )
             except Asked as asked:
                 if far:  # the question is on its host too: leave a copy here, as for a report
                     here = bring_home(og, args.session, Path(asked.args[0]), keep=True)
