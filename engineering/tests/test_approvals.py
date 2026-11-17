@@ -3603,6 +3603,8 @@ def lands(
                     "merge_commit_sha": state.get("squashes", {}).get(number),
                 }
             )
+        if args[:2] == ("api", "rate_limit"):  # land --wait's poll_seconds: plenty of quota
+            return "5000 5000"
         raise AssertionError(args)
 
     def comment(number: int, body: str) -> None:

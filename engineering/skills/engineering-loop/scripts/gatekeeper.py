@@ -651,6 +651,8 @@ POLL, CEILING = 30, 2 * 60 * 60
 # a wait on a held lock whose ref is unchanged runs landing() (the GitHub calls) again only after this many seconds: the
 # lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
 RECHECK = 300
+# the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
+LOW_POLL, LOW_QUOTA = 300, 0.1
 # (lock ref, tip) of the last HELD lock locked() waited on; land() polls it without GitHub calls
 held_tip: tuple[str, str] | None = None
 # the signals that stop a land and release its lock (stopped)
@@ -4181,11 +4183,12 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
             said, heard = state, out.getvalue()
         if not again:
             return code
-        if time.monotonic() + POLL > deadline:
+        nap = poll_seconds()
+        if time.monotonic() + nap > deadline:
             print(f"land --wait stopped after {CEILING // 3600} hours, still waiting")
             return WAITING
-        while time.monotonic() + POLL <= deadline:
-            time.sleep(POLL)
+        while time.monotonic() + nap <= deadline:
+            time.sleep(nap)
             if (
                 heard and time.monotonic() - spoke >= SLOT_SAY_SECONDS
             ):  # wait-for's stall check reads silence as a hang
@@ -4196,6 +4199,18 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
                 break
             if git("ls-remote", "origin", held_tip[0]).split()[:1] != [held_tip[1]]:
                 break
+
+
+def poll_seconds() -> float:
+    """POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA. `gh api rate_limit` is not counted against the
+    quota; gh shows no response headers, so nothing is read for free. A failed read keeps POLL."""
+    try:
+        left, limit = github.gh(
+            "api", "rate_limit", "--jq", r'.resources.core|"\(.remaining) \(.limit)"'
+        ).split()
+        return LOW_POLL if int(left) < LOW_QUOTA * int(limit) else POLL
+    except (subprocess.CalledProcessError, ValueError):
+        return POLL
 
 
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:

@@ -11,10 +11,17 @@ import pytest
 from approvals_harness import approvals
 
 github = approvals.github
+real_poll_seconds = approvals.poll_seconds
 
 
 def refuse(stderr: str) -> subprocess.CalledProcessError:
     return subprocess.CalledProcessError(1, ["gh"], "", stderr)
+
+
+@pytest.fixture(autouse=True)
+def poll_unstretched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The quota read is a `gh` call: tests of the wait loop poll at POLL without it."""
+    monkeypatch.setattr(approvals, "poll_seconds", lambda: approvals.POLL)
 
 
 @pytest.fixture
@@ -33,6 +40,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     monkeypatch.setattr(github.subprocess, "run", run)
     monkeypatch.setattr(github.time, "sleep", seen["sleeps"].append)
+    monkeypatch.setattr(github.random, "randint", lambda low, high: 0)
     monkeypatch.setattr(github, "wait_until", time.monotonic() + 3600)
     return seen
 
@@ -184,3 +192,24 @@ def test_a_rest_limit_message_without_a_status_is_not_a_limit(calls: dict[str, A
     with pytest.raises(subprocess.CalledProcessError):
         github.gh("api", "repos/x")
     assert calls["sleeps"] == []
+
+
+def test_a_rate_limit_wait_adds_bounded_jitter(
+    calls: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = []
+    monkeypatch.setattr(
+        github.random, "randint", lambda low, high: seen.append((low, high)) or high
+    )
+    calls["replies"] = [refuse("secondary rate limit (HTTP 403) Retry-After: 30"), "ok"]
+    github.gh("api", "x")
+    assert seen == [(0, github.JITTER)]
+    assert sum(calls["sleeps"]) == 30 + github.JITTER
+
+
+@pytest.mark.parametrize(("answer", "poll"), [("400 5000", 300), ("500 5000", 30), ("x", 30)])
+def test_a_low_quota_stretches_the_poll(
+    monkeypatch: pytest.MonkeyPatch, answer: str, poll: int
+) -> None:
+    monkeypatch.setattr(github, "gh", lambda *args: answer)
+    assert real_poll_seconds() == poll
