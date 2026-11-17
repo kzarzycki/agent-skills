@@ -4189,19 +4189,20 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
             return WAITING
         # a round asks GitHub again after `nap`, or RECHECK on a held lock; the sleep goes in POLL steps, so the log
         # is never silent past wait-for's stall check and a lock that moved is seen at once (ls-remote costs no quota)
+        asleep = 0.0
         while time.monotonic() + POLL <= deadline:
             time.sleep(POLL)
+            asleep += POLL
             if (
                 heard and time.monotonic() - spoke >= SLOT_SAY_SECONDS
             ):  # wait-for's stall check reads silence as a hang
                 print(heard, end="", flush=True)
                 spoke = time.monotonic()
             # the lock still held at the same tip, and its holder checked lately: nothing to ask GitHub
-            waited = time.monotonic() - checked
             if not held_tip:
-                if waited >= nap:
+                if asleep >= nap:
                     break
-            elif waited >= max(nap, RECHECK) or git("ls-remote", "origin", held_tip[0]).split()[
+            elif asleep >= max(nap, RECHECK) or git("ls-remote", "origin", held_tip[0]).split()[
                 :1
             ] != [held_tip[1]]:
                 break
