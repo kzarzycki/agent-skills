@@ -10247,6 +10247,7 @@ def cloud_routes(spec: str = "the spec", record_of: str | None = None) -> dict[s
         f"commits/{HEAD}/status?per_page=100": {"total_count": 0, "statuses": []},
         "issues/1": {
             "number": 1,
+            "state": "open",
             "body": spec,
             "created_at": WRITTEN,
             "updated_at": LABELED,

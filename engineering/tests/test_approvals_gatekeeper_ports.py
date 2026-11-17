@@ -62,6 +62,7 @@ class Memory:
             "label": lambda n, name, add: self.labels.append((n, name, add)),
             "assign": lambda n, login, add: None,
             "pull_request": lambda n: self.pulls[n],
+            "pull_status": lambda n: self.pulls[n],
             "current_pr": lambda: None,
             "pr_changes": lambda n: [],
             "merged_pull": lambda n: None,

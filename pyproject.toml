@@ -19,7 +19,7 @@ markers = [
 target-version = "py314"
 line-length = 100
 # Shipped scripts run on a consumer's own `python3`; macOS ships 3.9.
-per-file-target-version = { "engineering/skills/*/scripts/*.py" = "py39" }
+per-file-target-version = { "engineering/skills/*/scripts/*.py" = "py39", "engineering/hooks/*.py" = "py39" }
 
 [tool.ruff.lint.per-file-ignores]
 # A module of approvals tests imports a non-autouse fixture it takes from the harness by name (with

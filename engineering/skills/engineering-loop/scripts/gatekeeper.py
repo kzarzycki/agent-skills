@@ -668,6 +668,7 @@ QUEUE_POLL = 120
 RECHECK = 300
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
 LOW_POLL, LOW_QUOTA = 300, 0.1
+POLL_JITTER = 60  # most seconds of random delay added to a land --wait poll
 # a wait that meets this many network failures in a row (NETWORK) fails with the last one
 MISSES = 3
 # what git and gh print when the network, not the request, failed: a name that did not resolve, a dropped or timed-out
@@ -830,6 +831,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "levels": {
         level: {"spec": Choice(SPEC_ACTIONS), "merge": Choice(MERGE_ACTIONS)} for level in LEVELS
     },
+    "incubating": {"append_paths": list, "waive": list},
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
@@ -1122,6 +1124,90 @@ def matches(terms: dict[str, Any], labels: set[str], paths: list[str] | None) ->
         if any(fnmatch.fnmatch(path, glob) for path in paths or []):
             return f"path `{glob}`"
     return None if paths is None and terms.get("paths") else False
+
+
+# an incubating feature's PR and its tracking epic carry this label (SKILL.md § Incubating)
+INCUBATING = "incubating"
+# the body line naming the epic that tracks the feature an incubating PR belongs to
+INCUBATES = re.compile(r"^[ \t>*-]*Incubates:[ \t]+#(\d+)\b", re.MULTILINE | re.IGNORECASE)
+GRADUATES = re.compile(r"^[ \t>*-]*Graduates:?[ \t]+#(\d+)\b", re.MULTILINE | re.IGNORECASE)
+# the requirements `incubating.waive` may name; an eligible PR stops owing each (incubation)
+WAIVABLE = ("evidence", "proof_run", "verifier", "full_gate", "coverage")
+
+
+def graduation(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
+    """One line per `incubating` issue the PR would close without a `Graduates #<n>` line for it: an epic stays open
+    while the feature incubates, and graduating is the merge of a full-loop PR that says so (gatekeeper.py graduate)."""
+    body = pull["body"] or ""
+    kinds = links(body)
+    said = {int(n) for n in GRADUATES.findall(QUOTED.sub("", body))}
+    return [
+        f"PR #{pull['number']} would close #{issue['number']}, which is labelled `{INCUBATING}`: an incubating issue"
+        f" stays open until a PR graduates it (`Graduates #{issue['number']}`, with the full loop); use `Part of`"
+        f" for a slice"
+        for issue in issues
+        if INCUBATING in names(issue)
+        and kinds.get(issue["number"], CLOSES) == CLOSES
+        and issue["number"] not in said
+    ]
+
+
+def incubation(
+    pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None
+) -> tuple[set[str], list[str]]:
+    """The requirements an incubating PR doesn't owe, and a line when its label can't stand. The label is a claim, like
+    SCOPED: without an `incubating` policy section it means nothing, and with one it holds only while the PR is eligible
+    (ineligible), else the PR owes the full loop. `incubating.waive` names the waived requirements (WAIVABLE; default all)."""
+    policy = settings(loop).get(INCUBATING)
+    if policy is None or INCUBATING not in names(pull):
+        return set(), []
+    if GRADUATES.search(QUOTED.sub("", pull["body"] or "")):
+        return set(), [
+            f"PR #{pull['number']} graduates an issue, so it owes the full loop, not the `{INCUBATING}` waivers"
+        ]
+    waive = policy.get("waive", list(WAIVABLE))
+    if unknown := [name for name in waive if name not in WAIVABLE]:
+        raise Refused(
+            f"{source(loop)}'s `incubating.waive` names {', '.join(unknown)}; it may name {', '.join(WAIVABLE)}"
+        )
+    if why := ineligible(pull, issues, loop, policy.get("append_paths", [])):
+        return set(), [
+            f"PR #{pull['number']} is labelled `{INCUBATING}`, but {why}: it owes the full loop"
+        ]
+    return set(waive), []
+
+
+def ineligible(
+    pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None, appendable: list[str]
+) -> str | None:
+    """Why the PR can't be incubating, or None: its body names an open epic labelled `incubating` (`Incubates: #<n>`);
+    every file is added, or modified with no line deleted and matching `append_paths` (a file new features append to);
+    and the change doesn't rate high or critical (risk). A deleted or renamed file, a removed line, a file outside the
+    list, or a file list the gate can't read in full is existing code touched, which the full loop covers."""
+    found = INCUBATES.search(QUOTED.sub("", pull["body"] or ""))
+    if not found:
+        return "its body has no `Incubates: #<epic>` line"
+    try:
+        epic = issue_node(int(found[1]))
+    except (Refused, subprocess.CalledProcessError):
+        return f"epic #{found[1]} can't be read"
+    if INCUBATING not in names(epic) or epic.get("state") != "OPEN":
+        return f"#{found[1]} is not an open issue labelled `{INCUBATING}`"
+    files = pull["files"]
+    if (files.get("totalCount") or 0) > len(files["nodes"]):
+        return "GitHub can't give every file the PR changes"
+    for file in files["nodes"]:
+        kind, path = file.get("changeType"), file["path"]
+        if kind == "ADDED" or (
+            kind == "MODIFIED"
+            and file.get("deletions") == 0
+            and any(fnmatch.fnmatch(path, glob) for glob in appendable)
+        ):
+            continue
+        return f"it changes existing code (`{path}`, {str(kind).lower()})"
+    if why := risk(pull, issues, loop):
+        return f"it rates high or critical ({why})"
+    return None
 
 
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
@@ -2209,16 +2295,21 @@ def proofs(
         # where a lead hands the PR over, so a wrong keyword is fixed before the PR reaches the landing queue
         if loop is not None:
             found += linked(pull, issues, loop)
-    found += demo_form(pull)
+    waived, lapsed = incubation(pull, issues, loop) if point == "merge" else (set(), [])
+    found += lapsed
+    if point == "merge":
+        found += graduation(pull, issues)
+    if "evidence" not in waived:
+        found += demo_form(pull)
     if point != "merge":
         return found
     where = f"PR #{pull['number']}"
     evidence = section(pull["body"] or "", "Evidence")
-    if not evidence.strip():
+    if "evidence" not in waived and not evidence.strip():
         found.append(f"{where}: its body has no `## Evidence` section with content")
     if loop is not None:
         found += linked(pull, issues, loop)
-    if revert is None and not exempt(pull, loop):
+    if revert is None and "verifier" not in waived and not exempt(pull, loop):
         verdicts = passes(pull)
         found += (unreviewed := reviewed(where, pull, loop, verdicts))
         # only on a verdict that would land, and tier first, since risk() reads the reviews again
@@ -3244,7 +3335,7 @@ def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
         raise Refused(f"merge {merge} is not a commit here or on origin")
     head = git("rev-parse", f"{merge}^2").strip()
     # the head proof of the base the PR merges onto, not the default branch's
-    with policy_from(str(pull_request(pr)["baseRefName"])):
+    with policy_from(str(pull_status(pr)["baseRefName"])):
         loop = project()[1]
     record, entry = reusable(head), None
     if record is None and (entry := admitted(head, loop)) is None:
@@ -3833,6 +3924,7 @@ PORTS = {
     "tracker": ("issue_node", "issues", "comment", "label", "assign"),
     "forge": (
         "pull_request",  # (pr) -> the PR node, with its reviews, threads, checks, comments and closing issues
+        "pull_status",  # (pr) -> {state, baseRefName, headRefOid, mergeable} alone, for a caller that reads no more
         "current_pr",  # () -> the checkout's branch's open PR number, or None
         "pr_changes",  # (pr) -> each file the PR changes, with its patch
         "merged_pull",  # (pr) -> the merged PR with its head and merge commit, or None
@@ -3945,6 +4037,7 @@ def through(name: str, operation: str) -> Callable[..., Any]:
 issue_node, issues_of = through("tracker", "issue_node"), through("tracker", "issues")
 label, assign = through("tracker", "label"), through("tracker", "assign")
 pull_request, current_pr = through("forge", "pull_request"), through("forge", "current_pr")
+pull_status = through("forge", "pull_status")
 pr_changes, merged_pull = through("forge", "pr_changes"), through("forge", "merged_pull")
 tag_tree, file_at = through("forge", "tag_tree"), through("forge", "file_at")
 repo_tags = through("forge", "repo_tags")
@@ -4557,15 +4650,19 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
 
 
 def poll_seconds() -> float:
-    """QUEUE_POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA. `gh api rate_limit` is not counted against the
-    quota; gh shows no response headers, so nothing is read for free. A failed read keeps QUEUE_POLL."""
+    """QUEUE_POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA, plus up to POLL_JITTER random seconds so
+    waiting lands do not poll in the same minute. `gh api rate_limit` is not counted against the quota; gh shows no
+    response headers, so nothing is read for free. A failed read keeps QUEUE_POLL."""
+    base = max(POLL, QUEUE_POLL)
     try:
         left, limit = github.gh(
             "api", "rate_limit", "--jq", r'.resources.core|"\(.remaining) \(.limit)"'
         ).split()
-        return LOW_POLL if int(left) < LOW_QUOTA * int(limit) else max(POLL, QUEUE_POLL)
+        if int(left) < LOW_QUOTA * int(limit):
+            base = LOW_POLL
     except (subprocess.CalledProcessError, ValueError):
-        return max(POLL, QUEUE_POLL)
+        pass
+    return base + github.random.randint(0, POLL_JITTER)
 
 
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
@@ -6453,7 +6550,7 @@ def merges(
                 else:
                     # a merge queue the base's rules don't name (classic branch protection's) only queues it, to
                     # merge later on a tree this batch never gated
-                    if (state := pull_request(pull["number"])["state"]) != "MERGED":
+                    if (state := pull_status(pull["number"])["state"]) != "MERGED":
                         raise Refused(f"GitHub left it {state}, not merged")
                     print(f"{where} merged at {head}")
         except (subprocess.CalledProcessError, Refused) as exc:
@@ -7554,7 +7651,7 @@ def base_branch(pr: int | None) -> str | None:
     """The branch `local-ci` diffs against: PR `pr`'s base, else the default branch (`origin/HEAD`, else what `origin`
     says its HEAD is); None when neither answers."""
     if pr is not None:
-        return str(pull_request(pr)["baseRefName"])
+        return str(pull_status(pr)["baseRefName"])
     with contextlib.suppress(subprocess.CalledProcessError):
         return (
             git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")
@@ -8568,7 +8665,7 @@ def settled_head(pr: int, want: str | None) -> str:
             f"--head {want}: the whole commit hash (40 hex digits), not a prefix or a ref"
         )
     for read in range(HEAD_READS):
-        head = pull_request(pr)["headRefOid"]
+        head = pull_status(pr)["headRefOid"]
         if want is None or head.lower() == want.lower():
             return head
         if read < HEAD_READS - 1:
