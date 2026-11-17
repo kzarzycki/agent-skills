@@ -10432,13 +10432,14 @@ def test_without_graphql_check_merge_still_fails_a_missing_proof(
     )
 
 
-def test_review_threads_a_host_cannot_read_over_rest_fail_closed(cloud: Cloud) -> None:
-    """GitHub's own REST API has no review threads: where the proxy's route is missing, the read raises rather than
-    count none unresolved."""
+def test_review_threads_a_host_cannot_read_over_rest_or_graphql_fail_closed(cloud: Cloud) -> None:
+    """GitHub's own REST API has no review threads: where the proxy's route is missing and GraphQL refuses the threads
+    too, the read raises rather than count none unresolved."""
     del cloud.routes["repos/{owner}/{repo}/pulls/7/ccr/review_threads"]
     with pytest.raises(subprocess.CalledProcessError) as raised:
         approvals.pull_request(7)
-    assert "ccr/review_threads: Not Found" in raised.value.stderr
+    assert raised.value.stderr == REFUSED_GRAPHQL
+    assert "reviewThreads" in " ".join(cloud.calls[-1])
 
 
 def test_where_graphql_answers_it_is_the_one_read(monkeypatch: pytest.MonkeyPatch) -> None:
