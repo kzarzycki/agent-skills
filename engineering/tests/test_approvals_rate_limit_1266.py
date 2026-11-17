@@ -92,3 +92,99 @@ def test_another_error_is_no_rate_limit() -> None:
 
 def test_a_wait_polls_the_queue_every_two_minutes_not_thirty() -> None:
     assert approvals.QUEUE_POLL == 120 and approvals.POLL == 30
+
+
+def network(text: str) -> subprocess.CalledProcessError:
+    return subprocess.CalledProcessError(128, ["git"], "", text)
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    now = [0.0]
+    monkeypatch.setattr(github, "wait_until", None)
+    monkeypatch.setattr(approvals.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        approvals.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)
+    )
+    return now
+
+
+def hold(monkeypatch: pytest.MonkeyPatch, polls: list[Any]) -> list[int]:
+    """A land that holds the lock and polls it with `polls` answered in order (an exception is raised)."""
+    ran: list[int] = []
+
+    def landing(pr: Any, only: bool = False) -> tuple[int, bool]:
+        ran.append(1)
+        approvals.held_tip = ("refs/heads/loop-landing/main", "abc")
+        return approvals.WAITING, True
+
+    def git(*args: str) -> str:
+        reply = polls.pop(0) if polls else "abc\trefs\n"
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(approvals, "landing", landing)
+    monkeypatch.setattr(approvals, "git", git)
+    return ran
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "fatal: unable to access 'https://github.com/x/y/': Could not resolve host: github.com",
+        "error: RPC failed; curl 56 Recv failure: Operation timed out\nfatal: expected flush after ref listing",
+    ],
+)
+def test_a_network_miss_in_the_lock_poll_is_polled_again(
+    monkeypatch: pytest.MonkeyPatch,
+    clock: list[float],
+    capsys: pytest.CaptureFixture[str],
+    text: str,
+) -> None:
+    ran = hold(monkeypatch, [network(text), network(text)])
+    assert approvals.land(1, wait=True) == approvals.WAITING  # to the ceiling, not exit 1
+    out = capsys.readouterr().out
+    assert "network failure 1/3" in out and "network failure 2/3" in out
+    assert len(ran) > 2
+
+
+def test_three_network_misses_in_a_row_fail(
+    monkeypatch: pytest.MonkeyPatch, clock: list[float]
+) -> None:
+    hold(monkeypatch, [network("Could not resolve host: github.com")] * 3)
+    with pytest.raises(subprocess.CalledProcessError):
+        approvals.land(1, wait=True)
+
+
+def test_a_poll_that_answers_resets_the_misses(
+    monkeypatch: pytest.MonkeyPatch, clock: list[float]
+) -> None:
+    miss = network("Could not resolve host: github.com")
+    hold(monkeypatch, [miss, miss, "abc\trefs\n", miss, miss])
+    assert approvals.land(1, wait=True) == approvals.WAITING
+
+
+def test_another_git_failure_still_fails_at_once(
+    monkeypatch: pytest.MonkeyPatch, clock: list[float]
+) -> None:
+    hold(monkeypatch, [network("fatal: not a git repository")])
+    with pytest.raises(subprocess.CalledProcessError):
+        approvals.land(1, wait=True)
+
+
+def test_a_network_miss_in_landing_is_tried_again_at_the_next_poll(
+    monkeypatch: pytest.MonkeyPatch, clock: list[float]
+) -> None:
+    rounds: list[int] = []
+
+    def landing(pr: Any, only: bool = False) -> tuple[int, bool]:
+        rounds.append(1)
+        if len(rounds) == 1:
+            raise network(
+                "fatal: unable to access 'https://github.com/x/y/': Could not resolve host"
+            )
+        return 0, False
+
+    monkeypatch.setattr(approvals, "landing", landing)
+    assert approvals.land(1, wait=True) == 0 and len(rounds) == 2

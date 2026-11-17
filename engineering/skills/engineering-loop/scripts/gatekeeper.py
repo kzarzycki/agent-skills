@@ -662,6 +662,15 @@ QUEUE_POLL = 120
 RECHECK = 300
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
 LOW_POLL, LOW_QUOTA = 300, 0.1
+# a wait that meets this many network failures in a row (NETWORK) fails with the last one
+MISSES = 3
+# what git and gh print when the network, not the request, failed: a name that did not resolve, a dropped or timed-out
+# connection, a ref listing cut short
+NETWORK = re.compile(
+    r"Could not resolve host|RPC failed|Recv failure|expected flush|Operation timed out|Connection (?:timed out|reset|refused)"
+    r"|unable to access|Failed to connect|early EOF|TLS|Network is unreachable",
+    re.IGNORECASE,
+)
 # (lock ref, tip) of the last HELD lock locked() waited on; land() polls it without GitHub calls
 held_tip: tuple[str, str] | None = None
 # the signals that stop a land and release its lock (stopped)
@@ -4403,12 +4412,21 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
     global held_tip
     deadline, said, spoke, heard = time.monotonic() + CEILING, "", 0.0, ""
     github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
+    missed = 0  # network failures in a row, of landing() and of the lock poll
     while True:
         held_tip = None
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
                 code, again = landing(pr, only)
+            missed = 0
+        except subprocess.CalledProcessError as exc:
+            # one dropped connection is no reason to give up a wait that may have been hours long
+            missed += 1
+            if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
+                raise
+            print(f"land --wait: network failure {missed}/{MISSES}, trying again: {stderr_of(exc)}", flush=True)
+            code, again = WAITING, True
         finally:
             # a background command's log: each state once, not every 30 seconds, a held lock's age being no new
             # state; again every SLOT_SAY_SECONDS, so wait-for's stall check never reads a long wait as a hang
@@ -4438,10 +4456,20 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
             if not held_tip:
                 if asleep >= nap:
                     break
-            elif asleep >= max(nap, RECHECK) or git("ls-remote", "origin", held_tip[0]).split()[
-                :1
-            ] != [held_tip[1]]:
+            elif asleep >= max(nap, RECHECK):
                 break
+            else:
+                try:
+                    tip = git("ls-remote", "origin", held_tip[0]).split()[:1]
+                except subprocess.CalledProcessError as exc:
+                    missed += 1
+                    if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
+                        raise
+                    print(f"land --wait: network failure {missed}/{MISSES}, polling again: {stderr_of(exc)}", flush=True)
+                    continue
+                missed = 0
+                if tip != [held_tip[1]]:
+                    break
 
 
 def poll_seconds() -> float:

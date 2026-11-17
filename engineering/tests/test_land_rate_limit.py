@@ -139,7 +139,13 @@ def test_land_wait_turns_the_rate_limit_wait_on_and_sleeps_in_printing_slices(
 def test_a_graphql_limit_waits_for_the_graphql_reset(calls: dict[str, Any], message: str) -> None:
     calls["replies"] = [refuse(message), "ok"]
     github.gh("api", "graphql", "-f", "query=x")
-    assert ["gh", "api", "rate_limit", "--jq", '.resources.graphql | "\\(.remaining) \\(.reset)"'] in calls["gh"]
+    assert [
+        "gh",
+        "api",
+        "rate_limit",
+        "--jq",
+        '.resources.graphql | "\\(.remaining) \\(.reset)"',
+    ] in calls["gh"]
 
 
 def test_a_held_lock_is_asked_of_github_again_after_recheck_and_said_each_minute(
