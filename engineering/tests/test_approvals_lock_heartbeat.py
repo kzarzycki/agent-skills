@@ -122,3 +122,54 @@ def test_a_holder_whose_lock_was_taken_stops_beating_and_refuses_to_merge(
     assert not thread.is_alive() and held == []
     with pytest.raises(approvals.Refused, match="took the landing lock"):
         approvals.repointed("main", held, 7)
+
+
+def run_beat(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, failing: Any) -> tuple[list[str], threading.Thread]:
+    monkeypatch.setattr(approvals, "BEAT", 3600)
+    held: list[str] = []
+    assert approvals.locked("main", held, 7)
+    monkeypatch.setattr(approvals, "BEAT", 0.02)
+    monkeypatch.setattr(approvals, "leased", failing)
+    thread = threading.Thread(target=approvals.heartbeat, args=("main", held, threading.Event()), daemon=True)
+    thread.start()
+    return held, thread
+
+
+def test_a_beat_lost_to_the_network_keeps_the_lock_and_tries_again(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_leased, real_git, calls = approvals.leased, approvals.git, []
+
+    def flaky(base: str, new: str, old: str) -> Any:
+        calls.append(new)
+        return subprocess.CompletedProcess([], 1, "", "net") if len(calls) == 1 else real_leased(base, new, old)
+
+    def down(*args: str) -> str:
+        if args[:2] == ("ls-remote", "origin") and len(calls) == 1:
+            raise subprocess.CalledProcessError(128, ["git", *args])
+        return real_git(*args)
+
+    monkeypatch.setattr(approvals, "git", down)
+    held, thread = run_beat(lands, monkeypatch, flaky)
+    deadline = time.monotonic() + 20
+    while len(calls) < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert thread.is_alive() and held and len(calls) >= 2
+
+
+def test_a_beat_that_reached_origin_but_reported_failure_stays_in_held(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_leased = approvals.leased
+    seen: list[str] = []
+
+    def lost_answer(base: str, new: str, old: str) -> Any:
+        real_leased(base, new, old)
+        seen.append(new)
+        return subprocess.CompletedProcess([], 1, "", "reset")
+
+    held, thread = run_beat(lands, monkeypatch, lost_answer)
+    deadline = time.monotonic() + 20
+    while not seen and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert seen and seen[0] in held and held[-1] != held[0]

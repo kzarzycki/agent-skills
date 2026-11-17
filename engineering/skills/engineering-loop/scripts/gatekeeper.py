@@ -4929,7 +4929,9 @@ def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
     """While the lock is ours, every BEAT seconds push a HELD child of our newest commit, leased on it, so the lock's
     stamp stays fresh. A refused push means another land took the lock (broke it as stale, or read its PR as merged):
     our commits are dropped from `held`, which nothing then releases, as repointed() does. A push
-    that fails for another reason (the network) is tried again at the next beat."""
+    that fails for another reason (the network) is tried again at the next beat. A stop signal is left to the main
+    thread, which releases the lock."""
+    signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
     while not stop.wait(BEAT):
         with beating:
             if stop.is_set() or not held:
@@ -4940,8 +4942,11 @@ def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
             held.append(lock_commit(HELD, ours, int(named[1]) if named else None))
             pushed = leased(base, held[-1], ours)
             if pushed.returncode:
+                tip = lock_tip(base)
+                if tip == held[-1]:  # the push reached origin and only its answer was lost: the commit stays ours
+                    continue
                 held.pop()
-                if lock_tip(base) != ours:
+                if tip not in (None, ours):  # unreadable (the network) is not another land's tip
                     held.clear()
                     return
 
