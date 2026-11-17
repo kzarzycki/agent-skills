@@ -19,6 +19,7 @@ from datetime import datetime
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
@@ -3414,10 +3415,11 @@ def test_a_cloud_start_from_a_worktree_takes_its_main_checkout_s_environment_pin
     settings = tree / ".claude" / "settings.local.json"
     assert json.loads(settings.read_text()) == {"remote": {"defaultEnvironmentId": "env_a"}}
     assert "env_a" in capsys.readouterr().err and len(og.sessions) == 1
-    # a worktree already pinned keeps its own pin
+    # a worktree pinned to another environment is refused: its main checkout's pin would apply
     settings.write_text(json.dumps({"remote": {"defaultEnvironmentId": "env_b"}}))
-    assert start_cloud(og, tree, title="t2") == 0
-    assert json.loads(settings.read_text()) == {"remote": {"defaultEnvironmentId": "env_b"}}
+    assert start_cloud(og, tree, title="t2") == 1
+    err = capsys.readouterr().err
+    assert "env_b" in err and "env_a" in err and len(og.sessions) == 1
 
 
 def test_a_worktree_s_other_settings_stay_when_it_gains_the_pin(
@@ -9552,7 +9554,7 @@ def test_a_lead_the_owner_drives_directly_gets_no_deadline_and_no_nudge(
     assert state_of(registry)["leads"]["a"]["direct"] is True
 
 
-def test_a_direct_lead_still_reports_done_and_records_a_quiet_end() -> None:
+def test_a_direct_lead_s_done_tells_its_waiters_and_a_quiet_end_is_recorded() -> None:
     def route(last: str) -> tuple[str, str, str]:
         event = {"kind": "ended", "last": last, "direct": True, "decisions": True}
         return omnigent_agent.route(event, lambda: pytest.fail("no small model for it"))
@@ -9568,8 +9570,8 @@ def test_a_direct_lead_s_question_and_quiet_report_stay_with_the_owner() -> None
     no_model = lambda: pytest.fail("no model call")
     question = {"kind": "blocked", "question": True, "direct": True}
     assert omnigent_agent.route(question, no_model)[1] == "record"
-    prompt = {"kind": "blocked", "direct": True}
-    assert omnigent_agent.route(prompt, no_model)[1] == "owner"
+    prompt = {"kind": "blocked", "direct": True}  # the owner sees it in its session (#1163)
+    assert omnigent_agent.route(prompt, no_model)[1] == "record"
     quiet = {"kind": "ended", "direct": True, "last": "/tmp/f.md", "head": "Here is what I found."}
     assert omnigent_agent.route(quiet, no_model)[1] == "record"
     done = {"kind": "ended", "direct": True, "last": "/tmp/f.md", "head": "DONE: shipped"}
@@ -12026,3 +12028,57 @@ def test_call_allows_each_request_the_timeout_it_is_given_else_thirty_seconds(
     og.call("GET", "/v1/x")
     og.call("GET", "/v1/x", timeout=180.0)
     assert seen == [30.0, 180.0]
+
+
+def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    modes: list[str | None] = []
+
+    class Starter(FakeOmnigent):
+        launch: ClassVar[list[str]] = []
+        harness_of_starter = "claude-native"
+
+        def info(self, sid: str) -> dict:
+            if sid == "starter":
+                return {"harness": self.harness_of_starter, "terminal_launch_args": self.launch}
+            return super().info(sid)
+
+        def create(self, agent: str, title: str, model: str | None = None, *rest: object) -> str:
+            modes.append(rest[2] if len(rest) > 2 else None)  # permission_mode
+            return super().create(agent, title, model, *rest)
+
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "starter")
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
+    og = Starter()
+    og.harnesses = {"agy": "antigravity-native", "claude-cloud": omnigent_agent.CLOUD_HARNESS}
+    bypass = ["--permission-mode", "bypassPermissions"]
+    n = 0
+
+    def child(agent: str, starter: list[str], **kw: object) -> tuple[str | None, str]:
+        nonlocal n
+        n += 1
+        Starter.launch = starter
+        omnigent_agent.start(og, agent, f"t{n}", "do X", tmp_path / "r.md", None, 0, **kw)
+        return modes[-1], capsys.readouterr().err
+
+    mode, err = child("claude", bypass)
+    assert mode == "bypassPermissions" and "bypassPermissions inherited" in err
+    assert child("claude", []) == (None, "")  # a starter with no mode: the harness default
+    Starter.harness_of_starter = "codex-native"
+    assert child("claude", bypass) == (None, "")  # only a Claude starter lends its mode
+    Starter.harness_of_starter = "claude-native"
+    mode, err = child("claude", bypass, permission_mode="plan")  # the flag wins
+    assert mode == "plan" and "inherited" not in err
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "acceptEdits")  # so does the variable
+    mode, err = child("claude", bypass)
+    assert mode is None and "inherited" not in err  # create reads the variable itself
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE")
+    # Another harness's child never inherits: Codex takes no mode, claude-cloud and agy keep
+    # their own opt-in.
+    assert child("codex", bypass) == (None, "")
+    mode, err = child("claude-cloud", bypass)
+    assert mode is None and "inherited" not in err and "not applied" not in err
+    with pytest.raises(omnigent_agent.Fail, match="a --role child blocks unattended"):
+        Starter.launch = bypass
+        omnigent_agent.start(og, "agy", "t-agy", "x", tmp_path / "r.md", "worker.md", 0)

@@ -77,7 +77,8 @@ backoff on the same model, never on another, which would leave the work on a mod
 chose.
 
 **Permission mode.** A Claude child starts in `--permission-mode <mode>`, else
-`OMNIGENT_PERMISSION_MODE`, else the harness default; the mode is the project's or owner's
+`OMNIGENT_PERMISSION_MODE`, else the `--permission-mode` its Claude starter was launched with
+(named on stderr; none there, none here), else the harness default; the mode is the project's or owner's
 choice, set in the environment once. Omnigent applies it as the session's
 `terminal_launch_args` when it launches the terminal, so `info` shows it. A Codex child takes
 none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
@@ -153,8 +154,8 @@ runs in the environment its workspace's untracked `.claude/settings.local.json` 
 worktree's missing pin from its main checkout (keeping the file's other settings) and refuse
 when neither has one. They refuse a local agent in a main checkout whose own file names the pin, naming
 `claude-cloud` and a worktree as the routes: that checkout is where cloud sessions launch from,
-and a local agent working there switches its branch under every later start. A worktree's copied
-pin is its own, so a local agent there is accepted. A launch dir needs no checked-out files: nothing on the cloud path reads them (the bridge checks for a git repo, the CLI bundles it and reads the pin and the folder trust). `launch-dir <remote> <branch> <env-id> <path>` makes one with the pin and a `tmp/loop/`, a few dozen MB instead of a full checkout: run inside a checkout of the same repository (a remote with the same host, in any case, and the same path, in the same case) it is a `git worktree add --no-checkout` of that checkout (on a branch of its own, `launch/<folder>`), which inherits the checkout's folder trust (Claude Code keys a worktree's trust on the main worktree git lists first, which for a `--separate-git-dir` checkout is the git dir, not the checkout), since Claude Code trusts by path and a separate clone, even inside a trusted folder, is untrusted; anywhere else it is a blobless `--no-checkout` clone with HEAD on the branch. It prints whether the new folder is trusted. `--trust` also writes the folder-trust entry in the user's Claude config, which is the user's call and never done otherwise. `start` for a `claude-cloud` agent refuses an untrusted launch dir before any session exists, naming the folder and the two ways out (re-run `launch-dir` from a trusted checkout, or `launch-dir --trust` as the user's decision), since the bridge fails with "has not trusted" only after the session is created. `pin_environment` accepts such a clone with its own pin and refuses one without, naming the helper. `start --pr <n>` on a `claude-cloud` agent points the launch dir's HEAD at the PR's branch (fetching it) without checking files out, and leaves a directory with a working tree alone. It fetches the PR's own ref (`refs/pull/<n>/head`, so a fork's branch works), reads the PR from the launch dir's repository, and runs git where the launch dir is: a `start` for a workspace on another host leaves its HEAD to that host's own `start`.
+and a local agent working there switches its branch under every later start. A worktree is not that
+checkout, so a local agent there is accepted. In a worktree, though, `claude --cloud` takes the main checkout's pin when that checkout has one, so a worktree pinned to another environment would silently run that one's setup script and variables: `start`, `run` and `launch-dir` refuse such a worktree before any session exists, naming both pins and the two ways out (repin the main checkout, or launch from a clone, `launch-dir --clone`). A launch dir needs no checked-out files: nothing on the cloud path reads them (the bridge checks for a git repo, the CLI bundles it and reads the pin and the folder trust). `launch-dir <remote> <branch> <env-id> <path>` makes one with the pin and a `tmp/loop/`, a few dozen MB instead of a full checkout: run inside a checkout of the same repository (a remote with the same host, in any case, and the same path, in the same case) it is a `git worktree add --no-checkout` of that checkout (on a branch of its own, `launch/<folder>`), which inherits the checkout's folder trust (Claude Code keys a worktree's trust on the main worktree git lists first, which for a `--separate-git-dir` checkout is the git dir, not the checkout), since Claude Code trusts by path and a separate clone, even inside a trusted folder, is untrusted; anywhere else, or with `--clone`, it is a blobless `--no-checkout` clone with HEAD on the branch. It prints whether the new folder is trusted. `--trust` also writes the folder-trust entry in the user's Claude config, which is the user's call and never done otherwise. `start` for a `claude-cloud` agent refuses an untrusted launch dir before any session exists, naming the folder and the two ways out (re-run `launch-dir` from a trusted checkout, or `launch-dir --trust` as the user's decision), since the bridge fails with "has not trusted" only after the session is created. `pin_environment` accepts such a clone with its own pin and refuses one without, naming the helper. `start --pr <n>` on a `claude-cloud` agent points the launch dir's HEAD at the PR's branch (fetching it) without checking files out, and leaves a directory with a working tree alone. It fetches the PR's own ref (`refs/pull/<n>/head`, so a fork's branch works), reads the PR from the launch dir's repository, and runs git where the launch dir is: a `start` for a workspace on another host leaves its HEAD to that host's own `start`.
 `wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
 report path, so whatever reads the report reads a file as for any child. The worker pushes
@@ -675,9 +676,12 @@ session titled so) leave the deadline as above. Each deadline is one event per
 lead and `progress_at`, so new progress starts a new chain. A lead whose registry line has the
 `direct` field (`start --top-level --direct` writes it at launch, `omnigent_agent.py direct <session>`
 later, `--off` clears it), one the owner drives in
-its own session, has no deadline at all: its quiet ends and `USER NEEDED` are recorded, not
-routed, since the owner reads them there, and the `no event in <n>s` log line leaves it out; its
-`DONE`, failures and prompts route as any lead's.
+its own session, has no deadline at all, and nothing about it is posted: its turn ends, `DONE`
+included, its questions, prompts and failures are recorded, since the owner sees them there, and
+the `no event in <n>s` log line leaves it out. Its `DONE` still tells the leads registered `after=`
+it, and a failed turn that lost its runner (offline, or an error naming a lost runner or host)
+routes as any lead's, since the owner can't see why in that session. A direct lead that goes
+offline while idle raises nothing.
 
 **Routing.** With `--console` an event is not posted as a line: the supervisor routes it, by
 `route`'s table (the design's § Routing an event), and settles what needs no decision itself.

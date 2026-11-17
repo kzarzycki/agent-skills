@@ -3,7 +3,7 @@
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep|--no-keep] [--notify]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
-    python3 scripts/omnigent_agent.py launch-dir <remote> <branch> <env-id> <path> [--trust]
+    python3 scripts/omnigent_agent.py launch-dir <remote> <branch> <env-id> <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--notify]
@@ -137,8 +137,9 @@ itself (no post, a nudge, a revive, telling the leads registered ``after=`` it o
 ``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
 what its rules can't settle, and posts what needs the notified session or the owner as
 ``Supervisor [act] b-<id>: …`` or ``Supervisor [owner] b-<id>: …``, at most one post per 5
-minutes; ``--fyi post`` posts every line as without it too, ``--decisions`` names the owner's
-standing decisions for the small model. Without it, it writes none of these and posts every line.
+minutes, and for a lead marked ``direct`` nothing but a failed turn that lost its runner, which
+the owner can't see in its session; ``--fyi post`` posts every line as without it too,
+``--decisions`` names the owner's standing decisions for the small model. Without it, it writes none of these and posts every line.
 A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
 a user service running that same command line less ``--install`` and ``--log`` (a systemd user unit
 ``omnigent-supervise-<hash>`` with ``Restart=always`` on Linux, a launchd agent
@@ -373,14 +374,20 @@ USAGE_LIMIT_ERRORS = (
 # provider recovers: the supervisor revives it again after each backoff (minutes, the last
 # repeated) until the next revive would fall past the cap, and only then reports it. A false
 # match costs revives, never a report: the cap still reports it.
+# A failure whose text matches one of these lost the session's runner or host: the session died
+# where its own reader can't see why, so even a direct lead's is routed.
+LOST_RUNNER_ERRORS = (
+    r"\brunner (lost|is offline|disconnected|went away)",  # the host went away: a lost runner
+    r"\bhost (went away|restarted|rebooted|is (offline|unreachable|gone))",  # or a host restart
+    r"made no progress for \d+s",  # a cloud worker cut with its host reads as silence
+)
+LOST_RUNNER = re.compile("|".join(LOST_RUNNER_ERRORS), re.IGNORECASE)
 TRANSIENT_ERRORS = (
     r"authentication_failed",  # an auth outage on the provider's side, not a bad key
     r"Attention Required",  # a Cloudflare challenge page (a 403)
     r"\b5\d\d\b",  # any 5xx, a cloud create's 503 included
     r"overloaded",
-    r"\brunner (lost|is offline|disconnected|went away)",  # the host went away: a lost runner
-    r"\bhost (went away|restarted|rebooted|is (offline|unreachable|gone))",  # or a host restart
-    r"made no progress for \d+s",  # a cloud worker cut with its host reads as silence
+    *LOST_RUNNER_ERRORS,
     r"\brate_limit",  # a provider's rate limit: it clears within minutes, per session
     *USAGE_LIMIT_ERRORS,
 )
@@ -463,8 +470,9 @@ FOLLOW_FIELD = "follow"  # a registry line's mark for a lead followed, not owed 
 AFTER_FIELD = "after="  # a followed lead's line: the lead whose DONE it waits on
 # A followed manager's line: the registry of its own leads, the sessions its wait on its leads names
 LEADS_FIELD = "leads="
-# A followed lead the owner drives directly, in its own session: no deadline, nudge or quiet-end
-# routing, since the owner is its follower; its DONE, failures and prompts are still routed.
+# A followed lead the owner drives directly, in its own session: the owner is its follower, so
+# nothing about it is posted (no deadline, nudge, DONE, prompt or failure) but a failure that lost
+# its runner, which the owner can't see there; its DONE still tells the leads waiting on it.
 DIRECT_FIELD = "direct"
 # The supervisor's own lines to a followed lead, which start no new progress chain.
 OWN_LINES = ("Supervisor: ", REVIVED, NO_REPORT)
@@ -1631,7 +1639,7 @@ def heavy_lock() -> str:
     """The lock a lead's children on this host share around each heavy step, so a lead running
     two workers holds one heavy slot, not two (the host's slot counts every caller): the caller's
     ``LOOP_HEAVY_LOCK`` when set, else one per runner's primary session (the lead, in its children
-    and theirs too) beside the host's gate slot (``gate.1.lock``), since one lead starts children
+    and theirs too) beside the host's gate slots (``gate.<n>.lock``), since one lead starts children
     from several worktrees; ``""`` outside a session. A session gets no environment from its starter, so the
     path goes atop the brief, as ``AGENT_SIGNATURE`` does."""
     if path := os.environ.get("LOOP_HEAVY_LOCK"):
@@ -1695,6 +1703,23 @@ def own_id() -> str:
         or env.get("OMNIGENT_TERMINAL_LAUNCH_SESSION_ID")
         or parent_id()
     )
+
+
+def starter_mode(og: Omnigent) -> tuple[str, str]:
+    """The ``--permission-mode`` the session this runs in was launched with, and its id: the
+    fallback of a Claude child's start. ``("", "")`` outside Omnigent, for a starter that is not a
+    Claude session, or one launched with no mode."""
+    if not (sid := own_id()):
+        return "", ""
+    try:
+        info = og.info(sid)
+    except Fail:
+        return "", ""
+    args = info.get("terminal_launch_args") or []
+    if "claude" not in str(info.get("harness") or "") or "--permission-mode" not in args:
+        return "", ""
+    at = args.index("--permission-mode") + 1
+    return (str(args[at]), sid) if at < len(args) else ("", "")
 
 
 def runner_log(info: dict) -> str:
@@ -2533,9 +2558,9 @@ def git_dirs(workspace: Path) -> list[str]:
 def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
     """A main checkout pinned for cloud sessions is where they are launched from: a local agent
     working there switched its branch under every later start, and carried another worker's
-    uncommitted edits along. A worktree's pin, copied in by ``pin_environment``, is its own. A
-    folder inside the main checkout is the checkout, so the pin is read at its root, which git
-    names even when its git dir lives elsewhere (``--separate-git-dir``)."""
+    uncommitted edits along. A linked worktree is not the checkout, whatever it pins. A folder
+    inside the main checkout is the checkout, so the pin is read at its root, which git names
+    even when its git dir lives elsewhere (``--separate-git-dir``)."""
     dirs = git_dirs(workspace)
     if len(dirs) == 3 and dirs[0] == dirs[1] and environment_pin(own_settings(Path(dirs[2]))):
         raise Fail(
@@ -2545,15 +2570,30 @@ def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
         )
 
 
+def refuse_shadowed_pin(workspace: Path, env: str, main: Path | None) -> None:
+    """``claude --cloud`` in a linked worktree takes its main checkout's pin when that checkout has
+    one, so a different pin of the worktree's own never applies and the session would run the other
+    environment's setup script and variables (#1152): fail, naming both, before any session exists."""
+    theirs = environment_pin(own_settings(main)) if main else ""
+    if theirs and theirs != env:
+        raise Fail(
+            f"{workspace} would pin environment {env}, but a cloud session launched there takes"
+            f" {main / SETTINGS}'s {theirs}: repin that file to {env}, or launch from a clone"
+            " (`launch-dir --clone`; folder trust is the user's call, --trust)"
+        )
+
+
 def pin_environment(workspace: Path) -> None:
     """Make sure a cloud session started in ``workspace`` gets the repo's claude.ai environment: it
     takes ``remote.defaultEnvironmentId`` from the workspace's untracked settings file, which a new
     worktree lacks, and without it lands in the account's default environment. A worktree missing
-    the pin takes its main checkout's; with neither, fail before any session exists."""
+    the pin takes its main checkout's; with neither, fail before any session exists, as with a
+    pin of its own that its main checkout's shadows."""
     own = own_settings(workspace)
-    if environment_pin(own):
-        return
     main = main_worktree(workspace)  # no checkout: no main to copy from
+    if env := environment_pin(own):
+        refuse_shadowed_pin(workspace, env, main)
+        return
     if main and (env := environment_pin(own_settings(main))):
         remote = own.get("remote") if isinstance(own.get("remote"), dict) else {}
         own["remote"] = {**remote, "defaultEnvironmentId": env}
@@ -2577,8 +2617,12 @@ def main_worktree(path: Path) -> Path | None:
     --separate-git-dir`` (or for a bare repository) git and Claude Code name the git dir itself,
     since nothing in it records where the checkout is."""
     dirs = git_dirs(path)
-    if len(dirs) != 3 or dirs[0] == dirs[1]:
-        return None
+    return listed_main(path) if len(dirs) == 3 and dirs[0] != dirs[1] else None
+
+
+def listed_main(path: Path) -> Path | None:
+    """The worktree git lists first for the repository ``path`` is in, whether ``path`` is that
+    worktree or a linked one (``main_worktree``); None outside a checkout."""
     first = subprocess.run(
         ["git", "-C", str(path), "worktree", "list", "--porcelain", "-z"],
         capture_output=True,
@@ -2665,21 +2709,24 @@ def launch_dir(
     trust: bool = False,
     config: Path | None = None,
     here: Path | None = None,
+    clone: bool = False,
 ) -> None:
     """A directory cloud sessions launch from, with no working tree: nothing on the cloud path reads
     its files (the bridge checks for a git repo, the CLI bundles it and reads the pin), so a
     ``--no-checkout`` stand-in with HEAD on ``branch`` replaces a full checkout. Run inside a checkout
     of the same repository (``here``, default the current directory) it is a worktree of that
-    checkout, which inherits the checkout's folder trust; otherwise a blobless clone, which Claude
-    Code does not trust. It holds the pin (``remote.defaultEnvironmentId``) and the ``tmp/loop/``
+    checkout, which inherits the checkout's folder trust; otherwise, or with ``clone``, a blobless
+    clone, which Claude Code does not trust. It holds the pin (``remote.defaultEnvironmentId``) and the ``tmp/loop/``
     that briefs and reports use. The folder-trust entry in the user's Claude config (``config``,
     default ``~/.claude.json``) is written only with ``trust``: trust is the user's decision, never
     this script's. It prints whether the folder is trusted."""
     if path.exists() and any(path.iterdir()):
         raise Fail(f"{path} is not empty")
-    source = same_repo_checkout(remote, here or Path.cwd())
+    source = None if clone else same_repo_checkout(remote, here or Path.cwd())
     if source:
         main, name = source
+        # the main worktree the new worktree's pin_environment will read, so the two agree
+        refuse_shadowed_pin(path, env, listed_main(main))
         # the checkout's own remote, by name: its settings (a partial clone's among them) apply
         steps = [
             ["git", "-C", str(main), "fetch", "-q", name, branch],
@@ -2957,6 +3004,16 @@ def start(
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
 
+    if agent == "claude" and not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
+        # Neither flag nor variable: a Claude child takes its Claude starter's own mode, and only
+        # a Claude child, since another harness keeps its own explicit opt-in (the agy --role guard).
+        inherited, from_sid = starter_mode(og)
+        if inherited:
+            print(
+                f"permission mode {inherited} inherited from this session ({from_sid})",
+                file=sys.stderr,
+            )
+            permission_mode = inherited
     if permission_mode and not applied(permission_mode):
         raise Fail(
             f"--permission-mode is for claude sessions ({BYPASS} for antigravity, and"
@@ -2968,8 +3025,9 @@ def start(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
         )
-    # The flag was refused above, so a mode here came from the environment: the session starts in
-    # its harness's default stance, which a run counting on the mode is told (#987).
+    # The flag was refused above, so a mode not applied here came from the environment (an inherited
+    # one is a Claude child's, always applied): the session starts in its harness's default stance,
+    # which a run counting on the mode is told (#987).
     mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
     if mode and not applied(mode):
         print(
@@ -5155,7 +5213,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``wake`` (a timed
     wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``park`` (a usage limit:
     join the parked sessions, which one probe at a time revives), ``done``
-    (act, and tell each lead waiting on it), ``act`` (to the chief of staff), ``owner`` (queued
+    (act, and tell each lead waiting on it; for a ``direct`` lead only the telling), ``act`` (to the chief of staff), ``owner`` (queued
     for the owner) and ``read-report`` (read ``head``, then route again). Nothing approves: a
     prompt is the owner's."""
     # ``wait`` is the lead's, from its report when its last message is only the path
@@ -5164,10 +5222,12 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "act", "its default branch moved: a step owed after a landing"
     if kind == "archived":
         return "rule", "absorb", "archived: drop its row"
+    error = event.get("line", "").partition("\n")[0]  # the status line, not the lead's own words
+    lost = kind == "failed" and (event.get("offline") or LOST_RUNNER.search(error))
+    if event.get("direct") and kind != "ended" and not lost:  # its turn end: below, read first
+        return "rule", "record", "the owner drives it directly: they see it in its session"
     if kind == "blocked":
         if event.get("question"):
-            if event.get("direct"):
-                return "rule", "record", "the owner drives it directly: they answer its question"
             return (
                 "rule",
                 "act",
@@ -5197,8 +5257,6 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     if kind == "news":  # a session its wait names ended: only the waiter can act on it
         return "rule", "tell", "a session its wait names ended: tell the waiter"
     if kind == "deadline":
-        if event.get("direct"):
-            return "rule", "record", "the owner drives it directly: no deadline"
         if wait == "parked":
             return "rule", "record", "parked: no deadline"
         if wait != "unknown":
@@ -5226,7 +5284,9 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if not ENDING.search(text) and wait == "unknown" and not event.get("direct"):
             return "rule", "act", "its report names no ending"
     ending = ending_of(text)
-    if event.get("direct") and ending != "DONE":
+    if event.get("direct"):  # the owner reads its turn there: a DONE tells only its waiters
+        if ending == "DONE":
+            return "rule", "done", "done, driven by the owner: told only to the leads waiting on it"
         return "rule", "record", "the owner drives it directly: they read its turn there"
     if event.get("nudged") and not ending and wait == "unknown":  # its last words, unchanged
         return "rule", "act", "quiet again after its nudge"
@@ -5716,7 +5776,7 @@ def supervise_registry(
             }
         elif action == "tell":
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
-        elif action in ("act", "owner", "done"):
+        elif action in ("act", "owner") or action == "done" and not event["direct"]:
             queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
         if action == "act" and event["limit"] and event["capped"]:  # past the cap: no more probes
             for parked in state["leads"].values():
@@ -6926,6 +6986,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument(
         "--trust", action="store_true", help="also write the folder-trust entry (the user's call)"
     )
+    p.add_argument(
+        "--clone", action="store_true", help="clone even inside a checkout of the repository"
+    )
     p = sub.add_parser(
         "capacity", description="exit 0 when this host, or --host, has room for another session"
     )
@@ -7227,7 +7290,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 notify(outcome)
             return code
         if args.cmd == "launch-dir":
-            launch_dir(args.remote, args.branch, args.env, args.path, args.trust)
+            launch_dir(args.remote, args.branch, args.env, args.path, args.trust, clone=args.clone)
             return 0
         if args.cmd == "capacity" and not args.host:
             ok, line = capacity()

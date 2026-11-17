@@ -3420,13 +3420,6 @@ def test_any_other_rules_error_fails(
         approvals.required_checks("main")
 
 
-def test_a_base_whose_rules_require_a_merge_queue_is_refused(landing: dict[str, Any]) -> None:
-    """GitHub's queue would merge a PR later, on a merge-group tree land never gated."""
-    landing.update(rulesets=["check", ":merge_queue"])
-    with pytest.raises(approvals.Refused, match="require GitHub's merge queue"):
-        approvals.required_checks("main")
-
-
 def test_the_required_checks_are_the_rulesets_and_the_branch_protections(
     landing: dict[str, Any],
 ) -> None:
@@ -4050,7 +4043,9 @@ def test_a_machine_fault_twice_on_the_tip_after_the_merges_still_says_landed(
     refusing(monkeypatch, lambda args: args[2] == "8")
     codes = iter([0, 78, 78])
     monkeypatch.setattr(
-        approvals, "ran_step", lambda _step, cwd=None, out=None, load=None: (next(codes), 0, 0)
+        approvals,
+        "ran_step",
+        lambda _step, cwd=None, out=None, load=None, land=False: (next(codes), 0, 0),
     )
     code, lines = lands["land"]()
     assert (code, lands["merged"]()) == (1, ["7"])

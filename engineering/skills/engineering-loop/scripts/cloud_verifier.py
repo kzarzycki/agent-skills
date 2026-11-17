@@ -8,7 +8,7 @@ On the host that starts cloud sessions:
 
 In the VM, from the checkout:
 
-    python3 <skill>/scripts/cloud_verifier.py verify --pr N --brief FILE [--model M] [--effort E]
+    python3 <skill>/scripts/cloud_verifier.py verify --pr N --brief FILE [--harness codex|claude] [--model M] [--effort E]
 
 On a host with no worker VM (route 1b), a Codex Cloud thread driven with the host's own login:
 
@@ -55,8 +55,11 @@ report's own folder pass: a fresh clone ignores `tmp/loop/` only where the proje
 out the PR's head detached, so nothing the verifier does moves the worker's branch, runs `codex exec` on the brief with Codex's own sandbox
 off (the VM is the sandbox, and the verifier needs Docker and the network), under an `AGENT_SIGNATURE=` line
 naming the model and effort it was given, and posts the report as one comment on
-the PR through REST, unchanged, printing the comment's URL as its last line. The report is the file the brief's
-`- Report: <path>` line names (approvals.py brief), else Codex's final message, else the file inside the checkout that message links; one without a `SATISFIED:` line is
+the PR through REST, unchanged, printing the comment's URL as its last line. With `--harness claude` it runs
+`claude -p` on the brief instead, in permission mode `bypassPermissions` for the same reason, on the session's own
+Claude login (no install, no login step, no seeded variable), and keeps what it prints on stdout as the final
+message; `--effort` is refused there (exit 2), since the CLI has no such flag. The report is the file the brief's
+`- Report: <path>` line names (approvals.py brief), else the CLI's final message, else the file inside the checkout that message links; one without a `SATISFIED:` line is
 not posted, and a report or question file counts only when this pass wrote it, so an earlier pass's file is never
 posted again and none is deleted. A verifier that stops on a question (`<report>.question`, verifier.md) gets that file posted
 instead, headed `## Verifier question`. It returns the checkout to where it was. When the verifier left
@@ -67,12 +70,12 @@ leaves the checkout as it is (exit 4).
 Where the checkout of the PR's head itself shows changes (a submodule the PR moved, a file only the worker's branch
 ignores), the pass is refused and the checkout returned (exit 2), since an edit to one of those could not be told
 apart. A change is what `git status` shows: an edit to a file git ignores can't be seen and is not reported.
-Exit 0 report posted, 1 the pass failed (Codex failed, wrote no report, or the comment could not be posted), 2 a
+Exit 0 report posted, 1 the pass failed (the CLI failed, wrote no report, or the comment could not be posted), 2 a
 precondition is missing and nothing was touched, 3 a question posted, 4 the checkout needs a look, whatever else the
 pass did (a posted comment's URL is still printed).
 The carrier session runs it detached and polls, since a foreground command in the VM stops at 10 minutes.
 
-Standard library only, plus `gh`, `git` and `npm` in the VM and `codex` and the Claude Code login on the host.
+Standard library only, plus `gh`, `git` and `npm` (or `claude`, for `--harness claude`) in the VM and `codex` and the Claude Code login on the host.
 """
 
 from __future__ import annotations
@@ -477,13 +480,17 @@ def report_path(brief: str) -> Path | None:
     return Path(found[1]) if found else None
 
 
-def signature(model: str | None, effort: str | None) -> str:
-    """`codex/<model>/<effort>` as orchestrating-agents' launcher writes it atop a brief (`gpt-6.1-terra` is
-    `terra-6.1`, `medium` is `med`, `?` for the CLI's own default), so the report's `Verifier:` line names what ran."""
-    short = re.sub(r"^gpt-", "", model or "")
+def signature(model: str | None, effort: str | None, harness: str = "codex") -> str:
+    """`codex/<model>/<effort>` (`cc/...` for Claude) as orchestrating-agents' launcher writes it atop a brief
+    (`gpt-6.1-terra` is `terra-6.1`, `claude-sonnet-5-5` is `sonnet-5.5`, `medium` is `med`, `?` for the CLI's own
+    default), so the report's `Verifier:` line names what ran."""
+    short = re.sub(r"^(gpt|claude)-", "", model or "")
     if found := re.fullmatch(r"(\d+)[.-](\d+)-([a-z]+)", short):
         short = f"{found[3]}-{found[1]}.{found[2]}"
-    return f"codex/{short or '?'}/{ {'medium': 'med'}.get(effort or '', effort) or '?' }"
+    elif found := re.fullmatch(r"([a-z]+)-(\d+)-(\d+)", short):
+        short = f"{found[1]}-{found[2]}.{found[3]}"
+    name = {"claude": "cc"}.get(harness, harness)
+    return f"{name}/{short or '?'}/{ {'medium': 'med'}.get(effort or '', effort) or '?' }"
 
 
 def changes(report: Path | None) -> list[tuple[str, str]]:
@@ -578,15 +585,17 @@ def linked_report(final: str, root: Path) -> tuple[str, str] | None:
     return None
 
 
-def codex_exec(cmd: list[str], brief: str) -> int:
-    """Run Codex without the seeded variable (it reads the auth.json `verify` wrote), its output relayed line by line
-    through this process's redacted stdout, so a verifier can neither read the variable nor print a token."""
+def relay_exec(cmd: list[str], brief: str, keep: Path | None = None) -> int:
+    """Run a verifier CLI on the brief (stdin) without the seeded variable (Codex reads the auth.json `verify` wrote,
+    Claude its own login), its output relayed line by line through this process's redacted stdout and stderr, so a
+    verifier can neither read the variable nor print a token. With `keep`, what it prints on stdout (`claude -p`'s
+    final message) is also written there, and its stderr is relayed apart, so a warning never joins the report."""
     env = {k: v for k, v in os.environ.items() if k != VAR}
     child = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE if keep else subprocess.STDOUT,
         text=True,
         errors="replace",
         env=env,
@@ -598,27 +607,44 @@ def codex_exec(cmd: list[str], brief: str) -> int:
         try:
             child.stdin.write(brief)
             child.stdin.close()
-        except OSError:  # Codex exited before reading it all: its exit says so
+        except OSError:  # the CLI exited before reading it all: its exit says so
             pass
 
-    # Bound now, while `main` has the redactor in place: a line that arrives after
+    kept: list[str] = []
+
+    def relay(stream, to, into: list[str] | None) -> None:
+        for line in stream:
+            to.write(line)
+            to.flush()
+            if into is not None:
+                into.append(line)
+
+    # The streams are bound now, while `main` has the redactor in place: a line that arrives after
     # `main` has put the real streams back must still go through it.
-    out = sys.stdout
-
-    def relay() -> None:
-        for line in child.stdout:
-            out.write(line)
-            out.flush()
-
-    writer = threading.Thread(target=feed, daemon=True)
-    writer.start()
-    reader = threading.Thread(target=relay, daemon=True)
-    reader.start()
+    threads = [threading.Thread(target=feed, daemon=True)]
+    threads.append(
+        threading.Thread(
+            target=relay, args=(child.stdout, sys.stdout, kept if keep else None), daemon=True
+        )
+    )
+    if keep and child.stderr:
+        threads.append(
+            threading.Thread(target=relay, args=(child.stderr, sys.stderr, None), daemon=True)
+        )
+    for thread in threads:
+        thread.start()
     code = child.wait()
-    # a background descendant of Codex can hold the pipe open long after it exits: wait only briefly for the tail
-    reader.join(2)
-    writer.join(2)
+    # a background descendant of the CLI can hold the pipe open long after it exits: wait only briefly for the tail
+    for thread in threads:
+        thread.join(2)
+    if keep:
+        keep.write_text("".join(kept))
     return code
+
+
+def codex_exec(cmd: list[str], brief: str) -> int:
+    """Run Codex on the brief; it writes its final message to the file its `-o` names."""
+    return relay_exec(cmd, brief)
 
 
 def needs_a_look(why: str, what: str) -> None:
@@ -628,12 +654,17 @@ def needs_a_look(why: str, what: str) -> None:
     )
 
 
-def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> int:
+def verify(
+    pr: int, brief_file: Path, model: str | None, effort: str | None, harness: str = "codex"
+) -> int:
+    if harness == "claude" and effort:
+        raise Refused("`--effort` is Codex's only: the Claude CLI has no effort flag, so pass none")
     brief = brief_file.read_text()
     if not brief.startswith("AGENT_SIGNATURE="):
-        brief = f"AGENT_SIGNATURE={signature(model, effort)}\n{brief}"
+        brief = f"AGENT_SIGNATURE={signature(model, effort, harness)}\n{brief}"
     os.chdir(run("git", "rev-parse", "--show-toplevel").stdout.strip())
-    ensure_codex()
+    if harness == "codex":
+        ensure_codex()
     report = report_path(brief)
     question = report.with_name(report.name + ".question") if report else None
     final = Path(tempfile.mkdtemp(prefix="cloud-verifier-")) / "final.md"
@@ -669,22 +700,29 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
             "at the PR's head this checkout shows changes of its own, and a verifier reviews the pushed head only; "
             f"put them right (update a submodule, move a file aside) and run the pass again:\n{shown[:600]}"
         )
-    cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-o", str(final)]
-    cmd += ["-m", model] if model else []
-    cmd += ["-c", f"model_reasoning_effort={effort}"] if effort else []
+    if harness == "claude":
+        # the VM is the sandbox, as for Codex below; the final message is what `-p` prints on stdout
+        cmd = ["claude", "-p", "--permission-mode", "bypassPermissions", "--output-format", "text"]
+        cmd += ["--model", model] if model else []
+    else:
+        cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-o", str(final)]
+        cmd += ["-m", model] if model else []
+        cmd += ["-c", f"model_reasoning_effort={effort}"] if effort else []
     # an earlier pass's file is not this pass's answer: one counts only when this pass wrote it
     before = {p: written(p) for p in (report, question) if p}
     code, wrote, stuck = 1, {}, ""
     try:
         started = time.time()
-        code = codex_exec([*cmd, "-"], brief)
-        print(f"codex exited {code} after {time.time() - started:.0f} s", flush=True)
+        code = (
+            relay_exec(cmd, brief, final) if harness == "claude" else codex_exec([*cmd, "-"], brief)
+        )
+        print(f"{harness} exited {code} after {time.time() - started:.0f} s", flush=True)
         # read before the checkout back, which rewrites a report path that both commits track
         wrote = {
             p: text(p) for p in (report, question) if p and written(p) not in (None, before[p])
         }
         wrote[final] = text(final)
-        # A verdict of its own in the report file, else in the final message, wins. Failing both, Codex may have
+        # A verdict of its own in the report file, else in the final message, wins. Failing both, the CLI may have
         # written the report elsewhere and ended on a link to it: read it before the checkout goes back.
         if not re.search(r"^SATISFIED:", wrote.get(report, ""), re.MULTILINE):
             if re.search(r"^SATISFIED:", wrote[final], re.MULTILINE):
@@ -714,7 +752,7 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
             return 4 if stuck else 3
         if code or not re.search(r"^SATISFIED:", body, re.MULTILINE):
             print(
-                f"no report with a SATISFIED: line (codex exit {code}); the last of what it wrote:\n{body[-1500:]}"
+                f"no report with a SATISFIED: line ({harness} exit {code}); the last of what it wrote:\n{body[-1500:]}"
             )
             return 4 if stuck else 1
         print(post(pr, body))
@@ -1128,12 +1166,18 @@ def command(argv: list[str] | None) -> int:
         help="refresh the host's own login in place when its access token has fewer days left",
     )
     v = sub.add_parser(
-        "verify", help="run a Codex verifier pass on the PR and post its report (VM)"
+        "verify", help="run a Codex or Claude verifier pass on the PR and post its report (VM)"
     )
     v.add_argument("--pr", type=int, required=True)
     v.add_argument("--brief", type=Path, required=True)
+    v.add_argument(
+        "--harness",
+        choices=["codex", "claude"],
+        default="codex",
+        help="the verifier's CLI: codex for a Claude-written PR, claude for a Codex-written one",
+    )
     v.add_argument("--model")
-    v.add_argument("--effort")
+    v.add_argument("--effort", help="Codex's reasoning effort; refused with --harness claude")
     t = sub.add_parser(
         "thread",
         help="run a Codex verifier pass on a Codex Cloud thread, driven from this host (route 1b)",
@@ -1176,7 +1220,7 @@ def command(argv: list[str] | None) -> int:
             return thread_verify(
                 args.pr, args.brief, args.model, args.effort, args.thread, args.env, args.head
             )
-        return verify(args.pr, args.brief, args.model, args.effort)
+        return verify(args.pr, args.brief, args.model, args.effort, args.harness)
     except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         if not args.command.startswith("thread") and not isinstance(e, Refused):
             raise
