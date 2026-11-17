@@ -18,23 +18,13 @@ from approvals_harness import (
     HELD,
     SCRIPTS,
     TRACKER,
-    added,  # noqa: F401
     approvals,
     approved,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
     gatekeeper_md,
     git_in,
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
     note,
-    others_open,  # noqa: F401
     pull,
-    pushed,  # noqa: F401
     record,
-    refs,  # noqa: F401
-    required,  # noqa: F401
     status,
     verdict_on,
 )
@@ -99,6 +89,9 @@ class Memory:
             "commit_checks": lambda ref: {},
             "job_log": lambda job: "",
             "commit_tree": lambda sha: sha,
+            "repo_tags": lambda repo: {},
+            "tag_tree": lambda repo, tag: None,
+            "file_at": lambda ref, path, repo=None: None,
             "statuses": lambda sha: self.statuses.get(sha, []),
             "post_status": lambda sha, context, description, state="success": None,
             "post_review": lambda pr, review: None,

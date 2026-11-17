@@ -5,19 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from approvals_harness import (
-    added,  # noqa: F401
-    approvals,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
-    others_open,  # noqa: F401
-    pushed,  # noqa: F401
-    refs,  # noqa: F401
-    required,  # noqa: F401
-)
+from approvals_harness import approvals
 
 HEAD_SHA = "a" * 40
 TREE_SHA = "b" * 40

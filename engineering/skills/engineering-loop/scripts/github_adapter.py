@@ -10,8 +10,11 @@ session's proxy does. Reads return GitHub's GraphQL node shapes (ISSUE, PULL), w
 from __future__ import annotations
 
 import json
+import random
 import re
 import subprocess
+import sys
+import time
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -58,10 +61,14 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 
 
+# a PR's review threads, which PULL reads and rest_threads() asks for alone where GitHub's REST has none
+THREADS = f"reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}"
+
+
 PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
-  reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}
+  {THREADS}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
@@ -164,9 +171,75 @@ def gh(*args: str, data: str | None = None) -> str:
     if data is not None:  # every comment and review approvals.py posts goes as `data`
         for text in texts(data):
             denied(text)
-    return subprocess.run(
-        ["gh", *args], input=data, check=True, capture_output=True, text=True
-    ).stdout
+    backoff = 60
+    while True:
+        try:
+            return subprocess.run(
+                ["gh", *args], input=data, check=True, capture_output=True, text=True
+            ).stdout
+        except subprocess.CalledProcessError as exc:
+            if (
+                pause := rate_limited(str(exc.stderr), backoff, args[:2] == ("api", "graphql"))
+            ) is None:
+                raise
+            # jitter, so lands that waited on one reset do not all resume in the same second
+            pause += random.randint(0, JITTER)
+            until = time.time() + pause
+            if wait_until is None or time.monotonic() + pause > wait_until:
+                exc.stderr = f"{exc.stderr}\nGitHub rate limit, resets at {time.strftime('%H:%M UTC', time.gmtime(until))}"
+                raise
+            said = (
+                f"GitHub rate limit, waiting until {time.strftime('%H:%M UTC', time.gmtime(until))}"
+            )
+            # in slices that each print, so wait-for's stall check (a log silent for 300 s) never kills the wait
+            for left in range(pause, 0, -SLICE):
+                print(said, file=sys.stderr, flush=True)
+                time.sleep(min(left, SLICE))
+            backoff = min(backoff * 2, 600)
+
+
+# land --wait sets this (time.monotonic) to the end of its ceiling: a rate limit then waits, else gh() fails with the reset time
+wait_until: float | None = None
+JITTER = 60  # most seconds of random delay added to a rate-limit wait
+SLICE = 60  # seconds between the lines a rate-limit wait prints
+
+
+def rate_limited(stderr: str, backoff: int, graphql: bool = False) -> int | None:
+    """Seconds to wait when `stderr` is a GitHub rate-limit refusal, else None. A secondary limit waits for the
+    `Retry-After` the error shows, else `backoff` (60 s, doubling). A primary one (`API rate limit exceeded`, or
+    GitHub's `already exceeded for user ID n`) reads its bucket from `gh api rate_limit`, which costs no quota: an
+    empty bucket waits to its reset, one with calls left was refused for the per-minute limit and waits `backoff`.
+    The bucket is GraphQL's for `gh api graphql` and for any gh command whose error says `GraphQL:`, else REST's.
+    ponytail: gh's error text shows no headers, so Retry-After is read only where it appears in the message; and a
+    refusal may carry no HTTP status (a GraphQL one is HTTP 200), so the message alone is read."""
+    graphql = graphql or "GraphQL:" in stderr
+    if (
+        re.search(r"secondary rate limit|abuse detection", stderr, re.IGNORECASE)
+        or "HTTP 429" in stderr
+    ):
+        found = re.search(r"retry[- ]after:? *(\d+)", stderr, re.IGNORECASE)
+        return int(found[1]) if found else backoff
+    if not re.search(r"API rate limit (already )?exceeded", stderr):
+        return None
+    try:
+        remaining, reset = map(
+            int,
+            subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    "rate_limit",
+                    "--jq",
+                    f'.resources.{"graphql" if graphql else "core"} | "\\(.remaining) \\(.reset)"',
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.split(),
+        )
+    except (subprocess.CalledProcessError, ValueError):
+        return backoff
+    return backoff if remaining else max(reset - int(time.time()), 0) + 1
 
 
 def _graphql(query: str, **fields: object) -> Any:
@@ -395,10 +468,19 @@ def rest_checks(head: str) -> dict[str, Any]:
 
 def rest_threads(number: int) -> dict[str, Any]:
     """A PR's review threads, whether each is resolved, from the review-thread route a cloud session's GitHub proxy
-    serves (GitHub's own REST has none). Where it is missing, as on a host whose GraphQL refused for another reason,
-    the error raises: unresolved threads are never read as none. Each thread's comments, which that route names by id
-    alone, come from the PR's review comments, with no right to edit them (session_links())."""
-    threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
+    serves. GitHub's own REST has none and answers 404: there, as for a job token in a private organization repository,
+    whose GraphQL withholds other fields of PULL but not these, the threads come from GraphQL alone. Where that fails
+    too, the error raises: unresolved threads are never read as none. Each thread's comments, which the proxy's route
+    names by id alone, come from the PR's review comments, with no right to edit them (session_links())."""
+    try:
+        threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
+    except subprocess.CalledProcessError as exc:
+        if "HTTP 404" not in (exc.stderr or ""):
+            raise
+        found: dict[str, Any] = _graphql(
+            _repository(f"pullRequest(number: $n) {{ {THREADS} }}"), n=number
+        )
+        return found["pullRequest"]["reviewThreads"]
     listed = {found["id"]: found for found in rest_pages(f"pulls/{number}/comments?per_page=100")}
     nodes = [
         {
@@ -925,6 +1007,52 @@ def commit_tree(sha: str) -> str:
     return gh("api", f"repos/{{owner}}/{{repo}}/commits/{sha}", "--jq", ".commit.tree.sha").strip()
 
 
+def repo_tags(repo: str) -> dict[str, str]:
+    """Every tag of `repo`, by name: the commit each points at (an annotated tag's too), from one paged read."""
+    out = gh(
+        "api", "--paginate", f"repos/{repo}/tags?per_page=100", "--jq", ".[] | [.name, .commit.sha]"
+    )
+    return {name: sha for name, sha in map(json.loads, out.splitlines())}
+
+
+def tag_tree(repo: str, tag: str) -> tuple[str, dict[str, tuple[str, str]]] | None:
+    """Tag `tag` of `repo`: its commit and the (mode, blob SHA) of every path in that commit's tree; None when the repo
+    has no such tag, it names no commit, or GitHub truncates the tree."""
+    try:
+        found = rest(f"repos/{repo}/git/ref/tags/{tag}")["object"]
+    except subprocess.CalledProcessError as exc:
+        if "Not Found" in (exc.stderr or ""):
+            return None
+        raise
+    while found["type"] == "tag":  # an annotated tag: its object
+        found = rest(f"repos/{repo}/git/tags/{found['sha']}")["object"]
+    if found["type"] != "commit":
+        return None
+    listed = rest(f"repos/{repo}/git/trees/{found['sha']}?recursive=1")
+    if listed["truncated"]:
+        return None
+    return found["sha"], {
+        entry["path"]: (entry["mode"], entry["sha"])
+        for entry in listed["tree"]
+        if entry["type"] != "tree"
+    }
+
+
+def file_at(ref: str, path: str, repo: str | None = None) -> str | None:
+    """File `path`'s text at `ref` of `repo` (this checkout's when None); None when it has no such file."""
+    try:
+        return gh(
+            "api",
+            "-H",
+            "Accept: application/vnd.github.raw",
+            f"repos/{repo or '{owner}/{repo}'}/contents/{path}?ref={ref}",
+        )
+    except subprocess.CalledProcessError as exc:
+        if "Not Found" in (exc.stderr or ""):
+            return None
+        raise
+
+
 class Port:
     """One port's operations, each this module's function of that name, looked up at the call, so a stub set on the
     module (a test's) is the one called."""
@@ -968,5 +1096,8 @@ forge = Port(
     "commit_checks",
     "job_log",
     "commit_tree",
+    "repo_tags",
+    "tag_tree",
+    "file_at",
 )
 evidence = Port("statuses", "post_status", "post_review", "minimize")
