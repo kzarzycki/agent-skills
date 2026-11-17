@@ -532,6 +532,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
@@ -4070,26 +4071,40 @@ PACK_SCRIPT = re.compile(r"\b(?:approvals|gatekeeper|labels|board)\.py\b")
 BARE_PYTHON = re.compile(
     r"\bpython[\d.]*\s+(?:-\S+\s+)*\S*(?:approvals|gatekeeper|labels|board)\.py\b"
 )
-MISE_FILES = (
-    "mise.toml",
-    ".mise.toml",
-    ".config/mise.toml",
-    "mise/config.toml",
-    ".mise/config.toml",
+MISE_CONFIGS = (
+    "mise*.toml",
+    ".mise*.toml",
+    ".config/mise*.toml",
+    ".config/mise/*.toml",
+    "mise/config*.toml",
+    ".mise/config*.toml",
 )
-TASK_HEADER = re.compile(r'^\[tasks\.("?)([^\]"]+)\1\]', re.MULTILINE)
+MISE_TASK_DIRS = ("mise-tasks", ".mise-tasks", ".mise/tasks", ".config/mise/tasks", "mise/tasks")
+
+
+def mise_files(root: Path) -> list[Path]:
+    """The mise configs and file tasks of the repo, in every place mise reads them."""
+    configs = {path for pattern in MISE_CONFIGS for path in root.glob(pattern) if path.is_file()}
+    tasks = {path for name in MISE_TASK_DIRS for path in (root / name).rglob("*") if path.is_file()}
+    return sorted(configs | tasks)
 
 
 def pack_tasks(root: Path) -> set[str]:
-    """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does."""
+    """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does:
+    `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named by their path, `/` as `:`)."""
     bodies: dict[str, str] = {}
-    for name in MISE_FILES:
-        if (root / name).is_file():
-            text = read(root / name)
-            marks = list(TASK_HEADER.finditer(text)) + [None]
-            for here, after in zip(marks, marks[1:]):
-                end = after.start() if after else len(text)
-                bodies[here[2]] = bodies.get(here[2], "") + text[here.end() : end]
+    for path in mise_files(root):
+        if path.suffix == ".toml":
+            try:
+                tasks = tomllib.loads(read(path)).get("tasks") or {}
+            except tomllib.TOMLDecodeError:
+                continue
+            for task, body in tasks.items():
+                bodies[task] = bodies.get(task, "") + json.dumps(body)
+        else:
+            folder = next(d for d in MISE_TASK_DIRS if (root / d) in path.parents)
+            task = ":".join(path.relative_to(root / folder).parts)
+            bodies[task] = bodies.get(task, "") + read(path)
     named: set[str] = set()
     while grew := {
         task
@@ -4097,9 +4112,7 @@ def pack_tasks(root: Path) -> set[str]:
         if task not in named
         and (
             PACK_SCRIPT.search(body)
-            or any(
-                re.search(rf"mise run\b[^\n]*[ '\"]{re.escape(other)}\b", body) for other in named
-            )
+            or any(re.search(rf"mise run\b[^\n]*[ '\"]{re.escape(other)}\b", body) for other in named)
         )
     }:
         named |= grew
@@ -4114,7 +4127,7 @@ def setup_problems(root: Path) -> list[str]:
     the upgrade is `check setup --run`, executing each task against a stub forge."""
     found, tasks = [], pack_tasks(root)
     workflows = sorted((root / ".github" / "workflows").glob("*.y*ml"))
-    for path in [root / name for name in MISE_FILES if (root / name).is_file()] + workflows:
+    for path in mise_files(root) + workflows:
         for number, line in enumerate(read(path).splitlines(), 1):
             if BARE_PYTHON.search(line):
                 found.append(
@@ -4140,9 +4153,14 @@ def setup_problems(root: Path) -> list[str]:
             )
             runs = " ".join(str(step.get("run", "")) for step in steps)
             runs_pack = PACK_SCRIPT.search(runs) or any(
-                re.search(rf"\b{re.escape(task)}\b", runs) for task in tasks
+                re.search(rf"mise run\b[^\n]*[ '\"]{re.escape(task)}\b", runs) for task in tasks
             )
-            if skipped and runs_pack:
+            # another step that installs uv (mise install, setup-uv) makes the skip harmless; step order is not read
+            installs_uv = any(
+                "setup-uv" in str(step.get("uses", "")) or re.search(r"\bmise install\b", str(step.get("run", "")))
+                for step in steps
+            )
+            if skipped and runs_pack and not installs_uv:
                 found.append(
                     f"{path.relative_to(root)}: job `{job}` runs a pack script but mise-action installs no uv "
                     "(`install: false`, or `install_args` without uv): set `install_args: uv`"
@@ -4155,8 +4173,12 @@ def setup() -> int:
     (project(): refused when it is the bullet form or off its schema), then the repo's own invocations
     (setup_problems). Exit 0 when every loop step would start, else 1 with one line per problem."""
     root = toplevel()
-    project()
-    problems = setup_problems(root)
+    problems: list[str] = []
+    try:
+        project()
+    except Refused as refusal:
+        problems.append(str(refusal))
+    problems += setup_problems(root)
     for line in problems:
         print(line)
     if not problems:
@@ -8408,6 +8430,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return affected_tests()
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
         return heavy(args.words)
+    if args.command == "check" and args.point == "setup":  # reads the policy itself, to list it beside the rest
+        return setup()
     one_repo()
     if args.command == "check":
         if args.point == "queue" and (args.pr is None or args.head is None):
@@ -8420,8 +8444,6 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused("--issue goes with check build and no PR number")
         if args.point == "queue":
             deprecated("check queue")
-        if args.point == "setup":
-            return setup()
         return check(args.point, args.pr, args.head, args.issue)
     if args.command == "batch":
         deprecated("batch")
