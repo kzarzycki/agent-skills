@@ -32,7 +32,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     def run(cmd: list[str], **kw: Any) -> Any:
         seen["gh"].append(cmd)
         if cmd[:3] == ["gh", "api", "rate_limit"]:
-            return subprocess.CompletedProcess(cmd, 0, str(int(time.time()) + 120), "")
+            return subprocess.CompletedProcess(cmd, 0, f"0 {int(time.time()) + 120}", "")
         reply = seen["replies"].pop(0)
         if isinstance(reply, Exception):
             raise reply
@@ -136,7 +136,7 @@ def test_land_wait_turns_the_rate_limit_wait_on_and_sleeps_in_printing_slices(
 def test_a_graphql_limit_waits_for_the_graphql_reset(calls: dict[str, Any], message: str) -> None:
     calls["replies"] = [refuse(message), "ok"]
     github.gh("api", "graphql", "-f", "query=x")
-    assert ["gh", "api", "rate_limit", "--jq", ".resources.graphql.reset"] in calls["gh"]
+    assert ["gh", "api", "rate_limit", "--jq", '.resources.graphql | "\\(.remaining) \\(.reset)"'] in calls["gh"]
 
 
 def test_a_held_lock_is_asked_of_github_again_after_recheck_and_said_each_minute(
@@ -171,6 +171,7 @@ def test_a_round_that_does_not_hold_the_lock_polls_no_stale_tip(
     monkeypatch.setattr(github, "wait_until", None)
     monkeypatch.setattr(approvals, "POLL", 0.01)
     monkeypatch.setattr(approvals, "RECHECK", 0.05)
+    monkeypatch.setattr(approvals, "QUEUE_POLL", 0.03)
 
     def landing(pr: Any, only: bool = False) -> tuple[int, bool]:
         rounds.append(len(listed))

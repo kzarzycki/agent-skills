@@ -205,39 +205,41 @@ SLICE = 60  # seconds between the lines a rate-limit wait prints
 
 
 def rate_limited(stderr: str, backoff: int, graphql: bool = False) -> int | None:
-    """Seconds to wait when `stderr` is a GitHub rate-limit refusal (403 or 429), else None. The primary limit waits
-    to its reset (`gh api rate_limit`, which costs no quota); a secondary one waits for the `Retry-After` the error
-    shows, else `backoff` (60 s, doubling). ponytail: gh's error text shows no headers, so Retry-After is read only
-    where it appears in the message."""
-    # a GraphQL limit may come as HTTP 200 with the message alone, which gh prints with no status
-    if not graphql and not re.search(r"HTTP (403|429)", stderr):
-        return None
+    """Seconds to wait when `stderr` is a GitHub rate-limit refusal, else None. A secondary limit waits for the
+    `Retry-After` the error shows, else `backoff` (60 s, doubling). A primary one (`API rate limit exceeded`, or
+    GitHub's `already exceeded for user ID n`) reads its bucket from `gh api rate_limit`, which costs no quota: an
+    empty bucket waits to its reset, one with calls left was refused for the per-minute limit and waits `backoff`.
+    The bucket is GraphQL's for `gh api graphql` and for any gh command whose error says `GraphQL:`, else REST's.
+    ponytail: gh's error text shows no headers, so Retry-After is read only where it appears in the message; and a
+    refusal may carry no HTTP status (a GraphQL one is HTTP 200), so the message alone is read."""
+    graphql = graphql or "GraphQL:" in stderr
     if (
         re.search(r"secondary rate limit|abuse detection", stderr, re.IGNORECASE)
         or "HTTP 429" in stderr
     ):
         found = re.search(r"retry[- ]after:? *(\d+)", stderr, re.IGNORECASE)
         return int(found[1]) if found else backoff
-    if "API rate limit exceeded" not in stderr:
+    if not re.search(r"API rate limit (already )?exceeded", stderr):
         return None
     try:
-        reset = int(
+        remaining, reset = map(
+            int,
             subprocess.run(
                 [
                     "gh",
                     "api",
                     "rate_limit",
                     "--jq",
-                    f".resources.{'graphql' if graphql else 'core'}.reset",
+                    f'.resources.{"graphql" if graphql else "core"} | "\\(.remaining) \\(.reset)"',
                 ],
                 check=True,
                 capture_output=True,
                 text=True,
-            ).stdout
+            ).stdout.split(),
         )
-        return max(reset - int(time.time()), 0) + 1
     except (subprocess.CalledProcessError, ValueError):
         return backoff
+    return backoff if remaining else max(reset - int(time.time()), 0) + 1
 
 
 def _graphql(query: str, **fields: object) -> Any:

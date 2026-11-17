@@ -652,6 +652,11 @@ ATTACHMENT = "https://github.com/user-attachments/"
 # land --wait: seconds between tries, and how long it waits in all before it exits 3; a landing lock older than the
 # ceiling is stale
 POLL, CEILING = 30, 2 * 60 * 60
+# land --wait runs landing() (a GraphQL read of every named PR's PULL, 5 points each, and more) again only this many
+# seconds after the last run, unless it holds a lock (RECHECK): a merge queue or a check takes minutes to move, so
+# 30 s polls spend the account's quota, and its per-minute limit, on answers that did not change. POLL is the step
+# the sleep goes in, so the log is never silent and a lock that moved is seen at once
+QUEUE_POLL = 120
 # a wait on a held lock whose ref is unchanged runs landing() (the GitHub calls) again only after this many seconds: the
 # lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
 RECHECK = 300
@@ -4440,15 +4445,15 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
 
 
 def poll_seconds() -> float:
-    """POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA. `gh api rate_limit` is not counted against the
-    quota; gh shows no response headers, so nothing is read for free. A failed read keeps POLL."""
+    """QUEUE_POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA. `gh api rate_limit` is not counted against the
+    quota; gh shows no response headers, so nothing is read for free. A failed read keeps QUEUE_POLL."""
     try:
         left, limit = github.gh(
             "api", "rate_limit", "--jq", r'.resources.core|"\(.remaining) \(.limit)"'
         ).split()
-        return LOW_POLL if int(left) < LOW_QUOTA * int(limit) else POLL
+        return LOW_POLL if int(left) < LOW_QUOTA * int(limit) else QUEUE_POLL
     except (subprocess.CalledProcessError, ValueError):
-        return POLL
+        return QUEUE_POLL
 
 
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
