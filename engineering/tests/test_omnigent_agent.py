@@ -548,6 +548,65 @@ def test_an_interrupt_while_confirming_a_found_session_keeps_it_and_prints_its_i
     assert "status s0" in out.err
 
 
+def test_start_keeps_a_session_whose_history_shows_it_started_after_a_missed_confirm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(deaf={0})  # the brief never lands, but the history shows a tool call
+    monkeypatch.setattr(omnigent_agent, "delivered", lambda *_a, **_k: False)  # confirm times out
+    real_items = og.items
+
+    def items(sid: str) -> list[dict]:
+        return [{"id": "t1", "type": "function_call"}] if sid == "s0" else real_items(sid)
+
+    monkeypatch.setattr(og, "items", items)
+    assert omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0) == (
+        "s0",
+        [],
+    )
+    assert og.archived == [] and list(og.sessions) == ["s0"]
+
+
+def test_start_abandons_only_attempts_with_an_empty_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(deaf={0, 1})
+    monkeypatch.setattr(omnigent_agent, "delivered", lambda *_a, **_k: False)
+    with pytest.raises(omnigent_agent.Fail, match="s0: brief not in history"):
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert og.archived == ["s0", "s1"]
+
+
+def test_a_started_session_after_a_missed_confirm_exits_0_through_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(deaf={0})
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "delivered", lambda *_a, **_k: False)
+    real_items = og.items
+    monkeypatch.setattr(
+        og,
+        "items",
+        lambda sid: [{"id": "t1", "type": "function_call"}] if sid == "s0" else real_items(sid),
+    )
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    assert list(og.sessions) == ["s0"] and og.archived == []
+
+
+def test_a_failed_start_with_no_attempt_started_exits_non_zero_through_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(deaf={0, 1})
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    assert og.archived == ["s0", "s1"]
+
+
 def test_start_fails_after_two_deaf_sessions(tmp_path: Path) -> None:
     with pytest.raises(
         omnigent_agent.Fail, match="s0: brief not in history.*s1: brief not in history"

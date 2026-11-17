@@ -3607,7 +3607,12 @@ def start(
         try:
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
                 send_to_confirm(og, sid, text)
-            if delivered(og, sid, text, confirm_seconds):
+            # a slow server can miss the confirm window yet have started the session: any item
+            # in its history (the brief, a later turn, a tool call) means it did, so keep it; the
+            # `resource_event` a fresh session opens with is no sign of a start
+            if delivered(og, sid, text, confirm_seconds) or any(
+                i.get("type") != "resource_event" for i in og.items(sid)
+            ):
                 if not top_level:
                     held_of(report).parent.mkdir(parents=True, exist_ok=True)
                     held_of(report).write_text(json.dumps({"sid": sid, "brief": digest}))
