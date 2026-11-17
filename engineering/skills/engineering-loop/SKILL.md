@@ -908,7 +908,7 @@ or the owner's private network.
   in the dismissal. A human review follows the same pattern. The PR is marked ready once no core finding (blocker or major)
   is open, and squashed on merge. The PR keeps a public trail of what was found, fixed and
   iterated, and the project's CI skips draft PRs, so it doesn't run on half-done work:
-  the worker's lint plus `Affected tests:` selection (else `mise run check`) on each pushed head is the check while a PR is a draft.
+  the worker's `Affected tests:` selection (`approvals.py affected-tests`, else `mise run check`) on each pushed head is the check while a PR is a draft.
 - **Remove, don't append.** Remove a thing as if it never existed. Edit and compress
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds
