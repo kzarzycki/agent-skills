@@ -12,7 +12,7 @@ APM is the project installer. Add one dependency to the consuming repository:
 dependencies:
   apm:
     - git: kzarzycki/agent-skills/engineering
-      ref: ^0.26.5
+      ref: ^0.31.0
 ```
 
 Then run:
@@ -107,6 +107,14 @@ Take the first rung that holds:
    [microsoft/apm#2413](https://github.com/microsoft/apm/issues/2413); until
    then, extend instead or change the pack.
 4. **Change the pack** upstream, here.
+
+## Upgrading the pack
+
+A bump can break every loop step while the repo's own `mise run check` stays green, because the loop's scripts read the repo's `docs/agents/` and its mise tasks and workflows. Before a bump to 0.29 or later, land one migration PR on the base, then the bump:
+
+- **Policy as a fenced block.** The gatekeeper reads its policy only from a fenced `yaml` block (gatekeeper.md under `## Policy`, or loop.md and issue-tracker.md under `## Settings`) and refuses the bullet form. It reads the policy from `origin/<base>`, so the bump PR cannot migrate it: the migration lands first. Versions 0.21 to 0.23 read bullets only but ignore a fenced block next to them, so a repo on one of them can add the block, keep the bullets until the bump, and delete them after.
+- **`uv run` for the scripts.** From 0.29.0, `approvals.py` and `labels.py` are `uv run --script` scripts that import PyYAML. Call them with `uv run <script>` (never `python3 <script>`), and let the approvals workflow install uv: `install_args: uv` on `jdx/mise-action`, not `install: false`.
+- **The gate step.** `uv run --python '>=3.11' .agents/skills/engineering-loop/scripts/approvals.py check setup` (no PR, no GitHub) reads the policy as the loop does and scans the repo's mise config and workflows for the two mistakes above. Put it in the repo's `check` task, so the next bump fails its own gate, not every loop step.
 
 ## Install from the Claude marketplace
 

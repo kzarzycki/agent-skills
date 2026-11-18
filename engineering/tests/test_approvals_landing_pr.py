@@ -9,19 +9,9 @@ from typing import Any
 
 import pytest
 from approvals_harness import (
-    added,  # noqa: F401
     approvals,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
     git_in,
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
     lands,  # noqa: F401
-    others_open,  # noqa: F401
-    pushed,  # noqa: F401
-    refs,  # noqa: F401
-    required,  # noqa: F401
 )
 
 REF, NAME = approvals.LOCK.format("main"), "loop-landing/main"
@@ -181,17 +171,17 @@ def test_a_land_names_its_pr_and_moves_the_lock_to_its_batchs_last_pr_before_mer
     assert lands["land"]("7")[0] == 0
     assert lands["merged"]() == ["7", "8"]
     assert lock_bodies(lands) == [
-        f"held: pid {pid}, PR #7",
-        f"held: pid {pid}, PR #8",
-        f"free: pid {pid}",
+        f"held: pid {pid}, PR #7, beats",
+        f"held: pid {pid}, PR #8, beats",
+        f"free: pid {pid}, beats",
     ]
     # a land naming no PR takes the lock naming none, the old format, until its batch is known
     lands["open"](9, {"9.txt": "9\n"})
     assert lands["land"]()[0] == 0
     assert lock_bodies(lands)[3:] == [
-        f"held: pid {pid}",
-        f"held: pid {pid}, PR #9",
-        f"free: pid {pid}",
+        f"held: pid {pid}, beats",
+        f"held: pid {pid}, PR #9, beats",
+        f"free: pid {pid}, beats",
     ]
 
 

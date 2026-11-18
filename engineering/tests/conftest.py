@@ -1,11 +1,79 @@
 import os
+import shutil
 import sys
+from collections.abc import Callable, Iterable
+from pathlib import Path
 
 # The engineering loop's script tests load modules from a shipped skill folder;
-# a bytecode cache written there would ship with the package.
+# a bytecode cache written there would ship with the package. The variable carries
+# the same to the scripts the tests run as subprocesses (#1022).
 sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 import pytest
+
+# The approvals.py fixtures, visible to every module here; _approvals_stubs turns them on.
+from approvals_harness import (  # noqa: F401
+    AUTOUSE,
+    added,
+    assigned,
+    attached,
+    board_risks,
+    graphql_answers,
+    hub,
+    others_open,
+    pushed,
+    refs,
+    required,
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_wait_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A test that mocks the rerun's execv leaves the wait's place in the environment; the next land would resume it."""
+    monkeypatch.delenv("LOOP_LAND_WAIT", raising=False)
+
+
+# The fixtures that run a tool beyond git and Python: pytest ignores a mark on a fixture, so each test that takes
+# one gets its `needs_tool` mark at collection, as a test that runs the tool itself carries it.
+FIXTURE_TOOLS = {"cloud_land": ("ssh-keygen",), "signing": ("ssh-keygen",)}
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Before `-m` deselects, so `-m "not needs_tool"` leaves out a test that needs a tool through a fixture."""
+    for item in items:
+        for name in getattr(item, "fixturenames", ()):
+            if name in FIXTURE_TOOLS:
+                item.add_marker(pytest.mark.needs_tool(*FIXTURE_TOOLS[name]))
+
+
+def missing_tools(items: Iterable[pytest.Item]) -> list[str]:
+    """The tools the `needs_tool` marks of `items` name that are not on PATH."""
+    needed = {
+        tool for item in items for mark in item.iter_markers("needs_tool") for tool in mark.args
+    }
+    return sorted(tool for tool in needed if shutil.which(tool) is None)
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """A tool a selected test runs (its `needs_tool` mark) and PATH lacks stops the run before its first test, one
+    line naming every such tool, rather than failing each test that runs it partway through; a test with no such
+    mark runs, whatever its module's other tests need (#1022)."""
+    missing = missing_tools(session.items)
+    if missing:
+        pytest.exit(
+            f"missing tools the tests run: {', '.join(missing)}; put them on PATH",
+            returncode=pytest.ExitCode.USAGE_ERROR,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_viewer() -> None:
+    """The login `gh` runs as is read once per process (github_adapter.viewer); a test stubs it per test."""
+    from approvals_harness import approvals
+
+    approvals.github.viewer_login.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +104,7 @@ def _own_gate_slot(
     if request.module.__name__.startswith("test_approvals"):
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("cache")))
         monkeypatch.delenv("LOOP_GATE_SLOT_HELD", raising=False)
+        monkeypatch.setenv("GATE_SLOTS", "1")  # one slot, so a held slot 1 is a full host (#1138)
 
 
 @pytest.fixture(autouse=True)
@@ -57,9 +126,53 @@ def _no_user_git_config(
 
 
 @pytest.fixture(autouse=True)
+def _approvals_stubs(request: pytest.FixtureRequest) -> None:
+    """Every test of approvals.py runs under the harness's AUTOUSE fixtures, though its module imports none, so a
+    module that main gains while a PR adds a fixture still gets it (#1015)."""
+    if request.module.__name__.startswith("test_approvals"):
+        for name in AUTOUSE:
+            request.getfixturevalue(name)
+
+
+@pytest.fixture(autouse=True)
+def _status_follows_the_pull(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """approvals.py reads a PR's state, base and head alone through pull_status (one REST call); most tests fake the
+    whole PR with pull_request, so there it answers from that fake. A test of pull_status sets its own."""
+    module = request.module
+    if module.__name__.startswith("test_approvals") and hasattr(module, "approvals"):
+        approvals = module.approvals
+        monkeypatch.setattr(approvals, "pull_status", lambda n: approvals.pull_request(n))
+
+
+@pytest.fixture(autouse=True)
 def _brief_head_merges(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """approvals.py's brief checks the PR's head merges into its base with git: its other tests have no such repo, so
     the check reads clean there. test_approvals_brief_conflict.py runs the real one."""
     module = request.module
     if module.__name__ != "test_approvals_brief_conflict" and hasattr(module, "approvals"):
         monkeypatch.setattr(module.approvals, "conflicted", lambda _pr, _base, _head: [])
+
+
+@pytest.fixture(autouse=True)
+def _host_has_room(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A start reads this host's CPU and memory and waits up to 600 s while either is short, so a test's start on a
+    host busy with the gate running it waits and fails. Every module that loads omnigent_agent gets a host with room,
+    whether or not it imports test_omnigent_agent's fixtures; a test of the real check calls `monkeypatch.undo()`."""
+    agent = getattr(request.module, "omnigent_agent", None)
+    if agent is not None:
+        monkeypatch.setattr(agent, "capacity", lambda **_: (True, ""))
+
+
+@pytest.fixture
+def role_file(tmp_path: Path) -> Callable[[str], str]:
+    """Write a role file under tmp_path and return its path: `--role` must name a readable file (#1313)."""
+
+    def make(name: str) -> str:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("role")
+        return str(path)
+
+    return make

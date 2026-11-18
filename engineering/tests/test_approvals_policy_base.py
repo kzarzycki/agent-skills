@@ -8,19 +8,9 @@ from typing import Any
 
 import pytest
 from approvals_harness import (
-    added,  # noqa: F401
     approvals,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
     gatekeeper_md,
     git_in,
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
-    others_open,  # noqa: F401
-    pushed,  # noqa: F401
-    refs,  # noqa: F401
-    required,  # noqa: F401
 )
 
 OLD = gatekeeper_md("loop:\n  gate: mise run check\n")
@@ -212,7 +202,7 @@ def test_land_decides_under_the_policy_it_fetched_under_the_lock(
     judged: list[tuple[list[dict[str, Any]], dict[str, Any]]] = []
     monkeypatch.setattr(
         approvals,
-        "batched",
+        "local_queue",
         lambda named, base, tracker, loop, *_a: (
             judged.append((named, approvals.settings(loop))) or (0, False)
         ),
@@ -321,7 +311,7 @@ def test_a_land_reads_origins_policy_not_the_clones_last_fetch(
     monkeypatch.setattr(approvals, "in_cloud", lambda: False)
     seen: list[Any] = []
 
-    def readied(named: list[dict[str, Any]], base: str, tracker: Any, loop: Any) -> Any:
+    def readied(named: list[dict[str, Any]], required: set[str], tracker: Any, loop: Any) -> Any:
         seen.append(approvals.settings(loop).get("owner"))
         raise approvals.Refused("readied")
 
@@ -374,7 +364,9 @@ def test_a_draft_readied_before_the_lock_wait_goes_back_to_draft_when_the_new_po
     monkeypatch.setattr(approvals, "locked", lambda *_a: based["push"](changed) or True)
     monkeypatch.setattr(approvals, "unlock", lambda *_a: subprocess.CompletedProcess([], 0, "", ""))
     judged: list[list[dict[str, Any]]] = []
-    monkeypatch.setattr(approvals, "batched", lambda named, *_a: judged.append(named) or (0, False))
+    monkeypatch.setattr(
+        approvals, "local_queue", lambda named, *_a: judged.append(named) or (0, False)
+    )
     capsys.readouterr()
     assert approvals.landing([7, 8]) == (0, False)
     assert judging == [
@@ -446,7 +438,7 @@ def test_a_base_that_stops_allowing_this_place_during_the_wait_refuses_and_relea
         "unlock",
         lambda base, _tip: released.append(base) or subprocess.CompletedProcess([], 0, "", ""),
     )
-    monkeypatch.setattr(approvals, "batched", lambda *_a: pytest.fail("batched"))
+    monkeypatch.setattr(approvals, "local_queue", lambda *_a: pytest.fail("local_queue"))
     with pytest.raises(
         approvals.Refused, match="`land.where` is `cloud`, so land does not run in a host"
     ):
@@ -486,12 +478,12 @@ def test_a_land_signs_with_the_key_the_policy_names_under_the_lock(
     monkeypatch.setattr(approvals, "unlock", lambda *_a: subprocess.CompletedProcess([], 0, "", ""))
     used: list[str] = []
 
-    def batched(*_a: Any) -> tuple[int, bool]:
+    def local_queue(*_a: Any) -> tuple[int, bool]:
         key = next(arg for arg in approvals.SIGNING if arg.startswith("user.signingkey="))
         used.append(Path(key.removeprefix("user.signingkey=")).read_text())
         return 0, False
 
-    monkeypatch.setattr(approvals, "batched", batched)
+    monkeypatch.setattr(approvals, "local_queue", local_queue)
     assert approvals.landing(7) == (0, False)
     assert used == [(keys / "second").read_text()]
     assert approvals.SIGNING == []
@@ -541,7 +533,7 @@ def test_batch_judges_a_head_by_the_head_proof_of_the_base_the_pr_merges_onto(
     asked: list[str] = []
     posted: list[str] = []
     monkeypatch.setattr(approvals, "fetched", lambda _sha: True)
-    monkeypatch.setattr(approvals, "reusable", lambda _head: None)
+    monkeypatch.setattr(approvals, "reusable", lambda _head, _p=(): None)
     monkeypatch.setattr(
         approvals, "proved", lambda _head, status: asked.append(status) or status == "proof-feature"
     )

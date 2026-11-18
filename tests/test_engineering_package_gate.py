@@ -22,10 +22,13 @@ def test_live_agent_gate_requests_both_supported_agents() -> None:
 
 
 def test_the_check_task_runs_the_gates_ci_runs_in_its_order() -> None:
-    task = tomllib.loads((REPOSITORY / "mise.toml").read_text())["tasks"]["check"]
+    tasks = tomllib.loads((REPOSITORY / "mise.toml").read_text())["tasks"]
     workflow = (REPOSITORY / ".github" / "workflows" / "engineering-ci.yml").read_text()
+    ran = re.findall(r"^\s*run: (mise run \S+)$", workflow, re.MULTILINE)
 
-    assert task["run"] == re.findall(r"^\s*- run: (mise run \S+)$", workflow, re.MULTILINE)
+    # CI runs the landing gate on a PR or push and the full check on the nightly schedule
+    assert ran == ["mise run check-fast", "mise run check"]
+    assert tasks["check"]["run"][0] == "mise run vendor-engineering-check"
 
 
 @pytest.mark.parametrize("mutation", ["corrupt", "delete"])

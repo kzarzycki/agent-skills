@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -64,14 +65,17 @@ def test_a_child_is_refused_the_workspace_its_own_parent_uses(
 
 
 def test_the_cli_exits_non_zero_on_a_used_workspace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    role_file: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
     og = FakeOmnigent()
     lead_in(og, tmp_path)
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
-    argv = ["start", "claude", "s750-worker", "b.md", "r.md", "--role", WORKER]
+    argv = ["start", "claude", "s750-worker", "b.md", "r.md", "--role", role_file("worker.md")]
     assert omnigent_agent.main([*argv, "--top-level", "--confirm-seconds", "0"]) != 0
     assert "live session lead s750-lead" in capsys.readouterr().err
 
@@ -184,7 +188,10 @@ def test_a_launch_dir_holds_no_files_but_the_pin_and_a_loop_folder(
     }
 
 
-def test_a_clone_without_a_pin_is_refused_naming_the_helper(tmp_path: Path, bare: Path) -> None:
+def test_a_clone_without_a_pin_is_refused_naming_the_helper(
+    tmp_path: Path, bare: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "cloud_environments", list)  # nothing to resolve
     dest = tmp_path / "clone"
     git("clone", "-q", f"file://{bare}", str(dest), cwd=tmp_path)
     with pytest.raises(omnigent_agent.Fail, match="launch-dir"):
@@ -209,9 +216,15 @@ def test_start_for_a_pr_moves_a_launch_dirs_head_but_never_a_checkouts(
     assert git("symbolic-ref", "--short", "HEAD", cwd=full) == "main"  # it has files: left alone
 
 
-def test_start_pr_on_a_cloud_agent_moves_the_launch_dir_head_and_leaves_a_checkout(
+def worktrees(tree: Path) -> int:
+    return git("worktree", "list", "--porcelain", cwd=tree).count("worktree ")
+
+
+def test_start_pr_on_a_cloud_agent_reads_the_pin_and_checks_out_nothing_on_the_host(
     tmp_path: Path, bare: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The host keeps only the launch dir (#917): `start --pr` moves its HEAD, reads its pin, and makes no worktree
+    and checks out no file, there or in a checkout given as the workspace, which it leaves as it was."""
     og = FakeOmnigent()
     og.harnesses = {"claude-cloud": "acp:claude-cloud"}
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
@@ -225,6 +238,7 @@ def test_start_pr_on_a_cloud_agent_moves_the_launch_dir_head_and_leaves_a_checko
     (full / ".claude" / "settings.local.json").write_text(
         '{"remote": {"defaultEnvironmentId": "env_1"}}'
     )
+    pin = (dest / ".claude" / "settings.local.json").read_text()
     for tree in (dest, full):
         argv = [
             "start",
@@ -237,8 +251,13 @@ def test_start_pr_on_a_cloud_agent_moves_the_launch_dir_head_and_leaves_a_checko
         (tree / "tmp" / "loop").mkdir(parents=True, exist_ok=True)
         assert omnigent_agent.main(argv) == 0
     assert git("symbolic-ref", "HEAD", cwd=dest) == "refs/heads/pr-branch"
-    assert not (dest / "b.txt").exists()
+    assert (dest / ".claude" / "settings.local.json").read_text() == pin  # its own pin, read
+    assert not (dest / ".git" / "index").exists()
+    assert sorted(p.name for p in dest.iterdir()) == [".claude", ".git", "tmp"]
     assert git("symbolic-ref", "HEAD", cwd=full) == "refs/heads/main"
+    assert git("status", "--porcelain", "--untracked-files=no", cwd=full) == ""
+    assert not (full / "b.txt").exists()
+    assert worktrees(dest) == worktrees(full) == 1
 
 
 def test_a_fork_pr_head_moves_a_launch_dir_through_the_pr_ref_not_a_same_named_origin_branch(

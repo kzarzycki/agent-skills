@@ -11,6 +11,10 @@ A mid worker costs about half a top one per item, and a small item needs no more
 
 Verifier model: mid for not risk:high
 
+Lead model: mid for size:S or smaller
+
+A lead on a size:S item runs routine rounds, and a mid lead costs half a top one per token.
+
 Lead autocompact: 200k
 
 A lead re-reads its whole context every turn, so a smaller window costs less per turn; its notes
@@ -23,9 +27,11 @@ what no automated check can settle. A `risk:high` PR into a feature branch lands
 of staff's `approved:merge` (`approvals.py delegate`), so dependent work doesn't stall; the
 branch's merge to main waits for the owner.
 
+The landing gate (`check-fast`) runs the tests a change touches, so a pass it records covers those tests, not the whole suite; the nightly run covers the rest.
+
 ## Cloud worker
 
-Cloud worker: claude-cloud, gate test
+Cloud worker: claude-cloud, gate test, env agent-skills-dev
 
 Cloud verifier: worker session, else codex thread
 
@@ -43,6 +49,6 @@ When it says no login is usable, the owner logs in to Codex on the host, or runs
 
 The live-agent suites (`test-engineering-agents`, `test-chief-of-staff-live`) need
 logged-in harnesses and Omnigent, so they stay with the host lead. A cloud session clones the
-pushed branch, so push before starting a worker. `.claude/cloud-setup.sh` is the
+pushed branch, so push before starting a worker. `.claude/claude-cloud-setup.sh` (the older `.claude/cloud-setup.sh` is still read) is the
 environment's setup script; the environment keeps its own copy, so apply a change with
 `POST /v1/environment_providers/<id>`, `config.init_script` set to the file.
