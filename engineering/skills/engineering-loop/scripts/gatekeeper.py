@@ -705,7 +705,7 @@ HELD, FREE = "landing lock: held", "landing lock: free"
 WAIT_REF = "refs/heads/loop-waiting/{}/{}"
 WAITER_STALE = 600  # above the longest gap between stamps: LOW_POLL + POLL_JITTER, and the reads before the lock
 waiting = False
-waited = {"since": 0.0, "id": "", "base": "", "tip": ""}
+waited = {"since": 0.0, "id": "", "base": "", "tip": "", "took": False, "idle": False}
 WAIT_ENV = "LOOP_LAND_WAIT"  # the place in the waiting order, across a land run again on the base's new code
 BEAT, STALE, BEATS, BEAT_PUSH = 300, 900, "beats", 120
 beating = (
@@ -4694,6 +4694,9 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
             with contextlib.redirect_stdout(out):
                 code, again = landing(pr, only)
             missed = 0
+            # a round that took the lock and landed nothing (its PR is not landable yet) stamps `idle`: waiters behind
+            # it take the free lock meanwhile, and it keeps its place for when its PR is ready
+            waited["idle"], waited["took"] = waited["took"], False
         except Drifted as exc:
             drifted = exc
         except subprocess.CalledProcessError as exc:
@@ -5093,7 +5096,11 @@ def stamp_wait(base: str, pr: int | None) -> None:
     waited["id"] = waited["id"] or os.urandom(6).hex()
     waited["base"] = base
     wait_push(
-        "waiting", base, f"since {waited['since']:.3f}" + (f", PR #{pr}" if pr is not None else "")
+        "waiting",
+        base,
+        f"since {waited['since']:.3f}"
+        + (f", PR #{pr}" if pr is not None else "")
+        + (", idle" if waited["idle"] else ""),
     )
 
 
@@ -5135,6 +5142,7 @@ def waiter_ahead(base: str) -> str | None:
             if (
                 theirs[1] != waited["id"]
                 and age <= WAITER_STALE
+                and ", idle" not in body
                 and theirs < mine
                 and (ahead is None or theirs < ahead[0])
             ):
@@ -5169,7 +5177,7 @@ def unwait(forget: bool = False) -> None:
             check=False,
         )
     if forget:
-        waited.update(since=0.0, id="", base="", tip="")
+        waited.update(since=0.0, id="", base="", tip="", took=False, idle=False)
 
 
 def lock_name(base: str) -> str:
@@ -5350,6 +5358,7 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
         pushed = leased(base, held[-1], tip)
         if not pushed.returncode:
             unwait()
+            waited["took"] = True
             return True
         refused = " ".join(pushed.stderr.split())
     print(

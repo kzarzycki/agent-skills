@@ -53,7 +53,11 @@ def waiter(
 @pytest.fixture
 def waits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "waiting", True)
-    monkeypatch.setattr(approvals, "waited", {"since": 0.0, "id": "", "base": "", "tip": ""})
+    monkeypatch.setattr(
+        approvals,
+        "waited",
+        {"since": 0.0, "id": "", "base": "", "tip": "", "took": False, "idle": False},
+    )
 
 
 def refs(lands: dict[str, Any]) -> list[str]:
@@ -166,3 +170,15 @@ def test_a_wait_that_ends_without_taking_the_lock_leaves_no_ref(
     except RuntimeError:
         pass
     assert refs(lands) == [] and approvals.waited["id"] == ""
+
+
+def test_a_waiter_whose_last_round_landed_nothing_does_not_hold_the_queue(
+    lands: dict[str, Any], waits: None
+) -> None:
+    """A took the lock, found nothing landable and stamped idle: B, who began later, may take the free lock."""
+    approvals.waited.update(since=time.time() - 600, id="aaaa")
+    assert approvals.locked("main", [], 7) is True  # A's take of the free lock
+    approvals.waited["idle"] = True  # what wait_loop sets when the round landed nothing
+    approvals.stamp_wait("main", 7)
+    approvals.waited.update(since=time.time(), id="bbbb", tip="", took=False, idle=False)
+    assert approvals.waiter_ahead("main") is None

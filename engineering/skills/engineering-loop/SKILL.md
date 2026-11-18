@@ -626,7 +626,8 @@ isolated (one PR at a time, or GitHub's per-entry groups). The local merge queue
   merges and is broken at once; one older than 2 hours (a land that died before them) is broken too.
 - `land --wait` takes a free lock in waiting order: each waiting land keeps a branch
   `loop-waiting/<base>/<id>` on `origin` (a new commit on it every poll, a `done` one when it stops),
-  and a land that began waiting later leaves the lock to a live older one (stamped within 10 minutes).
+  and a land that began waiting later leaves the lock to a live older one (stamped within 10 minutes),
+  unless that one took the lock last round and landed nothing (its PR is not ready): it stamps `idle`.
   Those branches are this order's state: don't delete them while a land waits; a land that is gone
   leaves one that is ignored, and removed where the host may delete.
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
