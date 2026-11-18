@@ -27,8 +27,9 @@ uv run --with playwright python scripts/claude_ai_import.py project <url|id> <ou
 - The port is `--port=N` or `CLAUDE_CDP_PORT`, default 9333. Use the project's own rule
   for which browser holds the claude.ai login; not logged in → the script stops with a
   message, and the login is the owner's to do.
-- `<out-dir>` holds `transcript.md` and `assets/`. A project adds `instructions.md`,
-  `knowledge/` and `chats/<name>-<id8>/`, one chat folder each.
+- A chat's `<out-dir>` holds `transcript.md` and `assets/`. A project's holds
+  `instructions.md`, `knowledge/` and `chats/<name>-<id8>/`, one chat folder (with its own
+  `transcript.md` and `assets/`) each.
 - It prints one JSON line of counts (messages, assets, failed downloads). Files that could
   not be downloaded are listed at the end of the transcript, never skipped silently.
 - A chat's other branches (edited messages) are counted but not rendered: the transcript
@@ -56,8 +57,8 @@ uv run --with playwright python scripts/claude_ai_import.py project <url|id> <ou
   `prompt_template` = instructions), `.../projects/<id>/conversations`, `.../docs`,
   `.../files`. `docs` and `files` answered `[]` on the account probed, so the field names
   the script reads from their items (`file_name`, `content`, `file_uuid`) are unverified.
-- Artifacts: the script saves a `tool_use` named `artifacts` whose input has `content`;
-  not observed in a real chat yet.
+- Artifacts: the script saves a `tool_use` named `artifacts` whose input has `content`
+  and applies later `old_str`/`new_str` updates to it; not observed in a real chat yet.
 
 ## Extending
 

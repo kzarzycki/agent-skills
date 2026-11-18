@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Import a claude.ai chat or project into local files. Read-only: GET requests only.
 
-    uv run --with playwright python claude_ai_import.py chat <url|id> <out-dir> [--port 9333]
-    uv run --with playwright python claude_ai_import.py project <url|id> <out-dir> [--port 9333]
+    uv run --with playwright python claude_ai_import.py chat <url|id> <out-dir> [--port=9333]
+    uv run --with playwright python claude_ai_import.py project <url|id> <out-dir> [--port=9333]
     python3 claude_ai_import.py self-test          # no network, no browser, no playwright
 
 Output per chat: <out-dir>/transcript.md and <out-dir>/assets/. A project adds
@@ -12,6 +12,7 @@ Extending later (a write path): everything goes through `Fetcher`; a writer woul
 second method there, and nothing in the importer below needs to change.
 """
 import base64
+import inspect
 import json
 import os
 import re
@@ -94,7 +95,7 @@ class Assets:
 
     def __init__(self, fetcher, org, out):
         self.f, self.org, self.dir = fetcher, org, Path(out) / "assets"
-        self.done, self.failed = {}, []
+        self.done, self.failed, self.artifacts, self.titles = {}, [], {}, {}
 
     def save(self, file_id, name=None):
         if file_id in self.done:
@@ -118,6 +119,18 @@ class Assets:
         path = f"assets/{key[:8]}-{slug(name)}"
         (Path(self.dir.parent) / path).write_text(text)
         return path
+
+    def save_artifact(self, inp):
+        """Create or rewrite carries `content`; update carries old_str/new_str on the last text."""
+        key = inp.get("id") or "artifact"
+        self.titles[key] = inp.get("title") or self.titles.get(key) or key
+        if isinstance(inp.get("content"), str):
+            self.artifacts[key] = inp["content"]
+        elif key in self.artifacts and isinstance(inp.get("old_str"), str):
+            self.artifacts[key] = self.artifacts[key].replace(inp["old_str"], inp.get("new_str") or "", 1)
+        else:
+            return None
+        return self.save_text(key, self.titles[key], self.artifacts[key])
 
 
 def fence(text, lang=""):
@@ -161,10 +174,9 @@ def render_block(block, assets):
     if t == "tool_use":
         inp = block.get("input") or {}
         extra = ""
-        if block.get("name") == "artifacts" and isinstance(inp.get("content"), str):
-            p = assets.save_text(inp.get("id") or block.get("id", "artifact"),
-                                 inp.get("title") or inp.get("id") or "artifact", inp["content"])
-            extra = f"\n\nArtifact content: [{p}]({p})"
+        p = assets.save_artifact(inp) if block.get("name") == "artifacts" else None
+        if p:
+            extra = f"\n\nArtifact content after this call: [{p}]({p})"
         return details(f"Tool call — {block.get('name')}",
                        fence(json.dumps(inp, ensure_ascii=False, indent=1), "json") + extra)
     if t == "tool_result":
@@ -244,7 +256,12 @@ def import_project(fetcher, org, project_id, out):
     kassets.dir = kdir
     for f in fetcher.get_json(base + "/files"):
         n_know += 1
-        failed += kassets.save(f.get("file_uuid") or f.get("uuid"), f.get("file_name")) is None
+        kassets.save(f.get("file_uuid") or f.get("uuid"), f.get("file_name"))
+    failed = len(kassets.failed)
+    if kassets.failed:
+        (out / "instructions.md").open("a").write(
+            "\n## Knowledge files that could not be downloaded\n\n"
+            + "\n".join(f"- `{n or i}` (id `{i}`): {e}" for i, n, e in kassets.failed) + "\n")
     stats = []
     for c in fetcher.get_json(base + "/conversations"):
         sub = out / "chats" / f"{slug(c.get('name'))}-{c['uuid'][:8]}"
@@ -282,6 +299,8 @@ FIXTURE = {
              {"type": "text", "text": "Here is a table:\n\n| a | b |\n|---|---|\n| 1 | 2 |"},
              {"type": "tool_use", "name": "artifacts", "id": "toolu_1",
               "input": {"id": "art1", "title": "page.html", "content": "<p>hi</p>"}},
+             {"type": "tool_use", "name": "artifacts", "id": "toolu_2",
+              "input": {"id": "art1", "command": "update", "old_str": "hi", "new_str": "ho"}},
              {"type": "tool_result", "name": "Read", "content": [
                  {"type": "image", "file_uuid": "bbbbbbbb-0000"}, {"type": "text", "text": "a ``` fence"}]},
              {"type": "tool_result", "name": "SendUserFile", "content": [{"type": "text", "text": "1 file"}],
@@ -303,13 +322,13 @@ class FakeFetcher(Fetcher):
     def get_json(self, path):
         self.calls.append(path)
         if path == API:
-            return [{"uuid": "org1", "capabilities": ["chat"]}]
+            return [{"uuid": "api-org", "capabilities": ["api"]}, {"uuid": "org1", "capabilities": ["chat"]}]
         if "/chat_conversations/" in path:
             return FIXTURE
         if path.endswith("/docs"):
             return [{"uuid": "d1d1d1d1-x", "file_name": "spec.md", "content": "doc text"}]
         if path.endswith("/files"):
-            return [{"file_uuid": "aaaaaaaa-0000", "file_name": "k.py"}]
+            return [{"file_uuid": "aaaaaaaa-0000", "file_name": "k.py"}, {"file_uuid": "eeeeeeee-0000", "file_name": "lost.pdf"}]
         if path.endswith("/conversations"):
             return [{"uuid": FIXTURE["uuid"], "name": "Fixture chat"}]
         return {"uuid": "p1", "name": "Proj", "description": "d", "prompt_template": "be brief"}
@@ -335,11 +354,22 @@ def self_test():
             assert needle in t, needle
         names = sorted(p.name for p in (Path(tmp) / "chat/assets").iterdir())
         assert any(n.endswith("build.py") for n in names) and any(n.endswith(".png") for n in names), names
-        assert (Path(tmp) / "chat/assets/art1-page.html").read_text() == "<p>hi</p>"
-        assert all(c.startswith("/api/") and "POST" not in c for c in f.calls)
+        assert (Path(tmp) / "chat/assets/art1-page.html").read_text() == "<p>ho</p>"
+        assert org == "org1", org
+        assert any("render_all_tools=true" in c for c in f.calls), f.calls
+        assert t.rstrip().endswith("(id `dddddddd-0000`): GET -> 404"), t[-200:]
+        assert "## Files that could not be downloaded" in t
+        # the network layer is the one place a write could happen: read its source
+        src = inspect.getsource(CdpFetcher)
+        assert re.findall(r"method:\s*'(\w+)'", src) == ["GET"], "CdpFetcher must fetch with GET only"
+        assert '"background": ' + str(True) in src and "new_page" not in src and ".goto(" not in src, \
+            "CdpFetcher must open only a background tab"
         p = import_project(f, org, "p1", Path(tmp) / "proj")
-        assert p["chats"] == 1 and p["knowledge_items"] == 2 and p["messages"] == 3, p
-        assert "be brief" in (Path(tmp) / "proj/instructions.md").read_text()
+        assert p["chats"] == 1 and p["knowledge_items"] == 3 and p["knowledge_failed"] == 1 and p["messages"] == 3, p
+        ins = (Path(tmp) / "proj/instructions.md").read_text()
+        assert "be brief" in ins and "lost.pdf" in ins and "could not be downloaded" in ins
+        assert any(n.endswith("spec.md") for n in os.listdir(Path(tmp) / "proj/knowledge"))
+        assert any(n.endswith("k.py") for n in os.listdir(Path(tmp) / "proj/knowledge"))
         assert (Path(tmp) / "proj/chats/Fixture-chat-11111111/transcript.md").exists()
     print("self-test ok")
 
