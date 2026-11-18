@@ -54,3 +54,10 @@ def test_e2e_tests_are_never_selected_by_name(tmp_path, monkeypatch) -> None:
 def test_changed_returns_none_when_git_cannot_diff(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)  # not a repository
     assert a.changed("origin/main") is None
+
+
+def test_a_changed_test_file_runs_even_when_it_does_not_name_itself(tmp_path, monkeypatch) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_new.py").write_text("def test_x(): pass")
+    monkeypatch.chdir(tmp_path)
+    assert "tests/test_new.py" in a.targets(["tests/test_new.py"])
