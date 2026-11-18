@@ -8,7 +8,7 @@ On the host that starts cloud sessions:
 
 In the VM, from the checkout:
 
-    python3 <skill>/scripts/cloud_verifier.py verify --pr N --brief FILE [--harness codex|claude] [--model M] [--effort E]
+    python3 <skill>/scripts/cloud_verifier.py verify --pr N --brief FILE [--harness codex|claude] [--model M] [--effort E] [--requested UNIX_SECONDS]
 
 On a host with no worker VM (route 1b), a Codex Cloud thread driven with the host's own login:
 
@@ -55,7 +55,16 @@ report's own folder pass: a fresh clone ignores `tmp/loop/` only where the proje
 out the PR's head detached, so nothing the verifier does moves the worker's branch, runs `codex exec` on the brief with Codex's own sandbox
 off (the VM is the sandbox, and the verifier needs Docker and the network), under an `AGENT_SIGNATURE=` line
 naming the model and effort it was given, and posts the report as one comment on
-the PR through REST, unchanged, printing the comment's URL as its last line. With `--harness claude` it runs
+the PR through REST, with a footer of four lines, `Seconds: start|setup|review|post <n|unknown>`, and prints one
+JSON line, `{"pass_seconds": {...}, "pr": N, "head": "..."}` (`null` for an unknown phase), then the comment's URL as
+its last line. The phases, in whole seconds: `start`, from `--requested` (the unix time the carrier's lead asked for
+the pass; without it `unknown`) to `verify`'s own start; `setup`, from there to the CLI's start (install, fetch,
+checkout, the cleanliness checks); `review`, the CLI run; `post`, the comment's post, put in by one edit of the posted
+comment (`Seconds: post unknown` until then; a failed edit is a warning on stderr, the comment stays as posted and the
+exit code is unchanged). A phase that did not run prints `unknown`, never 0, and so does a `start` whose
+`--requested` is later than `verify`'s start, since the two clocks then disagree. A pass that ran the CLI but posted
+nothing (no report, a repeated question, a refused post) still prints its JSON line. The `thread` route records none: the
+thread API reports no phase times. With `--harness claude` it runs
 `claude -p` on the brief instead, in permission mode `bypassPermissions` for the same reason, on the session's own
 Claude login (no install, no login step, no seeded variable), and keeps what it prints on stdout as the final
 message; `--effort` is refused there (exit 2), since the CLI has no such flag. The report is the file the brief's
@@ -649,9 +658,75 @@ def needs_a_look(why: str, what: str) -> None:
     )
 
 
+PHASES = ("start", "setup", "review", "post")
+
+
+def seconds(requested, began, started, ended) -> dict[str, int | None]:
+    """A pass's phases in whole seconds, None for one that did not run or can't be seen: start (the lead's request to
+    `verify`'s own start), setup (to the CLI's start), review (the CLI run) and post (known only after the post). A
+    span that runs backwards is None too: `requested` comes from the lead's clock, so it means the two clocks
+    disagree, and 0 would claim a start time nobody measured."""
+
+    def span(a, b):
+        return None if a is None or b is None or b < a else round(b - a)
+
+    return {
+        "start": span(requested, began),
+        "setup": span(began, started),
+        "review": span(started, ended),
+        "post": None,
+    }
+
+
+def publish(pr: int, body: str, phases: dict[str, int | None]) -> None:
+    """Post the body with a `Seconds:` footer (post unknown, since it is known only afterwards), put the post time
+    into that one comment, then print the pass's JSON line and the comment's URL, the last line. A failed edit is a
+    warning: the comment is posted, so the pass stands."""
+
+    def footer(times: dict[str, int | None]) -> str:
+        return "\n".join(
+            f"Seconds: {n} {'unknown' if times[n] is None else times[n]}" for n in PHASES
+        )
+
+    plain = body.rstrip("\n") + "\n\n"
+    began = time.time()
+    url, ident = post(pr, f"{plain}{footer(phases)}\n")
+    took = round(time.time() - began)
+    try:
+        if ident:
+            run(
+                "gh",
+                "api",
+                "-X",
+                "PATCH",
+                f"repos/{{owner}}/{{repo}}/issues/comments/{ident}",
+                "-F",
+                "body=@-",
+                input=f"{plain}{footer({**phases, 'post': took})}\n",
+            )
+            phases = {**phases, "post": took}  # the JSON line says what the comment says
+    except (Refused, OSError, ValueError) as e:
+        print(f"cloud_verifier: the post time was not added to the comment: {e}", file=sys.stderr)
+    print(pass_line(pr, phases))
+    print(url)
+
+
+HEAD = [""]  # the head the running pass reviews, for its JSON line
+
+
+def pass_line(pr: int, phases: dict[str, int | None]) -> str:
+    return json.dumps({"pass_seconds": phases, "pr": pr, "head": HEAD[0]})
+
+
 def verify(
-    pr: int, brief_file: Path, model: str | None, effort: str | None, harness: str = "codex"
+    pr: int,
+    brief_file: Path,
+    model: str | None,
+    effort: str | None,
+    harness: str = "codex",
+    requested: float | None = None,
 ) -> int:
+    began = time.time()
     if harness == "claude" and effort:
         raise Refused("`--effort` is Codex's only: the Claude CLI has no effort flag, so pass none")
     brief = brief_file.read_text()
@@ -669,6 +744,7 @@ def verify(
         )
     pull = json.loads(run("gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}").stdout)
     head, ref = pull["head"]["sha"], pull["head"]["ref"]
+    HEAD[0] = head
     was = (
         run("git", "symbolic-ref", "-q", "--short", "HEAD", check=False).stdout.strip()
         or run("git", "rev-parse", "HEAD").stdout.strip()
@@ -705,13 +781,14 @@ def verify(
         cmd += ["-c", f"model_reasoning_effort={effort}"] if effort else []
     # an earlier pass's file is not this pass's answer: one counts only when this pass wrote it
     before = {p: written(p) for p in (report, question) if p}
-    code, wrote, stuck = 1, {}, ""
+    code, wrote, stuck, started, ended = 1, {}, "", None, None
     try:
         started = time.time()
         code = (
             relay_exec(cmd, brief, final) if harness == "claude" else codex_exec([*cmd, "-"], brief)
         )
-        print(f"{harness} exited {code} after {time.time() - started:.0f} s", flush=True)
+        ended = time.time()
+        print(f"{harness} exited {code} after {ended - started:.0f} s", flush=True)
         # read before the checkout back, which rewrites a report path that both commits track
         wrote = {
             p: text(p) for p in (report, question) if p and written(p) not in (None, before[p])
@@ -733,6 +810,7 @@ def verify(
         stuck = showing(report) or returned(was, report)
         if stuck:
             needs_a_look("the pass left the checkout changed, so it stays as it is", stuck)
+    phases = seconds(requested, began, started, ended)
     ask, body = (
         wrote.get(question, ""),
         wrote.get(report, "").strip() and wrote[report] or wrote[final],
@@ -740,25 +818,28 @@ def verify(
     try:
         if not code and ask.strip() and (why := repeat_ask(brief, ask)):
             print(f"cloud_verifier: {why}", file=sys.stderr)
+            print(pass_line(pr, phases))
             return 4 if stuck else 1
         if not code and ask.strip():
             # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
-            print(post(pr, f"## Verifier question\n\n{ask}"))
+            publish(pr, f"## Verifier question\n\n{ask}", phases)
             return 4 if stuck else 3
         if code or not re.search(r"^SATISFIED:", body, re.MULTILINE):
             print(
                 f"no report with a SATISFIED: line ({harness} exit {code}); the last of what it wrote:\n{body[-1500:]}"
             )
+            print(pass_line(pr, phases))
             return 4 if stuck else 1
-        print(post(pr, body))
+        publish(pr, body, phases)
     except (Refused, OSError, ValueError) as e:  # not posted, so a failed pass
         print(f"cloud_verifier: {e}", file=sys.stderr)
+        print(pass_line(pr, phases))  # a failed pass's time counts too
         return 4 if stuck else 1
     return 4 if stuck else 0
 
 
-def post(pr: int, body: str) -> str:
-    """Post one comment on the PR through REST (GraphQL answers 403 in the VM) and return its URL."""
+def post(pr: int, body: str) -> tuple[str, str | None]:
+    """Post one comment on the PR through REST (GraphQL answers 403 in the VM) and return its URL and id."""
     posted = run(
         "gh",
         "api",
@@ -766,10 +847,11 @@ def post(pr: int, body: str) -> str:
         "-F",
         "body=@-",  # from stdin: a long report does not fit an argument
         "--jq",
-        ".html_url",
+        ".html_url, .id",
         input=body,
     )
-    return posted.stdout.strip()
+    url, _, ident = posted.stdout.strip().partition("\n")
+    return url, ident.strip() or None
 
 
 # ── host: a Codex Cloud thread as the verifier's machine (route 1b) ───────────────────────────────────────────────
@@ -1173,6 +1255,11 @@ def command(argv: list[str] | None) -> int:
     )
     v.add_argument("--model")
     v.add_argument("--effort", help="Codex's reasoning effort; refused with --harness claude")
+    v.add_argument(
+        "--requested",
+        type=float,
+        help="unix seconds the lead asked for the pass, for the footer's `Seconds: start`; unknown without it",
+    )
     t = sub.add_parser(
         "thread",
         help="run a Codex verifier pass on a Codex Cloud thread, driven from this host (route 1b)",
@@ -1215,7 +1302,7 @@ def command(argv: list[str] | None) -> int:
             return thread_verify(
                 args.pr, args.brief, args.model, args.effort, args.thread, args.env, args.head
             )
-        return verify(args.pr, args.brief, args.model, args.effort, args.harness)
+        return verify(args.pr, args.brief, args.model, args.effort, args.harness, args.requested)
     except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         if not args.command.startswith("thread") and not isinstance(e, Refused):
             raise

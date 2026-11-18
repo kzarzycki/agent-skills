@@ -7,3 +7,5 @@ when either merges `main` in, while two edits to the same entry still conflict (
 
 A release moves every entry here, in issue order, under its version heading in
 `CHANGELOG.md`, after any still under `## Unreleased`, and deletes the files.
+
+The release's other steps, the pre-tag smoke run and `release-check`, are in [../RELEASING.md](../RELEASING.md).

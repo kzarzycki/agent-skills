@@ -88,7 +88,8 @@ Without one, every session you start is a lead, as before.
 
 The package is released under independently versioned `engineering-vX.Y.Z` tags. APM resolves
 the consumer constraint against package-prefixed tags and records the selected
-tag and commit in `apm.lock.yaml`.
+tag and commit in `apm.lock.yaml`. [RELEASING.md](RELEASING.md) is the release procedure, including the smoke run
+that precedes the tag.
 
 ## Changing a skill for one repo
 

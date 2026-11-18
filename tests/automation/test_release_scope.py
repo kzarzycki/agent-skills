@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -121,3 +122,67 @@ def test_release_candidate_rejects_leading_zero_versions(tmp_path: Path, version
 
     with pytest.raises(ConfigurationError, match="tag"):
         validate_release_candidate(engineering, f"engineering-v{version}")
+
+
+HEAD = "a" * 40
+SMOKE = {"RELEASE_SMOKE_REPOSITORY": "org/private", "RELEASE_SMOKE_WORKFLOW": "smoke.yml"}
+
+
+def _runs(*runs: dict) -> Callable[[list[str]], str]:
+    return lambda _arguments: json.dumps(list(runs))
+
+
+def test_release_check_refuses_without_a_smoke_run_for_the_release_head() -> None:
+    from tools.capability_pack.qualify import require_smoke_run
+
+    other = {"conclusion": "success", "displayTitle": f"smoke {'b' * 40}", "url": "u-other"}
+    failed = {"conclusion": "failure", "displayTitle": f"smoke {HEAD}", "url": "u-failed"}
+    for runs in ((), (other,), (failed,)):
+        with pytest.raises(ConfigurationError, match="no passing"):
+            require_smoke_run(HEAD, SMOKE, _runs(*runs))
+    with pytest.raises(ConfigurationError, match="RELEASE_SMOKE_REPOSITORY"):
+        require_smoke_run(HEAD, {}, _runs())
+    passed = {"conclusion": "success", "displayTitle": f"smoke {HEAD}", "url": "u-ok"}
+    assert require_smoke_run(HEAD, SMOKE, _runs(other, failed, passed)) == "u-ok"
+
+
+def test_release_check_command_refuses_without_a_smoke_run_and_prints_a_skip(
+    monkeypatch, capsys
+) -> None:
+    from tools.capability_pack import cli
+
+    monkeypatch.setattr(cli, "validate_release_candidate", lambda *_a: None)
+    monkeypatch.setattr(cli, "_git_output", lambda *_a, **_k: HEAD)
+    for name in SMOKE:
+        monkeypatch.delenv(name, raising=False)
+    argv = ["release-check", "engineering", "engineering-v0.0.0"]
+    assert cli.main(argv) == 2
+    assert "RELEASE_SMOKE_REPOSITORY" in capsys.readouterr().err
+    assert cli.main([*argv, "--skip-smoke"]) == 0
+    assert "smoke run: skipped" in capsys.readouterr().out
+
+
+def test_release_check_asks_about_the_head_it_checked_out(monkeypatch, capsys) -> None:
+    from tools.capability_pack import cli
+
+    asked: list[str] = []
+    monkeypatch.setattr(cli, "validate_release_candidate", lambda *_a: None)
+    monkeypatch.setattr(cli, "_git_output", lambda *_a, **_k: HEAD)
+    monkeypatch.setattr(cli, "require_smoke_run", lambda head: asked.append(head) or "u-ok")
+    assert cli.main(["release-check", "engineering", "engineering-v0.0.0"]) == 0
+    assert asked == [HEAD]
+    assert "smoke run: u-ok" in capsys.readouterr().out
+
+
+def test_smoke_run_refuses_a_short_head() -> None:
+    from tools.capability_pack.qualify import require_smoke_run
+
+    with pytest.raises(ConfigurationError, match="full commit sha"):
+        require_smoke_run(HEAD[:7], SMOKE, _runs())
+
+
+def test_smoke_workflow_in_releasing_md_requires_the_verdict_line() -> None:
+    text = (Path(__file__).parents[2] / "engineering" / "RELEASING.md").read_text()
+    block = text.split("```yaml")[1].split("```")[0]
+    assert "grep -q '^gh: '" in block
+    assert "risk: .*; merge: " in block
