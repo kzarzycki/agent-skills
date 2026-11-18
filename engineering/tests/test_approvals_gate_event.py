@@ -1,9 +1,10 @@
 """approvals.py: the gate emits the `gate` event (events.md) on the branch it gates: `waiting` while it waits for a slot
-or runs, rewritten at each beat, then `ok` or `failed` with the record's path (#1379)."""
+or runs, rewritten at each beat, then `ok` with the record's path, or `failed` with the detached run's log when there is one (#1379)."""
 
 from __future__ import annotations
 
 import fcntl
+import io
 import json
 import os
 import subprocess
@@ -73,11 +74,8 @@ def test_gate_failure_event(
 ) -> None:
     command = gate(steps, "raise SystemExit(3)")
     assert approvals.main(["local-ci", "--record"]) == 1
-    # a failed step records nothing: the url is the path its record would have, with no detached run's log
-    assert (emitted[-1][0], emitted[-1][2]) == (
-        "failed",
-        str(approvals.recorded(steps["tree"], command)),
-    )
+    # a failed step records nothing, and with no detached run there is no log: the url is empty
+    assert (emitted[-1][0], emitted[-1][2]) == ("failed", "")
     assert not approvals.recorded(steps["tree"], command).exists()
     assert f"refs/loop/gate/{branch_of(steps)}" in on_origin(steps)
 
@@ -95,7 +93,10 @@ def test_gate_waiting_beats(
     released: list[float] = []
 
     def release() -> None:
-        time.sleep(1.5)
+        # let go once three beats are seen, with a deadline generous enough for a loaded host
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and sum(s == "waiting" for s, *_ in list(emitted)) < 3:
+            time.sleep(0.05)
         released.append(time.monotonic())
         os.close(fd)
 
@@ -104,7 +105,7 @@ def test_gate_waiting_beats(
     code: list[int] = []
     run = threading.Thread(target=lambda: code.append(approvals.main(["local-ci", "--record"])))
     run.start()
-    run.join(60)
+    run.join(180)
     holder.join(10)
     assert code == [0]
     while_held = [
@@ -184,3 +185,51 @@ def test_an_event_that_cannot_be_written_leaves_the_gate_exit(
     assert approvals.main(["local-ci", "--record"]) == 0
     gate(steps, "raise SystemExit(3)")
     assert approvals.main(["local-ci", "--record"]) == 1
+
+
+def test_a_gate_on_a_new_head_is_not_read_as_the_previous_heads_end(
+    steps: dict[str, Any],
+    emitted: list[tuple[str, int, str, str, float]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a pass on one head, the detaching `local-ci` on the next says `waiting` before it starts the run, so a
+    `wait` that follows it does not return the old `ok`."""
+    gate(steps, "pass")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert emitted[-1][0] == "ok"
+    (steps["repo"] / "app.py").write_text("value = 2\n")
+    git_in(steps["repo"], "commit", "-qam", "next")
+    # a run that does nothing: the event is the parent's alone
+    monkeypatch.setattr(approvals, "follow", lambda *_a: 0)
+    assert approvals.detach(["--help"]) == 0
+    assert emitted[-1][0] == "waiting"
+    out = io.StringIO()
+    code = approvals.loop_events.wait(
+        "gate", branch_of(steps), timeout=1, poll=0.1, cwd=steps["repo"], out=out
+    )
+    assert code != 0 and "ok" not in out.getvalue()
+
+
+def test_a_gate_steps_policy_ends_ok_with_the_records_directory(
+    steps: dict[str, Any], emitted: list[tuple[str, int, str, str, float]]
+) -> None:
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert (emitted[-1][0], emitted[-1][2]) == ("ok", str(approvals.local_ci_dir()))
+
+
+def test_a_detached_head_writes_no_event(
+    steps: dict[str, Any], emitted: list[tuple[str, int, str, str, float]]
+) -> None:
+    git_in(steps["repo"], "checkout", "-q", "--detach")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert emitted == []
+    assert git_in(steps["repo"], "for-each-ref", "refs/loop/gate/") == ""
+
+
+def test_the_events_unpushed_warning_stays_off_the_gates_stderr(
+    steps: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    git_in(steps["repo"], "remote", "add", "origin", str(tmp_path / "nowhere.git"))
+    gate(steps, "pass")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert "not pushed" not in capsys.readouterr().err

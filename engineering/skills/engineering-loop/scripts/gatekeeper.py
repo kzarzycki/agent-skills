@@ -357,9 +357,11 @@ a refusal (`exited N: nothing recorded`) on its stdout. Stopping the caller, Ctr
 `kill -- -<pid>`, with the pid `<head>.pid` holds, stops its process group.
 A run that gates a branch also writes its `gate` event (events.md, `refs/loop/gate/<branch>`, the checked-out branch): `waiting` while a step waits for a slot or runs, rewritten every SLOT_SAY_SECONDS; `ok` at the end with
 `url` the record (with `gate_steps`, the records' directory); `failed` with `url` the detached run's log when there is one,
-else the path the step's record would have, since a failed step records nothing. Writing an event never changes the
-exit code. The `gate` commit status stays: `wait-for --until gate` reads it and the PR page shows it, and no event reader
-replaces them yet.
+else empty (a failed step records nothing, and a refusal has no log either). The detaching `local-ci` writes `waiting`
+first, before it starts the run, so a wait that follows it never reads the previous head's end. Writing an event never
+changes the exit code. The `gate` commit status stays, on the PR head and on main commits: `land` writes the latter
+(`publish(tip, landed_pass(...))`), `wait-for --until gate` reads the former and the PR page shows both, and no event
+reader replaces them yet.
 Every pass this clone holds, run or reused, is published one way from every session, host or cloud: pushed to origin
 as the branch `loop-gate/<tree>-<command's key>` (a branch, since a cloud session's proxy pushes nothing else), on a
 commit holding the tree, the commit the pass ran on as its parent, and as its message the line `Tree <tree> on
@@ -8666,10 +8668,9 @@ def run_local_ci(
     code, step = done["code"], done["step"]
     if step is not None:
         command = step["command"]
-        # a failed step records nothing, so its url is the detached run's log when there is one, else the path
-        # its record would have had
+        # a failed step records nothing, so its url is the detached run's log when there is one, else empty
         log = run_files(before[0])[0]
-        gate_event(branch, "failed", lambda: str(log if log.exists() else recorded(tree, command)))
+        gate_event(branch, "failed", str(log) if log.exists() else "")
         nothing = "nothing recorded" if step["legacy"] else f"nothing recorded for `{step['name']}`"
         machine = code == settings(project()[1]).get("machine_exit")
         # the lead's `wait-for --until gate` reads the run's end off the head (failed), said after the refusal
@@ -8877,6 +8878,9 @@ def detach(argv: list[str]) -> int:
     head = git("rev-parse", "HEAD").strip()
     log, pid, exit_file = run_files(head)
     log.parent.mkdir(parents=True, exist_ok=True)
+    # `waiting` before the run starts or any slow step, so a reader that waits once this returns never takes the previous
+    # head's end for this one's; a pass reused on this head writes `ok` over it at once
+    gate_event(gate_branch(), "waiting")
     while True:
         with open(pid, "a+") as claim:
             fcntl.flock(claim, fcntl.LOCK_EX)  # two callers at once start one run
@@ -9634,8 +9638,7 @@ def local_ci(
             return code
         if record := reusable(head, passed):
             print(f"{CHECKED} on {head}: {reused(record)}")
-            if not record.get("left"):
-                gate_event(gate_branch(), "ok", lambda: gate_url(record))
+            gate_event(gate_branch(), "ok", lambda: gate_url(record))
         else:
             record = run_local_ci(None, None, passed)
             where = (
