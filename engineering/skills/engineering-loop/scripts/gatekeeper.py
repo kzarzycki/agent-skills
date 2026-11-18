@@ -283,7 +283,7 @@ is missing. Without the section nothing changes.
 matches with `gh pr merge --merge --match-head-commit`, a merge commit that keeps the head's ancestry (an upstream-sync
 PR needs it), instead of the squash above; every other PR lands as before. `land` prints each PR's method, and a
 match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form.
-`where: host | cloud | both` (default `host`) says where `land` runs: it refuses elsewhere, exit 1, before reading any
+`where: host | cloud | both` (default `both`) says where `land` runs: it refuses elsewhere, exit 1, before reading any
 PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`; its checkout signs with the session's own
 key, shared across that service's users, so there `land` refuses without the section (GitHub's merge is GraphQL, which
 the session's proxy refuses, and signs with GitHub's key), when it names no `signing_key_env`, and when that variable
@@ -2891,21 +2891,21 @@ def armoured(value: str) -> str:
 
 @contextlib.contextmanager
 def placed(loop: str | None, queue: bool = False) -> Any:
-    """Refuse a land where loop.md's `land.where` (default `host`) excludes the place it runs, before any PR is read.
-    In a cloud session (CLOUD) also refuse one without the `land` section, since GitHub's own merge is GraphQL there
-    and signs with GitHub's key. Unless the base requires GitHub's merge queue (`queue`), which merges and signs each
+    """Refuse a land where loop.md's `land.where` (default `both`) excludes the place it runs, before any PR is read.
+    In a cloud session (CLOUD) also refuse one without the `land` section, unless the base requires GitHub's merge
+    queue, since otherwise GitHub's own merge is GraphQL there and signs with GitHub's key. Unless the base requires GitHub's merge queue (`queue`), which merges and signs each
     PR itself, refuse there too one whose `signing_key_env` variable is unset, empty or holds a key the allowed
     signers lack; else hold that key (armoured(), if a one-line variable stripped its armour) in a mode-0600 file in
     a fresh temporary directory, removed whatever happens, and sign each squash with it (SIGNING). The key and the variable's value are never printed."""
     global SIGNING
     land, cloud = settings(loop).get("land"), in_cloud()
     place = "a cloud session" if cloud else "a host"
-    if cloud and land is None:
+    if cloud and land is None and not queue:
         raise Refused(
             "land in a cloud session needs loop.md's `land` section: without it GitHub merges, over GraphQL, which"
             " the session's proxy refuses, and signs with GitHub's key"
         )
-    where = (land or {}).get("where", "host")
+    where = (land or {}).get("where", "both")
     where = LAND_WHERE.aliases.get(where, where)
     if where not in ("both", "cloud" if cloud else "host"):
         raise Refused(f"loop.md's `land.where` is `{where}`, so land does not run in {place}")

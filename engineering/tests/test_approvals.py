@@ -5281,17 +5281,12 @@ def test_land_refuses_where_loop_md_excludes_the_place_it_runs(
     unmoved(cloud_land)
 
 
-def test_a_cloud_land_defaults_to_host_and_lands_with_both(
+def test_a_cloud_land_with_where_unset_lands_like_both(
     cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`where` unset is `host`, which a cloud session refuses; `both` lands there."""
+    """`where` unset is `both` (#1356), so a cloud session lands as it does with `where: both`."""
     text = cloud_land["loop"].read_text()
     cloud_land["loop"].write_text(text.replace("  where: cloud\n", ""))
-    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
-        "loop.md's `land.where` is `host`, so land does not run in a cloud session"
-    ]
-    unmoved(cloud_land)
-    cloud_land["loop"].write_text(text.replace("where: cloud", "where: both"))
     code, lines = cloud_land["land"]("7")
     assert (code, cloud_land["main"]()) == (
         0,
