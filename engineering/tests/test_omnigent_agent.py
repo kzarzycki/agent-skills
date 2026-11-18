@@ -12642,26 +12642,32 @@ def test_a_quiet_waiter_is_not_stalled_while_a_session_its_line_names_progresses
         assert stalls(og) == [] and deadlines(registry) == []
 
 
-def test_a_named_session_that_ended_is_news_to_its_waiter_again_after_the_waiters_next_turn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "wait, child, tail",
+    [
+        (f"STILL WORKING: waiting on {OTHER}. Report: m.md", OTHER, "your wait still names it"),
+        ("STILL WORKING: waiting on the check. Report: m.md", WORKER, "a session it started"),
+    ],
+)
+def test_a_childs_end_is_news_to_its_lead_once_per_end_not_once_per_lead_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait: str, child: str, tail: str
 ) -> None:
-    done = {"status": "idle", "updated_at": time.time() - 1300}
-    wait = f"STILL WORKING: waiting on {OTHER}. Report: m.md"
-    registry, og = manager(tmp_path, wait, **{OTHER: done})
-    og.histories[OTHER] = [ending("DONE: all merged. Report: o.md", 1300)]
-    news = lambda: [  # told to the waiter, m, not only posted to the chief of staff
-        t
-        for s, t in og.inbox
-        if s == "m" and t.startswith("Supervisor: m t-m:") and "ended DONE" in t
-    ]
-    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    """The news wakes the lead and its reply is a new turn: keyed on that turn, the same end was
+    news again at every poll. Keyed on the child's own end, only a new end of it is news."""
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(tmp_path, wait, m={"status": "idle"}, **{child: gone})
+    og.histories[child] = [ending("DONE: all merged. Report: o.md", 1300)]
+    news = lambda: [t for s, t in og.inbox if s == "m" and f"{child} ended DONE" in t and tail in t]
+    run = lambda: supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    run()
     assert len(news()) == 1  # once, not once per poll
-    assert re.fullmatch(
-        rf"Supervisor: m t-m: {OTHER} ended DONE at \d\d:\d\dZ; your wait still names it", news()[0]
-    )
-    og.histories["m"].append(ending(wait, 0))  # its next turn names it again
+    og.histories["m"].append(ending(wait, 0))  # the lead's reply: a new turn, the child unchanged
     skewed(monkeypatch)[0] = 4000.0
-    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    run()
+    assert len(news()) == 1
+    og.histories[child].append(ending("DONE: merged again. Report: o.md", 0))  # it ended again
+    skewed(monkeypatch)[0] = 8000.0
+    run()
     assert len(news()) == 2
 
 
@@ -13039,6 +13045,102 @@ def test_a_pr_a_lead_waits_on_that_merged_is_news_to_it_from_github_once(
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
     told_m = [t for s, t in og.inbox if s == "m" and "PR #976 merged; your wait names it" in t]
     assert len(told_m) == 1 and reads  # once, however often it is read
+
+
+@pytest.mark.parametrize("end", [(1, "PR #976 checks red: gate"), (0, "PR #976 checks green (3)")])
+def test_a_waited_pr_that_ends_the_same_way_on_a_new_head_is_news_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, end: tuple[int, str]
+) -> None:
+    """A push is a new head, so the PR's next end is news though its text repeats and no poll saw
+    its checks pending; the same head after the lead's reply is not."""
+    wait = "STILL WORKING: fix pushed\nWaits: #976"
+    registry, og = manager(tmp_path, wait, m={"status": "idle"})
+    head = ["a1"]
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (*end, head[0]))
+    told = lambda: [t for s, t in og.inbox if s == "m" and end[1] in t]
+    run = lambda: supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    run()
+    og.histories["m"].append(ending(wait, 0))  # a new lead turn, the PR unchanged
+    skewed(monkeypatch)[0] = 4000.0
+    run()
+    assert len(told()) == 1
+    head[0] = "b2"  # the fix was pushed while the lead waited on something else
+    skewed(monkeypatch)[0] = 8000.0
+    run()
+    assert len(told()) == 2
+
+
+def test_pr_settled_carries_the_head_gh_reports(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The head keys a waited PR's end, so it is asked of GitHub and returned."""
+    asked = []
+
+    def gh(*args: str, timeout: float = 0) -> str:
+        asked.append(args)
+        check = {"name": "gate", "status": "COMPLETED", "conclusion": "FAILURE"}
+        return json.dumps({"state": "OPEN", "headRefOid": "b2", "statusCheckRollup": [check]})
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    assert omnigent_agent.pr_settled(976) == (1, "PR #976 checks red: gate", "b2")
+    assert "headRefOid" in asked[0][-1]
+
+
+def test_a_started_child_that_fails_again_after_a_revive_is_news_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wait = "STILL WORKING: waiting on the check. Report: m.md"
+    registry, og = manager(
+        tmp_path, wait, m={"status": "idle"}, **{WORKER: {"status": "failed", "updated_at": 0}}
+    )
+    og.histories[WORKER] = [ending("STILL WORKING: running tests", 1300)]
+    told = lambda: [t for s, t in og.inbox if s == "m" and f"{WORKER} failed" in t]
+    run = lambda: supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    run()
+    assert len(told()) == 1
+    og.histories["m"].append(ending(wait, 0))  # the lead revives it: a user message to the child
+    og.histories[WORKER].append({**said("user", "revive", "u-revive"), "created_at": time.time()})
+    og.snaps[WORKER]["status"] = "running"
+    skewed(monkeypatch)[0] = 4000.0
+    run()
+    og.snaps[WORKER]["status"] = "failed"  # it fails again before it writes a message
+    skewed(monkeypatch)[0] = 8000.0
+    run()
+    assert len(told()) == 2
+
+
+def test_a_session_in_a_wait_set_is_news_once_per_end_not_once_per_lead_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    wait = f"STILL WORKING: waiting\nWaits: {OTHER}, #976"
+    registry, og = manager(tmp_path, wait, m={"status": "idle"}, **{OTHER: gone})
+    og.histories[OTHER] = [ending("DONE: merged. Report: o.md", 1300)]
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+    told = lambda: [t for s, t in og.inbox if s == "m" and t.endswith("; your wait names it")]
+    run = lambda: supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    run()
+    assert len(told()) == 1  # every member ended: the set is news once
+    og.histories["m"].append(ending(wait, 0))
+    skewed(monkeypatch)[0] = 4000.0
+    run()
+    assert len(told()) == 1
+    og.histories[OTHER].append(ending("DONE: merged again. Report: o.md", 0))
+    skewed(monkeypatch)[0] = 8000.0
+    run()
+    assert len(told()) == 2
+
+
+def test_a_waited_pr_that_merged_is_not_news_again_after_the_leads_next_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+    told_m = lambda: [t for s, t in og.inbox if s == "m" and "PR #976 merged; your wait names" in t]
+    run = lambda: supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    run()
+    og.histories["m"].append(ending("STILL WORKING: spec filed\nWaits: #976", 0))  # a new turn
+    skewed(monkeypatch)[0] = 4000.0
+    run()
+    assert len(told_m()) == 1
 
 
 def test_a_set_that_names_ci_is_not_over_when_only_its_pr_ended(
