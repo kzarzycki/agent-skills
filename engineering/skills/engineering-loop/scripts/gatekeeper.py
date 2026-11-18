@@ -685,6 +685,12 @@ STOPS = (signal.SIGTERM, signal.SIGHUP)
 # says whether it is held, and [skip ci] in it starts no workflow
 LOCK = "refs/heads/loop-landing/{}"
 HELD, FREE = "landing lock: held", "landing lock: free"
+# a land re-stamps its lock every BEAT seconds; a lock that says it beats (BEATS in its body) and has not been stamped for STALE
+# seconds was left by a land that died, and is broken. A lock without the word is a land of an earlier version's: CEILING.
+BEAT, STALE, BEATS, BEAT_PUSH = 300, 900, "beats", 120
+beating = (
+    threading.Lock()
+)  # one push of the lock at a time: the heartbeat's, the repointing's, the release's
 # the lock before #814, a ref outside refs/heads/: a land waits while it is on origin, never writing it, so a host still
 # on that version and this one never land at once
 LEGACY = "refs/loop/landing"
@@ -4777,6 +4783,7 @@ def landing_here(
     # every lock commit pushed, each before its push; taken stays None while the last one's push may have reached origin
     held: list[str] = []
     taken = None
+    stop = threading.Event()
     try:
         for sig in stoppable:  # a land under nohup still outlives a hangup
             signal.signal(sig, stopped)
@@ -4784,6 +4791,7 @@ def landing_here(
         if not taken:
             # a named PR left out already is a refusal, which the wait for the lock doesn't clear: 1 over 3
             return (1 if worst else WAITING), True
+        threading.Thread(target=heartbeat, args=(base, held, stop), daemon=True).start()
         # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
         judge_with_base(base)
@@ -4800,6 +4808,11 @@ def landing_here(
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
         # children (ssh, gh as the credential helper) unblock the signals, and a stop of the land's group would end them
         mask = signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
+        stop.set()
+        with (
+            beating
+        ):  # the beat in flight finishes, so `held` ends on the commit that reached origin
+            pass
         if held and taken is not False:
             released = unlock(base, held[-1])
             if released.returncode and taken:
@@ -4943,7 +4956,7 @@ def lock_commit(title: str, parent: str | None, pr: int | None = None) -> str:
         "commit-tree",
         *(["-p", parent] if parent else []),
         "-m",
-        f"{title} [skip ci]\n\npid {os.getpid()}{landing}, nonce {os.urandom(8).hex()}",
+        f"{title} [skip ci]\n\npid {os.getpid()}{landing}, {BEATS}, nonce {os.urandom(8).hex()}",
         empty,
     ).strip()
 
@@ -4968,6 +4981,56 @@ def leased(base: str, ours: str, tip: str | None, **kw: Any) -> subprocess.Compl
         check=False,
         **kw,
     )
+
+
+def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
+    """While the lock is ours, every BEAT seconds push a HELD child of our newest commit, leased on it, so the lock's
+    stamp stays fresh. A refused push means another land took the lock (broke it as stale, or read its PR as merged):
+    our commits are dropped from `held`, which nothing then releases, as repointed() does. A push
+    that fails for another reason (the network) is tried again at the next beat. A stop signal is left to the main
+    thread, which releases the lock."""
+    signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
+    while not stop.wait(BEAT):
+        with beating:
+            if stop.is_set() or not held:
+                return
+            ours = held[-1]
+            # the PR our newest commit names, so a land waiting on this lock still reads it as released once that merges
+            try:
+                named = re.search(r"\bPR #(\d+)\b", git("log", "-1", "--format=%b", ours))
+                held.append(lock_commit(HELD, ours, int(named[1]) if named else None))
+            except (
+                subprocess.CalledProcessError
+            ):  # git failed locally: no beat this time, the next one tries again
+                continue
+            try:
+                pushed = leased(
+                    base, held[-1], ours, timeout=BEAT_PUSH
+                )  # a hung push must not hold `beating` for ever
+            except subprocess.TimeoutExpired:
+                pushed = subprocess.CompletedProcess([], 1)
+            if pushed.returncode:
+                tip = lock_tip(base)
+                if (
+                    tip is None
+                ):  # unreadable (the network): the commit may have reached origin, so it stays ours
+                    continue
+                if (
+                    tip in held
+                ):  # a push reached origin and only its answer was lost: what came after it did not
+                    del held[held.index(tip) + 1 :]
+                    continue
+                held.clear()  # another land's tip
+                return
+
+
+def lock_tip(base: str) -> str | None:
+    """The lock branch's tip on origin, None where it is missing or unreadable."""
+    try:
+        found = git("ls-remote", "origin", LOCK.format(base)).split()
+    except subprocess.CalledProcessError:
+        return None
+    return found[0] if found else None
 
 
 def unlock(base: str, ours: str) -> subprocess.CompletedProcess[str]:
@@ -5022,8 +5085,14 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
                 taken = int(stamp)
                 age = int(time.time()) - taken
                 holder = holder.strip().split(", nonce ")[0]
-                if age <= CEILING and (done := released(base, holder)):
+                dead = age > STALE and f", {BEATS}" in holder
+                if age <= CEILING and not dead and (done := released(base, holder)):
                     print(f"the landing lock {name} ({holder}) is released: {done}: broken")
+                elif dead and age <= CEILING:
+                    print(
+                        f"the landing lock {name} ({holder}) was last stamped {age // 60} minutes ago, past"
+                        f" {STALE // 60}: its land is gone, broken as stale"
+                    )
                 elif age <= CEILING:
                     global held_tip
                     held_tip = (ref, tip)
@@ -5081,9 +5150,14 @@ def repointed(base: str, held: list[str], pr: int) -> None:
     refused push means another land took the lock meanwhile (it read our PR as merged, merged by hand, or our lock as
     stale), so nothing is merged and theirs is left alone: our commits are dropped from `held`, which nothing then
     releases."""
-    ours = held[-1]
-    held.append(lock_commit(HELD, ours, pr))
-    pushed = leased(base, held[-1], ours)
+    with beating:
+        if not held:  # the heartbeat found the lock taken
+            raise Refused(
+                f"another land took the landing lock {lock_name(base)} while this one worked, so nothing was merged"
+            )
+        ours = held[-1]
+        held.append(lock_commit(HELD, ours, pr))
+        pushed = leased(base, held[-1], ours)
     if pushed.returncode:
         held.clear()
         raise Refused(
