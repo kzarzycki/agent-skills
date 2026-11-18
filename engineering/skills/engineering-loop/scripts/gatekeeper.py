@@ -5685,11 +5685,13 @@ def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
     that fails for another reason (the network) is tried again at the next beat. A stop signal is left to the main
     thread, which releases the lock."""
     signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
-    first = True
-    while first or not stop.wait(BEAT):
-        # the land is working while it gates under the lock, which can outlast a native wait's two beats of silence;
-        # the first beat comes when the lock is taken, so the silence since the round's own beat stays under one BEAT
-        first = False
+    # the land is working while it gates under the lock, which can outlast a native wait's two beats of silence; the
+    # first event beat comes when the lock is taken, so the silence since the round's own beat stays under one BEAT.
+    # The lock stamp is fresh from the take itself, so its first push waits a BEAT.
+    for pull in beating_for:
+        if not stop.is_set():
+            land_event(pull, "waiting")
+    while not stop.wait(BEAT):
         for pull in beating_for:
             if not stop.is_set():
                 land_event(pull, "waiting")
