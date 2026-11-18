@@ -13237,6 +13237,27 @@ def test_a_failed_workspace_read_is_tried_again_not_taken_for_no_repo(
     assert bare_pr_wait_reads(tmp_path, monkeypatch, "#976", flaky)[-1] == "o/r"
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("STILL WORKING: waiting\nWaits: session " + "a" * 32 + "\nCoS: https://x/1", False),
+        (
+            "STILL WORKING: waiting\nWaits: session "
+            + "a" * 32
+            + " (a worker) and a run\nCoS: https://x/1",
+            False,
+        ),
+        ("STILL WORKING: waiting on CoS\nWaits: whatever the worker says", False),
+        ("STILL WORKING: spec filed\nCoS: https://x/1", True),
+        ("STILL WORKING: waiting\nWaits: supervisor", True),
+    ],
+)
+def test_a_waits_line_that_does_not_parse_is_no_wait_on_the_supervisor_and_a_cos_footer_is_none_with_it(
+    text: str, expected: bool
+) -> None:
+    assert omnigent_agent.waits_on(text, {}, COS) is expected
+
+
 def told_idle(og) -> list[str]:
     return [t for s, t in og.inbox if s == "m" and "went idle" in t]
 

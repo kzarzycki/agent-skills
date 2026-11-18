@@ -688,7 +688,7 @@ wait comes from the lead's last message: `parked` for a `PARKED` ending, the thi
 WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`, a child's session id, or a
 background task id such as `bz3jp5aod`, `b` and 8 lowercase letters and digits with one digit at
 least, opening it or after `on`/`for`), else
-`unknown`. A last line `Waits: supervisor|session <id>|#<pr>|CI|until <UTC>` (printed by `omnigent_agent.py wait-on`, which refuses any other form) is read first and exactly, and one that names no supervisor makes prose decide nothing about routing to it; without one, prose decides: any single 32-hex id in the wait paragraph is a named wait, and `CoS`, `chief of staff` or a `CoS:` line count as waiting on the supervisor like `pm`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
+`unknown`. A last line `Waits: supervisor|session <id>|#<pr>|CI|until <UTC>` (printed by `omnigent_agent.py wait-on`, which refuses any other form) is read first and exactly, and one that names no supervisor, or that does not parse, makes prose and a `CoS:` footer decide nothing about routing to it; without one, prose decides: any single 32-hex id in the wait paragraph is a named wait, and `CoS`, `chief of staff` or a `CoS:` line count as waiting on the supervisor like `pm`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
 UTC`) is a timed wait, `until <time>`: no deadline before that time plus 20 minutes, then the
 named-wait rule. A last message that
 is only a report's path takes its ending and wait from the report's first line, read once per

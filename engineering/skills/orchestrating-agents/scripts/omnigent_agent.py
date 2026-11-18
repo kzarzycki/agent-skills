@@ -6150,12 +6150,15 @@ def waits_on(text: str, lead: dict, notify: str | None) -> bool:
     """Whether a lead's ``STILL WORKING`` wait names the session the supervisor notifies: a
     ``Waits: supervisor`` line, its full id, the words ``pm``, ``pm's``, ``manager``, ``you``,
     ``CoS`` or ``chief of staff`` after "waiting on", or a ``CoS:`` request line in the turn. A
-    ``Waits:`` line naming anything else is exact: prose then decides nothing."""
+    ``Waits:`` line naming anything else is exact: prose then decides nothing, and a ``Waits:`` line that
+    does not parse is no more a wait on the supervisor than a valid one that names something else."""
     if tr := trailer_of(text):
         return "supervisor" in tr or bool(notify and tr.get("session") == notify)
     if notify and notify in (lead.get("named") or []):
         return True
     start = text.find("STILL WORKING")
+    if start >= 0 and TRAILER.search(text[start:]):  # a Waits: line that does not parse still says the lead
+        return False  # waits on something it named: its prose and CoS: footer are no wait on the supervisor
     return start >= 0 and bool(SUPERVISOR_WAIT.search(text[start:]) or COS_LINE.search(text))
 
 
