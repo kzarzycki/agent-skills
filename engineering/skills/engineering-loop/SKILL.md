@@ -686,7 +686,7 @@ read again right after is the head pin. `approvals.py`'s docstring has each rule
 
 `land <pr>... --only` lands those PRs alone and leaves every other PR untouched, for a lead that must not land another lead's work.
 With `--wait` it is one background command that ends when the PR landed or needs someone
-(exit 3 while it waits on the lock, CI or GitHub's queue, 1 for a refusal or an eviction). A land that waits from a clean checkout of the base follows the base when another land changes the loop's scripts or policy, so no caller needs to pull and start it again. Never run `gh pr
+(exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction; on a base with GitHub's merge queue it ends once the PR is enqueued, exit 0, and polls nothing). A land that waits from a clean checkout of the base follows the base when another land changes the loop's scripts or policy, so no caller needs to pull and start it again. Never run `gh pr
 ready` or `gh pr merge` by hand, because `land` is what refuses a PR whose proof is missing. A repo with
 neither `docs/agents/gatekeeper.md` nor `docs/agents/loop.md` has no rules: `land` there needs each named issue to carry
 `approved:spec` and not `needs-owner`, and the PR's own proofs. A post that names a private project, its repo or a host can't be taken back, since
