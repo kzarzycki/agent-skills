@@ -618,7 +618,9 @@ def gated_wait(
     return result
 
 
-@pytest.mark.timeout(240)  # scaled real seconds: beats of 6 s and a 20 s gate, longer on a loaded host
+@pytest.mark.timeout(
+    240
+)  # scaled real seconds: beats of 6 s and a 20 s gate, longer on a loaded host
 def test_a_wait_on_a_land_whose_round_starts_late_and_gates_long_never_goes_silent(
     events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
