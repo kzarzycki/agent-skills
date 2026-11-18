@@ -405,9 +405,13 @@ variable `LOOP_DENY_LIST` names (denied): a line naming a listed term refuses th
 one's own PR) on the commit its `Head:` line names, carrying any text after the pass number on its `Verifier:` line
 (a qualifier, such as why the verifier shares the author's family) into the review's first line, refusing a report without that line or its
 `Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
-headings that don't add up to the `VERDICT:` counts (any other `### ` heading is a sub-heading and posts nothing): one
+headings that don't add up to the `VERDICT:` counts (any other `### ` heading is a sub-heading and posts nothing), a report
+with no `## Criteria` section or an empty one, an `Accepted on evidence: <line> — <proof log>` line naming no proof log,
+and any `Accepted on evidence:` line in a report whose `Risk:` is not `low`, naming it, since a manual line on a high-risk
+change is probed by hand: one
 inline comment per finding, moved to the nearest line of the diff when its
-line is outside it and saying so, and in the review's body when its file is outside the diff.
+line is outside it and saying so, and in the review's body when its file is outside the diff. The review's body
+carries the `## Criteria` section first and each `Accepted on evidence:` line before the closing lines.
 
 An exact revert skips the spec and the verdict: a PR whose body has a line `Reverts #<n>` (GitHub's Revert button writes
 `Reverts <owner>/<repo>#<n>`), where #n is a merged PR and, file for file as GitHub's diff of each shows them, the PR
@@ -6905,6 +6909,48 @@ def findings(text: str, report: Path) -> list[tuple[str, str, str, str, str, str
     return [(*finding[:5], "\n".join(finding[5]).strip()) for finding in found]
 
 
+# a manual acceptance line the verifier took on the worker's evidence: `Accepted on evidence: <line> — <proof log>`
+ACCEPTED = "Accepted on evidence:"
+
+
+def criteria(text: str) -> str:
+    """A report's `## Criteria` section, the criteria the verifier wrote from the spec before reading the worker's
+    evidence (verifier.md, Criteria first), up to the next heading of levels 1 or 2 or the closing lines, outside a
+    code fence; '' when it has none or the section is empty."""
+    section: list[str] | None = None
+    fenced = False
+    for line in text.splitlines():
+        fence = re.match(r"[ \t>]*(```|~~~)", line)
+        if not fenced and not fence and re.match(r"#{1,2} |(Head|VERDICT|SATISFIED):", line):
+            if section is not None:
+                break
+            if line.rstrip() == "## Criteria":
+                section = []
+            continue
+        if fence:
+            fenced = not fenced
+        if section is not None:
+            section.append(line)
+    return "\n".join(section or []).strip()
+
+
+def accepted(lines: list[str], report: Path) -> list[tuple[str, str]]:
+    """Each `Accepted on evidence: <line> — <proof log>` line of a report as (line, proof log), refused when one
+    names no proof log, since an acceptance taken on evidence nobody can find is no acceptance."""
+    found = []
+    for line in lines:
+        if not line.startswith(ACCEPTED):
+            continue
+        said = re.fullmatch(r"(\S.*)[ \t]+[—–][ \t]+(\S.*)", line[len(ACCEPTED) :].strip())
+        if not said:
+            raise Refused(
+                f"{report}: can't read `{line}`: write `{ACCEPTED} <line> — <proof log>`, naming the worker's "
+                "proof log it rests on"
+            )
+        found.append((said[1], said[2]))
+    return found
+
+
 def parse_report(
     report: Path,
 ) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str], str]:
@@ -6950,6 +6996,24 @@ def parse_report(
             f"headings read as one ({tally[0]} blocker, {tally[1]} major, {tally[2]} minor): write each "
             "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
         )
+    # the criteria come from the spec before the worker's evidence, so its framing can't narrow the review
+    if not criteria(text):
+        raise Refused(
+            f"{report} has no `## Criteria` section: write, from the spec alone and before reading the worker's "
+            "report, the criteria the change must meet, each mapped to a Before merge line and its check "
+            "(verifier.md, Criteria first)"
+        )
+    # a manual line taken on the worker's evidence holds only on a low-risk change; any word but `low` reads as high,
+    # as the gate reads it (risk)
+    if not re.match(r"low\b", judgments[-1].split(":", 1)[1].strip(), re.IGNORECASE) and (
+        taken := [line for line in lines if line.startswith(ACCEPTED)]
+    ):
+        raise Refused(
+            f"{report}: `{judgments[-1]}` with `{taken[0]}`: under a high risk a `Manual:` line is probed by hand, "
+            "never accepted on the worker's evidence: run it, or ask for the run in `<report>.question` "
+            "(verifier.md, Manual lines)"
+        )
+    accepted(lines, report)
     # a run not made can't back a satisfied verdict: that ends in a question for the lead's proof run
     if satisfied[-1].lower().split()[1:2] == ["yes"] and any(
         re.match(r"Not run:", line) for line in lines
@@ -6986,7 +7050,8 @@ def report_check(report: Path) -> int:
 def report_facts(report: Path) -> dict[str, Any]:
     """A verifier report's facts, as `verdict` reads them (parse_report, which refuses an unfinished one): the
     verifier's family, pass and qualifier, the head it reviewed, the tally, whether it is satisfied, the risk and its
-    reason, the `Logic change:` line, and each finding, so a flow engine never parses the prose."""
+    reason, the `Logic change:` line, each finding, the `## Criteria` section and each `Accepted on evidence:` line, so
+    a flow engine never parses the prose."""
     heading, head, found, closing, qualifier = parse_report(report)
     family, number = PASS.fullmatch(heading).groups()  # type: ignore[union-attr]
     counted = COUNTED.fullmatch(closing[0])
@@ -6994,7 +7059,13 @@ def report_facts(report: Path) -> dict[str, Any]:
     risk = re.match(r"Risk:[ \t]*(\S+)[ \t]*[—–-]*[ \t]*(.*)", closing[2])
     assert risk  # the same
     logic = [line.partition(":")[2].strip() for line in closing[3:]]
+    text = read(report)
     return {
+        "criteria": criteria(text),
+        "accepted_on_evidence": [
+            {"line": line, "proof": proof}
+            for line, proof in accepted([line.strip() for line in text.splitlines()], report)
+        ],
         "verifier": {"family": family, "pass": int(number), "qualifier": qualifier},
         "head": head,
         "verdict": dict(
@@ -7040,7 +7111,18 @@ def verdict(pr: int, report: Path) -> int:
             {"path": path, "line": at, "side": "RIGHT", "body": f"{said}\n\n{moved}{body}"}
         )
     first = f"{heading} on {head[:7]}" + (f": {qualifier}" if qualifier else "") + "."
-    summary = "\n\n".join([first, *outside, "\n".join(closing)])
+    text = read(report)
+    # the criteria first, as the verifier wrote them before the worker's evidence, and each line taken on that evidence
+    taken = [line.strip() for line in text.splitlines() if line.strip().startswith(ACCEPTED)]
+    summary = "\n\n".join(
+        [
+            first,
+            f"## Criteria\n\n{criteria(text)}",
+            *outside,
+            *(["\n".join(taken)] if taken else []),
+            "\n".join(closing),
+        ]
+    )
     post_review(
         pr, {"commit_id": head, "event": "COMMENT", "body": summary + "\n", "comments": comments}
     )
@@ -8968,7 +9050,9 @@ def brief(
     """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
     verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
     newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
-    file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. A proof log whose first line isn't the head is refused, since the
+    file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. For each spec it
+    prints `- Acceptance tests: <command> <issue>`, the command loop.md's `Acceptance tests:` line names, else the
+    fallback `uv run <this folder>/acceptance.py`, so the verifier runs the one the worker ran. A proof log whose first line isn't the head is refused, since the
     verifier counts a stale proof as missing and spends the pass on it. With `far` (a verifier on another host, `far` an
     absolute path there holding a clone of the repo) its paths are that host's: it fetches the head and makes its own
     detached worktree under `far`'s `tmp/loop/` first, the role is read there, and the report, the previous report and
@@ -9005,18 +9089,28 @@ def brief(
         | set(named(pull["body"] or ""))
     )
     role = Path(__file__).resolve().parents[1] / "verifier.md"
+    runner = Path(__file__).resolve().with_name("acceptance.py")
     loop_dir = far / "tmp" / "loop" if far else Path("tmp/loop")  # the verifier's tmp/loop/
     tree = loop_dir / f"pr{pr}-v{number}-tree"
     if far:
         if not far.is_absolute():
             raise Refused(f"--far {far}: an absolute path on the verifier's host")
         role = tree / role.relative_to(toplevel())  # the worktree's own copy
+        runner = tree / runner.relative_to(toplevel())
     lines = [
         f"Review PR #{pr} as the verifier, pass {number}, following {os.path.relpath(role) if not far else role}.",
         f"- Base: {base}",
         f"- Reviewed head: {head}",
         f"- Spec: {', '.join(f'#{n}' for n in issues) or 'none linked'}",
     ]
+    # the command the worker ran for each spec's checks, so the verifier runs the same one (SKILL.md, Acceptance checks)
+    own = re.search(r"^Acceptance tests:[ \t]*(\S.*?)[ \t]*$", loop or "", re.MULTILINE)
+    command = (
+        own[1].strip("`").strip()
+        if own and own[1].strip("`").strip()
+        else f"uv run {runner if far else os.path.relpath(runner)}"
+    )
+    lines += [f"- Acceptance tests: {command} {n}" for n in issues]
     if far:
         lines.append(
             f"- Worktree: first, in {far}, run `git fetch origin pull/{pr}/head` and"

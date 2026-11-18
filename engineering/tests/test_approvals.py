@@ -2252,6 +2252,10 @@ REPORT = f"""# Verifier report: PR #7, pass 2
 
 Verifier: claude, same-family, pass 2
 
+## Criteria
+
+- A draft never merges on its skipped checks: Before merge line 1, its check.
+
 ## Correctness
 
 ### C1 (blocker) app.py:12: a draft merges on its skipped checks
@@ -2395,6 +2399,7 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         f"- Base: {BASE}",
         f"- Reviewed head: {HEAD}",
         "- Spec: #12",
+        f"- Acceptance tests: uv run {os.path.relpath(SCRIPTS / 'acceptance.py')} 12",
         "- Report: tmp/loop/pr7-v3.md",
         f"- Previous report: tmp/loop/pr7-v2.md, on {earlier}: review the diff since that head and rerun its repros",
         f"- Proof log: {proof} (its first line is the head)",
@@ -2459,6 +2464,7 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
         f"- Base: {BASE}",
         f"- Reviewed head: {HEAD}",
         "- Spec: #12",
+        f"- Acceptance tests: uv run {tree}/engineering/skills/engineering-loop/scripts/acceptance.py 12",
         (
             f"- Worktree: first, in /there/repo, run `git fetch origin pull/7/head` and"
             f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}"
@@ -2505,6 +2511,7 @@ def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
         "event": "COMMENT",
         "body": (
             f"{heading} on {HEAD[:7]}.\n\n"
+            "## Criteria\n\n- A draft never merges on its skipped checks: Before merge line 1, its check.\n\n"
             f"- **{heading} · S1** (minor): a file outside the diff, at `docs/old.md:3`, a file outside the diff\n\n"
             "The doc.\n\nVERDICT: 1 blocker, 0 major, 2 minor\nSATISFIED: no\nRisk: low — a test fixture\n"
         ),
@@ -2561,6 +2568,10 @@ def test_an_unfinished_report_posts_nothing(
 
 
 RANGED = f"""Verifier: claude, pass 1
+
+## Criteria
+
+- The review posts each finding.
 
 ## Correctness
 
@@ -2631,6 +2642,10 @@ def test_a_finding_heading_verdict_cant_read_posts_nothing(
 SUBHEADED = f"""# PR #66 verifier report
 
 Verifier: claude, same-family, pass 1
+
+## Criteria
+
+- The review posts each finding.
 
 ## Standards
 
@@ -8729,7 +8744,8 @@ def test_the_go_carries_nothing_without_a_satisfied_verdict_on_the_new_head_sayi
 def test_a_verifier_reports_logic_change_line_is_posted_with_its_verdict(tmp_path: Path) -> None:
     report = tmp_path / "report.md"
     report.write_text(
-        f"Verifier: claude, pass 2 (merge of main)\n\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\n"
+        f"Verifier: claude, pass 2 (merge of main)\n\n## Criteria\n\n- The merge keeps both sides.\n\n"
+        f"Head: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\n"
         f"SATISFIED: yes\nRisk: low — a merge\n{NO_LOGIC}"
     )
     assert approvals.parse_report(report)[3][-1] == NO_LOGIC.strip()
