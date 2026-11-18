@@ -1193,6 +1193,27 @@ def incubation(
     return set(waive), []
 
 
+# the variables a gate run takes only from tier()
+INCUBATING_ENV = ("GATE_INCUBATING", "GATE_INCUBATING_WAIVES")
+
+
+def tier(pull: dict[str, Any], loop: str | None) -> list[str]:
+    """The variables an eligible incubating PR's gate run takes from this process (gate's `passed`): `GATE_INCUBATING=1`
+    and `GATE_INCUBATING_WAIVES`, the waived names (incubation) comma-joined, both set here. The gate command reads them
+    and runs less (a project's own task decides what `full_gate`, `proof_run` and `coverage` skip). They sit in the
+    command and env of the pass it records, so that pass is keyed apart from a full one and never stands in for it. An
+    ineligible or unlabelled PR gets none: its gate runs in full."""
+    if INCUBATING not in settings(loop) or INCUBATING not in names(pull):
+        return []
+    issues = adopted(closing_issues(pull), loop)
+    waived, _ = incubation(pull, issues, loop)
+    if not waived:
+        return []
+    os.environ["GATE_INCUBATING"] = "1"
+    os.environ["GATE_INCUBATING_WAIVES"] = ",".join(sorted(waived))
+    return list(INCUBATING_ENV)
+
+
 def ineligible(
     pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None, appendable: list[str]
 ) -> str | None:
@@ -3105,7 +3126,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
         # comment may write and which says nothing about today's gate command
         found = (
             []
-            if reusable(pull["headRefOid"])
+            if reusable(pull["headRefOid"], tier(pull, loop))
             else [
                 (
                     f"{where}: the project has no CI ({source(loop)} `ci: false`), and no local check passed on the head"
@@ -7461,7 +7482,8 @@ def gate_env(step: dict[str, Any]) -> dict[str, str]:
     """The environment a gate step runs in: this process's, without the names `local_ci_env` lists and without the
     `Gate base:` variable (gate_base_variable), unless the step's command sets them, or a head proof's `passed` takes
     them from this process's (gate): a caller's base never narrows a plain pass."""
-    cleared = set(local_ci_env()) | {"GATE_BASE"}
+    # the tier's names too (tier): a shell's own `GATE_INCUBATING` would run a reduced gate whose pass is keyed as a full one
+    cleared = set(local_ci_env()) | {"GATE_BASE", *INCUBATING_ENV}
     with contextlib.suppress(Refused, OSError):  # the working tree's loop.md, read with no git call
         held = toplevel() / LOOP
         named = (
@@ -9005,10 +9027,13 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
     """local_ci for PR `pr`, under its base's policy."""
     head = settled_head(pr, want)
     why: list[str] = []
-    if record := reusable(head, why=why):
+    loop = project()[1]
+    # the PR is read only for a policy with an `incubating` section: no other project pays the read
+    passed = tier(pull_request(pr), loop) if INCUBATING in settings(loop) else []
+    if record := reusable(head, passed, why=why):
         source = f"{reused(record)}\n"
     elif run:
-        record = run_local_ci(pr, head)
+        record = run_local_ci(pr, head, passed)
         source = ""
         if left := record.get("left"):
             raise Refused(

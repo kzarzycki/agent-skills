@@ -422,8 +422,11 @@ added, or modified with no line deleted and matching `incubating.append_paths`, 
 change doesn't rate `high` or `critical`. A PR that fails owes the full loop, and `check merge` says why. While it holds,
 `check merge` stops requiring what `incubating.waive` names: `evidence` (the `## Evidence` section and the `## Demo`
 form), and `verifier` (the verifier's review on the head). Nothing here forbids them, and a review thread or a
-`CHANGES_REQUESTED` review still blocks. The other three names (`proof_run`, `full_gate`, `coverage`) are accepted and
-read by later slices of #1288. Without an `incubating` section the label means nothing.
+`CHANGES_REQUESTED` review still blocks. The other three names (`proof_run`, `full_gate`, `coverage`) are for the project's gate:
+`local-ci <pr>` (and the `ci: false` check in `check merge`) runs the gate with `GATE_INCUBATING=1` and
+`GATE_INCUBATING_WAIVES` (the waived names, comma-joined) set for an eligible PR, and the gate command decides what each
+skips (the pack can't know a project's e2e or coverage tasks). The pass is keyed by that env, so it never stands in for a
+full one; a batch queue and a project's own CI read the label themselves. Without an `incubating` section the label means nothing.
 An `incubating` issue stays open while the feature incubates: `check merge` refuses a PR that would close one unless its
 body also says `Graduates #<n>`, and a PR that says it owes the full loop, labelled `incubating` or not. A slice uses
 `Part of #<n>`.
