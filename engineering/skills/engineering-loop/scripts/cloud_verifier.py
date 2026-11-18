@@ -61,7 +61,9 @@ its last line. The phases, in whole seconds: `start`, from `--requested` (the un
 the pass; without it `unknown`) to `verify`'s own start; `setup`, from there to the CLI's start (install, fetch,
 checkout, the cleanliness checks); `review`, the CLI run; `post`, the comment's post, put in by one edit of the posted
 comment (`Seconds: post unknown` until then; a failed edit is a warning on stderr, the comment stays as posted and the
-exit code is unchanged). A phase that did not run prints `unknown`, never 0. The `thread` route records none: the
+exit code is unchanged). A phase that did not run prints `unknown`, never 0, and so does a `start` whose
+`--requested` is later than `verify`'s start, since the two clocks then disagree. A pass that ran the CLI but posted
+nothing (no report, a repeated question, a refused post) still prints its JSON line. The `thread` route records none: the
 thread API reports no phase times. With `--harness claude` it runs
 `claude -p` on the brief instead, in permission mode `bypassPermissions` for the same reason, on the session's own
 Claude login (no install, no login step, no seeded variable), and keeps what it prints on stdout as the final
@@ -661,10 +663,12 @@ PHASES = ("start", "setup", "review", "post")
 
 def seconds(requested, began, started, ended) -> dict[str, int | None]:
     """A pass's phases in whole seconds, None for one that did not run or can't be seen: start (the lead's request to
-    `verify`'s own start), setup (to the CLI's start), review (the CLI run) and post (known only after the post)."""
+    `verify`'s own start), setup (to the CLI's start), review (the CLI run) and post (known only after the post). A
+    span that runs backwards is None too: `requested` comes from the lead's clock, so it means the two clocks
+    disagree, and 0 would claim a start time nobody measured."""
 
     def span(a, b):
-        return None if a is None or b is None else max(0, round(b - a))
+        return None if a is None or b is None or b < a else round(b - a)
 
     return {
         "start": span(requested, began),
@@ -686,8 +690,8 @@ def publish(pr: int, body: str, phases: dict[str, int | None]) -> None:
 
     plain = body.rstrip("\n") + "\n\n"
     began = time.time()
-    url, ident = post(pr, f"{plain}{footer({**phases, 'post': None})}\n")
-    phases = {**phases, "post": round(time.time() - began)}
+    url, ident = post(pr, f"{plain}{footer(phases)}\n")
+    took = round(time.time() - began)
     try:
         if ident:
             run(
@@ -698,10 +702,10 @@ def publish(pr: int, body: str, phases: dict[str, int | None]) -> None:
                 f"repos/{{owner}}/{{repo}}/issues/comments/{ident}",
                 "-F",
                 "body=@-",
-                input=f"{plain}{footer(phases)}\n",
+                input=f"{plain}{footer({**phases, 'post': took})}\n",
             )
+            phases = {**phases, "post": took}  # the JSON line says what the comment says
     except (Refused, OSError, ValueError) as e:
-        phases["post"] = None  # the posted footer still says unknown
         print(f"cloud_verifier: the post time was not added to the comment: {e}", file=sys.stderr)
     print(pass_line(pr, phases))
     print(url)
@@ -814,6 +818,7 @@ def verify(
     try:
         if not code and ask.strip() and (why := repeat_ask(brief, ask)):
             print(f"cloud_verifier: {why}", file=sys.stderr)
+            print(pass_line(pr, phases))
             return 4 if stuck else 1
         if not code and ask.strip():
             # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
@@ -828,6 +833,7 @@ def verify(
         publish(pr, body, phases)
     except (Refused, OSError, ValueError) as e:  # not posted, so a failed pass
         print(f"cloud_verifier: {e}", file=sys.stderr)
+        print(pass_line(pr, phases))  # a failed pass's time counts too
         return 4 if stuck else 1
     return 4 if stuck else 0
 

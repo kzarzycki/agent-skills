@@ -15,7 +15,8 @@ REPORT = "# Report\n\nHead: x\nVERDICT: 0 blocker\nSATISFIED: yes\nRisk: low\n"
 
 @pytest.fixture
 def pass_run(checkout, monkeypatch):  # noqa: F811 - the imported fixture, used by name
-    """`checkout` with `gh`'s comment calls replaced: a post answers a URL and an id, an edit is recorded."""
+    """`checkout` with `gh`'s comment calls replaced: a post answers what its `--jq` selects from the created comment,
+    as `gh` does, and an edit is recorded."""
     _, _, brief, _, seen = checkout
     seen["report"] = REPORT
     inner = cv.run
@@ -28,9 +29,14 @@ def pass_run(checkout, monkeypatch):  # noqa: F811 - the imported fixture, used 
                 if seen.get("edit fails"):
                     raise cv.Refused("`gh api` exited 1: HTTP 502")
                 edits.append((cmd[-3], kw["input"]))
-            else:
-                posts.append(kw["input"])
-            return cv.subprocess.CompletedProcess(cmd, 0, "https://example.com/comment/1\n42\n", "")
+                return cv.subprocess.CompletedProcess(cmd, 0, "", "")
+            if seen.get("post fails"):
+                raise cv.Refused("`gh api` exited 1: HTTP 502")
+            posts.append(kw["input"])
+            made = {"html_url": "https://example.com/comment/1", "id": 42}
+            jq = cmd[cmd.index("--jq") + 1] if "--jq" in cmd else ""
+            out = "".join(f"{made[f.strip().lstrip('.')]}\n" for f in jq.split(",") if f.strip())
+            return cv.subprocess.CompletedProcess(cmd, 0, out, "")
         return inner(*cmd, check=check, **kw)
 
     monkeypatch.setattr(cv, "run", run)
@@ -137,3 +143,37 @@ def test_the_footer_stays_out_of_the_verdict_parsers(tmp_path) -> None:
         "SATISFIED: yes",
         "Risk: low — small",
     ]
+
+
+def test_a_requested_later_than_the_pass_start_is_unknown_never_zero(pass_run) -> None:
+    brief, _, _, edits = pass_run
+    # the lead's clock runs 90 s ahead of the VM's, so the span runs backwards
+    assert cv.verify(7, brief, None, None, requested=time.time() + 90) == 0
+    assert footer(edits[0][1])["start"] == "unknown"
+    assert cv.seconds(100.0, 10.0, 12.0, 20.0)["start"] is None
+
+
+def test_requested_reaches_the_pass_from_the_command_line(pass_run) -> None:
+    brief, _, _, edits = pass_run
+    argv = ["verify", "--pr", "7", "--brief", str(brief), "--requested", str(time.time() - 4)]
+    assert cv.command(argv) == 0
+    assert int(footer(edits[0][1])["start"]) >= 4
+
+
+@pytest.mark.parametrize("why", ["no report", "repeated question", "refused post"])
+def test_a_pass_that_ran_but_posted_nothing_still_prints_its_json_line(
+    pass_run, capsys, why
+) -> None:
+    brief, seen, posts, _ = pass_run
+    if why == "no report":
+        seen.update(report="no verdict here\n", final="nothing\n")
+    elif why == "repeated question":
+        brief.write_text(f"{brief.read_text()}\n## Answer to your question\n\nRun it.\n")
+        seen["question"] = "Please run the gate again.\n"
+    else:
+        seen["post fails"] = True
+    assert cv.verify(7, brief, None, None, requested=time.time() - 2) == 1
+    assert not posts
+    line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert line["pass_seconds"]["start"] >= 2 and line["pass_seconds"]["review"] >= 1
+    assert line["pass_seconds"]["post"] is None
