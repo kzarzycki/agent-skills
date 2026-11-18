@@ -137,7 +137,10 @@ settled), appends each event to ``<registry stem>.events.jsonl``, labels each se
 time raises it once that time has passed, which the supervisor settles by waking the lead, and
 none for a lead marked ``direct``,
 which the owner drives in its own session: ``start --top-level --direct`` sets the mark at launch,
-``direct <session> [--off]`` later); and it routes each event instead of posting it: the supervisor settles the routine ones
+``direct <session> [--off]`` later); it reads engineering-loop's loop events (``refs/loop/*``, one ``ls-remote`` a poll) for the
+branches of the PRs a lead waits on: a ``waiting`` event changed within twice its beat is life (no deadline), a silent one
+is named in the deadline, a pending required check on the PR's head is life, and an end is told once, a ``needs-owner``
+question first, while a branch with no events keeps today's timing; and it routes each event instead of posting it: the supervisor settles the routine ones
 itself (no post, a nudge, a revive, telling the leads registered ``after=`` it of a lead's
 ``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
 what its rules can't settle, and posts what needs the notified session or the owner as
@@ -232,6 +235,7 @@ own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists i
 from __future__ import annotations
 
 import argparse
+import calendar
 import contextlib
 import copy
 import errno
@@ -4428,6 +4432,11 @@ def log_outcome(log: Path, code: int, run: str | None = None) -> str:
     return "\n".join([f"exit {code}", *(body[-LOG_TAIL:] if code else body[-1:])])
 
 
+PR_VIEWS: dict[
+    tuple[str, int], tuple[float, dict]
+] = {}  # (repo, PR) -> (read at, the last ``pr_view``)
+
+
 def pr_view(pr: int, timeout: float, repo: str = "") -> dict:
     """PR ``pr``'s state and checks from one ``gh pr view``, which gets ``timeout`` seconds."""
     view = gh(
@@ -4436,10 +4445,15 @@ def pr_view(pr: int, timeout: float, repo: str = "") -> dict:
         str(pr),
         *(["-R", repo] if repo else []),
         "--json",
-        "state,statusCheckRollup,headRefOid",
+        "state,statusCheckRollup,headRefOid,headRefName,baseRefName",
         timeout=timeout,
     )
-    return json.loads(view)
+    data = json.loads(view)
+    if data.get(
+        "headRefName"
+    ):  # the supervisor maps a wait to its events' branch from this read, with no second one
+        PR_VIEWS[(repo, pr)] = (time.time(), data)
+    return data
 
 
 def pr_outcome(
@@ -4484,6 +4498,81 @@ def pr_settled(pr: int, repo: str = "") -> tuple[int, str, str] | None:
         pr, "checks", HTTP_SECONDS, repo, data
     )
     return end and (*end, data.get("headRefOid") or "")
+
+
+# Loop events (engineering-loop's events.py, contract events.md): the supervisor reads them for what a wait is doing.
+EVENT_SECONDS = (
+    30.0  # origin's refs/loop/* are listed at most this often (one ls-remote for every branch)
+)
+
+
+def _load_events() -> Any:
+    """engineering-loop's ``events.py``, loaded by path from the sibling skill folder, else None: without it every
+    branch behaves as before events existed (the contract's Degraded rule)."""
+    path = Path(__file__).resolve().parents[2] / "engineering-loop" / "scripts" / "events.py"
+    try:
+        spec = importlib.util.spec_from_file_location(f"{__name__}_events", path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except (OSError, AssertionError, SyntaxError, ImportError):
+        return None
+    return module
+
+
+def event_epoch(text: object) -> float | None:
+    """An event's ``at`` (``YYYY-MM-DDTHH:MM:SSZ``) as epoch seconds, None when it does not parse."""
+    try:
+        return float(calendar.timegm(time.strptime(str(text), "%Y-%m-%dT%H:%M:%SZ")))
+    except ValueError:
+        return None
+
+
+def read_loop_events(cwd: Path | None = None) -> list[dict] | None:
+    """Every loop event on origin (``events.read``: one ``ls-remote``), None when the module is absent or the read
+    failed, which is "unknown" to the caller and never an end."""
+    events = _load_events()
+    if events is None:
+        return None
+    try:
+        return events.read(cwd=cwd)
+    except Exception:  # noqa: BLE001 - unreadable: unknown, the deadline stays the net
+        return None
+
+
+def pr_info(pr: int, repo: str = "") -> dict:
+    """PR ``pr``'s ``state``, head ``branch`` and ``sha`` and ``base`` branch, through REST."""
+    out = json.loads(
+        gh("api", f"repos/{repo or '{owner}/{repo}'}/pulls/{pr}", timeout=HTTP_SECONDS)
+    )
+    return {
+        "state": out["state"],
+        "branch": out["head"]["ref"],
+        "sha": out["head"]["sha"],
+        "base": out["base"]["ref"],
+    }
+
+
+def required_pending(info: dict, repo: str = "") -> bool:
+    """Whether a check the base branch requires is queued or running on the PR's head (``info`` from ``pr_info``).
+    A required check no run has registered is not pending, so a check that never starts cannot hold a wait live for
+    good. Needs no producer."""
+    # ponytail: `--cache` bounds the reads to one a minute per URL; an ETag read would spare the quota entirely
+    slug = repo or "{owner}/{repo}"
+    rules = json.loads(gh("api", "--cache", "1m", f"repos/{slug}/rules/branches/{info['base']}"))
+    required = {
+        c["context"]
+        for rule in rules
+        if rule.get("type") == "required_status_checks"
+        for c in rule.get("parameters", {}).get("required_status_checks", [])
+    }
+    if not required or info["state"] != "open":
+        return False
+    runs = json.loads(gh("api", "--cache", "1m", f"repos/{slug}/commits/{info['sha']}/check-runs"))
+    return any(
+        r.get("name") in required and r.get("status") != "completed"
+        for r in runs.get("check_runs", [])
+    )
 
 
 def kill_group(pid: int) -> None:
@@ -5860,6 +5949,7 @@ def fresh_state() -> dict:
         "rate": {"next_post_at": 0, "model_calls": []},
         "notify_label": {},
         "heads": {},
+        "events": {},  # loop event refs: sha, stamp (when it last moved), state, beat, told
     }
 
 
@@ -6167,6 +6257,10 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "absorb", "archived: drop its row"
     error = event.get("line", "").partition("\n")[0]  # the status line, not the lead's own words
     lost = kind == "failed" and (event.get("offline") or LOST_RUNNER.search(error))
+    if (
+        kind == "loop-owner"
+    ):  # a step's needs-owner event: its question is the owner's, whoever drives the lead
+        return "rule", "owner", "a loop step needs the owner's answer"
     if event.get("direct") and kind != "ended" and not lost:  # its turn end: below, read first
         return "rule", "record", "the owner drives it directly: they see it in its session"
     if kind == "blocked":
@@ -7220,7 +7314,11 @@ def supervise_registry(
             return False
         if ref := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", wait):  # a PR: GitHub says
             try:  # open with a check pending is a wait that is live; ended, it is news instead
-                return settled(lead, int(ref[2]), ref[1] or "") is None
+                if settled(lead, int(ref[2]), ref[1] or "") is None:
+                    return True
+                # its checks are all in, yet a check the base branch requires may be queued or running
+                info = pr_data(int(ref[2]), ref[1] or "")
+                return bool(info) and required_pending(info, ref[1] or "")
             except Exception:  # noqa: BLE001 - unread: not known to be moving
                 return False
         if re.fullmatch(r"b(?=[a-z]{0,7}[0-9])[a-z0-9]{8}", wait):  # its own background job
@@ -7269,6 +7367,132 @@ def supervise_registry(
                 return False
         return bool(named)
 
+    prs: dict[
+        tuple[str, int], tuple[float, dict | None]
+    ] = {}  # PR -> (read at, pr_info), one read a minute
+    ev = {"at": -EVENT_SECONDS}
+
+    def pr_data(pr: int, repo: str = "") -> dict | None:
+        """``pr_info`` read at most once per ``PR_POLL_SECONDS``; None when unread (the failure kept for that long)."""
+        got = prs.get((repo, pr))
+        if got and time.time() - got[0] < PR_POLL_SECONDS:
+            return got[1]
+        if (view := PR_VIEWS.get((repo, pr))) and time.time() - view[0] < PR_POLL_SECONDS:
+            data = view[1]  # the wait's own read, which the PR poll already made
+            return {
+                "state": str(data.get("state", "")).lower(),
+                "branch": data["headRefName"],
+                "sha": data.get("headRefOid") or "",
+                "base": data.get("baseRefName") or "",
+            }
+        try:
+            info: dict | None = pr_info(pr, repo)
+        except Exception as e:  # noqa: BLE001 - unread: no branch, no event for this wait
+            log(("prinfo", repo, pr), f"PR #{pr} not read: {reason(e)}")
+            info = None
+        else:
+            log(("prinfo", repo, pr), None)
+        prs[(repo, pr)] = (time.time(), info)
+        return info
+
+    def lead_branches(sid: str, lead: dict) -> set[str]:
+        """The head branches of the PRs ``lead``'s wait names and of its own (its ``PR_LABEL``): its events' branches."""
+        own = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
+        found = {(own[0], own[1])} if own else set()
+        for item in (lead.get("wait") or "").split(", "):
+            if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", item.strip()):
+                found.add((m[1] or "", int(m[2])))
+        infos = (pr_data(pr, repo) for repo, pr in sorted(found))
+        return {i["branch"] for i in infos if i}
+
+    def event_wait(sid: str, lead: dict) -> tuple[bool, str]:
+        """Whether a ``waiting`` loop event on the lead's branches changed within twice its beat (live), else the
+        longest-silent one's words (``land event silent 15m``), else none. No event on its branches: (False, "")
+        and the deadline runs on today's timing."""
+        now, silent = time.time(), ("", 0.0)
+        if not state["events"]:
+            return False, ""  # nothing on origin: no branch to look up, today's timing
+        branches = lead_branches(sid, lead)
+        for note in state["events"].values():
+            if note.get("state") != "waiting" or note["branch"] not in branches:
+                continue
+            age = now - note["stamp"]
+            if age <= 2 * note["beat"]:
+                return True, ""
+            if age > silent[1]:
+                silent = (f"{note['kind']} event silent {age / 60:.0f}m", age)
+        return False, silent[0]
+
+    def refresh_events() -> None:
+        """Read origin's loop events once per ``EVENT_SECONDS`` and update ``state["events"]``: an event's ``stamp``
+        is when it last moved (from its ``at`` on the first sight, as ``events.py wait`` counts), and an end it has
+        not yet told stays ``pending``. An unreadable poll changes nothing."""
+        if not console or time.monotonic() - ev["at"] < EVENT_SECONDS:
+            return
+        ev["at"] = time.monotonic()
+        found = read_loop_events(Path.cwd())
+        if found is None:
+            return
+        now, kept = time.time(), state["events"]
+        for e in found:
+            note, ref = kept.get(e["ref"]), e["ref"]
+            if e.get("state") == "unknown":
+                continue  # unreadable or malformed: neither live nor ended
+            at = event_epoch(e.get("at"))
+            if note is None or note["sha"] != e["sha"]:
+                first = note is None
+                stamp_ = min(now, at) if first and at is not None else now
+                changed = first or note["state"] != e["state"]
+                kept[ref] = note = {
+                    "sha": e["sha"],
+                    "stamp": stamp_,
+                    "state": e["state"],
+                    "beat": float(e.get("beat_s") or 300),
+                    "kind": e["kind"],
+                    "branch": e["branch"],
+                    "url": e.get("url") or "",
+                    "question": e.get("question") or "",
+                    "at": e.get("at") or "",
+                    "pending": False,
+                }
+                # a state change to an end is news once; an end from before this run (at is whole seconds) is none
+                note["pending"] = (
+                    changed
+                    and e["state"] != "waiting"
+                    and (at is None or at + 2 >= started or not first)
+                )
+        for ref in [r for r in kept if r not in {e["ref"] for e in found}]:
+            del kept[ref]
+
+    def event_news() -> None:
+        """Tell each pending end once, in the order owner questions, ``failed``, ``ok``; one line per kind per branch
+        (a beat is no change, so it is no news). The lead whose branches hold it hears it."""
+        owners: dict[str, list[str]] = {}
+        if not any(n["pending"] for n in state["events"].values()):
+            return
+        for sid, lead in state["leads"].items():
+            if sid in owed:
+                for branch in lead_branches(sid, lead):
+                    owners.setdefault(branch, []).append(sid)
+        rank = {"needs-owner": 0, "failed": 1, "ok": 2}
+        due_ = sorted(
+            (ref, n)
+            for ref, n in state["events"].items()
+            if n["pending"] and owners.get(n["branch"])
+        )
+        for ref, n in sorted(due_, key=lambda x: (rank[x[1]["state"]], x[0])):
+            sid = owners[n["branch"]][0]
+            head = f"{sid} {state['leads'][sid].get('title') or ''}".rstrip()
+            eid, url = f"event:{ref}:{n['state']}:{n['at']}", f" {n['url']}" * bool(n["url"])
+            if n["state"] == "needs-owner":
+                ask = n["question"].strip()
+                first = ask.splitlines()[0] if ask else ""
+                line = f"{head}: {n['kind']} on {n['branch']} needs the owner: {first}{url}"
+                say(line + ("\n" + ask if "\n" in ask else ""), sid, eid, "loop-owner")
+            else:
+                say(f"{head}: {n['kind']} {n['state']} on {n['branch']}{url}", sid, eid, "news")
+            n["pending"] = False
+
     def overdue(sid: str, lead: dict) -> None:
         """Raise a followed lead's ``deadline`` events: ``DEADLINE_SECONDS`` with no progress, and
         for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. A timed
@@ -7293,6 +7517,11 @@ def supervise_registry(
             return
         # read only once due
         lead["progress_at"] = max(lead["progress_at"], og.active(sid), written(sid, lead))
+        silent = ""
+        if due is None:
+            live, silent = event_wait(sid, lead)
+            if live:
+                return  # a beating event is the wait's own proof of life
         if due is None and moving(sid, lead):
             return  # what it waits on all shows life: no stall of its own
         # a session its STILL WORKING line names that shows life is progress, one that is archived,
@@ -7355,7 +7584,7 @@ def supervise_registry(
                 head = f"{sid} {lead['title']}".rstrip()
                 then = " after a wake" if due is not None else " after a nudge"
                 why = f"no progress {quiet / 60:.0f}m{then * (nudged == ':nudged')}"
-                what = mutual or f"{why} ({lead['wait']})"
+                what = mutual or f"{why} ({lead['wait']}{'; ' * bool(silent)}{silent})"
                 line = f"{head}: {what}\nlast message: {lead['last_line']}"
                 if quiet_named:
                     line += f"\nquiet: {', '.join(quiet_named)}"
@@ -7567,6 +7796,7 @@ def supervise_registry(
                 os.execv(sys.executable, [sys.executable, str(script), *sys.argv[1:]])
             except Fail:
                 pass
+        refresh_events()
         if console:
             recover()
             for again in retry[:]:
@@ -7631,6 +7861,10 @@ def supervise_registry(
             say(event, sid, eid, kind, (sid, report, since))
         landings()
         if console:
+            try:
+                event_news()
+            except Exception as e:  # noqa: BLE001 - never fatal; told again next poll
+                log("events-news", f"loop events not told: {reason(e)}")
             if read:  # a session gone from the registry leaves the state with it
                 for part in ("leads", "settled"):
                     state[part] = {s: v for s, v in state[part].items() if s in owed}
