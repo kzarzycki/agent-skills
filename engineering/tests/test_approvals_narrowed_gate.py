@@ -316,3 +316,42 @@ def test_local_ci_for_a_ci_false_pr_posts_its_narrowed_pass(
     assert len(repo["ran"]()) == 1 and repo["ran"]()[0].startswith("selected app.py")
     assert "(narrowed)" in posted[0]
     assert approvals.reusable(head) is None  # never a full pass
+
+
+# a stateful selector with no state (a fresh clone, a cloud VM, a CI runner): it logs the variables it got beyond the
+# caller's and whether the checkout held any untracked or ignored file, selects every test and exits with its own result
+NO_STATE = """import json, os, pathlib, subprocess, sys
+caller = set(json.loads(os.environ["CALLER_ENV"]))
+extra = sorted(set(os.environ) - caller)
+listed = subprocess.run(["git", "status", "--porcelain", "--ignored", "--untracked-files=all"], capture_output=True, text=True, check=True).stdout
+log = pathlib.Path(sys.argv[1])
+log.write_text(json.dumps({"extra": extra, "listed": listed, "base": os.environ.get("GATE_BASE")}))
+sys.exit(4)
+"""
+
+
+def test_a_selector_without_state_gets_only_the_base_and_its_own_result_stands(
+    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`affected-tests` and land's narrowed batch gate hand the command a clean checkout and the base variable (beside
+    the host gate slot's own), nothing else the pack provides: a selector with no state selects everything and its exit
+    passes through."""
+    import json
+
+    script, log = tmp_path / "no_state.py", tmp_path / "no_state.json"
+    script.write_text(NO_STATE)
+    repo["loop"](f"# Loop\n\nAffected tests: {sys.executable} {script} {log}\n")
+    monkeypatch.setenv("CALLER_ENV", json.dumps(sorted(os.environ) + ["CALLER_ENV"]))
+    pack_only = {"GATE_BASE", approvals.SLOT_HELD}
+    merge_base = git_in(repo["work"], "merge-base", "origin/main", "HEAD").strip()
+    assert approvals.main(["affected-tests"]) == 4
+    seen = json.loads(log.read_text())
+    assert set(seen["extra"]) <= pack_only and "GATE_BASE" in seen["extra"]
+    assert seen["listed"] == "" and seen["base"] == merge_base
+    log.unlink()
+    tip = repo["base"]()
+    with approvals.narrowed_to(tip):
+        assert approvals.gate_batch(repo["work"], [])[1] == ""  # red: the selector's exit 4
+    seen = json.loads(log.read_text())
+    assert set(seen["extra"]) <= pack_only and "GATE_BASE" in seen["extra"]
+    assert seen["listed"] == "" and seen["base"] == tip
