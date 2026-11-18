@@ -1383,6 +1383,10 @@ class Omnigent:
         page = self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc")
         return list(reversed(page.get("data", [])))
 
+    def first_items(self, sid: str, n: int = 20) -> list[dict]:
+        """``sid``'s oldest ``n`` items, oldest first: its start, however long the history grew."""
+        return self.call("GET", f"/v1/sessions/{sid}/items?limit={n}&order=asc").get("data", [])
+
     def older(self, sid: str, after: str = "") -> dict:
         """A page of ``sid``'s history, newest first: its newest 100 items, or with ``after`` (an
         item id) the 100 before that item; ``data``, ``last_id`` and ``has_more``."""
@@ -1835,15 +1839,15 @@ def usage_lines(og: Omnigent, sids: list[str]) -> list[str]:
 def cold_start_line(og: Omnigent, sid: str) -> str:
     """``cold start: <n|unknown> s to first turn``: the seconds from the session's ``created_at``
     (its record's, set by the create call) to the ``created_at`` of its first assistant item (a
-    message of the assistant, or a tool call it made). ``unknown``, never 0, when the API gives
-    either time or the item (a session with no turn yet, or whose first page of history has
-    scrolled past it)."""
+    message of the assistant, or a tool call it made), read from the oldest items, so a long
+    session still times its first turn. ``unknown``, never 0, when the API lacks either time or
+    the item (a session with no turn yet)."""
     try:
         made = float(og.info(sid).get("created_at") or 0)
         first = next(
             (
                 float(i.get("created_at") or 0)
-                for i in og.items(sid)
+                for i in og.first_items(sid)
                 if i.get("role") == "assistant" or i.get("type") == "function_call"
             ),
             0.0,
@@ -1893,6 +1897,8 @@ def reuse_decision(og: Omnigent, sid: str, repo: str, workspace: str) -> tuple[s
     label = pr_label((info.get("labels") or {}).get(PR_LABEL, ""))
     if not size:
         return "start", f"{LOOP_FILE} has no Reuse worker context line"
+    if info.get("archived"):
+        return "start", "the session is archived"
     if not label:
         return "start", "the session carries no PR label"
     if not merged_pr(*label):
@@ -8873,8 +8879,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             mark = RELAYED.format(who=own_id() or "an agent")
             # a reused worker (its earlier PR landed) is labelled with its new PR before the
             # message goes, or `reap --merged` would archive it for the old one meanwhile
-            if args.pr and (session.get("labels") or {}).get(PR_LABEL):
-                og.label(args.session, {PR_LABEL: f"{pr_repo(args.pr, workspace)}#{args.pr}"})
+            # a fix round to the same PR changes nothing; the repo is the label's unless named
+            if args.pr and (had := pr_label((session.get("labels") or {}).get(PR_LABEL, ""))):
+                new = (getattr(args.pr, "repo", "") or had[0], int(args.pr))
+                if new != had:
+                    og.label(args.session, {PR_LABEL: f"{new[0]}#{new[1]}"})
             baseline = tracked_changes(workspace) if not args.pr else None  # as run's
             undeleted = None
             try:

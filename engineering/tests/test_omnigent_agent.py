@@ -243,6 +243,9 @@ class FakeOmnigent:
     def items(self, sid: str) -> list[dict]:
         return self.sessions[sid]
 
+    def first_items(self, sid: str, n: int = 20) -> list[dict]:  # oldest first, as the API's asc
+        return self.items(sid)[:n]
+
     def older(self, sid: str, after: str = "") -> dict:  # a page of 100, newest first
         newest = list(reversed(self.sessions[sid]))
         ids = [str(i.get("id")) for i in newest]
@@ -334,6 +337,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
     monkeypatch.setattr(omnigent_agent, "LATE_BRIEF_SECONDS", 0)  # its tests set their own
     monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
+    monkeypatch.setattr(omnigent_agent, "COLD_START_SECONDS", 0)  # else start polls a real 20 s for a turn
     monkeypatch.delenv("OMNIGENT_SUPERVISE_REGISTRY", raising=False)  # else run arms a real one
 
 

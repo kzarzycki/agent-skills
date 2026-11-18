@@ -149,3 +149,46 @@ def test_send_with_a_new_pr_relabels_the_worker_before_the_message_goes(
     (project / "tmp").mkdir()
     code = omnigent_agent.main(["send", "s1", "brief.md", "tmp/r.md", "--pr", "o/r#9"])
     assert code == 1 and sent == [{"omni.pr": "o/r#9"}]
+
+
+def test_an_archived_worker_is_never_reused(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    loop(project, "Reuse worker context: 120k")
+    prs(monkeypatch, pr7="MERGED")
+    og = Server(80_000)
+    og.record["archived"] = True  # land's reap --merged got to it first
+    assert decide(og, project) == "start: the session is archived"
+
+
+@pytest.mark.parametrize(
+    ("pr", "label", "patched"),
+    [
+        ("7", "o/r#7", False),  # a fix round to the PR it has: no edit
+        ("o/r#7", "o/r#7", False),
+        ("9", "o/r#9", True),  # a new PR, no repo named: the label's repo, not this checkout's
+    ],
+)
+def test_send_relabels_only_for_a_new_pr_and_keeps_the_labels_repo(
+    project: Path, monkeypatch: pytest.MonkeyPatch, pr: str, label: str, patched: bool
+) -> None:
+    og = Server(80_000)
+    patches: list[object] = []
+    call = og.call
+
+    def watched(method: str, path: str, body: object = None, **kw: object) -> dict:
+        if method == "PATCH":
+            patches.append(body)
+        return call(method, path, body, **kw)
+
+    og.call = watched  # type: ignore[method-assign]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "pack_behind", lambda _: None)
+    monkeypatch.setattr(omnigent_agent, "repo_slug", lambda *_: "elsewhere/checkout")
+
+    def send(*_: object, **__: object) -> None:
+        raise omnigent_agent.Fail("stop here")
+
+    monkeypatch.setattr(omnigent_agent, "send", send)
+    (project / "brief.md").write_text("next")
+    (project / "tmp").mkdir()
+    assert omnigent_agent.main(["send", "s1", "brief.md", "tmp/r.md", "--pr", pr]) == 1
+    assert og.record["labels"] == {"omni.pr": label} and bool(patches) == patched

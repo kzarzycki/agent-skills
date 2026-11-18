@@ -51,8 +51,10 @@ class Server(omnigent_agent.Omnigent):
                     }
                 )
             return {}
-        if "/items" in path:
-            return {"data": list(reversed(self.items_))}
+        if "/items" in path:  # a page of at most ``limit`` items, in the order asked
+            limit = int(re.search(r"limit=(\d+)", path)[1])  # type: ignore[index]
+            ordered = self.items_ if "order=asc" in path else list(reversed(self.items_))
+            return {"data": ordered[:limit]}
         if path.startswith("/v1/sessions/s1"):
             info = {
                 "status": "idle",
@@ -102,3 +104,50 @@ def test_a_time_the_api_does_not_give_is_unknown_never_0(
     assert code == 0, capsys.readouterr().err
     err = capsys.readouterr().err
     assert re.search(r"cold start: unknown s to first turn", err), err
+
+
+def test_a_long_session_still_times_its_first_turn_not_a_later_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = started(monkeypatch, tmp_path, 1000, 1042)
+    og.items_ = [
+        {"id": f"i{n}", "type": "message", "role": role, "content": [], "created_at": at}
+        for n, (role, at) in enumerate(
+            [("user", 1000), ("assistant", 1042)] + [("assistant", 2000 + n) for n in range(150)]
+        )
+    ]
+    assert omnigent_agent.cold_start_line(og, "s1") == "cold start: 42 s to first turn"
+
+
+def waited(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Server:
+    """A session whose report is already in: ``wait`` (the poll loop) returns at once."""
+    og = started(monkeypatch, tmp_path, 1000, 1042)
+    og.items_ = [
+        {"id": "i1", "type": "message", "role": "user", "content": [], "created_at": 1000},
+        {"id": "i2", "type": "function_call", "content": [], "created_at": 1042},
+    ]
+    (tmp_path / "r.md").write_text("done")
+    monkeypatch.setattr(omnigent_agent, "wait", lambda *_, **__: tmp_path / "r.md")
+    monkeypatch.setattr(omnigent_agent, "told_at", lambda *_: None)
+    monkeypatch.setattr(omnigent_agent, "archive_delivered", lambda *_: None)
+    return og
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["wait", "s1", "r.md"],
+        ["run", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"],
+    ],
+)
+def test_wait_and_run_print_the_line_once_the_report_is_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    waited(monkeypatch, tmp_path)
+    code = omnigent_agent.main(argv)
+    out, err = capsys.readouterr()
+    assert code == 0, err
+    assert "cold start: 42 s to first turn" in err and out.strip().endswith("r.md")
