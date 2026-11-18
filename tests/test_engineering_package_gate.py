@@ -31,6 +31,7 @@ def test_the_check_task_runs_the_gates_ci_runs_in_its_order() -> None:
     assert tasks["check"]["run"][0] == "mise run vendor-engineering-check"
 
 
+@pytest.mark.timeout(300)  # it runs the package gate in a subprocess: 20-40 s, more under load
 @pytest.mark.parametrize("mutation", ["corrupt", "delete"])
 def test_advertised_package_gate_rejects_marketplace_mutation(
     tmp_path: Path,
