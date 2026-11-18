@@ -36,3 +36,20 @@ def test_a_pr_naming_no_issue_is_left_to_the_no_issue_refusal() -> None:
 def test_a_verified_release_pin_bump_is_exempt(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "pin_target", lambda _pull: "engineering-v1.0.0")
     assert refusal("Part of #1") == []
+
+
+@pytest.mark.parametrize(("body", "refused"), [("Part of #1", True), ("Closes #1", False)])
+def test_check_build_refuses_a_part_of_only_pr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], body: str, refused: bool
+) -> None:
+    """The refusal sits in gated(), which check build, check merge and land share: dropping that call must fail here."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    issue = approved(1, "kind:bug")
+    issue["state"] = "OPEN"
+    pr = pull(body=body)
+    pr["closingIssuesReferences"]["nodes"] = [issue] if not refused else []
+    monkeypatch.setattr(approvals, "pull_request", lambda _pr: pr)
+    monkeypatch.setattr(approvals, "issues_of", lambda numbers: [issue])
+    approvals.main(["check", "build", "7"])
+    out = capsys.readouterr().out
+    assert ("the PR closes no open issue" in out) is refused
