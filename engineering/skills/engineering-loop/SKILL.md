@@ -433,6 +433,10 @@ the epic for that command. The workflow `.github/workflows/incubating-epic.yml` 
 an `incubating` issue someone closed, and puts a dropped label back on an open `epic`, each with a comment; both leave
 an issue alone once a `Graduated by` comment is on it. Anyone with write access can still graduate by hand: the
 workflow keeps accidents out, not a person set on it.
+A second workflow, `.github/workflows/incubating-nightly.yml` (also copied), runs nightly while an `incubating` epic is open:
+it runs `mise run check` with `GATE_INCUBATING_NIGHTLY=1` (the project's gate turns each incubating feature's flag on
+for it), comments the failure on each epic, and comments `Still incubating` on an epic whose label is `STALE_DAYS` (30)
+old, again after each such period. It blocks no PR: only its own run turns red. With no open epic it runs nothing.
 
 ### Approvals and proof
 

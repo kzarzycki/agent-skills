@@ -1,0 +1,1 @@
+- engineering-loop: `.github/workflows/incubating-nightly.yml` runs the full gate nightly with `GATE_INCUBATING_NIGHTLY=1` while an `incubating` epic is open, comments a failure on each epic, and says every 30 days that an epic is still incubating; it blocks no PR (#1288).
