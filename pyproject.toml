@@ -7,6 +7,7 @@ dependencies = ["PyYAML==6.0.3"]
 [dependency-groups]
 dev = [
     "pytest==9.1.1",
+    "pytest-cov==7.1.0",
     "pytest-timeout==2.4.0",
     "pytest-xdist==3.8.0",
     "ruff==0.16.0",
@@ -23,6 +24,14 @@ markers = [
   "live_agent: tests that require a live agent runtime",
   "needs_tool(*tools): the external tools a test runs beyond git and Python; a run selecting it stops first when PATH lacks one",
 ]
+
+# The test map (tools/affected_tests.py): the nightly runs the suite with `--cov-context=test`, so the data says which
+# test executed each line. relative_files keeps the paths the same across checkouts; patch/parallel record the scripts
+# a test runs as a subprocess (their lines carry no test, so the selector falls back to the name match for them).
+[tool.coverage.run]
+relative_files = true
+parallel = true
+patch = ["subprocess"]
 
 [tool.ruff]
 target-version = "py314"
