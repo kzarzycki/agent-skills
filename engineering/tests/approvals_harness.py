@@ -225,7 +225,7 @@ def assigned(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
 
     def comment(number: int, body: str) -> None:
         if body.startswith(approvals.ASSIGNED):
-            calls.append((number, body))
+            calls.append((number, approvals.machine(body)))
         else:
             real(number, body)
 

@@ -243,6 +243,9 @@ class FakeOmnigent:
     def items(self, sid: str) -> list[dict]:
         return self.sessions[sid]
 
+    def first_items(self, sid: str, n: int = 20) -> list[dict]:  # oldest first, as the API's asc
+        return self.items(sid)[:n]
+
     def older(self, sid: str, after: str = "") -> dict:  # a page of 100, newest first
         newest = list(reversed(self.sessions[sid]))
         ids = [str(i.get("id")) for i in newest]
@@ -334,6 +337,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
     monkeypatch.setattr(omnigent_agent, "LATE_BRIEF_SECONDS", 0)  # its tests set their own
     monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
+    monkeypatch.setattr(omnigent_agent, "COLD_START_SECONDS", 0)  # else start polls 20 s
     monkeypatch.delenv("OMNIGENT_SUPERVISE_REGISTRY", raising=False)  # else run arms a real one
 
 
@@ -13408,6 +13412,244 @@ def test_an_unparsed_waits_line_naming_the_supervisors_id_is_a_wait_on_it_by_the
     assert omnigent_agent.waits_on(text, {"named": [COS]}, COS) is True
 
 
+RUN = "https://github.com/o/r/actions/runs/77"
+
+
+def test_a_waits_line_that_does_not_parse_is_told_once_with_the_accepted_forms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(
+        tmp_path, "STILL WORKING: x\nWaits: my PR and the build", m={"status": "idle"}
+    )
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    told = [t for s, t in og.inbox if s == "m" and "did not parse" in t]
+    assert len(told) == 1 and "Accepted: supervisor, session <32-hex id>" in told[0]
+    assert "GitHub Actions run URL" in told[0] and "my PR and the build" in told[0]
+
+
+def test_a_waits_line_that_does_not_parse_is_told_again_only_on_the_leads_next_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wait = "STILL WORKING: x\nWaits: my PR"
+    registry, og = manager(tmp_path, wait, m={"status": "idle"})
+    told = lambda: capsys.readouterr().out.count("did not parse")
+    run = lambda: supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    run()
+    first = told()
+    skewed(monkeypatch)[0] = 4000.0
+    run()
+    assert (first, told()) == (1, 0)  # the same turn, later polls: said once
+    og.histories["m"].append(ending(wait, 0))  # the lead tries again, and still gets it wrong
+    skewed(monkeypatch)[0] = 8000.0
+    run()
+    assert told() == 1
+
+
+def test_a_quiet_waiter_on_a_run_in_progress_is_not_raised_a_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, f"STILL WORKING: x. Report: m.md\nWaits: {RUN}")
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: '{"status":"in_progress"}')
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == []
+
+
+def test_a_waits_line_that_parses_gets_no_parse_news(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: CI", m={"status": "idle"})
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert [t for s, t in og.inbox if s == "m" and "did not parse" in t] == []
+
+
+def test_a_run_url_is_a_form_wait_on_prints_and_wait_of_names() -> None:
+    assert omnigent_agent.wait_line(["run", RUN]) == f"Waits: {RUN}"
+    assert omnigent_agent.wait_of(f"STILL WORKING: x\nWaits: {RUN}") == RUN
+    with pytest.raises(omnigent_agent.Fail):
+        omnigent_agent.wait_line(["run"])
+
+
+def test_wait_on_refuses_a_bare_number_this_repo_has_no_such_thing_as(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def gh(*args: str, **_: object) -> str:
+        if "issues/1357" in args[1]:
+            raise omnigent_agent.Fail("gh api: Not Found (HTTP 404)")
+        return "{}"
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    with pytest.raises(omnigent_agent.Fail, match=r"owner/repo#1357"):
+        omnigent_agent.check_bare_ref("Waits: #1357")
+    omnigent_agent.check_bare_ref("Waits: #12")  # exists
+    omnigent_agent.check_bare_ref("Waits: o/r#1357")  # names its repo: not checked
+    omnigent_agent.check_bare_ref("Waits: CI")
+
+
+def test_wait_on_lets_a_bare_number_pass_when_github_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def gh(*args: str, **_: object) -> str:
+        raise omnigent_agent.Fail("gh api: timed out")
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    omnigent_agent.check_bare_ref("Waits: #1357")
+
+
+def badref_told(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wait: str,
+    pr_error: str,
+    issue_error: str | None,
+    setup=lambda og: in_checkout(og),
+    polls: int = 3,
+) -> list[str]:
+    """What the lead is told when ``gh pr view`` fails with ``pr_error`` and the issues endpoint
+    fails with ``issue_error`` (found when None), over ``polls`` polls a minute apart."""
+    registry, og = manager(tmp_path, f"STILL WORKING: x\nWaits: {wait}", m={"status": "idle"})
+    setup(og)
+
+    def gh(*args: str, **_: object) -> str:
+        if args[0] == "api":
+            if issue_error:
+                raise omnigent_agent.Fail(issue_error)
+            return "{}"
+        raise omnigent_agent.Fail(pr_error)
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    offset = skewed(monkeypatch)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        polls,
+        between=lambda poll: offset.__setitem__(0, offset[0] + omnigent_agent.PR_POLL_SECONDS + 1),
+        notify=COS,
+        console=True,
+        fyi="post",
+    )
+    return [x for x in capsys.readouterr().out.splitlines() if "never ends" in x]  # as said
+
+
+NO_PR = "gh pr view: Could not resolve to a PullRequest with the number"
+NOT_FOUND = "gh api: Not Found (HTTP 404)"
+
+
+def test_a_bare_ref_with_no_such_pr_or_issue_in_the_leads_repo_is_told_once_over_many_polls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    told = badref_told(capsys, tmp_path, monkeypatch, "#1357", NO_PR, NOT_FOUND)
+    assert len(told) == 1 and "#1357 in o/r" in told[0] and "owner/repo#1357" in told[0]
+
+
+@pytest.mark.parametrize(
+    ("wait", "pr_error", "issue_error", "setup"),
+    [
+        ("#12", "gh pr view: HTTP 502", NOT_FOUND, in_checkout),  # unread, not missing
+        ("o/r#12", NO_PR, NOT_FOUND, in_checkout),  # it names its repo
+        ("#12", NO_PR, None, in_checkout),  # an issue of the lead's repo
+        ("#12", NO_PR, "gh api: HTTP 502", in_checkout),  # the issue read failed: not known missing
+        ("#12", NO_PR, NOT_FOUND, lambda og: None),  # the lead's repo is not known
+    ],
+)
+def test_a_bare_ref_gets_no_missing_news_unless_the_leads_repo_is_known_to_lack_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    wait: str,
+    pr_error: str,
+    issue_error,
+    setup,
+) -> None:
+    assert badref_told(capsys, tmp_path, monkeypatch, wait, pr_error, issue_error, setup) == []
+
+
+def run_waited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait: str, runs: list[dict], polls: int = 3
+) -> list[str]:
+    """The news a lead waiting on ``wait`` gets when each GitHub Actions read answers the next of
+    ``runs`` (the last one repeats), the polls a minute apart."""
+    registry, og = manager(tmp_path, f"STILL WORKING: x\nWaits: {wait}", m={"status": "idle"})
+    reads = iter(runs)
+    last: list[dict] = [runs[0]]
+
+    def gh(*args: str, **_: object) -> str:
+        if args[0] == "run":
+            last[0] = next(reads, last[0])
+            return json.dumps(last[0])
+        return '{"state":"OPEN","statusCheckRollup":[],"headRefOid":"h"}'
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    offset = skewed(monkeypatch)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        polls,
+        between=lambda poll: offset.__setitem__(0, offset[0] + omnigent_agent.PR_POLL_SECONDS + 1),
+        notify=COS,
+        console=True,
+        fyi="post",
+    )
+    return [t for s, t in og.inbox if s == "m" and "your wait names it" in t]
+
+
+@pytest.mark.parametrize(
+    ("conclusion", "good"),
+    [
+        ("success", True),
+        ("skipped", True),
+        ("neutral", True),
+        ("failure", False),
+        ("cancelled", False),
+        ("timed_out", False),
+    ],
+)
+def test_an_actions_runs_conclusion_is_good_or_failed(conclusion: str, good: bool) -> None:
+    with pytest.MonkeyPatch.context() as mp:
+        data = {"status": "completed", "conclusion": conclusion, "attempt": 1}
+        mp.setattr(omnigent_agent, "gh", lambda *a, **k: json.dumps(data))
+        assert omnigent_agent.run_settled(77, "o/r")[0] == (0 if good else 1)
+
+
+def test_a_failed_run_in_a_set_wakes_the_lead_at_once_and_a_good_one_does_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    done = {"status": "completed", "attempt": 1}
+    failed = run_waited(tmp_path, monkeypatch, f"{RUN}, CI", [{**done, "conclusion": "failure"}])
+    assert len(failed) == 1 and "run o/r#77 failure" in failed[0]  # CI still pending: news anyway
+    (tmp_path / "ok").mkdir()
+    ok = run_waited(tmp_path / "ok", monkeypatch, f"{RUN}, CI", [{**done, "conclusion": "success"}])
+    assert ok == []  # a good end waits for the rest of the set
+
+
+def test_a_run_that_ends_is_news_once_over_many_polls_and_again_when_it_is_rerun_and_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    f1 = {"status": "completed", "conclusion": "failure", "attempt": 1}
+    ends = lambda: set(re.findall(r"wait:m:fail:\w+", capsys.readouterr().out))
+    run_waited(tmp_path, monkeypatch, RUN, [f1], polls=4)
+    assert len(ends()) == 1  # many polls, one end
+    (tmp_path / "again").mkdir()
+    run_waited(tmp_path / "again", monkeypatch, RUN, [f1, {**f1, "attempt": 2}], polls=4)
+    assert len(ends()) == 2  # the same run id, a new attempt: a new end
+
+
+def test_wait_on_through_main_refuses_a_bare_number_this_repo_does_not_have(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def gh(*args: str, **_: object) -> str:
+        raise omnigent_agent.Fail(NOT_FOUND)
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    assert omnigent_agent.main(["wait-on", "pr", "1357"]) != 0
+    assert "owner/repo#1357" in capsys.readouterr().err
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: "{}")
+    assert omnigent_agent.main(["wait-on", "pr", "12"]) == 0
+    assert capsys.readouterr().out.strip() == "Waits: #12"
+
+
 def told_idle(og) -> list[str]:
     return [t for s, t in og.inbox if s == "m" and "went idle" in t]
 
@@ -13563,3 +13805,23 @@ def test_start_cli_passes_allow_older_model(
         assert not og.sessions
     else:
         assert og.sessions
+
+
+@pytest.mark.parametrize(
+    ("end", "deadline"),
+    [
+        ((0, "PR #976 checks green (3)", "a1"), False),  # open, checks settled: still live
+        ((1, "PR #976 checks red: gate", "a1"), False),
+        ((0, "PR #976 merged", "a1"), True),  # ended: news, so no longer a live wait
+        (None, False),
+    ],
+)
+def test_an_open_pr_a_lead_waits_on_is_live_after_its_checks_settle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, end: tuple | None, deadline: bool
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: queued\nWaits: #976", 3600))
+    og.snap = {"status": "running"}
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": end)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert any("no progress" in p for p in fyis(og)) is deadline
