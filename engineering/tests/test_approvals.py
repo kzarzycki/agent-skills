@@ -9240,7 +9240,7 @@ def test_a_pass_from_a_host_or_a_cloud_session_is_pushed_and_reused_by_another_c
     message = git_in(tmp_path / "origin.git", "log", "-1", "--format=%B", branch)
     assert message.splitlines()[0] == line
     assert git_in(tmp_path / "origin.git", "for-each-ref", "--format=%(refname)") == (
-        f"refs/heads/feature\n{branch}\nrefs/heads/main\n"
+        f"refs/heads/feature\n{branch}\nrefs/heads/main\nrefs/loop/gate/master\n"
     )
     if where == "host":
         assert [s["description"] for s in hub.pop(head)] == [line]
