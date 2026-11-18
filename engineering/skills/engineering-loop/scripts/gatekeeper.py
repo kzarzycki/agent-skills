@@ -253,7 +253,7 @@ its failed job log's last 30 lines, and is enqueued again; its second turns the 
 step 6 evicts (`Evicted from the merge queue`, exit 1). Any other removal (`checks_timed_out`, `manual`) counts for
 nothing, and the PR is enqueued again. The count lives in GitHub's timeline, so any land applies it and `land` keeps no
 state. A PR enqueued or already queued exits 0, naming its queue position and head, and `land` ends: it never polls the
-queue (GitHub tracks it; a poll only spends the account's GraphQL quota), so `--wait` is no flag on this base, and a
+queue (GitHub tracks it; a poll only spends the account's GraphQL quota), so `--wait` never waits on the queue (it only waits for the PR's own running checks or an owner's go, before enqueuing), and a
 later `land <pr>` reads a removed entry's state once (above). Exit 3 stays for a PR whose conflict GitHub is still
 working out, or a base still running its checks: nothing was enqueued yet. Who tells the lead of a merge or a removal
 is the project's watcher, not `land`. The first land that reads
@@ -6542,7 +6542,7 @@ def github_queue(
     """The GitHub merge queue, which `base`'s rules require (merging with `method`): no landing lock, local batch or
     local gate, since GitHub's queue orders the entries, gates each group with its `merge_group` CI run and isolates a
     red one. Every candidate (candidates_of), oldest PR first, goes in pinned to its head (queue_step), and land exits:
-    it never loops on the queue (`--wait` is no flag here), which GitHub tracks and a poll would only spend GraphQL
+    it never loops on the queue (`--wait` waits only for a PR's own checks or an owner's go, before enqueuing), which GitHub tracks and a poll would only spend GraphQL
     quota on. A PR in the queue is done (exit 0); exit 3 stays for a PR GitHub is still working out a conflict of, or
     a base still running its checks, which a later `land` reads again."""
     if signed(loop):

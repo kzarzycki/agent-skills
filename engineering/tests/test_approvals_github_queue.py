@@ -193,7 +193,7 @@ def test_a_bare_land_enqueues_every_landable_pr_oldest_first_pinned_to_its_head(
 def test_land_wait_on_a_queue_base_enqueues_and_exits_without_a_sleep_or_another_read(
     queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The queue is GitHub's to watch: `--wait` is no flag here, so a session holds no slot and spends no quota."""
+    """The queue is GitHub's to watch: `--wait` never waits on the queue, so a session holds no slot and spends no quota."""
     head = queue["opened"](7)
     monkeypatch.setattr(approvals.time, "sleep", lambda seconds: pytest.fail("polled the queue"))
     code, lines = queue["land"]("7", "--wait")
