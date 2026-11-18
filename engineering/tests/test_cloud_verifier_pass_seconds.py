@@ -52,7 +52,9 @@ def pass_run(checkout, monkeypatch):  # noqa: F811 - the imported fixture, used 
 
 def footer(body: str) -> dict[str, str]:
     lines = [line for line in body.splitlines() if line.startswith("Seconds: ")]
-    assert body.rstrip("\n").splitlines()[-6:-2] == lines and len(lines) == 4  # the folded timing block's four lines
+    assert (
+        body.rstrip("\n").splitlines()[-6:-2] == lines and len(lines) == 4
+    )  # the folded timing block's four lines
     assert body.rstrip("\n").splitlines()[-2:] == ["", "</details>"]
     return dict(line[len("Seconds: ") :].split(" ", 1) for line in lines)
 
@@ -62,7 +64,9 @@ def test_a_pass_with_requested_posts_four_numbers_and_edits_the_post_time_once(p
     assert cv.verify(7, brief, None, None, requested=time.time() - 5) == 0
     assert len(posts) == 1 and len(edits) == 1
     assert footer(posts[0])["post"] == "unknown"  # known only after the post
-    assert posts[0].startswith(cv.folded_report(REPORT).rstrip("\n"))  # the folded report, then the timing fold
+    assert posts[0].startswith(
+        cv.folded_report(REPORT).rstrip("\n")
+    )  # the folded report, then the timing fold
     got = footer(edits[0][1])
     assert edits[0][0].endswith("/issues/comments/42")
     assert all(got[name].isdigit() for name in cv.PHASES)
