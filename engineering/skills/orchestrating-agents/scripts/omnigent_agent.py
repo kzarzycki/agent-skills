@@ -3591,6 +3591,25 @@ def harness_signature(env: dict[str, str] | None = None, home: Path | None = Non
     return signature("?", None)
 
 
+def newer_generation(model: str, listed: list[str]) -> list[str]:
+    """The listed models of the newest generation, when it is newer than ``model``'s: Codex's ids
+    are ``gpt-<generation>-<tier>`` and a generation may drop tiers (6.2 lists only sol and
+    astra), so any tier of a newer generation supersedes ``model``. Empty for an id of another
+    shape, since Claude's tiers carry versions of their own (fable 5.2 beside sonnet 5.5) and
+    never supersede each other. ponytail: Codex's naming only; add a family's pattern here when
+    another needs it."""
+
+    def generation(i: str) -> tuple[int, ...] | None:
+        found = re.fullmatch(r"gpt-(\d+(?:\.\d+)*)-[a-z]+", i)
+        return tuple(map(int, found[1].split("."))) if found else None
+
+    mine = generation(model)
+    newer = sorted(
+        ((g, i) for i in listed if mine and (g := generation(i)) and g > mine), reverse=True
+    )
+    return [i for g, i in newer if g == newer[0][0]]
+
+
 def model_for(agent: str, model: str | None = None) -> tuple[str | None, str]:
     """The model ``agent`` runs on and where it came from: ``model`` (``--model``), else
     ``$OMNIGENT_MODEL_<AGENT>`` (``-`` as ``_``), else ``DEFAULT_MODELS``; None for an agent with
@@ -3625,6 +3644,7 @@ def start(
     subscriber: str = "",
     pr: int | None = None,
     files: list[Path] | None = None,
+    allow_older_model: bool = False,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
@@ -3709,6 +3729,13 @@ def start(
             listed = [chosen]
         if chosen not in listed:
             raise Fail(f"{source}: {agent} lists no such model; it lists {', '.join(listed)}")
+        if (newer := newer_generation(chosen, listed)) and not allow_older_model:
+            raise Fail(
+                f"{source}: {chosen} is an older generation; {agent} lists {', '.join(newer)}."
+                " Run on the newest generation's model of the tier, else of the next tier up"
+                " (engineering-loop SKILL.md, Models), or pass --allow-older-model for a"
+                " deliberate pin"
+            )
     # The variable names only exist for the two aliases, like OMNIGENT_MODEL_<AGENT>.
     variable = f"OMNIGENT_EFFORT_{agent.upper()}"
     if picked := effort or (agent in AGENTS and os.environ.get(variable)) or None:
@@ -7989,6 +8016,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             " sonnet for claude-cloud and the harness default for any other agent)",
         )
         p.add_argument(
+            "--allow-older-model",
+            action="store_true",
+            help="run --model although the host lists a newer generation of its family",
+        )
+        p.add_argument(
             "--effort",
             help="reasoning effort, as the harness names its levels (claude: low, medium, high, xhigh, max)"
             " (default: $OMNIGENT_EFFORT_<AGENT>, e.g. OMNIGENT_EFFORT_CODEX, else the harness default)",
@@ -8890,6 +8922,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 args.role,
                 args.confirm_seconds,
                 model=args.model,
+                allow_older_model=args.allow_older_model,
                 effort=args.effort,
                 permission_mode=args.permission_mode,
                 top_level=args.top_level,

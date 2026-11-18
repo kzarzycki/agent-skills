@@ -67,7 +67,7 @@ time to compare.
 server refuses an ACP session that names no model, else its harness's default (Codex:
 `~/.codex/config.toml`), a verifier included. `start` refuses a model the agent's harness doesn't list on the host the child runs on
 (`GET /v1/hosts/<host>/harnesses/<harness>/model-options`: each row's `id` and `model`, so `sonnet` and
-`claude-sonnet-5-5` both pass), naming the ids it does, and one it can't check because the list doesn't load (an ACP harness has no host list: `start` passes the id on, saying so):
+`claude-sonnet-5-5` both pass), naming the ids it does, refuses a Codex model (`gpt-<generation>-<tier>`) when the list has a newer generation, naming it (`--allow-older-model` for a deliberate pin), and one it can't check because the list doesn't load (an ACP harness has no host list: `start` passes the id on, saying so):
 Omnigent launches an unlisted id on the harness default with no error. Pass `--model` on every start: the owner's model, the project's, else one fit for the job (engineering-loop SKILL.md, Models). A
 tier the project names resolves against the family's lineup (engineering-loop SKILL.md, Models): Codex lists
 its models in `~/.codex/models_cache.json`, each `slug` naming its generation and its `description` its role; a Claude Code
