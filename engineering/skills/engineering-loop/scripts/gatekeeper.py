@@ -18,6 +18,7 @@
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
+    uv run scripts/approvals.py overlap <pr>|--files <path>... [--base <b>]  # other open PRs changing the same files: hunks, and whether the heads merge
     uv run scripts/approvals.py local-ci <pr> [--head <sha>] [--run]  # --head: the commit just pushed, refused if GitHub's head stays another; with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
     uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
@@ -4084,6 +4085,7 @@ PORTS = {
         "head_pushed",  # (pull) -> when the head was pushed to the PR's branch, or None
         "merged_labelled",  # (branch, name) -> the merged PRs into branch carrying the label
         "open_pulls",  # (limit) -> up to limit open PRs, each with its number, branches, draft, body and closing issues
+        "open_pull_files",  # (limit) -> up to limit open PRs, each with its number, base, head commit and changed paths
         "open_heads",  # () -> the head commit of every open PR
         "required_checks",  # (base) -> the checks the base requires, `queue` the merge method of a merge queue its
         # rules require (None, or no such attribute, without one)
@@ -4201,7 +4203,7 @@ required_checks, default_branch = (
 squash_message, pull_commits = through("forge", "squash_message"), through("forge", "pull_commits")
 viewer, writer = through("forge", "viewer"), through("forge", "writer")
 github_repo, one_repo = through("forge", "github_repo"), through("forge", "one_repo")
-open_heads = through("forge", "open_heads")
+open_heads, open_pull_files = through("forge", "open_heads"), through("forge", "open_pull_files")
 enqueue_pull, dequeue_pull = through("forge", "enqueue_pull"), through("forge", "dequeue_pull")
 commit_checks, job_log = through("forge", "commit_checks"), through("forge", "job_log")
 commit_tree = through("forge", "commit_tree")
@@ -9379,28 +9381,25 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
     return 0
 
 
-def conflicted(pr: int, base: str, head: str) -> list[str]:
-    """The files a PR's head conflicts with its own base in, from `git merge-tree --write-tree origin/<base> <head>`
-    (empty when it merges cleanly), after fetching both, so a stale or missing origin/<base> is never read as clean.
-    A conflict whose files git doesn't name still returns one entry, and a fetch or git failure is a Refused: never
-    a clean."""
+def fetch_for_merge(base: str, prs: Sequence[int]) -> None:
+    """Fetches origin/<base> and each PR's head, so a stale or missing ref is never read as a clean merge; a failure is
+    a Refused."""
     try:
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
-        git("fetch", "-q", "origin", f"refs/pull/{pr}/head")
+        for pr in prs:
+            git("fetch", "-q", "origin", f"refs/pull/{pr}/head")
     except subprocess.CalledProcessError as exc:
         raise Refused(
-            f"PR #{pr}: cannot fetch origin/{base} and the head to check the merge: {exc.stderr.strip() or exc}"
+            f"{' and '.join(f'PR #{pr}' for pr in prs)}: cannot fetch origin/{base} and the head to check the merge: "
+            f"{exc.stderr.strip() or exc}"
         ) from exc
+
+
+def merge_conflicts(first: str, second: str, what: str) -> list[str]:
+    """The files `git merge-tree --write-tree first second` conflicts in (empty when it merges cleanly). A conflict whose
+    files git doesn't name still returns one entry, and a git failure is a Refused naming `what`: never a clean."""
     merge = subprocess.run(
-        [
-            "git",
-            "merge-tree",
-            "--write-tree",
-            "--name-only",
-            "--no-messages",
-            f"origin/{base}",
-            head,
-        ],
+        ["git", "merge-tree", "--write-tree", "--name-only", "--no-messages", first, second],
         capture_output=True,
         text=True,
         check=False,
@@ -9411,10 +9410,92 @@ def conflicted(pr: int, base: str, head: str) -> list[str]:
     if merge.returncode != 1 or not re.fullmatch(
         r"[0-9a-f]{40,64}", merge.stdout.split("\n", 1)[0]
     ):
-        raise Refused(
-            f"PR #{pr}: git merge-tree failed: {merge.stderr.strip() or merge.returncode}"
-        )
+        raise Refused(f"{what}: git merge-tree failed: {merge.stderr.strip() or merge.returncode}")
     return list(dict.fromkeys(merge.stdout.splitlines()[1:])) or ["(files not named by git)"]
+
+
+def conflicted(pr: int, base: str, head: str) -> list[str]:
+    """The files a PR's head conflicts with its own base in, from `git merge-tree --write-tree origin/<base> <head>`
+    (empty when it merges cleanly), after fetching both (fetch_for_merge), so a stale or missing origin/<base> is never
+    read as clean. A conflict whose files git doesn't name still returns one entry, and a fetch or git failure is a
+    Refused: never a clean."""
+    fetch_for_merge(base, [pr])
+    return merge_conflicts(f"origin/{base}", head, f"PR #{pr}")
+
+
+def hunks(base: str, head: str, path: str) -> str:
+    """The lines `head` changes in `path` since `base` (a merge-base), numbered on `base`, as `3-5, 9` from
+    `git diff -U0`; a pure insertion is the one line it follows."""
+    out = git("diff", "-U0", "--no-color", base, head, "--", path)
+    spans = []
+    for old, count in re.findall(r"^@@ -(\d+)(?:,(\d+))? \+", out, re.MULTILINE):
+        start, length = int(old), int(count) if count else 1
+        spans.append(f"{start}-{start + length - 1}" if length > 1 else str(start))
+    return ", ".join(spans) or "(no lines)"
+
+
+def overlaps(pr: int | None, files: Sequence[str] = (), base: str | None = None) -> list[str]:
+    """What `overlap` prints: for each other open PR into the same base that changes a file of PR `pr` (or one of
+    `files`, for a story with no PR yet, into `base`, default the default branch), its files with both sides' hunks and,
+    with a PR, whether the two heads merge cleanly. The PRs and their files come from one call; only a PR that shares a
+    file is fetched. Empty with no overlap; a fetch or git failure is a Refused, never a clean."""
+    found = open_pull_files(OPEN_LIMIT)
+    if pr is not None:
+        mine = next((p for p in found if p["number"] == pr), None)
+        if mine is None:
+            raise Refused(f"PR #{pr} is not open")
+        base, files = mine["baseRefName"], mine["files"]
+    base = base or default_branch()
+    sharing = [
+        (p, [f for f in p["files"] if f in files])
+        for p in found
+        if p["number"] != pr and p["baseRefName"] == base
+    ]
+    sharing = [(p, shared) for p, shared in sharing if shared]
+    if not sharing:
+        return []
+    fetch_for_merge(base, [*([pr] if pr is not None else []), *(p["number"] for p, _ in sharing)])
+
+    def span(head: str, path: str) -> str:
+        return hunks(git("merge-base", f"origin/{base}", head).strip(), head, path)
+
+    def behind(number: int, head: str) -> str:
+        # merge-tree of two heads replays the base's commits one of them lacks, so a head that conflicts with the base
+        # alone shows that as a clash with the other PR too; say so, or the lead reorders PRs when the base is the cause
+        clash = merge_conflicts(f"origin/{base}", head, f"PR #{number}")
+        return (
+            f"; PR #{number} conflicts with {base} itself in {', '.join(clash)}: merge {base} into it and rerun"
+            if clash
+            else ""
+        )
+
+    lines = []
+    own = None  # this PR's base note, read on its first clash only, so a clean list runs no base check
+    for other, shared in sharing:
+        number = other["number"]
+        verdict = ""
+        if pr is not None:
+            clash = merge_conflicts(
+                mine["headRefOid"], other["headRefOid"], f"PRs #{pr} and #{number}"
+            )
+            if clash and own is None:
+                own = behind(pr, mine["headRefOid"])
+            verdict = (
+                f": conflicts in {', '.join(clash)}{own}{behind(number, other['headRefOid'])}"
+                if clash
+                else ": merges cleanly"
+            )
+        lines.append(f"PR #{number} also changes {len(shared)} file(s) here{verdict}")
+        for path in shared:
+            ours = f"PR #{pr} {span(mine['headRefOid'], path)}; " if pr is not None else ""
+            lines.append(f"  {path}: {ours}PR #{number} {span(other['headRefOid'], path)}")
+    return lines
+
+
+def overlap(pr: int | None, files: Sequence[str], base: str | None) -> int:
+    if lines := overlaps(pr, files, base):
+        print("\n".join(lines))
+    return 0
 
 
 def brief(
@@ -9520,6 +9601,13 @@ def brief(
     # as written, but for the blank lines around it: indentation may be a snippet's
     if (own := section(loop or "", "Verifier brief").strip("\n")).strip():
         lines += ["", own]
+    # a warning for the lead, on stderr: the brief on stdout is the verifier's and stays as it is
+    try:
+        if shared := overlaps(pr):
+            print(f"warning: PR #{pr} overlaps other open PRs:", *shared, sep="\n", file=sys.stderr)
+    except (Refused, subprocess.CalledProcessError, OSError, ValueError) as exc:
+        why = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()
+        print(f"warning: overlap lookup failed: {why[0] if why else exc!r}", file=sys.stderr)
     print("\n".join(lines))
     return 0
 
@@ -9648,6 +9736,10 @@ def main(argv: list[str]) -> int:
     briefing.add_argument("--priorities", type=Path)
     briefing.add_argument("--allow-conflict", action="store_true")
     briefing.add_argument("--proof", type=Path, action="append", default=[])
+    overlapping = commands.add_parser("overlap")
+    overlapping.add_argument("pr", type=int, nargs="?")
+    overlapping.add_argument("--files", nargs="+", metavar="path")
+    overlapping.add_argument("--base")
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
     graduating = commands.add_parser("graduate")
@@ -9753,6 +9845,12 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return land(args.pr or None, args.wait, args.only)
     if args.command == "brief":
         return brief(args.pr, args.priorities, args.proof, args.far, args.allow_conflict)
+    if args.command == "overlap":
+        if (args.pr is None) == (args.files is None):
+            raise Refused("overlap takes a PR number, or --files <path>... for a story with no PR")
+        if args.base and args.pr is not None:
+            raise Refused("--base goes with --files: a PR's own base is the one compared")
+        return overlap(args.pr, args.files or [], args.base)
     if args.command == "release":
         return release(args.issue)
     if args.command == "graduate":

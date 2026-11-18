@@ -1042,6 +1042,9 @@ or the owner's private network.
   found on the way) waits for that PR to land and starts from main, because on its branch
   it restarts the PR's review and CI and couples two concerns; chains of follow-up PRs come
   from PRs landing slower than they are produced, and fast landing makes the wait cheap.
+  `approvals.py overlap <pr>` (or `overlap --files <path>...` for a story with no PR yet) lists the other open
+  PRs into the same base that change a file this one does, with each side's hunk lines and whether the two heads
+  merge cleanly (`brief` prints it on stderr), so the lead lands or orders the overlapping ones first.
   Never push to a PR someone else owns, since that rewrites work under its owner: comment
   on it, or wait for it to land and start from main. Before filing an issue or starting a
   fix, search the open issues and PRs of this repo, and of the repo that owns the cause,
