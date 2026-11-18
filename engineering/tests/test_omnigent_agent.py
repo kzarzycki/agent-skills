@@ -337,7 +337,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
     monkeypatch.setattr(omnigent_agent, "LATE_BRIEF_SECONDS", 0)  # its tests set their own
     monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
-    monkeypatch.setattr(omnigent_agent, "COLD_START_SECONDS", 0)  # else start polls a real 20 s for a turn
+    monkeypatch.setattr(omnigent_agent, "COLD_START_SECONDS", 0)  # else start polls 20 s
     monkeypatch.delenv("OMNIGENT_SUPERVISE_REGISTRY", raising=False)  # else run arms a real one
 
 
