@@ -42,3 +42,37 @@ def test_an_ineligible_pr_exports_nothing() -> None:
     policy = loop_md("incubating:\n  waive: [full_gate]\n")
     assert approvals.tier(made(body="no epic line"), policy) == []
     assert "GATE_INCUBATING" not in os.environ
+
+
+def test_an_ambient_flag_never_reaches_a_gate_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in NAMES:
+        monkeypatch.setenv(name, "1")
+    step = {"sets": {}}
+    assert not set(NAMES) & set(approvals.gate_env(step))
+    assert approvals.gate_env({"sets": {"GATE_INCUBATING": "1"}})["GATE_INCUBATING"] == "1"
+
+
+def test_local_ci_of_a_pr_runs_the_gate_with_the_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(approvals, "settled_head", lambda *_a: "h")
+    monkeypatch.setattr(approvals, "project", lambda: (None, "loop"))
+    monkeypatch.setattr(approvals, "settings", lambda _l: {"incubating": {}})
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: made())
+    monkeypatch.setattr(approvals, "closing_issues", lambda _p: [])
+    monkeypatch.setattr(approvals, "reusable", lambda head, passed=(), why=None: seen.update(reuse=list(passed)))
+    monkeypatch.setattr(approvals, "run_local_ci", lambda pr, head, passed=(): seen.update(ran=list(passed)) or {"command": "c", "env": {}, "published": True})
+    monkeypatch.setattr(approvals, "comment", lambda *_a: None)
+    approvals.pr_local_ci(7, True)
+    assert seen["reuse"] == NAMES and seen["ran"] == NAMES
+
+
+def test_local_ci_of_a_pr_reads_no_pr_without_an_incubating_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(approvals, "settled_head", lambda *_a: "h")
+    monkeypatch.setattr(approvals, "project", lambda: (None, "loop"))
+    monkeypatch.setattr(approvals, "settings", lambda _l: {})
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pytest.fail("the PR was read"))
+    monkeypatch.setattr(approvals, "reusable", lambda head, passed=(), why=None: {"head": "h", "time": "t", "command": "c", "env": {}, "published": True})
+    monkeypatch.setattr(approvals, "comment", lambda *_a: None)
+    assert approvals.pr_local_ci(7, False) == 0
