@@ -25,9 +25,11 @@ jobs:
           install: false
       - run: mise install
       - run: uv sync --frozen
-      - run: mise run vendor-engineering-check
-      - run: mise run test
-      - run: mise run test-engineering-package
+      # A PR runs lint and the tests it touches (tools/affected_tests.py); the full suite runs on push to main.
+      - if: github.event_name == 'pull_request'
+        run: mise run check-fast
+      - if: github.event_name != 'pull_request'
+        run: mise run check
       - name: Check changed-file whitespace
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
