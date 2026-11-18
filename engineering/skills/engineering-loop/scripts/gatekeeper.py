@@ -6556,7 +6556,7 @@ def github_queue(
     candidates, exits, _ = candidates_of(named, base, tracker, loop, required, only)
     numbers, failed = {pull["number"] for pull in named}, set()
     for pull in candidates:
-        code, again = queue_step(pull, base, method, loop, required)
+        code, _ = queue_step(pull, base, method, loop, required)
         if code == 1:
             failed.add(pull["number"])
         if pull["number"] in numbers or code != WAITING:
