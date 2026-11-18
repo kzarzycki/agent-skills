@@ -477,15 +477,7 @@ def rest_threads(number: int) -> dict[str, Any]:
     whose GraphQL withholds other fields of PULL but not these, the threads come from GraphQL alone. Where that fails
     too, the error raises: unresolved threads are never read as none. Each thread's comments, which the proxy's route
     names by id alone, come from the PR's review comments, with no right to edit them (session_links())."""
-    try:
-        threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
-    except subprocess.CalledProcessError as exc:
-        if "HTTP 404" not in (exc.stderr or ""):
-            raise
-        found: dict[str, Any] = _graphql(
-            _repository(f"pullRequest(number: $n) {{ {THREADS} }}"), n=number
-        )
-        return found["pullRequest"]["reviewThreads"]
+    threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
     listed = {found["id"]: found for found in rest_pages(f"pulls/{number}/comments?per_page=100")}
     nodes = [
         {
