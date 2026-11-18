@@ -11,6 +11,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from pathlib import Path
@@ -1691,6 +1692,9 @@ def test_uv_lock_holder_with_a_library_or_cwd_in_the_cache_is_not_forced(tmp_pat
 
 def uv_real_holder(tmp_path, monkeypatch, alias, masked=False):
     """uv_force against the real lsof and ps and a real process holding the lock through a link in the cache."""
+    if sysconfig.get_config_var("PYTHONFRAMEWORK"):
+        # a framework python re-execs through Python.app, so ps shows that path, never the `uv` link this stands in for
+        pytest.skip("a framework python does not keep the link's name in its command line")
     hygiene = load("agent_hygiene_uv_real")
     real = tmp_path.resolve() / "real"
     (real / "env/bin").mkdir(parents=True)
