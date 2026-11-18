@@ -104,9 +104,14 @@ def test_a_waiting_land_whose_base_moved_its_script_follows_the_base_and_lands(
     "checkout",
     ["an edited tracked file", "a detached head", "another branch", "a commit the base lacks"],
 )
-def test_any_other_checkout_keeps_the_refusal(
-    waiting: dict[str, Any], tmp_path: Path, checkout: str
+def test_any_other_checkout_runs_again_from_a_fresh_worktree_of_the_base(
+    waiting: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    checkout: str,
 ) -> None:
+    """A lead's linked worktree on a PR branch or a detached head (#1314): its own files are never moved, and the run
+    again is from a detached worktree of the fetched base, whose script is the base's."""
     work = waiting["work"]
     if checkout == "an edited tracked file":
         (work / "app.py").write_text("value = 2\n")
@@ -117,11 +122,28 @@ def test_any_other_checkout_keeps_the_refusal(
             work, "switch", "-q", *(["--detach"] if checkout == "a detached head" else ["-c", "pr"])
         )
     before = git_in(work, "rev-parse", "HEAD").strip()
-    moved(waiting, tmp_path)
-    with pytest.raises(approvals.Drifted, match="a PR's own copy would judge it"):
+    status = git_in(work, "status", "--porcelain")
+    tip = moved(waiting, tmp_path)
+    cwd = Path.cwd()
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(sys, "argv", [str(work / SCRIPT), "land", "7", "--wait"])
+    with pytest.raises(Restarted):
         approvals.land(7, wait=True)
-    assert git_in(work, "rev-parse", "HEAD").strip() == before
-    assert waiting["execs"] == []
+    fresh = Path.cwd()
+    monkeypatch.chdir(cwd)
+    assert git_in(work, "rev-parse", "HEAD").strip() == before  # the checkout is left as it was
+    assert git_in(work, "status", "--porcelain") == status
+    assert fresh != work and git_in(fresh, "rev-parse", "HEAD").strip() == tip
+    assert git_in(fresh, "branch", "--show-current").strip() == ""  # detached
+    [(path, argv, deadline)] = waiting["execs"]
+    assert path == sys.executable and argv[1:] == [str(fresh / SCRIPT), "land", "7", "--wait"] and deadline
+    assert (fresh / SCRIPT).read_text().endswith("# another land's change\n")
+    # the run in place of this one removes the worktree when it ends
+    monkeypatch.chdir(fresh)
+    monkeypatch.setattr(approvals, "landing", lambda _pr, _only=False: (0, False))
+    assert approvals.land(7, wait=True) == 0
+    approvals.atexit._run_exitfuncs()
+    assert not fresh.exists()
 
 
 def test_a_drift_the_fast_forward_leaves_keeps_the_refusal(waiting: dict[str, Any]) -> None:
@@ -133,6 +155,24 @@ def test_a_drift_the_fast_forward_leaves_keeps_the_refusal(waiting: dict[str, An
     with pytest.raises(approvals.Drifted):
         approvals.land(7, wait=True)
     assert waiting["execs"] == []
+
+
+def test_a_base_without_the_running_script_leaves_no_worktree_and_keeps_the_refusal(
+    waiting: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = waiting["work"]
+    git_in(work, "switch", "-q", "--detach")
+    other = tmp_path / "other"
+    git_in(tmp_path, "clone", "-q", str(waiting["origin"]), str(other))
+    git_in(other, "rm", "-q", SCRIPT)
+    git_in(other, "-c", "user.email=l@example.com", "-c", "user.name=l", "commit", "-qm", "drop it")
+    git_in(other, "push", "-q", "origin", "HEAD:refs/heads/main")
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(sys, "argv", [str(work / SCRIPT), "land", "7", "--wait"])
+    with pytest.raises(approvals.Drifted):
+        approvals.land(7, wait=True)
+    assert waiting["execs"] == []
+    assert git_in(work, "worktree", "list").count("\n") == 1
 
 
 def test_the_lock_is_released_before_the_run_again(
