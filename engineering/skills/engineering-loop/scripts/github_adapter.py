@@ -41,7 +41,7 @@ WRITE = {"admin", "maintain", "write"}
 NOTE = "id author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
 
 
-SPECCED = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
+SPECCED = f"number state body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
 
 
 ASSIGNEES = "assignees(first: 10) { nodes { login } }"
@@ -66,7 +66,7 @@ THREADS = f"reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments
 
 
 PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
-  files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
+  files(first: 100) {{ totalCount nodes {{ path changeType additions deletions }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
   {THREADS}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
@@ -334,10 +334,12 @@ TIMELINE = {
 }
 
 
-def rest_timeline(number: int) -> dict[str, Any]:
-    """An issue's or PR's label, assign and ready events from REST's timeline, every page."""
+def rest_timeline(number: int, events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """An issue's or PR's label, assign and ready events from REST's timeline, every page (`events`, once read)."""
     nodes = []
-    for event in rest_pages(f"issues/{number}/timeline?per_page=100"):
+    if events is None:
+        events = rest_pages(f"issues/{number}/timeline?per_page=100")
+    for event in events:
         if (kind := TIMELINE.get(event.get("event"))) is None:
             continue
         found: dict[str, Any] = {"__typename": kind, "createdAt": event.get("created_at")}
@@ -354,6 +356,7 @@ def rest_specced(found: dict[str, Any]) -> dict[str, Any]:
     no edit time, so the spec's text names its version (versions)."""
     return {
         "number": found["number"],
+        "state": found["state"].upper(),
         "body": found.get("body") or "",
         "createdAt": found["created_at"],
         "updatedAt": found["updated_at"],
@@ -509,6 +512,7 @@ def rest_pull(pr: int) -> dict[str, Any]:
     says `merge_queue: false`."""
     found = rest(f"repos/{{owner}}/{{repo}}/pulls/{pr}")
     base, head = found["base"], found["head"]
+    events = rest_pages(f"issues/{pr}/timeline?per_page=100")
     reviews = [
         {
             "author": actor(review.get("user")),
@@ -521,7 +525,12 @@ def rest_pull(pr: int) -> dict[str, Any]:
         for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
     ]
     files = [
-        {"path": file["filename"], "changeType": CHANGE_TYPES.get(file["status"], "MODIFIED")}
+        {
+            "path": file["filename"],
+            "changeType": CHANGE_TYPES.get(file["status"], "MODIFIED"),
+            "additions": file.get("additions"),
+            "deletions": file.get("deletions"),
+        }
         for file in pr_changes(pr)
     ]
     state = "MERGED" if found.get("merged") else found["state"].upper()
@@ -557,9 +566,112 @@ def rest_pull(pr: int) -> dict[str, Any]:
         "reviews": {"totalCount": len(reviews), "nodes": reviews},
         "reviewThreads": rest_threads(pr),
         "authored": rest_authored(pr, found.get("commits") or 0),
-        "timelineItems": rest_timeline(pr),
+        "timelineItems": rest_timeline(pr, events),
         "commits": {"nodes": [{"commit": {"statusCheckRollup": rest_checks(head["sha"])}}]},
         "closingIssuesReferences": {"nodes": []},
+        **rest_queue(found, events),
+    }
+
+
+# the REST timeline's merge-queue events
+QUEUE_ADDED, QUEUE_REMOVED = "added_to_merge_queue", "removed_from_merge_queue"
+# the check run conclusions that make a merge-queue group red: a run cancelled there (its group rebuilt, or the entry
+# dequeued) failed nothing
+GROUP_RED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE"}
+
+
+def rest_queue(found: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
+    """The PR's `mergeQueueEntry` and `removals` as PULL reads them, from REST, which has neither: `found`, its REST
+    pull, and `events`, its timeline. The entry, only while the timeline's newest queue event is an add (GitHub may
+    delete a group's ref a while after it took the PR out): awaiting checks on its group's commit while GitHub's
+    readonly ref for it (`gh-readonly-queue/<base>/pr-<n>-<sha>`) exists, else queued; none, and no removal, for a PR
+    whose timeline has no queue event.
+    A `removed_from_merge_queue` event names no reason, so each gets GraphQL's from what REST reads on its group (the
+    commit of the newest `merge_group` run on such a ref since the PR's add before it): `merged`, the last one, when
+    GitHub reports the PR merged or the group's commit is in the base (GitHub takes it out a moment before it reports
+    the merge); `failed_checks` when a check the base requires failed on the group's commit; `merge_conflict`, the last
+    one, when GitHub reports the PR conflicting or is still working that out; else `unknown`, which counts for nothing, as `checks_timed_out` and
+    `manual` do."""
+    number, base, merged = found["number"], found["base"]["ref"], bool(found.get("merged"))
+    prefix = f"gh-readonly-queue/{base}/pr-{number}-"
+    queue = [event for event in events if event.get("event") in (QUEUE_ADDED, QUEUE_REMOVED)]
+    entry = None
+    if not queue:  # never in a merge queue: no ref, no group
+        return {"mergeQueueEntry": entry, "removals": {"nodes": []}}
+    if not merged and queue[-1]["event"] == QUEUE_ADDED:
+        entry = {"state": "QUEUED", "position": None, "headCommit": None}
+        if refs := rest_pages(f"git/matching-refs/heads/{prefix}"):
+            group = refs[-1]["object"]["sha"]
+            made = rest(f"repos/{{owner}}/{{repo}}/commits/{group}")["commit"]["committer"]["date"]
+            suites = rest(f"repos/{{owner}}/{{repo}}/commits/{group}/check-suites?per_page=1")
+            commit = {
+                "committedDate": made,
+                "checkSuites": {"totalCount": suites.get("total_count") or 0},
+            }
+            entry = {"state": "AWAITING_CHECKS", "position": None, "headCommit": commit}
+    removed = [event for event in queue if event["event"] == QUEUE_REMOVED]
+    if not removed:
+        return {"mergeQueueEntry": entry, "removals": {"nodes": []}}
+    # ponytail: the repo's newest 100 `merge_group` runs; a removal whose group fell out of them counts for nothing
+    runs = rest("repos/{owner}/{repo}/actions/runs?event=merge_group&per_page=100")
+    groups = sorted(
+        (run.get("created_at") or "", run["head_sha"])
+        for run in runs.get("workflow_runs") or []
+        if (run.get("head_branch") or "").startswith(prefix)
+    )
+    required = required_checks(base) if groups else set()
+    adds = [event.get("created_at") or "" for event in queue if event["event"] == QUEUE_ADDED]
+    nodes = []
+    for event in removed:
+        at, last = event.get("created_at") or "", event is removed[-1]
+        since = max((added for added in adds if added <= at), default="")
+        group = next((sha for made, sha in reversed(groups) if since <= made <= at), None)
+        reason, commit = "unknown", group
+        if last and merged:
+            reason, commit = "merged", found.get("merge_commit_sha") or group
+        elif group and group_red(group, required):
+            reason = "failed_checks"
+        elif last and group and in_base(base, group):
+            reason = "merged"
+        # false: conflicting; null: GitHub working it out again, which the gatekeeper waits on, as on a host
+        elif last and found.get("mergeable") is not True:
+            reason = "merge_conflict"
+        nodes.append(
+            {"reason": reason, "createdAt": at, "beforeCommit": {"oid": commit} if commit else None}
+        )
+    return {"mergeQueueEntry": entry, "removals": {"nodes": nodes}}
+
+
+def group_red(group: str, required: set[str]) -> bool:
+    """Whether a check the base requires (any, where it requires none) failed on the merge queue's commit `group`."""
+    return any(
+        run["conclusion"] in GROUP_RED
+        for name, run in commit_checks(group).items()
+        if not required or name in required
+    )
+
+
+def in_base(base: str, commit: str) -> bool:
+    """Whether `commit` is in `base` already, False where GitHub can't compare them."""
+    try:
+        return merge_base(base, commit) == commit
+    except subprocess.CalledProcessError:
+        return False
+
+
+def pull_status(pr: int) -> dict[str, Any]:
+    """What a caller that only reads a PR's status needs (`state`, `baseRefName`, `headRefOid`, `mergeable`), from one
+    REST call in PULL's shape. GraphQL's PULL is dozens of fields and counts toward the shared GraphQL limit; REST's
+    `pulls/N` has these four. Anything else (comments, reviews, labels, checks) stays on pull_request()."""
+    found = rest(f"repos/{{owner}}/{{repo}}/pulls/{pr}")
+    return {
+        "number": found["number"],
+        "state": "MERGED" if found.get("merged") else found["state"].upper(),
+        "baseRefName": found["base"]["ref"],
+        "headRefOid": found["head"]["sha"],
+        "mergeable": {True: "MERGEABLE", False: "CONFLICTING"}.get(
+            found.get("mergeable"), "UNKNOWN"
+        ),
     }
 
 
@@ -709,6 +821,19 @@ def assign(number: int, login: str, add: bool) -> None:
     )
 
 
+def close_issue(number: int) -> None:
+    """Close an issue as completed; closing a closed one is fine."""
+    gh(
+        "api",
+        "-X",
+        "PATCH",
+        f"repos/{{owner}}/{{repo}}/issues/{number}",
+        "-f",
+        "state=closed",
+        "--silent",
+    )
+
+
 def comment(number: int, body: str) -> None:
     gh(
         "api",
@@ -733,13 +858,20 @@ def minimize(comment_id: str) -> None:
     )
 
 
+viewer_login: dict[str, str] = {}  # the login `gh` runs as, read once per process (viewer)
+
+
 def viewer() -> str | None:
     """The login of the account `gh` runs as; None for a token `GET /user` refuses, such as a workflow's installation
-    token (`github.token`), where the PR's author and the repo's writers are the ones trusted (passes)."""
+    token (`github.token`), where the PR's author and the repo's writers are the ones trusted (passes). Read once per
+    process; a failure is not kept, so the next call asks again."""
+    if login := viewer_login.get("login"):
+        return login
     try:
-        return gh("api", "user", "--jq", ".login").strip()
+        login = viewer_login["login"] = gh("api", "user", "--jq", ".login").strip()
     except subprocess.CalledProcessError:
-        return None
+        return None  # not cached: a network or rate-limit failure must not read as a token GitHub refuses
+    return login
 
 
 def writer(login: str) -> bool:
@@ -908,8 +1040,18 @@ def default_branch() -> str:
 
 
 def ready(number: int, undo: bool = False) -> None:
-    """Mark PR #number ready for review, or with `undo` back to draft (GraphQL only, which a cloud proxy refuses)."""
-    gh("pr", "ready", *(("--undo",) if undo else ()), str(number))
+    """Mark PR #number ready for review, or with `undo` back to draft: over GraphQL, else the draft routes a cloud
+    session's proxy serves."""
+    fast(
+        lambda: gh("pr", "ready", *(("--undo",) if undo else ()), str(number)),
+        lambda: gh(
+            "api",
+            "-X",
+            "POST",
+            f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/{'convert_to_draft' if undo else 'ready_for_review'}",
+            "--silent",
+        ),
+    )
 
 
 def squash_message() -> str:
@@ -966,20 +1108,65 @@ ENQUEUE = (
 DEQUEUE = "mutation($id: ID!) { dequeuePullRequest(input: {id: $id}) { clientMutationId } }"
 
 
-def enqueue_pull(node: str, head: str) -> int | None:
-    """Put the PR (its GraphQL node id) in its base's merge queue pinned to `head`, so GitHub refuses it once the head
-    moved: its position, None where GitHub names none. A refusal raises."""
-    out = gh("api", "graphql", "-f", f"query={ENQUEUE}", "-f", f"id={node}", "-f", f"head={head}")
-    entry = ((json.loads(out or "{}").get("data") or {}).get("enqueuePullRequest") or {}).get(
-        "mergeQueueEntry"
+def enqueue_pull(number: int, node: str, head: str, method: str) -> int | None:
+    """Put PR #number (`node`, its GraphQL id) in its base's merge queue pinned to `head`, so GitHub refuses it once
+    the head moved: its position, None where GitHub names none. A refusal raises. Where GraphQL answers 403, auto-merge
+    on with the queue's merge `method` and `head`, which on a base requiring the queue enqueues it (rest_enqueue)."""
+
+    def graphql() -> int | None:
+        out = gh(
+            "api", "graphql", "-f", f"query={ENQUEUE}", "-f", f"id={node}", "-f", f"head={head}"
+        )
+        entry = ((json.loads(out or "{}").get("data") or {}).get("enqueuePullRequest") or {}).get(
+            "mergeQueueEntry"
+        )
+        position: int | None = (entry or {}).get("position")
+        return position
+
+    return fast(graphql, lambda: rest_enqueue(number, head, method))
+
+
+def auto_merge(number: int) -> str:
+    """The auto-merge route a cloud session's proxy serves for PR #number."""
+    return f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/auto_merge"
+
+
+def rest_enqueue(number: int, head: str, method: str) -> None:
+    """Auto-merge on for PR #number with `method` (lower case) and `head` as the expected head, then the PR read again:
+    a head other than `head` is taken out again and Refused, naming both, since the route may ignore the head it was
+    sent. ponytail: a push between the enable and the read that the queue merges before the dequeue lands unseen;
+    GitHub drops an entry whose head moves, so that needs a push and a whole `merge_group` run in one REST round trip."""
+    gh(
+        "api",
+        "-X",
+        "PUT",
+        auto_merge(number),
+        "-f",
+        f"merge_method={method.lower()}",
+        "-f",
+        f"expected_head_oid={head}",
+        "--silent",
     )
-    position: int | None = (entry or {}).get("position")
-    return position
+    now = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}")["head"]["sha"]
+    if now == head:
+        return
+    moved = f"its head is {now} now, not {head}, which the proofs judged"
+    try:
+        gh("api", "-X", "DELETE", auto_merge(number), "--silent")
+    except subprocess.CalledProcessError as exc:
+        raise Refused(
+            f"{moved}, and land could not take it out of the merge queue: take it out on GitHub"
+            f" ({' '.join((exc.stderr or '').split())})"
+        ) from exc
+    raise Refused(f"{moved}: taken out of the merge queue again")
 
 
-def dequeue_pull(node: str) -> None:
-    """Take the PR (its GraphQL node id) out of the merge queue."""
-    gh("api", "graphql", "-f", f"query={DEQUEUE}", "-f", f"id={node}")
+def dequeue_pull(number: int, node: str) -> None:
+    """Take PR #number (`node`, its GraphQL id) out of the merge queue: over GraphQL, else auto-merge off."""
+    fast(
+        lambda: gh("api", "graphql", "-f", f"query={DEQUEUE}", "-f", f"id={node}"),
+        lambda: gh("api", "-X", "DELETE", auto_merge(number), "--silent"),
+    )
 
 
 def commit_checks(ref: str) -> dict[str, dict[str, Any]]:
@@ -1067,9 +1254,10 @@ class Port:
         return found
 
 
-tracker = Port("issue_node", "issues", "comment", "label", "assign")
+tracker = Port("issue_node", "issues", "comment", "label", "assign", "close_issue")
 forge = Port(
     "pull_request",
+    "pull_status",
     "current_pr",
     "pr_changes",
     "merged_pull",

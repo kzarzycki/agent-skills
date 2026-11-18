@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -64,14 +65,17 @@ def test_a_child_is_refused_the_workspace_its_own_parent_uses(
 
 
 def test_the_cli_exits_non_zero_on_a_used_workspace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    role_file: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
     og = FakeOmnigent()
     lead_in(og, tmp_path)
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
-    argv = ["start", "claude", "s750-worker", "b.md", "r.md", "--role", WORKER]
+    argv = ["start", "claude", "s750-worker", "b.md", "r.md", "--role", role_file("worker.md")]
     assert omnigent_agent.main([*argv, "--top-level", "--confirm-seconds", "0"]) != 0
     assert "live session lead s750-lead" in capsys.readouterr().err
 

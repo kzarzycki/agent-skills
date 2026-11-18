@@ -2252,6 +2252,10 @@ REPORT = f"""# Verifier report: PR #7, pass 2
 
 Verifier: claude, same-family, pass 2
 
+## Criteria
+
+- A draft never merges on its skipped checks: Before merge line 1, its check.
+
 ## Correctness
 
 ### C1 (blocker) app.py:12: a draft merges on its skipped checks
@@ -2395,6 +2399,7 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         f"- Base: {BASE}",
         f"- Reviewed head: {HEAD}",
         "- Spec: #12",
+        f"- Acceptance tests: uv run {os.path.relpath(SCRIPTS / 'acceptance.py')} 12",
         "- Report: tmp/loop/pr7-v3.md",
         f"- Previous report: tmp/loop/pr7-v2.md, on {earlier}: review the diff since that head and rerun its repros",
         f"- Proof log: {proof} (its first line is the head)",
@@ -2459,6 +2464,7 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
         f"- Base: {BASE}",
         f"- Reviewed head: {HEAD}",
         "- Spec: #12",
+        f"- Acceptance tests: uv run {tree}/engineering/skills/engineering-loop/scripts/acceptance.py 12",
         (
             f"- Worktree: first, in /there/repo, run `git fetch origin pull/7/head` and"
             f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}"
@@ -2505,6 +2511,7 @@ def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
         "event": "COMMENT",
         "body": (
             f"{heading} on {HEAD[:7]}.\n\n"
+            "## Criteria\n\n- A draft never merges on its skipped checks: Before merge line 1, its check.\n\n"
             f"- **{heading} · S1** (minor): a file outside the diff, at `docs/old.md:3`, a file outside the diff\n\n"
             "The doc.\n\nVERDICT: 1 blocker, 0 major, 2 minor\nSATISFIED: no\nRisk: low — a test fixture\n"
         ),
@@ -2561,6 +2568,10 @@ def test_an_unfinished_report_posts_nothing(
 
 
 RANGED = f"""Verifier: claude, pass 1
+
+## Criteria
+
+- The review posts each finding.
 
 ## Correctness
 
@@ -2631,6 +2642,10 @@ def test_a_finding_heading_verdict_cant_read_posts_nothing(
 SUBHEADED = f"""# PR #66 verifier report
 
 Verifier: claude, same-family, pass 1
+
+## Criteria
+
+- The review posts each finding.
 
 ## Standards
 
@@ -4208,7 +4223,7 @@ def test_two_lands_from_one_free_tip_in_the_same_second_one_wins_and_the_other_w
     assert lands["lock"]() == winner[-1]
     assert git_in(lands["origin"], "rev-parse", f"{winner[-1]}^").strip() == free
     assert lines[-1].startswith(
-        f"another land holds the landing lock {NAME} (pid {os.getpid()}), taken 0 minutes ago ("
+        f"another land holds the landing lock {NAME} (pid {os.getpid()}, beats), taken 0 minutes ago ("
     )
 
 
@@ -4284,7 +4299,7 @@ def test_a_release_moves_the_lock_to_a_free_child_of_ours_and_its_history_only_g
     commits = [ids.split() for ids, _ in tips]
     assert [rest for _, *rest in commits] == [[c[0]] for c in commits[1:]] + [[]]
     body = git_in(lands["origin"], "log", "-1", "--format=%b", f"{REF}~1").strip()
-    assert re.fullmatch(rf"pid {os.getpid()}, PR #8, nonce [0-9a-f]{{16}}", body)
+    assert re.fullmatch(rf"pid {os.getpid()}, PR #8, beats, nonce [0-9a-f]{{16}}", body)
     assert lands["lock"]() == ""
 
 
@@ -4740,7 +4755,13 @@ def test_a_batch_tree_this_clone_passed_before_runs_no_gate(
     refused: list[str] = []
     refusing(monkeypatch, lambda args: not refused and not refused.append(args[2]))
     assert lands["land"]()[0] == 1
-    assert (lands["runs"](), lands["merged"](), hub) == (1, [], {})
+    # the refused head keeps only the `land` statuses (the success before its merge call, the error after the
+    # refusal): no gate result was published
+    assert (
+        lands["runs"](),
+        lands["merged"](),
+        [s["context"] for ss in hub.values() for s in ss],
+    ) == (1, [], ["land", "land"])
     assert lands["land"]()[0] == 0
     # neither head holds the batch's tree, and nothing was published: this clone's record is the pass
     assert (lands["runs"](), lands["merged"]()) == (1, ["7", "8"])
@@ -5329,18 +5350,6 @@ def test_the_cloud_key_file_is_the_owners_alone(
     assert modes == [0o600]
 
 
-def test_a_cloud_land_refuses_a_draft_it_cannot_mark_ready(
-    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses."""
-    cloud_land["pulls"][7]["isDraft"] = True
-    assert cloud_land["out"](capsys, cloud_land["land"]("7"))[-1] == (
-        "PR #7 is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
-    )
-    assert cloud_land["calls"] == []
-    assert cloud_land["main"]() == cloud_land["base"]
-
-
 def test_a_cloud_land_reads_the_default_branch_over_rest(
     cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5387,22 +5396,6 @@ def test_a_key_is_listed_only_as_its_type_and_body_together_on_a_live_line(tmp_p
     assert not approvals.listed("ssh-ed25519 BODY landing", signers)
     signers.write_text(signers.read_text() + 'd@example.com namespaces="git" ssh-ed25519 BODY d\n')
     assert approvals.listed("ssh-ed25519 BODY landing", signers)
-
-
-def test_a_cloud_eviction_leaves_the_pr_ready_and_says_so(
-    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """GitHub turns a PR back to draft only over GraphQL: a cloud session says it stays ready; a host makes it one."""
-    pull = cloud_land["pulls"][7]
-    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
-    assert (
-        "PR #7 stays ready, since a cloud session can't make it a draft: make it one on GitHub"
-        in (capsys.readouterr().out.splitlines())
-    )
-    assert cloud_land["calls"] == []
-    monkeypatch.delenv(approvals.CLOUD)
-    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
-    assert cloud_land["calls"] == [("pr", "ready", "--undo", "7")]
 
 
 def test_required_checks_never_stand_in_for_the_gate(
@@ -6465,7 +6458,7 @@ def test_a_pass_published_under_another_command_is_not_reused_on_another_host(
     monkeypatch.setattr(approvals, "LOCAL_CI", ["true", "--another-tier"])
     ran: list[str | None] = []
 
-    def run_local_ci(pr: int | None, at: str | None) -> dict[str, Any]:
+    def run_local_ci(pr: int | None, at: str | None, _passed: Any = ()) -> dict[str, Any]:
         ran.append(at)
         raise approvals.Refused("the check would run")
 
@@ -8277,7 +8270,9 @@ def queueing(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[s
     )
     landing["records"] = {HEAD}
     monkeypatch.setattr(
-        approvals, "reusable", lambda head: {"head": head} if head in landing["records"] else None
+        approvals,
+        "reusable",
+        lambda head, _p=(): {"head": head} if head in landing["records"] else None,
     )
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     return landing
@@ -8579,7 +8574,7 @@ def posting(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     `ran` each head the check would run on, which it never does here."""
     state: dict[str, Any] = {"posted": [], "ran": [], "loop": CARRY}
 
-    def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
+    def run_local_ci(pr: int | None, head: str | None, _passed: Any = ()) -> dict[str, Any]:
         state["ran"].append(head)
         raise approvals.Refused("the check would run")
 
@@ -8723,7 +8718,8 @@ def test_the_go_carries_nothing_without_a_satisfied_verdict_on_the_new_head_sayi
 def test_a_verifier_reports_logic_change_line_is_posted_with_its_verdict(tmp_path: Path) -> None:
     report = tmp_path / "report.md"
     report.write_text(
-        f"Verifier: claude, pass 2 (merge of main)\n\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\n"
+        f"Verifier: claude, pass 2 (merge of main)\n\n## Criteria\n\n- The merge keeps both sides.\n\n"
+        f"Head: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\n"
         f"SATISFIED: yes\nRisk: low — a merge\n{NO_LOGIC}"
     )
     assert approvals.parse_report(report)[3][-1] == NO_LOGIC.strip()
@@ -8887,7 +8883,9 @@ def test_without_the_line_check_merge_and_land_read_no_git(
     )
     monkeypatch.setattr(approvals, "git", trees)
     monkeypatch.setattr(approvals, "fetched", lambda sha: pytest.fail(f"fetched {sha}"))
-    monkeypatch.setattr(approvals, "reusable", lambda head: None)  # the merge proof, not a carry
+    monkeypatch.setattr(
+        approvals, "reusable", lambda head, _p=(): None
+    )  # the merge proof, not a carry
     monkeypatch.setattr(approvals, "elsewhere", lambda head: "")  # and what its refusal adds
     pr = carried_pull(case)
     assert approvals.judged(pr, NO_CI) is None
@@ -9695,7 +9693,7 @@ def test_a_landing_on_the_gated_tree_leaves_no_record_of_it_and_shows_the_pass_o
     )
     assert loop_gate_branches(origin) == set()
     assert f"published in origin as the record branch {branch_of(head)}" in capsys.readouterr().out
-    assert [found["context"] for found in hub[head]] == [approvals.PUBLISHED]
+    assert sorted(found["context"] for found in hub[head]) == sorted([approvals.PUBLISHED, "land"])
 
 
 def test_land_deletes_the_record_branches_of_the_prs_it_merged(
@@ -10275,6 +10273,7 @@ def cloud_routes(spec: str = "the spec", record_of: str | None = None) -> dict[s
         f"commits/{HEAD}/status?per_page=100": {"total_count": 0, "statuses": []},
         "issues/1": {
             "number": 1,
+            "state": "open",
             "body": spec,
             "created_at": WRITTEN,
             "updated_at": LABELED,

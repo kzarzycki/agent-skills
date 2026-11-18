@@ -1,0 +1,1 @@
+- engineering-loop: `.github/workflows/incubating-nightly.yml` lists every open `incubating` epic with its age, runs each epic's `Nightly:` command (`mise run <task>` only) with its `Flag:` on, comments a failure on the epic, and says every 30 days that an epic is still incubating; it blocks no PR (#1288).

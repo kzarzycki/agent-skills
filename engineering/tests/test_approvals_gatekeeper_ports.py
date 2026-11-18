@@ -61,7 +61,9 @@ class Memory:
             "comment": lambda n, body: self.comments.append((n, body)),
             "label": lambda n, name, add: self.labels.append((n, name, add)),
             "assign": lambda n, login, add: None,
+            "close_issue": lambda n: None,
             "pull_request": lambda n: self.pulls[n],
+            "pull_status": lambda n: self.pulls[n],
             "current_pr": lambda: None,
             "pr_changes": lambda n: [],
             "merged_pull": lambda n: None,
@@ -84,8 +86,8 @@ class Memory:
             "ready": lambda n, undo=False: None,
             "merge": lambda n, method, body, head: None,
             "edit_text": lambda method, path, body: None,
-            "enqueue_pull": lambda node, head: None,
-            "dequeue_pull": lambda node: None,
+            "enqueue_pull": lambda number, node, head, method: None,
+            "dequeue_pull": lambda number, node: None,
             "commit_checks": lambda ref: {},
             "job_log": lambda job: "",
             "commit_tree": lambda sha: sha,
@@ -191,6 +193,8 @@ def test_report_json_gives_the_reports_facts(
     assert approvals.main(["report", "--json", str(report)]) == 0
     facts = json.loads(capsys.readouterr().out)
     assert facts == {
+        "criteria": "- A draft never merges on its skipped checks: Before merge line 1, its check.",
+        "accepted_on_evidence": [],
         "verifier": {"family": "claude, same-family", "pass": 2, "qualifier": ""},
         "head": HEAD,
         "verdict": {"blocker": 1, "major": 0, "minor": 2},
@@ -231,7 +235,7 @@ def test_report_json_reads_a_satisfied_report_with_a_logic_change_line(
 ) -> None:
     report = tmp_path / "report.md"
     report.write_text(
-        f"Verifier: codex/terra-6.1/high, pass 3: mid\n\nHead: {HEAD}\n"
+        f"Verifier: codex/terra-6.1/high, pass 3: mid\n\n## Criteria\n\n- Billing holds.\n\nHead: {HEAD}\n"
         "VERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: high — billing\n"
         "Logic change: yes — the merge order\n"
     )

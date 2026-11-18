@@ -1,7 +1,8 @@
 import os
 import shutil
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from pathlib import Path
 
 # The engineering loop's script tests load modules from a shipped skill folder;
 # a bytecode cache written there would ship with the package. The variable carries
@@ -25,6 +26,13 @@ from approvals_harness import (  # noqa: F401
     refs,
     required,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_wait_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A test that mocks the rerun's execv leaves the wait's place in the environment; the next land would resume it."""
+    monkeypatch.delenv("LOOP_LAND_WAIT", raising=False)
+
 
 # The fixtures that run a tool beyond git and Python: pytest ignores a mark on a fixture, so each test that takes
 # one gets its `needs_tool` mark at collection, as a test that runs the tool itself carries it.
@@ -58,6 +66,14 @@ def pytest_collection_finish(session: pytest.Session) -> None:
             f"missing tools the tests run: {', '.join(missing)}; put them on PATH",
             returncode=pytest.ExitCode.USAGE_ERROR,
         )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_viewer() -> None:
+    """The login `gh` runs as is read once per process (github_adapter.viewer); a test stubs it per test."""
+    from approvals_harness import approvals
+
+    approvals.github.viewer_login.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -119,6 +135,18 @@ def _approvals_stubs(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _status_follows_the_pull(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """approvals.py reads a PR's state, base and head alone through pull_status (one REST call); most tests fake the
+    whole PR with pull_request, so there it answers from that fake. A test of pull_status sets its own."""
+    module = request.module
+    if module.__name__.startswith("test_approvals") and hasattr(module, "approvals"):
+        approvals = module.approvals
+        monkeypatch.setattr(approvals, "pull_status", lambda n: approvals.pull_request(n))
+
+
+@pytest.fixture(autouse=True)
 def _brief_head_merges(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """approvals.py's brief checks the PR's head merges into its base with git: its other tests have no such repo, so
     the check reads clean there. test_approvals_brief_conflict.py runs the real one."""
@@ -135,3 +163,16 @@ def _host_has_room(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPat
     agent = getattr(request.module, "omnigent_agent", None)
     if agent is not None:
         monkeypatch.setattr(agent, "capacity", lambda **_: (True, ""))
+
+
+@pytest.fixture
+def role_file(tmp_path: Path) -> Callable[[str], str]:
+    """Write a role file under tmp_path and return its path: `--role` must name a readable file (#1313)."""
+
+    def make(name: str) -> str:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("role")
+        return str(path)
+
+    return make

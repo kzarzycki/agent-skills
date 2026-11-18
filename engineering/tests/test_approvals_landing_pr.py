@@ -171,17 +171,17 @@ def test_a_land_names_its_pr_and_moves_the_lock_to_its_batchs_last_pr_before_mer
     assert lands["land"]("7")[0] == 0
     assert lands["merged"]() == ["7", "8"]
     assert lock_bodies(lands) == [
-        f"held: pid {pid}, PR #7",
-        f"held: pid {pid}, PR #8",
-        f"free: pid {pid}",
+        f"held: pid {pid}, PR #7, beats",
+        f"held: pid {pid}, PR #8, beats",
+        f"free: pid {pid}, beats",
     ]
     # a land naming no PR takes the lock naming none, the old format, until its batch is known
     lands["open"](9, {"9.txt": "9\n"})
     assert lands["land"]()[0] == 0
     assert lock_bodies(lands)[3:] == [
-        f"held: pid {pid}",
-        f"held: pid {pid}, PR #9",
-        f"free: pid {pid}",
+        f"held: pid {pid}, beats",
+        f"held: pid {pid}, PR #9, beats",
+        f"free: pid {pid}, beats",
     ]
 
 
