@@ -11406,17 +11406,21 @@ def github(
 
 def landed(registry: Path) -> list[dict]:
     path = registry.with_suffix(".events.jsonl")
-    return [e for e in events_of(registry) if e["kind"] == "landed"] if path.exists() else []
+    return (
+        [e for e in events_of(registry) if e["id"].startswith("landed:")] if path.exists() else []
+    )
 
 
 def test_a_moved_default_branch_raises_one_act_event_for_its_new_head_and_then_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = following(tmp_path)
-    og = Lead(told("brief", 60), ending("STILL WORKING: waiting on the verifier", 5))
+    og = Lead(told("brief", 60), ending("STILL WORKING: spec filed\nWaits: #12", 5))
+    og.snap = {"status": "idle"}
     in_checkout(og)
     head = [OLD]
     github(monkeypatch, head)
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": None)
     seen: list[int] = []
 
     def later(poll: int) -> None:
@@ -11427,8 +11431,8 @@ def test_a_moved_default_branch_raises_one_act_event_for_its_new_head_and_then_n
     supervised(og, registry, monkeypatch, 4, later, notify="cos", console=True)
     assert seen == [0, 0, 1]  # nothing for the same head twice, one once it moved, none after
     (event,) = landed(registry)
-    assert event["id"] == f"landed:o/r:{NEW}"
-    assert (event["settled"], event["action"]) == ("rule", "act")
+    assert event["id"] == f"landed:o/r:{NEW}:{event['session']}"  # only the lead waiting on #12
+    assert (event["settled"], event["action"]) == ("rule", "tell")
     assert NEW in event["line"] and "#12, #13" in event["line"]
     assert state_of(registry)["heads"] == {"o/r": NEW}
 
@@ -11498,15 +11502,19 @@ def test_a_restart_reports_a_landing_made_while_it_was_down_but_not_one_it_repor
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = following(tmp_path)
-    og = Lead(told("brief", 60))
+    og = Lead(told("brief", 60), ending("STILL WORKING: x\nWaits: #12", 5))
+    og.snap = {"status": "idle"}
     in_checkout(og)
     head = [OLD]
     github(monkeypatch, head)
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": None)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
     head[0] = NEW
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
-    assert [e["id"] for e in landed(registry)] == [f"landed:o/r:{NEW}"]
+    assert [e["id"] for e in landed(registry)] == [
+        f"landed:o/r:{NEW}:{landed(registry)[0]['session']}"
+    ]
 
 
 def test_two_leads_in_one_repo_raise_one_event_for_one_new_head(
@@ -11514,13 +11522,25 @@ def test_two_leads_in_one_repo_raise_one_event_for_one_new_head(
 ) -> None:
     registry = tmp_path / "registry"
     registry.write_text(f"a={tmp_path / 'a.md'}\tfollow\nb={tmp_path / 'b.md'}\tfollow\n")
-    og = Fleet(a=[told("brief", 60)], b=[told("brief", 60)])
+    og = Leads(
+        a=[told("brief", 60)], b=[told("brief", 60), ending("STILL WORKING: x\nWaits: #13", 5)]
+    )
+    og.snaps["b"] = {"status": "idle"}
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": None)
     in_checkout(og)
     head = [OLD]
     calls = github(monkeypatch, head)
-    supervised(og, registry, monkeypatch, 2, lambda poll: head.__setitem__(0, NEW), console=True)
-    (event,) = landed(registry)
-    assert (event["session"], event["id"]) == ("a", f"landed:o/r:{NEW}")
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        2,
+        lambda poll: head.__setitem__(0, NEW),
+        notify="cos",
+        console=True,
+    )
+    (event,) = landed(registry)  # a waits on nothing: only b, whose wait names #13, is told
+    assert (event["session"], event["id"]) == ("b", f"landed:o/r:{NEW}:b")
     assert [c[1] for c in calls].count("repos/o/r/commits/HEAD") == 2  # one read per poll
 
 
@@ -11541,9 +11561,7 @@ def test_a_landing_the_lead_wrote_under_a_named_wait_reaches_the_manager(
     assert own == ("rule", "record", "names its wait: second")  # its own words reach no one
     moved = lambda poll: head.__setitem__(0, NEW)
     supervised(og, registry, monkeypatch, 2, moved, notify="cos", console=True)
-    (post,) = posted(og)
-    line = f"o/r: its default branch moved to {NEW}; merged since {OLD[:12]}: #12, #13"
-    assert f"[act] {line} (its default branch moved: a step owed after a landing)" in post
+    assert posted(og) == [] and landed(registry) == []  # no lead waits on #12 or #13: recorded only
 
 
 FAR = "until 2099-01-01T00:00Z"  # a timed wait's end: the supervisor raises no deadline before it
@@ -11564,6 +11582,12 @@ def heads_moving(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> None:
     monkeypatch.setattr(omnigent_agent, "gh", gh)
 
 
+def landings_posted(og: Fleet) -> list[str]:
+    """The posts to the chief of staff that carry a landing (a lead waiting on the supervisor
+    also raises its own ends and deadlines, which these tests leave aside)."""
+    return [p for p in posted(og) if "its default branch moved" in p]
+
+
 def test_a_turn_end_from_before_the_run_is_in_no_post_though_its_label_shows_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -11572,8 +11596,10 @@ def test_a_turn_end_from_before_the_run_is_in_no_post_though_its_label_shows_it(
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
     # a wait timed far ahead: no deadline, so it never settles
-    old = f"STILL WORKING: waiting on the verifier {FAR}; an outage notice from weeks ago"
+    old = "STILL WORKING: an outage notice from weeks ago\nWaits: supervisor"
+    first_line = old.splitlines()[0]
     og = Lead(told("brief", 30 * 86400), ending(old, 29 * 86400))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}}  # its PR: a landing is its news
     in_checkout(og)
     head = ["1" * 40]
     heads_moving(monkeypatch, head)
@@ -11584,10 +11610,10 @@ def test_a_turn_end_from_before_the_run_is_in_no_post_though_its_label_shows_it(
             head[0] = str(poll + 1) * 40
 
     supervised(og, registry, monkeypatch, 5, land, notify="cos", console=True)
-    posts = posted(og)
+    posts = landings_posted(og)
     assert len(posts) == 2 and all("its default branch moved" in p for p in posts)
-    assert all("\na t-a: idle · " in p and old not in p and "turn ended" not in p for p in posts)
-    assert [l["status.line"] for s, l in og.labels if s == "a"][-1].endswith(f": {old}")
+    assert all("\na t-a: idle · " in p and old not in p and "turn ended ·" not in p for p in posts)
+    assert [l["status.line"] for s, l in og.labels if s == "a"][-1].endswith(f": {first_line}")
 
 
 def test_a_turn_end_in_the_run_is_posted_once_also_across_restarts(
@@ -11598,13 +11624,14 @@ def test_a_turn_end_in_the_run_is_posted_once_also_across_restarts(
     another restart give it no more; the key it was told under is kept in the state."""
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    og = Lead(told("brief", 600), ending("STILL WORKING: waiting on the verifier", 500))
+    og = Lead(told("brief", 600), ending("STILL WORKING: x\nWaits: supervisor", 500))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}}  # its PR: a landing is its news
     in_checkout(og)
     head = ["1" * 40]
     heads_moving(monkeypatch, head)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # the run that saw it
     offset[0] = 60.0
-    new = "STILL WORKING: waiting on the verifier for the second fix"
+    new = "STILL WORKING: the second fix\nWaits: supervisor"
     og.histories["a"].append(ending(new, 0))  # written while the supervisor is down
     offset[0], head[0] = 120.0, "2" * 40
 
@@ -11614,10 +11641,10 @@ def test_a_turn_end_in_the_run_is_posted_once_also_across_restarts(
     supervised(og, registry, monkeypatch, 2, land, notify="cos", console=True)  # a restart
     offset[0], head[0] = 120.0 + 602.0, "4" * 40
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # another restart
-    posts = posted(og)
+    posts = landings_posted(og)
     assert len(posts) == 3 and all("its default branch moved" in p for p in posts)
-    assert [new in p for p in posts] == [True, False, False]
-    assert f"\na t-a: turn ended · waits on verifier: {new}" in posts[0]
+    assert [new.splitlines()[0] in p for p in posts] == [True, False, False]
+    assert f"\na t-a: turn ended · waits on supervisor: {new.splitlines()[0]}" in posts[0]
     lead = state_of(registry)["leads"]["a"]
     assert lead["told_turn"] == lead["turn"] == f"m{new}0"
 
@@ -11630,12 +11657,16 @@ def test_a_turn_end_without_an_id_is_keyed_by_its_time_and_each_is_posted_once(
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
     anon = lambda text, ago: {k: v for k, v in ending(text, ago).items() if k != "id"}
-    og = Lead(told("brief", 600), anon("STILL WORKING: waiting on the verifier", 500))
+    og = Lead(told("brief", 600), anon("STILL WORKING: x\nWaits: supervisor", 500))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}}  # its PR: a landing is its news
     in_checkout(og)
     head = ["1" * 40]
     heads_moving(monkeypatch, head)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # the run that saw it
-    first, second = "STILL WORKING: waiting on CI", "STILL WORKING: waiting on the verifier again"
+    first, second = (
+        "STILL WORKING: first\nWaits: supervisor",
+        "STILL WORKING: second\nWaits: supervisor",
+    )
     offset[0] = 60.0
     og.histories["a"].append(anon(first, 0))  # written while the supervisor is down
     offset[0], head[0] = 120.0, "2" * 40
@@ -11647,9 +11678,9 @@ def test_a_turn_end_without_an_id_is_keyed_by_its_time_and_each_is_posted_once(
     supervised(og, registry, monkeypatch, 2, land, notify="cos", console=True)  # a restart
     offset[0], head[0] = 120.0 + 602.0, "4" * 40
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # another restart
-    posts = posted(og)
+    posts = landings_posted(og)
     assert len(posts) == 3 and all("its default branch moved" in p for p in posts)
-    assert [(first in p, second in p) for p in posts] == [
+    assert [(first.splitlines()[0] in p, second.splitlines()[0] in p) for p in posts] == [
         (True, False),
         (False, True),
         (False, False),
@@ -11665,8 +11696,9 @@ def test_a_state_kept_before_seen_from_reports_no_old_turn_end(
     reads it, so its old last message is not the turn end of the next post."""
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    old = f"STILL WORKING: waiting on the verifier {FAR}, since last month"  # it never settles
+    old = "STILL WORKING: since last month\nWaits: supervisor"
     og = Lead(told("brief", 30 * 86400), ending(old, 29 * 86400))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}}  # its PR: a landing is its news
     in_checkout(og)
     head = ["1" * 40]
     heads_moving(monkeypatch, head)
@@ -11675,11 +11707,11 @@ def test_a_state_kept_before_seen_from_reports_no_old_turn_end(
     for key in ("seen_from", "told_turn"):  # as an older supervisor wrote it
         state["leads"]["a"].pop(key, None)
     registry.with_suffix(".state.json").write_text(json.dumps(state))
-    offset[0], head[0] = 120.0, "2" * 40
+    offset[0], head[0] = 120.0 + 301.0, "2" * 40
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # a restart
-    [post] = posted(og)
+    [post] = landings_posted(og)
     assert "its default branch moved" in post
-    assert "\na t-a: idle · " in post and old not in post and "turn ended" not in post
+    assert "\na t-a: idle · " in post and old not in post and "turn ended ·" not in post
 
 
 def test_without_console_a_landing_is_posted_as_a_line(
@@ -11691,8 +11723,7 @@ def test_without_console_a_landing_is_posted_as_a_line(
     head = [OLD]
     github(monkeypatch, head)
     supervised(og, registry, monkeypatch, 2, lambda poll: head.__setitem__(0, NEW), notify="cos")
-    line = f"o/r: its default branch moved to {NEW}; merged since {OLD[:12]}: #12, #13"
-    assert posted(og) == [f"Supervisor: {line}"]
+    assert posted(og) == []  # no lead waits on a merged PR: recorded, not posted
 
 
 def test_a_lead_outside_a_checkout_or_a_failed_head_read_raises_nothing_and_logs_once(
@@ -12940,3 +12971,170 @@ def test_reap_merged_takes_an_owner_repo_pr(monkeypatch):
     except SystemExit as e:
         code = e.code
     assert code != 2
+
+
+def test_a_session_the_lead_started_that_ended_is_news_though_its_wait_names_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(
+        tmp_path,
+        "STILL WORKING: waiting on the check. Report: m.md",
+        m={"status": "idle"},
+        **{WORKER: gone},
+    )
+    og.histories[WORKER] = [ending("DONE: checked. Report: w.md", 1300)]
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    told_m = [
+        t for s, t in og.inbox if s == "m" and "ended DONE" in t and "a session it started" in t
+    ]
+    assert len(told_m) == 1 and WORKER in told_m[0]  # once, not once per poll
+
+
+def test_a_pr_a_lead_waits_on_that_merged_is_news_to_it_from_github_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    reads = []
+    monkeypatch.setattr(
+        omnigent_agent,
+        "pr_settled",
+        lambda pr, repo="": reads.append(pr) or (0, f"PR #{pr} merged"),
+    )
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    told_m = [t for s, t in og.inbox if s == "m" and "PR #976 merged; your wait names it" in t]
+    assert len(told_m) == 1 and reads  # once, however often it is read
+
+
+def test_a_set_that_names_ci_is_not_over_when_only_its_pr_ended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976, CI", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    assert [t for s, t in og.inbox if s == "m" and "your wait names it" in t] == []
+
+
+def test_an_open_pr_a_lead_waits_on_costs_one_github_read_a_minute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976", m={"status": "idle"})
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        omnigent_agent,
+        "gh",
+        lambda *a, **k: calls.append(a) or '{"state":"OPEN","statusCheckRollup":[]}',
+    )
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    assert len(calls) == 1
+
+
+def told_idle(og) -> list[str]:
+    return [t for s, t in og.inbox if s == "m" and "went idle" in t]
+
+
+def test_a_named_session_idle_with_no_ending_word_is_news_to_its_waiter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a verifier of another harness, or a cloud run, whose answer is its report: no DONE line
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(
+        tmp_path,
+        f"STILL WORKING: waiting on session {WORKER}",
+        m={"status": "idle"},
+        **{WORKER: gone},
+    )
+    og.histories[WORKER] = [ending("Verdict written. SATISFIED: yes", 100)]
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert len(told_idle(og)) == 1 and WORKER in told_idle(og)[0]
+
+
+def test_a_session_the_lead_started_that_went_idle_after_its_turn_is_news_but_an_old_one_is_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    for age, expect in ((100, 1), (2000, 0)):  # the lead's turn was 600 s ago
+        (tmp_path / str(age)).mkdir()
+        registry, og = manager(
+            tmp_path / str(age),
+            "STILL WORKING: waiting on the check. Report: m.md",
+            m={"status": "idle"},
+            **{WORKER: gone},
+        )
+        og.histories["m"] = [ending("STILL WORKING: waiting on the check. Report: m.md", 600)]
+        og.histories[WORKER] = [ending("Pass 4 written. SATISFIED: yes", age)]
+        supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+        assert len(told_idle(og)) == expect
+
+
+def test_a_session_that_ended_on_a_still_working_turn_or_was_just_prompted_is_not_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    for n, history in enumerate(
+        (
+            [ending("STILL WORKING: compiling", 100)],  # idle between turns, not finished
+            [ending("Pass 4 written.", 100), said("user", "now pass 5", "u1")],  # prompted since
+            # prompted, then tool calls only: the interrupted turn has no answer yet
+            [
+                ending("Pass 4 written.", 100),
+                said("user", "now pass 5", "u1"),
+                {"id": "t1", "type": "function_call"},
+            ],
+        )
+    ):
+        (tmp_path / str(n)).mkdir()
+        registry, og = manager(
+            tmp_path / str(n),
+            f"STILL WORKING: waiting on session {WORKER}",
+            m={"status": "idle"},
+            **{WORKER: gone},
+        )
+        og.histories[WORKER] = history
+        supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+        assert told_idle(og) == []
+
+
+def test_a_failed_github_read_is_asked_again_only_after_a_minute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976", m={"status": "idle"})
+    calls: list[tuple] = []
+
+    def down(*a, **k):
+        calls.append(a)
+        raise omnigent_agent.Fail("gh: HTTP 502")
+
+    monkeypatch.setattr(omnigent_agent, "gh", down)
+    supervised(og, registry, monkeypatch, 6, notify=COS, console=True, fyi="post")
+    assert len(calls) <= 2  # one for the news read, at most one for the moving check
+
+
+def test_a_wait_on_a_pr_whose_github_read_failed_is_not_moving_for_that_minute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976", m=gone)
+
+    def down(*a, **k):
+        raise omnigent_agent.Fail("gh: HTTP 502")
+
+    monkeypatch.setattr(omnigent_agent, "gh", down)
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    assert stalls(og)  # unread is not "open and pending": the quiet lead is still flagged
+
+
+def test_a_childs_news_carries_the_first_line_of_its_last_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a worker that put its report in its final message, not in the report file
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(
+        tmp_path,
+        f"STILL WORKING: waiting on session {WORKER}",
+        m={"status": "idle"},
+        **{WORKER: gone},
+    )
+    og.histories[WORKER] = [ending("Report: all 12 checks pass, nothing to fix.", 100)]
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert "all 12 checks pass" in told_idle(og)[0]

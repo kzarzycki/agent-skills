@@ -649,8 +649,9 @@ marked `direct` is a checkout of (a direct lead's owner reads its landings in it
 `STILL WORKING` wait, tells no one, and a step owed after a landing (a restart, a rebuild, a board
 update) then waits. It reads each lead's origin once through the file API (`.git/config`, or a
 worktree's common dir), so on any host, and the head with `gh api repos/<owner>/<name>/commits/HEAD`
-at most once a minute per repo. A head that moved raises one `landed` event per repo and new head,
-on the repo's first such lead in the registry: `<owner>/<name>: its default branch moved to <sha>; merged
+at most once a minute per repo. A head that moved is told only to a lead whose wait names a merged PR or whose `omni.pr` label is one (a `news` event the
+lead acts on; a `landed` act event to the supervisor when that lead waits on it), and is otherwise only logged and
+stored, so the chief of staff gets no empty turn. The line reads: `<owner>/<name>: its default branch moved to <sha>; merged
 since <old sha>: #12, #13` (the `(#N)` ending each commit's subject, or a `Merge pull request #N`), naming
 only the PRs the GitHub login the supervisor runs as opened, the one leads open theirs with. A move with
 none (a release bot's bump, a teammate's merge, a commit naming no PR) only stores the head; a PR whose
@@ -686,7 +687,7 @@ wait comes from the lead's last message: `parked` for a `PARKED` ending, the thi
 WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`, a child's session id, or a
 background task id such as `bz3jp5aod`, `b` and 8 lowercase letters and digits with one digit at
 least, opening it or after `on`/`for`), else
-`unknown`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
+`unknown`. A last line `Waits: supervisor|session <id>|#<pr>|CI|until <UTC>` (printed by `omnigent_agent.py wait-on`, which refuses any other form) is read first and exactly, and one that names no supervisor makes prose decide nothing about routing to it; without one, prose decides: any single 32-hex id in the wait paragraph is a named wait, and `CoS`, `chief of staff` or a `CoS:` line count as waiting on the supervisor like `pm`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
 UTC`) is a timed wait, `until <time>`: no deadline before that time plus 20 minutes, then the
 named-wait rule. A last message that
 is only a report's path takes its ending and wait from the report's first line, read once per
@@ -722,7 +723,8 @@ offline while idle raises nothing.
 
 | Event | Settled by | What happens |
 |---|---|---|
-| `landed`: the default branch of a repo the followed, non-direct leads work in moved with a PR of theirs | rule | act, one per repo and new head, naming the new sha and the PRs merged since |
+| a default branch of a repo the followed, non-direct leads work in moved with a PR a lead's wait names or owns | rule | tell that lead (act, to the supervisor, when the lead waits on it), naming the new sha and the PRs merged since; no other lead and not the chief of staff |
+| a PR or session a lead's wait names settled, or a session it started reached a final state | rule | tell that lead within a minute, read from GitHub and the session; a set tells on its first failure or its last end |
 | `archived` | rule | its line and state entry dropped; no post |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
