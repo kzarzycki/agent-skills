@@ -5683,7 +5683,7 @@ def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
         # the land is working while it gates under the lock, which can outlast a native wait's two beats of silence;
         # the first beat comes when the lock is taken, so the silence since the round's own beat stays under one BEAT
         first = False
-        for pull in list(beating_for):
+        for pull in beating_for:
             if not stop.is_set():
                 land_event(pull, "waiting")
         with beating:
