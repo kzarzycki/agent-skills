@@ -13458,27 +13458,6 @@ def test_a_waits_line_that_parses_gets_no_parse_news(
     assert [t for s, t in og.inbox if s == "m" and "did not parse" in t] == []
 
 
-@pytest.mark.parametrize(
-    ("status", "conclusion", "news"),
-    [("in_progress", None, False), ("completed", "success", True), ("completed", "failure", True)],
-)
-def test_an_actions_run_url_wait_is_live_while_it_runs_and_its_end_is_news(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str, conclusion: str | None, news: bool
-) -> None:
-    registry, og = manager(tmp_path, f"STILL WORKING: x\nWaits: {RUN}", m={"status": "idle"})
-    calls: list[tuple[str, ...]] = []
-
-    def gh(*args: str, **_: object) -> str:
-        calls.append(args)
-        return json.dumps({"status": status, "conclusion": conclusion})
-
-    monkeypatch.setattr(omnigent_agent, "gh", gh)
-    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
-    assert ("run", "view", "77", "-R", "o/r", "--json", "status,conclusion") in calls
-    told = [t for s, t in og.inbox if s == "m" and "your wait names it" in t]
-    assert bool(told) is news and (not news or f"run o/r#77 {conclusion}" in told[0])
-
-
 def test_a_run_url_is_a_form_wait_on_prints_and_wait_of_names() -> None:
     assert omnigent_agent.wait_line(["run", RUN]) == f"Waits: {RUN}"
     assert omnigent_agent.wait_of(f"STILL WORKING: x\nWaits: {RUN}") == RUN
@@ -13512,18 +13491,159 @@ def test_wait_on_lets_a_bare_number_pass_when_github_cannot_be_read(
     omnigent_agent.check_bare_ref("Waits: #1357")
 
 
-def test_a_bare_ref_with_no_such_pr_in_the_leads_repo_is_told_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #1357", m={"status": "idle"})
-    in_checkout(og)
+def badref_told(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wait: str,
+    pr_error: str,
+    issue_error: str | None,
+    setup=lambda og: in_checkout(og),
+    polls: int = 3,
+) -> list[str]:
+    """What the lead is told when ``gh pr view`` fails with ``pr_error`` and the issues endpoint
+    fails with ``issue_error`` (found when None), over ``polls`` polls a minute apart."""
+    registry, og = manager(tmp_path, f"STILL WORKING: x\nWaits: {wait}", m={"status": "idle"})
+    setup(og)
 
     def gh(*args: str, **_: object) -> str:
-        raise omnigent_agent.Fail("gh pr view: Could not resolve to a PullRequest with the number")
+        if args[0] == "api":
+            if issue_error:
+                raise omnigent_agent.Fail(issue_error)
+            return "{}"
+        raise omnigent_agent.Fail(pr_error)
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
-    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
-    assert len([t for s, t in og.inbox if s == "m" and "owner/repo#1357" in t]) == 1
+    offset = skewed(monkeypatch)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        polls,
+        between=lambda poll: offset.__setitem__(0, offset[0] + omnigent_agent.PR_POLL_SECONDS + 1),
+        notify=COS,
+        console=True,
+        fyi="post",
+    )
+    return [x for x in capsys.readouterr().out.splitlines() if "never ends" in x]  # as said
+
+
+NO_PR = "gh pr view: Could not resolve to a PullRequest with the number"
+NOT_FOUND = "gh api: Not Found (HTTP 404)"
+
+
+def test_a_bare_ref_with_no_such_pr_or_issue_in_the_leads_repo_is_told_once_over_many_polls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    told = badref_told(capsys, tmp_path, monkeypatch, "#1357", NO_PR, NOT_FOUND)
+    assert len(told) == 1 and "#1357 in o/r" in told[0] and "owner/repo#1357" in told[0]
+
+
+@pytest.mark.parametrize(
+    ("wait", "pr_error", "issue_error", "setup"),
+    [
+        ("#12", "gh pr view: HTTP 502", NOT_FOUND, in_checkout),  # unread, not missing
+        ("o/r#12", NO_PR, NOT_FOUND, in_checkout),  # it names its repo
+        ("#12", NO_PR, None, in_checkout),  # an issue of the lead's repo
+        ("#12", NO_PR, "gh api: HTTP 502", in_checkout),  # the issue read failed: not known missing
+        ("#12", NO_PR, NOT_FOUND, lambda og: None),  # the lead's repo is not known
+    ],
+)
+def test_a_bare_ref_gets_no_missing_news_unless_the_leads_repo_is_known_to_lack_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    wait: str,
+    pr_error: str,
+    issue_error,
+    setup,
+) -> None:
+    assert badref_told(capsys, tmp_path, monkeypatch, wait, pr_error, issue_error, setup) == []
+
+
+def run_waited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait: str, runs: list[dict], polls: int = 3
+) -> list[str]:
+    """The news a lead waiting on ``wait`` gets when each GitHub Actions read answers the next of
+    ``runs`` (the last one repeats), the polls a minute apart."""
+    registry, og = manager(tmp_path, f"STILL WORKING: x\nWaits: {wait}", m={"status": "idle"})
+    reads = iter(runs)
+    last: list[dict] = [runs[0]]
+
+    def gh(*args: str, **_: object) -> str:
+        if args[0] == "run":
+            last[0] = next(reads, last[0])
+            return json.dumps(last[0])
+        return '{"state":"OPEN","statusCheckRollup":[],"headRefOid":"h"}'
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    offset = skewed(monkeypatch)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        polls,
+        between=lambda poll: offset.__setitem__(0, offset[0] + omnigent_agent.PR_POLL_SECONDS + 1),
+        notify=COS,
+        console=True,
+        fyi="post",
+    )
+    return [t for s, t in og.inbox if s == "m" and "your wait names it" in t]
+
+
+@pytest.mark.parametrize(
+    ("conclusion", "good"),
+    [
+        ("success", True),
+        ("skipped", True),
+        ("neutral", True),
+        ("failure", False),
+        ("cancelled", False),
+        ("timed_out", False),
+    ],
+)
+def test_an_actions_runs_conclusion_is_good_or_failed(conclusion: str, good: bool) -> None:
+    with pytest.MonkeyPatch.context() as mp:
+        data = {"status": "completed", "conclusion": conclusion, "attempt": 1}
+        mp.setattr(omnigent_agent, "gh", lambda *a, **k: json.dumps(data))
+        assert omnigent_agent.run_settled(77, "o/r")[0] == (0 if good else 1)
+
+
+def test_a_failed_run_in_a_set_wakes_the_lead_at_once_and_a_good_one_does_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    done = {"status": "completed", "attempt": 1}
+    failed = run_waited(tmp_path, monkeypatch, f"{RUN}, CI", [{**done, "conclusion": "failure"}])
+    assert len(failed) == 1 and "run o/r#77 failure" in failed[0]  # CI still pending: news anyway
+    (tmp_path / "ok").mkdir()
+    ok = run_waited(tmp_path / "ok", monkeypatch, f"{RUN}, CI", [{**done, "conclusion": "success"}])
+    assert ok == []  # a good end waits for the rest of the set
+
+
+def test_a_run_that_ends_is_news_once_over_many_polls_and_again_when_it_is_rerun_and_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    f1 = {"status": "completed", "conclusion": "failure", "attempt": 1}
+    ends = lambda: set(re.findall(r"wait:m:fail:\w+", capsys.readouterr().out))
+    run_waited(tmp_path, monkeypatch, RUN, [f1], polls=4)
+    assert len(ends()) == 1  # many polls, one end
+    (tmp_path / "again").mkdir()
+    run_waited(tmp_path / "again", monkeypatch, RUN, [f1, {**f1, "attempt": 2}], polls=4)
+    assert len(ends()) == 2  # the same run id, a new attempt: a new end
+
+
+def test_wait_on_through_main_refuses_a_bare_number_this_repo_does_not_have(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def gh(*args: str, **_: object) -> str:
+        raise omnigent_agent.Fail(NOT_FOUND)
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    assert omnigent_agent.main(["wait-on", "pr", "1357"]) != 0
+    assert "owner/repo#1357" in capsys.readouterr().err
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: "{}")
+    assert omnigent_agent.main(["wait-on", "pr", "12"]) == 0
+    assert capsys.readouterr().out.strip() == "Waits: #12"
 
 
 def told_idle(og) -> list[str]:

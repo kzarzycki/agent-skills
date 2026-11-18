@@ -4526,12 +4526,26 @@ def run_settled(run: int, repo: str) -> tuple[int, str, str] | None:
     """A GitHub Actions run's end read from GitHub: 0 or 1 (it failed, was cancelled or timed out)
     with a line and the run id (a re-run is the same id), None while it is queued or in progress."""
     data = json.loads(
-        gh("run", "view", str(run), "-R", repo, "--json", "status,conclusion", timeout=HTTP_SECONDS)
+        gh(
+            "run",
+            "view",
+            str(run),
+            "-R",
+            repo,
+            "--json",
+            "status,conclusion,attempt",
+            timeout=HTTP_SECONDS,
+        )
     )
     if data.get("status") != "completed":
         return None
     ok = data.get("conclusion") in ("success", "skipped", "neutral")
-    return (0 if ok else 1), f"run {repo}#{run} {data.get('conclusion')}", str(run)
+    # the attempt is part of the end: a re-run that fails again is a new end, as a push is for a PR
+    return (
+        (0 if ok else 1),
+        f"run {repo}#{run} {data.get('conclusion')}",
+        f"{run}.{data.get('attempt', 1)}",
+    )
 
 
 def check_bare_ref(line: str) -> None:
@@ -7573,14 +7587,18 @@ def supervise_registry(
                     found = settled(lead, int(m[2]), wait_repo(sid, m[1] or ""), fresh=True)
                 except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
                     log(("pr", sid), f"{sid}: PR #{m[2]} not read: {reason(e)}")
-                    if "Could not resolve" in str(e) and not m[1]:  # no such #N in the lead's repo
-                        say(
-                            f"{head}: no PR #{m[2]} in the repo your workspace is in, so this wait "
-                            f"never ends; name the repo as owner/repo#{m[2]} in your Waits: line",
-                            sid,
-                            f"badref:{sid}:{m[2]}",
-                            "news",
-                        )
+                    if "Could not resolve" in str(e) and not m[1] and (own := wait_repo(sid, "")):
+                        try:  # told only when the lead's repo is known and has no such PR or issue
+                            gh("api", f"repos/{own}/issues/{m[2]}")
+                        except Fail as no:
+                            if "404" in str(no) or "Not Found" in str(no):
+                                say(
+                                    f"{head}: no PR or issue #{m[2]} in {own}, so this wait never "
+                                    f"ends; name its repo as owner/repo#{m[2]} in your Waits: line",
+                                    sid,
+                                    f"badref:{sid}:{m[2]}",
+                                    "news",
+                                )
                     pending = True
                     continue
                 log(("pr", sid), None)
