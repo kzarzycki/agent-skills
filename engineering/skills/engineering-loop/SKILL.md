@@ -51,7 +51,8 @@ gatekeeper.md holds the gatekeeper's policy, a fenced `yaml` block under `## Pol
 keeps the prose for people and agents: why a path is critical, how to judge a finding, the
 risk criteria in words. A project without gatekeeper.md may keep the block under loop.md's
 `## Settings` for now: `approvals.py` reads it there with a deprecation line, and refuses a
-project with both, since two sources of the bar would drift. `approvals.py` reads these files,
+project with both, since two sources of the bar would drift. `uv run --python '>=3.11' approvals.py check setup` is a consumer's gate on a pack upgrade: it reads the policy this way and
+scans the repo's mise config and workflows for a pack script run without `uv run` (README § Upgrading the pack). `approvals.py` reads these files,
 and issue-tracker.md, from the base's copy on `origin/<base>`, never the checkout's: the base the
 PR a command acts on merges onto, the ref `land` builds on (`check`, `land`, `local-ci <pr>`,
 `approve merge`, `delegate`, `brief`), else the default branch. `land` fetches the base before
@@ -83,7 +84,7 @@ The scripts read the block with PyYAML, the one package they need beyond the sta
 library. Each declares it inline (PEP 723), so `uv run <this skill's folder>/scripts/approvals.py` installs it
 into uv's cache on first use and nothing is installed by hand; uv comes with the project's
 mise. Run with a bare `python3` that lacks PyYAML, a script exits with one line saying to
-run it with `uv run`. They need Python 3.9 or later. Every key is optional:
+run it with `uv run`. They need Python 3.9 or later, except `check setup`, which needs 3.11 (it reads mise's TOML). Every key is optional:
 
 ```yaml
 spec:
