@@ -37,7 +37,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    host gate slot, in place of the full `mise run check`; without the line, or with loop.md's `Gate: full`, it runs
    `mise run check`. A selector that selects nothing exits 0. With `ci: false` the draft heads run `affected-tests` too,
    and the gate of record on the ready head is `approvals.py local-ci --record` on the committed head, run once when the
-   PR goes ready (again only if the head moves after that): a narrowed pass against the merge base where loop.md has
+   PR goes ready (again only if the head moves after that, or its merge base with the PR's base does: a stacked PR whose parent lands, a retarget, since a narrowed record is keyed by that merge base): a narrowed pass against the merge base where loop.md has
    the line and no `Gate: full`, which `check merge` takes, else the full gate, since then `check merge` needs a full
    pass on the head (SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
    file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report with

@@ -29,7 +29,7 @@ what no automated check can settle. A `risk:high` PR into a feature branch lands
 of staff's `approved:merge` (`approvals.py delegate`), so dependent work doesn't stall; the
 branch's merge to main waits for the owner.
 
-The landing gate (`check-land`) runs the vendor check and lint only, so a pass it records covers no tests: the PR's `qualify` check runs the tests it touches (`check-fast`) and the nightly run covers the rest. Interim, until the approvals tests run in seconds.
+`land`'s batch gate runs the `Affected tests:` command (`check-fast`: the tests the batch's combined diff touches plus lint) against the tip the batch merges onto; `check-land`, the vendor check and lint without tests, is the `gate` line's full-mode command. The PR's `qualify` check runs the tests it touches and the nightly run covers the rest.
 
 ## Cloud worker
 
