@@ -7765,6 +7765,37 @@ def test_the_gates_risk_high_comes_off_when_a_later_pass_judges_it_low_and_a_rai
     assert added == []
 
 
+OLD_HEAD = "b" * 40
+
+
+def test_a_delta_pass_cannot_lower_the_risk_of_the_pass_it_carries(
+    gating: tuple[dict[str, Any], list[tuple[int, str]]],
+    capsys: pytest.CaptureFixture[str],
+    added: list[tuple[int, str, bool]],
+) -> None:
+    """#1397: pass 1 `Risk: high` on OLD_HEAD, then a rebase's delta pass `Risk: low` + `Logic change: none` on HEAD
+    keeps the PR high, and a later full pass on a real code change lowers it."""
+    state, _ = gating
+    full = judging("high — it changes landing policy", commit=OLD_HEAD)
+    delta = judging("low — a rebase", heading="Verifier (claude), pass 2")
+    delta["body"] += "Logic change: none\n"
+    state["pull"] = judged_pr(full, delta)
+    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
+    assert "says `Risk: high — it changes landing policy`" in capsys.readouterr().err
+    assert added == [(7, "risk:high", True)]
+    # a delta pass that names a logic change is a full pass again
+    changed = {**delta, "body": delta["body"].replace("none", "the retry count")}
+    state["pull"] = judged_pr(full, changed)
+    assert approvals.main(["check", "merge", "7"]) == 0
+    # a delta over a delta still reaches the full pass
+    second = judging("low — another rebase", commit="c" * 40, heading="Verifier (claude), pass 3")
+    second["body"] += "Logic change: none\n"
+    state["pull"] = judged_pr(
+        full, {**delta, "commit": {"oid": "c" * 40}}, {**second, "commit": {"oid": HEAD}}
+    )
+    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
+
+
 @pytest.mark.parametrize(
     ("change", "why"),
     [

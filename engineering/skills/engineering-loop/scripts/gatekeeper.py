@@ -1595,21 +1595,39 @@ def head_passes(
 def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
     """Why the verifier holds the change high, or None: the highest pass on the head (passes), or on the commit whose
     proofs the head carries (carried), says `Risk: high`, any other word than `low`, or has no `Risk:` line; a mixed
-    PR's two verifiers both must say `low`. A head no review covers is None, since reviewed() then refuses the merge,
-    or the PR needs no review (exempt, an exact revert)."""
+    PR's two verifiers both must say `low`. A pass that only reviews a delta (`Logic change: none`, or the head
+    carrying the commit before it) cannot lower the risk of that earlier commit's pass, so the walk goes on down the
+    reviewed commits until a pass that changed code by hand. A head no review covers is None, since reviewed() then
+    refuses the merge, or the PR needs no review (exempt, an exact revert)."""
     found = head_passes(pull, loop)
     if isinstance(found, str):
-        return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {found}"
+        return found_why(pull, found)
     head, on_head = found
     if not on_head:
         return None
-    last = max(number for number, _ in on_head)
-    for number, lines in on_head:
-        said = lines.get("Risk")
-        if number == last and not re.match(r"low\b", said or "", re.IGNORECASE):
-            line = "has no `Risk:` line" if said is None else f"says `Risk: {said}`"
-            return f"the verifier's pass {last} on {head[:7]} {line}"
-    return None
+    verdicts = passes(pull)
+    order: list[str] = []
+    for commit, _, _ in verdicts:  # the reviewed commits, newest review last
+        order = [c for c in order if c != commit] + [commit]
+    commit, earlier = head, order[: order.index(head)]
+    while True:
+        here = [(n, lines) for c, n, lines in verdicts if c == commit]
+        last = max(number for number, _ in here)
+        for number, lines in here:
+            said = lines.get("Risk")
+            if number == last and not re.match(r"low\b", said or "", re.IGNORECASE):
+                line = "has no `Risk:` line" if said is None else f"says `Risk: {said}`"
+                return f"the verifier's pass {last} on {commit[:7]} {line}"
+        delta = all(
+            lines.get(LOGIC, "").lower().split()[:1] == ["none"] for n, lines in here if n == last
+        ) or (commit == head and earlier and isinstance(carried(pull, loop, earlier[-1]), tuple))
+        if not (delta and earlier):
+            return None
+        commit, earlier = earlier[-1], earlier[:-1]
+
+
+def found_why(pull: dict[str, Any], why: str) -> str:
+    return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {why}"
 
 
 def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:

@@ -226,6 +226,8 @@ keep these lines exact:
   The gate sets the board's `Risk` field from it (github.md, Board).
   On a delta of merges of the base alone, add `Logic change: none` when its conflict fixes
   change no behaviour, which carries the owner's go to the head, else `Logic change: <what>`.
+  `Risk:` names the PR's risk, not the delta's. The gate keeps the highest `Risk:` of the passes the delta carries,
+  so a `low` on a delta cannot lower an earlier pass's `high`; only a full pass on a real code change can.
   The merge reads the review as covering that commit only, so a push after your review
   needs its own, unless the new head has your commit's tree (`git rev-parse <sha>^{tree}`),
   as after a reword of commit messages only: every file you reviewed is the same, so your
