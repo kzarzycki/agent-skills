@@ -13075,6 +13075,12 @@ def test_a_session_that_ended_on_a_still_working_turn_or_was_just_prompted_is_no
         (
             [ending("STILL WORKING: compiling", 100)],  # idle between turns, not finished
             [ending("Pass 4 written.", 100), said("user", "now pass 5", "u1")],  # prompted since
+            # prompted, then tool calls only: the interrupted turn has no answer yet
+            [
+                ending("Pass 4 written.", 100),
+                said("user", "now pass 5", "u1"),
+                {"id": "t1", "type": "function_call"},
+            ],
         )
     ):
         (tmp_path / str(n)).mkdir()
