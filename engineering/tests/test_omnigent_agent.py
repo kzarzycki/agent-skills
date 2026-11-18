@@ -2849,7 +2849,10 @@ def test_a_follow_up_sent_as_the_turn_before_ends_is_waited_for(tmp_path: Path) 
 
 
 def test_same_family_verifier_needs_break_glass(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    role_file: Callable[[str], str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     brief = tmp_path / "b.md"
     brief.write_text("review")
@@ -2860,7 +2863,7 @@ def test_same_family_verifier_needs_break_glass(
         str(brief),
         str(tmp_path / "r.md"),
         "--role",
-        "verifier.md",
+        role_file("verifier.md"),
         "--author",
         "claude",
     ]
@@ -4595,7 +4598,7 @@ def test_a_start_that_fails_and_a_rerun_after_a_failure_each_write_their_own_fai
 
 
 def test_a_failed_run_never_overwrites_a_report_its_child_wrote(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, role_file: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = FakeOmnigent(reply="done")
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
@@ -4603,7 +4606,17 @@ def test_a_failed_run_never_overwrites_a_report_its_child_wrote(
     (tmp_path / "b.md").write_text("verify X")
     report = tmp_path / "r.md"
     killed_mid_run(og, 2, lambda: report.write_text("C1: findings, gate still running\n"))
-    argv = ["run", "claude", "t", "b.md", "r.md", "--role", "verifier.md", "--confirm-seconds", "0"]
+    argv = [
+        "run",
+        "claude",
+        "t",
+        "b.md",
+        "r.md",
+        "--role",
+        role_file("verifier.md"),
+        "--confirm-seconds",
+        "0",
+    ]
     assert omnigent_agent.main(argv + ["--same-family"]) == 1  # no SATISFIED: line, no verdict
     assert report.read_text() == "C1: findings, gate still running\n"
     # nor an earlier pass's report a fix pass reuses the path of
@@ -4842,7 +4855,7 @@ def test_wait_neither_retries_nor_continues_a_failure_after_the_first_turn_or_an
 
 
 def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, role_file: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     models = []
     og = FakeOmnigent(reply="done")
@@ -4857,11 +4870,13 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("verify")
     base = ["start", "codex", "t", "b.md", "r.md", "--confirm-seconds", "0"]
-    omnigent_agent.main([*base, "--role", "verifier.md"])
+    omnigent_agent.main([*base, "--role", role_file("verifier.md")])
     omnigent_agent.main([*base[:2], "t2", *base[3:]])
     monkeypatch.setenv("OMNIGENT_MODEL_CODEX", "named")
-    omnigent_agent.main([*base[:2], "t3", *base[3:], "--role", "verifier.md"])
-    omnigent_agent.main([*base[:2], "t4", *base[3:], "--role", "verifier.md", "--model", "flag"])
+    omnigent_agent.main([*base[:2], "t3", *base[3:], "--role", role_file("verifier.md")])
+    omnigent_agent.main(
+        [*base[:2], "t4", *base[3:], "--role", role_file("verifier.md"), "--model", "flag"]
+    )
     assert models == [None, None, None, "flag"]  # Omnigent.create reads OMNIGENT_MODEL_CODEX
     assert not hasattr(omnigent_agent, "CODEX_VERIFIER_MODEL")
 
@@ -6903,7 +6918,7 @@ def test_a_notify_session_with_no_live_runner_is_revived_before_the_post(
 
 
 def test_start_and_run_arm_the_registry_with_their_brief_file_and_run_disarms_it_on_the_report(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, role_file: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
@@ -6922,7 +6937,10 @@ def test_start_and_run_arm_the_registry_with_their_brief_file_and_run_disarms_it
     (tmp_path / "vw").mkdir()  # a role child's own worktree: s0 and s1 use this one (#750)
     verifier = ["start", "codex", "v", "b.md", "vw/v.md", "--confirm-seconds", "0"]
     verifier += ["--workspace", "vw"]
-    assert omnigent_agent.main([*verifier, "--role", "verifier.md", "--author", "claude"]) == 0
+    assert (
+        omnigent_agent.main([*verifier, "--role", role_file("verifier.md"), "--author", "claude"])
+        == 0
+    )
     v = f"s2={tmp_path / 'vw/v.md'}\t{tmp_path / 'vw/v.md.brief'}\tverdict\n"
     assert (tmp_path / "registry").read_text() == s1 + v
     s1 += v
@@ -11970,7 +11988,7 @@ def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) ->
 
 
 VERIFY_FAR = ["start", "claude", "v", "b.md", "/there/repo/tmp/loop/pr7-v1.md", "--top-level"]
-VERIFY_FAR += ["--host", "mac", "--pr", "7", "--role", "roles/verifier.md"]
+VERIFY_FAR += ["--host", "mac", "--pr", "7", "--role", str(VERIFIER_MD)]
 VERIFY_FAR += ["--workspace", "/there/repo", "--confirm-seconds", "0"]
 
 
@@ -12085,7 +12103,10 @@ def test_a_role_that_only_names_verifier_keeps_the_worker_pr_meaning(
     whose path holds the word is a worker, refused --pr on a native agent."""
     og = far_verifier(tmp_path, monkeypatch, "")
     argv = [*VERIFY_FAR]
-    argv[argv.index("roles/verifier.md")] = "roles/not-a-verifier-helper.md"
+    helper = tmp_path / "roles" / "not-a-verifier-helper.md"
+    helper.parent.mkdir()
+    helper.write_text("role")
+    argv[argv.index(str(VERIFIER_MD))] = str(helper)
     assert omnigent_agent.main(argv) == 1
     assert "is not a cloud agent" in capsys.readouterr().err
     assert og.sessions == {}
@@ -12111,7 +12132,7 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
     assert omnigent_agent.main(VERIFY_FAR) == 0
     assert "the verifier works in its own worktree" in capsys.readouterr().err
     worker = [*VERIFY_FAR]
-    worker[worker.index("roles/verifier.md")] = "roles/worker.md"
+    worker[worker.index(str(VERIFIER_MD))] = str(VERIFIER_MD.with_name("worker.md"))
     worker[worker.index("--pr") : worker.index("--pr") + 2] = []
     worker[1] = "w"
     assert omnigent_agent.main(worker) == 1
@@ -12539,7 +12560,7 @@ def test_a_cloud_verifier_start_without_host_sends_no_create_and_names_the_in_vm
         "--confirm-seconds",
         "0",
     ]
-    verifier += ["--pr", "7", "--role", "roles/verifier.md"]
+    verifier += ["--pr", "7", "--role", str(VERIFIER_MD)]
     assert omnigent_agent.main(verifier) == 1
     err = capsys.readouterr().err
     assert "cloud_verifier.py verify" in err and "--host" in err and og.sessions == {}
@@ -12580,7 +12601,7 @@ def test_a_verifier_on_a_host_for_a_pr_starts_at_the_prs_head_never_the_base(
     (bin_dir / "gh").chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     argv = ["start", "claude", "v", "b.md", str(tmp_path / "tmp/r.md"), "--confirm-seconds", "0"]
-    argv += ["--pr", "7", "--role", "roles/verifier.md", "--workspace", str(tmp_path)]
+    argv += ["--pr", "7", "--role", str(VERIFIER_MD), "--workspace", str(tmp_path)]
     assert omnigent_agent.main(argv) == 0 and len(og.sessions) == 1
     assert run("rev-parse", "HEAD") == head
     # a checkout with tracked changes is refused, never moved under them
@@ -12971,6 +12992,20 @@ def test_reap_merged_takes_an_owner_repo_pr(monkeypatch):
     except SystemExit as e:
         code = e.code
     assert code != 2
+
+
+@pytest.mark.parametrize("cmd", ["run", "start"])
+def test_a_role_path_that_is_not_a_file_is_refused_before_a_session(
+    cmd: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("brief")
+    missing = str(tmp_path / "references" / "worker.md")
+    assert omnigent_agent.main([cmd, "claude", "t", "b.md", "r.md", "--role", missing]) == 1
+    assert missing in capsys.readouterr().err
+    assert not og.sessions
 
 
 def test_a_session_the_lead_started_that_ended_is_news_though_its_wait_names_none(
