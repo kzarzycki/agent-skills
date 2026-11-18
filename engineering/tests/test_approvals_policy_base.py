@@ -549,3 +549,13 @@ def test_batch_judges_a_head_by_the_head_proof_of_the_base_the_pr_merges_onto(
     with pytest.raises(approvals.Refused, match="nor its loop.md `head_proof` status"):
         approvals.batch(7, merged, "b" * 40, 0, log)
     assert asked == ["proof-feature", "proof-main"]
+
+
+def test_the_working_tree_env_var_reads_the_working_tree_and_says_why(monkeypatch, capsys):
+    root = str(approvals.toplevel())
+    monkeypatch.setenv(approvals.WORKING_TREE_POLICY, "1")
+    assert approvals.policy_base(root) is None
+    approvals.unbased(root)
+    assert (
+        f"{approvals.WORKING_TREE_POLICY} is set, so the policy is read" in capsys.readouterr().err
+    )

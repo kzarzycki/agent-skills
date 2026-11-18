@@ -16,9 +16,6 @@ from approvals_harness import (
 
 LOOP = "docs/agents/loop.md"
 REAL = approvals.judge_with_base  # the shared fixtures replace it per test
-REAL_BASE = (
-    approvals.policy_base
-)  # `lands` reads the policy from the work tree; these tests read it from origin
 MARK = "<!-- origin's main -->"
 
 
@@ -29,7 +26,9 @@ def launch(
     """The policy files on origin's main, and a `--no-checkout` clone of origin to run from, as a host keeps to launch
     cloud sessions; the real base comparison of #926 back, and the script installed outside the clone."""
     monkeypatch.setattr(approvals, "judge_with_base", REAL)
-    monkeypatch.setattr(approvals, "policy_base", REAL_BASE)
+    monkeypatch.delenv(
+        approvals.WORKING_TREE_POLICY
+    )  # `lands` reads the policy from the work tree; these read it from origin
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     work = lands["work"]
     (work / LOOP).write_text((work / LOOP).read_text() + f"\n{MARK}\n")

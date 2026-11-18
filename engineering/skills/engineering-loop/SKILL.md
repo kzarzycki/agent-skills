@@ -389,11 +389,12 @@ against `LOOP_DENY_LIST` before posting, and its docstring has the formats and e
 **Fixing the gate itself.** `land` reads `gate_steps` from the default branch, so a PR that changes them lands under the old
 policy, which still runs the step the PR moves (to `where: linux`, say) on a host where it can't pass. Run from a host where
 the step runs, a clean checkout of the merge tree `land` will build (`git fetch origin pull/<n>/merge`, or the queue's
-branch, then `git checkout --detach FETCH_HEAD`) and `approvals.py local-ci --record` there records and pushes the step's pass
-from the policy that tree holds, so `land` reuses it by tree and command and runs no step again. That holds for a step the
-PR keeps with the same command and no `paths`: `local-ci` plans from the checkout's own policy, so a step the PR drops is not
-in the plan and has no pass to record, and a step with `paths` is keyed on the whole `gate_steps` setting, so a pass recorded
-under the changed one is not the pass the old one asks for. For those, put the case to the owner.
+branch, then `git checkout --detach FETCH_HEAD`) and `approvals.py local-ci --record` there records and pushes the step's
+pass, so `land` reuses it by tree and command and runs no step again. `local-ci` plans from `origin/<base>`'s policy, the
+one `land` reads, never the checkout's own, so a PR cannot loosen its own gate: the plan holds the steps `land` will ask
+for, including one the PR moves or drops, and each pass is keyed on the base's `gate_steps` setting. A PR that changes
+`gate_steps` therefore gets passes under the old setting, and `land` finds them. To plan from the checkout's policy in a
+test or preview, set `GATEKEEPER_POLICY_FROM_WORKING_TREE=1`; a real run never does.
 
 ### Practice
 
