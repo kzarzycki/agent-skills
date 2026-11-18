@@ -141,18 +141,23 @@ Commit, push and rerun the gates.
        runs-on: ubuntu-latest
        strategy: {fail-fast: false, matrix: {rest_only: ["0", "1"]}}
        steps:
-         - uses: actions/checkout@<pinned sha>  # this repository
-           with: {persist-credentials: false}
+         - uses: actions/checkout@<pinned sha>  # this repository, at the PR's base: check merge refuses any other commit
+           with: {ref: "${{ github.event.repository.default_branch }}", persist-credentials: false}
          - uses: actions/checkout@<pinned sha>
            with: {repository: kzarzycki/agent-skills, ref: "${{ inputs.ref }}", path: gatekeeper, persist-credentials: false}
          - uses: jdx/mise-action@<pinned sha>
            with: {install_args: uv}
+         - run: mv gatekeeper "$RUNNER_TEMP/gatekeeper"  # outside the checkout, so the base's drift check leaves it be
          - env: {GH_TOKEN: "${{ github.token }}", GATEKEEPER_REST_ONLY: "${{ matrix.rest_only }}", PR: "${{ inputs.pr }}"}
            run: |
-             out=$(uv run gatekeeper/engineering/skills/engineering-loop/scripts/approvals.py check merge "$PR" 2>&1)
+             set +e  # a verdict that is not go exits 1 or 3; only a gh error fails
+             out=$(uv run "$RUNNER_TEMP/gatekeeper/engineering/skills/engineering-loop/scripts/approvals.py" check merge "$PR" 2>&1)
              printf '%s\n' "$out"
              ! printf '%s\n' "$out" | grep -q '^gh: '
    ```
+
+   Before the tag, on the commit that gets tagged (the squash commit on main, which is the smoke `ref`), run
+   `uv run python -m tools.capability_pack.cli release-check engineering engineering-vX.Y.Z`.
 
    Then tag the merge commit and push the tag:
    `git tag -a engineering-vX.Y.Z -m engineering-vX.Y.Z <merge sha> && git push origin engineering-vX.Y.Z`.

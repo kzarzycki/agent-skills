@@ -25,10 +25,18 @@ jobs:
       matrix:
         rest_only: ["0", "1"]
     steps:
+      # `check merge` refuses to judge from a checkout that isn't the base's tip, or whose scripts differ from the base's
+      # (a PR's own copy must not judge it). So the workspace is the base, and the PR head's scripts run from outside it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          path: head
           persist-credentials: false
+      - run: mv head "$RUNNER_TEMP/head"
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           install_args: uv
@@ -38,7 +46,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set +e
-          out=$(uv run engineering/skills/engineering-loop/scripts/approvals.py check merge "$PR" 2>&1)
+          out=$(uv run "$RUNNER_TEMP/head/engineering/skills/engineering-loop/scripts/approvals.py" check merge "$PR" 2>&1)
           echo "check merge exit $?"
           printf '%s\n' "$out"
           if printf '%s\n' "$out" | grep -q '^gh: '; then

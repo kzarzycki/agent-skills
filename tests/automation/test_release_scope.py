@@ -144,3 +144,17 @@ def test_release_check_refuses_without_a_smoke_run_for_the_release_head() -> Non
         require_smoke_run(HEAD, {}, _runs())
     passed = {"conclusion": "success", "displayTitle": f"smoke {HEAD}", "url": "u-ok"}
     assert require_smoke_run(HEAD, SMOKE, _runs(other, failed, passed)) == "u-ok"
+
+
+def test_release_check_command_refuses_without_a_smoke_run_and_prints_a_skip(monkeypatch, capsys) -> None:
+    from tools.capability_pack import cli
+
+    monkeypatch.setattr(cli, "validate_release_candidate", lambda *_a: None)
+    monkeypatch.setattr(cli, "_git_output", lambda *_a, **_k: HEAD)
+    for name in SMOKE:
+        monkeypatch.delenv(name, raising=False)
+    argv = ["release-check", "engineering", "engineering-v0.0.0"]
+    assert cli.main(argv) == 2
+    assert "RELEASE_SMOKE_REPOSITORY" in capsys.readouterr().err
+    assert cli.main([*argv, "--skip-smoke"]) == 0
+    assert "smoke run: skipped" in capsys.readouterr().out
