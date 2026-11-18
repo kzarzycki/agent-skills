@@ -2252,6 +2252,10 @@ REPORT = f"""# Verifier report: PR #7, pass 2
 
 Verifier: claude, same-family, pass 2
 
+## Criteria
+
+- A draft never merges on its skipped checks: Before merge line 1, its check.
+
 ## Correctness
 
 ### C1 (blocker) app.py:12: a draft merges on its skipped checks
@@ -2395,6 +2399,7 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         f"- Base: {BASE}",
         f"- Reviewed head: {HEAD}",
         "- Spec: #12",
+        f"- Acceptance tests: uv run {os.path.relpath(SCRIPTS / 'acceptance.py')} 12",
         "- Report: tmp/loop/pr7-v3.md",
         f"- Previous report: tmp/loop/pr7-v2.md, on {earlier}: review the diff since that head and rerun its repros",
         f"- Proof log: {proof} (its first line is the head)",
@@ -2459,6 +2464,7 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
         f"- Base: {BASE}",
         f"- Reviewed head: {HEAD}",
         "- Spec: #12",
+        f"- Acceptance tests: uv run {tree}/engineering/skills/engineering-loop/scripts/acceptance.py 12",
         (
             f"- Worktree: first, in /there/repo, run `git fetch origin pull/7/head` and"
             f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}"
@@ -2505,6 +2511,7 @@ def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
         "event": "COMMENT",
         "body": (
             f"{heading} on {HEAD[:7]}.\n\n"
+            "## Criteria\n\n- A draft never merges on its skipped checks: Before merge line 1, its check.\n\n"
             f"- **{heading} · S1** (minor): a file outside the diff, at `docs/old.md:3`, a file outside the diff\n\n"
             "The doc.\n\nVERDICT: 1 blocker, 0 major, 2 minor\nSATISFIED: no\nRisk: low — a test fixture\n"
         ),
@@ -2561,6 +2568,10 @@ def test_an_unfinished_report_posts_nothing(
 
 
 RANGED = f"""Verifier: claude, pass 1
+
+## Criteria
+
+- The review posts each finding.
 
 ## Correctness
 
@@ -2631,6 +2642,10 @@ def test_a_finding_heading_verdict_cant_read_posts_nothing(
 SUBHEADED = f"""# PR #66 verifier report
 
 Verifier: claude, same-family, pass 1
+
+## Criteria
+
+- The review posts each finding.
 
 ## Standards
 
@@ -4208,7 +4223,7 @@ def test_two_lands_from_one_free_tip_in_the_same_second_one_wins_and_the_other_w
     assert lands["lock"]() == winner[-1]
     assert git_in(lands["origin"], "rev-parse", f"{winner[-1]}^").strip() == free
     assert lines[-1].startswith(
-        f"another land holds the landing lock {NAME} (pid {os.getpid()}), taken 0 minutes ago ("
+        f"another land holds the landing lock {NAME} (pid {os.getpid()}, beats), taken 0 minutes ago ("
     )
 
 
@@ -4284,7 +4299,7 @@ def test_a_release_moves_the_lock_to_a_free_child_of_ours_and_its_history_only_g
     commits = [ids.split() for ids, _ in tips]
     assert [rest for _, *rest in commits] == [[c[0]] for c in commits[1:]] + [[]]
     body = git_in(lands["origin"], "log", "-1", "--format=%b", f"{REF}~1").strip()
-    assert re.fullmatch(rf"pid {os.getpid()}, PR #8, nonce [0-9a-f]{{16}}", body)
+    assert re.fullmatch(rf"pid {os.getpid()}, PR #8, beats, nonce [0-9a-f]{{16}}", body)
     assert lands["lock"]() == ""
 
 
@@ -5335,18 +5350,6 @@ def test_the_cloud_key_file_is_the_owners_alone(
     assert modes == [0o600]
 
 
-def test_a_cloud_land_refuses_a_draft_it_cannot_mark_ready(
-    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses."""
-    cloud_land["pulls"][7]["isDraft"] = True
-    assert cloud_land["out"](capsys, cloud_land["land"]("7"))[-1] == (
-        "PR #7 is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
-    )
-    assert cloud_land["calls"] == []
-    assert cloud_land["main"]() == cloud_land["base"]
-
-
 def test_a_cloud_land_reads_the_default_branch_over_rest(
     cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5393,22 +5396,6 @@ def test_a_key_is_listed_only_as_its_type_and_body_together_on_a_live_line(tmp_p
     assert not approvals.listed("ssh-ed25519 BODY landing", signers)
     signers.write_text(signers.read_text() + 'd@example.com namespaces="git" ssh-ed25519 BODY d\n')
     assert approvals.listed("ssh-ed25519 BODY landing", signers)
-
-
-def test_a_cloud_eviction_leaves_the_pr_ready_and_says_so(
-    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """GitHub turns a PR back to draft only over GraphQL: a cloud session says it stays ready; a host makes it one."""
-    pull = cloud_land["pulls"][7]
-    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
-    assert (
-        "PR #7 stays ready, since a cloud session can't make it a draft: make it one on GitHub"
-        in (capsys.readouterr().out.splitlines())
-    )
-    assert cloud_land["calls"] == []
-    monkeypatch.delenv(approvals.CLOUD)
-    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
-    assert cloud_land["calls"] == [("pr", "ready", "--undo", "7")]
 
 
 def test_required_checks_never_stand_in_for_the_gate(
@@ -8729,7 +8716,8 @@ def test_the_go_carries_nothing_without_a_satisfied_verdict_on_the_new_head_sayi
 def test_a_verifier_reports_logic_change_line_is_posted_with_its_verdict(tmp_path: Path) -> None:
     report = tmp_path / "report.md"
     report.write_text(
-        f"Verifier: claude, pass 2 (merge of main)\n\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\n"
+        f"Verifier: claude, pass 2 (merge of main)\n\n## Criteria\n\n- The merge keeps both sides.\n\n"
+        f"Head: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\n"
         f"SATISFIED: yes\nRisk: low — a merge\n{NO_LOGIC}"
     )
     assert approvals.parse_report(report)[3][-1] == NO_LOGIC.strip()

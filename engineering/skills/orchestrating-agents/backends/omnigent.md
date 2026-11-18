@@ -26,7 +26,7 @@ refuses a brief left with an empty `` `` `` span. Exit 0 prints the report path.
 prints the reason and the child's last message; for a session that failed, also its
 `last_task_error` and its runner log. With a verifier's role file, the report
 counts only once it has its `SATISFIED:` line, so a report written in stages does not end
-the wait early. Any report counts only once the child's turn has ended and the file is
+the wait early. `wait` takes only a report written after the newest message the session was given (its brief, a `send` or relay), so a file left by an earlier run is not returned at once. Any report counts only once the child's turn has ended and the file is
 unchanged since, which takes 30 seconds out of its turn at every look (a session can read idle
 mid-turn), and is read again before `run` returns it: until then a child can rewrite it (a
 verifier revising its verdict). Omnigent can lose a turn end and leave the session
@@ -766,7 +766,8 @@ a later write failed keeps its place in the hour, and the retry acts on its answ
 What needs the notified session waits in the state's `attention` queue and goes out as one post,
 at most one per 5 minutes (`rate.next_post_at`, written before the post), so a restart or a
 successor keeps the window: `Supervisor [act] b-<id>: <n> events`, or `[owner]` when one is the
-owner's, one line per event with why, then each lead's status row and the first 5 lines of its
+owner's (an owner item with the same request, a prompt's text or a turn end's last message, as the last one raised for that session, kept in the
+lead's `owner_item`, is `[info]`, which wakes no one), one line per event with why, then each lead's status row and the first 5 lines of its
 report (read through the file API, from any host; a failed read is noted). A row gives a turn end
 (`turn ended: <last line>`) once per turn, keyed on its last message's id (else its time) in the
 lead's `told_turn`, and never one written before the run that first saw the lead (`seen_from`), so

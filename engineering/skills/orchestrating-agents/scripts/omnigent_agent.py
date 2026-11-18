@@ -141,8 +141,9 @@ itself (no post, a nudge, a revive, telling the leads registered ``after=`` it o
 ``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
 what its rules can't settle, and posts what needs the notified session or the owner as
 ``Supervisor [act] b-<id>: …`` or ``Supervisor [owner] b-<id>: …``, at most one post per 5
-minutes, and for a lead marked ``direct`` nothing but a failed turn that lost its runner, which
-the owner can't see in its session; ``--fyi post`` posts every line as without it too,
+minutes (an owner item it already raised for that session, same text, goes as ``[info]``, which wakes no
+one; a new or changed item raises ``[owner]``), and for a lead marked ``direct`` nothing but a failed turn
+that lost its runner, which the owner can't see in its session; ``--fyi post`` posts every line as without it too,
 ``--decisions`` names the owner's standing decisions for the small model. Without it, it writes none of these and posts every line.
 A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
 a user service running that same command line less ``--install`` and ``--log`` (a systemd user unit
@@ -4817,42 +4818,54 @@ def default_head(repo: str) -> str:
 
 def merged_since(repo: str, old: str, new: str) -> str:
     """The PRs merged between ``old`` and ``new`` that the GitHub login this runs as opened, the
-    one leads open theirs with, as ``#12, #13``: the ``(#N)`` that ends each commit's subject (a
-    squash or queue merge), or a ``Merge pull request #N`` subject. Empty when none is (a bot's or
-    another person's PR, a commit naming no PR), since no lead landed it; a comparison, login or
-    author not read is named, so the landing is still raised."""
+    one leads open theirs with, as ``#12, #13``, in the order their merge commits landed. Two
+    reads whatever the range holds: the comparison's shas and first commit date, and the login's
+    merged PRs since that date (``gh pr list --author @me``), kept when their ``mergeCommit`` is
+    one of the range's shas (a squash, a queue's merge commit or a merge commit alike). A range's
+    ``(#N)`` subjects play no part: on a fork they are its upstream's numbers. Empty when none is
+    (a bot's or another person's PR, a commit no PR of the login made); a read that failed is
+    named, so the landing is still raised."""
     try:
-        subjects = gh(
-            "api",
-            f"repos/{repo}/compare/{old}...{new}",
-            "--jq",
-            '.commits[].commit.message | split("\\n")[0]',
-        ).splitlines()
+        commits = [
+            line.split("\t")
+            for line in gh(
+                "api",
+                f"repos/{repo}/compare/{old}...{new}",
+                "--jq",
+                ".commits[] | [.sha, .commit.committer.date] | @tsv",
+            ).splitlines()
+            if line.strip()
+        ]
     except Fail as e:
         return f"not read: {e}"
-    prs = []
-    for s in subjects:
-        m = re.search(r"\(#(\d+)\)\s*$", s) or re.match(r"Merge pull request #(\d+)", s)
-        if m and f"#{m[1]}" not in prs:
-            prs.append(f"#{m[1]}")
-    if not prs:
+    if not commits:
         return ""
+    since = commits[0][1][:10]  # the first commit's day: a merge is never before it
     try:
-        me = gh("api", "user", "--jq", ".login").strip()
-    except Fail as e:
-        return f"{', '.join(prs)} (authors not read: {e})"
+        listed = json.loads(
+            gh(
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--state",
+                "merged",
+                "--author",
+                "@me",
+                "--search",
+                f"merged:>={since}",
+                "--limit",
+                "200",
+                "--json",
+                "number,mergeCommit",
+            )
+        )
+        by_sha = {(p.get("mergeCommit") or {}).get("oid"): f"#{p['number']}" for p in listed}
+    except (Fail, ValueError, TypeError, KeyError, AttributeError) as e:
+        return f"not read: {e}"
     # ponytail: the login stands for "a lead's PR", so the owner's own hand-made PR counts too;
     # telling them apart needs a PR-to-lead link that nothing records yet.
-    mine = []
-    for pr in prs:
-        try:
-            author = gh("api", f"repos/{repo}/pulls/{pr[1:]}", "--jq", ".user.login").strip()
-        except Fail as e:
-            mine.append(f"{pr} (author not read: {e})")
-            continue
-        if author == me:
-            mine.append(pr)
-    return ", ".join(mine)
+    return ", ".join(by_sha[sha] for sha, *_ in commits if sha in by_sha)
 
 
 def pr_label(label: object) -> tuple[str, int] | None:
@@ -5034,6 +5047,21 @@ def observe(
     return ("running",), f"{head}: {status}{tail}"
 
 
+def owner_item(line: str) -> str:
+    """What the owner acts on in an event ``line``, which keys an owner item as raised: a
+    prompt's text, a turn end's last message, else the line. Never the header (session, title,
+    queued inputs, open card), which changes while the request stands. A prompt's elicitation id
+    is dropped: it changes when a prompt is re-raised, and the owner acts on the text."""
+    first, _, rest = line.partition("\n")
+    marker = ": blocked on a prompt: "
+    if (at := first.find(marker)) >= 0:
+        head, text = first[at + 2 :].split(": ", 1)
+        return f"{head}: " + re.sub(r"(^|; )[^\s:;]+: ", r"\1", text)
+    if re.search(r": turn ended(, quiet \d+s)?$", first) and rest:
+        return rest
+    return line
+
+
 def watch(
     og: Omnigent, sessions: list[str], parent: str | None = None, timeout: float = 3 * 3600
 ) -> list[str]:
@@ -5143,14 +5171,37 @@ def instruction(item: dict, resume: str) -> bool:
     return from_user(item) and text != resume and not text.startswith(REVIVED)
 
 
-def instructed(items: list[dict], resume: str) -> tuple[float, float]:
+def last_instruction(og: Omnigent, sid: str, items: list[dict], resume: str) -> float | None:
+    """When ``sid`` was last given an instruction (``instruction``): the newest of ``items``
+    (its newest page, oldest first), else read back a page at a time behind the page, as
+    ``told_park`` does, so one behind the newest 100 items is found. A page short of 100 is the
+    whole history. None when the history holds none; each caller keeps its own fallback."""
+    for i in reversed(items):
+        if instruction(i, resume):
+            return float(i.get("created_at") or 0)
+    # ponytail: one extra page read per call for a session with 100+ items and no instruction on
+    # its newest page, never cached; upgrade: keep the time in the caller's state once found.
+    after = str(items[0].get("id")) if len(items) >= 100 else ""
+    while after:
+        page = og.older(sid, after)
+        data = page.get("data") or []
+        for i in data:
+            if instruction(i, resume):
+                return float(i.get("created_at") or 0)
+        after = str(page.get("last_id") or "") if data and page.get("has_more") else ""
+    return None
+
+
+def instructed(og: Omnigent, sid: str, items: list[dict], resume: str) -> tuple[float, float]:
     """When the session was last told to write its report, and when the resume line was sent
     since (0.0 when it was not). The instruction is its newest user message other than the resume
-    or revive line, else the oldest item on the page, since the instruction is older still. The
+    or revive line (``last_instruction``, behind the page too), else, when the whole history holds
+    none, the oldest item on the page. The
     resume line is read from the history, so a supervisor restarted after sending one sends no
     second."""
-    told = [float(i.get("created_at") or 0) for i in items if instruction(i, resume)]
-    since = told[-1] if told else min((float(i.get("created_at") or 0) for i in items), default=0.0)
+    since = last_instruction(og, sid, items, resume)
+    if since is None:
+        since = min((float(i.get("created_at") or 0) for i in items), default=0.0)
     resent = [
         float(i.get("created_at") or 0)
         for i in items
@@ -5159,6 +5210,16 @@ def instructed(items: list[dict], resume: str) -> tuple[float, float]:
         and float(i.get("created_at") or 0) >= since
     ]
     return since, max(resent, default=0.0)
+
+
+def told_at(og: Omnigent, sid: str, info: dict, report: Path) -> int | None:
+    """The ``st_mtime_ns`` floor for ``sid``'s report: when it was last given a message (its
+    brief, or a later ``send`` or relay; not the supervisor's nudge), else its ``created_at``,
+    None when neither is known. A report from before it is the turn before's."""
+    resume = CLOUD_NUDGE if cloud_session(og, info) else NUDGE.format(report=report)
+    told = last_instruction(og, sid, og.items(sid), resume)
+    at = told if told is not None else float(info.get("created_at") or 0)
+    return int(at * 1e9) if at else None
 
 
 def settled(
@@ -5334,7 +5395,7 @@ def check(
     # a cloud child's files stay in its VM: its marked last message is its report or question
     cloud = cloud_session(og, info)
     resume = CLOUD_NUDGE if cloud else NUDGE.format(report=report)
-    since, resent = instructed(items, resume)
+    since, resent = instructed(og, sid, items, resume)
     if resumed.get(sid, since) < since:  # sent before a newer instruction
         del resumed[sid]
 
@@ -6547,7 +6608,13 @@ def supervise_registry(
         elif action == "tell":
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
         elif action in ("act", "owner") or action == "done" and not event["direct"]:
-            queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
+            item = line.splitlines()[0]
+            to = "owner" if action == "owner" else "act"
+            if to == "owner" and lead.get("owner_item") == owner_item(line):
+                to = "info"  # the owner item already raised: it wakes no one
+            elif to == "owner" and lead:
+                lead["owner_item"] = owner_item(line)
+            queue(eid, sid, to, item, why)
         if action == "act" and event["limit"] and event["capped"]:  # past the cap: no more probes
             for parked in state["leads"].values():
                 if (parked.get("retrying") or {}).get("limit"):
@@ -6575,7 +6642,8 @@ def supervise_registry(
         ``told_turn``, and never one written before the run that first saw the lead
         (``seen_from``), so an old last message of a lead that never settles is no news in every
         post; the row then reads ``idle``."""
-        to = "owner" if any(e["route"] == "owner" for e in events) else "act"
+        routes = {e["route"] for e in events}
+        to = "owner" if "owner" in routes else "act" if "act" in routes else "info"
         n = len(events)
         lines = [f"Supervisor [{to}] {bid}: {n} event{'s' * (n > 1)}"]
         lines += [f"[{e['route']}] {e['line']} ({e['why']})" for e in events]
@@ -8262,7 +8330,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             far = not args.pr and elsewhere(og, og.info(args.session))
             report = args.report if far else args.report.resolve()
             try:
-                got = wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr)
+                # --pr reads a comment, not a file
+                since = (
+                    None if args.pr else told_at(og, args.session, og.info(args.session), report)
+                )
+                got = wait(
+                    og, args.session, report, args.timeout, args.verdict, since=since, pr=args.pr
+                )
             except Asked as asked:
                 if far:  # the question is on its host too: leave a copy here, as for a report
                     here = bring_home(og, args.session, Path(asked.args[0]), keep=True)

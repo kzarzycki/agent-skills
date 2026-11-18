@@ -100,7 +100,7 @@ run = "uv run python -m tools.capability_pack.cli assert-codex-inventory ."
 run = "uv run python tests/adoption/run_renovate_probe.py"
 
 [tasks.test-engineering-package]
-run = "uv run pytest -q engineering/tests/test_contract.py engineering/tests/test_package_metadata.py engineering/tests/test_consumer_e2e.py"
+run = "uv run pytest -q engineering/tests/test_contract.py engineering/tests/test_package_metadata.py engineering/tests/test_consumer_e2e.py engineering/tests/test_approvals_acceptance_evidence.py"
 
 [tasks.test-engineering-agents]
 run = "CLAUDE_CODE_E2E=1 CODEX_E2E=1 uv run pytest -q -m live_agent engineering/tests/e2e"

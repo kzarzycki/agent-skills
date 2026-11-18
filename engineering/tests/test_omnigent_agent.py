@@ -243,6 +243,14 @@ class FakeOmnigent:
     def items(self, sid: str) -> list[dict]:
         return self.sessions[sid]
 
+    def older(self, sid: str, after: str = "") -> dict:  # a page of 100, newest first
+        newest = list(reversed(self.sessions[sid]))
+        ids = [str(i.get("id")) for i in newest]
+        start = ids.index(after) + 1 if after else 0
+        data = newest[start : start + 100]
+        more = start + 100 < len(newest)
+        return {"data": data, "last_id": data[-1].get("id") if data else None, "has_more": more}
+
     def info(self, sid: str) -> dict:
         for held in list(self.held):
             self.held.remove(held)
@@ -892,6 +900,124 @@ def test_wait_notify_tells_loop_notify_once_the_report_is_in(
     (repo / "r.md").write_text("ok")
     assert omnigent_agent.main(["wait", sid, "r.md", "--notify"]) == 0
     assert calls.read_text().splitlines() == [f"exit 0: {repo / 'r.md'}"]
+
+
+def test_wait_takes_no_report_older_than_the_sessions_last_message_until_it_is_rewritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    report = repo / "r.md"
+    report.write_text("old run")
+    past = time.time() - 600
+    os.utime(report, (past, past))
+    og.land(sid, "second brief")  # a later message the old report does not answer
+    og.sessions[sid][-1]["created_at"] = time.time() - 300
+    assert (
+        omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1
+    )  # the old one is not taken
+    info = og.info
+    og.info = lambda s: (report.write_text("new run"), info(s))[1]  # type: ignore[method-assign]
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+    assert report.read_text() == "new run"
+
+
+def test_wait_takes_a_report_written_after_the_sessions_last_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    og.sessions[sid][-1]["created_at"] = time.time() - 300
+    (repo / "r.md").write_text("ok")
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+
+
+def stale_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, og: FakeOmnigent
+) -> tuple[str, Path]:
+    """A session and its report file, written ten minutes ago."""
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    report = repo / "r.md"
+    report.write_text("old run")
+    past = time.time() - 600
+    os.utime(report, (past, past))
+    return sid, report
+
+
+def say(og: FakeOmnigent, sid: str, role: str, text: str, ago: float, **more: object) -> None:
+    kind = "output_text" if role == "assistant" else "input_text"
+    og.sessions[sid].append(
+        {
+            "id": f"m{len(og.sessions[sid])}",
+            "type": "message",
+            "role": role,
+            "created_at": time.time() - ago,
+            "content": [{"type": kind, "text": text}],
+            **more,
+        }
+    )
+
+
+def test_wait_floors_at_the_newest_of_two_messages_not_the_oldest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, _ = stale_report(tmp_path, monkeypatch, og)
+    og.sessions[sid][:] = []
+    say(og, sid, "user", "brief", 900)  # before the report
+    say(og, sid, "user", "follow-up", 300)  # after it
+    assert omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1
+
+
+def test_wait_does_not_floor_at_the_supervisors_nudge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, report = stale_report(tmp_path, monkeypatch, og)
+    og.sessions[sid][:] = []
+    say(og, sid, "user", "brief", 900)
+    nudge = omnigent_agent.NUDGE.format(report=report.resolve())
+    say(og, sid, "user", nudge, 10)  # after the report: it does not make it stale
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+
+
+def test_wait_floors_at_the_sessions_creation_when_no_message_is_in_the_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, _ = stale_report(tmp_path, monkeypatch, og)
+    og.sessions[sid][:] = []
+    info = og.info
+    og.info = lambda s: {**info(s), "created_at": time.time() - 300}  # type: ignore[method-assign]
+    assert omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1
+
+
+def test_wait_finds_a_message_behind_the_newest_page_of_the_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, _ = stale_report(tmp_path, monkeypatch, og)
+    og.sessions[sid][:] = []
+    say(og, sid, "user", "second brief", 300)
+    for n in range(100):  # the turn's steps since: the real items() page holds only these
+        say(og, sid, "assistant", f"step {n}", 200)
+    og.items = lambda s: og.sessions[s][-100:]  # type: ignore[method-assign]
+    assert omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1
+
+
+def test_wait_takes_a_far_report_only_if_written_after_the_brief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: box, mac\n")
+    assert omnigent_agent.main([*VERIFY_FAR, "--file", "gate.log"]) == 0
+    path = "/there/repo/tmp/loop/pr7-v1.md"
+    og.files[path] = "VERDICT: 0 blocker\nSATISFIED: yes\n"
+    og.times[path] = time.time() - 600  # an earlier pass's, before this brief
+    argv = ["wait", "s0", path, "--verdict", "--timeout", "1"]
+    assert omnigent_agent.main(argv) == 1
+    og.sessions["s0"][-1]["created_at"] = time.time() - 300
+    og.times[path] = time.time() - 60  # the verifier wrote it after its brief
+    assert omnigent_agent.main(argv) == 0
 
 
 def test_run_notify_tells_loop_notify_once_the_report_is_in(
@@ -5109,6 +5235,59 @@ def aged(path: Path, ago: float) -> Path:
     return path
 
 
+class Paged(Owing):
+    """Owing whose history is longer than the newest 100 items ``items`` returns."""
+
+    def __init__(self, history: list[dict], *infos: dict) -> None:
+        super().__init__(history[-100:], *infos)
+        self.history = history
+
+    def older(self, sid: str, after: str = "") -> dict:
+        newest = list(reversed(self.history))
+        ids = [str(i.get("id")) for i in newest]
+        start = ids.index(after) + 1 if after else 0
+        data = newest[start : start + 100]
+        last = data[-1]["id"] if data else None
+        return {"data": data, "last_id": last, "has_more": start + 100 < len(newest)}
+
+
+def steps(n: int, ago: float) -> list[dict]:
+    return [
+        {**said("assistant", f"s{k}", f"a{k}"), "created_at": time.time() - ago} for k in range(n)
+    ]
+
+
+def test_check_counts_a_report_written_after_an_instruction_behind_the_page(tmp_path: Path) -> None:
+    report = aged(tmp_path / "r.md", 300)  # after the brief, before the page's oldest item
+    og = Paged([told("brief", 600), *steps(150, 100)], {})
+    event, since = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert event == f"a coord: report written: {report}"
+    assert abs(since - (time.time() - 600)) < 5
+
+
+def test_check_refuses_a_report_older_than_an_instruction_behind_the_page(tmp_path: Path) -> None:
+    report = aged(tmp_path / "r.md", 900)
+    og = Paged([told("brief", 600), *steps(150, 100)], {})
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert event == ""
+
+
+def test_check_with_no_instruction_in_the_history_floors_at_the_pages_oldest_item(
+    tmp_path: Path,
+) -> None:
+    report = aged(tmp_path / "r.md", 150)
+    og = Paged(steps(150, 100), {})
+    _, since = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert abs(since - (time.time() - 100)) < 5
+
+
+def test_a_page_short_of_100_items_is_read_without_a_page_back(tmp_path: Path) -> None:
+    og = Paged([told("brief", 600), *steps(5, 100)], {})
+    og.older = lambda *a, **k: pytest.fail("read back a whole history")  # type: ignore[method-assign]
+    assert omnigent_agent.last_instruction(og, "a", og.items("a"), "") is not None
+    assert omnigent_agent.last_instruction(og, "a", steps(5, 1), "") is None
+
+
 def test_supervise_returns_a_report_written_since_the_last_instruction(tmp_path: Path) -> None:
     report = aged(tmp_path / "r.md", 60)
     og = Owing([told("brief", 120)], {})
@@ -6834,7 +7013,7 @@ def test_send_arms_only_once_its_message_is_in_the_history(
 
     def reporting(s: str) -> dict:
         if not stale and f"{sid}=" in (registry.read_text() if registry.exists() else ""):
-            since, _ = omnigent_agent.instructed(og.items(sid), "")
+            since, _ = omnigent_agent.instructed(og, sid, og.items(sid), "")
             stale.append(report.stat().st_mtime > since)  # the supervisor's view once armed
             report.write_text("fixed")
         return info(s)
@@ -11191,21 +11370,34 @@ def in_checkout(og: Fleet) -> None:
     og.files[".git/config"] = GIT_CONFIG
 
 
-def github(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> list[tuple[str, ...]]:
+S1, S2, S3 = "1" * 40, "2" * 40, "3" * 40
+COMPARE = f"{S1}\t2026-11-01T10:00:00Z\n{S2}\t2026-11-02T10:00:00Z\n{S3}\t2026-11-03T10:00:00Z\n"
+
+
+def pr_list(*merged: tuple[int, str]) -> str:
+    """What ``gh pr list --json number,mergeCommit`` prints for PRs merged as the given shas."""
+    return json.dumps([{"number": n, "mergeCommit": {"oid": sha}} for n, sha in merged])
+
+
+def github(
+    monkeypatch: pytest.MonkeyPatch, head: list[str], prs: str | None = None
+) -> list[tuple[str, ...]]:
     """``gh`` faked: the default branch's head is ``head[0]``, which a test moves between polls;
-    a comparison lists two merges, both PRs opened by the login it runs as. Each call is
-    recorded."""
+    a comparison lists three commits, and the login's merged PRs (``prs``, by default #12 as the
+    first commit's squash merge and #13 as the second's) come from one ``pr list``. Any lookup of
+    a single PR or of the login raises. Each call is recorded."""
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 0)
     calls: list[tuple[str, ...]] = []
+    mine = prs if prs is not None else pr_list((13, S2), (12, S1), (99, "f" * 40))
 
     def gh(*args: str, timeout: float = 0) -> str:
         calls.append(args)
         if args[1] == "repos/o/r/commits/HEAD":
             return head[0] + "\n"
-        if args[1] == "user" or args[1].startswith("repos/o/r/pulls/"):
-            return "me\n"
         if args[1] == f"repos/o/r/compare/{OLD}...{NEW}":
-            return "Fix the gate (#12)\nSupervisor: one more (#781) (#13)\nchore: bump\n"
+            return COMPARE
+        if args[:2] == ("pr", "list"):
+            return mine
         raise AssertionError(args)
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
@@ -11239,6 +11431,54 @@ def test_a_moved_default_branch_raises_one_act_event_for_its_new_head_and_then_n
     assert (event["settled"], event["action"]) == ("rule", "act")
     assert NEW in event["line"] and "#12, #13" in event["line"]
     assert state_of(registry)["heads"] == {"o/r": NEW}
+
+
+def test_a_range_of_foreign_numbers_lists_the_repos_own_merges_in_a_fixed_number_of_calls() -> None:
+    """A fork's range holds the upstream's `(#n)` subjects, none a PR of the fork: the notice
+    lists only the fork's own merges (a squash, then a queue's merge commit) and reads the
+    repo twice however many commits there are, never once per number."""
+    queue = "4" * 40
+    commits = "".join(f"{c}\t2026-11-0{n}T10:00:00Z\n" for n, c in enumerate([S1, S2, queue], 1))
+    commits += "".join(f"{n:040x}\t2026-11-09T10:00:00Z\n" for n in range(80))
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, timeout: float = 0) -> str:
+        calls.append(args)
+        if args[1].startswith("repos/o/r/compare/"):
+            return commits
+        if args[:2] == ("pr", "list"):
+            return pr_list((9, queue), (7, S1), (8, "e" * 40))  # #8 merged outside the range
+        raise AssertionError(args)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(omnigent_agent, "gh", gh)
+        assert omnigent_agent.merged_since("o/r", OLD, NEW) == "#7, #9"
+    assert len(calls) == 2
+    listing = calls[1]
+    assert listing[:4] == ("pr", "list", "--repo", "o/r")
+    assert "--author" in listing and listing[listing.index("--author") + 1] == "@me"
+    assert "merged:>=2026-11-01" in listing[listing.index("--search") + 1]
+
+
+def test_a_range_none_of_whose_commits_is_a_merged_pr_of_the_login_lists_nothing() -> None:
+    def gh(*args: str, timeout: float = 0) -> str:
+        return COMPARE if args[0] == "api" else pr_list((5, "e" * 40))
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(omnigent_agent, "gh", gh)
+        assert omnigent_agent.merged_since("o/r", OLD, NEW) == ""
+
+
+def test_a_merged_pr_list_that_cannot_be_read_is_named_so_the_landing_is_still_raised() -> None:
+    def gh(*args: str, timeout: float = 0) -> str:
+        if args[0] == "api":
+            return COMPARE
+        raise omnigent_agent.Fail("gh pr list: HTTP 502")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(omnigent_agent, "gh", gh)
+        got = omnigent_agent.merged_since("o/r", OLD, NEW)
+    assert got == "not read: gh pr list: HTTP 502"
 
 
 def test_the_first_head_seen_for_a_repo_is_stored_and_raises_nothing(
@@ -11310,14 +11550,16 @@ FAR = "until 2099-01-01T00:00Z"  # a timed wait's end: the supervisor raises no 
 
 
 def heads_moving(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> None:
-    """``gh`` faked: the default branch's head is ``head[0]``, any comparison one merge of a PR the
-    login it runs as opened."""
+    """``gh`` faked: the default branch's head is ``head[0]``, any comparison one commit, the
+    squash merge of a PR the login it runs as opened."""
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 0)
 
     def gh(*args: str, timeout: float = 0) -> str:
-        if args[1] == "user" or args[1].startswith("repos/o/r/pulls/"):
-            return "me\n"
-        return head[0] + "\n" if args[1] == "repos/o/r/commits/HEAD" else "Fix the gate (#12)\n"
+        if args[:2] == ("pr", "list"):
+            return pr_list((12, S1))
+        if args[1] == "repos/o/r/commits/HEAD":
+            return head[0] + "\n"
+        return f"{S1}\t2026-11-01T10:00:00Z\n"
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
 
@@ -11731,6 +11973,7 @@ def test_a_verifier_starts_on_a_host_loop_md_lists_with_its_files_there_and_repo
     assert og.files["/there/repo/tmp/loop/gate.log"] == "abc\nok\n"
     report = "VERDICT: 0 blocker\nSATISFIED: yes\n"
     og.files["/there/repo/tmp/loop/pr7-v1.md"] = report
+    og.times["/there/repo/tmp/loop/pr7-v1.md"] = time.time()  # written after the brief
     capsys.readouterr()
     argv = ["wait", "s0", "/there/repo/tmp/loop/pr7-v1.md", "--verdict", "--timeout", "5"]
     assert omnigent_agent.main(argv) == 0
@@ -12116,6 +12359,136 @@ def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_
     assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
     assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
     assert not any("Which base?" in p for p in posted(og))
+
+
+def owner_posts_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, previews: list[str]
+) -> list[str]:
+    """The posts to ``cos`` when a lead blocks on one approval prompt per preview, each answered
+    before the next, with the post window passed between them."""
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "PROMPT_CONFIRM_SECONDS", 0.0)
+    og = Lead(told("brief", 60), ending("STILL WORKING: its worker runs", 5))
+
+    def prompt(n: int) -> dict:
+        item = {"elicitation_id": f"e{n}", "params": {"content_preview": previews[n]}}
+        return {"status": "running", "pending_elicitations": [item]}
+
+    og.snap = prompt(0)
+
+    def later(poll: int) -> None:
+        offset[0] = poll * 400.0
+        og.snap = prompt(poll) if poll < len(previews) else {"status": "running"}
+
+    supervised(og, registry, monkeypatch, len(previews) + 1, later, notify="cos", console=True)
+    return posted(og)
+
+
+def test_the_same_owner_item_at_a_later_turn_end_is_posted_as_info(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = owner_posts_for(tmp_path, monkeypatch, ["Bash(ls)", "Bash(ls)"])
+    assert "[owner] a t-a: blocked on a prompt: e0: Bash(ls)" in first
+    assert second.startswith("Supervisor [info] b-")
+    assert "[info] a t-a: blocked on a prompt: e1: Bash(ls)" in second
+
+
+def test_an_owner_item_ignores_the_elicitation_id_a_re_raised_prompt_gets() -> None:
+    line = "a t-a: blocked on a prompt: {}: Bash(ls)"
+    assert omnigent_agent.owner_item(line.format("e0")) == omnigent_agent.owner_item(
+        line.format("e1")
+    )
+    joined = "a t-a: blocked on a prompt: {}: Bash(ls); {}: Bash(rm x)"
+    assert omnigent_agent.owner_item(joined.format("e0", "e1")) == omnigent_agent.owner_item(
+        joined.format("e2", "e3")
+    )
+
+
+def test_a_changed_owner_item_is_posted_as_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = owner_posts_for(tmp_path, monkeypatch, ["Bash(ls)", "Bash(rm x)"])
+    assert second.startswith("Supervisor [owner] b-")
+    assert "[owner] a t-a: blocked on a prompt: e1: Bash(rm x)" in second
+    assert "[owner] a t-a: blocked on a prompt: e0: Bash(ls)" in first
+
+
+def test_a_new_session_s_first_owner_item_is_posted_as_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    [post] = owner_posts_for(tmp_path, monkeypatch, ["Bash(ls)"])
+    assert post.startswith("Supervisor [owner] b-")
+
+
+def owner_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, looks: list[tuple[dict, str]]
+) -> list[str]:
+    """The route of each post to ``cos`` when the lead shows one look per poll, the post window
+    passed between them: a look is its ``snap`` and, unless empty, the turn end it then writes."""
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "PROMPT_CONFIRM_SECONDS", 0.0)
+    og = Lead(told("brief", 60), ending("STILL WORKING: its worker runs", 5))
+
+    def show(n: int) -> None:
+        snap, text = looks[n]
+        og.snap = snap
+        if text:
+            og.histories["a"].append({**ending(text, 0), "id": f"end{n}"})
+
+    show(0)
+
+    def later(poll: int) -> None:
+        offset[0] = poll * 400.0
+        if poll < len(looks):
+            show(poll)
+        else:
+            og.snap = {"status": "running"}
+
+    supervised(og, registry, monkeypatch, len(looks) + 1, later, notify="cos", console=True)
+    return [re.match(r"Supervisor \[(\w+)\]", p).group(1) for p in posted(og)]  # type: ignore[union-attr]
+
+
+def prompt_look(n: int, title: str, queued: int) -> tuple[dict, str]:
+    item = {"elicitation_id": f"e{n}", "params": {"content_preview": "Bash(ls)"}}
+    inputs = [{"id": f"i{k}"} for k in range(queued)]
+    return {
+        "status": "running",
+        "pending_elicitations": [item],
+        "title": title,
+        "pending_inputs": inputs,
+    }, ""
+
+
+@pytest.mark.parametrize(
+    ("looks", "routes"),
+    [
+        pytest.param(
+            [({}, "USER NEEDED: approve A"), ({}, "USER NEEDED: approve B")],
+            ["owner", "owner"],
+            id="two-different-requests",
+        ),
+        pytest.param(
+            [
+                ({}, "USER NEEDED: approve A"),
+                ({}, "DONE: step one"),
+                ({}, "USER NEEDED: approve A"),
+            ],
+            ["owner", "act", "info"],
+            id="one-request-twice",
+        ),
+        pytest.param(
+            [prompt_look(0, "t-a", 0), prompt_look(1, "t-a renamed", 2)],
+            ["owner", "info"],
+            id="one-prompt-under-a-new-title-and-queue",
+        ),
+    ],
+)
+def test_an_owner_item_is_keyed_on_what_the_owner_acts_on_not_its_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, looks: list, routes: list[str]
+) -> None:
+    assert owner_routes(tmp_path, monkeypatch, looks) == routes
 
 
 # --- a child never falls back to the runner's host, and a host verifier runs at the PR's head (#917) ---
