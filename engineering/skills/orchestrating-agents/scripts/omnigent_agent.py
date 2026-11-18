@@ -147,7 +147,7 @@ itself (no post, a nudge, a revive, telling the leads registered ``after=`` it o
 what its rules can't settle, and posts what needs the notified session or the owner as
 ``Supervisor [act] b-<id>: …`` or ``Supervisor [owner] b-<id>: …``, at most one post per 5
 minutes (an owner item it already raised for that session, same text, goes as ``[info]``, which wakes no
-one; a new or changed item raises ``[owner]``), and for a lead marked ``direct`` nothing but a failed turn
+one; a new or changed item raises ``[owner]``), a plain ``DONE`` turn end from a followed lead is told to the leads waiting on it and logged, and wakes no one, and for a lead marked ``direct`` nothing but a failed turn
 that lost its runner, which the owner can't see in its session; ``--fyi post`` posts every line as without it too,
 ``--decisions`` names the owner's standing decisions for the small model. Without it, it writes none of these and posts every line.
 A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
@@ -7011,7 +7011,7 @@ def supervise_registry(
             }
         elif action == "tell":
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
-        elif action in ("act", "owner") or action == "done" and not event["direct"]:
+        elif action in ("act", "owner"):  # a DONE is a plain turn end: logged, no wake
             item = line.splitlines()[0]
             if asked := question_for(lead_ev, parsed):
                 item = f"{item}\n{asked}"  # the whole question, never cut
@@ -7477,13 +7477,17 @@ def supervise_registry(
         seen[key] = [time.time(), found]
         return found
 
+    nameless: set[tuple[str, str]] = (
+        set()
+    )  # (session, wait) a poll's ``moving`` found no session for
+
     def moving(sid: str, lead: dict, wait: str = "") -> bool:
         """Whether every session ``sid``'s wait names shows life (``alive``). A wait names X by
         a full session id in ``sid``'s follow set: one of its leads (the sessions its line's
         ``leads=`` registry follows) or of its ``kin`` (its live children and subscriptions, a
         lead's worker); for a manager, ``lead`` names its leads as a group; any other word (a kind
         such as ``worker``, a title word, a short id) names each of its kin whose title holds it
-        as a word or whose id opens with it; a background task id names ``sid``'s own job, alive
+        as a word or whose id opens with it (a manager's followed leads count as kin); a background task id names ``sid``'s own job, alive
         while ``sid`` declares a live background task. A wait on anything else (the notified
         session, a session outside its follow set, the owner, a word no kin answers), a named
         session that shows no life or is not read, and a registry or kin not read, are False:
@@ -7523,7 +7527,8 @@ def supervise_registry(
             named = [wait]
         else:  # not one of its leads: one of its own children or subscriptions, else outside
             try:
-                kin = [k for k in og.kin(sid) if k != notify]
+                # its followed leads too: a lead started through its registry is no child
+                kin = [k for k in dict.fromkeys([*og.kin(sid), *followed]) if k != notify]
             except Exception as e:  # noqa: BLE001 - the deadline is raised as without it
                 log(("kin", sid), f"{sid}: children not read: {reason(e)}")
                 return False
@@ -7548,6 +7553,8 @@ def supervise_registry(
                 return False
             if not alive(other, info):
                 return False
+        if not named:
+            nameless.add((sid, wait))
         return bool(named)
 
     def overdue(sid: str, lead: dict) -> None:
@@ -7574,6 +7581,7 @@ def supervise_registry(
             return
         # read only once due
         lead["progress_at"] = max(lead["progress_at"], og.active(sid), written(sid, lead))
+        nameless.discard((sid, lead["wait"]))
         if due is None and moving(sid, lead):
             return  # what it waits on all shows life: no stall of its own
         # a session its STILL WORKING line names that shows life is progress, one that is archived,
@@ -7640,7 +7648,13 @@ def supervise_registry(
                 line = f"{head}: {what}\nlast message: {lead['last_line']}"
                 if quiet_named:
                     line += f"\nquiet: {', '.join(quiet_named)}"
-                say(line, sid, f"deadline:{sid}:{lead['progress_at']:.0f}{nudged}", "deadline")
+                # a wait that names no session is one event per wait text, not per progress chain
+                chain = (
+                    lead["wait"]
+                    if (sid, lead["wait"]) in nameless
+                    else f"{lead['progress_at']:.0f}"
+                )
+                say(line, sid, f"deadline:{sid}:{chain}{nudged}", "deadline")
 
     def has_event(sid: str) -> bool:  # an event settles what a prose wait would
         try:

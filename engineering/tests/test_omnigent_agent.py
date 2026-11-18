@@ -5941,7 +5941,7 @@ def test_one_poll_writes_the_state_and_labels_and_an_unchanged_poll_within_a_min
     owing = tmp_path / "b.md"
     registry.write_text(registry.read_text() + f"b={owing}\n")
     offset = skewed(monkeypatch)
-    og = Lead(told("brief", 60), ending("DONE: shipped\nPR #1 merged", 5))
+    og = Lead(told("brief", 60), ending("USER NEEDED: shipped\nPR #1 merged", 5))
     og.histories["b"] = [told("brief", 60)]
     og.snap = {"host_id": "h"}
     at = {1: 30.0, 2: 61.0}
@@ -5963,23 +5963,29 @@ def test_one_poll_writes_the_state_and_labels_and_an_unchanged_poll_within_a_min
         "state": "idle",
         "wait": "unknown",
     }
-    assert (lead["ending"], lead["last_line"], lead["waits_on"]) == ("DONE", "DONE: shipped", [])
+    assert (lead["ending"], lead["last_line"], lead["waits_on"]) == (
+        "USER NEEDED",
+        "USER NEEDED: shipped",
+        [],
+    )
     assert (lead["nudges"], lead["revives"], lead["briefs"]) == (
         0,
         0,
         [str(tmp_path / "a.md.brief")],
     )
     assert first["leads"]["b"]["report"] == str(owing) and first["leads"]["b"]["follow"] is False
-    assert first["settled"]["a"] == ["ended:a:mDONE: shipped\nPR #1 merged5"]
+    assert first["settled"]["a"] == ["ended:a:mUSER NEEDED: shipped\nPR #1 merged5"]
     assert (first["intents"], first["attention"], first["pending_posts"]) == ([], [], [])
     assert first["rate"]["next_post_at"] > time.time()  # its DONE printed as a post would go
     a_labels = [labels for sid, labels in og.labels if sid == "a"]
-    assert [labels["status.line"] for labels in a_labels] == ["turn ended: DONE: shipped"] * 2
+    assert [labels["status.line"] for labels in a_labels] == [
+        "turn ended: USER NEEDED: shipped"
+    ] * 2
     assert int(a_labels[1]["status.at"]) - int(a_labels[0]["status.at"]) >= 60  # none at 30 s
     assert lead["label"] == {"line": a_labels[0]["status.line"], "at": a_labels[0]["status.at"]}
     events = [json.loads(e) for e in registry.with_suffix(".events.jsonl").read_text().splitlines()]
     assert [(e["id"], e["session"], e["kind"], e["settled"], e["action"]) for e in events] == [
-        (first["settled"]["a"][0], "a", "ended", "rule", "done")
+        (first["settled"]["a"][0], "a", "ended", "rule", "owner")
     ]
 
 
@@ -8616,7 +8622,7 @@ def test_a_crash_right_after_a_post_is_accepted_posts_it_once_after_a_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, landed: bool
 ) -> None:
     registry = following(tmp_path)
-    og = Lead(told("brief", 60), ending("DONE: shipped", 5))
+    og = Lead(told("brief", 60), ending("USER NEEDED: shipped", 5))
     og.histories["cos"] = []
     real = og.send
 
@@ -8638,7 +8644,7 @@ def test_a_crash_right_after_a_post_is_accepted_posts_it_once_after_a_restart(
     og.send = real  # type: ignore[method-assign]
     supervised(og, registry, monkeypatch, 2, notify="cos", console=True)  # the restart
     posts = posted(og)
-    assert len(posts) == 1 and posts[0].startswith(f"Supervisor [act] {pending['id']}: 1 event")
+    assert len(posts) == 1 and posts[0].startswith(f"Supervisor [owner] {pending['id']}: 1 event")
     if landed:
         assert og.pages >= 2  # found on the second page of the history
     state = state_of(registry)
@@ -8651,19 +8657,19 @@ def test_a_restart_inside_the_post_window_keeps_it(
     registry = follows(tmp_path, "a", "b")
     offset = skewed(monkeypatch)
     og = Leads(
-        a=[told("brief", 60), ending("DONE: one", 5)],
+        a=[told("brief", 60), ending("USER NEEDED: one", 5)],
         b=[told("brief", 60), ending("STILL WORKING: waiting on CI", 5)],
     )
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
     assert len(posted(og)) == 1
     offset[0] = 60.0
-    og.histories["b"].append(ending("DONE: two", 0))
+    og.histories["b"].append(ending("USER NEEDED: two", 0))
     supervised(og, registry, monkeypatch, 2, notify="cos", console=True)  # a restart at 60 s
     assert len(posted(og)) == 1  # the window from the first post holds across it
     assert [e["session"] for e in state_of(registry)["attention"]] == ["b"]
     offset[0] = 301.0
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
-    assert len(posted(og)) == 2 and "[act] b t-b: turn ended" in posted(og)[1]
+    assert len(posted(og)) == 2 and "[owner] b t-b: turn ended" in posted(og)[1]
 
 
 def test_a_restart_inside_the_model_window_keeps_it(
@@ -8745,7 +8751,7 @@ def test_an_archived_lead_is_absorbed_with_no_post(
     assert [(e["kind"], e["action"]) for e in events_of(registry)] == [("archived", "absorb")]
 
 
-def test_a_done_is_told_to_each_lead_waiting_on_it_and_posted_with_its_report_head(
+def test_a_done_is_told_to_each_lead_waiting_on_it_and_wakes_no_one_else(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = follows(tmp_path, "a", "b", "c", after={"b": "a"})
@@ -8763,12 +8769,7 @@ def test_a_done_is_told_to_each_lead_waiting_on_it_and_posted_with_its_report_he
     supervised(og, registry, monkeypatch, 3, done, notify="cos", console=True)
     told_b = "Supervisor: a t-a, the lead you wait on, ended: DONE: PR #7 merged"
     assert [(s, t) for s, t in og.inbox if s != "cos"] == [("b", told_b)]
-    [post] = posted(og)
-    assert (
-        f"a t-a: turn ended: DONE: PR #7 merged\nreport {tmp_path / 'a'}.md:\nDONE: merged\n"
-        in post
-    )
-    assert post.endswith("l3")  # the report's first 5 lines
+    assert posted(og) == []  # a plain turn end stays in the log (#1426)
     assert state_of(registry)["leads"]["b"]["waits_on"] == ["a"]
 
 
@@ -9320,7 +9321,11 @@ def test_a_failed_state_write_stops_the_side_effect_it_guards_and_the_next_poll_
 ) -> None:
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    last = {"action": "STILL WORKING: on it", "model call": "Reading code.", "post": "DONE: x"}
+    last = {
+        "action": "STILL WORKING: on it",
+        "model call": "Reading code.",
+        "post": "USER NEEDED: x",
+    }
     og = Lead(told("brief", 60), ending(last[needed_by], 0))
     og.snap = {"status": "running"} if needed_by == "action" else {}
     real, full = omnigent_agent.write_state, [False]
@@ -9344,7 +9349,7 @@ def test_a_failed_state_write_stops_the_side_effect_it_guards_and_the_next_poll_
     supervised(og, registry, monkeypatch, 4, later, notify="cos", console=True)
     if needed_by == "post":
         assert seen[0] == ([], [])  # the post's pending write failed: nothing sent
-        assert posted(og)[0].startswith("Supervisor [act] b-") and len(posted(og)) == 1
+        assert posted(og)[0].startswith("Supervisor [owner] b-") and len(posted(og)) == 1
     else:
         assert seen[1] == ([], [])  # the poll with the full disk sent nothing, asked nothing
         if needed_by == "action":
@@ -9392,7 +9397,7 @@ def test_a_late_retry_of_a_pending_post_reserves_its_own_window(
 ) -> None:
     registry = follows(tmp_path, "a", "b")
     offset = skewed(monkeypatch)
-    og = Leads(a=[told("brief", 60), ending("DONE: one", 5)], b=[told("brief", 60)])
+    og = Leads(a=[told("brief", 60), ending("USER NEEDED: one", 5)], b=[told("brief", 60)])
     og.histories["cos"] = []
     real, at = og.send, []
 
@@ -9410,7 +9415,7 @@ def test_a_late_retry_of_a_pending_post_reserves_its_own_window(
     og.send = record  # type: ignore[method-assign]
     offset[0] = 299.0
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # the restart: a retry
-    og.histories["b"].append(ending("DONE: two", 0))
+    og.histories["b"].append(ending("USER NEEDED: two", 0))
     for t in (301.0, 598.0, 600.0):
         offset[0] = t
         supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
@@ -9462,7 +9467,7 @@ def test_a_copy_still_pending_after_a_crash_counts_as_delivered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: str
 ) -> None:
     registry = following(tmp_path)
-    og = Lead(told("brief", 60), ending("DONE: shipped" if held == "post" else "on it", 5))
+    og = Lead(told("brief", 60), ending("USER NEEDED: shipped" if held == "post" else "on it", 5))
     og.histories["cos"] = []
     to = "cos" if held == "post" else "a"
     pending: list[dict] = []  # the session took the copy and has not folded it in yet
@@ -12672,7 +12677,7 @@ def prompt_look(n: int, title: str, queued: int) -> tuple[dict, str]:
         pytest.param(
             [
                 ({}, "USER NEEDED: approve A"),
-                ({}, "DONE: step one"),
+                ({}, "PARKED: no host"),
                 ({}, "USER NEEDED: approve A"),
             ],
             ["owner", "act", "info"],
