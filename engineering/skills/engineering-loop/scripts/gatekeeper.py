@@ -2900,16 +2900,16 @@ def placed(loop: str | None, queue: bool = False) -> Any:
     global SIGNING
     land, cloud = settings(loop).get("land"), in_cloud()
     place = "a cloud session" if cloud else "a host"
+    where = (land or {}).get("where", "both")
+    where = LAND_WHERE.aliases.get(where, where)
+    if where not in ("both", "cloud" if cloud else "host"):
+        raise Refused(f"loop.md's `land.where` is `{where}`, so land does not run in {place}")
     if cloud and not queue and not (land or {}).get("signed_squash_to"):
         raise Refused(
             "land in a cloud session needs a base that requires GitHub's merge queue, or loop.md's"
             " `land.signed_squash_to`: otherwise GitHub merges, over GraphQL, which the session's proxy refuses, and"
             " signs with GitHub's key"
         )
-    where = (land or {}).get("where", "both")
-    where = LAND_WHERE.aliases.get(where, where)
-    if where not in ("both", "cloud" if cloud else "host"):
-        raise Refused(f"loop.md's `land.where` is `{where}`, so land does not run in {place}")
     if not cloud or queue:
         yield
         return

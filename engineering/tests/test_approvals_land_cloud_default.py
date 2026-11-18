@@ -53,3 +53,16 @@ def test_land_where_host_still_refuses_a_cloud_session_on_a_merge_queue_base(
         approvals.placed(loop, True),
     ):
         pass
+
+
+def test_where_host_names_where_even_on_a_base_without_the_queue_or_signed_squash_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Adding a queue or `signed_squash_to` would not let it land, so the `where` line is the one it gets."""
+    monkeypatch.setenv(approvals.CLOUD, "true")
+    loop = NO_LAND.replace("practice:", "land:\n  where: host\npractice:")
+    with (
+        pytest.raises(approvals.Refused, match="`land.where` is `host`"),
+        approvals.placed(loop, False),
+    ):
+        pass
