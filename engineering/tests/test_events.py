@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -14,7 +15,11 @@ import pytest
 
 spec = importlib.util.spec_from_file_location(
     "loop_events",
-    Path(__file__).resolve().parent.parent / "skills" / "engineering-loop" / "scripts" / "events.py",
+    Path(__file__).resolve().parent.parent
+    / "skills"
+    / "engineering-loop"
+    / "scripts"
+    / "events.py",
 )
 events = importlib.util.module_from_spec(spec)
 sys.modules["loop_events"] = events
@@ -22,7 +27,9 @@ spec.loader.exec_module(events)
 
 
 def git(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout
 
 
 @pytest.fixture
@@ -40,7 +47,14 @@ def clones(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 def test_event_round_trips_between_clones(clones: tuple[Path, Path, Path]) -> None:
     _, a, b = clones
-    events.emit("lead", "feat/x", "needs-owner", url="https://example.test/1", question="Which one?\n\nA or B.\n", cwd=a)
+    events.emit(
+        "lead",
+        "feat/x",
+        "needs-owner",
+        url="https://example.test/1",
+        question="Which one?\n\nA or B.\n",
+        cwd=a,
+    )
     (got,) = events.read("lead", cwd=b)
     assert (got["state"], got["url"], got["question"], got["branch"], got["kind"]) == (
         "needs-owner",
@@ -52,13 +66,17 @@ def test_event_round_trips_between_clones(clones: tuple[Path, Path, Path]) -> No
     assert got["seq"] == 1 and got["beat_s"] == events.BEATS["lead"]
 
 
-def test_read_fetches_only_a_moved_sha(clones: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_read_fetches_only_a_moved_sha(
+    clones: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     _, a, b = clones
     events.emit("land", "x", "waiting", cwd=a)
     first = events.read(cwd=b)[0]
     fetched = []
     real = events.fetch_event
-    monkeypatch.setattr(events, "fetch_event", lambda cwd, ref: fetched.append(ref) or real(cwd, ref))
+    monkeypatch.setattr(
+        events, "fetch_event", lambda cwd, ref: fetched.append(ref) or real(cwd, ref)
+    )
     again = events.read(cwd=b)[0]
     assert fetched == [] and again["changed"] == first["changed"]
     time.sleep(1.1)
@@ -83,7 +101,9 @@ def test_wait_exit_codes(clones: tuple[Path, Path, Path]) -> None:
     sink = type("S", (), {"write": lambda self, s: out.append(s), "flush": lambda self: None})()
     # another process emits ok while this one waits (from the other clone, through the remote)
     events.emit("land", "x", "waiting", cwd=a)
-    threading.Timer(0.5, lambda: events.emit("land", "x", "ok", url="https://example.test/p", cwd=a)).start()
+    threading.Timer(
+        0.5, lambda: events.emit("land", "x", "ok", url="https://example.test/p", cwd=a)
+    ).start()
     assert events.wait("land", "x", poll=0.1, timeout=10, cwd=b, out=sink) == 0
     events.emit("land", "y", "failed", cwd=a)
     assert events.wait("land", "y", poll=0.1, timeout=5, cwd=b, out=sink) == 1
@@ -101,14 +121,20 @@ def test_wait_exit_codes(clones: tuple[Path, Path, Path]) -> None:
 
 def test_unreadable_event_is_unknown_not_ended(clones: tuple[Path, Path, Path]) -> None:
     _, a, _ = clones
-    tree = subprocess.run(["git", "mktree"], cwd=a, input="", text=True, capture_output=True, check=True).stdout.strip()
-    commit = git(a, "-c", "user.name=t", "-c", "user.email=t@t", "commit-tree", "-m", "junk", tree).strip()
+    tree = subprocess.run(
+        ["git", "mktree"], cwd=a, input="", text=True, capture_output=True, check=True
+    ).stdout.strip()
+    commit = git(
+        a, "-c", "user.name=t", "-c", "user.email=t@t", "commit-tree", "-m", "junk", tree
+    ).strip()
     git(a, "update-ref", "refs/loop/lead/j", commit)
     assert events.event_at(a, commit)["state"] == "unknown"
-    assert events.wait("lead", "j", poll=0.1, timeout=0.3, cwd=a, out=open("/dev/null", "w")) == 3
+    assert events.wait("lead", "j", poll=0.1, timeout=0.3, cwd=a, out=io.StringIO()) == 3
 
 
-def test_emit_offline_is_not_a_failure(clones: tuple[Path, Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_emit_offline_is_not_a_failure(
+    clones: tuple[Path, Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     _, a, _ = clones
     git(a, "remote", "set-url", "origin", str(tmp_path / "nowhere.git"))
     assert events.main(["--repo", str(a), "emit", "lead", "x", "waiting"]) == 0
@@ -118,7 +144,7 @@ def test_emit_offline_is_not_a_failure(clones: tuple[Path, Path, Path], tmp_path
     assert local["state"] == "waiting"
     # a native lead in the same clone still waits on it
     events.emit("lead", "x", "ok", cwd=a)
-    assert events.wait("lead", "x", poll=0.1, timeout=2, cwd=a, out=open("/dev/null", "w")) == 0
+    assert events.wait("lead", "x", poll=0.1, timeout=2, cwd=a, out=io.StringIO()) == 0
 
 
 def test_clear_removes_refs_here_and_on_origin(clones: tuple[Path, Path, Path]) -> None:
@@ -129,9 +155,15 @@ def test_clear_removes_refs_here_and_on_origin(clones: tuple[Path, Path, Path]) 
     events.read(cwd=b)
     events.clear("x", cwd=a)
     events.clear("x", cwd=b)
-    assert git(bare, "for-each-ref", "--format=%(refname)", "refs/loop/").split() == ["refs/loop/land/keep"]
-    assert git(a, "for-each-ref", "--format=%(refname)", "refs/loop/").split() == ["refs/loop/land/keep"]
-    assert git(b, "for-each-ref", "--format=%(refname)", "refs/loop-remote/").split() == ["refs/loop-remote/land/keep"]
+    assert git(bare, "for-each-ref", "--format=%(refname)", "refs/loop/").split() == [
+        "refs/loop/land/keep"
+    ]
+    assert git(a, "for-each-ref", "--format=%(refname)", "refs/loop/").split() == [
+        "refs/loop/land/keep"
+    ]
+    assert git(b, "for-each-ref", "--format=%(refname)", "refs/loop-remote/").split() == [
+        "refs/loop-remote/land/keep"
+    ]
 
 
 def test_cli_emit_read_round_trip(clones: tuple[Path, Path, Path], tmp_path: Path) -> None:
@@ -139,8 +171,29 @@ def test_cli_emit_read_round_trip(clones: tuple[Path, Path, Path], tmp_path: Pat
     question = tmp_path / "q.md"
     question.write_text("Go?\n")
     script = Path(events.__file__)
-    run = lambda repo, *args: subprocess.run([sys.executable, str(script), "--repo", str(repo), *args], capture_output=True, text=True)  # noqa: E731
-    assert run(a, "emit", "lead", "b1", "needs-owner", "--url", "https://example.test/9", "--question", str(question)).returncode == 0
+
+    def run(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), "--repo", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert (
+        run(
+            a,
+            "emit",
+            "lead",
+            "b1",
+            "needs-owner",
+            "--url",
+            "https://example.test/9",
+            "--question",
+            str(question),
+        ).returncode
+        == 0
+    )
     read = run(b, "read", "--json")
     assert read.returncode == 0 and json.loads(read.stdout)["question"] == "Go?\n"
     assert run(b, "wait", "lead", "b1", "--timeout", "2").returncode == 2

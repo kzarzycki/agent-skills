@@ -53,7 +53,13 @@ IDENTITY = {
 }
 
 
-def run(cwd: Path | str | None, *args: str, stdin: str | None = None, env: dict[str, str] | None = None, timeout: float | None = None) -> str:
+def run(
+    cwd: Path | str | None,
+    *args: str,
+    stdin: str | None = None,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> str:
     """One git call in `cwd`; its stdout, or CalledProcessError (TimeoutExpired past `timeout`)."""
     # ponytail: a four-line runner here, not gatekeeper.git: that module imports PyYAML and its signing state at load,
     # and this one is stdlib-only so a native lead with plain git can run it
@@ -139,14 +145,30 @@ def emit(
     if old:
         previous = event_at(cwd, old).get("seq")
         seq = previous + 1 if isinstance(previous, int) else 1
-    data = {"state": state, "seq": seq, "at": now(), "beat_s": beat if beat is not None else BEATS[kind], "url": url}
-    files = {"event.json": json.dumps(data, sort_keys=True) + "\n"} | ({"question.md": question} if question is not None else {})
+    data = {
+        "state": state,
+        "seq": seq,
+        "at": now(),
+        "beat_s": beat if beat is not None else BEATS[kind],
+        "url": url,
+    }
+    files = {"event.json": json.dumps(data, sort_keys=True) + "\n"} | (
+        {"question.md": question} if question is not None else {}
+    )
     entries = "".join(
-        f"100644 blob {run(cwd, 'hash-object', '-w', '--stdin', stdin=text).strip()}\t{name}\n" for name, text in files.items()
+        f"100644 blob {run(cwd, 'hash-object', '-w', '--stdin', stdin=text).strip()}\t{name}\n"
+        for name, text in files.items()
     )
     tree = run(cwd, "mktree", stdin=entries).strip()
     # [skip ci]: a ref outside refs/heads/ starts no workflow, but a host that mirrors it should not either
-    commit = run(cwd, "commit-tree", "-m", f"loop event {kind} {branch}: {state} [skip ci]", tree, env=IDENTITY).strip()
+    commit = run(
+        cwd,
+        "commit-tree",
+        "-m",
+        f"loop event {kind} {branch}: {state} [skip ci]",
+        tree,
+        env=IDENTITY,
+    ).strip()
     run(cwd, "update-ref", ref, commit)
     try:
         # the lease is the sha origin holds now: this writer rewrites its own ref, and only a push that races another
@@ -154,7 +176,16 @@ def emit(
         # ponytail: one ls-remote per beat, not a lease on a remembered sha, so a producer restarted on another host
         # takes the ref over instead of failing for good
         held = remote_refs(cwd, ref).get(ref, "")
-        run(cwd, "push", "-q", "--no-verify", f"--force-with-lease={ref}:{held}", "origin", f"{commit}:{ref}", timeout=NETWORK)
+        run(
+            cwd,
+            "push",
+            "-q",
+            "--no-verify",
+            f"--force-with-lease={ref}:{held}",
+            "origin",
+            f"{commit}:{ref}",
+            timeout=NETWORK,
+        )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         reason = " ".join((getattr(exc, "stderr", None) or str(exc)).split())[:300]
         print(f"events: {ref} written here, not pushed: {reason}", file=sys.stderr)
@@ -177,7 +208,16 @@ def fetch_event(cwd: Path | str | None, ref: str) -> dict[str, Any]:
     """The event origin's `ref` holds: fetched into the mirror, then parsed. A failed fetch: state `unknown`."""
     mirror = MIRROR + ref.removeprefix(NAMESPACE)
     try:
-        run(cwd, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "origin", f"+{ref}:{mirror}", timeout=NETWORK)
+        run(
+            cwd,
+            "fetch",
+            "-q",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "origin",
+            f"+{ref}:{mirror}",
+            timeout=NETWORK,
+        )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
         return {"state": "unknown"}
     return event_at(cwd, mirror)
@@ -211,11 +251,24 @@ def read(kind: str | None = None, *, cwd: Path | str | None = None) -> list[dict
             moved = note.get("sha") != sha
             event = fetch_event(cwd, ref) if moved or "event" not in note else note["event"]
             if event.get("state") != "unknown":
-                seen[ref] = {"sha": sha, "changed": time.time() if moved else note.get("changed", time.time()), "event": event}
+                seen[ref] = {
+                    "sha": sha,
+                    "changed": time.time() if moved else note.get("changed", time.time()),
+                    "event": event,
+                }
             changed = seen.get(ref, {}).get("changed", time.time())
         else:
             event, changed = event_at(cwd, sha), time.time()
-        found.append({**event, "kind": split(ref)[0], "branch": split(ref)[1], "ref": ref, "sha": sha, "changed": changed})
+        found.append(
+            {
+                **event,
+                "kind": split(ref)[0],
+                "branch": split(ref)[1],
+                "ref": ref,
+                "sha": sha,
+                "changed": changed,
+            }
+        )
     if remote:
         with contextlib.suppress(OSError):
             seen_path(cwd).write_text(json.dumps({r: seen[r] for r in shas if r in seen}))
@@ -249,10 +302,18 @@ def wait(
                 events.append(fetch_event(cwd, ref))
         known = [e for e in events if e["state"] != "unknown"]
         # ponytail: the later `at` wins, so two hosts' clocks decide a tie; a producer has one writer per ref
-        event = max(known, key=lambda e: (str(e.get("at", "")), int(e.get("seq", 0)))) if known else None
+        event = (
+            max(known, key=lambda e: (str(e.get("at", "")), int(e.get("seq", 0))))
+            if known
+            else None
+        )
         if event is not None:
             if event["state"] in ENDS:
-                print(f"{kind} {branch}: {event['state']}" + (f" {event['url']}" if event.get("url") else ""), file=out)
+                print(
+                    f"{kind} {branch}: {event['state']}"
+                    + (f" {event['url']}" if event.get("url") else ""),
+                    file=out,
+                )
                 if event.get("question"):
                     print(event["question"], file=out)
                 return ENDS[event["state"]]
@@ -260,7 +321,10 @@ def wait(
                 at = parse_at(event.get("at"))
                 watched = (event["sha"], min(time.time(), at) if at is not None else time.time())
             if time.time() - watched[1] > 2 * float(event.get("beat_s", BEATS.get(kind, 300))):
-                print(f"{kind} {branch}: silent, waiting and unchanged for more than twice its beat", file=out)
+                print(
+                    f"{kind} {branch}: silent, waiting and unchanged for more than twice its beat",
+                    file=out,
+                )
                 return SILENT
         if time.monotonic() >= deadline:
             print(f"{kind} {branch}: still waiting after {timeout:g}s", file=out)
@@ -280,7 +344,15 @@ def clear(branch: str, *, cwd: Path | str | None = None) -> None:
     try:
         there = [ref for ref in mine if ref in remote_refs(cwd, f"{NAMESPACE}/*/{branch}")]
         if there:
-            run(cwd, "push", "-q", "--no-verify", "origin", *(f":{ref}" for ref in there), timeout=NETWORK)
+            run(
+                cwd,
+                "push",
+                "-q",
+                "--no-verify",
+                "origin",
+                *(f":{ref}" for ref in there),
+                timeout=NETWORK,
+            )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         reason = " ".join((getattr(exc, "stderr", None) or str(exc)).split())[:300]
         print(f"events: origin's refs of {branch} not removed: {reason}", file=sys.stderr)
@@ -288,7 +360,9 @@ def clear(branch: str, *, cwd: Path | str | None = None) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--repo", default=None, help="run git in this directory (default: the current one)")
+    parser.add_argument(
+        "--repo", default=None, help="run git in this directory (default: the current one)"
+    )
     sub = parser.add_subparsers(dest="verb", required=True)
     p = sub.add_parser("emit")
     p.add_argument("kind", choices=sorted(BEATS))
@@ -296,7 +370,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("state", choices=STATES)
     p.add_argument("--url", default="")
     p.add_argument("--question", metavar="FILE", help="the whole text of a request to the owner")
-    p.add_argument("--beat", type=float, default=None, help="seconds between this producer's beats (default: the kind's)")
+    p.add_argument(
+        "--beat",
+        type=float,
+        default=None,
+        help="seconds between this producer's beats (default: the kind's)",
+    )
     p = sub.add_parser("read")
     p.add_argument("kind", nargs="?", choices=sorted(BEATS))
     p.add_argument("--json", action="store_true")
@@ -311,18 +390,35 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verb == "emit":
             question = Path(args.question).read_text() if args.question else None
-            print(emit(args.kind, args.branch, args.state, url=args.url, question=question, beat=args.beat, cwd=args.repo))
+            print(
+                emit(
+                    args.kind,
+                    args.branch,
+                    args.state,
+                    url=args.url,
+                    question=question,
+                    beat=args.beat,
+                    cwd=args.repo,
+                )
+            )
         elif args.verb == "read":
             found = read(args.kind, cwd=args.repo)
             for event in found:
-                print(json.dumps(event, sort_keys=True) if args.json else f"{event['ref']} {event['state']} {event.get('url', '')}".rstrip())
+                print(
+                    json.dumps(event, sort_keys=True)
+                    if args.json
+                    else f"{event['ref']} {event['state']} {event.get('url', '')}".rstrip()
+                )
         elif args.verb == "wait":
             return wait(args.kind, args.branch, timeout=args.timeout, poll=args.poll, cwd=args.repo)
         else:
             clear(args.branch, cwd=args.repo)
     except (subprocess.CalledProcessError, OSError) as exc:
         # the local half failed (not a git repo, an unreadable question file): the one case that is a real error
-        print(f"events: {' '.join((getattr(exc, 'stderr', None) or str(exc)).split())}", file=sys.stderr)
+        print(
+            f"events: {' '.join((getattr(exc, 'stderr', None) or str(exc)).split())}",
+            file=sys.stderr,
+        )
         return 1
     return 0
 
