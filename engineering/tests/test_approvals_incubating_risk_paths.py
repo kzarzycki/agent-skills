@@ -33,3 +33,9 @@ def test_an_added_file_on_a_risk_path_owes_the_full_loop(path: str) -> None:
 
 def test_an_added_file_elsewhere_stays_eligible() -> None:
     assert merge("new/skill.md") == []
+
+
+def test_a_critical_path_stays_ineligible_where_critical_asks_the_owner_for_the_spec() -> None:
+    """risk() skips a critical term when `levels.critical` is {owner, gates}, so critical() must be read directly."""
+    loop = POLICY + "levels:\n  critical: {spec: owner, merge: gates}\n"
+    assert any("rates high or critical" in line for line in merge("CODEOWNERS", loop))
