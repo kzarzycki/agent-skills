@@ -114,8 +114,17 @@ run = "OMNIGENT_E2E=1 uv run pytest -q -m live_agent engineering/tests/e2e/test_
 # GATE_TEST_PARALLEL=1 runs it on pytest-xdist, one worker per free core (tools/gate_workers.py), a file per worker (#941); unset, serially.
 run = """uv run python tools/gate_slot.py pytest -q -m 'not live_agent' $([ "${GATE_TEST_PARALLEL:-0}" = 1 ] && printf '%s' '-p tools.gate_workers -n auto --dist loadfile') && uv run ruff check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts engineering/skills/chief-of-staff/scripts engineering/skills/omnigent-telemetry/scripts engineering/hooks && uv run ruff format --check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts engineering/skills/chief-of-staff/scripts engineering/skills/omnigent-telemetry/scripts engineering/hooks"""
 
+[tasks.check-fast]
+description = "The landing gate: vendor check, lint, and only the tests the change touches (tools/affected_tests.py). The full suite runs nightly in CI."
+# ponytail: a batch of PRs is gated on its own touched tests only, so a combination of PRs that breaks an untouched test
+# reaches main; the nightly full run catches it, a bisect names the PR, and the fix goes forward on main.
+# Upgrade path: a suite that runs in seconds lets `check` come back as the gate.
+run = """mise run vendor-engineering-check
+uv run python tools/gate_slot.py sh -c 'uv run pytest -q -m "not live_agent" $(uv run python tools/affected_tests.py ${GATE_BASE:-origin/main})'
+uv run ruff check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts engineering/skills/chief-of-staff/scripts engineering/skills/omnigent-telemetry/scripts engineering/hooks && uv run ruff format --check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts engineering/skills/chief-of-staff/scripts engineering/skills/omnigent-telemetry/scripts engineering/hooks"""
+
 [tasks.check]
-description = "The gates CI runs, in its order: vendor-engineering-check, test, test-engineering-package"
+description = "The full suite, nightly in CI: vendor-engineering-check, test, test-engineering-package"
 run = [
   "mise run vendor-engineering-check",
   "mise run test",
