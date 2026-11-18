@@ -190,6 +190,7 @@ def test_a_script_that_changed_on_main_after_the_map_runs_by_name(mapped) -> Non
 
 def test_a_line_run_in_process_and_in_a_subprocess_falls_back_to_the_name_match(mapped) -> None:
     data = CoverageData(basename=str(a.MAP / "coverage"))
+    data.read()
     data.set_context("")  # what a subprocess records
     data.add_lines({"pkg/mod.py": [7]})
     data.write()
