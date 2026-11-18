@@ -462,7 +462,7 @@ Finish a worker or verifier as soon as its report is read or its verdict posted,
 idle child keeps its agent process, MCP servers and runner alive. With Omnigent, `run` and
 `wait` already finish the child whose report they return, except a `--pr` worker, which they keep
 for its fix rounds and which `reap` finishes once its PR is merged or closed (a verdict does not release it), and `land` once it
-merges the PR; a report you heard any other way
+merges the PR (after a land, `omnigent_agent.py reuse <session> --repo <owner/name>` says `reuse` or `start`: on `reuse`, `send --pr <new PR>` the next brief to that worker, with a line saying it is a reused worker whose earlier story landed, so it starts its new branch from a fresh origin/main; the send relabels it, so `reap --merged` keeps it until the new PR lands; on `start`, reap it and start a fresh one as today); a report you heard any other way
 (`send`, `watch`, a `run` that died, a file you read) leaves the child idle, so `reap <id>` it. At each
 wake and before each new start, finish any child whose report you have read and whose turn
 ended over 15 min ago. Only you know a report is in: an idle child still owing one looks

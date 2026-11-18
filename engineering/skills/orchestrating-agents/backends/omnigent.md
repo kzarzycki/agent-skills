@@ -242,6 +242,21 @@ reviewer must be of the other family is the caller's policy.
 `start` and `wait <session> <report>` are the two halves, for a start whose wait runs
 elsewhere.
 
+**Cold start.** `start` (after waiting up to `COLD_START_SECONDS`, 20 s, for a first turn), `wait` and
+`run` print on stderr `cold start: <n|unknown> s to first turn`: the seconds from the session record's
+`created_at` (set by the create call) to the `created_at` of its first assistant item (a message or
+tool call of the assistant). A time the API does not give, or a session with no turn yet, prints
+`unknown`, never 0; `wait` prints it again once the turn exists. The lead's log keeps the line.
+
+**Reusing a landed worker.** `reuse <session> --repo <owner/name> [--workspace DIR]` prints `reuse: <why>`
+or `start: <why>` for a `--pr` worker's next story. `reuse` needs: the worker's PR (its `omni.pr`
+label) merged; the next story in that PR's repository; and the session's current context
+(`last_total_tokens` in its record) under loop.md's `Reuse worker context: <size>` line (the spec's
+`reuse_worker_context_tokens`, sized as `Lead autocompact:` is, 10k to 1M). No line, an unreadable
+context, an open or closed-unmerged PR or another repo is `start`; a bad size fails. The lead then
+`send --pr <new PR>`s the next brief, which relabels the worker with the new PR before the message
+goes, so `reap --merged` keeps it until that PR lands and finishes it as usual after.
+
 **Signature.** `python3 scripts/omnigent_agent.py signature` prints `<harness>/<model>/<effort>` of the session it
 runs in, read at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and transcript), so it holds
 however the session started. It reads the session's Omnigent record first (`llm_model` once the harness has
