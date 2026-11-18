@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -53,13 +54,24 @@ def test_signature_names_agy() -> None:
 
 
 def test_gemini_route_without_a_host_is_refused_by_the_start(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    role_file: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     brief = tmp_path / "b.md"
     brief.write_text("review")
     monkeypatch.setattr(omnigent_agent, "Omnigent", FakeOmnigent)
     monkeypatch.chdir(tmp_path)
-    argv = ["run", "codex", "t", str(brief), str(tmp_path / "r.md"), "--role", "verifier.md"]
+    argv = [
+        "run",
+        "codex",
+        "t",
+        str(brief),
+        str(tmp_path / "r.md"),
+        "--role",
+        role_file("verifier.md"),
+    ]
     assert omnigent_agent.main([*argv, "--verifier-route", "gemini"]) == 1
     assert "pass --host" in capsys.readouterr().err
 
@@ -85,7 +97,10 @@ def test_agy_on_another_host_reads_its_brief_from_a_file_there(
 
 
 def test_verifier_start_refuses_a_workspace_not_at_the_briefs_reviewed_head(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    role_file: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
     git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -110,7 +125,7 @@ def test_verifier_start_refuses_a_workspace_not_at_the_briefs_reviewed_head(
             "b.md",
             str(tmp_path / f"{name}.md"),
             "--role",
-            "verifier.md",
+            role_file("verifier.md"),
         ]
         return omnigent_agent.main(argv)
 
@@ -131,13 +146,24 @@ def test_verifier_start_refuses_a_workspace_not_at_the_briefs_reviewed_head(
     og.sessions.clear()
     capsys.readouterr()
     (tmp_path / "b.md").write_text(f"- Reviewed head: {shas[0]}\n")
-    argv = ["start", "codex", "plain", "b.md", str(plain / "r.md"), "--role", "verifier.md"]
+    argv = [
+        "start",
+        "codex",
+        "plain",
+        "b.md",
+        str(plain / "r.md"),
+        "--role",
+        role_file("verifier.md"),
+    ]
     assert omnigent_agent.main([*argv, "--workspace", str(plain)]) == 0
     assert "HEAD not read" in capsys.readouterr().err
 
 
 def test_a_start_with_a_pr_whose_head_moved_asks_for_a_new_brief(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    role_file: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
     git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -157,7 +183,15 @@ def test_a_start_with_a_pr_whose_head_moved_asks_for_a_new_brief(
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text(f"- Reviewed head: {old}\n")
-    argv = ["start", "codex", "t", "b.md", str(tmp_path / "r.md"), "--role", "verifier.md"]
+    argv = [
+        "start",
+        "codex",
+        "t",
+        "b.md",
+        str(tmp_path / "r.md"),
+        "--role",
+        role_file("verifier.md"),
+    ]
     assert omnigent_agent.main([*argv, "--pr", "7"]) == 1
     err = capsys.readouterr().err
     assert "`approvals.py brief 7`" in err and "checkout --detach" not in err
@@ -165,7 +199,10 @@ def test_a_start_with_a_pr_whose_head_moved_asks_for_a_new_brief(
 
 
 def test_verifier_start_reads_a_remote_workspace_head_through_a_session_there(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    role_file: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     old, new = "a" * 40, "b" * 40
     og = FakeOmnigent()
@@ -183,7 +220,7 @@ def test_verifier_start_reads_a_remote_workspace_head_through_a_session_there(
 
     def start(head: str, name: str) -> int:
         (tmp_path / "b.md").write_text(f"- Reviewed head: {head}\n")
-        argv = ["start", "codex", name, "b.md", "/there/r.md", "--role", "verifier.md"]
+        argv = ["start", "codex", name, "b.md", "/there/r.md", "--role", role_file("verifier.md")]
         return omnigent_agent.main(
             [*argv, "--top-level", "--host", "kris", "--workspace", "/there"]
         )
@@ -217,7 +254,7 @@ def test_route_flag_without_the_verifier_role_is_refused_before_a_session(
 
 
 def test_env_route_on_a_verifier_start_routes_to_agy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, role_file: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = FakeOmnigent()
     og.host = lambda n: {"h": "far"}[n]  # type: ignore[method-assign]
@@ -238,7 +275,7 @@ def test_env_route_on_a_verifier_start_routes_to_agy(
         "b.md",
         "/w/r.md",
         "--role",
-        "x/verifier.md",
+        role_file("x/verifier.md"),
         "--top-level",
         "--host",
         "h",

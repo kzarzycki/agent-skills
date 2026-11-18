@@ -8140,6 +8140,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             ok, line = capacity()
             print(line)
             return 0 if ok else 1
+        if args.cmd in ("run", "start") and args.role is not None:
+            role_file = Path(args.role)
+            if not (role_file.is_file() and os.access(role_file, os.R_OK)):
+                raise Fail(f"--role {args.role}: not a readable file; the child reads it first")
         og = Omnigent(args.server) if args.server else Omnigent()
         if args.cmd == "capacity":
             target = og.host(args.host)

@@ -1,7 +1,8 @@
 import os
 import shutil
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from pathlib import Path
 
 # The engineering loop's script tests load modules from a shipped skill folder;
 # a bytecode cache written there would ship with the package. The variable carries
@@ -147,3 +148,16 @@ def _host_has_room(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPat
     agent = getattr(request.module, "omnigent_agent", None)
     if agent is not None:
         monkeypatch.setattr(agent, "capacity", lambda **_: (True, ""))
+
+
+@pytest.fixture
+def role_file(tmp_path: Path) -> Callable[[str], str]:
+    """Write a role file under tmp_path and return its path: `--role` must name a readable file (#1313)."""
+
+    def make(name: str) -> str:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("role")
+        return str(path)
+
+    return make
