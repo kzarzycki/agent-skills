@@ -10,7 +10,8 @@ prose. Every producer and the supervisor read this file; `scripts/events.py` is 
 owner, `question.md` (the whole text, never cut). A beat is the same ref rewritten with a new parentless commit, so one
 commit is reachable from it and history never grows. The branch is the one the work is on, so the ref exists before
 a PR does and survives a push. The landing lock and waiter refs (`refs/heads/loop-landing/*`, `refs/heads/loop-waiting/*`)
-are not events and stay as `land` writes them.
+are not events and stay as `land` writes them, and so are the gatekeeper's `refs/loop/records/*` (gate records) and
+`refs/loop/landing`: `read` lists only the kinds below.
 
 `event.json` fields (all present on every event):
 
@@ -30,15 +31,15 @@ as ends and leaves a ref it cannot read or parse as `unknown`, never as ended; t
 
 | Kind | Writer | Beat interval | `url` points to |
 |---|---|---|---|
-| `lead` | the lead's own script, when it waits or needs the owner (slice #1376) | 300 s | the PR or issue the lead's item is |
-| `land` | `approvals.py land` (slice #1378) | 300 s | the PR, and on `failed` the failing log |
-| `gate` | the gate run, `local-ci` (slice #1379) | 120 s | the gate log |
-| `verifier` | the verifier run (slice #1380) | 300 s | the verifier's report or PR comment |
+| `lead` | the lead's own script, when it waits or needs the owner | 300 s | the PR or issue the lead's item is |
+| `land` | `approvals.py land` | 300 s | the PR, and on `failed` the failing log |
+| `gate` | the gate run, `local-ci` | 120 s | the gate log |
+| `verifier` | the verifier run | 300 s | the verifier's report or PR comment |
 | `probe` | `events.py` tests and the one-off check below only | 60 s | nothing |
 
 A wait is **live** while its ref changed within twice its `beat_s`. `wait` ends with exit 4 on a `waiting` event that
 did not change for longer, counted from its `at` on the first sight and from the moment its sha moved after that.
-The intervals are the kinds' starting values: a slice that writes a kind may set `beat_s` per emit and fix its row here.
+The intervals are the kinds' starting values: the code that writes a kind may set `beat_s` per emit and fix its row here.
 
 ## Reading and waiting
 
@@ -48,18 +49,15 @@ The intervals are the kinds' starting values: a slice that writes a kind may set
 - `wait <kind> <branch>`: exit 0 `ok`, 1 `failed`, 2 `needs-owner` (the question is printed), 3 timeout, 4 silent.
   Each poll reads the local ref, then origin's, and takes the later `at`.
 - `clear <branch>`: removes the branch's refs of every kind here and on origin. `land` calls it when a PR merges
-  and `reap` for a closed one (slice #1378).
+  and `reap` for a closed one.
 
 ## Degraded
 
 Only `git` and an `origin` are needed. `emit` writes the local ref first; a push that fails prints one warning and
 exits 0, so an event reports a step and is never part of it. A native lead in the same clone still sees the event with
-`wait`; another host sees it when a later push goes through. `read` with origin down shows the local refs and warns.
+`wait`; another host sees it when a later push goes through. `read` with origin down shows the local events (kinds below, nested branches included) and warns.
 
-## Measured on GitHub (slice #1375)
-
-Run on 2026-11-18 against this repository's `origin` (github.com, over HTTPS) from a cloud session whose git traffic
-goes through that session's proxy.
+## Measured on GitHub
 
 - **Rulesets:** `gh api repos/{owner}/{repo}/rulesets/<id>` lists two: `main` (target branch, includes only
   `refs/heads/main`: deletion, non_fast_forward, required_status_checks, pull_request) and `tags immutable` (target

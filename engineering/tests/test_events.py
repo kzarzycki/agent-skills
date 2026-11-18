@@ -85,6 +85,43 @@ def test_read_fetches_only_a_moved_sha(
     assert fetched == [moved["ref"]] and moved["seq"] == 2 and moved["changed"] > first["changed"]
 
 
+def test_filtered_read_keeps_the_other_kinds_cached(
+    clones: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, a, b = clones
+    events.emit("lead", "x", "waiting", cwd=a)
+    events.emit("gate", "x", "waiting", cwd=a)
+    first = {e["kind"]: e["changed"] for e in events.read(cwd=b)}
+    events.read("lead", cwd=b)
+    time.sleep(1.1)
+    fetched = []
+    real = events.fetch_event
+    monkeypatch.setattr(
+        events, "fetch_event", lambda cwd, ref: fetched.append(ref) or real(cwd, ref)
+    )
+    again = {e["kind"]: e["changed"] for e in events.read(cwd=b)}
+    assert fetched == [] and again == first
+
+
+def test_read_with_origin_down_lists_the_local_events_only(
+    clones: tuple[Path, Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, a, _ = clones
+    events.emit("lead", "y", "waiting", cwd=a)
+    events.emit("probe", "loop/x", "waiting", cwd=a)
+    # the gatekeeper's refs share the namespace and are not events
+    head = git(a, "rev-parse", "refs/loop/lead/y").strip()
+    git(a, "update-ref", "refs/loop/records/abc-key", head)
+    git(a, "update-ref", "refs/loop/landing", head)
+    git(a, "remote", "set-url", "origin", str(tmp_path / "nowhere.git"))
+    assert [e["ref"] for e in events.read(cwd=a)] == [
+        "refs/loop/lead/y",
+        "refs/loop/probe/loop/x",
+    ]
+    assert [e["ref"] for e in events.read("probe", cwd=a)] == ["refs/loop/probe/loop/x"]
+    assert capsys.readouterr().err.count("origin not read") == 2
+
+
 def test_beat_leaves_no_history(clones: tuple[Path, Path, Path]) -> None:
     bare, a, _ = clones
     events.emit("gate", "x", "waiting", cwd=a)
@@ -95,28 +132,108 @@ def test_beat_leaves_no_history(clones: tuple[Path, Path, Path]) -> None:
     assert git(a, "rev-parse", ref) == git(bare, "rev-parse", ref)
 
 
-def test_wait_exit_codes(clones: tuple[Path, Path, Path]) -> None:
+def waiting_on(clone: Path, kind: str, branch: str, timeout: float) -> tuple[int, str]:
+    out = io.StringIO()
+    code = events.wait(kind, branch, poll=0.1, timeout=timeout, cwd=clone, out=out)
+    return code, out.getvalue()
+
+
+def test_wait_ends_with_0_when_another_clone_emits_ok(clones: tuple[Path, Path, Path]) -> None:
     _, a, b = clones
-    out = []
-    sink = type("S", (), {"write": lambda self, s: out.append(s), "flush": lambda self: None})()
-    # another process emits ok while this one waits (from the other clone, through the remote)
     events.emit("land", "x", "waiting", cwd=a)
     threading.Timer(
         0.5, lambda: events.emit("land", "x", "ok", url="https://example.test/p", cwd=a)
     ).start()
-    assert events.wait("land", "x", poll=0.1, timeout=10, cwd=b, out=sink) == 0
+    code, text = waiting_on(b, "land", "x", 10)
+    assert code == 0 and "https://example.test/p" in text
+
+
+def test_wait_ends_with_1_on_failed(clones: tuple[Path, Path, Path]) -> None:
+    _, a, b = clones
     events.emit("land", "y", "failed", cwd=a)
-    assert events.wait("land", "y", poll=0.1, timeout=5, cwd=b, out=sink) == 1
+    assert waiting_on(b, "land", "y", 5)[0] == 1
+
+
+def test_wait_ends_with_2_on_needs_owner_and_prints_the_question(
+    clones: tuple[Path, Path, Path],
+) -> None:
+    _, a, b = clones
     events.emit("lead", "y", "needs-owner", question="Go?\n", cwd=a)
-    assert events.wait("lead", "y", poll=0.1, timeout=5, cwd=b, out=sink) == 2
-    assert "Go?" in "".join(out)
-    # a waiting ref nobody rewrites is silent past twice its beat; one still beating is not
+    code, text = waiting_on(b, "lead", "y", 5)
+    assert code == 2 and "Go?" in text
+
+
+def test_wait_ends_with_4_on_a_waiting_event_nobody_rewrites(
+    clones: tuple[Path, Path, Path],
+) -> None:
+    _, a, b = clones
     events.emit("gate", "z", "waiting", beat=0.3, cwd=a)
-    assert events.wait("gate", "z", poll=0.1, timeout=10, cwd=b, out=sink) == 4
+    assert waiting_on(b, "gate", "z", 10)[0] == 4
+
+
+def test_wait_times_out_with_3_on_an_event_still_beating(clones: tuple[Path, Path, Path]) -> None:
+    _, a, b = clones
     events.emit("gate", "q", "waiting", beat=60, cwd=a)
-    assert events.wait("gate", "q", poll=0.1, timeout=0.5, cwd=b, out=sink) == 3
-    # nothing there at all is unknown, not an end
-    assert events.wait("gate", "none", poll=0.1, timeout=0.3, cwd=b, out=sink) == 3
+    assert waiting_on(b, "gate", "q", 0.5)[0] == 3
+
+
+def test_wait_times_out_with_3_when_nothing_is_there(clones: tuple[Path, Path, Path]) -> None:
+    _, _, b = clones
+    assert waiting_on(b, "gate", "none", 0.3)[0] == 3
+
+
+@pytest.mark.parametrize("zone", ["Europe/Warsaw", "America/New_York", "Australia/Sydney", "UTC"])
+def test_a_fresh_waiting_event_is_not_silent_in_any_time_zone(
+    clones: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch, zone: str
+) -> None:
+    # the zones cover summer time in both hemispheres, in whatever season the test runs
+    _, a, b = clones
+    events.emit("land", "x", "waiting", cwd=a)
+    monkeypatch.setenv("TZ", zone)
+    time.tzset()
+    try:
+        assert waiting_on(b, "land", "x", 0.5)[0] == 3
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def test_parse_at_reads_the_utc_stamp_in_any_time_zone(monkeypatch: pytest.MonkeyPatch) -> None:
+    stamp = "2026-07-01T12:00:00Z"
+    for zone in ("Europe/Warsaw", "Australia/Sydney", "UTC"):
+        monkeypatch.setenv("TZ", zone)
+        time.tzset()
+        assert events.parse_at(stamp) == 1782907200
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_wait_takes_the_later_at_of_the_local_and_the_remote_event(
+    clones: tuple[Path, Path, Path],
+) -> None:
+    _, a, b = clones
+    events.emit("land", "x", "waiting", cwd=b)
+    time.sleep(1.1)
+    events.emit("land", "x", "ok", cwd=a)
+    assert waiting_on(b, "land", "x", 5)[0] == 0
+
+
+def test_emit_pushes_under_a_lease_so_a_racing_writer_wins(
+    clones: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bare, a, b = clones
+    ref = "refs/loop/lead/x"
+    stale = events.emit("lead", "x", "waiting", cwd=a)
+    winner = events.emit("lead", "x", "ok", cwd=b)
+    assert git(bare, "rev-parse", ref).strip() == winner
+    # a's ls-remote answered before b pushed, so its lease names the sha origin no longer holds
+    monkeypatch.setattr(events, "remote_refs", lambda cwd, pattern: {ref: stale})
+    capsys.readouterr()
+    events.emit("lead", "x", "waiting", cwd=a)
+    assert git(bare, "rev-parse", ref).strip() == winner
+    assert len(capsys.readouterr().err.strip().splitlines()) == 1
 
 
 def test_unreadable_event_is_unknown_not_ended(clones: tuple[Path, Path, Path]) -> None:
@@ -166,7 +283,9 @@ def test_clear_removes_refs_here_and_on_origin(clones: tuple[Path, Path, Path]) 
     ]
 
 
-def test_cli_emit_read_round_trip(clones: tuple[Path, Path, Path], tmp_path: Path) -> None:
+def test_the_cli_emits_reads_and_waits_between_clones(
+    clones: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
     _, a, b = clones
     question = tmp_path / "q.md"
     question.write_text("Go?\n")

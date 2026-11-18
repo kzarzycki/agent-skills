@@ -22,6 +22,7 @@ and the timeout is the net."""
 from __future__ import annotations
 
 import argparse
+import calendar
 import contextlib
 import json
 import os
@@ -44,6 +45,8 @@ MIRROR = "refs/loop-remote"
 SEEN = "loop-events-seen.json"
 # seconds one git call that reaches origin may take before it counts as a failed push or read
 NETWORK = 60
+# what a git call that reaches origin raises when origin can't be read or answers too slowly
+UNREACHABLE = (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError)
 # the commit's author and committer: no person's name or address reaches the repo through an event
 IDENTITY = {
     "GIT_AUTHOR_NAME": "loop",
@@ -61,7 +64,7 @@ def run(
     timeout: float | None = None,
 ) -> str:
     """One git call in `cwd`; its stdout, or CalledProcessError (TimeoutExpired past `timeout`)."""
-    # ponytail: a four-line runner here, not gatekeeper.git: that module imports PyYAML and its signing state at load,
+    # ponytail: a small runner here, not gatekeeper.git: that module imports PyYAML and its signing state at load,
     # and this one is stdlib-only so a native lead with plain git can run it
     return subprocess.run(
         ["git", *args],
@@ -85,7 +88,7 @@ def now() -> str:
 
 def parse_at(text: Any) -> float | None:
     try:
-        return time.mktime(time.strptime(str(text), "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+        return calendar.timegm(time.strptime(str(text), "%Y-%m-%dT%H:%M:%SZ"))
     except ValueError:
         return None
 
@@ -119,10 +122,45 @@ def local_sha(cwd: Path | str | None, ref: str) -> str | None:
         return None
 
 
+def sha_by_ref(listing: str) -> dict[str, str]:
+    """The `<sha> <ref>` lines of `ls-remote` or `for-each-ref --format='%(objectname) %(refname)'` as {ref: sha}."""
+    words = listing.split()
+    return dict(zip(words[1::2], words[0::2], strict=True))
+
+
 def remote_refs(cwd: Path | str | None, pattern: str) -> dict[str, str]:
-    """`git ls-remote origin <pattern>` as {ref: sha}; CalledProcessError or TimeoutExpired when origin can't be read."""
-    listed = run(cwd, "ls-remote", "origin", pattern, timeout=NETWORK).split()
-    return dict(zip(listed[1::2], listed[0::2], strict=True))
+    """`git ls-remote origin <pattern>` as {ref: sha}; UNREACHABLE's errors when origin can't be read."""
+    return sha_by_ref(run(cwd, "ls-remote", "origin", pattern, timeout=NETWORK))
+
+
+def local_refs(cwd: Path | str | None, prefix: str) -> dict[str, str]:
+    """The refs here under `prefix` (a path up to a slash: for-each-ref's `*` stops at one) as {ref: sha}."""
+    return sha_by_ref(run(cwd, "for-each-ref", "--format=%(objectname) %(refname)", prefix))
+
+
+def mirror_of(ref: str) -> str:
+    """Where `read` and `wait` keep the last fetch of the remote event `ref`."""
+    return MIRROR + ref.removeprefix(NAMESPACE)
+
+
+def warn(what: str, exc: Exception) -> None:
+    """One stderr line: `what` and the error's text, whitespace folded and cut at 300 characters."""
+    reason = " ".join((getattr(exc, "stderr", None) or str(exc)).split())[:300]
+    print(f"events: {what}: {reason}", file=sys.stderr)
+
+
+def push(cwd: Path | str | None, *refspecs: str, lease: str | None = None) -> None:
+    """Push `refspecs` to origin (hooks skipped), under `--force-with-lease=<lease>` when given."""
+    run(
+        cwd,
+        "push",
+        "-q",
+        "--no-verify",
+        *([f"--force-with-lease={lease}"] if lease else []),
+        "origin",
+        *refspecs,
+        timeout=NETWORK,
+    )
 
 
 def emit(
@@ -176,19 +214,9 @@ def emit(
         # ponytail: one ls-remote per beat, not a lease on a remembered sha, so a producer restarted on another host
         # takes the ref over instead of failing for good
         held = remote_refs(cwd, ref).get(ref, "")
-        run(
-            cwd,
-            "push",
-            "-q",
-            "--no-verify",
-            f"--force-with-lease={ref}:{held}",
-            "origin",
-            f"{commit}:{ref}",
-            timeout=NETWORK,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-        reason = " ".join((getattr(exc, "stderr", None) or str(exc)).split())[:300]
-        print(f"events: {ref} written here, not pushed: {reason}", file=sys.stderr)
+        push(cwd, f"{commit}:{ref}", lease=f"{ref}:{held}")
+    except UNREACHABLE as exc:
+        warn(f"{ref} written here, not pushed", exc)
     return commit
 
 
@@ -206,7 +234,7 @@ def load_seen(cwd: Path | str | None) -> dict[str, Any]:
 
 def fetch_event(cwd: Path | str | None, ref: str) -> dict[str, Any]:
     """The event origin's `ref` holds: fetched into the mirror, then parsed. A failed fetch: state `unknown`."""
-    mirror = MIRROR + ref.removeprefix(NAMESPACE)
+    mirror = mirror_of(ref)
     try:
         run(
             cwd,
@@ -218,7 +246,7 @@ def fetch_event(cwd: Path | str | None, ref: str) -> dict[str, Any]:
             f"+{ref}:{mirror}",
             timeout=NETWORK,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+    except UNREACHABLE:
         return {"state": "unknown"}
     return event_at(cwd, mirror)
 
@@ -232,17 +260,17 @@ def read(kind: str | None = None, *, cwd: Path | str | None = None) -> list[dict
     """Every event on origin (of `kind`, when given) as dicts: kind, branch, ref, sha, the event's own fields, and
     `changed`, the epoch second this clone first saw the ref at that sha. One `ls-remote`; a blob is fetched only for
     a ref whose sha moved since the last read, and the rest come from the cache. Origin unreachable: one warning, and
-    the local refs are returned instead."""
-    pattern = f"{NAMESPACE}/{kind}/*" if kind else f"{NAMESPACE}/*"
+    the local refs are returned instead. Only the kinds in BEATS are events: the gatekeeper's own refs under
+    `refs/loop/` (`records/*`, `landing`) are skipped."""
+    prefix = f"{NAMESPACE}/{kind}/" if kind else f"{NAMESPACE}/"
     try:
-        shas = remote_refs(cwd, pattern)
+        shas = remote_refs(cwd, prefix + "*")
         remote = True
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-        reason = " ".join((getattr(exc, "stderr", None) or str(exc)).split())[:300]
-        print(f"events: origin not read, showing the local refs: {reason}", file=sys.stderr)
-        listed = run(cwd, "for-each-ref", "--format=%(objectname) %(refname)", pattern).split()
-        shas = dict(zip(listed[1::2], listed[0::2], strict=True))
+    except UNREACHABLE as exc:
+        warn("origin not read, showing the local refs", exc)
+        shas = local_refs(cwd, prefix)
         remote = False
+    shas = {ref: sha for ref, sha in shas.items() if split(ref)[0] in BEATS}
     seen = load_seen(cwd)
     found = []
     for ref, sha in sorted(shas.items()):
@@ -271,7 +299,9 @@ def read(kind: str | None = None, *, cwd: Path | str | None = None) -> list[dict
         )
     if remote:
         with contextlib.suppress(OSError):
-            seen_path(cwd).write_text(json.dumps({r: seen[r] for r in shas if r in seen}))
+            # what this listing did not cover (another kind, after a filtered read) stays cached as it was
+            kept = {r: note for r, note in seen.items() if not r.startswith(prefix)}
+            seen_path(cwd).write_text(json.dumps(kept | {r: seen[r] for r in shas if r in seen}))
     return found
 
 
@@ -296,7 +326,7 @@ def wait(
         events = []
         if sha := local_sha(cwd, ref):
             events.append(event_at(cwd, sha))
-        with contextlib.suppress(subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        with contextlib.suppress(*UNREACHABLE):
             remote = remote_refs(cwd, ref).get(ref)
             if remote and remote != sha:
                 events.append(fetch_event(cwd, ref))
@@ -338,24 +368,15 @@ def clear(branch: str, *, cwd: Path | str | None = None) -> None:
     for ref in mine:
         if local_sha(cwd, ref):
             run(cwd, "update-ref", "-d", ref)
-        mirror = MIRROR + ref.removeprefix(NAMESPACE)
+        mirror = mirror_of(ref)
         if local_sha(cwd, mirror):
             run(cwd, "update-ref", "-d", mirror)
     try:
         there = [ref for ref in mine if ref in remote_refs(cwd, f"{NAMESPACE}/*/{branch}")]
         if there:
-            run(
-                cwd,
-                "push",
-                "-q",
-                "--no-verify",
-                "origin",
-                *(f":{ref}" for ref in there),
-                timeout=NETWORK,
-            )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-        reason = " ".join((getattr(exc, "stderr", None) or str(exc)).split())[:300]
-        print(f"events: origin's refs of {branch} not removed: {reason}", file=sys.stderr)
+            push(cwd, *(f":{ref}" for ref in there))
+    except UNREACHABLE as exc:
+        warn(f"origin's refs of {branch} not removed", exc)
 
 
 def main(argv: list[str] | None = None) -> int:
