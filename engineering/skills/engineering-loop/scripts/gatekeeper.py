@@ -2286,9 +2286,7 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
     None, without docs/agents/issue-tracker.md, checks no label's shape); empty when none does. A missing
     `approved:spec` is proofs()'s line."""
     if not issues:
-        return [
-            "the PR names no issue: it needs a `Closes #<issue>` line for an approved spec"
-        ]
+        return ["the PR names no issue: it needs a `Closes #<issue>` line for an approved spec"]
     found = []
     for issue in issues:
         labels = names(issue)
@@ -4566,7 +4564,9 @@ def gated(
     return found + proofs(point, pull, issues, loop, revert), issues
 
 
-def closes_nothing(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
+def closes_nothing(
+    pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None
+) -> list[str]:
     """A line when the PR closes no open issue: GitHub lists a PR in an issue's Development panel (and the issue in
     the PR's) only for a closing keyword, so a PR that only says `Part of #n` shows on no issue. A slice of an epic closes
     its own sub-issue, never the epic. A PR naming no issue at all is problems()'s refusal, not repeated here; a revert has its own path (gated) and a verified
@@ -4579,9 +4579,11 @@ def closes_nothing(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str
     if pin_target(pull) is not None:  # a verified release pin bump has no issue to close
         return []
     return [
-        "the PR closes no open issue: GitHub lists a PR on an issue's Development panel only for a closing keyword, so"
-        " `Part of` alone leaves it on none. Add `Closes #<n>` for the issue it finishes; a slice of an epic gets its own"
-        " sub-issue to close, never the epic"
+        (
+            "the PR closes no open issue: GitHub lists a PR on an issue's Development panel only for a closing keyword, so"
+            " `Part of` alone leaves it on none. Add `Closes #<n>` for the issue it finishes; a slice of an epic gets its own"
+            " sub-issue to close, never the epic"
+        )
     ]
 
 
