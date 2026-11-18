@@ -50,7 +50,8 @@ it is out, delivery unconfirmed, and running ``send`` again is safe, since it fi
 copy before it posts; a failure before the post stays exit 1.
 ``relay`` posts a message that owes no report (an owner's words for a lead) and returns at once:
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
-one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
+one), or when only the session's running step holds it (``queued until the session's current step
+ends``, it lands then), 5 while an approval prompt or a question holds it, 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
 a later read failed (delivered, unconfirmed: run it again, it posts no second copy). An open
 question card (``sys_ask_user_question``: elicitation id ``question_…``, not ``elicit_question_…``) holds
@@ -6451,7 +6452,7 @@ def supervise_registry(
                     raise Fail("it waits on a prompt, which the supervisor never answers")
                 relay(og, sid, text, ACTION_SECONDS)
             except (Queued, SentUnconfirmed):
-                pass  # held by the session's current step, or out and unconfirmed: it landed or lands
+                pass  # held behind a prompt or question, or out and unconfirmed: it lands or landed
             except Exception as e:  # noqa: BLE001 - never fatal; the chief of staff is told
                 intent["status"] = "failed"
                 head = f"{sid} {state['leads'].get(sid, {}).get('title') or ''}".rstrip()
