@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from approvals_harness import approvals, loop_md, pull
+from test_approvals import BOTS, LOOP, add, authored
 
 RULE = loop_md("risk:\n  paths:\n    - billing/**\n")
 
@@ -88,3 +89,47 @@ def test_one_rest_read_serves_paths_and_the_old_names(
     found = approvals.touched(big)
     assert found is not None and "billing/old.py" in found and "docs/new.md" in found
     assert rest["calls"] == 1
+
+
+RENOVATE = add(LOOP, "bot", 'renovate:\n  branch: renovate/\n  paths:\n    - "**/package.json"\n')
+
+
+def lockfiles(
+    status: str | None, *, branch: bool = False
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """A bot PR of 150 package.json files, GraphQL's page the first 100; `status` is the REST status of file 120."""
+    names = [f"p{i}/package.json" for i in range(150)]
+    if branch:
+        bot = {"__typename": "User", "login": "writer"}
+        pr = {**pull(files=("uv.lock",)), "author": bot, "headRefName": "renovate/foo"}
+        pr["authored"] = {"nodes": [authored("writer")]}
+    else:
+        bot = {"__typename": "Bot", "login": "dependabot"}
+        pr = {**pull(files=("uv.lock",)), "author": bot}
+        pr["authored"] = {"nodes": [authored("dependabot[bot]")]}
+    pr["files"] = {
+        "totalCount": 150,
+        "nodes": [{"path": n, "changeType": "MODIFIED"} for n in names[:100]],
+    }
+    changes = [{"filename": n, "status": "modified"} for n in names]
+    if status:
+        changes[120] = {"filename": names[120], "status": status, "previous_filename": "app.py"}
+    return pr, changes
+
+
+@pytest.mark.parametrize(
+    ("status", "branch", "exempt"),
+    [
+        ("renamed", False, False),
+        ("copied", False, False),
+        ("renamed", True, False),
+        (None, False, True),
+        (None, True, True),
+    ],
+)
+def test_a_move_past_node_100_refuses_the_bot_exemption(
+    monkeypatch: pytest.MonkeyPatch, status: str | None, branch: bool, exempt: bool
+) -> None:
+    pr, changes = lockfiles(status, branch=branch)
+    monkeypatch.setattr(approvals, "pr_changes", lambda _n: changes)
+    assert approvals.exempt(pr, RENOVATE if branch else BOTS) is exempt

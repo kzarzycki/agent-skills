@@ -1219,11 +1219,8 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
     renamed or copied file refuses it, since GraphQL gives only the new path, which may hide code moved onto a lock
     file's name, and so does the label `verify`, which asks for the review (a major update). No entry, or more files
     or commits than the gate reads: no exemption."""
-    renamed = any(
-        file.get("changeType") in ("RENAMED", "COPIED") for file in pull["files"]["nodes"]
-    )
     labels = {label["name"] for label in pull["labels"]["nodes"]}
-    if renamed or "verify" in labels:
+    if moved_files(pull) != [] or "verify" in labels:
         return False
     author, files = pull.get("author") or {}, paths(pull)
     if not files:
@@ -1288,6 +1285,18 @@ def paths(pull: dict[str, Any]) -> list[str] | None:
     return None if len(found) >= REST_FILE_CAP or len(found) < total else found
 
 
+def moved_files(pull: dict[str, Any]) -> list[str] | None:
+    """The renamed or copied files' new paths: GraphQL's nodes when its page holds every file, else the REST entries
+    (changed()); None when that list can't be read. The one reader of a move, for touched() and exempt()."""
+    files = pull["files"]
+    if (files.get("totalCount") or 0) <= len(files["nodes"]):
+        return [f["path"] for f in files["nodes"] if f.get("changeType") in ("RENAMED", "COPIED")]
+    changes = changed(pull)
+    if changes is None:
+        return None
+    return [c["filename"] for c in changes if c.get("status") in ("renamed", "copied")]
+
+
 def touched(pull: dict[str, Any]) -> list[str] | None:
     """Every path the PR touches on either side of the change: each file's path (a deleted file's is its old one), and
     a renamed or copied file's old name too (previous), since moving a file across a boundary changes both sides;
@@ -1296,20 +1305,9 @@ def touched(pull: dict[str, Any]) -> list[str] | None:
     found = paths(pull)
     if found is None:
         return None
-    files = pull["files"]
-    if (files.get("totalCount") or 0) > len(files["nodes"]):
-        # GraphQL's page is incomplete: the moved files are the REST entries' own
-        moved = [
-            change["filename"]
-            for change in changed(pull) or []
-            if change.get("status") in ("renamed", "copied")
-        ]
-    else:
-        moved = [
-            file["path"]
-            for file in files["nodes"]
-            if file.get("changeType") in ("RENAMED", "COPIED")
-        ]
+    moved = moved_files(pull)
+    if moved is None:
+        return None
     if moved:
         old = previous(pull)
         # every moved file needs its own old name: a response that lacks one (an entry without it, a file list that
