@@ -358,6 +358,13 @@ follows that run instead of starting another (after it, one with other arguments
 naming the exit), with the log's path. The run's stderr goes to the same log, so a caller prints the check's stderr and
 a refusal (`exited N: nothing recorded`) on its stdout. Stopping the caller, Ctrl-C included, leaves the run going:
 `kill -- -<pid>`, with the pid `<head>.pid` holds, stops its process group.
+A run that gates a branch also writes its `gate` event (events.md, `refs/loop/gate/<branch>`, the checked-out branch): `waiting` while a step waits for a slot or runs, rewritten every SLOT_SAY_SECONDS; `ok` at the end with
+`url` the record (with `gate_steps`, the records' directory); `failed` with `url` the detached run's log when there is one,
+else empty (a failed step records nothing, and a refusal has no log either). The detaching `local-ci` writes `waiting`
+first, before it starts the run, so a wait that follows it never reads the previous head's end, and ends the event itself when the run wrote none (`failed` with the log on a nonzero exit, `ok` with no url on exit 0, as a record on a changed tree); a step left for a host keeps `waiting`. Writing an event never
+changes the exit code. The `gate` commit status stays, on the PR head and on main commits: `land` writes the latter
+(`publish(tip, landed_pass(...))`), `wait-for --until gate` reads the former and the PR page shows both, and no event
+reader replaces them yet.
 Every pass this clone holds, run or reused, is published one way from every session, host or cloud: pushed to origin
 as the branch `loop-gate/<tree>-<command's key>` (a branch, since a cloud session's proxy pushes nothing else), on a
 commit holding the tree, the commit the pass ran on as its parent, and as its message the line `Tree <tree> on
@@ -8065,18 +8072,23 @@ def ran_step(
     out: Any = None,
     load: dict[str, Any] | None = None,
     land: bool = False,
+    beat: Callable[[], None] | None = None,
 ) -> tuple[int, int, int]:
     """Run one gate step (gate_plan) in its environment (gate_env) under the host gate slot (heavy_slot), in `cwd`
     with its output to `out` when given: its exit, the seconds it ran and the seconds it waited for the slot; `load`,
     when given, gets the host's load at the step's start, once it holds the slot (host_load). A command that isn't
-    there is refused, naming the gate, since loop.md is hand-written."""
+    there is refused, naming the gate, since loop.md is hand-written. `beat`, when given, is called while the step waits
+    for the slot (heavy_slot) and while it runs, every SLOT_SAY_SECONDS (the gate event, gate_beat)."""
     where = {"cwd": cwd, "stdout": out, "stderr": subprocess.STDOUT} if cwd else {}
-    with heavy_slot(step["name"], out, land) as (slot, waited):
+    with heavy_slot(step["name"], out, land, **({"beat": beat} if beat else {})) as (slot, waited):
         if load is not None:
             load.update(host_load())
         began = time.monotonic()
         try:
-            code = run_heavy(step["words"], env=gate_env(step) | {SLOT_HELD: slot}, **where)[0]
+            with repeating(beat) if beat else contextlib.nullcontext():
+                if beat:
+                    beat()
+                code = run_heavy(step["words"], env=gate_env(step) | {SLOT_HELD: slot}, **where)[0]
         except OSError as exc:
             what = "gate" if step["legacy"] else f"gate step `{step['name']}`"
             raise Refused(f"loop.md's {what} {step['command']!r} can't run: {exc}") from None
@@ -8588,19 +8600,25 @@ def saying(text: str) -> Any:
 
 
 @contextlib.contextmanager
-def heavy_slot(name: str, out: Any = None, land: bool = False) -> Any:
+def heavy_slot(
+    name: str, out: Any = None, land: bool = False, beat: Callable[[], None] | None = None
+) -> Any:
     """Hold a host gate slot (take_slot, `land` as it takes it) for one gate step: (its path, the whole seconds
     waited for it). A wait is said as `local-ci: <step>: waiting for the host gate slot: <slot_plan's line>`, again
-    every SLOT_SAY_SECONDS, so the log shows how many slots the host has and which limit set that."""
+    every SLOT_SAY_SECONDS, so the log shows how many slots the host has and which limit set that. `beat`, when given,
+    is called at each of those, so the gate event is rewritten while the step waits."""
     began = time.monotonic()
-    fd, path = take_slot(
-        lambda: print(
+
+    def say() -> None:
+        print(
             f"local-ci: {name}: waiting for the host gate slot: {slot_plan()[1]}",
             file=out or sys.stderr,
             flush=True,
-        ),
-        land,
-    )
+        )
+        if beat:
+            beat()
+
+    fd, path = take_slot(say, land)
     try:
         yield path, 0 if fd is None else round(time.monotonic() - began)
     finally:
@@ -8759,6 +8777,37 @@ def deepened(pr: int | None) -> None:
     print(f"local-ci: no merge base of {ref} and HEAD after deepening", file=sys.stderr)
 
 
+loop_events = sibling("events")
+
+
+def gate_branch() -> str | None:
+    """The branch the gate gates, which names its `gate` event (events.md): the checked-out one, since a run is on the
+    head it gates; none for a detached head, which has no event."""
+    # ponytail: not the PR's head branch (a REST read `local-ci <pr>` does not make otherwise), so a checkout on another
+    # local name than the PR's branch writes the event under its own
+    with contextlib.suppress(Exception):
+        return git("symbolic-ref", "-q", "--short", "HEAD").strip() or None
+    return None
+
+
+def gate_url(record: dict[str, Any]) -> str:
+    """Where a pass is recorded, as a gate event's `url`: the record file, or with `gate_steps` the records' directory."""
+    return str(local_ci_dir() if "steps" in record else recorded(record["tree"], record["command"]))
+
+
+def gate_event(branch: str | None, state: str, url: str | Callable[[], str] = "") -> None:
+    """Write the `gate` event of `branch` (events.emit). It reports the gate and is no part of it, so whatever goes wrong
+    in writing it is dropped and the gate's exit stays its own. `url` may be a function, called inside that guard, so a
+    record that lacks a field costs the event and nothing else."""
+    if branch is None:
+        return
+    if state != "waiting":
+        ENDED["state"] = state
+    # ponytail: emit's one "not pushed" warning is dropped here, since publish() already says when origin is unreachable
+    with contextlib.suppress(Exception), contextlib.redirect_stderr(io.StringIO()):
+        loop_events.emit("gate", branch, state, url=url() if callable(url) else url)
+
+
 def run_local_ci(
     pr: int | None, head: str | None, passed: list[str] | tuple[str, ...] = ()
 ) -> dict[str, Any]:
@@ -8782,10 +8831,21 @@ def run_local_ci(
             "" if now == before else now[1]
         )
 
-    done = run_steps(before[0], tree, changes, passed=passed)
+    branch = gate_branch()
+    try:
+        done = run_steps(
+            before[0], tree, changes, passed=passed, beat=lambda: gate_event(branch, "waiting")
+        )
+    except BaseException:
+        # a refusal or an interrupt ends the run too: a reader must not find `waiting` left to go silent
+        gate_event(branch, "failed")
+        raise
     code, step = done["code"], done["step"]
     if step is not None:
         command = step["command"]
+        # a failed step records nothing, so its url is the detached run's log when there is one, else empty
+        log = run_files(before[0])[0]
+        gate_event(branch, "failed", str(log) if log.exists() else "")
         nothing = "nothing recorded" if step["legacy"] else f"nothing recorded for `{step['name']}`"
         machine = code == settings(project()[1]).get("machine_exit")
         # the lead's `wait-for --until gate` reads the run's end off the head (failed), said after the refusal
@@ -8800,7 +8860,14 @@ def run_local_ci(
         raise Refused(
             f"{command} changed the checkout, so it did not run on the head as pushed:\n{done['changed']}"
         )
-    return whole(done["records"], passed, tree) | ({"left": done["left"]} if done["left"] else {})
+    result = whole(done["records"], passed, tree)
+    # ponytail: with a step left for a host the gate has no result here, so it ends no event: the `waiting` one goes
+    # silent (wait exit 4) rather than saying `ok` for a gate that passed in part
+    if done["left"]:
+        ENDED["state"] = "left"  # told apart by detach() from a run that ended without writing one
+    else:
+        gate_event(branch, "ok", lambda: gate_url(result))
+    return result | ({"left": done["left"]} if done["left"] else {})
 
 
 def run_steps(
@@ -8811,6 +8878,7 @@ def run_steps(
     out: Any = None,
     passed: list[str] | tuple[str, ...] = (),
     land: bool = False,
+    beat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Run each gate step (gate_plan, with `passed`) that has no pass on `tree` (step_pass) and may run here (here),
     in order, each under the host gate slot (ran_step), and record each that passes as run on `commit`, with the
@@ -8846,7 +8914,9 @@ def run_steps(
             done["left"].append(step["name"])
             continue
         load: dict[str, Any] = {}
-        code, seconds, waited = ran_step(step, cwd, out, load, land)
+        code, seconds, waited = ran_step(
+            step, cwd, out, load, land, **({"beat": beat} if beat else {})
+        )
         done["ran"].append(step["name"])
         if code or (changed := changes()):
             return done | {"code": code, "step": step, "changed": "" if code else changed}
@@ -8934,6 +9004,9 @@ DETACHED = "APPROVALS_LOCAL_CI_HEAD"
 RAN: dict[
     str, str
 ] = {}  # the gate command this process's local-ci ran, for the detached run to record (finished)
+ENDED: dict[
+    str, str
+] = {}  # `state`: the end event this process wrote (`ok`, `failed`), or `left` for a host step's
 
 
 def leads_its_session() -> bool:
@@ -8985,6 +9058,9 @@ def detach(argv: list[str]) -> int:
     head = git("rev-parse", "HEAD").strip()
     log, pid, exit_file = run_files(head)
     log.parent.mkdir(parents=True, exist_ok=True)
+    # `waiting` before the run starts or any slow step, so a reader that waits once this returns never takes the previous
+    # head's end for this one's; a pass reused on this head writes `ok` over it at once
+    gate_event(gate_branch(), "waiting")
     while True:
         with open(pid, "a+") as claim:
             fcntl.flock(claim, fcntl.LOCK_EX)  # two callers at once start one run
@@ -8992,6 +9068,7 @@ def detach(argv: list[str]) -> int:
             run, started = None, going(claim.read(), exit_file)
             if started is None:
                 exit_file.unlink(missing_ok=True)
+                ended_file(head).unlink(missing_ok=True)
                 with open(log, "wb") as out, open(os.devnull) as nothing:
                     run = subprocess.Popen(
                         [sys.executable, os.path.abspath(__file__), *argv],
@@ -9005,6 +9082,11 @@ def detach(argv: list[str]) -> int:
                 claim.truncate(0)
                 claim.write(json.dumps(started))
         code = follow(log, exit_file, started, run)
+        if not ended_file(head).exists():
+            # the run wrote no end event (a refusal before the gate, `--record` on a changed tree, a child killed or
+            # crashed): end it here, so a `wait` reports the end and `waiting` does not go silent. A step left for a
+            # host writes `left` and keeps its `waiting` on purpose (run_local_ci).
+            gate_event(gate_branch(), "failed" if code else "ok", str(log) if code else "")
         if started["argv"] == argv:
             return code
 
@@ -9031,6 +9113,11 @@ def follow(
         return 1
 
 
+def ended_file(head: str) -> Path:
+    """Where the detached run on `head` records the end event it wrote (ENDED), beside its exit code."""
+    return run_files(head)[2].with_suffix(".event")
+
+
 def ran_command_file(head: str) -> Path:
     """Where the detached run on `head` records the gate command it ran, beside its exit code."""
     return run_files(head)[2].with_suffix(".command")
@@ -9044,6 +9131,8 @@ def finished(head: str, code: int, command: str | None = None) -> None:
     _, _, exit_file = run_files(head)
     if command:
         ran_command_file(head).write_text(command + "\n")
+    if ENDED.get("state"):
+        ended_file(head).write_text(ENDED["state"] + "\n")
     partial = exit_file.with_suffix(".exit-partial")
     partial.write_text(f"{code}\n")
     os.replace(partial, exit_file)
@@ -9742,6 +9831,7 @@ def local_ci(
             return code
         if record := reusable(head, passed):
             print(f"{CHECKED} on {head}: {reused(record)}")
+            gate_event(gate_branch(), "ok", lambda: gate_url(record))
         else:
             record = run_local_ci(None, None, passed)
             where = (
@@ -9775,6 +9865,7 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
     passed = tier(pull_request(pr), loop) if INCUBATING in settings(loop) else []
     if record := reusable(head, passed, why=why):
         source = f"{reused(record)}\n"
+        gate_event(gate_branch(), "ok", lambda: gate_url(record))
     elif run:
         record = run_local_ci(pr, head, passed)
         source = ""

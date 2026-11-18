@@ -33,7 +33,7 @@ as ends and leaves a ref it cannot read or parse as `unknown`, never as ended; t
 |---|---|---|---|
 | `lead` | the lead's own script, when it waits or needs the owner | 300 s | the PR or issue the lead's item is |
 | `land` | `approvals.py land` | 300 s | the PR, and on `failed` the eviction comment, which holds the log's last lines |
-| `gate` | the gate run, `local-ci` | 120 s | the gate log |
+| `gate` | the gate run, `local-ci` (slice #1379); the main-commit `gate` status that `land` writes (`publish(tip, landed_pass(...))`) stays | 120 s | the `local-ci` record; on `failed`, the detached run's log when there is one, else empty |
 | `verifier` | the verifier run | 300 s | the verifier's report or PR comment |
 | `probe` | `events.py` tests and the one-off check below only | 60 s | nothing |
 

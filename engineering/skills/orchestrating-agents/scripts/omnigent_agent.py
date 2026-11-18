@@ -2861,6 +2861,24 @@ def _load_environments() -> Any:
 ENVS = _load_environments()
 
 
+def _load_events() -> Any:
+    """The loop's event module (``engineering-loop/scripts/events.py``, a sibling skill's), loaded by path, or
+    ``None`` when this skill is installed without it: an event is a report of a step, never part of it, so a host
+    without the module prints the same lines and writes no ref."""
+    path = Path(__file__).resolve().parents[2] / "engineering-loop" / "scripts" / "events.py"
+    try:
+        spec = importlib.util.spec_from_file_location(f"{__name__}_events", path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001 - absent or broken: no events, the lines still print
+        return None
+
+
+EVENTS = _load_events()
+
+
 class CloudWorker(NamedTuple):
     """loop.md's ``Cloud worker:`` line: the cloud agent, its gate task (``""``: the policy's ``gate``) and the
     claude.ai environment's name (``""``: none named)."""
@@ -6202,6 +6220,76 @@ def wait_line(words: list[str]) -> str:
     return f"Waits: {text}"
 
 
+def branch_of(cwd: Path | str | None) -> str:
+    """The branch ``cwd`` has checked out, empty when detached, not a checkout or git is missing."""
+    try:
+        done = subprocess.run(
+            ["git", *(["-C", str(cwd)] if cwd else []), "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def lead_emit(
+    state: str, branch: str = "", url: str = "", question: str | None = None, cwd: str | None = None
+) -> None:
+    """Write this lead's ``lead`` event on its branch (the checked-out one without ``branch``). No branch yet (a
+    detached or new checkout), no event module or a failed write: nothing is written, since an event reports a
+    step and must never change the exit code of the one that wrote it."""
+    if EVENTS is None:
+        return
+    try:
+        if branch := branch or branch_of(cwd):
+            EVENTS.emit("lead", branch, state, url=url, question=question, cwd=cwd)
+    except Exception as e:  # noqa: BLE001 - the printed line still ends the turn
+        print(f"lead event not written: {e}", file=sys.stderr)
+
+
+def end_line(word: str, text: str, report: str = "") -> str:
+    """The ``DONE`` or ``USER NEEDED`` line a lead ends its turn with: ``<word>: <text's first line>`` and
+    ``Report: <path>``, so ``ending_of`` reads it and a human sees the question's first line."""
+    first = (text.strip().splitlines() or [""])[0].rstrip(" .")
+    if not first:
+        raise Fail(f"end-on: {word} needs a result or a question")
+    return f"{word}: {first}." + (f" Report: {report}" if report else "")
+
+
+def lead_event_of(og: Omnigent, info: dict) -> dict | None:
+    """The ``lead`` event on the branch a lead's local workspace has checked out, with its ``question`` text for
+    ``needs-owner``; ``None`` when there is none or it can't be read. A lead on another host is not looked up
+    (ponytail: its workspace is a path there, and ``events.py`` runs git in a local clone)."""
+    workspace = info.get("workspace")
+    if EVENTS is None or not workspace or elsewhere(og, info):
+        return None
+    try:
+        if not (branch := branch_of(workspace)):
+            return None
+        found = [e for e in EVENTS.read("lead", cwd=workspace) if e["branch"] == branch]
+        if not found:
+            return None
+        return dict(found[0])
+    except Exception:  # noqa: BLE001 - unreadable: the message decides, as without an event
+        return None
+
+
+def question_for(lead_ev: dict | None, message: str) -> str:
+    """The question a ``needs-owner`` event holds (only that state has one), when ``message`` is the ``USER NEEDED:`` ending that
+    ``end_line`` wrote for it (its text starts with the question's first line); else ``""``, since an event is
+    not tied to any later message of the lead, and an old question must never ride on a new item."""
+    question = (lead_ev or {}).get("question") or ""
+    if not (first := (question.strip().splitlines() or [""])[0].rstrip(" .")):
+        return ""
+    for m in re.finditer(r"^\W*USER NEEDED:[ \t]*(.*)$", message, re.MULTILINE):
+        if m.group(1).startswith(first):
+            return question.rstrip()
+    return ""
+
+
 def wait_of(text: str, at: float | None = None) -> str:
     """What a lead's message says it waits on: ``parked``, the wait its ``STILL WORKING`` names
     (``until <UTC time>`` for a timed one, ``TIMED`` says which, ``at`` being when the message was
@@ -6287,14 +6375,18 @@ def report_head(text: str) -> str:
     return "\n".join(kept) or next(iter(lines), "")
 
 
-def waits_on(text: str, lead: dict, notify: str | None) -> bool:
+def waits_on(text: str, lead: dict, notify: str | None, event: bool = False) -> bool:
     """Whether a lead's ``STILL WORKING`` wait names the session the supervisor notifies: a
     ``Waits: supervisor`` line, its full id, the words ``pm``, ``pm's``, ``manager``, ``you``,
     ``CoS`` or ``chief of staff`` after "waiting on", or a ``CoS:`` request line in the turn. A
     ``Waits:`` line naming anything else is exact: prose then decides nothing, and a ``Waits:`` line that
-    does not parse decides alone too: a wait on the supervisor when it says ``supervisor``, ``CoS`` or ``chief of staff``, else none."""
+    does not parse decides alone too: a wait on the supervisor when it says ``supervisor``, ``CoS`` or ``chief of staff``, else none.
+    A lead with a ``lead`` event (``event``) is read from a ``Waits:`` line that parses alone: its prose and a
+    ``CoS:`` footer say nothing, since the event is the state it reported (#1376)."""
     if tr := trailer_of(text):
         return "supervisor" in tr or bool(notify and tr.get("session") == notify)
+    if event:
+        return False
     if notify and notify in (lead.get("named") or []):
         return True
     start = text.find("STILL WORKING")
@@ -6818,6 +6910,7 @@ def supervise_registry(
         pending = info.get("pending_elicitations") or []
         found = standing(decisions) if decisions else ""
         retrying, now = lead.get("retrying") or {}, time.time()
+        lead_ev = lead_event_of(og, info) if lead else None  # its state, when it wrote one (#1376)
         error = lead.get("error") or line
         # the reset is read once, when first parked: read again once passed, the same text
         # names next year's (or tomorrow's) and the cap would never come
@@ -6854,7 +6947,7 @@ def supervise_registry(
             "parked": parked_before(og, sid, items, said[-1] if said else None),
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
-            "supervisor": notify if waits_on(parsed, lead, notify) else "",
+            "supervisor": notify if waits_on(parsed, lead, notify, bool(lead_ev)) else "",
         }
 
         def ask() -> tuple[str, str]:
@@ -6920,6 +7013,8 @@ def supervise_registry(
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
         elif action in ("act", "owner") or action == "done" and not event["direct"]:
             item = line.splitlines()[0]
+            if asked := question_for(lead_ev, parsed):
+                item = f"{item}\n{asked}"  # the whole question, never cut
             to = "owner" if action == "owner" else "act"
             if to == "owner" and lead.get("owner_item") == owner_item(line):
                 to = "info"  # the owner item already raised: it wakes no one
@@ -7547,6 +7642,12 @@ def supervise_registry(
                     line += f"\nquiet: {', '.join(quiet_named)}"
                 say(line, sid, f"deadline:{sid}:{lead['progress_at']:.0f}{nudged}", "deadline")
 
+    def has_event(sid: str) -> bool:  # an event settles what a prose wait would
+        try:
+            return lead_event_of(og, og.info(sid)) is not None
+        except Exception:  # noqa: BLE001 - unread: the message decides
+            return False
+
     def wait_news(sid: str, lead: dict) -> None:
         """What a lead waits on, read from GitHub and the sessions themselves and not from its
         words, is news to it once it has settled, at most one read per ``PR_POLL_SECONDS`` and
@@ -7563,7 +7664,7 @@ def supervise_registry(
             for i in looks.get(sid, ({}, []))[1]
             if i.get("type") == "message" and i.get("role") == "assistant"
         ]
-        if said and (bad := unparsed_trailer(text_of(said[-1]).strip())):
+        if said and not has_event(sid) and (bad := unparsed_trailer(text_of(said[-1]).strip())):
             say(  # once per turn: the event id holds the turn
                 f"{sid} {lead['title']}".rstrip()
                 + f": your last line `Waits: {bad[:80]}` did not parse, so the supervisor reads it as "
@@ -8519,6 +8620,22 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         description="print the `Waits:` line a STILL WORKING ends with, refusing a malformed wait",
     )
     p.add_argument("wait", nargs="+", metavar="supervisor|session ID|pr N|ci|until UTC")
+    p.add_argument(
+        "--branch", help="the lead's branch for its event (default: the checked-out one)"
+    )
+    p.add_argument("--url", default="", help="the PR or issue the lead's item is (the event's url)")
+    p = sub.add_parser(
+        "end-on",
+        description="print the DONE or USER NEEDED line a lead ends its turn with, and write its lead event",
+    )
+    p.add_argument("ending", choices=["done", "needs-owner"])
+    p.add_argument("text", nargs="*", help="done: the result in one line")
+    p.add_argument("--question", type=Path, help="needs-owner: the file holding the whole question")
+    p.add_argument("--report", default="", help="the report path the line ends with")
+    p.add_argument(
+        "--branch", help="the lead's branch for its event (default: the checked-out one)"
+    )
+    p.add_argument("--url", default="", help="the PR or issue the lead's item is (the event's url)")
     p = sub.add_parser(
         "wait-until",
         description=f"run CMD until it exits 0 (exit 0), or exit {LIMIT} once --limit passes",
@@ -8680,6 +8797,26 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             line = wait_line(args.wait)
             check_bare_ref(line)
             print(line)
+            lead_emit("waiting", args.branch or "", args.url)
+            return 0
+        if args.cmd == "end-on":
+            if args.ending == "done":
+                line, question = end_line("DONE", " ".join(args.text), args.report), None
+            else:
+                if args.question is None:
+                    raise Fail("end-on needs-owner takes --question FILE, the whole question")
+                try:
+                    question = args.question.read_text()
+                except OSError as e:
+                    raise Fail(f"end-on: {e}") from e
+                line = end_line("USER NEEDED", question, args.report)
+            print(line)
+            lead_emit(
+                "ok" if args.ending == "done" else "needs-owner",
+                args.branch or "",
+                args.url,
+                question,
+            )
             return 0
         if args.cmd == "wait-until":
             cmd = args.until[1:] if args.until[:1] == ["--"] else args.until
