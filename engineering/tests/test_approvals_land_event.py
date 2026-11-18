@@ -388,7 +388,9 @@ def test_land_batch_wait_keeps_the_ok_of_a_pr_that_merged(
     seen = batch_wait(lands, monkeypatch, one_round)
     assert seen == [(1, "ok")], seen
     assert len(calls) > 2  # the rounds went on, with 8 alone once 7 was merged
-    assert (events_of(lands, 8) or {}).get("state") == "needs-owner"
+    assert (events_of(lands, 8) or {}).get("state") == "needs-owner"  # the ceiling asks for the PR still open
+    event = events_of(lands, 7)
+    assert event and (event["state"], event["seq"]) == ("ok", 1)  # and leaves the one that merged
 
 
 def test_land_beats_waiting_while_it_gates_under_the_lock(
