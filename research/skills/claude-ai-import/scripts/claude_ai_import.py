@@ -12,7 +12,6 @@ Extending later (a write path): everything goes through `Fetcher`; a writer woul
 second method there, and nothing in the importer below needs to change.
 """
 import base64
-import inspect
 import json
 import os
 import re
@@ -176,7 +175,7 @@ def render_block(block, assets):
         extra = ""
         p = assets.save_artifact(inp) if block.get("name") == "artifacts" else None
         if p:
-            extra = f"\n\nArtifact content after this call: [{p}]({p})"
+            extra = f"\n\nArtifact content (latest version): [{p}]({p})"
         return details(f"Tool call — {block.get('name')}",
                        fence(json.dumps(inp, ensure_ascii=False, indent=1), "json") + extra)
     if t == "tool_result":
@@ -360,7 +359,8 @@ def self_test():
         assert t.rstrip().endswith("(id `dddddddd-0000`): GET -> 404"), t[-200:]
         assert "## Files that could not be downloaded" in t
         # the network layer is the one place a write could happen: read its source
-        src = inspect.getsource(CdpFetcher)
+        text = Path(__file__).read_text()  # not inspect.getsource: a pytest loader leaves no module
+        src = text[text.index("class CdpFetcher"):text.index("def slug")]
         assert re.findall(r"method:\s*'(\w+)'", src) == ["GET"], "CdpFetcher must fetch with GET only"
         assert '"background": ' + str(True) in src and "new_page" not in src and ".goto(" not in src, \
             "CdpFetcher must open only a background tab"
