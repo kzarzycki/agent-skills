@@ -13,6 +13,8 @@ env:
   GH_TOKEN: ${{ github.token }}
   REPO: ${{ github.repository }}
   # days an epic may incubate before the nightly says so, and again after each that passes
+  # ponytail: the spec's `incubating.stale_days` setting, narrowed to a constant so this workflow needs no change to
+  # gatekeeper.py's SCHEMA; read it from loop.md once the gatekeeper freeze lifts (follow-up of #1288)
   STALE_DAYS: "30"
 jobs:
   nightly:
