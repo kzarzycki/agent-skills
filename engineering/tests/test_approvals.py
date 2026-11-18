@@ -5301,8 +5301,9 @@ def test_a_cloud_land_without_the_land_section_names_it(
     cloud_land["loop"].write_text(GITHUB_RULE)
     assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
         (
-            "land in a cloud session needs loop.md's `land` section: without it GitHub merges, over GraphQL, which"
-            " the session's proxy refuses, and signs with GitHub's key"
+            "land in a cloud session needs a base that requires GitHub's merge queue, or loop.md's"
+            " `land.signed_squash_to`: otherwise GitHub merges, over GraphQL, which the session's proxy refuses, and"
+            " signs with GitHub's key"
         )
     ]
     unmoved(cloud_land)

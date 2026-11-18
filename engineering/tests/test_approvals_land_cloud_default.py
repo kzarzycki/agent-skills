@@ -16,9 +16,27 @@ def test_a_cloud_land_on_a_merge_queue_base_needs_no_land_section(
     with approvals.placed(NO_LAND, True):
         assert approvals.SIGNING == []
     with (
-        pytest.raises(approvals.Refused, match="needs loop.md's `land` section"),
+        pytest.raises(approvals.Refused, match="needs a base that requires GitHub's merge queue"),
         approvals.placed(NO_LAND, False),
     ):
+        pass
+
+
+@pytest.mark.parametrize(
+    "land", ["merge_commit_heads: [sync/*]", "where: both", "signing_key_env: KEY"]
+)
+def test_a_land_section_without_signed_squash_to_refuses_on_a_base_without_the_queue(
+    monkeypatch: pytest.MonkeyPatch, land: str
+) -> None:
+    """No signing is set up, so GitHub would merge over GraphQL: the same line, never a key check or a KeyError."""
+    monkeypatch.setenv(approvals.CLOUD, "true")
+    loop = NO_LAND.replace("practice:", f"land:\n  {land}\npractice:")
+    with (
+        pytest.raises(approvals.Refused, match="needs a base that requires GitHub's merge queue"),
+        approvals.placed(loop, False),
+    ):
+        pass
+    with approvals.placed(loop, True):
         pass
 
 
@@ -29,7 +47,8 @@ def test_land_where_host_still_refuses_a_cloud_session_on_a_merge_queue_base(
     loop = NO_LAND.replace("practice:", "land:\n  where: host\npractice:")
     with (
         pytest.raises(
-            approvals.Refused, match="`land.where` is `host`, so land does not run in a cloud session"
+            approvals.Refused,
+            match="`land.where` is `host`, so land does not run in a cloud session",
         ),
         approvals.placed(loop, True),
     ):
