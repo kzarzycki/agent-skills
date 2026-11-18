@@ -1320,11 +1320,23 @@ def require_smoke_run(
 
     out = (runner or gh)(
         [
-            "run", "list", "--repo", repository, "--workflow", workflow, "--event", "workflow_dispatch",
-            "--limit", "100", "--json", "conclusion,displayTitle,url",
+            "run",
+            "list",
+            "--repo",
+            repository,
+            "--workflow",
+            workflow,
+            "--event",
+            "workflow_dispatch",
+            "--limit",
+            "100",
+            "--json",
+            "conclusion,displayTitle,url",
         ]
     )
     for run in json.loads(out):
         if run.get("conclusion") == "success" and head in (run.get("displayTitle") or ""):
             return str(run["url"])
-    raise ConfigurationError(f"release smoke run: no passing {workflow} run for {head} in the smoke repository")
+    raise ConfigurationError(
+        f"release smoke run: no passing {workflow} run for {head} in the smoke repository"
+    )

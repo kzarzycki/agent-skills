@@ -14,10 +14,10 @@ from tools.capability_pack.qualify import (
     PortRequiredError,
     QualificationError,
     QualificationTimeoutError,
-    qualify,
-    upstream_deltas,
     _git_output,
+    qualify,
     require_smoke_run,
+    upstream_deltas,
     validate_release_candidate,
 )
 

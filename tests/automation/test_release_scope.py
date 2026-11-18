@@ -128,7 +128,7 @@ HEAD = "a" * 40
 SMOKE = {"RELEASE_SMOKE_REPOSITORY": "org/private", "RELEASE_SMOKE_WORKFLOW": "smoke.yml"}
 
 
-def _runs(*runs: dict) -> "Callable[[list[str]], str]":
+def _runs(*runs: dict) -> Callable[[list[str]], str]:
     return lambda _arguments: json.dumps(list(runs))
 
 
