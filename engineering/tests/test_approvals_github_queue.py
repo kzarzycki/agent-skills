@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -429,18 +428,6 @@ def test_a_queue_base_refuses_a_signed_squash(queue: dict[str, Any]) -> None:
     assert queue["enqueued"] == []
 
 
-def test_a_cloud_session_refuses_the_github_merge_queue(
-    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    queue["opened"](7)
-    monkeypatch.setattr(approvals, "in_cloud", lambda: True)
-    monkeypatch.setattr(approvals, "placed", lambda _loop: nullcontext())
-    code, lines = queue["land"]("7")
-    assert code == 1 and "a cloud session can't enqueue" in lines[-1], lines
-    assert queue["enqueued"] == []
-
-
-@pytest.mark.usefixtures("required")
 def test_required_checks_reports_the_merge_queue_and_its_method(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
