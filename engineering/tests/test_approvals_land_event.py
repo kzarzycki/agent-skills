@@ -250,3 +250,18 @@ def test_land_wait_ceiling_asks_the_owner(
     assert event and event["state"] == "needs-owner"
     question = git_in(lands["origin"], "show", "refs/loop/land/pr7:question.md")
     assert "stopped after 2 hours" in question
+
+
+def test_land_waiting_on_the_owners_go_ends_needs_owner(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A named PR held for the owner's go ends `needs-owner`, the line `land` prints as the question."""
+    lands = events_pushed
+    said = "PR #7 waits for the owner's go on its head (`approve merge 7`)"
+    monkeypatch.setattr(approvals, "owner_waits", lambda *_a: [said])
+    lands["open"](7, {"7.txt": "7\n"})
+    code, lines = lands["land"]("7")
+    assert code == approvals.WAITING and said in lines, lines
+    event = lands["event"]("pr7")
+    assert event and event["state"] == "needs-owner"
+    assert git_in(lands["origin"], "show", "refs/loop/land/pr7:question.md") == said + "\n"
