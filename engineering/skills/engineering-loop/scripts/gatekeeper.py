@@ -6307,6 +6307,12 @@ def conflict_note(pull: dict[str, Any], base: str, ahead: str = "") -> None:
         )
 
 
+def recording_base() -> str:
+    """` --base <tip>` in narrowed mode (narrowed_gate), the base the batch gate selects against, so the `local-ci
+    --record` a message names records the pass the lookup then finds; empty for the full gate."""
+    return f" --base {NARROW_BASE.get()}" if narrowed_gate() is not None else ""
+
+
 def merged_trees(
     candidates: list[dict[str, Any]], base: str, tip: str, failed: set[int]
 ) -> list[tuple[dict[str, Any], str, str, str]]:
@@ -6359,7 +6365,7 @@ def merged_trees(
         raise Refused(
             f"Tree {tree} (the batch of {numbers} on {base} at {tip}): {', '.join(f'`{m}`' for m in missing)} has no"
             " recorded pass on it, and land runs no gate in a clone with no working tree: pass it where the files are"
-            " checked out (`approvals.py local-ci --record` on a head with this tree), then land again"
+            f" checked out (`approvals.py local-ci --record{recording_base()}` on a head with this tree), then land again"
         )
     print(f"Tree {tree}: `{gate()[0]}` passed on it before, reused")
     return [(pull, own, tree, "reused") for pull, own in zip(merged, trees, strict=True)]
@@ -6642,7 +6648,7 @@ def ask_cloud_gate(tree: str) -> str:
     removed. The reason it could not be asked, else empty."""
     script, branch = agent_script(), LAND_BRANCH.format(tree).removeprefix("refs/heads/")
     # a narrowed batch gate (narrowed_gate) selects against the base tip the batch merges onto
-    narrowed = f" --base {NARROW_BASE.get()}" if narrowed_gate() is not None else ""
+    narrowed = recording_base()
     if not script.is_file():
         return f"{script.name} is not installed"
     # the command as worker.md names it: the cloud VM has its own skill install, never this host's paths
@@ -7358,7 +7364,7 @@ def merges(
             else:
                 print(
                     f"Tree {actual}: no recorded pass, and land runs no gate in a clone with no working tree: pass {tip}"
-                    " where the files are checked out (`approvals.py local-ci --record`)"
+                    f" where the files are checked out (`approvals.py local-ci --record{recording_base()}`)"
                 )
         else:
             reset(work, tip)

@@ -200,12 +200,80 @@ def test_lands_batch_gate_runs_the_selector_against_the_base_tip(repo: dict[str,
     assert approvals.reusable(repo["head"]()) is None
 
 
-def test_land_sets_its_base_tip_for_the_batch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`land` gates each batch under narrowed_to the tip it merges onto: the narrowed base merge_batch sees."""
-    import inspect
+def batch_of(repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Two PR heads pushed to origin, each adding one file to `main`'s tip, as `land` reads them: candidates_of names
+    them, and merges, the GitHub part, is replaced by a log of what it was given."""
+    work, pulls = repo["work"], []
+    for number, name in ((7, "b.py"), (8, "c.py")):
+        git_in(work, "checkout", "-q", "-b", f"pr{number}", "origin/main")
+        (work / name).write_text("x = 1\n")
+        git_in(work, "add", name)
+        git_in(work, "commit", "-qm", name)
+        git_in(work, "push", "-q", "origin", f"pr{number}")
+        pulls.append(
+            {"number": number, "headRefOid": repo["head"](), "baseRefName": "main", "isDraft": False}
+        )
+    git_in(work, "checkout", "-q", "work")
+    monkeypatch.setattr(approvals, "candidates_of", lambda named, *_a: (named, {}, {}))
+    merged: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(approvals, "merges", lambda *args: merged.append(args))
+    repo["merged"] = merged
+    return pulls
 
-    source = inspect.getsource(approvals.local_queue)
-    assert source.count("with narrowed_to(tip):") == 2
+
+def test_land_gates_the_batch_with_the_selector_against_the_tip_it_merges_onto(
+    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a working tree: merge_batch's gate selects over the batch's combined diff against the tip."""
+    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
+    pulls = batch_of(repo, monkeypatch)
+    tip = repo["base"]()
+    assert approvals.local_queue(pulls, "main", None, None, set()) == (0, False)
+    assert repo["ran"]() == [f"selected b.py c.py against {tip}"]
+    [(landed, *_)] = repo["merged"]
+    assert [pull["number"] for pull, *_ in landed] == [7, 8]
+    assert {how for *_, how in landed} == {"run"}
+
+
+def test_land_in_a_clone_with_no_working_tree_looks_up_the_narrowed_pass_on_the_batch_tree(
+    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without one: merged_trees finds the pass recorded against the tip, and refuses, naming that command, without."""
+    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
+    pulls = batch_of(repo, monkeypatch)
+    tip = repo["base"]()
+    monkeypatch.setattr(approvals, "working_tree", lambda root: False)
+    monkeypatch.delenv(approvals.WORKING_TREE_POLICY)  # the policy is origin's, as a clone with no files reads it
+    with pytest.raises(approvals.Refused) as refused:
+        approvals.local_queue(pulls, "main", None, None, set())
+    assert f"`approvals.py local-ci --record --base {tip}`" in str(refused.value)
+    assert repo["ran"]() == []  # no gate runs there
+    # the printed command's equivalent, on a head with the batch's tree: the lookup then finds that record
+    monkeypatch.setenv(approvals.WORKING_TREE_POLICY, "1")
+    monkeypatch.setattr(approvals, "working_tree", lambda root: True)
+    git_in(repo["work"], "checkout", "-q", "-B", "batch", "origin/main")
+    for pull in pulls:
+        git_in(repo["work"], "merge", "-q", "--no-ff", "--no-edit", pull["headRefOid"])
+    assert approvals.main(["local-ci", "--record", "--base", tip]) == 0
+    assert repo["ran"]() == [f"selected b.py c.py against {tip}"]
+    git_in(repo["work"], "checkout", "-q", "work")
+    monkeypatch.setattr(approvals, "working_tree", lambda root: False)
+    monkeypatch.delenv(approvals.WORKING_TREE_POLICY)
+    assert approvals.local_queue(pulls, "main", None, None, set()) == (0, False)
+    assert repo["ran"]() == [f"selected b.py c.py against {tip}"]  # nothing ran again
+    assert {how for *_, how in repo["merged"][0][0]} == {"reused"}
+
+
+def test_the_full_gate_keeps_its_refusal_text(
+    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n\nGate: full\n")
+    pulls = batch_of(repo, monkeypatch)
+    monkeypatch.setattr(approvals, "working_tree", lambda root: False)
+    monkeypatch.delenv(approvals.WORKING_TREE_POLICY)
+    with pytest.raises(approvals.Refused) as refused:
+        approvals.local_queue(pulls, "main", None, None, set())
+    assert "(`approvals.py local-ci --record` on a head with this tree)" in str(refused.value)
 
 
 def test_the_cloud_gate_task_passes_the_base_tip(
@@ -316,6 +384,50 @@ def test_local_ci_for_a_ci_false_pr_posts_its_narrowed_pass(
     assert len(repo["ran"]()) == 1 and repo["ran"]()[0].startswith("selected app.py")
     assert "(narrowed)" in posted[0]
     assert approvals.reusable(head) is None  # never a full pass
+
+
+def pr_ready(repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """`local-ci 7 --run` against a stand-in GitHub: the PR's head, base and the comments it posts."""
+    head = repo["head"]()
+    monkeypatch.setattr(approvals, "settled_head", lambda pr, want: head)
+    monkeypatch.setattr(approvals, "pull_status", lambda pr: {"baseRefName": "main"})
+    monkeypatch.setattr(approvals, "base_branch", lambda pr: "main")
+    posted: list[str] = []
+    monkeypatch.setattr(approvals, "comment", lambda pr, body: posted.append(body))
+    return posted
+
+
+def test_local_ci_for_a_pr_on_a_project_with_ci_is_not_narrowed(
+    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CI runs the selector on the PR; the narrowed record is only `ci: false`'s gate of record."""
+    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
+    posted = pr_ready(repo, monkeypatch)
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
+    assert repo["ran"]() == ["mise run check:all base=unset"]
+    assert "(narrowed)" not in posted[0]
+
+
+def test_under_ci_false_a_head_with_a_full_pass_takes_it_and_is_not_gated_again(
+    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo["loop"](f"# Loop\n\nAffected tests: SELECTOR\n\n{NO_CI}")
+    posted = pr_ready(repo, monkeypatch)
+    approvals.run_local_ci(None, None, [])  # the full gate's pass on the head, as `Gate: full` records it
+    assert repo["ran"]() == ["mise run check:all base=unset"]
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
+    assert repo["ran"]() == ["mise run check:all base=unset"]  # nothing ran again
+    assert "(narrowed)" not in posted[0]
+
+
+def test_local_ci_base_without_record_is_refused(
+    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
+    pr_ready(repo, monkeypatch)
+    assert approvals.main(["local-ci", "7", "--run", "--base", repo["base"]()]) != 0
+    assert "local-ci --base goes with --record" in capsys.readouterr().out
+    assert repo["ran"]() == []
 
 
 # a stateful selector with no state (a fresh clone, a cloud VM, a CI runner): it logs the variables it got beyond the
