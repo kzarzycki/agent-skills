@@ -4817,42 +4817,54 @@ def default_head(repo: str) -> str:
 
 def merged_since(repo: str, old: str, new: str) -> str:
     """The PRs merged between ``old`` and ``new`` that the GitHub login this runs as opened, the
-    one leads open theirs with, as ``#12, #13``: the ``(#N)`` that ends each commit's subject (a
-    squash or queue merge), or a ``Merge pull request #N`` subject. Empty when none is (a bot's or
-    another person's PR, a commit naming no PR), since no lead landed it; a comparison, login or
-    author not read is named, so the landing is still raised."""
+    one leads open theirs with, as ``#12, #13``, in the order their merge commits landed. Two
+    reads whatever the range holds: the comparison's shas and first commit date, and the login's
+    merged PRs since that date (``gh pr list --author @me``), kept when their ``mergeCommit`` is
+    one of the range's shas (a squash, a queue's merge commit or a merge commit alike). A range's
+    ``(#N)`` subjects play no part: on a fork they are its upstream's numbers. Empty when none is
+    (a bot's or another person's PR, a commit no PR of the login made); a read that failed is
+    named, so the landing is still raised."""
     try:
-        subjects = gh(
-            "api",
-            f"repos/{repo}/compare/{old}...{new}",
-            "--jq",
-            '.commits[].commit.message | split("\\n")[0]',
-        ).splitlines()
+        commits = [
+            line.split("\t")
+            for line in gh(
+                "api",
+                f"repos/{repo}/compare/{old}...{new}",
+                "--jq",
+                ".commits[] | [.sha, .commit.committer.date] | @tsv",
+            ).splitlines()
+            if line.strip()
+        ]
     except Fail as e:
         return f"not read: {e}"
-    prs = []
-    for s in subjects:
-        m = re.search(r"\(#(\d+)\)\s*$", s) or re.match(r"Merge pull request #(\d+)", s)
-        if m and f"#{m[1]}" not in prs:
-            prs.append(f"#{m[1]}")
-    if not prs:
+    if not commits:
         return ""
+    since = commits[0][1][:10]  # the first commit's day: a merge is never before it
     try:
-        me = gh("api", "user", "--jq", ".login").strip()
-    except Fail as e:
-        return f"{', '.join(prs)} (authors not read: {e})"
+        listed = json.loads(
+            gh(
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--state",
+                "merged",
+                "--author",
+                "@me",
+                "--search",
+                f"merged:>={since}",
+                "--limit",
+                "200",
+                "--json",
+                "number,mergeCommit",
+            )
+        )
+        by_sha = {(p.get("mergeCommit") or {}).get("oid"): f"#{p['number']}" for p in listed}
+    except (Fail, ValueError, TypeError, KeyError, AttributeError) as e:
+        return f"not read: {e}"
     # ponytail: the login stands for "a lead's PR", so the owner's own hand-made PR counts too;
     # telling them apart needs a PR-to-lead link that nothing records yet.
-    mine = []
-    for pr in prs:
-        try:
-            author = gh("api", f"repos/{repo}/pulls/{pr[1:]}", "--jq", ".user.login").strip()
-        except Fail as e:
-            mine.append(f"{pr} (author not read: {e})")
-            continue
-        if author == me:
-            mine.append(pr)
-    return ", ".join(mine)
+    return ", ".join(by_sha[sha] for sha, *_ in commits if sha in by_sha)
 
 
 def pr_label(label: object) -> tuple[str, int] | None:

@@ -11191,21 +11191,34 @@ def in_checkout(og: Fleet) -> None:
     og.files[".git/config"] = GIT_CONFIG
 
 
-def github(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> list[tuple[str, ...]]:
+S1, S2, S3 = "1" * 40, "2" * 40, "3" * 40
+COMPARE = f"{S1}\t2026-11-01T10:00:00Z\n{S2}\t2026-11-02T10:00:00Z\n{S3}\t2026-11-03T10:00:00Z\n"
+
+
+def pr_list(*merged: tuple[int, str]) -> str:
+    """What ``gh pr list --json number,mergeCommit`` prints for PRs merged as the given shas."""
+    return json.dumps([{"number": n, "mergeCommit": {"oid": sha}} for n, sha in merged])
+
+
+def github(
+    monkeypatch: pytest.MonkeyPatch, head: list[str], prs: str | None = None
+) -> list[tuple[str, ...]]:
     """``gh`` faked: the default branch's head is ``head[0]``, which a test moves between polls;
-    a comparison lists two merges, both PRs opened by the login it runs as. Each call is
-    recorded."""
+    a comparison lists three commits, and the login's merged PRs (``prs``, by default #12 as the
+    first commit's squash merge and #13 as the second's) come from one ``pr list``. Any lookup of
+    a single PR or of the login raises. Each call is recorded."""
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 0)
     calls: list[tuple[str, ...]] = []
+    mine = prs if prs is not None else pr_list((13, S2), (12, S1), (99, "f" * 40))
 
     def gh(*args: str, timeout: float = 0) -> str:
         calls.append(args)
         if args[1] == "repos/o/r/commits/HEAD":
             return head[0] + "\n"
-        if args[1] == "user" or args[1].startswith("repos/o/r/pulls/"):
-            return "me\n"
         if args[1] == f"repos/o/r/compare/{OLD}...{NEW}":
-            return "Fix the gate (#12)\nSupervisor: one more (#781) (#13)\nchore: bump\n"
+            return COMPARE
+        if args[:2] == ("pr", "list"):
+            return mine
         raise AssertionError(args)
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
@@ -11239,6 +11252,54 @@ def test_a_moved_default_branch_raises_one_act_event_for_its_new_head_and_then_n
     assert (event["settled"], event["action"]) == ("rule", "act")
     assert NEW in event["line"] and "#12, #13" in event["line"]
     assert state_of(registry)["heads"] == {"o/r": NEW}
+
+
+def test_a_range_of_foreign_numbers_lists_the_repos_own_merges_in_a_fixed_number_of_calls() -> None:
+    """A fork's range holds the upstream's `(#n)` subjects, none a PR of the fork: the notice
+    lists only the fork's own merges (a squash, then a queue's merge commit) and reads the
+    repo twice however many commits there are, never once per number."""
+    queue = "4" * 40
+    commits = "".join(f"{c}\t2026-11-0{n}T10:00:00Z\n" for n, c in enumerate([S1, S2, queue], 1))
+    commits += "".join(f"{n:040x}\t2026-11-09T10:00:00Z\n" for n in range(80))
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, timeout: float = 0) -> str:
+        calls.append(args)
+        if args[1].startswith("repos/o/r/compare/"):
+            return commits
+        if args[:2] == ("pr", "list"):
+            return pr_list((9, queue), (7, S1), (8, "e" * 40))  # #8 merged outside the range
+        raise AssertionError(args)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(omnigent_agent, "gh", gh)
+        assert omnigent_agent.merged_since("o/r", OLD, NEW) == "#7, #9"
+    assert len(calls) == 2
+    listing = calls[1]
+    assert listing[:4] == ("pr", "list", "--repo", "o/r")
+    assert "--author" in listing and listing[listing.index("--author") + 1] == "@me"
+    assert "merged:>=2026-11-01" in listing[listing.index("--search") + 1]
+
+
+def test_a_range_none_of_whose_commits_is_a_merged_pr_of_the_login_lists_nothing() -> None:
+    def gh(*args: str, timeout: float = 0) -> str:
+        return COMPARE if args[0] == "api" else pr_list((5, "e" * 40))
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(omnigent_agent, "gh", gh)
+        assert omnigent_agent.merged_since("o/r", OLD, NEW) == ""
+
+
+def test_a_merged_pr_list_that_cannot_be_read_is_named_so_the_landing_is_still_raised() -> None:
+    def gh(*args: str, timeout: float = 0) -> str:
+        if args[0] == "api":
+            return COMPARE
+        raise omnigent_agent.Fail("gh pr list: HTTP 502")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(omnigent_agent, "gh", gh)
+        got = omnigent_agent.merged_since("o/r", OLD, NEW)
+    assert got == "not read: gh pr list: HTTP 502"
 
 
 def test_the_first_head_seen_for_a_repo_is_stored_and_raises_nothing(
@@ -11310,14 +11371,16 @@ FAR = "until 2099-01-01T00:00Z"  # a timed wait's end: the supervisor raises no 
 
 
 def heads_moving(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> None:
-    """``gh`` faked: the default branch's head is ``head[0]``, any comparison one merge of a PR the
-    login it runs as opened."""
+    """``gh`` faked: the default branch's head is ``head[0]``, any comparison one commit, the
+    squash merge of a PR the login it runs as opened."""
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 0)
 
     def gh(*args: str, timeout: float = 0) -> str:
-        if args[1] == "user" or args[1].startswith("repos/o/r/pulls/"):
-            return "me\n"
-        return head[0] + "\n" if args[1] == "repos/o/r/commits/HEAD" else "Fix the gate (#12)\n"
+        if args[:2] == ("pr", "list"):
+            return pr_list((12, S1))
+        if args[1] == "repos/o/r/commits/HEAD":
+            return head[0] + "\n"
+        return f"{S1}\t2026-11-01T10:00:00Z\n"
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
 
