@@ -103,7 +103,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "release-check":
             validate_release_candidate(args.package, args.tag)
-            if not args.skip_smoke:
+            if args.skip_smoke:
+                print("smoke run: skipped (--skip-smoke); the pre-tag run gated this release")
+            else:
                 head = _git_output(["rev-parse", "HEAD"], cwd=args.package.resolve())
                 print(f"smoke run: {require_smoke_run(head)}")
             return 0

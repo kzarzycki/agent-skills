@@ -116,7 +116,7 @@ Commit, push and rerun the gates.
 2. When the required `qualify` check passes, run `gh pr merge --squash --delete-branch`.
    If it fails, fix, commit and go back to step 4; a third failure is blocked. If main
    moved, update the branch and wait again. Never use `--admin`, and never push to main.
-3. For a release, check the gatekeeper against real github.com first. The in-repo job
+3. For a release, the pre-tag smoke run is a required step: check the gatekeeper against real github.com first. The in-repo job
    `Gatekeeper on real GitHub` runs on every PR that changes the engineering-loop scripts. The one
    place a private organization repository's `github.token` shows (GraphQL `FORBIDDEN`) is the
    smoke run: run the `workflow_dispatch` workflow below in a private organization repository with
@@ -124,7 +124,7 @@ Commit, push and rerun the gates.
    refuses to pass until a passing run for `git rev-parse HEAD` exists. The repository comes from
    the releaser's own environment, never from this repository: `RELEASE_SMOKE_REPOSITORY`
    (`owner/name`) and `RELEASE_SMOKE_WORKFLOW` (the workflow file). Put the run's URL, which
-   `release-check` prints, in the release PR's evidence (a private repository's name stays out of
+   `release-check` prints, in the release PR's evidence. The tag check in CI passes `--skip-smoke` and prints that it skipped: its token can't dispatch a workflow in another organization's private repository, so the run before the tag is the gate (a private repository's name stays out of
    public text).
 
    ```yaml
