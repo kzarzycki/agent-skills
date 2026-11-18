@@ -24,6 +24,10 @@
     python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [--console [--fyi skip|post] [--decisions FILE]] [<session>=<report>...]
     python3 scripts/omnigent_agent.py supervise --registry <file> ... --install --log <file> | --uninstall
 
+``start``, ``wait`` and ``run`` print ``cold start: <n|unknown> s to first turn`` on stderr: the seconds from
+the session record's ``created_at`` to the ``created_at`` of its first assistant item, ``unknown``
+(never 0) when the API gives none (``start`` waits up to ``COLD_START_SECONDS`` for the turn).
+
 ``run`` is ``start`` then ``wait`` in one process: exit 0 prints the report path (a verifier's
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
 path of a question the child wrote (``<report>.question``) instead of a report; exit 1 prints the
@@ -269,6 +273,7 @@ ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled 
 # servers stay. A project's `Worker tools:` or `Verifier tools:` line names more, or `full`.
 LEAN_ROLES = ("worker", "verifier")
 LEAN_TOOLS = "Bash,Read,Edit,Write,Agent,Skill,ToolSearch,WebFetch,WebSearch"
+COLD_START_SECONDS = 20.0  # how long ``start`` waits for a first turn to time (``wait`` has one)
 LOOP_FILE = Path("docs") / "agents" / "loop.md"
 COMPACT_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"  # outranks Claude Code's --autocompact flag
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
@@ -1383,6 +1388,10 @@ class Omnigent:
         page = self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc")
         return list(reversed(page.get("data", [])))
 
+    def first_items(self, sid: str, n: int = 20) -> list[dict]:
+        """``sid``'s oldest ``n`` items, oldest first: its start, however long the history grew."""
+        return self.call("GET", f"/v1/sessions/{sid}/items?limit={n}&order=asc").get("data", [])
+
     def older(self, sid: str, after: str = "") -> dict:
         """A page of ``sid``'s history, newest first: its newest 100 items, or with ``after`` (an
         item id) the 100 before that item; ``data``, ``last_id`` and ``has_more``."""
@@ -1826,6 +1835,37 @@ def usage_lines(og: Omnigent, sids: list[str]) -> list[str]:
     trees = f"{counted} session tree{'s' * (counted != 1)}"
     lines.append(f"Tokens spent: {tokens_text(tokens)}, ${cost:.2f} ({trees}{not_counted})")
     return lines
+
+
+def cold_start_line(og: Omnigent, sid: str) -> str:
+    """``cold start: <n|unknown> s to first turn``: the seconds from the session's ``created_at``
+    (its record's, set by the create call) to the ``created_at`` of its first assistant item (a
+    message of the assistant, or a tool call it made), read from the oldest items, so a long
+    session still times its first turn. ``unknown``, never 0, when the API lacks either time or
+    the item (a session with no turn yet)."""
+    try:
+        made = float(og.info(sid).get("created_at") or 0)
+        first = next(
+            (
+                float(i.get("created_at") or 0)
+                for i in og.first_items(sid)
+                if i.get("role") == "assistant" or i.get("type") == "function_call"
+            ),
+            0.0,
+        )
+    except (Fail, ValueError):
+        made = first = 0.0
+    seconds = f"{max(first - made, 0):.0f}" if made and first else "unknown"
+    return f"cold start: {seconds} s to first turn"
+
+
+def report_cold_start(og: Omnigent, sid: str, wait: float = 0.0) -> None:
+    """Print ``cold_start_line`` on stderr (stdout is the id or the report path), after up to
+    ``wait`` seconds for a numeric one."""
+    end = time.monotonic() + wait
+    while "unknown" in (line := cold_start_line(og, sid)) and time.monotonic() < end:
+        time.sleep(min(POLL_SECONDS, 1.0))
+    print(line, file=sys.stderr, flush=True)
 
 
 def own_id() -> str:
@@ -8853,6 +8893,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     here = bring_home(og, args.session, Path(asked.args[0]), keep=True)
                     raise Asked(str(here)) from asked
                 raise
+            report_cold_start(og, args.session)
             if far:
                 home = bring_home(og, args.session, report, keep=not args.verdict)
                 print(home)
@@ -9126,10 +9167,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
 
         sid = launch()
         cover(og, sid, ended)
+        if args.cmd == "start":
+            report_cold_start(og, sid, COLD_START_SECONDS)
         if args.cmd == "run":
             print(
                 wait(og, sid, report, args.timeout, verifier, launched, args.pr, baseline, launch)
             )
+            report_cold_start(og, sid)
             arm_quietly(registry, sid)
             if not keeps(args, verifier):
                 archive_delivered(og, sid)

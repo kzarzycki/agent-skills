@@ -242,6 +242,13 @@ reviewer must be of the other family is the caller's policy.
 `start` and `wait <session> <report>` are the two halves, for a start whose wait runs
 elsewhere.
 
+**Cold start.** `start` (after waiting up to `COLD_START_SECONDS`, 20 s, for a first turn), `wait` and
+`run` print on stderr `cold start: <n|unknown> s to first turn`: the seconds from the session record's
+`created_at` (set by the create call) to the `created_at` of its first assistant item (a message or
+tool call of the assistant), read from the session's oldest items so a long session still times it.
+A time the API does not give, or a session with no turn yet, prints
+`unknown`, never 0; `wait` prints it again once the turn exists. The lead's log keeps the line.
+
 **Signature.** `python3 scripts/omnigent_agent.py signature` prints `<harness>/<model>/<effort>` of the session it
 runs in, read at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and transcript), so it holds
 however the session started. It reads the session's Omnigent record first (`llm_model` once the harness has
