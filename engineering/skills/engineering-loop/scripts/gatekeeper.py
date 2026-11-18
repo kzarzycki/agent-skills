@@ -252,8 +252,11 @@ gets a `Red in the merge queue` comment naming the check that failed on the queu
 its failed job log's last 30 lines, and is enqueued again; its second turns the PR back to draft with the same, as
 step 6 evicts (`Evicted from the merge queue`, exit 1). Any other removal (`checks_timed_out`, `manual`) counts for
 nothing, and the PR is enqueued again. The count lives in GitHub's timeline, so any land applies it and `land` keeps no
-state. A named PR enqueued or queued exits 3, naming its queue position and head; a bare `land` exits 0 once its
-candidates are in. `land --wait` polls the entry as above until the PR merges, then exits 0; the first land that reads
+state. A PR enqueued or already queued exits 0, naming its queue position and head, and `land` ends: it never polls the
+queue (GitHub tracks it; a poll only spends the account's GraphQL quota), so `--wait` is no flag on this base, and a
+later `land <pr>` reads a removed entry's state once (above). Exit 3 stays for a PR whose conflict GitHub is still
+working out, or a base still running its checks: nothing was enqueued yet. Who tells the lead of a merge or a removal
+is the project's watcher, not `land`. The first land that reads
 a PR the queue merged (a `land <pr>` naming it, or a bare `land`, which reads every merged PR into the base that carries
 `loop:queued`, the label `land` puts on each PR before it enqueues it) comments `Landed` on it, `Base:` its merge commit, `Tree:` that commit's tree and `Gate: merge
 queue` with the links of the runs on that commit (the queue's `merge_group` CI), and finishes its worker sessions as
@@ -6538,8 +6541,10 @@ def github_queue(
 ) -> tuple[int, bool]:
     """The GitHub merge queue, which `base`'s rules require (merging with `method`): no landing lock, local batch or
     local gate, since GitHub's queue orders the entries, gates each group with its `merge_group` CI run and isolates a
-    red one. Every candidate (candidates_of), oldest PR first, goes in pinned to its head (queue_step). A named PR in
-    the queue waits (exit 3) until it merges; a bare land is done once its candidates are in."""
+    red one. Every candidate (candidates_of), oldest PR first, goes in pinned to its head (queue_step), and land exits:
+    it never loops on the queue (`--wait` is no flag here), which GitHub tracks and a poll would only spend GraphQL
+    quota on. A PR in the queue is done (exit 0); exit 3 stays for a PR GitHub is still working out a conflict of, or
+    a base still running its checks, which a later `land` reads again."""
     if signed(loop):
         raise Refused(
             f"{base}'s rules require GitHub's merge queue, which merges with GitHub's signature, but loop.md's"
@@ -6558,7 +6563,7 @@ def github_queue(
             exits[pull["number"]] = (code, again)
     if not named:
         queue_trail(base)
-    return outcome(named, exits, worst, failed)
+    return outcome(named, exits, worst, failed)[0], False
 
 
 def queue_trail(base: str) -> None:
@@ -6602,7 +6607,7 @@ def queue_step(
     if entry := pull.get("mergeQueueEntry"):
         if not stuck(entry):
             print(f"{where} is in the merge queue at {head}, position {entry.get('position')}")
-            return WAITING, True
+            return 0, False
         dequeue_pull(pull["number"], pull["id"])
         print(
             f"{where}: its merge-queue entry waited {STUCK // 60} minutes for checks GitHub never started:"
@@ -6754,7 +6759,7 @@ def required_state(
 
 def enqueue(pull: dict[str, Any], method: str) -> tuple[int, bool]:
     """Put the PR in the GitHub merge queue (merging with `method`) pinned to the head the proofs judged, its session
-    link lines dropped first (unlink_pull): exit 3 while it waits there, 1 when GitHub refuses, or when its head moved
+    link lines dropped first (unlink_pull): exit 0 once it is in, 1 when GitHub refuses, or when its head moved
     as it went in (the forge port's REST answer reads it again)."""
     where, head = f"PR #{pull['number']}", pull["headRefOid"]
     unlink_pull(pull)
@@ -6769,7 +6774,7 @@ def enqueue(pull: dict[str, Any], method: str) -> tuple[int, bool]:
         print(f"{where}: {exc}")
         return 1, False
     print(f"{where} enqueued at {head}, position {position}")
-    return WAITING, True
+    return 0, False
 
 
 def run_link(url: str) -> str:

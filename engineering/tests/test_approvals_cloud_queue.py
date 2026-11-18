@@ -225,7 +225,7 @@ def test_a_cloud_land_enqueues_through_auto_merge_with_the_queues_method_and_the
     assert (cloud_queue["tips"](), cloud_queue["runs"](), cloud_queue["merged"]()) == ([], 0, [])
     # in the queue now, by their timelines: left alone
     assert cloud_queue["land"]("7") == (
-        approvals.WAITING,
+        0,
         [
             f"PR #7 is in the merge queue at {seven}, position None",
             f"PR #8 is in the merge queue at {eight}, position None",
@@ -281,10 +281,10 @@ def test_a_red_group_read_from_rest_comments_once_and_enqueues_again_and_a_secon
     """Example 3's red group and example 4's second red: a removal names no reason over REST, and a required check
     that failed on its group's commit makes it `failed_checks`; the eviction goes through `ccr/convert_to_draft`."""
     head = cloud_queue["opened"](7)
-    assert cloud_queue["land"]("7")[0] == approvals.WAITING
+    assert cloud_queue["land"]("7")[0] == 0
     red_out(cloud_queue, 7, "g1", 410)
     code, lines = cloud_queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     [note] = notes_on(cloud_queue, 7, approvals.QUEUE_RED)
     assert f"Head: {head}\nGroup: g1\n" in note and "\n".join(LOG[-30:]) in note
     assert cloud_queue["enqueued"] == [(7, head), (7, head)]
@@ -306,7 +306,7 @@ def test_a_removal_whose_group_failed_only_checks_the_base_does_not_require_coun
     cloud_queue["checks"]["g1"] = [run("lint", "failure", 411), run("qualify", "cancelled", 410)]
     cloud_queue["out"](7)
     code, lines = cloud_queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert notes_on(cloud_queue, 7, approvals.QUEUE_RED) == []
     assert cloud_queue["enqueued"] == [(7, head), (7, head)]
 
@@ -321,7 +321,7 @@ def test_a_later_removal_with_no_group_of_its_own_never_reuses_an_earlier_red_gr
     cloud_queue["land"]("7")
     cloud_queue["out"](7)  # taken out before the queue built it a group
     code, lines = cloud_queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert not cloud_queue["pulls"][7]["isDraft"]
     assert notes_on(cloud_queue, 7, approvals.QUEUE_EVICTED) == []
     assert cloud_queue["enqueued"] == [(7, head)] * 3
@@ -360,30 +360,19 @@ def test_an_entry_whose_group_waited_for_checks_github_never_started_is_taken_ou
     cloud_queue["made"]["g1"] = (datetime.now(UTC) - timedelta(minutes=11)).isoformat()
     cloud_queue["build"](7, "g1")
     code, lines = cloud_queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert any(line.endswith("dequeued, to enqueue it again") for line in lines), lines
     assert cloud_queue["dequeued"] == [7] and cloud_queue["enqueued"] == [(7, head)] * 2
 
 
-def test_land_wait_follows_the_rest_entry_until_the_queue_merges_it_then_comments_landed(
+def test_land_wait_on_the_rest_queue_enqueues_and_exits_with_no_poll_and_no_graphql(
     cloud_queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     head = cloud_queue["opened"](7)
-    polls: list[float] = []
-
-    def slept(seconds: float) -> None:
-        polls.append(seconds)
-        if len(polls) == 2:
-            cloud_queue["queue_merge"](7)
-
-    monkeypatch.setattr(approvals.time, "sleep", slept)
+    monkeypatch.setattr(approvals.time, "sleep", lambda seconds: pytest.fail("polled the queue"))
     code, lines = cloud_queue["land"]("7", "--wait")
     assert code == 0, lines
-    assert cloud_queue["enqueued"] == [(7, head)] and lines[-1] == "PR #7 is merged"
-    [landed] = notes_on(cloud_queue, 7, approvals.LANDED)
-    commit = cloud_queue["main"]()
-    assert landed.startswith(f"Landed\nBase: {commit}\nTree: {cloud_queue['main']('^{tree}')}\n")
-    assert cloud_queue["graphql"] == []
+    assert cloud_queue["enqueued"] == [(7, head)] and cloud_queue["graphql"] == []
 
 
 def test_a_green_group_already_in_main_is_read_as_merged_before_github_reports_it(
@@ -479,7 +468,7 @@ def test_a_red_removal_is_read_while_the_groups_readonly_ref_outlives_it(
     cloud_queue["suites"]["g1"] = 1
     cloud_queue["readonly"][7] = "g1"
     code, lines = cloud_queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert not any("is in the merge queue" in line for line in lines), lines
     [note] = notes_on(cloud_queue, 7, approvals.QUEUE_RED)
     assert f"Head: {head}\nGroup: g1\n" in note
@@ -516,5 +505,5 @@ def test_a_removal_read_while_github_works_out_mergeability_waits_as_on_a_host(
     )
     assert cloud_queue["enqueued"] == [(7, head)]
     cloud_queue["pulls"][7]["mergeable"] = "MERGEABLE"  # GitHub decided: no conflict
-    assert cloud_queue["land"]("7")[0] == approvals.WAITING
+    assert cloud_queue["land"]("7")[0] == 0
     assert cloud_queue["enqueued"] == [(7, head), (7, head)]
