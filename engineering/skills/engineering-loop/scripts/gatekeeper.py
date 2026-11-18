@@ -3646,7 +3646,8 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     the head decides alone, so a go withdrawn there stays withdrawn. A string names why the older go carries nothing;
     None: no go to carry."""
     head = pull["headRefOid"]
-    guard = settings(loop).get("carry_over_main")  # a project with its own rule keeps it for the go too
+    # a project with its own rule keeps it for the go too
+    guard = settings(loop).get("carry_over_main")
     by = go_on(pull, head, loop)
     if by is not None:
         return (by, head) if by else None
@@ -5001,7 +5002,8 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
 
 
 DEADLINE_ENV = "LOOP_LAND_DEADLINE"
-made: list[list[str]] = []  # the worktrees this process's ancestors made (land), handed on by caught_up
+# the worktrees this process's ancestors made (land), handed on by caught_up
+made: list[list[str]] = []
 WORKTREES_ENV = (
     "LOOP_LAND_WORKTREES"  # JSON [[git dir, path]] of the worktrees caught_up made, removed at exit
 )
@@ -5046,9 +5048,7 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
             fresh.rmdir()
             raise drifted
         gitdir = Path(out(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-        os.environ[WORKTREES_ENV] = json.dumps(
-            [*made, [str(gitdir), str(fresh)]]
-        )
+        os.environ[WORKTREES_ENV] = json.dumps([*made, [str(gitdir), str(fresh)]])
         # the running script as the base has it; one outside the checkout is not drift, so it stays as it is
         if script.is_relative_to(root.resolve()):
             argv[1] = str(fresh / script.relative_to(root.resolve()))
