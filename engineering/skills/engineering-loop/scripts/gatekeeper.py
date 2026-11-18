@@ -223,7 +223,7 @@ the bare base is gated: red, the run stops (exit 1) and evicts nobody, since eve
 With loop.md's `machine_exit` (78, say), a gate run in steps 4 and 6 exiting with it is the machine's fault, not the
 tree's: it runs once more on the same tree, and a second such exit stops the run (exit 1), landing nothing, evicting
 nobody and posting nothing, and prints the log's last 30 lines: fix the machine, then land again.
-Exit 0 when the named PR merged, or with no PR named when nothing landable failed; 1 for a refusal, a conflict, an
+Exit 0 when the named PR merged (on a GitHub-queue base, also once it is enqueued or queued), or with no PR named when nothing landable failed; 1 for a refusal, a conflict, an
 eviction, a merge GitHub refused or a red base; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
 `land --wait` runs it again every 30 seconds while it waits on the lock or on CI, printing each new state once, for up
 to 2 hours, then exits 3; a wait for the owner ends it at once, since only the owner clears it.
@@ -237,12 +237,12 @@ and is refused (exit 1), naming both heads, and the other candidates still go in
 on its group's commit 10 minutes after that commit was made (GitHub lost its `merge_group` event): then it is dequeued
 and enqueued again. Else
 the queue's last removal of the head decides: the PR's `RemovedFromMergeQueueEvent`s since its head was pushed and since
-it last went ready, so a PR evicted and marked ready again counts anew. `merged`: it waits, since GitHub reports the
-merge a moment after the removal. A PR GitHub reports conflicting: step 3's conflict comment, once per head, and not
+it last went ready, so a PR evicted and marked ready again counts anew. `merged`: nothing to do (exit 0), since GitHub reports
+the merge a moment after the removal. A PR GitHub reports conflicting: step 3's conflict comment, once per head, and not
 enqueued (exit 1). A `merge_conflict` removal holds only that long, since the queue tests an entry on the entries ahead
 of it, so the conflict may have been with one of them: while GitHub works the PR's mergeability out again after the
-base moved, it waits (exit 3, `GitHub is still working out whether PR #<n> conflicts`), and once GitHub reports it
-mergeable it is enqueued again. `failed_checks`: first the checks the base requires are read on its tip; one red there stops
+base moved, land exits 3 at once (`GitHub is still working out whether PR #<n> conflicts`), and a later land, once GitHub
+reports it mergeable, enqueues it again. `failed_checks`: first the checks the base requires are read on its tip; one red there stops
 the land (exit 1, `<base> itself is red`), counting nothing and evicting nobody. Then each such removal is placed on
 the base commit its group was built on (the merge base of the base and the group's commit): a required check that
 failed there (`FAILURE`, `TIMED_OUT`, `STARTUP_FAILURE` or `ERROR`; a run cancelled, stale or awaiting approval failed
