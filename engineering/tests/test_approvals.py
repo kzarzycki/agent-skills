@@ -7815,13 +7815,73 @@ def test_a_chain_of_later_passes_keeps_the_risk_and_a_full_scope_pass_lowers_it(
     ]
     state["pull"] = judged_pr(*chain)
     assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
-    state["pull"] = judged_pr(
-        *chain, later("low — whole diff re-read", 5, HEAD, "Scope: full — all of it")
-    )
+    state["pull"] = judged_pr(*chain, later("low — whole diff re-read", 5, HEAD, "Scope: full"))
     assert approvals.main(["check", "merge", "7"]) == 0
     state["pull"] = judged_pr(
         *chain, later("high — whole diff", 5, HEAD, "Scope: full"), later("low", 6)
     )
+    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
+
+
+def posted_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    number: int,
+    body: str,
+    scope: str | None,
+) -> dict[str, Any]:
+    """The review `verdict` posts for a report with `body` in its criteria and `scope` as its closing line, as GitHub returns it."""
+    report = tmp_path / f"r{number}.md"
+    report.write_text(
+        f"Verifier: claude, pass {number}\n\n## Criteria\n\n- c{body}\n\nHead: {HEAD}\n"
+        f"VERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\n"
+        + (f"Scope: {scope}\n" if scope else "")
+        + "Risk: low — whole diff\n"
+    )
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(approvals, "diff_lines", lambda *_: {})
+    monkeypatch.setattr(approvals, "post_review", lambda _pr, review: sent.append(review))
+    assert approvals.verdict(7, report) == 0
+    return {
+        **verdict_on(HEAD, heading=f"Verifier (claude), pass {number}"),
+        "body": sent[0]["body"],
+    }
+
+
+def test_the_closing_scope_line_is_posted_and_read_and_a_criteria_line_is_not(
+    gating: tuple[dict[str, Any], list[tuple[int, str]]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """#1397: `verdict` posts the report's last `Scope:` line, `Scope: full` lowers a high, and the exact value counts."""
+    state, _ = gating
+    full = judging("high — it changes landing policy", commit=OLD_HEAD)
+    state["pull"] = judged_pr(full)
+    for scope, body, waits in [
+        ("full", "", False),
+        ("Full", "", False),
+        (None, "\nScope: full", True),  # a criteria line is no scope
+        ("full diff of the delta", "", True),
+        (None, "", True),
+    ]:
+        review = posted_pass(monkeypatch, tmp_path, 2, body, scope)
+        state["pull"] = judged_pr(full, review)
+        assert (approvals.main(["check", "merge", "7"]) != 0) is waits, (scope, body)
+    report = tmp_path / "r2.md"
+    assert approvals.report_facts(report)["scope"] is None
+    report.write_text(report.read_text().replace("Risk:", "Scope: full\nRisk:"))
+    assert approvals.report_facts(report)["scope"] == "full"
+
+
+def test_a_repeated_pass_1_is_a_delta_and_a_pass_that_comes_first_is_the_whole_change(
+    gating: tuple[dict[str, Any], list[tuple[int, str]]],
+) -> None:
+    state, _ = gating
+    state["pull"] = judged_pr(
+        judging("high — policy", commit=OLD_HEAD), judging("low", commit=HEAD)
+    )
+    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
+    state["pull"] = judged_pr(later("high — policy", 2, OLD_HEAD), later("low", 3))
     assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
 
 

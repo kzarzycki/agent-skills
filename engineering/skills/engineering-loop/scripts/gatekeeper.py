@@ -513,10 +513,10 @@ owner signs off in use after it lands: `check merge` needs the PR to link each i
 line `Sign-off: owner`, with `Implements #<n>`, which leaves it open for the sign-off, and every other issue with a
 closing keyword (`Part of` suits both); without a `signoff` section no keyword is checked and `Implements` is a link like
 `Part of`. `verifier` holds at the merge (under `spec.auto: true` too, since the verdict comes after the build) when the
-verifier judges the change high: the highest pass on the head, by a trusted account (passes), says `Risk: high`, any
-word but `low`, or has no `Risk:` line, and the hold quotes it. A head no review covers waits for its review instead; a
+verifier judges the change high: the highest `Risk:` of the verifier's passes since its last `Scope: full` pass (its first pass counts as one), by
+a trusted account (passes), is `high`, any word but `low`, or missing, and the hold quotes it. A head no review covers waits for its review instead; a
 PR that needs none (exempt, an exact revert) has no judgment. A `risk:high` the gate added for that term comes with a
-comment saying so, and the gate takes the label off once a later pass says `Risk: low`, unless it was added again
+comment saying so, and the gate takes the label off once a later `Scope: full` pass says `Risk: low`, unless it was added again
 after that comment, which is a raise only the owner lowers. Paths in the same rule hold whatever the verifier says.
 The board's `Risk` field follows the label and the verifier's word, and a field at `High` adds the label (flag); the
 label stays the gate's only input, and a board it can't reach is a line, never a failure.
@@ -1595,7 +1595,8 @@ def head_passes(
 def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
     """Why the verifier holds the change high, or None. Every pass after the first reviews only the diff since the last
     reviewed head, so a verifier's risk is the highest `Risk:` of its passes since the last that reviewed the whole
-    change: pass 1, or a later pass whose `Scope:` line starts `full`. A pass whose `Risk:` is any other word than `low`,
+    change: its first pass (by posting order, so a repeated `pass 1` later is a delta), or a later pass whose closing
+    `Scope:` line is exactly `full`. A pass whose `Risk:` is any other word than `low`,
     or has no such line, holds; a mixed PR's two verifiers each count. A head no review covers is None, since reviewed()
     then refuses the merge, or the PR needs no review (exempt, an exact revert)."""
     found = head_passes(pull, loop)
@@ -1604,13 +1605,13 @@ def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
     if not found[1]:
         return None
     families: dict[str, list[tuple[int, str, dict[str, str]]]] = {}
-    for commit, number, lines in sorted(passes(pull), key=lambda entry: entry[1]):  # type: ignore[arg-type]
+    for commit, number, lines in passes(pull):  # type: ignore[union-attr]
         families.setdefault(kin(lines["Family"]), []).append((number, commit, lines))
     for family in families.values():
         whole = [
             i
             for i, (number, _, lines) in enumerate(family)
-            if number == 1 or lines.get("Scope", "").lower().split()[:1] == ["full"]
+            if i == 0 or lines.get("Scope", "").lower() == "full"
         ]
         for number, commit, lines in family[whole[-1] if whole else 0 :]:
             said = lines.get("Risk")
@@ -1760,7 +1761,7 @@ def raise_risk(pull: dict[str, Any], why: str, loop: str | None, mark: bool = Fa
                 f"{where}: could not remove `{other}` beside `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): remove it by hand"
             )
     if (verdict := judged(pull, loop)) and verdict in why:
-        body = f"{FLAGGED}, since {why}. A later pass that says `Risk: low` takes it off.\n"
+        body = f"{FLAGGED}, since {why}. A later pass that says `Scope: full` and `Risk: low` takes it off.\n"
         failed = f"{where}: could not comment why the gate added `{RISK_LABEL}`, so it stays until a person removes it"
     else:
         body = f"`{RISK_LABEL}` added, since {why}.\n"
@@ -2452,7 +2453,8 @@ def proofs(
 
 
 def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
-    """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:`/`Risk:`/`Logic change:` lines: a body
+    """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:`/`Risk:`/`Scope:`/`Logic change:` lines (`Scope:` read from the closing block only,
+    since a criteria line may say anything): a body
     starting `Verifier (<family>), pass <n>`, by the PR's author, the account running this or a writer (writer), since
     anyone can review a public repo, and a colleague (or their agent) verifying someone else's PR posts as themself.
     A verifier's newest review on a commit and pass replaces its earlier ones there (kin), since one that parked on a
@@ -2477,7 +2479,15 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
                     for key, _, value in (
                         line.partition(":") for line in review["body"].splitlines()
                     )
-                    if key.strip() in ("VERDICT", "SATISFIED", "Risk", "Scope", LOGIC)
+                    if key.strip() in ("VERDICT", "SATISFIED", "Risk", LOGIC)
+                },
+                **{
+                    key.strip(): value.strip()
+                    for key, _, value in (
+                        line.partition(":")
+                        for line in review["body"].rsplit("\n\n", 1)[-1].splitlines()
+                    )
+                    if key.strip() == "Scope"
                 },
             },
         )
@@ -7460,7 +7470,7 @@ def parse_report(
     report: Path,
 ) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str], str]:
     """A verifier report as `verdict` posts it: its review heading, the head it reviewed, its findings, its closing
-    `VERDICT:`, `SATISFIED:`, `Risk:` and any `Logic change:` lines, and the qualifier its `Verifier:` line has after the pass number ('' for
+    `VERDICT:`, `SATISFIED:`, `Risk:` and any `Logic change:` and `Scope:` lines, and the qualifier its `Verifier:` line has after the pass number ('' for
     none). Refused, naming the fix, when `verdict` couldn't post it whole."""
     text = read(report)
     lines = [line.strip() for line in text.splitlines()]
@@ -7540,7 +7550,12 @@ def parse_report(
         )
     family, number, qualifier = passes[-1].groups()
     logic = [line for line in lines if line.startswith(f"{LOGIC}:")]
-    closing = [verdicts[-1], satisfied[-1], judgments[-1], *logic[-1:]]
+    # only after the `Head:` line, with the other closing lines: a criteria line saying `Scope: full` is no scope
+    last_head = max(
+        i for i, line in enumerate(lines) if re.fullmatch(r"Head:[ \t]*[0-9a-fA-F]{40}", line)
+    )
+    scope = [line for line in lines[last_head:] if re.match(r"Scope:[ \t]*\S", line)]
+    closing = [verdicts[-1], satisfied[-1], judgments[-1], *logic[-1:], *scope[-1:]]
     heading = f"Verifier ({family}), pass {number}"
     return heading, heads[-1].lower(), found, closing, qualifier
 
@@ -7555,7 +7570,7 @@ def report_check(report: Path) -> int:
 def report_facts(report: Path) -> dict[str, Any]:
     """A verifier report's facts, as `verdict` reads them (parse_report, which refuses an unfinished one): the
     verifier's family, pass and qualifier, the head it reviewed, the tally, whether it is satisfied, the risk and its
-    reason, the `Logic change:` line, each finding, the `## Criteria` section and each `Accepted on evidence:` line, so
+    reason, the `Logic change:` and `Scope:` lines, each finding, the `## Criteria` section and each `Accepted on evidence:` line, so
     a flow engine never parses the prose."""
     heading, head, found, closing, qualifier = parse_report(report)
     family, number = PASS.fullmatch(heading).groups()  # type: ignore[union-attr]
@@ -7563,7 +7578,8 @@ def report_facts(report: Path) -> dict[str, Any]:
     assert counted  # parse_report refused a report without one
     risk = re.match(r"Risk:[ \t]*(\S+)[ \t]*[—–-]*[ \t]*(.*)", closing[2])
     assert risk  # the same
-    logic = [line.partition(":")[2].strip() for line in closing[3:]]
+    logic = [line.partition(":")[2].strip() for line in closing[3:] if line.startswith(f"{LOGIC}:")]
+    scope = [line.partition(":")[2].strip() for line in closing[3:] if line.startswith("Scope:")]
     text = read(report)
     return {
         "criteria": criteria(text),
@@ -7579,6 +7595,7 @@ def report_facts(report: Path) -> dict[str, Any]:
         "satisfied": closing[1].lower().split()[1:2] == ["yes"],
         "risk": {"level": risk[1].lower(), "reason": risk[2].strip()},
         "logic_change": logic[0] if logic else None,
+        "scope": scope[0] if scope else None,
         "findings": [
             dict(zip(("id", "severity", "path", "line", "title", "body"), finding, strict=True))
             for finding in found
