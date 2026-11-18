@@ -62,6 +62,14 @@ def pytest_collection_finish(session: pytest.Session) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _fresh_viewer() -> None:
+    """The login `gh` runs as is read once per process (github_adapter.viewer); a test stubs it per test."""
+    from approvals_harness import approvals
+
+    approvals.github.viewer_login.clear()
+
+
+@pytest.fixture(autouse=True)
 def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests run as if outside an Omnigent session; one that needs a session sets it."""
     for var in (

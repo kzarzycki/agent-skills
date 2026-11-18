@@ -858,13 +858,20 @@ def minimize(comment_id: str) -> None:
     )
 
 
+viewer_login: dict[str, str] = {}  # the login `gh` runs as, read once per process (viewer)
+
+
 def viewer() -> str | None:
     """The login of the account `gh` runs as; None for a token `GET /user` refuses, such as a workflow's installation
-    token (`github.token`), where the PR's author and the repo's writers are the ones trusted (passes)."""
+    token (`github.token`), where the PR's author and the repo's writers are the ones trusted (passes). Read once per
+    process; a failure is not kept, so the next call asks again."""
+    if login := viewer_login.get("login"):
+        return login
     try:
-        return gh("api", "user", "--jq", ".login").strip()
+        login = viewer_login["login"] = gh("api", "user", "--jq", ".login").strip()
     except subprocess.CalledProcessError:
-        return None
+        return None  # not cached: a network or rate-limit failure must not read as a token GitHub refuses
+    return login
 
 
 def writer(login: str) -> bool:
