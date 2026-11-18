@@ -150,6 +150,42 @@ def open_pulls(limit: int) -> list[dict[str, Any]]:
     return found
 
 
+def open_pull_files(limit: int) -> list[dict[str, Any]]:
+    """Up to `limit` open PRs, each with its number, base, head commit and the paths it changes (`files`), in one call.
+    ponytail: GitHub lists a PR's first 100 files on a `gh pr list`, and REST's first 100 per PR."""
+    return fast(  # type: ignore[no-any-return]
+        lambda: [
+            {**pull, "files": [file["path"] for file in pull["files"]]}
+            for pull in json.loads(
+                gh(
+                    "pr",
+                    "list",
+                    "--state",
+                    "open",
+                    "--limit",
+                    str(limit),
+                    "--json",
+                    "number,baseRefName,headRefOid,files",
+                )
+            )
+        ],
+        lambda: [
+            {
+                "number": other["number"],
+                "baseRefName": other["base"]["ref"],
+                "headRefOid": other["head"]["sha"],
+                "files": [
+                    file["filename"]
+                    for file in rest(
+                        f"repos/{{owner}}/{{repo}}/pulls/{other['number']}/files?per_page=100"
+                    )
+                ],
+            }
+            for other in rest_pages("pulls?state=open&per_page=100")[:limit]
+        ],
+    )
+
+
 def texts(data: str) -> list[str]:
     """The text GitHub will publish from a post's `data`: every string a JSON payload holds, decoded (a review's body
     and its inline comments), else the data itself (a comment's body)."""
@@ -1267,6 +1303,7 @@ forge = Port(
     "head_pushed",
     "merged_labelled",
     "open_pulls",
+    "open_pull_files",
     "open_heads",
     "required_checks",
     "default_branch",

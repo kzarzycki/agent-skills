@@ -118,6 +118,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
    both are yours (worker.md, Gates and push). Its model: SKILL.md, Models.
+   Before starting a worker, run `approvals.py overlap --files <the files the story names>`: another open PR that
+   changes the same files is landed first, or the story is ordered after it or stacked on it, since two PRs in one
+   function cost the second a merge round and a pass.
    Before the first worker starts, write the verifier's priority checks once, from the spec and
    its comments (a later comment can narrow the spec), into `tmp/loop/priorities-<pr>.md`, the
    file `approvals.py brief <pr> --priorities <file>` takes at step 7. Paste its lines into each

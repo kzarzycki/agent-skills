@@ -73,6 +73,7 @@ class Memory:
             "head_pushed": lambda pull: "2026-10-01T10:00:00Z",
             "merged_labelled": lambda branch, name: [],
             "open_pulls": lambda limit: [],
+            "open_pull_files": lambda limit: [],
             "open_heads": list,
             # the gate's own status under either name is never waited on
             "required_checks": lambda base: {"check", approvals.APPROVALS, approvals.GATEKEEPER},
