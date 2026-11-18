@@ -5885,6 +5885,8 @@ def end_of(over: dict) -> str:
     its last turn. News of a child's end is keyed on it, never on the waiter's turn (a reply to the
     news is a new waiter turn, so the same end would be news again each poll); a child that ends
     again, after a revive or a restart, has a new last message and so is news again."""
+    if over["state"] in ("failed", "archived"):  # a revive is a user message: a new failure after it
+        return f"{over['turn']}|{over['last']}"
     return over["turn"] or f"{over['turn_at']:.0f}"
 
 
@@ -5918,6 +5920,7 @@ def lead_status(info: dict, items: list[dict]) -> dict:
         "asked": bool(items) and items[-1].get("role") == "user",  # prompted since it answered
         "last_line": text.splitlines()[0][:200] if text else "",
         "turn": str(said[-1].get("id") or said[-1].get("created_at") or "") if said else "",
+        "last": str(items[-1].get("id") or items[-1].get("created_at") or "") if items else "",
         "turn_at": float(said[-1].get("created_at") or 0) if said else 0.0,
     }
 
@@ -7419,14 +7422,16 @@ def supervise_registry(
                     pending = True
                     continue
                 log(("pr", sid), None)
+                gen = lead.setdefault("pr_gen", {})
                 if found is None:
                     pending = True
+                    gen[item] = gen.get(item, 0) + 1  # new checks run: its next end is news again
                 elif found[0]:
                     failed = failed or found[1]
-                    ends.append(found[1])
+                    ends.append(f"{found[1]}@{gen.get(item, 0)}")
                 else:
                     done.append(found[1])
-                    ends.append(found[1])
+                    ends.append(f"{found[1]}@{gen.get(item, 0)}")
             elif (
                 item == "CI"
             ):  # not read here: a set naming it is not over; the deadline is the net

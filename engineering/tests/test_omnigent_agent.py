@@ -13012,6 +13012,72 @@ def test_a_pr_a_lead_waits_on_that_merged_is_news_to_it_from_github_once(
     assert len(told_m) == 1 and reads  # once, however often it is read
 
 
+def test_a_waited_pr_red_again_after_a_fix_push_is_news_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wait = "STILL WORKING: fix pushed\nWaits: #976"
+    registry, og = manager(tmp_path, wait, m={"status": "idle"})
+    outcome = [(1, "PR #976 checks red: gate")]
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": outcome[0])
+    told = lambda: [t for s, t in og.inbox if s == "m" and "PR #976 checks red: gate" in t]
+    run = lambda: supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    run()
+    assert len(told()) == 1
+    og.histories["m"].append(ending(wait, 0))  # the lead pushes a fix and waits again
+    outcome[0] = None  # CI runs on the new head
+    skewed(monkeypatch)[0] = 4000.0
+    run()
+    outcome[0] = (1, "PR #976 checks red: gate")  # red again, same text
+    skewed(monkeypatch)[0] = 8000.0
+    run()
+    assert len(told()) == 2
+
+
+def test_a_started_child_that_fails_again_after_a_revive_is_news_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wait = "STILL WORKING: waiting on the check. Report: m.md"
+    registry, og = manager(
+        tmp_path, wait, m={"status": "idle"}, **{WORKER: {"status": "failed", "updated_at": 0}}
+    )
+    og.histories[WORKER] = [ending("STILL WORKING: running tests", 1300)]
+    told = lambda: [t for s, t in og.inbox if s == "m" and f"{WORKER} failed" in t]
+    run = lambda: supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    run()
+    assert len(told()) == 1
+    og.histories["m"].append(ending(wait, 0))  # the lead revives it: a user message to the child
+    og.histories[WORKER].append({**said("user", "revive", "u-revive"), "created_at": time.time()})
+    og.snaps[WORKER]["status"] = "running"
+    skewed(monkeypatch)[0] = 4000.0
+    run()
+    og.snaps[WORKER]["status"] = "failed"  # it fails again before it writes a message
+    skewed(monkeypatch)[0] = 8000.0
+    run()
+    assert len(told()) == 2
+
+
+def test_a_session_in_a_wait_set_is_news_once_per_end_not_once_per_lead_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    wait = f"STILL WORKING: waiting\nWaits: {OTHER}, #976"
+    registry, og = manager(tmp_path, wait, m={"status": "idle"}, **{OTHER: gone})
+    og.histories[OTHER] = [ending("DONE: merged. Report: o.md", 1300)]
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+    told = lambda: [t for s, t in og.inbox if s == "m" and t.endswith("; your wait names it")]
+    run = lambda: supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    run()
+    assert len(told()) == 1  # every member ended: the set is news once
+    og.histories["m"].append(ending(wait, 0))
+    skewed(monkeypatch)[0] = 4000.0
+    run()
+    assert len(told()) == 1
+    og.histories[OTHER].append(ending("DONE: merged again. Report: o.md", 0))
+    skewed(monkeypatch)[0] = 8000.0
+    run()
+    assert len(told()) == 2
+
+
 def test_a_waited_pr_that_merged_is_not_news_again_after_the_leads_next_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
