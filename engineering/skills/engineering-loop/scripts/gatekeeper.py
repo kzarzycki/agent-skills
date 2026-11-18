@@ -7864,22 +7864,13 @@ def slot_rule(
 
 def total_memory() -> Fraction | None:
     """The host's total memory in whole GB (GiB, rounded), never its available memory, so the count stays put between
-    runs and a waiter never waits on a slot that no longer exists: macOS's `sysctl -n hw.memsize`, Linux's
-    /proc/meminfo MemTotal; None where neither answers."""
-    found = None
-    if sys.platform == "darwin":
-        with contextlib.suppress(OSError, subprocess.SubprocessError, ValueError):
-            found = int(
-                subprocess.run(
-                    ["sysctl", "-n", "hw.memsize"],
-                    capture_output=True, text=True, check=True, timeout=10,
-                ).stdout.strip()
-            )  # fmt: skip
-    else:
-        with contextlib.suppress(OSError, ValueError), open("/proc/meminfo") as info:
-            line = next((s for s in info if s.startswith("MemTotal:")), "")
-            found = int(line.split()[1]) * 1024 if line else None
-    return None if not found else Fraction((found + GIB // 2) // GIB)
+    runs and a waiter never waits on a slot that no longer exists: page size × physical pages from `os.sysconf`, which
+    macOS and Linux both answer and which runs no command, so a test's stand-in for `subprocess.run` is never asked;
+    None where it is not known."""
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        found = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return Fraction((found + GIB // 2) // GIB) if found > 0 else None
+    return None
 
 
 def gate_cost() -> tuple[tuple[Fraction, Fraction] | None, Fraction | None]:

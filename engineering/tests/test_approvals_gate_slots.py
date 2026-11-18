@@ -610,34 +610,24 @@ def test_with_gate_slots_off_mutate_takes_no_short_lane_lock(
         holder.communicate("")
 
 
-def test_total_memory_is_linuxs_memtotal_never_its_available_memory(
+def test_total_memory_is_page_size_times_physical_pages_and_runs_no_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    info = "MemAvailable:    4000000 kB\nMemTotal:       16303428 kB\nMemFree:  100 kB\n"
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(approvals, "open", lambda *_a, **_k: io.StringIO(info), raising=False)
-    assert approvals.total_memory() == 16  # 15.55 GiB rounds to 16
+    pages = {"SC_PAGE_SIZE": 4096, "SC_PHYS_PAGES": 16303428 * 1024 // 4096}  # 15.55 GiB rounds to 16
 
+    def refuse(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("total_memory must run no command")
 
-def test_total_memory_is_macos_hw_memsize(monkeypatch: pytest.MonkeyPatch) -> None:
-    asked: list[list[str]] = []
-
-    def run(words: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
-        asked.append(words)
-        return subprocess.CompletedProcess(words, 0, "34359738368\n", "")
-
-    monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(approvals.subprocess, "run", run)
-    assert approvals.total_memory() == 32
-    assert asked == [["sysctl", "-n", "hw.memsize"]]
+    monkeypatch.setattr(approvals.os, "sysconf", lambda name: pages[name])
+    monkeypatch.setattr(approvals.subprocess, "run", refuse)
+    assert approvals.total_memory() == 16
 
 
 def test_unread_memory_limits_by_the_cores_alone(monkeypatch: pytest.MonkeyPatch) -> None:
-    def broken(*_a: Any, **_k: Any) -> Any:
-        raise OSError("no /proc")
+    def broken(_name: str) -> int:
+        raise OSError("no sysconf")
 
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(approvals, "open", broken, raising=False)
+    monkeypatch.setattr(approvals.os, "sysconf", broken)
     assert approvals.total_memory() is None
     assert approvals.plan_number(None) == "?"
 
