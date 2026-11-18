@@ -9446,7 +9446,7 @@ def overlaps(pr: int | None, files: Sequence[str] = (), base: str | None = None)
         )
 
     lines = []
-    own = behind(pr, mine["headRefOid"]) if pr is not None else ""
+    own = None  # this PR's base note, read on its first clash only, so a clean list runs no base check
     for other, shared in sharing:
         number = other["number"]
         verdict = ""
@@ -9454,6 +9454,8 @@ def overlaps(pr: int | None, files: Sequence[str] = (), base: str | None = None)
             clash = merge_conflicts(
                 mine["headRefOid"], other["headRefOid"], f"PRs #{pr} and #{number}"
             )
+            if clash and own is None:
+                own = behind(pr, mine["headRefOid"])
             verdict = (
                 f": conflicts in {', '.join(clash)}{own}{behind(number, other['headRefOid'])}"
                 if clash
@@ -9461,8 +9463,8 @@ def overlaps(pr: int | None, files: Sequence[str] = (), base: str | None = None)
             )
         lines.append(f"PR #{number} also changes {len(shared)} file(s) here{verdict}")
         for path in shared:
-            own = f"PR #{pr} {span(mine['headRefOid'], path)}; " if pr is not None else ""
-            lines.append(f"  {path}: {own}PR #{number} {span(other['headRefOid'], path)}")
+            ours = f"PR #{pr} {span(mine['headRefOid'], path)}; " if pr is not None else ""
+            lines.append(f"  {path}: {ours}PR #{number} {span(other['headRefOid'], path)}")
     return lines
 
 

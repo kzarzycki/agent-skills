@@ -87,14 +87,24 @@ def test_pull_requests_changing_the_same_lines_are_listed_as_conflicts(
 
 
 def test_pull_requests_changing_one_file_far_apart_merge_cleanly(
-    repo: Repo, capsys: pytest.CaptureFixture[str]
+    repo: Repo, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo.open(1, {3: "mine"})
     repo.open(2, {30: "theirs"})
+    merged = approvals.merge_conflicts
+    pairs: list[str] = []
+    monkeypatch.setattr(
+        approvals,
+        "merge_conflicts",
+        lambda first, second, what: pairs.append(first) or merged(first, second, what),
+    )
     assert approvals.main(["overlap", "1"]) == 0
     out = capsys.readouterr().out
     assert "PR #2" in out and "merges cleanly" in out
     assert "shared.txt: PR #1 3; PR #2 30" in out
+    assert not [
+        first for first in pairs if first.startswith("origin/")
+    ]  # no base check on a clean list
 
 
 def test_a_conflict_the_other_pull_request_has_with_the_base_alone_is_named(
@@ -115,6 +125,27 @@ def test_a_conflict_the_other_pull_request_has_with_the_base_alone_is_named(
         in out
     )
     assert "PR #1 conflicts with trunk" not in out
+
+
+def test_this_pull_requests_own_conflict_with_the_base_is_named_on_every_clash(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # PR 1 branched before trunk moved on line 20 and changes it too; PRs 2 and 3 are built on the new trunk
+    repo.open(1, {20: "mine"})
+    git(repo.seed, "checkout", "-q", "trunk")
+    (repo.seed / "shared.txt").write_text(BODY.replace("line 20\n", "trunk 20\n"))
+    git(repo.seed, "commit", "-qam", "trunk moves")
+    git(repo.seed, "push", "-q", "origin", "trunk")
+    moved = git(repo.seed, "rev-parse", "HEAD")
+    repo.open(2, {20: "theirs"}, on=moved)
+    repo.open(3, {21: "theirs too"}, on=moved)
+    assert approvals.main(["overlap", "1"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    note = "conflicts in shared.txt; PR #1 conflicts with trunk itself in shared.txt: merge trunk into it and rerun"
+    assert f"PR #2 also changes 1 file(s) here: {note}" in out
+    assert f"PR #3 also changes 1 file(s) here: {note}" in out
+    assert "  shared.txt: PR #1 20; PR #2 20" in out
+    assert "  shared.txt: PR #1 20; PR #3 21" in out
 
 
 def test_a_pull_request_with_no_overlap_prints_nothing(
