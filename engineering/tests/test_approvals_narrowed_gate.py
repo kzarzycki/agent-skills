@@ -211,7 +211,12 @@ def batch_of(repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list[dict
         git_in(work, "commit", "-qm", name)
         git_in(work, "push", "-q", "origin", f"pr{number}")
         pulls.append(
-            {"number": number, "headRefOid": repo["head"](), "baseRefName": "main", "isDraft": False}
+            {
+                "number": number,
+                "headRefOid": repo["head"](),
+                "baseRefName": "main",
+                "isDraft": False,
+            }
         )
     git_in(work, "checkout", "-q", "work")
     monkeypatch.setattr(approvals, "candidates_of", lambda named, *_a: (named, {}, {}))
@@ -243,7 +248,9 @@ def test_land_in_a_clone_with_no_working_tree_looks_up_the_narrowed_pass_on_the_
     pulls = batch_of(repo, monkeypatch)
     tip = repo["base"]()
     monkeypatch.setattr(approvals, "working_tree", lambda root: False)
-    monkeypatch.delenv(approvals.WORKING_TREE_POLICY)  # the policy is origin's, as a clone with no files reads it
+    monkeypatch.delenv(
+        approvals.WORKING_TREE_POLICY
+    )  # the policy is origin's, as a clone with no files reads it
     with pytest.raises(approvals.Refused) as refused:
         approvals.local_queue(pulls, "main", None, None, set())
     assert f"`approvals.py local-ci --record --base {tip}`" in str(refused.value)
@@ -413,7 +420,9 @@ def test_under_ci_false_a_head_with_a_full_pass_takes_it_and_is_not_gated_again(
 ) -> None:
     repo["loop"](f"# Loop\n\nAffected tests: SELECTOR\n\n{NO_CI}")
     posted = pr_ready(repo, monkeypatch)
-    approvals.run_local_ci(None, None, [])  # the full gate's pass on the head, as `Gate: full` records it
+    approvals.run_local_ci(
+        None, None, []
+    )  # the full gate's pass on the head, as `Gate: full` records it
     assert repo["ran"]() == ["mise run check:all base=unset"]
     assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert repo["ran"]() == ["mise run check:all base=unset"]  # nothing ran again
