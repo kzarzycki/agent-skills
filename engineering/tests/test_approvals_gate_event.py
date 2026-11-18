@@ -199,8 +199,14 @@ def test_a_gate_on_a_new_head_is_not_read_as_the_previous_heads_end(
     assert emitted[-1][0] == "ok"
     (steps["repo"] / "app.py").write_text("value = 2\n")
     git_in(steps["repo"], "commit", "-qam", "next")
-    # a run that does nothing: the event is the parent's alone
-    monkeypatch.setattr(approvals, "follow", lambda *_a: 0)
+    # a run that leaves a host step (it wrote no end, and says so): the event is the parent's alone
+    head = git_in(steps["repo"], "rev-parse", "HEAD").strip()
+
+    def left(*_a: Any) -> int:
+        approvals.ended_file(head).write_text("left\n")
+        return 0
+
+    monkeypatch.setattr(approvals, "follow", left)
     assert approvals.detach(["--help"]) == 0
     assert emitted[-1][0] == "waiting"
     out = io.StringIO()
@@ -233,3 +239,101 @@ def test_the_events_unpushed_warning_stays_off_the_gates_stderr(
     gate(steps, "pass")
     assert approvals.main(["local-ci", "--record"]) == 0
     assert "not pushed" not in capsys.readouterr().err
+
+
+def ended_by_detach(
+    steps: dict[str, Any], argv: list[str], monkeypatch: pytest.MonkeyPatch
+) -> tuple[int, str]:
+    """The exit of a real detached `local-ci <argv>` on the checkout, and what a `wait` then reports for its branch."""
+    monkeypatch.chdir(steps["repo"])
+    code = approvals.detach(argv)
+    out = io.StringIO()
+    waited = approvals.loop_events.wait(
+        "gate", branch_of(steps), timeout=1, poll=0.1, cwd=steps["repo"], out=out
+    )
+    return code, f"{waited}: {out.getvalue()}"
+
+
+def test_a_detached_run_refused_before_the_gate_ends_failed_with_the_log(
+    steps: dict[str, Any],
+    emitted: list[tuple[str, int, str, str, float]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`local-ci <pr>` on a head with no pass refuses in the child before any gate step: the event ends `failed`."""
+    gate(steps, "pass")
+    monkeypatch.setattr(approvals, "follow", lambda *_a: 1)  # a child that wrote nothing and exited 1
+    code, waited = ended_by_detach(steps, ["--help"], monkeypatch)
+    assert code == 1
+    log = approvals.run_files(git_in(steps["repo"], "rev-parse", "HEAD").strip())[0]
+    assert [(state, url) for state, _, url, *_ in emitted][-1] == ("failed", str(log))
+    assert not waited.startswith("3")
+
+
+def test_a_detached_record_on_a_dirty_tree_ends_ok_with_no_url(
+    steps: dict[str, Any],
+    emitted: list[tuple[str, int, str, str, float]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exit 0 with no record written (`--record` on a changed tree): the end is `ok`, its url empty."""
+    monkeypatch.setattr(approvals, "follow", lambda *_a: 0)
+    ended_by_detach(steps, ["--help"], monkeypatch)
+    assert [(state, url) for state, _, url, *_ in emitted][-2:] == [("waiting", ""), ("ok", "")]
+
+
+def in_process_child(
+    monkeypatch: pytest.MonkeyPatch, steps: dict[str, Any], argv: list[str], die: bool = False
+) -> None:
+    """Make detach() run its child in this process, where the test's policy is set: `follow` runs `cli` as the child
+    does (the head in DETACHED, the exit and event files written at its end), or, with `die`, writes nothing."""
+    head = git_in(steps["repo"], "rev-parse", "HEAD").strip()
+    monkeypatch.chdir(steps["repo"])
+    approvals.ENDED.clear()
+    real = subprocess.Popen
+
+    def popen(*a: Any, **k: Any) -> Any:
+        if approvals.DETACHED in (k.get("env") or {}):  # only the child detach() starts
+            return type("P", (), {"pid": os.getpid()})()
+        return real(*a, **k)
+
+    monkeypatch.setattr(approvals.subprocess, "Popen", popen)
+
+    def follow(*_a: Any) -> int:
+        if die:
+            return 1
+        monkeypatch.setenv(approvals.DETACHED, head)
+        code = approvals.cli(argv)
+        return code
+
+    monkeypatch.setattr(approvals, "follow", follow)
+
+
+def test_a_detached_child_killed_before_writing_ends_failed(
+    steps: dict[str, Any],
+    emitted: list[tuple[str, int, str, str, float]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A child that dies before it writes anything: `follow` returns 1 with no exit file, and the event fails."""
+    in_process_child(monkeypatch, steps, ["local-ci", "--record"], die=True)
+    assert approvals.detach(["local-ci", "--record"]) == 1
+    assert emitted[-1][0] == "failed"
+
+
+def test_a_detached_run_that_wrote_its_end_is_not_ended_twice(
+    steps: dict[str, Any], emitted: list[tuple[str, int, str, str, float]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate(steps, "raise SystemExit(3)")
+    in_process_child(monkeypatch, steps, ["local-ci", "--record"])
+    assert approvals.detach(["local-ci", "--record"]) == 1
+    states = [state for state, *_ in emitted]
+    assert states.count("failed") == 1 and states[-1] == "failed"
+
+
+def test_a_detached_run_with_a_step_left_for_a_host_stays_waiting(
+    steps: dict[str, Any],
+    emitted: list[tuple[str, int, str, str, float]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    in_process_child(monkeypatch, steps, ["local-ci", "--record"])
+    assert approvals.detach(["local-ci", "--record"]) == 0
+    assert {state for state, *_ in emitted} == {"waiting"}

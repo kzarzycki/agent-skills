@@ -8670,6 +8670,8 @@ def gate_event(branch: str | None, state: str, url: str | Callable[[], str] = ""
     record that lacks a field costs the event and nothing else."""
     if branch is None:
         return
+    if state != "waiting":
+        ENDED["state"] = state
     # ponytail: emit's one "not pushed" warning is dropped here, since publish() already says when origin is unreachable
     with contextlib.suppress(Exception), contextlib.redirect_stderr(io.StringIO()):
         loop_events.emit("gate", branch, state, url=url() if callable(url) else url)
@@ -8730,7 +8732,9 @@ def run_local_ci(
     result = whole(done["records"], passed, tree)
     # ponytail: with a step left for a host the gate has no result here, so it ends no event: the `waiting` one goes
     # silent (wait exit 4) rather than saying `ok` for a gate that passed in part
-    if not done["left"]:
+    if done["left"]:
+        ENDED["state"] = "left"  # told apart by detach() from a run that ended without writing one
+    else:
         gate_event(branch, "ok", lambda: gate_url(result))
     return result | ({"left": done["left"]} if done["left"] else {})
 
@@ -8869,6 +8873,7 @@ DETACHED = "APPROVALS_LOCAL_CI_HEAD"
 RAN: dict[
     str, str
 ] = {}  # the gate command this process's local-ci ran, for the detached run to record (finished)
+ENDED: dict[str, str] = {}  # `state`: the end event this process wrote (`ok`, `failed`), or `left` for a host step's
 
 
 def leads_its_session() -> bool:
@@ -8930,6 +8935,7 @@ def detach(argv: list[str]) -> int:
             run, started = None, going(claim.read(), exit_file)
             if started is None:
                 exit_file.unlink(missing_ok=True)
+                ended_file(head).unlink(missing_ok=True)
                 with open(log, "wb") as out, open(os.devnull) as nothing:
                     run = subprocess.Popen(
                         [sys.executable, os.path.abspath(__file__), *argv],
@@ -8943,6 +8949,11 @@ def detach(argv: list[str]) -> int:
                 claim.truncate(0)
                 claim.write(json.dumps(started))
         code = follow(log, exit_file, started, run)
+        if not ended_file(head).exists():
+            # the run wrote no end event (a refusal before the gate, `--record` on a changed tree, a child killed or
+            # crashed): end it here, so a `wait` reports the end and `waiting` does not go silent. A step left for a
+            # host writes `left` and keeps its `waiting` on purpose (run_local_ci).
+            gate_event(gate_branch(), "failed" if code else "ok", str(log) if code else "")
         if started["argv"] == argv:
             return code
 
@@ -8969,6 +8980,11 @@ def follow(
         return 1
 
 
+def ended_file(head: str) -> Path:
+    """Where the detached run on `head` records the end event it wrote (ENDED), beside its exit code."""
+    return run_files(head)[2].with_suffix(".event")
+
+
 def ran_command_file(head: str) -> Path:
     """Where the detached run on `head` records the gate command it ran, beside its exit code."""
     return run_files(head)[2].with_suffix(".command")
@@ -8982,6 +8998,8 @@ def finished(head: str, code: int, command: str | None = None) -> None:
     _, _, exit_file = run_files(head)
     if command:
         ran_command_file(head).write_text(command + "\n")
+    if ENDED.get("state"):
+        ended_file(head).write_text(ENDED["state"] + "\n")
     partial = exit_file.with_suffix(".exit-partial")
     partial.write_text(f"{code}\n")
     os.replace(partial, exit_file)
