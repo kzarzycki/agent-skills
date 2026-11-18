@@ -612,7 +612,10 @@ def test_with_gate_slots_off_mutate_takes_no_short_lane_lock(
 def test_total_memory_is_page_size_times_physical_pages_and_runs_no_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pages = {"SC_PAGE_SIZE": 4096, "SC_PHYS_PAGES": 16303428 * 1024 // 4096}  # 15.55 GiB rounds to 16
+    pages = {
+        "SC_PAGE_SIZE": 4096,
+        "SC_PHYS_PAGES": 16303428 * 1024 // 4096,
+    }  # 15.55 GiB rounds to 16
 
     def refuse(*_a: Any, **_k: Any) -> Any:
         raise AssertionError("total_memory must run no command")
