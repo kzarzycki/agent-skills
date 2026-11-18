@@ -1593,41 +1593,31 @@ def head_passes(
 
 
 def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
-    """Why the verifier holds the change high, or None: the highest pass on the head (passes), or on the commit whose
-    proofs the head carries (carried), says `Risk: high`, any other word than `low`, or has no `Risk:` line; a mixed
-    PR's two verifiers both must say `low`. A pass that only reviews a delta (`Logic change: none`, or the head
-    carrying the commit before it) cannot lower the risk of that earlier commit's pass, so the walk goes on down the
-    reviewed commits until a pass that changed code by hand. A head no review covers is None, since reviewed() then
-    refuses the merge, or the PR needs no review (exempt, an exact revert)."""
+    """Why the verifier holds the change high, or None. Every pass after the first reviews only the diff since the last
+    reviewed head, so a verifier's risk is the highest `Risk:` of its passes since the last that reviewed the whole
+    change: pass 1, or a later pass whose `Scope:` line starts `full`. A pass whose `Risk:` is any other word than `low`,
+    or has no such line, holds; a mixed PR's two verifiers each count. A head no review covers is None, since reviewed()
+    then refuses the merge, or the PR needs no review (exempt, an exact revert)."""
     found = head_passes(pull, loop)
     if isinstance(found, str):
-        return found_why(pull, found)
-    head, on_head = found
-    if not on_head:
+        return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {found}"
+    if not found[1]:
         return None
-    verdicts = passes(pull)
-    order: list[str] = []
-    for commit, _, _ in verdicts:  # the reviewed commits, newest review last
-        order = [c for c in order if c != commit] + [commit]
-    commit, earlier = head, order[: order.index(head)]
-    while True:
-        here = [(n, lines) for c, n, lines in verdicts if c == commit]
-        last = max(number for number, _ in here)
-        for number, lines in here:
+    families: dict[str, list[tuple[int, str, dict[str, str]]]] = {}
+    for commit, number, lines in sorted(passes(pull), key=lambda entry: entry[1]):  # type: ignore[arg-type]
+        families.setdefault(kin(lines["Family"]), []).append((number, commit, lines))
+    for family in families.values():
+        whole = [
+            i
+            for i, (number, _, lines) in enumerate(family)
+            if number == 1 or lines.get("Scope", "").lower().split()[:1] == ["full"]
+        ]
+        for number, commit, lines in family[whole[-1] if whole else 0 :]:
             said = lines.get("Risk")
-            if number == last and not re.match(r"low\b", said or "", re.IGNORECASE):
+            if not re.match(r"low\b", said or "", re.IGNORECASE):
                 line = "has no `Risk:` line" if said is None else f"says `Risk: {said}`"
-                return f"the verifier's pass {last} on {commit[:7]} {line}"
-        delta = all(
-            lines.get(LOGIC, "").lower().split()[:1] == ["none"] for n, lines in here if n == last
-        ) or (commit == head and earlier and isinstance(carried(pull, loop, earlier[-1]), tuple))
-        if not (delta and earlier):
-            return None
-        commit, earlier = earlier[-1], earlier[:-1]
-
-
-def found_why(pull: dict[str, Any], why: str) -> str:
-    return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {why}"
+                return f"the verifier's pass {number} on {commit[:7]} {line}"
+    return None
 
 
 def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
@@ -2487,7 +2477,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
                     for key, _, value in (
                         line.partition(":") for line in review["body"].splitlines()
                     )
-                    if key.strip() in ("VERDICT", "SATISFIED", "Risk", LOGIC)
+                    if key.strip() in ("VERDICT", "SATISFIED", "Risk", "Scope", LOGIC)
                 },
             },
         )

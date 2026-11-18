@@ -226,8 +226,11 @@ keep these lines exact:
   The gate sets the board's `Risk` field from it (github.md, Board).
   On a delta of merges of the base alone, add `Logic change: none` when its conflict fixes
   change no behaviour, which carries the owner's go to the head, else `Logic change: <what>`.
-  `Risk:` names the PR's risk, not the delta's. The gate keeps the highest `Risk:` of the passes the delta carries,
-  so a `low` on a delta cannot lower an earlier pass's `high`; only a full pass on a real code change can.
+  `Risk:` names the PR's risk, not the delta's: the gate takes the highest `Risk:` of the passes since the last one
+  that reviewed the whole change (pass 1, or a later pass with a `Scope: full` line), so a `low` on a delta cannot
+  lower an earlier `high`. Write `Scope: full` when you re-reviewed the whole PR diff against the base (a fresh
+  verifier, or a request for a full pass); its `Risk:` then names the PR's risk and may lower an earlier one.
+  Write no `Scope:` line on a pass that reviewed only the diff since the last reviewed head, as every later pass does.
   The merge reads the review as covering that commit only, so a push after your review
   needs its own, unless the new head has your commit's tree (`git rev-parse <sha>^{tree}`),
   as after a reword of commit messages only: every file you reviewed is the same, so your
