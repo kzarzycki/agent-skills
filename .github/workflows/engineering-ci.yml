@@ -40,13 +40,14 @@ jobs:
           GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: mise run check-fast
       - if: github.event_name == 'schedule'
-        env:
-          COVERAGE_FILE: .test-map/coverage
-          PYTEST_ADDOPTS: --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
         run: |
           mkdir -p .test-map
           git rev-parse HEAD > .test-map/sha
-          mise run check
+      - if: github.event_name == 'schedule'
+        env:
+          COVERAGE_FILE: .test-map/coverage
+          PYTEST_ADDOPTS: --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
+        run: mise run check
       # Only a green run: the map names the lines every test ran, which a failed run leaves incomplete.
       - if: github.event_name == 'schedule'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
