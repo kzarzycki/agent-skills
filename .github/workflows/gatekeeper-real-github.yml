@@ -1,6 +1,6 @@
 # Runs the gatekeeper against real github.com under the job's own `github.token`, with the approvals template's job
 # permissions: the tests fake GitHub and a host run uses a token that reads every field, so a read github.com refuses
-# or doesn't serve (#1215, #1259) shows nowhere else. `check merge` ends on a verdict, `go` or not; only a `gh:` error
+# or doesn't serve (#1215, #1259) shows nowhere else. `check merge` must end on its verdict line, `go` or not; a `gh:` error or no verdict line
 # fails the job. The second run forces REST-only mode, the path a refused GraphQL field sends a run down.
 name: Gatekeeper on real GitHub
 
@@ -51,5 +51,9 @@ jobs:
           printf '%s\n' "$out"
           if printf '%s\n' "$out" | grep -q '^gh: '; then
             echo "::error::check merge ended on a gh error (GATEKEEPER_REST_ONLY=$GATEKEEPER_REST_ONLY)"
+            exit 1
+          fi
+          if ! printf '%s\n' "$out" | grep -q "^PR #$PR: risk: .*; merge: "; then
+            echo "::error::check merge ended before its verdict line (GATEKEEPER_REST_ONLY=$GATEKEEPER_REST_ONLY)"
             exit 1
           fi
