@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import stat
+import subprocess
+import sys
 import threading
 import time as real_time
 from typing import Any
 
 import pytest
 from approvals_harness import (
+    Cloud,
     approvals,
+    cloud,  # noqa: F401
     git_in,
     lands,  # noqa: F401
 )
@@ -161,13 +167,13 @@ def test_land_merged_event_and_cleanup(
     lands = events_pushed
     lands["open"](7, {"7.txt": "7\n"})
     ends: list[tuple[str, dict[str, Any] | None, str]] = []
-    emit = approvals.loop_events().emit
+    emit = approvals.loop_events.emit
 
     def spy(kind: str, branch: str, state: str, **kw: Any) -> str:
         ends.append((state, None, lands["pulls"][7]["state"]))
         return emit(kind, branch, state, **kw)
 
-    monkeypatch.setattr(approvals.loop_events(), "emit", spy)
+    monkeypatch.setattr(approvals.loop_events, "emit", spy)
     code, lines = lands["land"]("7")
     assert code == 0, lines
     # the reference: the PR as GitHub reports it, merged, onto main's squash
@@ -188,7 +194,7 @@ def test_native_wait_follows_land(
     out = io.StringIO()
 
     def wait() -> None:
-        result["code"] = approvals.loop_events().wait(
+        result["code"] = approvals.loop_events.wait(
             "land", "pr7", timeout=30, poll=0.2, cwd=lands["work"], out=out
         )
 
@@ -226,7 +232,7 @@ def test_land_exit_codes_without_origin_push(
         def boom(*_a: Any, **_k: Any) -> str:
             raise OSError("no git")
 
-        monkeypatch.setattr(approvals.loop_events(), "emit", boom)
+        monkeypatch.setattr(approvals.loop_events, "emit", boom)
     monkeypatch.setattr(approvals, "EVENT_GRACE", 0)
     lands["open"](7, files)
     got, lines = lands["land"]("7")
@@ -265,3 +271,239 @@ def test_land_waiting_on_the_owners_go_ends_needs_owner(
     event = lands["event"]("pr7")
     assert event and event["state"] == "needs-owner"
     assert git_in(lands["origin"], "show", "refs/loop/land/pr7:question.md") == said + "\n"
+
+
+PULL_URL = "https://example.test/org/repo/pull/{}"
+
+
+def events_of(lands: dict[str, Any], number: int) -> dict[str, Any] | None:
+    return lands["event"](f"pr{number}")
+
+
+def test_land_ok_event_points_to_the_pr(events_pushed: dict[str, Any]) -> None:
+    """`ok` carries the PR's URL, which `read` and `wait` show a lead."""
+    lands = events_pushed
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["pulls"][7]["url"] = PULL_URL.format(7)
+    code, lines = lands["land"]("7")
+    assert code == 0, lines
+    event = events_of(lands, 7)
+    assert event and (event["state"], event["url"]) == ("ok", PULL_URL.format(7))
+
+
+def test_land_merged_outside_land_ends_ok(events_pushed: dict[str, Any]) -> None:
+    """A PR the GitHub merge queue merged, or one merged by hand, is read merged by the next `land`, whose
+    `queue_landed` is its only end: the event ends `ok` and its refs go."""
+    lands = events_pushed
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["pulls"][7]["state"] = "MERGED"
+    code, lines = lands["land"]("7")
+    assert code == 0, lines
+    # the reference: land merged nothing itself
+    assert lands["merged"]() == []
+    assert refs_gone(lands)
+    assert "PR #7 is merged" in lines
+
+
+def test_land_merged_outside_land_writes_ok_once(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The event of a merged PR is written once by a process however many rounds read it merged."""
+    lands = events_pushed
+    monkeypatch.setattr(approvals, "EVENT_GRACE", 600)  # the refs stay while the rounds run
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["pulls"][7]["state"] = "MERGED"
+    for _ in range(3):
+        code, lines = lands["land"]("7")
+        assert code == 0, lines
+    event = events_of(lands, 7)
+    assert event and (event["state"], event["seq"]) == ("ok", 1)
+
+
+@pytest.fixture(autouse=True)
+def fresh_process_state() -> Any:
+    """What a land process holds per run (the branches whose end it wrote) starts empty in each test."""
+    approvals.landed_ok.clear()
+    approvals.ended.clear()
+    yield
+    approvals.landed_ok.clear()
+    approvals.ended.clear()
+
+
+def batch_wait(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, round_of: Any
+) -> list[tuple[int, str | None]]:
+    """`land --wait 7 8` where `landing_here` is `round_of(named)` (7 ends, 8 waits again); the states of 7's event
+    seen at each sleep, as (seq, state)."""
+    clock = Clock()
+    monkeypatch.setattr(approvals, "time", clock)
+    monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    monkeypatch.setattr(approvals, "landing_here", lambda named, *_a, **_k: round_of(named))
+    seen: list[tuple[int, str | None]] = []
+
+    def tick(_now: float) -> None:
+        event = events_of(lands, 7)
+        if event and (not seen or seen[-1][0] != event["seq"]):
+            seen.append((event["seq"], event["state"]))
+
+    clock.tick = tick
+    lands["land"]("7", "8", "--wait")
+    return seen
+
+
+def test_land_batch_wait_keeps_the_owners_question_of_a_pr_that_ended(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With PR 7 held for the owner's go and PR 8 waiting on CI, the wait's beat rewrites 8 only: 7's event stays
+    `needs-owner` at every sleep (the ceiling asks for both)."""
+    lands = events_pushed
+
+    def one_round(named: list[dict[str, Any]]) -> tuple[int, bool]:
+        approvals.asks_owner(named[0], ["PR #7 waits for the owner's go"], True)
+        return approvals.WAITING, True
+
+    seen = batch_wait(lands, monkeypatch, one_round)
+    assert seen and {state for _, state in seen} == {"needs-owner"}, seen
+    assert (events_of(lands, 8) or {}).get("state") == "needs-owner"  # the ceiling
+
+
+def test_land_batch_wait_keeps_the_ok_of_a_pr_that_merged(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With PR 7 merged in the first round and PR 8 still waiting, 7's event stays `ok` at seq 1: the beat skips it,
+    later rounds read it merged without writing it again, and the ceiling leaves it."""
+    lands = events_pushed
+    monkeypatch.setattr(approvals, "EVENT_GRACE", 3600)
+    calls: list[int] = []
+
+    def one_round(named: list[dict[str, Any]]) -> tuple[int, bool]:
+        calls.append(len(named))
+        if not calls[1:]:
+            lands["pulls"][7]["state"] = "MERGED"
+            approvals.land_ended(named[0])
+        return approvals.WAITING, True
+
+    seen = batch_wait(lands, monkeypatch, one_round)
+    assert seen == [(1, "ok")], seen
+    assert len(calls) > 2  # the rounds went on, with 8 alone once 7 was merged
+    assert (events_of(lands, 8) or {}).get("state") == "needs-owner"
+
+
+def test_land_beats_waiting_while_it_gates_under_the_lock(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A round that holds the lock and runs a long gate beats `waiting` meanwhile from the lock's heartbeat, so a
+    native `wait` does not read the land as silent."""
+    lands = events_pushed
+    monkeypatch.setattr(approvals, "BEAT", 0.2)
+    lands["open"](7, {"7.txt": "7\n"})
+    seen: list[int] = []
+
+    def gating(*_a: Any, **_k: Any) -> tuple[int, bool]:
+        end = real_time.monotonic() + 1.5
+        while real_time.monotonic() < end:
+            event = events_of(lands, 7)
+            if event and event["state"] == "waiting" and event["seq"] not in seen:
+                seen.append(event["seq"])
+            real_time.sleep(0.05)
+        return 0, False
+
+    monkeypatch.setattr(approvals, "local_queue", gating)
+    code, lines = lands["land"]("7", "--wait")
+    assert code == 0, lines
+    assert len(seen) >= 2, seen
+
+
+def test_land_draft_held_for_the_owners_go_ends_needs_owner(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A draft is held before it is readied, so CI never starts ahead of the go: its event ends `needs-owner` and
+    the draft stays a draft."""
+    lands = events_pushed
+    said = "PR #7 waits for the owner's go on its head (`approve merge 7`)"
+    monkeypatch.setattr(approvals, "owner_waits", lambda *_a: [said])
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["pulls"][7].update(isDraft=True, url=PULL_URL.format(7))
+    code, lines = lands["land"]("7")
+    assert code == approvals.WAITING and said in lines, lines
+    event = events_of(lands, 7)
+    assert event and (event["state"], event["url"]) == ("needs-owner", PULL_URL.format(7))
+    assert lands["pulls"][7]["isDraft"] and lands["merged"]() == []
+    assert git_in(lands["origin"], "show", "refs/loop/land/pr7:question.md") == said + "\n"
+
+
+def test_land_waiting_and_ceiling_events_point_to_the_pr(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`waiting` and `needs-owner` carry the PR's URL too."""
+    lands = events_pushed
+    clock = Clock()
+    monkeypatch.setattr(approvals, "time", clock)
+    monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["pulls"][7]["url"] = PULL_URL.format(7)
+    hold_lock(lands)
+    urls: list[tuple[str, str]] = []
+
+    def tick(_now: float) -> None:
+        event = events_of(lands, 7)
+        if event and (not urls or urls[-1] != (event["state"], event["url"])):
+            urls.append((event["state"], event["url"]))
+
+    clock.tick = tick
+    lands["land"]("7", "--wait")
+    assert urls == [("waiting", PULL_URL.format(7))]
+    event = events_of(lands, 7)  # the ceiling comes after the last sleep
+    assert event and (event["state"], event["url"]) == ("needs-owner", PULL_URL.format(7))
+
+
+def test_the_clear_of_a_merged_pr_runs_after_its_worktree_is_gone(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """A land run again in a fresh worktree (caught_up) ends and the worktree is removed; the refs of the PR it merged
+    still go, since the clear runs from the repository's git dir."""
+    lands = events_pushed
+    work = lands["work"]
+    fresh = tmp_path / "fresh"
+    git_in(work, "worktree", "add", "-q", "--detach", str(fresh), "HEAD")
+    lands["open"](7, {"7.txt": "7\n"})
+    git_in(work, "switch", "-q", "--detach", "origin/main")
+    monkeypatch.chdir(fresh)
+    monkeypatch.setattr(approvals, "EVENT_GRACE", 2)
+    code, lines = lands["land"]("7")
+    assert code == 0, lines
+    git_in(work, "worktree", "remove", "--force", str(fresh))  # reap, as the land exits
+    assert not fresh.exists()
+    assert refs_gone(lands)
+
+
+def test_comment_returns_the_url_of_the_comment_it_posts(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`comment` asks `gh` for the new comment's `html_url`, and gives back what it prints."""
+    fake = tmp_path / "bin" / "gh"
+    fake.parent.mkdir()
+    fake.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in *"--jq .html_url"*) echo https://example.test/pull/7#issuecomment-9;; esac\n'
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
+    assert (
+        approvals.github.comment(7, "a note") == "https://example.test/pull/7#issuecomment-9"
+    )
+
+
+def test_rest_pull_and_the_graphql_query_carry_the_pr_url(cloud: Cloud) -> None:  # noqa: F811
+    """Both ways a PR is read give its `url`, which every `land` event points to."""
+    assert "number url title" in approvals.github.PULL
+    cloud.routes.update(
+        {
+            "repos/{owner}/{repo}/issues/7/timeline?per_page=100": [],
+            "repos/{owner}/{repo}/git/matching-refs/heads/gh-readonly-queue/main/pr-7-": [],
+        }
+    )
+    cloud.routes["repos/{owner}/{repo}/pulls/7"]["html_url"] = PULL_URL.format(7)
+    assert approvals.github.rest_pull(7)["url"] == PULL_URL.format(7)

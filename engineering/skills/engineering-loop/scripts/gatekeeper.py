@@ -4927,22 +4927,18 @@ def branch_issue() -> int | None:
     return int(found[1]) if found else None
 
 
-EVENT_GRACE = (
-    120  # seconds a merged PR's `ok` event stays readable before its refs are cleared (land_event)
-)
+# seconds a merged PR's `ok` event stays readable before its refs are cleared (land_ended)
+EVENT_GRACE = 120
+# the branches whose `land` event ended (ok, failed, needs-owner) in this round of land, so no beat of the same round
+# rewrites an end as `waiting`; and the branches whose `ok` this process has written, so a wait writes it once
+ended: set[str] = set()
+landed_ok: set[str] = set()
+# the PRs the lock's heartbeat beats `waiting` for while a round holds the lock and runs its gates
+beating_for: list[dict[str, Any]] = []
 
 
-def loop_events() -> ModuleType:
-    """events.py beside this script, loaded on first use: the loop's event writer, which needs only git."""
-    if "loop_events" not in sys.modules:
-        spec = importlib.util.spec_from_file_location(
-            "loop_events", Path(__file__).with_name("events.py")
-        )
-        assert spec and spec.loader
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        sys.modules["loop_events"] = module
-    return sys.modules["loop_events"]
+# events.py beside this script: the loop's event writer, which needs only git
+loop_events = sibling("events")
 
 
 def land_event(
@@ -4950,8 +4946,10 @@ def land_event(
 ) -> None:
     """Write PR `pull`'s `land` event (events.md) on its branch. An event reports a step and is not part of it, so
     whatever goes wrong here is one line on stderr and changes no exit code of land."""
+    if state != "waiting":
+        ended.add(pull["headRefName"])
     try:
-        loop_events().emit(
+        loop_events.emit(
             "land",
             pull["headRefName"],
             state,
@@ -4969,18 +4967,26 @@ def land_event_of(pr: int | Sequence[int] | None, state: str, question: str | No
     """land_event for each PR number a land names (the PR is read again, since the wait holds only its numbers)."""
     for number in [] if pr is None else [pr] if isinstance(pr, int) else list(dict.fromkeys(pr)):
         try:
-            land_event(pull_request(number), state, question=question)
+            pull = pull_request(number)
+            if pull["state"] == "OPEN":  # one merged during this wait has its `ok`, which a ceiling must not replace
+                land_event(pull, state, question=question)
         except Exception as exc:  # noqa: BLE001 -- the same: a failed read of the PR ends nothing
             print(f"PR #{number}: land event not written: {stderr_of(exc)}", file=sys.stderr)
 
 
 def land_ended(pull: dict[str, Any]) -> None:
-    """A merged PR's `land` event ends `ok`, and its refs go (events.py clear). The refs go EVENT_GRACE seconds later,
-    in a process of its own, since a native lead blocked in `wait land <branch>` polls and would otherwise find nothing
-    where the end was."""
+    """A merged PR's `land` event ends `ok`, written once per process, and its refs go (events.py clear). The refs go
+    EVENT_GRACE seconds later, in a process of its own, since a native lead blocked in `wait land <branch>` polls and
+    would otherwise find nothing where the end was. The clear runs in the repository's common git dir, which outlives
+    the checkout this land runs in (caught_up's fresh worktree is removed when the land exits)."""
+    branch = pull["headRefName"]
+    if branch in landed_ok:  # a wait reads the same merged PR again each round
+        return
+    landed_ok.add(branch)
     land_event(pull, "ok")
     try:
-        script = Path(loop_events().__file__).resolve()
+        script = Path(loop_events.__file__).resolve()
+        common = git("rev-parse", "--path-format=absolute", "--git-common-dir").strip()
         subprocess.Popen(
             [
                 sys.executable,
@@ -4990,17 +4996,18 @@ def land_ended(pull: dict[str, Any]) -> None:
                 sys.executable,
                 str(script),
                 "--repo",
-                str(toplevel()),
+                common,
                 "clear",
-                pull["headRefName"],
+                branch,
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        # ponytail: a detached sleep, not a sweep on the next land, so a branch's refs go without another land
-    except Exception as exc:  # noqa: BLE001 -- the PR has landed: a ref left over is cleared by the next `clear`
+        # ponytail: a detached sleep, not a sweep on the next land, so a branch's refs go without another land; a host
+        # that ends within the grace leaves them, and a scheduled `events.py clear` is the upgrade if that happens
+    except Exception as exc:  # noqa: BLE001 -- the PR has landed: the refs stay until a `clear` of the branch is run
         print(
             f"PR #{pull.get('number')}: land event refs not cleared: {stderr_of(exc)}",
             file=sys.stderr,
@@ -5227,6 +5234,7 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     `Landed` comment: queue_landed), the base fetched,
     and its policy read to place the land (placed: where it may run and the key it signs with) and to ready drafts,
     then read again after the fetch under the lock for the batch (landing_here)."""
+    ended.clear()
     named, base, worst = land_base(pr)
     if named is None:
         return worst, False
@@ -5250,9 +5258,10 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
             code, again = landing_here(
                 named, base, worst, tracker, loop, only, not fetch.returncode, rules
             )
-        if waiting and again:  # the beat of a wait that goes on: each poll rewrites it
+        if waiting and again:  # the beat of a wait that goes on: each poll rewrites it, but never an end of this round
             for pull in named:
-                land_event(pull, "waiting")
+                if pull["headRefName"] not in ended:
+                    land_event(pull, "waiting")
         return code, again
 
 
@@ -5327,6 +5336,7 @@ def landing_here(
         if not taken:
             # a named PR left out already is a refusal, which the wait for the lock doesn't clear: 1 over 3
             return (1 if worst else WAITING), True
+        beating_for[:] = named
         threading.Thread(target=heartbeat, args=(base, held, stop), daemon=True).start()
         # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
@@ -5345,6 +5355,7 @@ def landing_here(
         # children (ssh, gh as the credential helper) unblock the signals, and a stop of the land's group would end them
         mask = signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
         stop.set()
+        beating_for.clear()
         with (
             beating
         ):  # the beat in flight finishes, so `held` ends on the commit that reached origin
@@ -5642,6 +5653,10 @@ def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
     thread, which releases the lock."""
     signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
     while not stop.wait(BEAT):
+        # the land is working while it gates under the lock, which can outlast a native wait's two beats of silence
+        for pull in list(beating_for) if waiting else []:
+            if pull["headRefName"] not in ended and not stop.is_set():
+                land_event(pull, "waiting")
         with beating:
             if stop.is_set() or not held:
                 return
