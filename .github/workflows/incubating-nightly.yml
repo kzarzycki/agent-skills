@@ -1,6 +1,9 @@
-# Nightly for `incubating` epics (engineering-loop, Incubating): while any is open, run the full gate with the features'
-# flags on, say a failure on each epic, and say once a month that an epic is still incubating. It blocks no PR: only
-# this run turns red. With no open epic it runs nothing. REST only (gh api).
+# Nightly for `incubating` epics (engineering-loop, Incubating). For each open epic it lists the epic with its age, runs
+# the `Nightly:` command its body names with the `Flag:` switch on, says a failure on that epic, and says once every
+# STALE_DAYS that it is still incubating. It blocks no PR: only this run turns red. With no open epic it runs nothing.
+# An epic's body carries `Flag: <ENV_NAME>` (the variable that turns the feature on, set to 1; or `none`) and
+# `Nightly: mise run <task>` (the full gate and acceptance run for it). Only `mise run <task>` is run, since an issue
+# body is text anyone who can edit an issue may change. REST only (gh api).
 name: incubating-nightly
 on:
   schedule:
@@ -14,7 +17,7 @@ env:
   REPO: ${{ github.repository }}
   # days an epic may incubate before the nightly says so, and again after each that passes
   # ponytail: the spec's `incubating.stale_days` setting, narrowed to a constant so this workflow needs no change to
-  # gatekeeper.py's SCHEMA; read it from loop.md once the gatekeeper freeze lifts (follow-up of #1288)
+  # gatekeeper.py's SCHEMA; read it from loop.md once the gatekeeper freeze lifts (follow-up #1331 of #1288)
   STALE_DAYS: "30"
 jobs:
   nightly:
@@ -29,24 +32,6 @@ jobs:
             --jq '.[] | select(.pull_request == null) | .number' | tr '\n' ' ')
           echo "numbers=${list% }" >> "$GITHUB_OUTPUT"
           echo "found: ${list:-none}"
-      - name: Say that an epic has incubated for a while
-        if: steps.epics.outputs.numbers != ''
-        env:
-          NUMBERS: ${{ steps.epics.outputs.numbers }}
-        run: |
-          set -euo pipefail
-          limit=$(date -u -d "$STALE_DAYS days ago" +%s)
-          for n in $NUMBERS; do
-            # when the label went on last, and when the nightly last said so
-            since=$(gh api "repos/$REPO/issues/$n/events" --paginate \
-              --jq '[.[] | select(.event == "labeled" and .label.name == "incubating") | .created_at] | max // empty')
-            said=$(gh api "repos/$REPO/issues/$n/comments" --paginate \
-              --jq '[.[] | select(.body | startswith("Still incubating")) | .created_at] | max // empty')
-            newest=$(printf '%s\n%s\n' "$since" "$said" | sort | tail -n1)
-            [ -n "$newest" ] || continue
-            [ "$(date -u -d "$newest" +%s)" -lt "$limit" ] || continue
-            gh api "repos/$REPO/issues/$n/comments" --silent -f body="Still incubating: this epic has been incubating for $STALE_DAYS days or more. Graduate it (a full-loop PR that says \`Graduates #$n\`, then \`approvals.py graduate\`) or say here why it stays."
-          done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.epics.outputs.numbers != ''
         with:
@@ -57,25 +42,52 @@ jobs:
         with:
           version: 2026.9.2
           install: false
-      - name: Run the full gate with the incubating flags on
-        id: gate
+      - name: Report each epic, run its nightly, say what is wrong
         if: steps.epics.outputs.numbers != ''
-        continue-on-error: true
-        # the project's gate reads GATE_INCUBATING_NIGHTLY and turns each incubating feature's flag on
-        env:
-          GATE_INCUBATING_NIGHTLY: "1"
-        run: |
-          mise install
-          uv sync --frozen
-          mise run check
-      - name: Say on each epic that the gate failed
-        if: steps.gate.outcome == 'failure'
         env:
           NUMBERS: ${{ steps.epics.outputs.numbers }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          limit=$(date -u -d "$STALE_DAYS days ago" +%s)
+          now=$(date -u +%s)
+          failed=0
+          tick=$(printf '\x60')
+          mise install && uv sync --frozen || exit 1
           for n in $NUMBERS; do
-            gh api "repos/$REPO/issues/$n/comments" --silent -f body="The nightly full gate failed with the incubating flags on: $RUN. It blocks nothing; fix or revert the slice that broke it."
+            body=$(gh api "repos/$REPO/issues/$n" --jq .body)
+            # the first time the label went on, so a label put back after a drop doesn't restart the clock
+            since=$(gh api "repos/$REPO/issues/$n/events" --paginate \
+              --jq '[.[] | select(.event == "labeled" and .label.name == "incubating") | .created_at] | min // empty')
+            # the nightly's own reminders only: a person's comment that starts the same way is not one
+            said=$(gh api "repos/$REPO/issues/$n/comments" --paginate \
+              --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("Still incubating"))) | .created_at] | max // empty')
+            newest=$(printf '%s\n%s\n' "$since" "$said" | sort | tail -n1)
+            if [ -n "$since" ]; then
+              age=$(( (now - $(date -u -d "$since" +%s)) / 86400 ))
+            else
+              age="?"
+            fi
+            flag="" cmd=""
+            while IFS= read -r line; do
+              line=${line%$'\r'}
+              if [ -z "$flag" ] && [[ $line =~ ^Flag:[[:space:]]*$tick?([A-Za-z_][A-Za-z0-9_]*)$tick?[[:space:]]*$ ]]; then
+                flag=${BASH_REMATCH[1]}
+              fi
+              if [ -z "$cmd" ] && [[ $line =~ ^Nightly:[[:space:]]*$tick?(mise\ run\ [A-Za-z0-9:_-]+)$tick?[[:space:]]*$ ]]; then
+                cmd=${BASH_REMATCH[1]}
+              fi
+            done <<< "$body"
+            echo "#$n: incubating $age days, flag ${flag:-unset}, nightly ${cmd:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ -n "$newest" ] && [ "$(date -u -d "$newest" +%s)" -lt "$limit" ]; then
+              gh api "repos/$REPO/issues/$n/comments" --silent -f body="Still incubating: this epic has been incubating for $age days. Graduate it (a full-loop PR that says \`Graduates #$n\`, then \`approvals.py graduate\`) or say here why it stays."
+            fi
+            if [ -n "$cmd" ] && [ -n "$flag" ] && [ "$flag" != none ]; then
+              # shellcheck disable=SC2086 # `mise run <task>` is matched above: two words, no glob
+              if ! env "$flag=1" $cmd; then
+                failed=1
+                gh api "repos/$REPO/issues/$n/comments" --silent -f body="The nightly \`$cmd\` failed with \`$flag=1\`: $RUN. It blocks nothing; fix or revert the slice that broke it."
+              fi
+            fi
           done
-          exit 1
+          exit "$failed"
