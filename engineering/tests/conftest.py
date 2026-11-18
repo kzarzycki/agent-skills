@@ -26,6 +26,13 @@ from approvals_harness import (  # noqa: F401
     required,
 )
 
+
+@pytest.fixture(autouse=True)
+def _no_wait_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A test that mocks the rerun's execv leaves the wait's place in the environment; the next land would resume it."""
+    monkeypatch.delenv("LOOP_LAND_WAIT", raising=False)
+
+
 # The fixtures that run a tool beyond git and Python: pytest ignores a mark on a fixture, so each test that takes
 # one gets its `needs_tool` mark at collection, as a test that runs the tool itself carries it.
 FIXTURE_TOOLS = {"cloud_land": ("ssh-keygen",), "signing": ("ssh-keygen",)}
