@@ -3317,8 +3317,9 @@ def carried(
     if tree := same_tree(pull["headRefOid"], verified):
         return verified, [same_tree_line(verified, tree)]
     guard = settings(loop).get("carry_over_main")
-    if guard is None:
-        return None
+    if guard is None:  # a project's own `except` globs (deprecated) keep deciding where it sets them
+        proof = catch_up(pull, verified)
+        return (verified, [f"verdict on {verified} carried to {pull['headRefOid']}: {proof}"]) if proof else None
     walked = base_merges(pull, verified)
     if isinstance(walked, str):
         return walked
@@ -3343,6 +3344,37 @@ def same_tree(head: str, old: str) -> str | None:
     same, as after a reword of commit messages only. A tree neither the clone nor origin has is None."""
     mine = tree_of(head)
     return mine if mine is not None and mine == tree_of(old) else None
+
+
+def catch_up(pull: dict[str, Any], old: str) -> str | None:
+    """What shows, mechanically, that the PR's head only takes the base in since `old` (an earlier head), with no hand
+    edit, or None: the proof's words, which carried() and whose() print. Either (a rebase) `git range-diff` of
+    `merge-base(old, tip)..old` against `merge-base(head, tip)..head` marks every commit `=` with none added or dropped,
+    or (a merge of the base) every commit since `old` is a merge of the base (base_merges) and `git show --remerge-diff`
+    of each is empty, so no conflict was resolved by hand. A verdict (carried) and a go (carried_go) on `old` carry to
+    the head by this one test, which nobody asserts. Fail-closed: a git error, or a commit origin lacks, is None (#1314)."""
+    head, old, tip = pull["headRefOid"].lower(), old.lower(), pull["baseRefOid"].lower()
+    base = pull["baseRefName"]
+    if head == old or not all(map(fetched, (head, old, tip))):
+        return None
+    try:
+        walked = base_merges(pull, old)
+        if not isinstance(walked, str):
+            if all(
+                not git("show", "--remerge-diff", "--format=", "--no-color", commit).strip()
+                for commit, _, _ in walked
+            ):
+                return f"every commit since is a merge of {base} whose `git show --remerge-diff` is empty: no conflict was resolved by hand"
+            return None
+        first, second = (git("merge-base", commit, tip).strip() for commit in (old, head))
+        shown = git("range-diff", "--no-color", f"{first}..{old}", f"{second}..{head}").splitlines()
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    # one line per commit pair: `1:  abc1234 = 1:  def5678 subject`; a changed one is followed by its indented diff
+    marks = [line.split()[2] for line in shown if line.strip() and not line[0].isspace()]
+    if marks and set(marks) == {"="}:
+        return f"`git range-diff` against {base} shows every commit unchanged: a rebase with no added or dropped commit"
+    return None
 
 
 def same_tree_line(old: str, tree: str) -> str:
@@ -3612,7 +3644,7 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     if not earlier or not (by := go_on(pull, earlier[-1], loop)):
         return None
     old = earlier[-1]
-    if same_tree(head, old):
+    if same_tree(head, old) or catch_up(pull, old):
         return by, old
     why = unchanged(pull, old.lower())
     return f"the go on {old} carries nothing to {head}: {why}" if why else (by, old)
@@ -3685,6 +3717,8 @@ def whose(pull: dict[str, Any], loop: str | None) -> list[str]:
     line = f"{head} is the delegate's{DELEGATED}" if by == DELEGATE else f"{head} is the owner's"
     if old != pull["headRefOid"] and (tree := same_tree(pull["headRefOid"], old)):
         line += f", carried to {pull['headRefOid']}: same tree {tree}"
+    elif old != pull["headRefOid"] and (proof := catch_up(pull, old)):
+        line += f", carried to {pull['headRefOid']}: {proof}"
     elif old != pull["headRefOid"]:
         line += (
             f", carried to {pull['headRefOid']}: every commit since is a merge of {pull['baseRefName']}, and the"

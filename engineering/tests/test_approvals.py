@@ -8705,10 +8705,29 @@ def test_the_go_carries_nothing_without_a_satisfied_verdict_on_the_new_head_sayi
     given: dict[str, str],
     why: str,
 ) -> None:
-    case = carrying({"other.txt": "main moved\n"})
+    case = carrying(  # a hand-resolved merge, which the mechanical proof (catch_up) does not carry
+        {"app.py": CONFLICTED}, resolve={"app.py": APP.replace("line 1\n", "line 1, both\n")}
+    )
     assert approvals.owner_waits(go_over(case, hub, **given), [], LOOP) == held_at(
         case, why.format(**case)
     )
+
+
+def test_a_clean_merge_of_the_base_carries_the_verdict_and_the_go_with_no_new_pass(
+    carrying: Callable[..., dict[str, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#1314: the proof is mechanical (catch_up), so neither a verifier pass on the merge nor its `Logic change: none`
+    is read, and a project without `carry_over_main` gets it too."""
+    case = carrying({"other.txt": "main moved\n"})
+    pr = go_over(case, hub, logic="", on="head")
+    assert approvals.owner_waits(pr, [], LOOP) == []
+    [line] = approvals.whose(pr, LOOP)
+    assert f"carried to {case['merge']}: every commit since is a merge of main whose" in line
+    assert "git show --remerge-diff` is empty" in line
+    assert merge(carried_pull(case), [approved(1, "area:web")], NO_CI) == [NO_LOCAL_CHECK]
+    assert "carried to" in capsys.readouterr().out
 
 
 def test_a_verifier_reports_logic_change_line_is_posted_with_its_verdict(tmp_path: Path) -> None:
@@ -8770,7 +8789,12 @@ REFUSED = {
         CARRY,
         "{head} and {base} have 2 merge bases",
     ),
-    "a project without the line": ({"other.txt": "main moved\n"}, {}, NO_CI, None),
+    "a project without the line": (
+        {"app.py": CONFLICTED},
+        {"resolve": {"app.py": APP.replace("line 1\n", "line 1, both\n")}},
+        NO_CI,
+        None,
+    ),
 }
 
 
@@ -8861,34 +8885,6 @@ def test_a_merge_that_may_have_changed_the_prs_code_carries_nothing(
         else [f"PR #7: {merge_sha} carries nothing from {head}: {why.format(**case)}"]
     )
     assert capsys.readouterr().out.splitlines() == said
-
-
-def test_without_the_line_check_merge_and_land_read_no_git(
-    carrying: Callable[..., dict[str, str]],
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """A project without carry_over_main gates exactly as before: git runs only to read the two trees (same_tree),
-    never to look for a carry over main."""
-    case = carrying({"other.txt": "main moved\n"})
-    real = approvals.git
-    trees = lambda *args: (
-        real(*args)
-        if args[0] == "rev-parse" and args[-1].endswith("^{tree}")
-        else pytest.fail(f"git {args}")
-    )
-    monkeypatch.setattr(approvals, "git", trees)
-    monkeypatch.setattr(approvals, "fetched", lambda sha: pytest.fail(f"fetched {sha}"))
-    monkeypatch.setattr(
-        approvals, "reusable", lambda head, _p=(): None
-    )  # the merge proof, not a carry
-    monkeypatch.setattr(approvals, "elsewhere", lambda head: "")  # and what its refusal adds
-    pr = carried_pull(case)
-    assert approvals.judged(pr, NO_CI) is None
-    assert merge(pr, [approved(1, "area:web")], NO_CI)[0].startswith(
-        "PR #7: the newest verifier review is on"
-    )
-    assert capsys.readouterr().out == ""
 
 
 def test_a_merge_of_a_commit_not_on_the_base_carries_nothing(
