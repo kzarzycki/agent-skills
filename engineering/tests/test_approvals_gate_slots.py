@@ -4,7 +4,6 @@ the first free one, waits only when every one is held, and a record is never tor
 from __future__ import annotations
 
 import fcntl
-import io
 import json
 import os
 import re
