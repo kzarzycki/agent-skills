@@ -556,4 +556,6 @@ def test_the_working_tree_env_var_reads_the_working_tree_and_says_why(monkeypatc
     monkeypatch.setenv(approvals.WORKING_TREE_POLICY, "1")
     assert approvals.policy_base(root) is None
     approvals.unbased(root)
-    assert f"{approvals.WORKING_TREE_POLICY} is set, so the policy is read" in capsys.readouterr().err
+    assert (
+        f"{approvals.WORKING_TREE_POLICY} is set, so the policy is read" in capsys.readouterr().err
+    )
