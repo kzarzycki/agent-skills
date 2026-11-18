@@ -7180,6 +7180,23 @@ def supervise_registry(
         last = max(float(info.get("updated_at") or 0), active(other))
         return time.time() - last < DEADLINE_SECONDS
 
+    def wait_repo(sid: str, named: str) -> str:
+        """The repository a wait's PR ref reads from: the one it names (``owner/repo#N``), else the
+        one ``sid``'s ``omni.pr`` label names, else the origin of its workspace (``repos``, read once),
+        since the supervisor's own directory may hold no remote. Empty when none resolves: ``gh``
+        then reads this directory's, and its refusal is the reason shown."""
+        if named:
+            return named
+        label = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
+        if label:
+            return label[0]
+        if sid not in repos:
+            try:
+                repos[sid] = workspace_repo(og, sid)
+            except Exception:  # noqa: BLE001 - not known: read again next poll
+                return ""
+        return repos[sid]
+
     def settled(lead: dict, pr: int, repo: str, fresh: bool = False):
         """``pr_settled`` for ``lead``, read at most once per ``PR_POLL_SECONDS`` unless ``fresh``,
         so the overdue check and the news check share one GitHub read."""
@@ -7215,7 +7232,7 @@ def supervise_registry(
             return False
         if ref := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", wait):  # a PR: GitHub says
             try:  # open with a check pending is a wait that is live; ended, it is news instead
-                return settled(lead, int(ref[2]), ref[1] or "") is None
+                return settled(lead, int(ref[2]), wait_repo(sid, ref[1] or "")) is None
             except Exception:  # noqa: BLE001 - unread: not known to be moving
                 return False
         if re.fullmatch(r"b(?=[a-z]{0,7}[0-9])[a-z0-9]{8}", wait):  # its own background job
@@ -7419,7 +7436,7 @@ def supervise_registry(
         for item in items:
             if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", item):
                 try:
-                    found = settled(lead, int(m[2]), m[1] or "", fresh=True)
+                    found = settled(lead, int(m[2]), wait_repo(sid, m[1] or ""), fresh=True)
                 except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
                     log(("pr", sid), f"{sid}: PR #{m[2]} not read: {reason(e)}")
                     pending = True

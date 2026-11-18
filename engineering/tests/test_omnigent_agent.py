@@ -13166,6 +13166,30 @@ def test_an_open_pr_a_lead_waits_on_costs_one_github_read_a_minute(
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("labelled", [False, True])
+def test_a_bare_pr_wait_is_read_from_the_leads_repo_not_the_supervisors_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, labelled: bool
+) -> None:
+    """The supervisor can run where no git remote exists, so ``gh pr view N`` there fails: the repo
+    comes from the lead's omni.pr label, else its workspace's origin."""
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976", m={"status": "idle"})
+    if labelled:
+        og.snaps["m"]["labels"] = {omnigent_agent.PR_LABEL: "o/r#12"}
+    else:
+        in_checkout(og)
+    calls: list[tuple] = []
+
+    def gh(*args: str, **_: object) -> str:
+        calls.append(args)
+        if "-R" not in args:
+            raise omnigent_agent.Fail("gh pr view 976: no git remotes found")
+        return '{"state":"OPEN","statusCheckRollup":[],"headRefOid":"h"}'
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert calls and all(c[c.index("-R") + 1] == "o/r" for c in calls if "pr" in c), calls
+
+
 def told_idle(og) -> list[str]:
     return [t for s, t in og.inbox if s == "m" and "went idle" in t]
 
