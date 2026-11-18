@@ -5,6 +5,8 @@ The engineering loop's values for this repo. `engineering/skills/engineering-loo
 
 Orchestration backend: omnigent
 
+Affected tests: mise run check-fast
+
 Worker model: mid for size:S or smaller
 
 A mid worker costs about half a top one per item, and a small item needs no more.
