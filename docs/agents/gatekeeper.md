@@ -13,6 +13,11 @@ loop:
   gate: QUALIFY_TIMEOUT=900 mise run check-land
   machine_exit: 78   # qualify exits 78 when a step stops on QUALIFY_TIMEOUT: the host's load, not the change
 
+incubating:
+  # a feature may append lines to the layer table (every new skill needs its layer, #1288); no waive list: all five
+  append_paths:
+    - docs/layers.md
+
 risk:
   verifier: true
   paths:

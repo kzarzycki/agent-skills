@@ -122,7 +122,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    their runs too. Then write your
    report to a file and send the lead its path: the branch and head SHA, the PR, the gate
    exit codes, your signature (what orchestrating-agents' `scripts/omnigent_agent.py signature` prints, else
-   the `AGENT_SIGNATURE=` line atop your brief), the line `Spec deviations: none` or that line
+   the `AGENT_SIGNATURE=` line atop your brief), the line `First commit: <n> s after the brief` (the brief file's time to the first commit's committer date, `unknown` when no commit is made), the line `Spec deviations: none` or that line
    with one bullet per deviation quoting the spec line it narrows (each one already asked,
    above), anything else left out and why, and what you tried and dropped. The deviations
    line is fixed, so a narrowed item never sits among harmless choices where the lead skims
