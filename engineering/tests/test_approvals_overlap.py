@@ -4,6 +4,7 @@ repos (an origin, and a clone the lead works in); only the one `gh pr list` call
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -167,3 +168,38 @@ def test_an_overlap_failure_is_one_warning_and_the_brief_is_written(
     seen = capsys.readouterr()
     assert seen.out.startswith("Review PR #1 as the verifier")
     assert seen.err.count("\n") == 1 and "overlap lookup failed" in seen.err
+
+
+@pytest.mark.parametrize("rest_only", [False, True])
+def test_a_pull_request_with_100_files_has_every_file_read(
+    monkeypatch: pytest.MonkeyPatch, rest_only: bool
+) -> None:
+    """`gh pr list` names a PR's first 100 files only, and REST pages 100 at a time: a PR whose 101st file is the one a
+    sibling changes is still listed, on the GraphQL path and on the REST one a cloud proxy forces."""
+    github = approvals.github
+    many = [f"f{n}.py" for n in range(150)]
+    listed = [
+        {
+            "number": 7,
+            "baseRefName": "trunk",
+            "headRefOid": "a" * 40,
+            "files": [{"path": p} for p in many[:100]],
+        },
+        {"number": 8, "baseRefName": "trunk", "headRefOid": "b" * 40, "files": [{"path": "g.py"}]},
+    ]
+    pulls = [
+        {"number": p["number"], "base": {"ref": "trunk"}, "head": {"sha": p["headRefOid"]}}
+        for p in listed
+    ]
+    files = {7: many, 8: ["g.py"]}
+
+    def pages(path: str, items: str = ".[]") -> list[Any]:
+        if path.startswith("pulls?"):
+            return pulls
+        return files[int(path.split("/")[1])]
+
+    monkeypatch.setattr(github, "gh", lambda *_args: json.dumps(listed))
+    monkeypatch.setattr(github, "rest_pages", pages)
+    monkeypatch.setattr(github, "_rest_only", rest_only)
+    found = {p["number"]: p["files"] for p in github.open_pull_files(1000)}
+    assert found == {7: many, 8: ["g.py"]}

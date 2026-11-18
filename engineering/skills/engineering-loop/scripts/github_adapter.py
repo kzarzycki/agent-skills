@@ -152,10 +152,20 @@ def open_pulls(limit: int) -> list[dict[str, Any]]:
 
 def open_pull_files(limit: int) -> list[dict[str, Any]]:
     """Up to `limit` open PRs, each with its number, base, head commit and the paths it changes (`files`), in one call.
-    ponytail: GitHub lists a PR's first 100 files on a `gh pr list`, and REST's first 100 per PR."""
+    `gh pr list` names a PR's first 100 files only, so a PR with 100 has all of its files re-read through REST's pages
+    (GitHub's own cap there is 3000), and an overlap past the 100th file is never missed."""
+
+    def every_file(number: int) -> list[str]:
+        return rest_pages(f"pulls/{number}/files?per_page=100", ".[].filename")
+
     return fast(  # type: ignore[no-any-return]
         lambda: [
-            {**pull, "files": [file["path"] for file in pull["files"]]}
+            {
+                **pull,
+                "files": every_file(pull["number"])
+                if len(pull["files"]) >= 100
+                else [file["path"] for file in pull["files"]],
+            }
             for pull in json.loads(
                 gh(
                     "pr",
@@ -174,12 +184,7 @@ def open_pull_files(limit: int) -> list[dict[str, Any]]:
                 "number": other["number"],
                 "baseRefName": other["base"]["ref"],
                 "headRefOid": other["head"]["sha"],
-                "files": [
-                    file["filename"]
-                    for file in rest(
-                        f"repos/{{owner}}/{{repo}}/pulls/{other['number']}/files?per_page=100"
-                    )
-                ],
+                "files": every_file(other["number"]),
             }
             for other in rest_pages("pulls?state=open&per_page=100")[:limit]
         ],
