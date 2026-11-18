@@ -6560,10 +6560,11 @@ def github_queue(
         if code == 1:
             failed.add(pull["number"])
         if pull["number"] in numbers or code != WAITING:
-            exits[pull["number"]] = (code, again)
+            # the queue is never polled; what candidates_of waits on (a check, an owner's go) keeps its own wait
+            exits[pull["number"]] = (code, False)
     if not named:
         queue_trail(base)
-    return outcome(named, exits, worst, failed)[0], False
+    return outcome(named, exits, worst, failed)
 
 
 def queue_trail(base: str) -> None:
@@ -6592,7 +6593,7 @@ def queue_step(
 ) -> tuple[int, bool]:
     """One candidate in the GitHub merge queue, and the exit it means for a named PR. In the queue: left alone, or,
     stuck (stuck), dequeued and enqueued again. Out of it, by the queue's last removal of its head (queue_removals):
-    merged, waited on; a conflict GitHub still reports (or one it reports with no removal), commented once per head and
+    merged, done (exit 0); a conflict GitHub still reports (or one it reports with no removal), commented once per head and
     not enqueued; a red group, after a check that `base`'s tip is green (main_red), counted only when built on a green
     commit of `base` (own_reds), then commented once and enqueued again, or evicted on the second red of the head; any
     other removal, or none, enqueued."""
@@ -6621,7 +6622,7 @@ def queue_step(
         print(f"{where} left the merge queue merged at {head}")
         return 0, False
     # the queue tests an entry on top of those ahead of it, so its conflict may be with one of them, not with the base:
-    # it holds only while GitHub reports one, and waits while GitHub works it out again after the base moved
+    # it holds only while GitHub reports one, and exits 3 (no wait) while GitHub works it out again after the base moved
     mergeable = pull.get("mergeable")
     if reason == MERGE_CONFLICT and mergeable not in ("CONFLICTING", "MERGEABLE"):
         print(f"GitHub is still working out whether {where} conflicts with {base}")
