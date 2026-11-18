@@ -3317,9 +3317,15 @@ def carried(
     if tree := same_tree(pull["headRefOid"], verified):
         return verified, [same_tree_line(verified, tree)]
     guard = settings(loop).get("carry_over_main")
-    if guard is None:  # a project's own `except` globs (deprecated) keep deciding where it sets them
+    if (
+        guard is None
+    ):  # a project's own `except` globs (deprecated) keep deciding where it sets them
         proof = catch_up(pull, verified)
-        return (verified, [f"verdict on {verified} carried to {pull['headRefOid']}: {proof}"]) if proof else None
+        return (
+            (verified, [f"verdict on {verified} carried to {pull['headRefOid']}: {proof}"])
+            if proof
+            else None
+        )
     walked = base_merges(pull, verified)
     if isinstance(walked, str):
         return walked
@@ -4982,7 +4988,9 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
 
 
 DEADLINE_ENV = "LOOP_LAND_DEADLINE"
-WORKTREES_ENV = "LOOP_LAND_WORKTREES"  # JSON [[git dir, path]] of the worktrees caught_up made, removed at exit
+WORKTREES_ENV = (
+    "LOOP_LAND_WORKTREES"  # JSON [[git dir, path]] of the worktrees caught_up made, removed at exit
+)
 
 
 def caught_up(drifted: Drifted, deadline: float) -> NoReturn:

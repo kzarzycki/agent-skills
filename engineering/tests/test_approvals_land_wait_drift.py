@@ -136,7 +136,11 @@ def test_any_other_checkout_runs_again_from_a_fresh_worktree_of_the_base(
     assert fresh != work and git_in(fresh, "rev-parse", "HEAD").strip() == tip
     assert git_in(fresh, "branch", "--show-current").strip() == ""  # detached
     [(path, argv, deadline)] = waiting["execs"]
-    assert path == sys.executable and argv[1:] == [str(fresh / SCRIPT), "land", "7", "--wait"] and deadline
+    assert (
+        path == sys.executable
+        and argv[1:] == [str(fresh / SCRIPT), "land", "7", "--wait"]
+        and deadline
+    )
     assert (fresh / SCRIPT).read_text().endswith("# another land's change\n")
     # the run in place of this one removes the worktree when it ends
     monkeypatch.chdir(fresh)
