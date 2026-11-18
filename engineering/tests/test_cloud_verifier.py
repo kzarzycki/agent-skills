@@ -389,7 +389,14 @@ def checkout(tmp_path, monkeypatch):
         if cmd[:2] == ("gh", "api"):
             assert "body=@-" in cmd  # the body goes in through stdin
             # the Seconds: footer is the timing's (test_cloud_verifier_pass_seconds.py), not the report's
-            posted.append(re.sub(r"\n\n<details><summary>Timing</summary>.*\Z", "\n", kw["input"], flags=re.DOTALL))
+            posted.append(
+                re.sub(
+                    r"\n\n<details><summary>Timing</summary>.*\Z",
+                    "\n",
+                    kw["input"],
+                    flags=re.DOTALL,
+                )
+            )
             return subprocess.CompletedProcess(cmd, 0, "https://example.com/comment/1\n", "")
         return real_run(*cmd, check=check, **kw)
 
