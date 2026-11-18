@@ -3646,6 +3646,7 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     the head decides alone, so a go withdrawn there stays withdrawn. A string names why the older go carries nothing;
     None: no go to carry."""
     head = pull["headRefOid"]
+    guard = settings(loop).get("carry_over_main")  # a project with its own rule keeps it for the go too
     by = go_on(pull, head, loop)
     if by is not None:
         return (by, head) if by else None
@@ -3657,7 +3658,7 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     if not earlier or not (by := go_on(pull, earlier[-1], loop)):
         return None
     old = earlier[-1]
-    if same_tree(head, old) or catch_up(pull, old):
+    if same_tree(head, old) or (guard is None and catch_up(pull, old)):
         return by, old
     why = unchanged(pull, old.lower())
     return f"the go on {old} carries nothing to {head}: {why}" if why else (by, old)
@@ -3730,7 +3731,11 @@ def whose(pull: dict[str, Any], loop: str | None) -> list[str]:
     line = f"{head} is the delegate's{DELEGATED}" if by == DELEGATE else f"{head} is the owner's"
     if old != pull["headRefOid"] and (tree := same_tree(pull["headRefOid"], old)):
         line += f", carried to {pull['headRefOid']}: same tree {tree}"
-    elif old != pull["headRefOid"] and (proof := catch_up(pull, old)):
+    elif (
+        old != pull["headRefOid"]
+        and "carry_over_main" not in settings(loop)
+        and (proof := catch_up(pull, old))
+    ):
         line += f", carried to {pull['headRefOid']}: {proof}"
     elif old != pull["headRefOid"]:
         line += (

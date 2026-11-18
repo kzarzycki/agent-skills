@@ -8730,6 +8730,20 @@ def test_a_clean_merge_of_the_base_carries_the_verdict_and_the_go_with_no_new_pa
     assert "carried to" in capsys.readouterr().out
 
 
+def test_a_project_with_carry_over_main_keeps_its_own_rule_for_the_go_as_for_the_verdict(
+    carrying: Callable[..., dict[str, str]],
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """The mechanical proof (catch_up) is for a project without `carry_over_main`: with it, the go carries only by the
+    verifier's pass on the new head, as the verdict carries only by the project's own merge rule (B3)."""
+    case = carrying({"other.txt": "main moved\n"})
+    pr = go_over(case, hub, logic="", on="head")
+    assert isinstance(approvals.carried_go(pr, LOOP), tuple)
+    found = approvals.carried_go(pr, CARRY)
+    assert isinstance(found, str) and found.startswith("the go on") and "carries nothing" in found
+    assert approvals.whose(pr, CARRY) == []
+
+
 def test_a_verifier_reports_logic_change_line_is_posted_with_its_verdict(tmp_path: Path) -> None:
     report = tmp_path / "report.md"
     report.write_text(
