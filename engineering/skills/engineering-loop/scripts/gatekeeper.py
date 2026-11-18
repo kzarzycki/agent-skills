@@ -4992,14 +4992,22 @@ def land_event(
         )
 
 
-def land_event_of(pr: int | Sequence[int] | None, state: str, question: str | None = None) -> None:
-    """land_event for each PR number a land names (the PR is read again, since the wait holds only its numbers)."""
+def land_event_of(
+    pr: int | Sequence[int] | None,
+    state: str,
+    question: str | None = None,
+    unless_ended: bool = False,
+) -> None:
+    """land_event for each PR number a land names (the PR is read again, since the wait holds only its numbers);
+    `unless_ended` leaves a PR whose end this process wrote, so a later end keeps the first one's reason."""
     for number in [] if pr is None else [pr] if isinstance(pr, int) else list(dict.fromkeys(pr)):
         try:
             pull = pull_request(number)
             if (
-                pull["state"] == "OPEN"
-            ):  # one merged during this wait has its `ok`, which a ceiling must not replace
+                pull["state"]
+                == "OPEN"  # one merged during this wait has its `ok`, which a ceiling must not replace
+                and not (unless_ended and pull["headRefName"] in ended)
+            ):
                 land_event(pull, state, question=question)
         except Exception as exc:  # noqa: BLE001 -- the same: a failed read of the PR ends nothing
             print(f"PR #{number}: land event not written: {stderr_of(exc)}", file=sys.stderr)
@@ -5115,6 +5123,8 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
         if drifted:
             caught_up(drifted, deadline)
         if not again:
+            if code:  # a wait that exits with its PR neither merged nor ended (main is red) must not leave `waiting`
+                land_event_of(pr, "failed", unless_ended=True)
             return code
         nap = poll_seconds()
         if time.monotonic() + nap > deadline:
@@ -5685,16 +5695,19 @@ def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
     that fails for another reason (the network) is tried again at the next beat. A stop signal is left to the main
     thread, which releases the lock."""
     signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
-    # the land is working while it gates under the lock, which can outlast a native wait's two beats of silence; the
-    # first event beat comes when the lock is taken, so the silence since the round's own beat stays under one BEAT.
-    # The lock stamp is fresh from the take itself, so its first push waits a BEAT.
-    for pull in beating_for:
-        if not stop.is_set():
-            land_event(pull, "waiting")
-    while not stop.wait(BEAT):
-        for pull in beating_for:
+
+    # Only a `land --wait` beats `waiting` (events.md): a land that is not waiting ends with no event of its own, and a
+    # stale `waiting` would read as a live wait until it went silent. The first beat comes when the lock is taken, since
+    # a gate under the lock can outlast a native wait's two beats of silence; the lock's own stamp is fresh from the
+    # take, so its first push waits a BEAT.
+    def beat() -> None:
+        for pull in beating_for if waiting else []:
             if not stop.is_set():
                 land_event(pull, "waiting")
+
+    beat()
+    while not stop.wait(BEAT):
+        beat()
         with beating:
             if stop.is_set() or not held:
                 return

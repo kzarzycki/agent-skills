@@ -39,7 +39,7 @@ as ends and leaves a ref it cannot read or parse as `unknown`, never as ended; t
 
 `land` writes its event for each PR it names: `waiting` only under `--wait`, once per round (about every 2 to 6 minutes)
 and from the lock's heartbeat while a round gates, never over an end of the same round; `ok` once a PR merges (by `land`,
-the merge queue or by hand); `failed` when it is evicted; `needs-owner` when the PR waits for the owner's go (a draft
+the merge queue or by hand); `failed` when it is evicted, or when `--wait` exits non-zero with the PR neither merged nor ended (main is red, say); `needs-owner` when the PR waits for the owner's go (a draft
 too) and when `--wait` reaches its 2-hour ceiling.
 
 A wait is **live** while its ref changed within twice its `beat_s`. `wait` ends with exit 4 on a `waiting` event that

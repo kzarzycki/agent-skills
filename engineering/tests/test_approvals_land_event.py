@@ -6,6 +6,7 @@ import io
 import json
 import os
 import stat
+import sys
 import threading
 import time as real_time
 from typing import Any
@@ -176,10 +177,8 @@ def test_land_merged_event_and_cleanup(
     assert code == 0, lines
     # the reference: the PR as GitHub reports it, merged, onto main's squash
     assert lands["pulls"][7]["state"] == "MERGED" and lands["main"]() == lands["squashes"][7]
-    # a beat may come first (the heartbeat's, at the lock), the `ok` once, after the merge, and nothing after it
-    assert [e for e in ends if e[0] != "waiting"] == [("ok", None, "MERGED")] and ends[-1][
-        0
-    ] == "ok"
+    # a land without --wait beats nothing: one `ok`, after the merge, and nothing after it
+    assert ends == [("ok", None, "MERGED")]
     assert refs_gone(lands)
 
 
@@ -562,3 +561,130 @@ def test_a_new_round_beats_waiting_for_the_pr_that_asked_the_owner_last_round(
     lands["land"]("7", "--wait")
     event = events_of(lands, 7)
     assert event and event["state"] == "waiting", event
+
+
+def gated_wait(
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    beat: float,
+    gate: float,
+    nap: float,
+    ci_first: bool,
+) -> dict[str, Any]:
+    """Scaled: the land beat (events' beat_s) and the lock heartbeat (BEAT) are both `beat` real seconds, standing for
+    300 s; the gate takes `gate` s. Round 1 waits (the lock held, or with `ci_first` PR 7's CI pending) and beats
+    `waiting`; a `wait land pr7` starts on that beat; round 2 starts `nap` real seconds later, takes the lock and gates.
+    Returns the land's exit, what merged and the wait's exit."""
+    events = approvals.loop_events
+    monkeypatch.setitem(events.BEATS, "land", beat)
+    monkeypatch.setattr(approvals, "BEAT", beat)
+    monkeypatch.setattr(
+        approvals, "LOCAL_CI", ["sh", "-c", f'sleep {gate}; exec "$0" "$@"', *approvals.LOCAL_CI]
+    )
+    clock = Clock()
+    monkeypatch.setattr(approvals, "time", clock)
+    monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)
+    lands["open"](7, {"7.txt": "7\n"})
+    if ci_first:
+        lands["pulls"][7]["waiting"] = (approvals.WAITING, True)
+    else:
+        hold_lock(lands)
+    result: dict[str, Any] = {}
+
+    def wait() -> None:
+        result["code"] = events.wait(
+            "land", "pr7", timeout=120, poll=0.2, cwd=lands["work"], out=sys.stderr
+        )
+
+    waiter = threading.Thread(target=wait)
+
+    def tick(_now: float) -> None:
+        if lands["event"]("pr7") and "started" not in result:
+            result["started"] = True
+            waiter.start()
+            if ci_first:
+                lands["pulls"][7].pop("waiting")
+            else:
+                free_lock(lands)
+            real_time.sleep(nap)  # the real time the wait loop's nap takes before round 2
+
+    clock.tick = tick
+    code, _lines = lands["land"]("7", "--wait")
+    waiter.join(timeout=120)
+    result.update(land=code, merged=lands["merged"]())
+    return result
+
+
+def test_a_wait_on_a_land_whose_round_starts_late_and_gates_long_never_goes_silent(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round 1 waits on PR 7's CI and beats; the next round starts a low-quota nap later (300 s, scaled), takes the lock
+    and gates for longer than a beat. The heartbeat beats at the lock, so the silence stays under two beats and a
+    native `wait land` ends 0 instead of 4."""
+    result = gated_wait(events_pushed, monkeypatch, beat=6, gate=20, nap=7.2, ci_first=True)
+    assert result["land"] == 0 and result["merged"] == ["7"]
+    assert result.get("code") == 0, result
+
+
+def test_v2_heartbeat_beat_in_flight_does_not_replace_ok(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The heartbeat checks `ended`, then emits; an `ok` written by the main thread between the two is replaced by
+    the beat's `waiting`. Forced here: the heartbeat's emit for pr7 is held until the `ok` is written, as a beat whose
+    ls-remote and push (up to 60 s each) are in flight when the merge lands."""
+    lands = events_pushed
+    events = approvals.loop_events
+    monkeypatch.setattr(approvals, "BEAT", 0.3)
+    monkeypatch.setattr(approvals, "EVENT_GRACE", 3600)
+    monkeypatch.setattr(
+        approvals, "LOCAL_CI", ["sh", "-c", 'sleep 1; exec "$0" "$@"', *approvals.LOCAL_CI]
+    )
+    clock = Clock()
+    monkeypatch.setattr(approvals, "time", clock)
+    lands["open"](7, {"7.txt": "7\n"})
+    real_emit = events.emit
+    ok_written = threading.Event()
+    held = {"n": 0}
+
+    def emit(kind: str, branch: str, state: str, **kw: Any) -> str:
+        if state == "waiting" and threading.current_thread() is not threading.main_thread():
+            held["n"] += 1
+            ok_written.wait(timeout=10)
+        sha = real_emit(kind, branch, state, **kw)
+        if state == "ok":
+            ok_written.set()
+        return sha
+
+    monkeypatch.setattr(events, "emit", emit)
+    code, _lines = lands["land"]("7", "--wait")
+    real_time.sleep(1)  # the heartbeat thread's held emit finishes
+    event = lands["event"]("pr7")
+    assert code == 0 and lands["merged"]() == ["7"] and held["n"] >= 1
+    assert event and event["state"] == "ok", event
+
+
+def red_main(lands: dict[str, Any]) -> None:
+    work = lands["work"]
+    (work / "red.txt").write_text("red\n")
+    git_in(work, "add", "red.txt")
+    git_in(work, "commit", "-qm", "red main")
+    git_in(work, "push", "-q", "origin", "HEAD:main")
+
+
+@pytest.mark.parametrize(
+    "argv", [pytest.param(("7",), id="one-shot"), pytest.param(("7", "--wait"), id="wait")]
+)
+def test_a_land_that_ends_leaves_no_waiting(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch, argv: tuple[str, ...]
+) -> None:
+    """events.md: `waiting` only under `--wait`. main is
+    red, so the batch gates, nothing lands and nobody is evicted, and land exits 1. A land that is not waiting
+    beats nothing at the lock, so no `waiting` is left behind for a wait to read as live."""
+    lands = events_pushed
+    red_main(lands)
+    lands["open"](7, {"7.txt": "7\n"})
+    code, _lines = lands["land"](*argv)
+    event = lands["event"]("pr7")
+    assert code == 1
+    # a one-shot land beats nothing; a `--wait` one ends `failed`, so a native wait exits 1 instead of timing out
+    assert event is None if argv == ("7",) else event and event["state"] == "failed", event
