@@ -13190,6 +13190,49 @@ def test_a_bare_pr_wait_is_read_from_the_leads_repo_not_the_supervisors_director
     assert calls and all(c[c.index("-R") + 1] == "o/r" for c in calls if "pr" in c), calls
 
 
+def bare_pr_wait_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait: str, og_setup
+) -> list[str]:
+    """The ``-R`` repo of each ``gh pr view`` the supervisor makes for a lead's wait, two polls."""
+    registry, og = manager(tmp_path, f"STILL WORKING: x\nWaits: {wait}", m={"status": "idle"})
+    og_setup(og)
+    calls: list[str] = []
+
+    def gh(*args: str, **_: object) -> str:
+        if args[:2] == ("pr", "view"):
+            calls.append(args[args.index("-R") + 1] if "-R" in args else "")
+        return '{"state":"OPEN","statusCheckRollup":[],"headRefOid":"h"}'
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    return calls
+
+
+def test_a_ref_that_names_its_repo_keeps_it_over_the_leads_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    label = lambda og: og.snaps["m"].update(labels={omnigent_agent.PR_LABEL: "o/r#12"})
+    assert set(bare_pr_wait_reads(tmp_path, monkeypatch, "x/y#976", label)) == {"x/y"}
+
+
+def test_a_failed_workspace_read_is_tried_again_not_taken_for_no_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def flaky(og) -> None:
+        in_checkout(og)
+        read, failed = og.read_file, []
+
+        def read_file(sid: str, path: str) -> str:
+            if not failed:  # the server is restarting: the first read fails
+                failed.append(path)
+                raise omnigent_agent.Fail("HTTP 502")
+            return read(sid, path)
+
+        og.read_file = read_file
+
+    assert bare_pr_wait_reads(tmp_path, monkeypatch, "#976", flaky)[-1] == "o/r"
+
+
 def told_idle(og) -> list[str]:
     return [t for s, t in og.inbox if s == "m" and "went idle" in t]
 
