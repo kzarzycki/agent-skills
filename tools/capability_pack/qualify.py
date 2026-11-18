@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -1284,3 +1285,58 @@ def qualify(
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
+
+
+SMOKE_REPOSITORY = "RELEASE_SMOKE_REPOSITORY"
+SMOKE_WORKFLOW = "RELEASE_SMOKE_WORKFLOW"
+
+
+def require_smoke_run(
+    head: str,
+    environment: Mapping[str, str] | None = None,
+    runner: Callable[[list[str]], str] | None = None,
+) -> str:
+    """The URL of a passing `workflow_dispatch` run, in the private organization repository the releaser's own
+    configuration names, for the release head; refuses without one. The repository (owner/name) and the workflow file
+    come from RELEASE_SMOKE_REPOSITORY and RELEASE_SMOKE_WORKFLOW, never from this repository. The workflow names its
+    runs after the ref it checked (`run-name`), so a run's title holds the head it passed for."""
+    environment = os.environ if environment is None else environment
+    repository, workflow = environment.get(SMOKE_REPOSITORY), environment.get(SMOKE_WORKFLOW)
+    if not repository or not workflow:
+        raise ConfigurationError(
+            f"release smoke run: set {SMOKE_REPOSITORY} (owner/name of a private organization repository) and "
+            f"{SMOKE_WORKFLOW} (its workflow_dispatch workflow file)"
+        )
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise ConfigurationError(f"release smoke run: not a full commit sha: {head}")
+
+    def gh(arguments: list[str]) -> str:
+        try:
+            return subprocess.run(
+                ["gh", *arguments], check=True, text=True, capture_output=True, timeout=120
+            ).stdout
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ConfigurationError(f"release smoke run: gh failed: {error}") from error
+
+    out = (runner or gh)(
+        [
+            "run",
+            "list",
+            "--repo",
+            repository,
+            "--workflow",
+            workflow,
+            "--event",
+            "workflow_dispatch",
+            "--limit",
+            "100",
+            "--json",
+            "conclusion,displayTitle,url",
+        ]
+    )
+    for run in json.loads(out):
+        if run.get("conclusion") == "success" and head in (run.get("displayTitle") or ""):
+            return str(run["url"])
+    raise ConfigurationError(
+        f"release smoke run: no passing {workflow} run for {head} in the smoke repository"
+    )
