@@ -175,7 +175,8 @@ def test_a_pull_request_with_100_files_has_every_file_read(
     monkeypatch: pytest.MonkeyPatch, rest_only: bool
 ) -> None:
     """`gh pr list` names a PR's first 100 files only, and REST pages 100 at a time: a PR whose 101st file is the one a
-    sibling changes is still listed, on the GraphQL path and on the REST one a cloud proxy forces."""
+    sibling changes is still listed, on the GraphQL path and on the REST one a cloud proxy forces. The stand-in is `gh`
+    itself, printing what `gh api --paginate --jq` prints (a JSON object per line, a string raw), so the parsing runs."""
     github = approvals.github
     many = [f"f{n}.py" for n in range(150)]
     listed = [
@@ -193,13 +194,22 @@ def test_a_pull_request_with_100_files_has_every_file_read(
     ]
     files = {7: many, 8: ["g.py"]}
 
-    def pages(path: str, items: str = ".[]") -> list[Any]:
-        if path.startswith("pulls?"):
-            return pulls
-        return files[int(path.split("/")[1])]
+    def gh(*args: str) -> str:
+        if args[:2] == ("pr", "list"):
+            return json.dumps(listed)
+        assert args[:2] == ("api", "--paginate") and args[3] == "--jq", args
+        path, items = args[2], args[4]
+        page: list[Any] = (
+            pulls
+            if "/pulls?" in path
+            else [{"filename": f} for f in files[int(path.split("/")[-2])]]
+        )
+        if items == ".[]":
+            return "\n".join(json.dumps(item) for item in page)
+        field = items.removeprefix(".[].")
+        return "\n".join(str(item[field]) for item in page)  # a string prints raw
 
-    monkeypatch.setattr(github, "gh", lambda *_args: json.dumps(listed))
-    monkeypatch.setattr(github, "rest_pages", pages)
+    monkeypatch.setattr(github, "gh", gh)
     monkeypatch.setattr(github, "_rest_only", rest_only)
     found = {p["number"]: p["files"] for p in github.open_pull_files(1000)}
     assert found == {7: many, 8: ["g.py"]}

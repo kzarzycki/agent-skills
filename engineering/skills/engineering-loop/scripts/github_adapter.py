@@ -156,7 +156,8 @@ def open_pull_files(limit: int) -> list[dict[str, Any]]:
     (GitHub's own cap there is 3000), and an overlap past the 100th file is never missed."""
 
     def every_file(number: int) -> list[str]:
-        return rest_pages(f"pulls/{number}/files?per_page=100", ".[].filename")
+        # objects, not `.[].filename`: `gh --jq` prints a string raw, which rest_pages can't read as JSON
+        return [file["filename"] for file in rest_pages(f"pulls/{number}/files?per_page=100")]
 
     return fast(  # type: ignore[no-any-return]
         lambda: [
