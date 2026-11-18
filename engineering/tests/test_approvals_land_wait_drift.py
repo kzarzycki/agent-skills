@@ -141,8 +141,11 @@ def test_any_other_checkout_runs_again_from_a_fresh_worktree_of_the_base(
     # the run in place of this one removes the worktree when it ends
     monkeypatch.chdir(fresh)
     monkeypatch.setattr(approvals, "landing", lambda _pr, _only=False: (0, False))
+    registered: list[Any] = []
+    monkeypatch.setattr(approvals.atexit, "register", lambda *call: registered.append(call))
     assert approvals.land(7, wait=True) == 0
-    approvals.atexit._run_exitfuncs()
+    [(reap, *args)] = registered
+    reap(*args)
     assert not fresh.exists()
 
 
