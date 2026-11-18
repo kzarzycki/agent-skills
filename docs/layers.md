@@ -75,6 +75,7 @@ skills:
   wizard: {layer: 1}
   chatgpt-deep-research: {layer: 1}
   claude-ai-deep-research: {layer: 1}
+  claude-ai-import: {layer: 1}
   deep-research: {layer: 1}
   gemini-deep-research: {layer: 1}
   voice-dna: {layer: 1}

@@ -1901,7 +1901,9 @@ def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
         number, owners = issue["number"], assignees(issue)
         if not owners and (login := approver(issue)):
             try:
-                comment(number, f"{ASSIGNED}{login}\nBy: loop\nPR: #{pull['number']}\n")
+                comment(
+                    number, fold(f"{ASSIGNED}{login}", details=f"By: loop\nPR: #{pull['number']}")
+                )
             except subprocess.CalledProcessError as exc:
                 found.append(
                     f"#{number}: did not assign @{login}: could not record the claim ({(exc.stderr or '').strip() or exc})"
@@ -2057,7 +2059,7 @@ def spec_holder(issue: dict[str, Any]) -> dict[str, Any]:
 
 def parsed(body: str, point: str) -> dict[str, str] | None:
     """An `Approved: <point>` comment's lower-cased `Key: value` lines; None for any other comment."""
-    lines = body.strip().splitlines()
+    lines = machine(body).strip().splitlines()
     if lines and lines[0].strip() in VOICED.values():  # the plain line atop a merge record
         lines = lines[1:]
     if not lines or lines[0].strip() != f"Approved: {point}":
@@ -3179,7 +3181,7 @@ def queued(pull: dict[str, Any], loop: str | None = None) -> list[str] | None:
     ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
     where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
     for note in notes(pull):
-        lines = note["body"].strip().splitlines()
+        lines = machine(note["body"]).strip().splitlines()
         if not lines or lines[0].strip() != BATCHED:
             continue
         header = itertools.takewhile(
@@ -3553,21 +3555,19 @@ def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
         tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
     except OSError:
         tail = []
-    body = (
-        f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n"
+    body = fold(
+        BATCHED,
+        f"The merge queue's batch {'passed' if code == 0 else 'failed'} the gate with {head[:7]} in it (exit {code}).",
+        f"Head: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n"
         + (
             f"{env_line(record['env'])}Gated: {record['time']}\n"
             if record
             else f"Admitted: {entry}\n"
         )
-        + f"Log: {log}\n"
+        + f"Log: {log}",
     )
     if tail:
-        body += (
-            "\n<details><summary>The gate's last lines</summary>\n\n````\n"
-            + "\n".join(tail)
-            + "\n````\n</details>\n"
-        )
+        body += "\n" + folded("The gate's last lines", tail)
     comment(pr, body)
     return 0
 
@@ -3793,14 +3793,28 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
         post_status(
             head, OWNER_GO, f"{who.capitalize()} withdrew their go on {head[:12]}", state="failure"
         )
-        comment(number, f"Withdrawn: merge\nBy: {by}\nHead: {head}\n")
+        comment(
+            number,
+            fold(
+                "Withdrawn: merge",
+                f"{who.capitalize()} withdrew their go on {head[:7]}.",
+                f"By: {by}\nHead: {head}",
+            ),
+        )
         print(f"PR #{number}: {who}'s go on {head} is withdrawn")
         return 0
     if by == DELEGATE:
         post_status(head, OWNER_GO, f"The delegate's go on {head[:12]}{DELEGATED}")
     else:
         post_status(head, OWNER_GO, f"The owner's go on {head[:12]}")
-    comment(number, f"{VOICED[by]}\nApproved: merge\nBy: {by}\nHead: {head}\n")
+    comment(
+        number,
+        fold(
+            VOICED[by],
+            f"Go to merge {head[:7]}.",
+            f"Approved: merge\nBy: {by}\nHead: {head}",
+        ),
+    )
     print(f"PR #{number}: {who}'s go is on {head}{DELEGATED if by == DELEGATE else ''}")
     if by != DELEGATE and NEEDS_OWNER in names(pull):
         # the owner's go names this PR, so the hold it waited on is theirs to lift; the delegate's never is
@@ -4193,6 +4207,9 @@ def sibling(name: str) -> ModuleType:
 
 
 github = sibling("github_adapter")
+# every comment the loop writes: a heading, a short summary and the rest folded (folding.py)
+folding = sibling("folding")
+fold, machine = folding.fold, folding.machine
 # the adapters a policy's `adapters` section may name, by name; another team's adapter is added here
 ADAPTERS: dict[str, Any] = {"github": github}
 # each port's adapter while main() runs, read from the policy at the first call (port); GitHub's outside main()
@@ -6340,8 +6357,12 @@ def conflict_note(pull: dict[str, Any], base: str, ahead: str = "") -> None:
     ):
         comment(
             pull["number"],
-            f"{CONFLICTS}\nHead: {head}\n\nIt conflicts with {base}{ahead}: merge origin/{base} in, rerun the gates,"
-            " get a verdict on the merge (lead.md step 8), then land again.\n",
+            fold(
+                CONFLICTS,
+                f"It conflicts with {base}{ahead}: merge origin/{base} in, rerun the gates, get a verdict on the"
+                " merge (lead.md step 8), then land again.",
+                f"Head: {head}",
+            ),
         )
 
 
@@ -6452,11 +6473,15 @@ def pre_landed(
     ):
         comment(
             pull["number"],
-            f"{PRE_LAND}\nHead: {head}\n\n`{command}` refused it against {base} at {tip}, exiting {ran.returncode}: fix"
-            " what it says, then land again.\n\n````\n"
-            # its end, where a check says why, within GitHub's 65536 characters a comment holds
-            + ran.stdout.rstrip("\n")[-60000:]
-            + "\n````\n",
+            fold(
+                PRE_LAND,
+                f"`{command}` refused it against {base} at {tip}, exiting {ran.returncode}: fix what it says, then"
+                " land again.",
+                f"Head: {head}\n\n````\n"
+                # its end, where a check says why, within GitHub's 65536 characters a comment holds
+                + ran.stdout.rstrip("\n")[-60000:]
+                + "\n````",
+            ),
         )
     return False
 
@@ -6775,7 +6800,8 @@ def evicted(
     port("forge").ready(number, undo=True)
     posted = comment(
         number,
-        f"{title}\nHead: {head}\n\n{why}: fix it, then `land {number}` marks it ready again.\n\n"
+        fold(title, f"{why}: fix it, then `land {number}` marks it ready again.", f"Head: {head}")
+        + "\n"
         + folded(what, tail),
     )
     land_event(pull, "failed", url=posted if isinstance(posted, str) else "")
@@ -6934,8 +6960,13 @@ def queue_step(
         ):
             comment(
                 pull["number"],
-                f"{QUEUE_RED}\nHead: {head}\nGroup: {group}\n\n{why}: enqueued once more, in case it was a flake."
-                " A second red on this head turns it back to draft.\n\n"
+                fold(
+                    QUEUE_RED,
+                    f"{why}: enqueued once more, in case it was a flake. A second red on this head turns it back"
+                    " to draft.",
+                    f"Head: {head}\nGroup: {group}",
+                )
+                + "\n"
                 + folded("The failed job's last lines", tail),
             )
     return enqueue(pull, method)
@@ -7105,7 +7136,11 @@ def landed_comment(pull: dict[str, Any], merged: dict[str, Any]) -> None:
     )
     comment(
         pull["number"],
-        f"{LANDED}\nBase: {commit}\nTree: {tree}\nGate: merge queue, {', '.join(runs) or 'no run on the commit'}\n",
+        fold(
+            LANDED,
+            f"Merged by the merge queue as {commit[:7]}.",
+            f"Base: {commit}\nTree: {tree}\nGate: merge queue, {', '.join(runs) or 'no run on the commit'}",
+        ),
     )
     archive_workers(pull["number"])
 
@@ -7397,7 +7432,11 @@ def merges(
     for pull, tree, gated, how in done:
         comment(
             pull["number"],
-            f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}{waited}\n",
+            fold(
+                LANDED,
+                f"Merged as {tip[:7]}.",
+                f"Base: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}{waited}",
+            ),
         )
         archive_workers(pull["number"])
         land_ended(pull)
@@ -7458,7 +7497,10 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
         for _, found in earlier
     ):
         record += CHANGED[point]
-    comment(number, f"Approved: {point}\nBy: owner\n{record}")
+    comment(
+        number,
+        fold(f"Approved: {point}", f"The owner approved the {point}.", f"By: owner\n{record}"),
+    )
     for note, _ in earlier:
         if not note.get("isMinimized") and note.get("viewerCanMinimize"):
             minimize(note["id"])
@@ -7488,7 +7530,10 @@ def delegate(number: int) -> int:
     # the label first, so the record is never older than the label it names
     label(number, MERGE_LABEL, add=True)
     try:
-        comment(number, f"Approved: merge\nBy: {DELEGATE}\n")
+        comment(
+            number,
+            fold("Approved: merge", "The delegate approved the merge.", f"By: {DELEGATE}"),
+        )
     except subprocess.CalledProcessError:
         # a label with no record names no one: take it off again
         label(number, MERGE_LABEL, add=False)
@@ -7742,18 +7787,15 @@ def verdict(pr: int, report: Path) -> int:
     text = read(report)
     # the criteria first, as the verifier wrote them before the worker's evidence, and each line taken on that evidence
     taken = [line.strip() for line in text.splitlines() if line.strip().startswith(ACCEPTED)]
-    summary = "\n\n".join(
-        [
-            first,
-            f"## Criteria\n\n{criteria(text)}",
-            *outside,
-            *(["\n".join(taken)] if taken else []),
-            "\n".join(closing),
-        ]
+    # the verdict lines stay in view, as the gate reads them (passes); the criteria and the rest fold
+    summary = fold(
+        first,
+        "\n".join(closing),
+        "\n\n".join(
+            [f"## Criteria\n\n{criteria(text)}", *outside, *(["\n".join(taken)] if taken else [])]
+        ),
     )
-    post_review(
-        pr, {"commit_id": head, "event": "COMMENT", "body": summary + "\n", "comments": comments}
-    )
+    post_review(pr, {"commit_id": head, "event": "COMMENT", "body": summary, "comments": comments})
     return 0
 
 
@@ -9738,7 +9780,11 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
         publish(head, record)
     comment(
         pr,
-        f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
+        fold(
+            CHECKED,
+            f"The gate passed on {head[:7]}.",
+            f"Head: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
+        ),
     )
     print(f"{CHECKED} on {head}: posted on PR #{pr}")
     return 0
