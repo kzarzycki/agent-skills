@@ -18,7 +18,6 @@
     python3 scripts/omnigent_agent.py usage [<session>...]
     python3 scripts/omnigent_agent.py report <session> [<path>] [--registry <file>]
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
-    python3 scripts/omnigent_agent.py reuse <session> --repo owner/name [--workspace DIR]
     python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>] [--force] [--merged [--pr N]]
     python3 scripts/omnigent_agent.py direct <session> [--off] [--registry <file>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
@@ -28,11 +27,6 @@
 ``start``, ``wait`` and ``run`` print ``cold start: <n|unknown> s to first turn`` on stderr: the seconds from
 the session record's ``created_at`` to the ``created_at`` of its first assistant item, ``unknown``
 (never 0) when the API gives none (``start`` waits up to ``COLD_START_SECONDS`` for the turn).
-``reuse`` prints ``reuse: <why>`` or ``start: <why>`` for a merged ``--pr`` worker's next story in
-``--repo``: ``reuse`` when its context (``last_total_tokens``) is under loop.md's ``Reuse worker
-context:`` line (the spec's ``reuse_worker_context_tokens``, in the project's size format) and the
-PR's repo is ``--repo``; no line, an unreadable context or any other case is ``start``. ``send --pr N``
-to a worker labelled with an earlier PR relabels it with N first, so ``reap --merged`` keeps it.
 
 ``run`` is ``start`` then ``wait`` in one process: exit 0 prints the report path (a verifier's
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
@@ -1683,15 +1677,6 @@ def lean_args(
     return args + (["--mcp-config", json.dumps({"mcpServers": servers})] if servers else [])
 
 
-def size_tokens(size: str) -> float:
-    """``size`` in tokens, as Claude Code spells it (150000, 150k, 0.15M; a bare number up to 1000
-    is thousands); 0 for any other text."""
-    found = re.fullmatch(r"(\d+(?:\.\d+)?)([kKmM]?)", size)
-    number = float(found[1]) if found else 0.0
-    unit = found[2].lower() if found else ""
-    return number * (1e6 if unit == "m" else 1000 if unit == "k" or number <= 1000 else 1)
-
-
 def autocompact_args(
     workspace: str, og: Omnigent | None = None, host_id: str | None = None
 ) -> list[str]:
@@ -1704,7 +1689,12 @@ def autocompact_args(
     size = project_line(workspace, "Lead autocompact", og, host_id)
     if not size:
         return []
-    if not 100_000 <= size_tokens(size) <= 1_000_000:
+    # Claude Code's spellings: 150000, 150k, 0.15M, and a bare number up to 1000 as thousands
+    found = re.fullmatch(r"(\d+(?:\.\d+)?)([kKmM]?)", size)
+    number = float(found[1]) if found else 0.0
+    unit = found[2].lower() if found else ""
+    tokens = number * (1e6 if unit == "m" else 1000 if unit == "k" or number <= 1000 else 1)
+    if not 100_000 <= tokens <= 1_000_000:
         raise Fail(
             f"{LOOP_FILE}: Lead autocompact: {size} is not a size from 100k to 1M, like 150k"
         )
@@ -1865,55 +1855,6 @@ def report_cold_start(og: Omnigent, sid: str, wait: float = 0.0) -> None:
     while "unknown" in (line := cold_start_line(og, sid)) and time.monotonic() < end:
         time.sleep(min(POLL_SECONDS, 1.0))
     print(line, file=sys.stderr, flush=True)
-
-
-def merged_pr(repo: str, pr: int) -> bool:
-    """Whether PR ``pr`` of ``repo`` is merged (not merely closed, not unreadable)."""
-    try:
-        return (
-            json.loads(gh("pr", "view", str(pr), "--repo", repo, "--json", "state")).get("state")
-            == "MERGED"
-        )
-    except (Fail, ValueError, AttributeError):
-        return False
-
-
-def reuse_decision(og: Omnigent, sid: str, repo: str, workspace: str) -> tuple[str, str]:
-    """``("reuse"|"start", reason)`` for the next story, in ``repo``, of the ``--pr`` worker ``sid``.
-    Reuse when the worker's PR (its ``PR_LABEL``) is merged, the next story is in that PR's
-    repository, and the session's current context (``last_total_tokens`` of its record, the
-    tokens its last turn read) is under the project's ``Reuse worker context:`` line in
-    ``docs/agents/loop.md`` (the spec's ``reuse_worker_context_tokens``, in the project's
-    size format: ``120k``). No line, a context the record does not give, or any other case is
-    ``start``: a project opts in with the line, and a worker that can't be judged is not kept.
-    A bad size fails, as ``Lead autocompact`` does."""
-    size = project_line(workspace, "Reuse worker context", og)
-    limit = 0.0
-    if size and not 10_000 <= (limit := size_tokens(size)) <= 1_000_000:
-        raise Fail(
-            f"{LOOP_FILE}: Reuse worker context: {size} is not a size from 10k to 1M, like 120k"
-        )
-    info = og.info(sid)
-    label = pr_label((info.get("labels") or {}).get(PR_LABEL, ""))
-    if not size:
-        return "start", f"{LOOP_FILE} has no Reuse worker context line"
-    if info.get("archived"):
-        return "start", "the session is archived"
-    if not label:
-        return "start", "the session carries no PR label"
-    if not merged_pr(*label):
-        return "start", f"{label[0]}#{label[1]} is not merged"
-    if label[0] != repo:
-        return "start", f"the next story is in {repo}, the worker's PR in {label[0]}"
-    tokens = info.get("last_total_tokens")
-    if not isinstance(tokens, int) or isinstance(tokens, bool):
-        return "start", "the session's context size is not readable"
-    if tokens >= limit:
-        return "start", f"context {tokens_text(tokens)} is not under {size}"
-    return (
-        "reuse",
-        f"{label[0]}#{label[1]} merged, same repo, context {tokens_text(tokens)} under {size}",
-    )
 
 
 def own_id() -> str:
@@ -8318,14 +8259,6 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument(
         "--pr", type=pr_ref, help="with --merged, only the workers of this PR (N or owner/repo#N)"
     )
-    p = sub.add_parser(
-        "reuse",
-        description="whether the next story takes a --pr worker whose PR merged: prints"
-        " `reuse: <why>` or `start: <why>`",
-    )
-    p.add_argument("session")
-    p.add_argument("--repo", required=True, metavar="OWNER/NAME", help="the next story's repo")
-    p.add_argument("--workspace", type=Path, help="the checkout whose loop.md sets the threshold")
     p = sub.add_parser("supervise")
     p.add_argument(
         "owed", nargs="*", metavar="SESSION=REPORT", help="a session and the report it owes"
@@ -8617,7 +8550,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             ok, line = host_capacity(og, target, name)
             print(unchecked(name, line) if ok is None else f"{name}: {line}")
             return 1 if ok is False else 0
-        if args.cmd in ("relay", "send", "report", "reuse"):
+        if args.cmd in ("relay", "send", "report"):
             sid = args.session = og.session_id(args.session)
         if args.cmd == "status":
             args.sessions = [og.session_id(s) for s in args.sessions]
@@ -8719,12 +8652,6 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             )
             print("\n".join(lines))
             return 1 if failed else 0
-        if args.cmd == "reuse":
-            verdict, why = reuse_decision(
-                og, args.session, args.repo, str(args.workspace or Path.cwd())
-            )
-            print(f"{verdict}: {why}")
-            return 0
         if args.cmd == "supervise":
             if args.registry:
                 for s, r in owed.items():
@@ -8877,13 +8804,6 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 file_write(og, args.session, then, text, far)
             # marked like a relay: the server stamps it as the owner's, and owner-said must skip it
             mark = RELAYED.format(who=own_id() or "an agent")
-            # a reused worker (its earlier PR landed) is labelled with its new PR before the
-            # message goes, or `reap --merged` would archive it for the old one meanwhile
-            # a fix round to the same PR changes nothing; the repo is the label's unless named
-            if args.pr and (had := pr_label((session.get("labels") or {}).get(PR_LABEL, ""))):
-                new = (getattr(args.pr, "repo", "") or had[0], int(args.pr))
-                if new != had:
-                    og.label(args.session, {PR_LABEL: f"{new[0]}#{new[1]}"})
             baseline = tracked_changes(workspace) if not args.pr else None  # as run's
             undeleted = None
             try:
