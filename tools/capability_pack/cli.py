@@ -16,6 +16,8 @@ from tools.capability_pack.qualify import (
     QualificationTimeoutError,
     qualify,
     upstream_deltas,
+    _git_output,
+    require_smoke_run,
     validate_release_candidate,
 )
 
@@ -56,6 +58,11 @@ def _parser() -> argparse.ArgumentParser:
     release = subparsers.add_parser("release-check")
     release.add_argument("package", type=Path)
     release.add_argument("tag")
+    release.add_argument(
+        "--skip-smoke",
+        action="store_true",
+        help="the tag check's run: the smoke run gated the release before the tag was pushed",
+    )
     consumer = subparsers.add_parser("prepare-consumer")
     consumer.add_argument("repository", type=Path)
     consumer.add_argument("source_tag")
@@ -96,6 +103,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "release-check":
             validate_release_candidate(args.package, args.tag)
+            if not args.skip_smoke:
+                head = _git_output(["rev-parse", "HEAD"], cwd=args.package.resolve())
+                print(f"smoke run: {require_smoke_run(head)}")
             return 0
         mode = "locked" if args.command == "check" else args.command
         result = qualify(args.package, mode, args.summary)

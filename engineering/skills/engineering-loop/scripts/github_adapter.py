@@ -10,6 +10,7 @@ session's proxy does. Reads return GitHub's GraphQL node shapes (ISSUE, PULL), w
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import subprocess
@@ -265,8 +266,9 @@ def refused(stderr: str | None) -> bool:
     return any(text in (stderr or "") for text in REFUSALS)
 
 
-# set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again
-_rest_only = False
+# set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again; GATEKEEPER_REST_ONLY=1
+# sets it from the start, so a check can force the REST path on a token GraphQL would answer
+_rest_only = os.environ.get("GATEKEEPER_REST_ONLY") == "1"
 
 
 Answer = TypeVar("Answer")

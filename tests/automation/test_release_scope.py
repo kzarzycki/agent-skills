@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -121,3 +122,25 @@ def test_release_candidate_rejects_leading_zero_versions(tmp_path: Path, version
 
     with pytest.raises(ConfigurationError, match="tag"):
         validate_release_candidate(engineering, f"engineering-v{version}")
+
+
+HEAD = "a" * 40
+SMOKE = {"RELEASE_SMOKE_REPOSITORY": "org/private", "RELEASE_SMOKE_WORKFLOW": "smoke.yml"}
+
+
+def _runs(*runs: dict) -> "Callable[[list[str]], str]":
+    return lambda _arguments: json.dumps(list(runs))
+
+
+def test_release_check_refuses_without_a_smoke_run_for_the_release_head() -> None:
+    from tools.capability_pack.qualify import require_smoke_run
+
+    other = {"conclusion": "success", "displayTitle": f"smoke {'b' * 40}", "url": "u-other"}
+    failed = {"conclusion": "failure", "displayTitle": f"smoke {HEAD}", "url": "u-failed"}
+    for runs in ((), (other,), (failed,)):
+        with pytest.raises(ConfigurationError, match="no passing"):
+            require_smoke_run(HEAD, SMOKE, _runs(*runs))
+    with pytest.raises(ConfigurationError, match="RELEASE_SMOKE_REPOSITORY"):
+        require_smoke_run(HEAD, {}, _runs())
+    passed = {"conclusion": "success", "displayTitle": f"smoke {HEAD}", "url": "u-ok"}
+    assert require_smoke_run(HEAD, SMOKE, _runs(other, failed, passed)) == "u-ok"

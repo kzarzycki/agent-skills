@@ -116,7 +116,45 @@ Commit, push and rerun the gates.
 2. When the required `qualify` check passes, run `gh pr merge --squash --delete-branch`.
    If it fails, fix, commit and go back to step 4; a third failure is blocked. If main
    moved, update the branch and wait again. Never use `--admin`, and never push to main.
-3. For a release, tag the merge commit and push the tag:
+3. For a release, check the gatekeeper against real github.com first. The in-repo job
+   `Gatekeeper on real GitHub` runs on every PR that changes the engineering-loop scripts. The one
+   place a private organization repository's `github.token` shows (GraphQL `FORBIDDEN`) is the
+   smoke run: run the `workflow_dispatch` workflow below in a private organization repository with
+   the release head as its `ref`, and wait for it to pass. `release-check engineering <tag>`
+   refuses to pass until a passing run for `git rev-parse HEAD` exists. The repository comes from
+   the releaser's own environment, never from this repository: `RELEASE_SMOKE_REPOSITORY`
+   (`owner/name`) and `RELEASE_SMOKE_WORKFLOW` (the workflow file). Put the run's URL, which
+   `release-check` prints, in the release PR's evidence (a private repository's name stays out of
+   public text).
+
+   ```yaml
+   name: Gatekeeper smoke
+   run-name: Gatekeeper smoke ${{ inputs.ref }}  # release-check matches the head sha here
+   on:
+     workflow_dispatch:
+       inputs:
+         ref: {description: "agent-skills commit to check", required: true}
+         pr: {description: "an open PR of this repository", required: true}
+   permissions: {contents: read, issues: write, pull-requests: write, checks: read, actions: read, statuses: write}
+   jobs:
+     smoke:
+       runs-on: ubuntu-latest
+       strategy: {fail-fast: false, matrix: {rest_only: ["0", "1"]}}
+       steps:
+         - uses: actions/checkout@<pinned sha>  # this repository
+           with: {persist-credentials: false}
+         - uses: actions/checkout@<pinned sha>
+           with: {repository: kzarzycki/agent-skills, ref: "${{ inputs.ref }}", path: gatekeeper, persist-credentials: false}
+         - uses: jdx/mise-action@<pinned sha>
+           with: {install_args: uv}
+         - env: {GH_TOKEN: "${{ github.token }}", GATEKEEPER_REST_ONLY: "${{ matrix.rest_only }}", PR: "${{ inputs.pr }}"}
+           run: |
+             out=$(uv run gatekeeper/engineering/skills/engineering-loop/scripts/approvals.py check merge "$PR" 2>&1)
+             printf '%s\n' "$out"
+             ! printf '%s\n' "$out" | grep -q '^gh: '
+   ```
+
+   Then tag the merge commit and push the tag:
    `git tag -a engineering-vX.Y.Z -m engineering-vX.Y.Z <merge sha> && git push origin engineering-vX.Y.Z`.
    The tag check re-qualifies the release and opens the consumer-sync PR, which step 1
    of the next run merges.

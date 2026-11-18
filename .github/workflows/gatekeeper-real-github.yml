@@ -1,0 +1,47 @@
+# Runs the gatekeeper against real github.com under the job's own `github.token`, with the approvals template's job
+# permissions: the tests fake GitHub and a host run uses a token that reads every field, so a read github.com refuses
+# or doesn't serve (#1215, #1259) shows nowhere else. `check merge` ends on a verdict, `go` or not; only a `gh:` error
+# fails the job. The second run forces REST-only mode, the path a refused GraphQL field sends a run down.
+name: Gatekeeper on real GitHub
+
+on:
+  pull_request:
+    paths:
+      - engineering/skills/engineering-loop/scripts/**
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  checks: read
+  actions: read
+  statuses: write
+
+jobs:
+  check-merge:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rest_only: ["0", "1"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install_args: uv
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GATEKEEPER_REST_ONLY: ${{ matrix.rest_only }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set +e
+          out=$(uv run engineering/skills/engineering-loop/scripts/approvals.py check merge "$PR" 2>&1)
+          echo "check merge exit $?"
+          printf '%s\n' "$out"
+          if printf '%s\n' "$out" | grep -q '^gh: '; then
+            echo "::error::check merge ended on a gh error (GATEKEEPER_REST_ONLY=$GATEKEEPER_REST_ONLY)"
+            exit 1
+          fi
