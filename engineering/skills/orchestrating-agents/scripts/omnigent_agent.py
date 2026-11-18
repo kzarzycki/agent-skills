@@ -7263,8 +7263,9 @@ def supervise_registry(
         if wait == notify or wait == "unknown":
             return False
         if ref := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", wait):  # a PR: GitHub says
-            try:  # open with a check pending is a wait that is live; ended, it is news instead
-                return settled(lead, int(ref[2]), wait_repo(sid, ref[1] or "")) is None
+            try:  # an open PR is live, its checks settled or not; merged or closed, it is news
+                end = settled(lead, int(ref[2]), wait_repo(sid, ref[1] or ""))
+                return end is None or " checks " in end[1]
             except Exception:  # noqa: BLE001 - unread: not known to be moving
                 return False
         if re.fullmatch(r"b(?=[a-z]{0,7}[0-9])[a-z0-9]{8}", wait):  # its own background job

@@ -13392,3 +13392,23 @@ def test_start_cli_passes_allow_older_model(
         assert not og.sessions
     else:
         assert og.sessions
+
+
+@pytest.mark.parametrize(
+    ("end", "deadline"),
+    [
+        ((0, "PR #976 checks green (3)", "a1"), False),  # open, checks settled: still live
+        ((1, "PR #976 checks red: gate", "a1"), False),
+        ((0, "PR #976 merged", "a1"), True),  # ended: news, so no longer a live wait
+        (None, False),
+    ],
+)
+def test_an_open_pr_a_lead_waits_on_is_live_after_its_checks_settle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, end: tuple | None, deadline: bool
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: queued\nWaits: #976", 3600))
+    og.snap = {"status": "running"}
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": end)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert any("no progress" in p for p in fyis(og)) is deadline
