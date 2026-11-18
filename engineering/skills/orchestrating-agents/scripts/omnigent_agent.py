@@ -6278,13 +6278,11 @@ def lead_event_of(og: Omnigent, info: dict) -> dict | None:
 
 
 def question_for(lead_ev: dict | None, message: str) -> str:
-    """The question a ``needs-owner`` event holds, when ``message`` is the ``USER NEEDED:`` ending that
+    """The question a ``needs-owner`` event holds (only that state has one), when ``message`` is the ``USER NEEDED:`` ending that
     ``end_line`` wrote for it (its text starts with the question's first line); else ``""``, since an event is
     not tied to any later message of the lead, and an old question must never ride on a new item."""
     question = (lead_ev or {}).get("question") or ""
-    if (lead_ev or {}).get("state") != "needs-owner" or not (
-        first := (question.strip().splitlines() or [""])[0].rstrip(" .")
-    ):
+    if not (first := (question.strip().splitlines() or [""])[0].rstrip(" .")):
         return ""
     for m in re.finditer(r"^\W*USER NEEDED:[ \t]*(.*)$", message, re.MULTILINE):
         if m.group(1).startswith(first):
