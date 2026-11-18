@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 from test_omnigent_agent import (
     COS,
-    LEAD,
     Lead,
     blocked_on,
     deadlines,
@@ -33,13 +32,13 @@ def raised(
     return posted(og)
 
 
-def test_a_plain_turn_end_raises_nothing_and_stays_in_the_log(
+def test_a_done_still_reaches_the_notified_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = following(tmp_path)
     og = Lead(told("brief", 60), ending("DONE: shipped", 5))
-    assert raised(og, registry, 3, monkeypatch) == []
-    assert "DONE: shipped" in registry.with_suffix(".events.jsonl").read_text()
+    [post] = raised(og, registry, 3, monkeypatch)
+    assert "[act] a t-a: turn ended" in post
 
 
 def test_a_new_owner_card_is_raised_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -118,4 +117,20 @@ def test_a_wait_that_names_no_session_raises_one_deadline_across_progress_chains
 
     supervised(og, registry, monkeypatch, 3, later, notify=COS, console=True, fyi="post")
     assert len(stalls(og)) == 1
-    assert LEAD  # the manager's leads exist but none is named "rest"
+
+
+def test_a_wait_that_names_no_session_yet_raises_its_deadline_once_a_lead_with_that_word_goes_quiet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, WAIT.format("queue"))
+
+    def later(poll: int) -> None:  # a lead titled "queue" joins and is quiet; new progress for m
+        og.snaps["y"].update(title="queue lead", status="idle", updated_at=time.time() - 1300)
+        og.histories["m"].append(ending(WAIT.format("queue"), 3000 - poll))
+
+    supervised(og, registry, monkeypatch, 3, later, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [
+        "Supervisor: m t-m: no progress 60m (queue)",
+        "Supervisor: m t-m: no progress 50m (queue)",
+        "Supervisor: m t-m: no progress 50m (queue)",
+    ]
