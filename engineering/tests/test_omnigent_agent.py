@@ -5644,7 +5644,9 @@ def supervised(
 
     def sleep(seconds: float) -> None:
         if sys._getframe(1).f_globals["__name__"] == "subprocess":
-            return real(seconds)  # a git call with a timeout polls with sleep: it is no supervisor poll
+            return real(
+                seconds
+            )  # a git call with a timeout polls with sleep: it is no supervisor poll
         count[0] += 1
         if count[0] >= polls:
             raise Stop
