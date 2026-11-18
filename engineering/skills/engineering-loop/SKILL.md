@@ -880,7 +880,9 @@ or the owner's private network.
   reviewing nothing itself. `wait --pr` writes the comment to the report path, and the lead posts the verdict
   from it as for a host verifier. The VM has no Codex configuration, so the lead passes the model and effort
   the host's Codex is configured with as `--model` and `--effort` (or the `Verifier model:` tier's model);
-  without them the CLI's own default runs. Exit 3 means the verifier stopped on a question, posted as that
+  without them the CLI's own default runs. It also passes `--requested <unix seconds>`, the time the lead asked for
+  the pass (`date +%s` when it sends the brief), so the comment's `Seconds:` footer and the run's JSON line can
+  show how long the pass waited to start. Exit 3 means the verifier stopped on a question, posted as that
   comment: answer it and send the pass again. Exit 4 means the pass left the checkout changed, whatever else it did (the
   verifier's leftovers, or a checkout that failed part way): the script deletes and restores nothing, since git
   can't say which leftover hides an older file, so the checkout stays as it is, named in the output, and the
