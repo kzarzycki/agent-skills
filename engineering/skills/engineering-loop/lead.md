@@ -99,8 +99,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    blocks what, environment facts, gates, the model and session id of each agent, and every worktree and
    branch the run creates (step 10 removes them). Agents get its path, never its content.
    The spec is the only issue for the work itself; SKILL.md, Triage places what the PR
-   leaves unfixed, and the PR says `Part of` instead of `Closes` when that leaves the spec
-   open. A workspace holding several repos (a change that needs them together) changes
+   leaves unfixed. Every PR carries a `Closes` line for an open issue, since GitHub shows a PR in an
+   issue's Development panel only for a closing keyword and `check build` refuses a PR without one: a slice
+   of an epic closes its own sub-issue, never the epic. A PR that finishes only part of a spec closes a
+   new sub-issue of it that holds the part done, and says `Part of` for the spec. A workspace holding several repos (a change that needs them together) changes
    only where things go: each PR's issue, branch, worktree, gates and landing follow its
    own repo's `docs/agents/` files, and the notes say which repo each PR is in. Read each
    repo's `AGENTS.md` or `CLAUDE.md` and `docs/agents/` yourself, since a harness loads
