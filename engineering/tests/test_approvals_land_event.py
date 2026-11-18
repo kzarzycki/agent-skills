@@ -176,7 +176,10 @@ def test_land_merged_event_and_cleanup(
     assert code == 0, lines
     # the reference: the PR as GitHub reports it, merged, onto main's squash
     assert lands["pulls"][7]["state"] == "MERGED" and lands["main"]() == lands["squashes"][7]
-    assert ends == [("ok", None, "MERGED")]
+    # a beat may come first (the heartbeat's, at the lock), the `ok` once, after the merge, and nothing after it
+    assert [e for e in ends if e[0] != "waiting"] == [("ok", None, "MERGED")] and ends[-1][
+        0
+    ] == "ok"
     assert refs_gone(lands)
 
 
@@ -336,6 +339,7 @@ def batch_wait(
     clock = Clock()
     monkeypatch.setattr(approvals, "time", clock)
     monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)
+    monkeypatch.setattr(approvals, "CEILING", 6 * approvals.POLL)  # a few rounds, not the 2 hours
     lands["open"](7, {"7.txt": "7\n"})
     lands["open"](8, {"8.txt": "8\n"})
     monkeypatch.setattr(approvals, "landing_here", lambda named, *_a, **_k: round_of(named))
@@ -404,8 +408,10 @@ def test_land_beats_waiting_while_it_gates_under_the_lock(
     seen: list[int] = []
 
     def gating(*_a: Any, **_k: Any) -> tuple[int, bool]:
-        end = real_time.monotonic() + 1.5
-        while real_time.monotonic() < end:
+        end = (
+            real_time.monotonic() + 60
+        )  # a deadline for a loaded host; two beats end the gate at once
+        while real_time.monotonic() < end and len(seen) < 2:
             event = events_of(lands, 7)
             if event and event["state"] == "waiting" and event["seq"] not in seen:
                 seen.append(event["seq"])
@@ -507,3 +513,52 @@ def test_rest_pull_and_the_graphql_query_carry_the_pr_url(cloud: Cloud) -> None:
     )
     cloud.routes["repos/{owner}/{repo}/pulls/7"]["html_url"] = PULL_URL.format(7)
     assert approvals.github.rest_pull(7)["url"] == PULL_URL.format(7)
+
+
+def test_the_heartbeat_beats_the_pr_still_gating_not_the_one_that_ended(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the lock with 7 and 8, 7 is evicted while 8 still gates: the heartbeat beats 8 and leaves 7's `failed`."""
+    lands = events_pushed
+    monkeypatch.setattr(approvals, "BEAT", 0.2)
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    seen: list[int] = []
+
+    def gating(*_a: Any, **_k: Any) -> tuple[int, bool]:
+        approvals.land_event(approvals.beating_for[0], "failed")
+        end = real_time.monotonic() + 60
+        while real_time.monotonic() < end and len(seen) < 3:
+            event = events_of(lands, 8)
+            if event and event["seq"] not in seen:
+                seen.append(event["seq"])
+            real_time.sleep(0.05)
+        return 0, False
+
+    monkeypatch.setattr(approvals, "local_queue", gating)
+    code, lines = lands["land"]("7", "8", "--wait")
+    assert code == 0, lines
+    assert len(seen) >= 3, seen
+    assert (events_of(lands, 7) or {}).get("state") == "failed"
+
+
+def test_a_new_round_beats_waiting_for_the_pr_that_asked_the_owner_last_round(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """7 ended `needs-owner` in an earlier round of this process; the owner's go came, and the next round waits on its
+    CI: that round starts with no ends, so its beat rewrites the event to `waiting`."""
+    lands = events_pushed
+    monkeypatch.setattr(approvals, "time", Clock())
+    monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)
+    lands["open"](7, {"7.txt": "7\n"})
+    approvals.land_event(lands["pulls"][7], "needs-owner", question="Go?")
+    rounds: list[int] = []
+
+    def one_round(named: list[dict[str, Any]], *_a: Any, **_k: Any) -> tuple[int, bool]:
+        rounds.append(1)
+        return (approvals.WAITING, True) if len(rounds) < 2 else (0, False)
+
+    monkeypatch.setattr(approvals, "landing_here", one_round)
+    lands["land"]("7", "--wait")
+    event = events_of(lands, 7)
+    assert event and event["state"] == "waiting", event

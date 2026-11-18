@@ -4952,6 +4952,8 @@ ended: set[str] = set()
 landed_ok: set[str] = set()
 # the PRs the lock's heartbeat beats `waiting` for while a round holds the lock and runs its gates
 beating_for: list[dict[str, Any]] = []
+# one writer at a time, so a beat in flight cannot land its `waiting` after the `ok` of the same branch
+event_lock = threading.Lock()
 
 
 # events.py beside this script: the loop's event writer, which needs only git
@@ -4963,17 +4965,20 @@ def land_event(
 ) -> None:
     """Write PR `pull`'s `land` event (events.md) on its branch. An event reports a step and is not part of it, so
     whatever goes wrong here is one line on stderr and changes no exit code of land."""
-    if state != "waiting":
-        ended.add(pull["headRefName"])
     try:
-        loop_events.emit(
-            "land",
-            pull["headRefName"],
-            state,
-            url=url or pull.get("url") or "",
-            question=question,
-            cwd=toplevel(),
-        )
+        with event_lock:
+            if state == "waiting" and pull["headRefName"] in ended:
+                return  # its end is written: no beat of this round rewrites it
+            if state != "waiting":
+                ended.add(pull["headRefName"])
+            loop_events.emit(
+                "land",
+                pull["headRefName"],
+                state,
+                url=url or pull.get("url") or "",
+                question=question,
+                cwd=toplevel(),
+            )
     except Exception as exc:  # noqa: BLE001 -- by contract nothing here may end a land
         print(
             f"PR #{pull.get('number')}: land event not written: {stderr_of(exc)}", file=sys.stderr
@@ -5673,10 +5678,13 @@ def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
     that fails for another reason (the network) is tried again at the next beat. A stop signal is left to the main
     thread, which releases the lock."""
     signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
-    while not stop.wait(BEAT):
-        # the land is working while it gates under the lock, which can outlast a native wait's two beats of silence
-        for pull in list(beating_for) if waiting else []:
-            if pull["headRefName"] not in ended and not stop.is_set():
+    first = True
+    while first or not stop.wait(BEAT):
+        # the land is working while it gates under the lock, which can outlast a native wait's two beats of silence;
+        # the first beat comes when the lock is taken, so the silence since the round's own beat stays under one BEAT
+        first = False
+        for pull in list(beating_for):
+            if not stop.is_set():
                 land_event(pull, "waiting")
         with beating:
             if stop.is_set() or not held:
