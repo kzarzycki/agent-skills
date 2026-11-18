@@ -13294,3 +13294,30 @@ def test_start_refuses_a_model_a_newer_generation_supersedes(tmp_path: Path) -> 
     run("gpt-6.1-terra", allow_older_model=True)
     assert omnigent_agent.newer_generation("sonnet", og.listed) == []
     assert omnigent_agent.newer_generation("gpt-6.2-sol", og.listed) == []
+    assert omnigent_agent.newer_generation("gpt-6-luna", og.listed) == [
+        "gpt-6.2-sol",
+        "gpt-6.2-astra",
+    ]  # only the newest generation: a hint from 6.1 would be refused again
+
+
+@pytest.mark.parametrize(("flags", "code"), [([], 1), (["--allow-older-model"], 0)])
+def test_start_cli_passes_allow_older_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    code: int,
+) -> None:
+    """The flag reaches start(): refused without it, a session with it."""
+    og = FakeOmnigent()
+    og.listed = ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra"]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "codex", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main([*argv, "--model", "gpt-6.1-terra", *flags]) == code
+    if code:
+        assert "gpt-6.2-sol, gpt-6.2-astra" in capsys.readouterr().err
+        assert not og.sessions
+    else:
+        assert og.sessions
