@@ -6458,7 +6458,7 @@ def test_a_pass_published_under_another_command_is_not_reused_on_another_host(
     monkeypatch.setattr(approvals, "LOCAL_CI", ["true", "--another-tier"])
     ran: list[str | None] = []
 
-    def run_local_ci(pr: int | None, at: str | None) -> dict[str, Any]:
+    def run_local_ci(pr: int | None, at: str | None, _passed: Any = ()) -> dict[str, Any]:
         ran.append(at)
         raise approvals.Refused("the check would run")
 
@@ -8270,7 +8270,7 @@ def queueing(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[s
     )
     landing["records"] = {HEAD}
     monkeypatch.setattr(
-        approvals, "reusable", lambda head: {"head": head} if head in landing["records"] else None
+        approvals, "reusable", lambda head, _p=(): {"head": head} if head in landing["records"] else None
     )
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     return landing
@@ -8572,7 +8572,7 @@ def posting(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     `ran` each head the check would run on, which it never does here."""
     state: dict[str, Any] = {"posted": [], "ran": [], "loop": CARRY}
 
-    def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
+    def run_local_ci(pr: int | None, head: str | None, _passed: Any = ()) -> dict[str, Any]:
         state["ran"].append(head)
         raise approvals.Refused("the check would run")
 
@@ -8881,7 +8881,7 @@ def test_without_the_line_check_merge_and_land_read_no_git(
     )
     monkeypatch.setattr(approvals, "git", trees)
     monkeypatch.setattr(approvals, "fetched", lambda sha: pytest.fail(f"fetched {sha}"))
-    monkeypatch.setattr(approvals, "reusable", lambda head: None)  # the merge proof, not a carry
+    monkeypatch.setattr(approvals, "reusable", lambda head, _p=(): None)  # the merge proof, not a carry
     monkeypatch.setattr(approvals, "elsewhere", lambda head: "")  # and what its refusal adds
     pr = carried_pull(case)
     assert approvals.judged(pr, NO_CI) is None

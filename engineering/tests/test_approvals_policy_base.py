@@ -533,7 +533,7 @@ def test_batch_judges_a_head_by_the_head_proof_of_the_base_the_pr_merges_onto(
     asked: list[str] = []
     posted: list[str] = []
     monkeypatch.setattr(approvals, "fetched", lambda _sha: True)
-    monkeypatch.setattr(approvals, "reusable", lambda _head: None)
+    monkeypatch.setattr(approvals, "reusable", lambda _head, _p=(): None)
     monkeypatch.setattr(
         approvals, "proved", lambda _head, status: asked.append(status) or status == "proof-feature"
     )
