@@ -9435,7 +9435,18 @@ def overlaps(pr: int | None, files: Sequence[str] = (), base: str | None = None)
     def span(head: str, path: str) -> str:
         return hunks(git("merge-base", f"origin/{base}", head).strip(), head, path)
 
+    def behind(number: int, head: str) -> str:
+        # merge-tree of two heads replays the base's commits one of them lacks, so a head that conflicts with the base
+        # alone shows that as a clash with the other PR too; say so, or the lead reorders PRs when the base is the cause
+        clash = merge_conflicts(f"origin/{base}", head, f"PR #{number}")
+        return (
+            f"; PR #{number} conflicts with {base} itself in {', '.join(clash)}: merge {base} into it and rerun"
+            if clash
+            else ""
+        )
+
     lines = []
+    own = behind(pr, mine["headRefOid"]) if pr is not None else ""
     for other, shared in sharing:
         number = other["number"]
         verdict = ""
@@ -9443,7 +9454,11 @@ def overlaps(pr: int | None, files: Sequence[str] = (), base: str | None = None)
             clash = merge_conflicts(
                 mine["headRefOid"], other["headRefOid"], f"PRs #{pr} and #{number}"
             )
-            verdict = f": {'conflicts in ' + ', '.join(clash) if clash else 'merges cleanly'}"
+            verdict = (
+                f": conflicts in {', '.join(clash)}{own}{behind(number, other['headRefOid'])}"
+                if clash
+                else ": merges cleanly"
+            )
         lines.append(f"PR #{number} also changes {len(shared)} file(s) here{verdict}")
         for path in shared:
             own = f"PR #{pr} {span(mine['headRefOid'], path)}; " if pr is not None else ""

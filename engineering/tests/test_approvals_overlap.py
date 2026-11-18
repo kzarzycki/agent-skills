@@ -54,10 +54,10 @@ class Repo:
         monkeypatch.setattr(approvals, "open_pull_files", lambda _limit: self.listed)
         monkeypatch.setattr(approvals, "default_branch", lambda: "trunk")
 
-    def open(self, number: int, edits: dict[int, str], base: str = "trunk") -> None:
-        """PR `number`: the lines `edits` replaces in shared.txt, on the start commit."""
-        git(self.seed, "checkout", "-q", "-B", f"pr{number}", self.start)
-        lines = BODY.splitlines()
+    def open(self, number: int, edits: dict[int, str], base: str = "trunk", on: str = "") -> None:
+        """PR `number`: the lines `edits` replaces in shared.txt, on commit `on` (default the start commit)."""
+        git(self.seed, "checkout", "-q", "-B", f"pr{number}", on or self.start)
+        lines = (self.seed / "shared.txt").read_text().splitlines()
         for n, text in edits.items():
             lines[n - 1] = text
         (self.seed / "shared.txt").write_text("\n".join(lines) + "\n")
@@ -95,6 +95,26 @@ def test_pull_requests_changing_one_file_far_apart_merge_cleanly(
     out = capsys.readouterr().out
     assert "PR #2" in out and "merges cleanly" in out
     assert "shared.txt: PR #1 3; PR #2 30" in out
+
+
+def test_a_conflict_the_other_pull_request_has_with_the_base_alone_is_named(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # trunk moves on line 20 after PR 2 branched; PR 1 is built on the new trunk, PR 2 changes line 20 too
+    git(repo.seed, "checkout", "-q", "trunk")
+    (repo.seed / "shared.txt").write_text(BODY.replace("line 20\n", "trunk 20\n"))
+    git(repo.seed, "commit", "-qam", "trunk moves")
+    git(repo.seed, "push", "-q", "origin", "trunk")
+    moved = git(repo.seed, "rev-parse", "HEAD")
+    repo.open(1, {5: "mine"}, on=moved)
+    repo.open(2, {20: "theirs"})
+    assert approvals.main(["overlap", "1"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "conflicts in shared.txt; PR #2 conflicts with trunk itself in shared.txt: merge trunk into it"
+        in out
+    )
+    assert "PR #1 conflicts with trunk" not in out
 
 
 def test_a_pull_request_with_no_overlap_prints_nothing(
