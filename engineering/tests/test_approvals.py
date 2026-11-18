@@ -3342,7 +3342,7 @@ def lands(
     monkeypatch.setattr(approvals, "archive_workers", lambda _number: None)
     # its tests rewrite the policy in the work tree after opening PRs, so it is read there, as in a checkout without
     # origin (test_approvals_policy_base.py tests the read from origin/<base>)
-    monkeypatch.setattr(approvals, "policy_base", lambda _root, _base=None: None)
+    monkeypatch.setenv(approvals.WORKING_TREE_POLICY, "1")
     origin, work = tmp_path / "origin.git", tmp_path / "work"
     git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     (origin / "hooks" / "pre-receive").write_text(NO_REWRITE)
@@ -5281,17 +5281,12 @@ def test_land_refuses_where_loop_md_excludes_the_place_it_runs(
     unmoved(cloud_land)
 
 
-def test_a_cloud_land_defaults_to_host_and_lands_with_both(
+def test_a_cloud_land_with_where_unset_lands_like_both(
     cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`where` unset is `host`, which a cloud session refuses; `both` lands there."""
+    """`where` unset is `both` (#1356), so a cloud session lands as it does with `where: both`."""
     text = cloud_land["loop"].read_text()
     cloud_land["loop"].write_text(text.replace("  where: cloud\n", ""))
-    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
-        "loop.md's `land.where` is `host`, so land does not run in a cloud session"
-    ]
-    unmoved(cloud_land)
-    cloud_land["loop"].write_text(text.replace("where: cloud", "where: both"))
     code, lines = cloud_land["land"]("7")
     assert (code, cloud_land["main"]()) == (
         0,
@@ -5306,8 +5301,9 @@ def test_a_cloud_land_without_the_land_section_names_it(
     cloud_land["loop"].write_text(GITHUB_RULE)
     assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
         (
-            "land in a cloud session needs loop.md's `land` section: without it GitHub merges, over GraphQL, which"
-            " the session's proxy refuses, and signs with GitHub's key"
+            "land in a cloud session needs a base that requires GitHub's merge queue, or loop.md's"
+            " `land.signed_squash_to`: otherwise GitHub merges, over GraphQL, which the session's proxy refuses, and"
+            " signs with GitHub's key"
         )
     ]
     unmoved(cloud_land)
