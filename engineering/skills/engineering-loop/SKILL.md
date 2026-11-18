@@ -500,12 +500,12 @@ gatekeeper.md's policy (Settings) holds:
   moving a file out of a listed directory changes it as much as editing it. Paths it can't
   judge, past the one page of files it reads, hold, since nothing else would enforce them.
   The `verifier` term holds when the verifier judges the change high: the newest
-  pass on the head, by a trusted account, says `Risk: high`, any word but `low`, or has no
-  `Risk:` line (verifier.md). Paths beside it hold whatever the verifier says, so
+  highest `Risk:` of its passes since the last `Scope: full` one (its first counts as one), by a trusted account,
+  is `high`, any word but `low`, or missing (verifier.md). Paths beside it hold whatever the verifier says, so
   `verifier: true` with `paths` `.github/**` and `CODEOWNERS` lets the verifier decide and
   keeps those files the owner's. The gate judges it at the merge, under `auto: true` too,
   since the verdict comes after the build, and quotes the verdict. A `risk:high` it added
-  for that term comes off when a later pass says `Risk: low`; one added again after it
+  for that term comes off when a later `Scope: full` pass says `Risk: low`; one added again after it
   stays. loop.md § Risk criteria adds the project's own criteria in words, which the
   verifier reads.
 - `risk.critical_paths`, globs matched on the PR's files as `paths` are, names the paths
