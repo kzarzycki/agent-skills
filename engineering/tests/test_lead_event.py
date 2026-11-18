@@ -100,7 +100,7 @@ def test_unparsed_wait_notice_once(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         t for s, t in og.inbox if s == "a" and "did not parse" in t
     ]  # a nudge is another message
     assert len(notices) == 1
-    assert "supervisor, session <32-hex id>" in notices[0]  # the accepted forms
+    assert "Accepted:" in notices[0]  # the accepted forms
 
 
 def test_end_line_round_trips(

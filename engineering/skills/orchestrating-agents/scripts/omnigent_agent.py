@@ -6220,19 +6220,6 @@ def wait_line(words: list[str]) -> str:
     return f"Waits: {text}"
 
 
-WAIT_FORMS = (
-    "a `Waits:` line names supervisor, session <32-hex id>, #<pr> (or owner/repo#<pr>), CI, or until"
-    " <YYYY-MM-DDTHH:MMZ>, several joined by a comma or `and`: print it with `omnigent_agent.py wait-on`"
-    " (`supervisor|session <id>|pr <n>|ci|until <UTC time>`) and paste it as printed"
-)
-
-
-def unparsed_wait(text: str) -> bool:
-    """Whether ``text``'s ``STILL WORKING`` ends in a ``Waits:`` line no wait parses from."""
-    start = text.find("STILL WORKING")
-    return start >= 0 and bool(TRAILER.search(text[start:])) and not trailer_items(text)
-
-
 def branch_of(cwd: Path | str | None) -> str:
     """The branch ``cwd`` has checked out, empty when detached, not a checkout or git is missing."""
     try:
@@ -6952,23 +6939,6 @@ def supervise_registry(
             "due": eid.endswith(":due"),
             "supervisor": notify if waits_on(parsed, lead, notify, bool(lead_ev)) else "",
         }
-        if (
-            lead
-            and not lead_ev
-            and unparsed_wait(parsed)
-            and lead.get("form_told") != lead.get("turn")
-        ):
-            lead["form_told"] = lead.get("turn")  # once per message: the next one is read afresh
-            act_on(
-                f"{eid}:form",
-                [
-                    (
-                        sid,
-                        "tell",
-                        f"Supervisor: your Waits: line did not parse, so it was ignored; {WAIT_FORMS}",
-                    )
-                ],
-            )
 
         def ask() -> tuple[str, str]:
             if eid in answers:  # asked before a later write failed: the call is spent
@@ -7662,6 +7632,12 @@ def supervise_registry(
                     line += f"\nquiet: {', '.join(quiet_named)}"
                 say(line, sid, f"deadline:{sid}:{lead['progress_at']:.0f}{nudged}", "deadline")
 
+    def has_event(sid: str) -> bool:  # an event settles what a prose wait would
+        try:
+            return lead_event_of(og, og.info(sid)) is not None
+        except Exception:  # noqa: BLE001 - unread: the message decides
+            return False
+
     def wait_news(sid: str, lead: dict) -> None:
         """What a lead waits on, read from GitHub and the sessions themselves and not from its
         words, is news to it once it has settled, at most one read per ``PR_POLL_SECONDS`` and
@@ -7678,7 +7654,11 @@ def supervise_registry(
             for i in looks.get(sid, ({}, []))[1]
             if i.get("type") == "message" and i.get("role") == "assistant"
         ]
-        if said and (bad := unparsed_trailer(text_of(said[-1]).strip())):
+        if (
+            said
+            and not has_event(sid)
+            and (bad := unparsed_trailer(text_of(said[-1]).strip()))
+        ):
             say(  # once per turn: the event id holds the turn
                 f"{sid} {lead['title']}".rstrip()
                 + f": your last line `Waits: {bad[:80]}` did not parse, so the supervisor reads it as "
