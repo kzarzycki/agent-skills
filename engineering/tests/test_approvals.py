@@ -7871,10 +7871,15 @@ def test_the_closing_scope_line_is_posted_and_read_and_a_criteria_line_is_not(
         review = posted_pass(monkeypatch, tmp_path, 2, body, scope)
         state["pull"] = judged_pr(full, review)
         assert (approvals.main(["check", "merge", "7"]) != 0) is waits, (scope, body)
-    crlf = {**review, "body": review["body"].replace("\n", "\r\n")}  # a review edited on the web: CRLF
+    crlf = {
+        **review,
+        "body": review["body"].replace("\n", "\r\n"),
+    }  # a review edited on the web: CRLF
     crlf = {**crlf, "body": crlf["body"].replace("- c\r\n", "- c\r\n\r\nScope: full\r\n")}
     state["pull"] = judged_pr(full, crlf)
-    assert approvals.main(["check", "merge", "7"]) != 0, "a criteria Scope line in a CRLF body is no scope"
+    assert approvals.main(["check", "merge", "7"]) != 0, (
+        "a criteria Scope line in a CRLF body is no scope"
+    )
     report = tmp_path / "r2.md"
     assert approvals.report_facts(report)["scope"] is None
     report.write_text(report.read_text().replace("Risk:", "Scope: full\nRisk:"))

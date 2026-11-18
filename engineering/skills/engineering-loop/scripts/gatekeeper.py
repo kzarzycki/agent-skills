@@ -2495,7 +2495,9 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
                     key.strip(): value.strip()
                     for key, _, value in (
                         line.partition(":")
-                        for line in re.split(r"\r?\n\r?\n", folding.visible(review["body"]).rstrip())[-1].splitlines()
+                        for line in re.split(
+                            r"\r?\n\r?\n", folding.visible(review["body"]).rstrip()
+                        )[-1].splitlines()
                     )
                     if key.strip() == "Scope"
                 },
