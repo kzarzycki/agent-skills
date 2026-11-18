@@ -77,6 +77,17 @@ def _fresh_viewer() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_cold_start_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`omnigent_agent start` polls up to 20 s for a first turn to time; a fake Omnigent never takes one, so each
+    start a test lets succeed cost 20 s (#1420). A test of the wait passes its own `wait`."""
+    module = sys.modules.get(
+        "omnigent_agent"
+    )  # loaded by test_omnigent_agent, which the other modules import from
+    if module:
+        monkeypatch.setattr(module, "COLD_START_SECONDS", 0)
+
+
+@pytest.fixture(autouse=True)
 def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests run as if outside an Omnigent session; one that needs a session sets it."""
     for var in (
