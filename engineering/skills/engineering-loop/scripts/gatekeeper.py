@@ -229,6 +229,9 @@ Exit 0 when the named PR merged (on a GitHub-queue base, also once it is enqueue
 eviction, a merge GitHub refused or a red base; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
 `land --wait` runs it again every 30 seconds while it waits on the lock or on CI, printing each new state once, for up
 to 2 hours, then exits 3; a wait for the owner ends it at once, since only the owner clears it.
+Each named PR's branch carries the `land` event (events.md): `waiting` rewritten at each poll of `--wait`, `ok` once it
+merged (its refs cleared EVENT_GRACE seconds later, so a `wait land <branch>` finds the end), `failed` when evicted (its
+`url` the log comment), `needs-owner` at the owner's go or the 2-hour ceiling. A write that fails changes no exit code.
 The GitHub merge queue takes no landing lock (GitHub orders the entries, and two lands enqueueing one PR change
 nothing), builds no local batch, runs no local gate, publishes no pass and deletes no record branch. Once it has fetched
 the base (the base-drift refusal below), each of step 2's candidates, oldest PR first, goes in with GraphQL
@@ -4924,6 +4927,86 @@ def branch_issue() -> int | None:
     return int(found[1]) if found else None
 
 
+EVENT_GRACE = (
+    120  # seconds a merged PR's `ok` event stays readable before its refs are cleared (land_event)
+)
+
+
+def loop_events() -> ModuleType:
+    """events.py beside this script, loaded on first use: the loop's event writer, which needs only git."""
+    if "loop_events" not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            "loop_events", Path(__file__).with_name("events.py")
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules["loop_events"] = module
+    return sys.modules["loop_events"]
+
+
+def land_event(
+    pull: dict[str, Any], state: str, url: str = "", question: str | None = None
+) -> None:
+    """Write PR `pull`'s `land` event (events.md) on its branch. An event reports a step and is not part of it, so
+    whatever goes wrong here is one line on stderr and changes no exit code of land."""
+    try:
+        loop_events().emit(
+            "land",
+            pull["headRefName"],
+            state,
+            url=url or pull.get("url") or "",
+            question=question,
+            cwd=toplevel(),
+        )
+    except Exception as exc:  # noqa: BLE001 -- by contract nothing here may end a land
+        print(
+            f"PR #{pull.get('number')}: land event not written: {stderr_of(exc)}", file=sys.stderr
+        )
+
+
+def land_event_of(pr: int | Sequence[int] | None, state: str, question: str | None = None) -> None:
+    """land_event for each PR number a land names (the PR is read again, since the wait holds only its numbers)."""
+    for number in [] if pr is None else [pr] if isinstance(pr, int) else list(dict.fromkeys(pr)):
+        try:
+            land_event(pull_request(number), state, question=question)
+        except Exception as exc:  # noqa: BLE001 -- the same: a failed read of the PR ends nothing
+            print(f"PR #{number}: land event not written: {stderr_of(exc)}", file=sys.stderr)
+
+
+def land_ended(pull: dict[str, Any]) -> None:
+    """A merged PR's `land` event ends `ok`, and its refs go (events.py clear). The refs go EVENT_GRACE seconds later,
+    in a process of its own, since a native lead blocked in `wait land <branch>` polls and would otherwise find nothing
+    where the end was."""
+    land_event(pull, "ok")
+    try:
+        script = Path(loop_events().__file__).resolve()
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import subprocess, sys, time; time.sleep(float(sys.argv[1])); subprocess.run(sys.argv[2:], check=False)",
+                str(EVENT_GRACE),
+                sys.executable,
+                str(script),
+                "--repo",
+                str(toplevel()),
+                "clear",
+                pull["headRefName"],
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        # ponytail: a detached sleep, not a sweep on the next land, so a branch's refs go without another land
+    except Exception as exc:  # noqa: BLE001 -- the PR has landed: a ref left over is cleared by the next `clear`
+        print(
+            f"PR #{pull.get('number')}: land event refs not cleared: {stderr_of(exc)}",
+            file=sys.stderr,
+        )
+
+
 def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False) -> int:
     """landing() once, or with `wait` again every POLL seconds while it waits on something time clears, printing each
     new state once: until it ends, or exit 3 at CEILING."""
@@ -4998,6 +5081,12 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
         nap = poll_seconds()
         if time.monotonic() + nap > deadline:
             print(f"land --wait stopped after {CEILING // 3600} hours, still waiting")
+            land_event_of(
+                pr,
+                "needs-owner",
+                f"land --wait stopped after {CEILING // 3600} hours with the PR still waiting: land it again or"
+                " say what holds it.\n",
+            )
             return WAITING
         # a round asks GitHub again after `nap`, or RECHECK on a held lock; the sleep goes in POLL steps, so the log
         # is never silent past wait-for's stall check and a lock that moved is seen at once (ls-remote costs no quota)
@@ -5158,9 +5247,13 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
         with placed(loop, bool(getattr(rules, "queue", None))):
-            return landing_here(
+            code, again = landing_here(
                 named, base, worst, tracker, loop, only, not fetch.returncode, rules
             )
+        if waiting and again:  # the beat of a wait that goes on: each poll rewrites it
+            for pull in named:
+                land_event(pull, "waiting")
+        return code, again
 
 
 def land_base(
@@ -5846,6 +5939,12 @@ def unreadied(
     return found
 
 
+def asks_owner(pull: dict[str, Any], lines: list[str], named: bool) -> None:
+    """A named PR a land waits on the owner's go for: its `land` event is `needs-owner`, the lines said as the question."""
+    if named:
+        land_event(pull, "needs-owner", question="\n".join(lines) + "\n")
+
+
 def landable(
     pull: dict[str, Any],
     tracker: str | None,
@@ -5888,6 +5987,7 @@ def landable(
         if owner := owner_waits(pull, issues, loop):  # ready starts CI, so never before the go
             for line in owner:
                 print(line)
+            asks_owner(pull, owner, named)
             return Verdict((WAITING, False), issues=issues)
         return Verdict(None, draft=True, issues=issues)
     if pull.get("waiting"):  # readied by this land: its CI has only just started
@@ -5904,6 +6004,7 @@ def landable(
     if owner := owner_waits(pull, issues, loop):
         for line in owner:
             print(line)
+        asks_owner(pull, owner, named)
         return Verdict((WAITING, False), issues=issues)  # the owner is asked, not polled
     if rated.merge != "gates":
         for line in whose(pull, loop):
@@ -6653,11 +6754,12 @@ def evicted(
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
     print(f"{where} {said}: evicted")
     port("forge").ready(number, undo=True)
-    comment(
+    posted = comment(
         number,
         f"{title}\nHead: {head}\n\n{why}: fix it, then `land {number}` marks it ready again.\n\n"
         + folded(what, tail),
     )
+    land_event(pull, "failed", url=posted if isinstance(posted, str) else "")
 
 
 def folded(what: str, lines: list[str]) -> str:
@@ -6968,6 +7070,7 @@ def queue_landed(pull: dict[str, Any]) -> None:
     # off once the trail is written, or where there is none to write (merged outside the queue)
     if QUEUED in {each["name"] for each in pull["labels"]["nodes"]}:
         label(pull["number"], QUEUED, add=False)
+    land_ended(pull)
 
 
 def landed_comment(pull: dict[str, Any], merged: dict[str, Any]) -> None:
@@ -7278,6 +7381,7 @@ def merges(
             f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}{waited}\n",
         )
         archive_workers(pull["number"])
+        land_ended(pull)
 
 
 def agent_script() -> Path:
