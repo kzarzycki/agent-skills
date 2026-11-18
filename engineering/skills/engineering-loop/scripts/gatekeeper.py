@@ -700,6 +700,11 @@ LOCK = "refs/heads/loop-landing/{}"
 HELD, FREE = "landing lock: held", "landing lock: free"
 # a land re-stamps its lock every BEAT seconds; a lock that says it beats (BEATS in its body) and has not been stamped for STALE
 # seconds was left by a land that died, and is broken. A lock without the word is a land of an earlier version's: CEILING.
+# waiting order (#1216): a `land --wait` keeps one ref per waiting land, stamped at every poll, holding when it began to
+# wait; a free lock goes to the longest waiter that still stamps (younger than WAITER_STALE, above a poll with its jitter)
+WAITING = "refs/heads/loop-waiting/{}/{}"
+WAITER_STALE = 420
+waiting, waited = False, {"since": 0.0, "id": "", "base": ""}
 BEAT, STALE, BEATS, BEAT_PUSH = 300, 900, "beats", 120
 beating = (
     threading.Lock()
@@ -4651,6 +4656,17 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
     new state once: until it ends, or exit 3 at CEILING."""
     if not wait:
         return landing(pr, only)[0]
+    global waiting
+    waiting = True  # locked() now stamps this land's place in the waiting order
+    try:
+        return wait_loop(pr, only)
+    finally:
+        waiting = False
+        unwait()
+
+
+def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
+    """land's wait loop."""
     global held_tip
     # a land run again on the base's new code (caught_up) keeps the first run's ceiling; the clock is system-wide
     deadline = float(os.environ.pop(DEADLINE_ENV, "0")) or time.monotonic() + CEILING
@@ -5028,6 +5044,97 @@ def stopped(signum: int, _frame: Any) -> None:
     sys.exit(128 + signum)
 
 
+def stamp_wait(base: str, pr: int | None) -> None:
+    """Stamp this waiting land's ref: a commit whose date is now and whose body holds when the land began to wait.
+    A failed push (the network) leaves the last stamp, which stays live for WAITER_STALE."""
+    waited["since"] = waited["since"] or time.time()
+    waited["id"] = waited["id"] or os.urandom(6).hex()
+    waited["base"] = base
+    empty = git("hash-object", "-t", "tree", "-w", os.devnull).strip()
+    named = f", PR #{pr}" if pr is not None else ""
+    commit = git(
+        "commit-tree",
+        "-m",
+        f"waiting [skip ci]\n\nsince {waited['since']:.0f}{named}, pid {os.getpid()}, nonce {os.urandom(4).hex()}",
+        empty,
+    ).strip()
+    subprocess.run(
+        [
+            "git",
+            "push",
+            "-q",
+            "--no-verify",
+            "--force",
+            "origin",
+            f"{commit}:{WAITING.format(base, waited['id'])}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def waiter_ahead(base: str) -> str | None:
+    """The PR text of the longest live waiter that began before this land (None: none does, or origin can't be read)."""
+    mine = (waited["since"], waited["id"])
+    ahead = None
+    try:
+        refs = [
+            x.split("\t")[1]
+            for x in git("ls-remote", "origin", WAITING.format(base, "*")).splitlines()
+        ]
+        if refs:
+            git(
+                "fetch",
+                "-q",
+                "origin",
+                *(f"+{r}:{r.replace('refs/heads/', 'refs/remotes/origin/')}" for r in refs),
+            )
+        for ref in refs:
+            stamp, body = git(
+                "log",
+                "-1",
+                "--format=%ct%x00%b",
+                ref.replace("refs/heads/", "refs/remotes/origin/"),
+            ).split("\0")
+            since = re.search(r"since (\d+)", body)
+            theirs = (float(since[1]) if since else 0.0, ref.rsplit("/", 1)[1])
+            if (
+                theirs[1] != waited["id"]
+                and time.time() - int(stamp) <= WAITER_STALE
+                and theirs < mine
+                and (ahead is None or theirs < ahead[0])
+            ):
+                named = re.search(r"PR #(\d+)", body)
+                ahead = (
+                    theirs,
+                    f"PR #{named[1]}" if named else f"pid {body.split('pid ')[-1].split(',')[0]}",
+                )
+    except subprocess.CalledProcessError:
+        return None
+    return ahead[1] if ahead else None
+
+
+def unwait() -> None:
+    """Delete this land's waiting ref: it holds the lock, or stopped waiting."""
+    if waited["id"]:
+        subprocess.run(
+            [
+                "git",
+                "push",
+                "-q",
+                "--no-verify",
+                "origin",
+                "--delete",
+                WAITING.format(waited["base"], waited["id"]),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    waited.update(since=0.0, id="", base="")
+
+
 def lock_name(base: str) -> str:
     """The landing lock's branch for `base`, as messages name it."""
     return LOCK.format(base).removeprefix("refs/heads/")
@@ -5136,6 +5243,8 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
     as it reaches origin still releases it. False, after saying who holds it since when, while another land holds it
     or LEGACY, the previous version's lock, is on origin and no older than CEILING."""
     ref, name = LOCK.format(base), lock_name(base)
+    if waiting:
+        stamp_wait(base, pr)
     tip, refused = (
         "",
         "",
@@ -5195,9 +5304,15 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
                         f"the landing lock {name} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as"
                         " stale"
                     )
+        if waiting and (first := waiter_ahead(base)):
+            print(
+                f"{first} began waiting for the landing lock {name} before this land, so it takes it first"
+            )
+            return False
         held.append(lock_commit(HELD, tip, pr))
         pushed = leased(base, held[-1], tip)
         if not pushed.returncode:
+            unwait()
             return True
         refused = " ".join(pushed.stderr.split())
     print(
