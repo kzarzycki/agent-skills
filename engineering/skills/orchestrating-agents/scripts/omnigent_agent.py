@@ -5171,14 +5171,37 @@ def instruction(item: dict, resume: str) -> bool:
     return from_user(item) and text != resume and not text.startswith(REVIVED)
 
 
-def instructed(items: list[dict], resume: str) -> tuple[float, float]:
+def last_instruction(og: Omnigent, sid: str, items: list[dict], resume: str) -> float | None:
+    """When ``sid`` was last given an instruction (``instruction``): the newest of ``items``
+    (its newest page, oldest first), else read back a page at a time behind the page, as
+    ``told_park`` does, so one behind the newest 100 items is found. A page short of 100 is the
+    whole history. None when the history holds none; each caller keeps its own fallback."""
+    for i in reversed(items):
+        if instruction(i, resume):
+            return float(i.get("created_at") or 0)
+    # ponytail: one extra page read per call for a session with 100+ items and no instruction on
+    # its newest page, never cached; upgrade: keep the time in the caller's state once found.
+    after = str(items[0].get("id")) if len(items) >= 100 else ""
+    while after:
+        page = og.older(sid, after)
+        data = page.get("data") or []
+        for i in data:
+            if instruction(i, resume):
+                return float(i.get("created_at") or 0)
+        after = str(page.get("last_id") or "") if data and page.get("has_more") else ""
+    return None
+
+
+def instructed(og: Omnigent, sid: str, items: list[dict], resume: str) -> tuple[float, float]:
     """When the session was last told to write its report, and when the resume line was sent
     since (0.0 when it was not). The instruction is its newest user message other than the resume
-    or revive line, else the oldest item on the page, since the instruction is older still. The
+    or revive line (``last_instruction``, behind the page too), else, when the whole history holds
+    none, the oldest item on the page. The
     resume line is read from the history, so a supervisor restarted after sending one sends no
     second."""
-    told = [float(i.get("created_at") or 0) for i in items if instruction(i, resume)]
-    since = told[-1] if told else min((float(i.get("created_at") or 0) for i in items), default=0.0)
+    since = last_instruction(og, sid, items, resume)
+    if since is None:
+        since = min((float(i.get("created_at") or 0) for i in items), default=0.0)
     resent = [
         float(i.get("created_at") or 0)
         for i in items
@@ -5187,6 +5210,16 @@ def instructed(items: list[dict], resume: str) -> tuple[float, float]:
         and float(i.get("created_at") or 0) >= since
     ]
     return since, max(resent, default=0.0)
+
+
+def told_at(og: Omnigent, sid: str, info: dict, report: Path) -> int | None:
+    """The ``st_mtime_ns`` floor for ``sid``'s report: when it was last given a message (its
+    brief, or a later ``send`` or relay; not the supervisor's nudge), else its ``created_at``,
+    None when neither is known. A report from before it is the turn before's."""
+    resume = CLOUD_NUDGE if cloud_session(og, info) else NUDGE.format(report=report)
+    told = last_instruction(og, sid, og.items(sid), resume)
+    at = told if told is not None else float(info.get("created_at") or 0)
+    return int(at * 1e9) if at else None
 
 
 def settled(
@@ -5362,7 +5395,7 @@ def check(
     # a cloud child's files stay in its VM: its marked last message is its report or question
     cloud = cloud_session(og, info)
     resume = CLOUD_NUDGE if cloud else NUDGE.format(report=report)
-    since, resent = instructed(items, resume)
+    since, resent = instructed(og, sid, items, resume)
     if resumed.get(sid, since) < since:  # sent before a newer instruction
         del resumed[sid]
 
@@ -8297,7 +8330,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             far = not args.pr and elsewhere(og, og.info(args.session))
             report = args.report if far else args.report.resolve()
             try:
-                got = wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr)
+                # --pr reads a comment, not a file
+                since = (
+                    None if args.pr else told_at(og, args.session, og.info(args.session), report)
+                )
+                got = wait(
+                    og, args.session, report, args.timeout, args.verdict, since=since, pr=args.pr
+                )
             except Asked as asked:
                 if far:  # the question is on its host too: leave a copy here, as for a report
                     here = bring_home(og, args.session, Path(asked.args[0]), keep=True)
