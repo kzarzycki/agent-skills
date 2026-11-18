@@ -358,7 +358,7 @@ a refusal (`exited N: nothing recorded`) on its stdout. Stopping the caller, Ctr
 A run that gates a branch also writes its `gate` event (events.md, `refs/loop/gate/<branch>`, the checked-out branch): `waiting` while a step waits for a slot or runs, rewritten every SLOT_SAY_SECONDS; `ok` at the end with
 `url` the record (with `gate_steps`, the records' directory); `failed` with `url` the detached run's log when there is one,
 else empty (a failed step records nothing, and a refusal has no log either). The detaching `local-ci` writes `waiting`
-first, before it starts the run, so a wait that follows it never reads the previous head's end. Writing an event never
+first, before it starts the run, so a wait that follows it never reads the previous head's end, and ends the event itself when the run wrote none (`failed` with the log on a nonzero exit, `ok` with no url on exit 0, as a record on a changed tree); a step left for a host keeps `waiting`. Writing an event never
 changes the exit code. The `gate` commit status stays, on the PR head and on main commits: `land` writes the latter
 (`publish(tip, landed_pass(...))`), `wait-for --until gate` reads the former and the PR page shows both, and no event
 reader replaces them yet.
@@ -8873,7 +8873,9 @@ DETACHED = "APPROVALS_LOCAL_CI_HEAD"
 RAN: dict[
     str, str
 ] = {}  # the gate command this process's local-ci ran, for the detached run to record (finished)
-ENDED: dict[str, str] = {}  # `state`: the end event this process wrote (`ok`, `failed`), or `left` for a host step's
+ENDED: dict[
+    str, str
+] = {}  # `state`: the end event this process wrote (`ok`, `failed`), or `left` for a host step's
 
 
 def leads_its_session() -> bool:

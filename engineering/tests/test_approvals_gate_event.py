@@ -261,7 +261,9 @@ def test_a_detached_run_refused_before_the_gate_ends_failed_with_the_log(
 ) -> None:
     """`local-ci <pr>` on a head with no pass refuses in the child before any gate step: the event ends `failed`."""
     gate(steps, "pass")
-    monkeypatch.setattr(approvals, "follow", lambda *_a: 1)  # a child that wrote nothing and exited 1
+    monkeypatch.setattr(
+        approvals, "follow", lambda *_a: 1
+    )  # a child that wrote nothing and exited 1
     code, waited = ended_by_detach(steps, ["--help"], monkeypatch)
     assert code == 1
     log = approvals.run_files(git_in(steps["repo"], "rev-parse", "HEAD").strip())[0]
@@ -319,7 +321,9 @@ def test_a_detached_child_killed_before_writing_ends_failed(
 
 
 def test_a_detached_run_that_wrote_its_end_is_not_ended_twice(
-    steps: dict[str, Any], emitted: list[tuple[str, int, str, str, float]], monkeypatch: pytest.MonkeyPatch
+    steps: dict[str, Any],
+    emitted: list[tuple[str, int, str, str, float]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gate(steps, "raise SystemExit(3)")
     in_process_child(monkeypatch, steps, ["local-ci", "--record"])
@@ -337,3 +341,16 @@ def test_a_detached_run_with_a_step_left_for_a_host_stays_waiting(
     in_process_child(monkeypatch, steps, ["local-ci", "--record"])
     assert approvals.detach(["local-ci", "--record"]) == 0
     assert {state for state, *_ in emitted} == {"waiting"}
+
+
+def test_a_stale_end_marker_of_an_earlier_run_on_the_head_does_not_hide_a_dead_child(
+    steps: dict[str, Any],
+    emitted: list[tuple[str, int, str, str, float]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    in_process_child(monkeypatch, steps, ["local-ci", "--record"], die=True)
+    head = git_in(steps["repo"], "rev-parse", "HEAD").strip()
+    approvals.local_ci_dir().mkdir(parents=True, exist_ok=True)
+    approvals.ended_file(head).write_text("ok\n")
+    assert approvals.detach(["local-ci", "--record"]) == 1
+    assert emitted[-1][0] == "failed"
