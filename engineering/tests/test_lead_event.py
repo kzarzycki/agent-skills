@@ -168,3 +168,70 @@ def test_a_cos_footer_is_a_wait_on_the_supervisor_only_without_an_event(
 def _d(root: Path, name: str) -> Path:
     (root / name).mkdir()
     return root / name
+
+
+def settled(
+    clone: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *messages: str
+) -> list[str]:
+    """What the supervisor posts for lead ``a``, whose turns ended with ``messages`` after its brief."""
+    items = [base.told("brief", 60 + 40 * len(messages))]
+    items += [base.ending(m, 30 * (len(messages) - n)) for n, m in enumerate(messages)]
+    og = Workspace(clone, *items)
+    base.supervised(og, base.following(tmp_path), monkeypatch, 3, notify="cos", console=True)
+    return base.posted(og)
+
+
+def asked(clone: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> str:
+    """The ``end-on needs-owner`` line for a question whose body is ``OLD-QUESTION-BODY``."""
+    question = tmp_path / "q-old.md"
+    question.write_text("Should the epic split into two?\nOLD-QUESTION-BODY " + "y" * 40)
+    return run("end-on", "needs-owner", "--question", str(question), capsys=capsys)
+
+
+def test_a_later_hand_written_user_needed_does_not_carry_the_old_question(
+    clone: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    asked(clone, tmp_path, capsys)
+    [post] = settled(
+        clone, tmp_path, monkeypatch, "USER NEEDED: Approve the second step? Report: r.md"
+    )
+    assert "[owner]" in post and "OLD-QUESTION-BODY" not in post
+
+
+def test_a_later_hand_written_done_does_not_carry_the_old_question(
+    clone: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    asked(clone, tmp_path, capsys)
+    posts = settled(clone, tmp_path, monkeypatch, "DONE: PR 7 merged. Report: r.md")
+    assert all("OLD-QUESTION-BODY" not in p for p in posts)
+
+
+def test_the_end_on_line_still_carries_its_question(
+    clone: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    line = asked(clone, tmp_path, capsys)
+    [post] = settled(clone, tmp_path, monkeypatch, line)
+    assert "OLD-QUESTION-BODY" in post
+
+
+def test_another_act_event_while_needs_owner_carries_no_question(
+    clone: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    asked(clone, tmp_path, capsys)
+    posts = settled(
+        clone, tmp_path, monkeypatch, "I hit an error: Traceback (most recent call last)"
+    )
+    assert all("OLD-QUESTION-BODY" not in p for p in posts)
+
+
+def test_only_the_followed_leads_own_branch_is_read(
+    clone: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Another lead's ``needs-owner`` on the same origin is not the followed lead's event."""
+    asked(clone, tmp_path, capsys)
+    git(clone, "checkout", "-q", "-b", "loop/y")  # the followed lead: a branch with no event
+    assert oa.lead_event_of(base.Fleet(), {"workspace": str(clone)}) is None
+    [post] = settled(
+        clone, tmp_path, monkeypatch, "USER NEEDED: Should the epic split into two? Report: r.md"
+    )
+    assert "OLD-QUESTION-BODY" not in post

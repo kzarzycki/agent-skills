@@ -6253,7 +6253,7 @@ def lead_emit(
 def end_line(word: str, text: str, report: str = "") -> str:
     """The ``DONE`` or ``USER NEEDED`` line a lead ends its turn with: ``<word>: <text's first line>`` and
     ``Report: <path>``, so ``ending_of`` reads it and a human sees the question's first line."""
-    first = (text.strip().splitlines() or [""])[0][:300].rstrip(" .")
+    first = (text.strip().splitlines() or [""])[0].rstrip(" .")
     if not first:
         raise Fail(f"end-on: {word} needs a result or a question")
     return f"{word}: {first}." + (f" Report: {report}" if report else "")
@@ -6272,12 +6272,24 @@ def lead_event_of(og: Omnigent, info: dict) -> dict | None:
         found = [e for e in EVENTS.read("lead", cwd=workspace) if e["branch"] == branch]
         if not found:
             return None
-        event = dict(found[0])
-        if event.get("state") == "needs-owner":
-            event["question"] = EVENTS.blob(workspace, event["sha"], "question.md") or ""
-        return event
+        return dict(found[0])
     except Exception:  # noqa: BLE001 - unreadable: the message decides, as without an event
         return None
+
+
+def question_for(lead_ev: dict | None, message: str) -> str:
+    """The question a ``needs-owner`` event holds, when ``message`` is the ``USER NEEDED:`` ending that
+    ``end_line`` wrote for it (its text starts with the question's first line); else ``""``, since an event is
+    not tied to any later message of the lead, and an old question must never ride on a new item."""
+    question = (lead_ev or {}).get("question") or ""
+    if (lead_ev or {}).get("state") != "needs-owner" or not (
+        first := (question.strip().splitlines() or [""])[0].rstrip(" .")
+    ):
+        return ""
+    for m in re.finditer(r"^\W*USER NEEDED:[ \t]*(.*)$", message, re.MULTILINE):
+        if m.group(1).startswith(first):
+            return question.rstrip()
+    return ""
 
 
 def wait_of(text: str, at: float | None = None) -> str:
@@ -7003,8 +7015,8 @@ def supervise_registry(
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
         elif action in ("act", "owner") or action == "done" and not event["direct"]:
             item = line.splitlines()[0]
-            if lead_ev and lead_ev.get("state") == "needs-owner" and lead_ev.get("question"):
-                item = f"{item}\n{lead_ev['question'].rstrip()}"  # the whole question, never cut
+            if asked := question_for(lead_ev, parsed):
+                item = f"{item}\n{asked}"  # the whole question, never cut
             to = "owner" if action == "owner" else "act"
             if to == "owner" and lead.get("owner_item") == owner_item(line):
                 to = "info"  # the owner item already raised: it wakes no one
