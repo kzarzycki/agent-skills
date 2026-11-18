@@ -163,3 +163,55 @@ def test_a_node_id_with_a_space_runs_as_its_file(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     Path("t.py").write_text("def test_p(): pass\n")
     assert a.node_files({"t.py::test_p[a b]", "t.py::test_p[a]"}) == {"t.py", "t.py::test_p[a]"}
+
+
+def land_on_main(name: str, text: str) -> str:
+    """A commit after the map's, standing for main moving on; returns it as the PR's base."""
+    Path(name).write_text(text)
+    git("add", name)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+    return git("rev-parse", "HEAD")
+
+
+def test_a_test_that_landed_after_the_map_runs_by_name(mapped) -> None:
+    base = land_on_main("tests/test_new.py", "from pkg import mod\n\n\ndef test_new(): mod.two()\n")
+    picked = a.targets(mapped("return 2", "return 22"), base)
+    assert "tests/test_new.py" in picked
+    assert "tests/test_both.py::test_both" in picked
+
+
+def test_a_script_that_changed_on_main_after_the_map_runs_by_name(mapped) -> None:
+    base = land_on_main("pkg/mod.py", SCRIPT + "\n\ndef three():\n    return 3\n")
+    Path("pkg/mod.py").write_text(Path("pkg/mod.py").read_text().replace("return 3", "return 33"))
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "pr")
+    picked = a.targets(["pkg/mod.py"], base)
+    assert {"tests/test_one.py", "tests/test_both.py"} <= set(picked)
+
+
+def test_a_line_run_in_process_and_in_a_subprocess_falls_back_to_the_name_match(mapped) -> None:
+    data = CoverageData(basename=str(a.MAP / "coverage"))
+    data.set_context("")  # what a subprocess records
+    data.add_lines({"pkg/mod.py": [7]})
+    data.write()
+    picked = a.targets(mapped("return 2", "return 22"))
+    assert {"tests/test_one.py", "tests/test_both.py"} <= set(picked)
+
+
+def test_a_corrupt_map_falls_back_to_the_name_match(mapped) -> None:
+    (a.MAP / "coverage").write_text("garbage")
+    assert a.load_map() is None
+    assert {"tests/test_one.py", "tests/test_both.py"} <= set(a.targets(mapped("return 2", "x")))
+
+
+def test_a_test_that_can_skip_runs_by_name_beside_the_map(mapped) -> None:
+    Path("tests/test_skips.py").write_text(
+        "import pytest\nfrom pkg import mod\n\n\n@pytest.mark.skipif(True, reason='x')\ndef test_s(): mod.two()\n"
+    )
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "skips")
+    picked = a.targets(mapped("return 2", "return 22"))
+    assert "tests/test_skips.py" in picked
+
+
+def test_a_changed_line_no_test_ran_selects_only_the_cheap_checks(mapped) -> None:
+    assert a.targets(mapped("\n\n\ndef two", "\n# c\n\ndef two")) == a.CHEAP
