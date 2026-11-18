@@ -396,7 +396,7 @@ merge base, as the ready head's gate of record, and `check merge` takes that pas
 base of the head and the PR's base, in place of a full one; `local-ci <pr>` posts it. A narrowed pass's command is the
 variable's assignment, the command, then ` (narrowed)`, which no gate command can hold, so its record and key never
 equal a full pass's, and nothing that wants a full pass (`ci: false` without narrowed mode, a batch proof's head pass)
-takes it. Its `gate` status, record branch and `local-ci --status` say `narrowed vs <base>`. A project with
+takes it. Its `gate` status and record branch say `narrowed vs <base>`, and `local-ci --status` says `narrowed against <base>`. A project with
 `gate_steps` keeps its steps everywhere, since each narrows by its `paths`. Without the `Affected tests:` line, `check
 build` says in one line that every gate runs the full check (not with the opt-out, which chose it).
 Deprecated: a project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
@@ -6230,7 +6230,10 @@ def merge_batch(
             continue
         if green == tip and not base_green:
             reset(work, tip)
-            if not gate_batch(work, [])[1]:
+            # the full gate: at the tip itself the narrowed one selects nothing, so it reads a red base green
+            with narrowed_to(None):
+                base_ok = gate_batch(work, [])[1]
+            if not base_ok:
                 print(
                     f"{base} itself is red at {tip}: nothing lands and nobody is evicted until it is fixed"
                 )
@@ -8072,6 +8075,9 @@ def affected_tests(given: str | None = None) -> int:
     words, sets = [*LOCAL_CI[:-1], "check"], {}
     if written is not None and (base := selection_base(given)) is not None:
         _, words, sets = command_line(written, "Affected tests")
+        sets = {
+            name: value for name, value in sets.items() if name != variable
+        }  # the base is the run's, not the line's
         env[variable] = base
     print(f"affected-tests: {shlex.join(words)}", file=sys.stderr, flush=True)
     try:

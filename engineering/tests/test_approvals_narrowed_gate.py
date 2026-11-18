@@ -75,6 +75,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     git_in(work, "commit", "-qam", "change")
     return {
         "work": work,
+        "tools": tools,
         "loop": loop,
         "ran": lambda: log.read_text().splitlines() if log.exists() else [],
         "base": lambda: git_in(work, "rev-parse", "origin/main").strip(),
@@ -114,6 +115,17 @@ def test_without_the_line_no_base_is_resolved(
     assert approvals.main(["affected-tests", "--base", "0" * 40]) == 0
     assert repo["ran"]() == ["mise run check base=unset"]
     assert "is no commit here" not in capsys.readouterr().err
+
+
+def test_a_base_variable_written_on_the_line_never_overrides_the_narrowed_base(
+    repo: dict[str, Any],
+) -> None:
+    repo["loop"]("# Loop\n\nAffected tests: GATE_BASE=elsewhere SELECTOR\n")
+    base = repo["base"]()
+    assert approvals.main(["affected-tests", "--base", base]) == 0
+    assert repo["ran"]() == [f"selected app.py against {base}"]
+    with approvals.narrowed_to(base):
+        assert approvals.gate()[2] == {"GATE_BASE": base}
 
 
 def test_the_opt_out_runs_the_full_check(repo: dict[str, Any]) -> None:
@@ -238,6 +250,34 @@ def test_land_gates_the_batch_with_the_selector_against_the_tip_it_merges_onto(
     [(landed, *_)] = repo["merged"]
     assert [pull["number"] for pull, *_ in landed] == [7, 8]
     assert {how for *_, how in landed} == {"run"}
+
+
+def test_a_red_main_is_not_read_green_by_the_selector_and_nobody_is_evicted(
+    repo: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A PR red twice makes `land` gate the bare base; the selector selects nothing there (no diff), so only the full
+    gate can tell a main carrying breakage from an innocent PR."""
+    work, tools = repo["work"], repo["tools"]
+    # main's breakage: the selector fails once any change is selected (its tests reach app.py), the full check always
+    (tools / "selector.py").write_text(
+        SELECTOR
+        + 'if changed and "BROKEN" in pathlib.Path("app.py").read_text():\n    sys.exit(1)\n'
+    )
+    (tools / "mise").write_text(MISE + "grep -q BROKEN app.py && exit 1\nexit 0\n")
+    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
+    git_in(work, "checkout", "-q", "main")
+    (work / "app.py").write_text("value = BROKEN\n")
+    git_in(work, "commit", "-qam", "breakage")
+    git_in(work, "push", "-q", "origin", "main")
+    git_in(work, "checkout", "-q", "work")
+    pulls = batch_of(repo, monkeypatch)
+    evicted: list[int] = []
+    monkeypatch.setattr(approvals, "evict", lambda pull, *_a: evicted.append(pull["number"]))
+    assert approvals.local_queue(pulls, "main", None, None, set())[0] != 0
+    assert "main itself is red" in capsys.readouterr().out
+    assert evicted == [] and repo["merged"] == []
 
 
 def test_land_in_a_clone_with_no_working_tree_looks_up_the_narrowed_pass_on_the_batch_tree(
@@ -369,10 +409,17 @@ def test_with_ci_a_record_without_base_stays_full(repo: dict[str, Any]) -> None:
     ids=["no line", "selector", "opt-out"],
 )
 def test_check_build_says_when_every_gate_runs_the_full_check(
-    repo: dict[str, Any], capsys: pytest.CaptureFixture[str], text: str, said: bool
+    repo: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    said: bool,
 ) -> None:
     repo["loop"](text)
-    approvals.full_check_line()
+    monkeypatch.setattr(
+        approvals, "unbuilt", lambda *_a: 0
+    )  # the spec check is GitHub's; the line is `check`'s
+    assert approvals.main(["check", "build", "--issue", "1"]) == 0
     line = "loop.md has no `Affected tests:` line, so every gate runs the full check"
     assert (line in capsys.readouterr().err) is said
 
