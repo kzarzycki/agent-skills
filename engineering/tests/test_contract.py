@@ -208,6 +208,15 @@ def test_the_to_spec_template_holds_both_acceptance_lists() -> None:
         assert text.index("## Acceptance") < text.index("## Out of Scope")
 
 
+def test_the_to_spec_template_before_merge_list_shows_a_check_and_a_manual_line() -> None:
+    for root in ("overlays", "."):
+        text = (PACKAGE / root / "skills" / "to-spec" / "SKILL.md").read_text()
+        before = text.split("### Before merge")[1].split("### After merge")[0]
+        lines = [line for line in before.splitlines() if line.startswith("- ")]
+        assert any("Check: `" in line for line in lines)
+        assert any(line.startswith("- Manual:") and "Evidence:" in line for line in lines)
+
+
 def test_the_board_setup_issue_template_holds_both_acceptance_lists() -> None:
     stage_root = os.environ.get("CAPABILITY_PACK_QUALIFICATION_STAGE_ROOT")
     if stage_root is not None:
