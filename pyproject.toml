@@ -5,11 +5,20 @@ requires-python = ">=3.14,<3.15"
 dependencies = ["PyYAML==6.0.3"]
 
 [dependency-groups]
-dev = ["pytest==9.1.1", "pytest-xdist==3.8.0", "ruff==0.16.0"]
+dev = [
+    "pytest==9.1.1",
+    "pytest-timeout==2.4.0",
+    "pytest-xdist==3.8.0",
+    "ruff==0.16.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "engineering/tests"]
 pythonpath = ["."]
+# A test that outlives 60 s fails with every thread's traceback instead of holding the landing lock for the queue;
+# a test that needs longer carries @pytest.mark.timeout(N). QUALIFY_TIMEOUT does not cover pytest.
+timeout = 60
+timeout_method = "signal"
 markers = [
   "live_agent: tests that require a live agent runtime",
   "needs_tool(*tools): the external tools a test runs beyond git and Python; a run selecting it stops first when PATH lacks one",
