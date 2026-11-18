@@ -62,7 +62,7 @@ def waiting(monkeypatch: pytest.MonkeyPatch, lands: dict[str, Any], pushed: None
 
 def moved(state: dict[str, Any], tmp: Path) -> str:
     """Another land merges a change to the script into origin's main: the new tip."""
-    other = tmp / "other"
+    other = tmp / f"other{len(list(tmp.glob('other*')))}"
     git_in(tmp, "clone", "-q", str(state["origin"]), str(other))
     (other / SCRIPT).write_text((other / SCRIPT).read_text() + "\n# another land's change\n")
     git_in(
@@ -224,3 +224,33 @@ def test_the_run_again_keeps_the_first_runs_ceiling(
         approvals.time, "sleep", lambda _s: pytest.fail("waited past the first run's ceiling")
     )
     assert approvals.land(7, wait=True) == approvals.WAITING  # at once: no fresh 2 hours
+
+
+def test_two_base_moves_leave_no_worktree_behind(
+    waiting: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """execv runs no atexit, so each run again hands the earlier worktrees on: the last run removes all (B2)."""
+    work = waiting["work"]
+    git_in(work, "switch", "-q", "--detach")
+    cwd = Path.cwd()
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(sys, "argv", [str(work / SCRIPT), "land", "7", "--wait"])
+    fresh: list[Path] = []
+    for _ in range(2):  # each run is a new process: it starts with the environment alone
+        monkeypatch.setattr(approvals, "made", [])
+        moved(waiting, tmp_path)
+        with pytest.raises(Restarted):
+            approvals.land(7, wait=True)
+        fresh.append(Path.cwd())
+        monkeypatch.setattr(sys, "argv", [str(fresh[-1] / SCRIPT), "land", "7", "--wait"])
+        monkeypatch.setattr(approvals, "RUNNING", (str(fresh[-1] / SCRIPT),))
+    assert len(set(fresh)) == 2 and all(path.exists() for path in fresh)
+    monkeypatch.setattr(approvals, "made", [])
+    monkeypatch.setattr(approvals, "landing", lambda _pr, _only=False: (0, False))
+    registered: list[Any] = []
+    monkeypatch.setattr(approvals.atexit, "register", lambda *call: registered.append(call))
+    assert approvals.land(7, wait=True) == 0
+    for reap, *args in registered:
+        reap(*args)
+    monkeypatch.chdir(cwd)
+    assert not any(path.exists() for path in fresh)

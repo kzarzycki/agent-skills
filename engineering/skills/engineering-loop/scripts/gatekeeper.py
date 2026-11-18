@@ -4922,8 +4922,9 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
     global held_tip
     # a land run again on the base's new code (caught_up) keeps the first run's ceiling; the clock is system-wide
     deadline = float(os.environ.pop(DEADLINE_ENV, "0")) or time.monotonic() + CEILING
-    if fresh := json.loads(os.environ.pop(WORKTREES_ENV, "[]")):
-        atexit.register(reap, fresh)
+    if earlier := json.loads(os.environ.pop(WORKTREES_ENV, "[]")):
+        made.extend(earlier)  # execv runs no atexit: the next re-exec hands these on (caught_up)
+        atexit.register(reap, earlier)
     said, spoke, heard = "", 0.0, ""
     github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
     missed = 0  # network failures in a row, of landing() and of the lock poll
@@ -5000,6 +5001,7 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
 
 
 DEADLINE_ENV = "LOOP_LAND_DEADLINE"
+made: list[list[str]] = []  # the worktrees this process's ancestors made (land), handed on by caught_up
 WORKTREES_ENV = (
     "LOOP_LAND_WORKTREES"  # JSON [[git dir, path]] of the worktrees caught_up made, removed at exit
 )
@@ -5045,7 +5047,7 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
             raise drifted
         gitdir = Path(out(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
         os.environ[WORKTREES_ENV] = json.dumps(
-            [*json.loads(os.environ.get(WORKTREES_ENV, "[]")), [str(gitdir), str(fresh)]]
+            [*made, [str(gitdir), str(fresh)]]
         )
         # the running script as the base has it; one outside the checkout is not drift, so it stays as it is
         if script.is_relative_to(root.resolve()):
