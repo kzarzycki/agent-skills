@@ -5,7 +5,8 @@ thread (resolution follows triage, which is not yours), and leave nothing behind
 tree ends as you found it, with `git status --porcelain` and `git diff` unchanged. The
 lead gives you the base, the reviewed head, the spec number, priorities and a
 report path, so ask for nothing. You run in the worktree you were started in, a
-detached one at the reviewed head, so you see the tree the author tested. Read no memory (a Hindsight bank or any other store): remembered context carries
+detached one at the reviewed head or the worker's own when lead.md step 7's shared-worktree
+conditions hold, so you see the tree the author tested. Read no memory (a Hindsight bank or any other store): remembered context carries
 the author's assumptions into the review. Call no memory tool, and when your session shows
 recalled memories, leave them out of the review and say in the report that they were there.
 Where your test and mutation runs go is SKILL.md, Where heavy steps run. Unless loop.md's
@@ -20,6 +21,13 @@ Check the tree first:
   because what was tested is not what will land. Review the committed diff, but run no
   gates or repros, since they would test the dirty tree. Tool caches and build output are
   not findings.
+
+**Criteria first.** Before reading the worker's report or proof logs, write from the spec
+alone (its body and comments) the criteria the change must meet, as a `## Criteria` section
+of your report, then map each to a Before merge line and the check it names. A criterion no
+line covers is a finding, since nothing reruns it after the merge. Only then read the
+worker's evidence, so its framing can't narrow the review; `approvals.py verdict` refuses a
+report without the section.
 
 ## Method
 
@@ -85,6 +93,17 @@ yourself, keeping standards and spec as separate axes.
   the tool timeout), and past the limit you state the pass ends with a report naming it, never
   on a run still pending, since nothing wakes an idle session and a run left queued can apply
   its mutation after you have gone.
+- **Checks match their lines.** For each Before merge line, read the check it names and say
+  whether it tests what the line says. A check that doesn't is a major, since a passing wrong
+  check proves nothing.
+- **Run the checks yourself.** Run the acceptance command the brief's `Acceptance tests:` line
+  names on the head (SKILL.md, Acceptance checks), and the tests the PR adds or changes, picked
+  from `git diff --name-only <base>...<head>`, each as a long run is (above). You never rely on
+  the worker's gate log, which is the worker's own file, and run no full gate (Gates and repros).
+- **Manual lines.** Probe a `Manual:` line by hand when you rate the change high or the line is
+  risky in itself. Otherwise you may accept it on the worker's evidence, written `Accepted on
+  evidence: <line> — <proof log>`, the log stamped with the head (Proof provenance); `verdict`
+  refuses that line in a report whose `Risk:` is not `low`, naming it.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
   run the spec's Before merge list on it: the UI in a headless browser (worker.md, Report,
   says how: your own headless browser, never one attached over CDP unless the check needs its logins), the API with its client,
@@ -150,10 +169,11 @@ yourself, keeping standards and spec as separate axes.
   necessary, such as a log that shows a new failure, with a `New in the answer: <the log>` line
   naming that log; the verifier script hands no later question to the lead without that line
   (exit 1).
-- **An acceptance line you did not run** through the path a user takes (the spec's Before
-  merge list, on the instance when one is up; a flat `## Acceptance` list is all Before merge)
-  blocks `SATISFIED: yes`, whatever the reason:
-  mark each Before merge line run (with its evidence), failing or not run. List each After
+- **An acceptance line you did not run** blocks `SATISFIED: yes`, whatever the reason: a
+  Before merge line's check run by the acceptance command, a `Manual:` line probed through
+  the path a user takes (on the instance when one is up) or accepted on evidence (Manual
+  lines; a flat `## Acceptance` list is all Before merge): mark each Before merge line run
+  (with its evidence), accepted on evidence, failing or not run. List each After
   merge line under an `After merge:` line in the report (`After merge: none` when the spec has
   none), never counted as run or not run, since it needs the merged default branch or a
   deployed environment and the lead runs it after landing (lead.md step 9). A line not run ends
@@ -189,7 +209,8 @@ keep these lines exact:
   A Gemini pass through agy gives its signature, `Verifier: agy/gemini-4-hydrogen-medium/?, pass 1`, and a
   same-family one on the Codex fallback `Verifier: claude, same-family, pass 1 (Codex out of quota)`: `check
   merge` reads either as the default tier, so a satisfied one lands a high-risk change too.
-- Sections: the Review skill's (code-review's Standards and Spec), then Correctness.
+- Sections: `## Criteria` first (Criteria first), then the Review skill's (code-review's
+  Standards and Spec), then Correctness.
 - Per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, the
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR
   review's inline comment, moved to the nearest line of the diff when outside it), then
