@@ -44,10 +44,10 @@ jobs:
       - run: mv gatekeeper "$RUNNER_TEMP/gatekeeper"  # outside the checkout, so the base's drift check leaves it be
       - env: {GH_TOKEN: "${{ github.token }}", GATEKEEPER_REST_ONLY: "${{ matrix.rest_only }}", PR: "${{ inputs.pr }}"}
         run: |
-          set +e  # a verdict that is not go exits 1 or 3; only a gh error fails
+          set +e  # a verdict that is not go exits 1 or 3; a gh error or no verdict line fails
           out=$(uv run "$RUNNER_TEMP/gatekeeper/engineering/skills/engineering-loop/scripts/approvals.py" check merge "$PR" 2>&1)
           printf '%s\n' "$out"
-          ! printf '%s\n' "$out" | grep -q '^gh: '
+          ! printf '%s\n' "$out" | grep -q '^gh: ' && printf '%s\n' "$out" | grep -q "^PR #$PR: risk: .*; merge: "
 ```
 
 Before the tag, on the commit that gets tagged (the squash commit on main, which is the smoke `ref`), run
