@@ -67,10 +67,8 @@ goes through that session's proxy.
 - **`git ls-remote origin 'refs/loop/*'`:** 0.51 s with no such ref (one call). The same call over `refs/heads/*`
   (325 refs) took 0.44 s and over every ref (1107) 0.37 s, so a listing of 20 refs costs well under a second; the call
   is bound by the round trip, not the count.
-- **A push of `refs/loop/probe/<branch>`: not measured.** From the cloud session the push is refused by that session's
-  proxy (`RPC failed; HTTP 403`, and the REST create-ref path answers "Write access to this GitHub API path is not
-  permitted through this proxy"), as the gatekeeper's lock comment predicts for any ref outside `refs/heads/`. That is
-  the sandbox's rule, not GitHub's, so it says nothing about a plain token. The check is one run from a host with
-  its own token: `events.py emit probe <branch> waiting`, `git ls-remote origin 'refs/loop/*'`, then
-  `events.py clear <branch>`; time the push and the listing. Until it is run, **a cloud session's events stay local
-  and warn once** (Degraded), so a reader on another host sees only what a host with push access wrote.
+- **A push of `refs/loop/probe/<branch>`:** accepted by GitHub with a plain token from a host. One `events.py emit` took
+  2.3 s end to end (process start, commit, push); `git ls-remote origin 'refs/loop/*'` with one such ref took 0.46 s;
+  `events.py clear` removed it from `origin`. A cloud session's proxy refuses refs outside `refs/heads/` (`RPC failed;
+  HTTP 403`), so **a cloud session's events stay local and warn once** (Degraded); only a host with push access
+  writes events another host reads.
