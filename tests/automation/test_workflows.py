@@ -21,36 +21,28 @@ def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
     workflow = _workflow("engineering-ci.yml")
     # qualify is a required check: a path-filtered PR run never reports, so the PR never merges
     assert not workflow["on"]["pull_request"]
-    paths = set(workflow["on"]["push"]["paths"])
+    assert workflow["on"]["push"]["branches"] == ["main"]
+    assert "paths" not in workflow["on"]["push"]
+    assert workflow["on"]["schedule"]
     commands = "\n".join(step.get("run", "") for step in _steps(workflow))
     whitespace = next(
         step for step in _steps(workflow) if step.get("name") == "Check changed-file whitespace"
     )
 
-    assert {
-        ".github/workflows/engineering-*.yml",
-        ".gitattributes",
-        "engineering/**",
-        "tools/capability_pack/**",
-        "tests/capability_pack/**",
-        "tests/automation/**",
-        "mise.toml",
-        "pyproject.toml",
-        "uv.lock",
-        ".claude-plugin/marketplace.json",
-        "README.md",
-        "CLAUDE.md",
-    } <= paths
     assert whitespace["env"]["BASE_SHA"] == (
         "${{ github.event.pull_request.base.sha || github.event.before }}"
     )
     assert "HEAD^" not in whitespace["run"]
+    fast = next(st for st in _steps(workflow) if st.get("run") == "mise run check-fast")
+    full = next(st for st in _steps(workflow) if st.get("run") == "mise run check")
+    assert fast["if"] == "github.event_name != 'schedule'"
+    assert fast["env"]["GATE_BASE"] == whitespace["env"]["BASE_SHA"]
+    assert full["if"] == "github.event_name == 'schedule'"
     for command in (
         "mise install",
         "uv sync --frozen",
-        "mise run vendor-engineering-check",
-        "mise run test",
-        "mise run test-engineering-package",
+        "mise run check-fast",
+        "mise run check",
         "git diff --check",
     ):
         assert command in commands
@@ -123,9 +115,3 @@ def test_all_actions_are_pinned_to_full_commit_shas() -> None:
 
     assert uses
     assert all(re.search(r"@[0-9a-f]{40}$", value) for value in uses)
-
-
-def test_consumer_generated_state_triggers_qualification() -> None:
-    workflow = _workflow("engineering-ci.yml")
-    required = {".agents/**", ".claude/**", "apm.yml", "apm.lock.yaml"}
-    assert required <= set(workflow["on"]["push"]["paths"])
