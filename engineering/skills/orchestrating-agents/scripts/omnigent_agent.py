@@ -7525,8 +7525,8 @@ def supervise_registry(
         if said and (bad := unparsed_trailer(text_of(said[-1]).strip())):
             say(  # once per turn: the event id holds the turn
                 f"{sid} {lead['title']}".rstrip()
-                + f": your last line `Waits: {bad[:80]}` did not parse, so it counts for nothing "
-                f"but the deadline. Accepted: {ACCEPTED_WAITS}. `omnigent_agent.py wait-on ...` "
+                + f": your last line `Waits: {bad[:80]}` did not parse, so the supervisor reads it as "
+                f"prose, not exactly. Accepted: {ACCEPTED_WAITS}. `omnigent_agent.py wait-on ...` "
                 "prints a line that parses.",
                 sid,
                 f"trailer:{sid}:{said[-1].get('id') or said[-1].get('created_at')}",
