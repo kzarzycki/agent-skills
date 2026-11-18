@@ -10,8 +10,10 @@ This pre-tag smoke run is a required step. The in-repo job
 `Gatekeeper on real GitHub` runs on every PR that changes the engineering-loop scripts. The one
 place a private organization repository's `github.token` shows (GraphQL `FORBIDDEN`) is the
 smoke run: run the `workflow_dispatch` workflow below in a private organization repository with
-the release head as its `ref`, and wait for it to pass. `release-check engineering <tag>`
-refuses to pass until a passing run for `git rev-parse HEAD` exists. The repository comes from
+the release's squash commit on main as its `ref` (the full 40-character sha), and wait for it to pass.
+That is the commit that gets tagged, and its tree is exactly what ships; the release PR's head can
+differ from it when main moved. `release-check engineering <tag>`, run on that commit, refuses to
+pass until a passing run for `git rev-parse HEAD` exists. The repository comes from
 the releaser's own environment, never from this repository: `RELEASE_SMOKE_REPOSITORY`
 (`owner/name`) and `RELEASE_SMOKE_WORKFLOW` (the workflow file). Put the run's URL, which
 `release-check` prints, in the release PR's evidence. The tag check in CI passes `--skip-smoke` and prints that it skipped: its token can't dispatch a workflow in another organization's private repository, so the run before the tag is the gate (a private repository's name stays out of
