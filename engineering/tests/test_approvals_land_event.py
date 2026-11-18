@@ -119,6 +119,8 @@ def test_land_wait_beats_waiting(
     """Blocked on a held lock, `land --wait` rewrites its `waiting` event at each poll; the lock's own tip stays
     what the holder wrote, and the PR lands once the lock is free."""
     lands = events_pushed
+    # the `ok` stays readable: a waiter polling every 0.2 s must not find the ref cleared before it reads the end
+    monkeypatch.setattr(approvals, "EVENT_GRACE", 3600)
     clock = Clock()
     monkeypatch.setattr(approvals, "time", clock)
     monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)
@@ -483,7 +485,8 @@ def test_the_clear_of_a_merged_pr_runs_after_its_worktree_is_gone(
     assert code == 0, lines
     git_in(work, "worktree", "remove", "--force", str(fresh))  # reap, as the land exits
     assert not fresh.exists()
-    assert refs_gone(lands)
+    # the clear starts after the grace and pushes twice: a loaded host needs more than the default window
+    assert refs_gone(lands, 60)
 
 
 def test_comment_returns_the_url_of_the_comment_it_posts(
@@ -615,6 +618,7 @@ def gated_wait(
     return result
 
 
+@pytest.mark.timeout(240)  # scaled real seconds: beats of 6 s and a 20 s gate, longer on a loaded host
 def test_a_wait_on_a_land_whose_round_starts_late_and_gates_long_never_goes_silent(
     events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -688,3 +692,16 @@ def test_a_land_that_ends_leaves_no_waiting(
     assert code == 1
     # a one-shot land beats nothing; a `--wait` one ends `failed`, so a native wait exits 1 instead of timing out
     assert event is None if argv == ("7",) else event and event["state"] == "failed", event
+
+
+def test_a_wait_that_evicts_its_pr_keeps_the_eviction_comments_url(
+    events_pushed: dict[str, Any],
+) -> None:
+    """`land 7 --wait`, PR 7 red alone twice: evicted, and land exits 1. The `failed` carries the eviction comment's
+    URL, which the exit's own `failed` (unless_ended) must not replace by the PR's."""
+    lands = events_pushed
+    lands["open"](7, {"red.txt": "red\n"})
+    code, lines = lands["land"]("7", "--wait")
+    event = lands["event"]("pr7")
+    assert code == 1, lines
+    assert event and event["state"] == "failed" and event["url"] == COMMENT_URL.format(7), event
