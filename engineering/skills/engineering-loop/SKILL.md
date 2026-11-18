@@ -1101,7 +1101,7 @@ or the owner's private network.
   and outlives a release. Resolve the tier
   at launch from the newest generation of the family's tier models only: its model of that
   tier, else its closest higher tier (its highest when none is higher), never an older
-  generation's model, which the family has already superseded. A lead that can't read the
+  generation's model, which the family has already superseded (`omnigent_agent.py start` refuses a Codex model when the host lists a newer generation). A lead that can't read the
   family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them. A launch that fails on
   capacity takes the next placement option (Where heavy steps run); with none left it is retried
   later on the same model (the backend's Model section). When one
