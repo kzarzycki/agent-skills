@@ -580,8 +580,8 @@ print whose go they used. Into the default branch it is refused unless the polic
 `origin/<base>` sets `delegate: all` under `loop` (a branch's own edit of it is not the owner's;
 a base with no policy file leaves the default branch's), and there a delegate's go counts only while it does; without the
 key (`feature`) the owner's go alone covers the default branch. A status covers one commit, so
-it never covers code the approver did not see; it carries to a head whose commits since are
-only merges of the base, once the verifier's pass there says `Logic change: none`. Into the default branch these are the only go:
+it never covers code the approver did not see; it carries to a head that only takes the base in
+(the catch-up rule below), else to one whose commits since are only merges of the base, once the verifier's pass there says `Logic change: none`. Into the default branch these are the only go:
 anyone with triage rights can add a label, so `approved:merge` there is no go. On a change whose level asks no go
 `approved:merge` means nothing. On a PR into a feature branch (any base but the default
 branch) the label added after the head's push is a go too, and it may be the delegated
@@ -687,7 +687,7 @@ read again right after is the head pin. `approvals.py`'s docstring has each rule
 
 `land <pr>... --only` lands those PRs alone and leaves every other PR untouched, for a lead that must not land another lead's work.
 With `--wait` it is one background command that ends when the PR landed or needs someone
-(exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction; on a base with GitHub's merge queue it ends once the PR is enqueued, exit 0, and polls nothing). A land that waits from a clean checkout of the base follows the base when another land changes the loop's scripts or policy, so no caller needs to pull and start it again. Never run `gh pr
+(exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction; on a base with GitHub's merge queue it ends once the PR is enqueued, exit 0, and polls nothing). A land that waits follows the base when another land changes the loop's scripts or policy, so no caller needs to pull and start it again: from a clean checkout of the base it fast-forwards that checkout, from any other (a linked worktree on a PR branch or a detached head, an edited tracked file) it leaves the checkout alone and runs again from a fresh detached worktree of the fetched base, removed when it ends. Never run `gh pr
 ready` or `gh pr merge` by hand, because `land` is what refuses a PR whose proof is missing. A repo with
 neither `docs/agents/gatekeeper.md` nor `docs/agents/loop.md` has no rules: `land` there needs each named issue to carry
 `approved:spec` and not `needs-owner`, and the PR's own proofs. A post that names a private project, its repo or a host can't be taken back, since
@@ -706,6 +706,16 @@ and `ci: false` still work for one release and print a `deprecated:` line each, 
 keeps landing while it adopts the batch `land`: `land` gates the merged result itself, so a
 queue of its own, a carried verdict and a `local-ci` pass on the head add nothing. Adopting
 means deleting the project's queue and those keys from gatekeeper.md.
+
+A verdict, and the owner's go, recorded on head H stay valid for a new head H' that only takes the base in with no hand edit,
+so `land` and `check merge` ask for no new verifier pass and no new `Logic change: none`. The gate computes the proof
+(`catch_up`, one function for the verdict and the go) and prints which one carried it and from which head: for a rebase,
+`git range-diff` of `merge-base(H, base)..H` against `merge-base(H', base)..H'` marks every commit `=`, with none added or
+dropped; for a merge of the base, every commit after H is a merge of the base whose first parent is the previous head and
+whose `git show --remerge-diff` is empty. A resolved conflict, a changed or new commit, or a dropped one keeps the old
+rule: no verdict on H' until a verifier reviews it, and the go carries only on `Logic change: none`. A clean catch-up
+changes no line the PR wrote, so only what the old pass would have read for how main's new code meets the PR's is left
+to the head's own gate; a project that sets `carry_over_main` keeps its own `except` rule for the verdict instead.
 
 Deprecated: with gatekeeper.md's `carry_over_main` section, merging main into a PR head H keeps H's verdict
 when git shows the merges changed nothing the PR's code reads: every commit from the new

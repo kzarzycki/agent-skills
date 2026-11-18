@@ -301,7 +301,7 @@ whether classic branch protection requires one, so a PR is a candidate there onl
 section, the project's word that its base requires none (a ruleset that does picks the GitHub merge queue, above);
 a draft is marked ready and an evicted PR turned back to draft through the proxy's draft routes
 (`ccr/ready_for_review`, `ccr/convert_to_draft`). Off a cloud session only `where` is new.
-`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip. `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its 2-hour ceiling; any other checkout keeps the refusal.
+`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip. `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its 2-hour ceiling; any other checkout is left alone and the land runs again from a fresh detached worktree of `origin/<base>`, removed when it ends; the refusal stands only when nothing newer exists to run from (the checkout is the base's tip, or the base lacks the running script).
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
 printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
@@ -530,6 +530,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import atexit
 import contextlib
 import contextvars
 import fcntl
@@ -3317,8 +3318,15 @@ def carried(
     if tree := same_tree(pull["headRefOid"], verified):
         return verified, [same_tree_line(verified, tree)]
     guard = settings(loop).get("carry_over_main")
-    if guard is None:
-        return None
+    if (
+        guard is None
+    ):  # a project's own `except` globs (deprecated) keep deciding where it sets them
+        proof = catch_up(pull, verified)
+        return (
+            (verified, [f"verdict on {verified} carried to {pull['headRefOid']}: {proof}"])
+            if proof
+            else None
+        )
     walked = base_merges(pull, verified)
     if isinstance(walked, str):
         return walked
@@ -3343,6 +3351,44 @@ def same_tree(head: str, old: str) -> str | None:
     same, as after a reword of commit messages only. A tree neither the clone nor origin has is None."""
     mine = tree_of(head)
     return mine if mine is not None and mine == tree_of(old) else None
+
+
+def catch_up(pull: dict[str, Any], old: str) -> str | None:
+    """What shows, mechanically, that the PR's head only takes the base in since `old` (an earlier head), with no hand
+    edit, or None: the proof's words, which carried() and whose() print. Either (a rebase) `git range-diff` of
+    `merge-base(old, tip)..old` against `merge-base(head, tip)..head` marks every commit `=` with none added or dropped,
+    or (a merge of the base) every commit since `old` is a merge of the base (base_merges) and `git show --remerge-diff`
+    of each is empty, so no conflict was resolved by hand. A verdict (carried) and a go (carried_go) on `old` carry to
+    the head by this one test, which nobody asserts. Fail-closed: a git error, or a commit origin lacks, is None (#1314)."""
+    head, old, tip = pull["headRefOid"].lower(), old.lower(), pull["baseRefOid"].lower()
+    base = pull["baseRefName"]
+    if head == old or not all(map(fetched, (head, old, tip))):
+        return None
+    try:
+        walked = base_merges(pull, old)
+        if not isinstance(walked, str):
+            if all(
+                not git("show", "--remerge-diff", "--format=", "--no-color", commit).strip()
+                for commit, _, _ in walked
+            ):
+                return f"every commit since is a merge of {base} whose `git show --remerge-diff` is empty: no conflict was resolved by hand"
+            return None
+        first, second = (git("merge-base", commit, tip).strip() for commit in (old, head))
+        shown = git("range-diff", "--no-color", f"{first}..{old}", f"{second}..{head}").splitlines()
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    # one line per commit pair (`1:  abc1234 = 1:  def5678 subject`, padded with a leading space once a side has 10+
+    # commits), a changed one followed by its 4-space-indented diff; any other line is not understood: not clean
+    pair = re.compile(r"^\s*(?:\d+|-):\s+\S+\s+([=!<>])\s+(?:\d+|-):")
+    marks: list[str] = []
+    for line in shown:
+        if found := pair.match(line):
+            marks.append(found[1])
+        elif line.strip() and not line.startswith("    "):
+            return None
+    if marks and set(marks) == {"="}:
+        return f"`git range-diff` against {base} shows every commit unchanged: a rebase with no added or dropped commit"
+    return None
 
 
 def same_tree_line(old: str, tree: str) -> str:
@@ -3601,6 +3647,8 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     the head decides alone, so a go withdrawn there stays withdrawn. A string names why the older go carries nothing;
     None: no go to carry."""
     head = pull["headRefOid"]
+    # a project with its own rule keeps it for the go too
+    guard = settings(loop).get("carry_over_main")
     by = go_on(pull, head, loop)
     if by is not None:
         return (by, head) if by else None
@@ -3612,7 +3660,7 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     if not earlier or not (by := go_on(pull, earlier[-1], loop)):
         return None
     old = earlier[-1]
-    if same_tree(head, old):
+    if same_tree(head, old) or (guard is None and catch_up(pull, old)):
         return by, old
     why = unchanged(pull, old.lower())
     return f"the go on {old} carries nothing to {head}: {why}" if why else (by, old)
@@ -3685,6 +3733,12 @@ def whose(pull: dict[str, Any], loop: str | None) -> list[str]:
     line = f"{head} is the delegate's{DELEGATED}" if by == DELEGATE else f"{head} is the owner's"
     if old != pull["headRefOid"] and (tree := same_tree(pull["headRefOid"], old)):
         line += f", carried to {pull['headRefOid']}: same tree {tree}"
+    elif (
+        old != pull["headRefOid"]
+        and "carry_over_main" not in settings(loop)
+        and (proof := catch_up(pull, old))
+    ):
+        line += f", carried to {pull['headRefOid']}: {proof}"
     elif old != pull["headRefOid"]:
         line += (
             f", carried to {pull['headRefOid']}: every commit since is a merge of {pull['baseRefName']}, and the"
@@ -4871,6 +4925,9 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
     global held_tip
     # a land run again on the base's new code (caught_up) keeps the first run's ceiling; the clock is system-wide
     deadline = float(os.environ.pop(DEADLINE_ENV, "0")) or time.monotonic() + CEILING
+    if earlier := json.loads(os.environ.pop(WORKTREES_ENV, "[]")):
+        made.extend(earlier)  # execv runs no atexit: the next re-exec hands these on (caught_up)
+        atexit.register(reap, earlier)
     said, spoke, heard = "", 0.0, ""
     github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
     missed = 0  # network failures in a row, of landing() and of the lock poll
@@ -4947,32 +5004,62 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
 
 
 DEADLINE_ENV = "LOOP_LAND_DEADLINE"
+# the worktrees this process's ancestors made (land), handed on by caught_up
+made: list[list[str]] = []
+WORKTREES_ENV = (
+    "LOOP_LAND_WORKTREES"  # JSON [[git dir, path]] of the worktrees caught_up made, removed at exit
+)
 
 
 def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
-    """A waiting land whose base moved its code or policy (another land merged a change to them): fast-forward a clean
-    checkout of the base to the fetched `origin/<base>` and run this land again from that code, in place (#1280), since
-    the wait was the point and nobody reads its log. Any other checkout (another branch, a detached head, an edit of a
-    tracked file, a fast-forward refused or one that moves nothing) keeps the refusal, since a PR's own copy must never judge it."""
+    """A waiting land whose base moved its code or policy (another land merged a change to them) runs again from the
+    base's new code, keeping its ceiling, since the wait was the point and nobody reads its log (#1280, #1314). A clean
+    checkout of the base is fast-forwarded to the fetched `origin/<base>` and the land runs again in it (#1280). Any
+    other checkout (a linked worktree on a PR branch or a detached head, an edited tracked file, a fast-forward
+    refused) is left as it is, and the land runs again from a fresh detached worktree of `origin/<base>`, removed when
+    that run ends (#1314), since moving a checkout the caller is using is not ours to do and a PR's own copy must never
+    judge it. Nothing newer to run from (this checkout already is the base's tip, or the base lacks the running script)
+    keeps the refusal, which would otherwise run again forever."""
     base, root = drifted.base, toplevel()
+    ref = f"refs/remotes/origin/{base}"
 
-    def run(*args: str) -> subprocess.CompletedProcess[str]:
+    def run(where: Path, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["git", "-C", str(root), *args], capture_output=True, text=True, check=False
+            ["git", "-C", str(where), *args], capture_output=True, text=True, check=False
         )
 
-    before = run("rev-parse", "HEAD").stdout.strip()
-    if (
-        run("symbolic-ref", "-q", "HEAD").stdout.strip() != f"refs/heads/{base}"
-        or run("status", "--porcelain", "--untracked-files=no").stdout.strip()
-        or run("merge", "-q", "--ff-only", f"refs/remotes/origin/{base}").returncode
-        # a drift the fast-forward left in place (a running script the base doesn't track) would re-run land forever
-        or run("rev-parse", "HEAD").stdout.strip() == before
-    ):
+    def out(where: Path, *args: str) -> str:
+        return run(where, *args).stdout.strip()
+
+    before, tip = out(root, "rev-parse", "HEAD"), out(root, "rev-parse", ref)
+    if before == tip and not out(root, "status", "--porcelain", "--untracked-files=no"):
         raise drifted
-    tip = run("rev-parse", "--short=12", "HEAD").stdout.strip()
+    script = Path(sys.argv[0]).resolve()
+    argv, cwd = [sys.executable, *sys.argv], None
+    if (
+        out(root, "symbolic-ref", "-q", "HEAD") == f"refs/heads/{base}"
+        and not out(root, "status", "--porcelain", "--untracked-files=no")
+        and not run(root, "merge", "-q", "--ff-only", ref).returncode
+        and out(root, "rev-parse", "HEAD") != before
+    ):
+        where = f"this checkout fast-forwarded to origin/{base}"
+    else:
+        fresh = Path(tempfile.mkdtemp(prefix=f"land-{base.replace('/', '-')}-")).resolve()
+        added = run(root, "worktree", "add", "-q", "--detach", str(fresh), tip)
+        if added.returncode:
+            fresh.rmdir()
+            raise drifted
+        gitdir = Path(out(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        os.environ[WORKTREES_ENV] = json.dumps([*made, [str(gitdir), str(fresh)]])
+        # the running script as the base has it; one outside the checkout is not drift, so it stays as it is
+        if script.is_relative_to(root.resolve()):
+            argv[1] = str(fresh / script.relative_to(root.resolve()))
+            if not Path(argv[1]).exists():  # the base lacks it: nothing to run again from
+                reap([[str(gitdir), str(fresh)]])
+                raise drifted
+        cwd, where = fresh, f"a fresh worktree of origin/{base} ({fresh})"
     print(
-        f"{drifted} -- this checkout fast-forwarded to origin/{base} ({tip}): land runs again from its code",
+        f"{drifted} -- {where} ({tip[:12]}): land runs again from its code",
         flush=True,
     )
     os.environ[DEADLINE_ENV] = repr(deadline)
@@ -4980,7 +5067,20 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
         os.environ[WAIT_ENV] = ":".join(
             [repr(waited["since"]), waited["id"], waited["base"], waited["tip"]]
         )
-    os.execv(sys.executable, [sys.executable, *sys.argv])
+    if cwd:
+        os.chdir(cwd)
+    os.execv(sys.executable, argv)
+
+
+def reap(worktrees: Sequence[Sequence[str]]) -> None:
+    """Remove the fresh worktrees that caught_up made for a land run again, now that none of them is this process's cwd."""
+    os.chdir(tempfile.gettempdir())
+    for gitdir, path in worktrees:
+        subprocess.run(
+            ["git", f"--git-dir={gitdir}", "worktree", "remove", "--force", path],
+            capture_output=True,
+            check=False,
+        )
 
 
 def poll_seconds() -> float:
