@@ -187,3 +187,26 @@ def test_an_unreadable_poll_changes_nothing(
 ) -> None:
     monkeypatch.setattr(omnigent_agent, "read_loop_events", lambda cwd=None: None)
     assert len(wait_run(tmp_path, monkeypatch, 0.0)) == 1  # no events known: today's deadline
+
+
+def test_another_branchs_beating_event_is_no_life_for_this_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    EVENTS.emit(
+        "land", "elsewhere", "waiting", cwd=clone
+    )  # a beat on a branch this lead's PR is not on
+    assert len(wait_run(tmp_path, monkeypatch, 60.0)) == 1
+
+
+def test_an_end_written_again_with_the_same_state_is_told_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending(WAIT, 30))
+    og.snap = {"status": "idle"}
+    again = lambda poll: EVENTS.emit(
+        "land", "feat", "ok", cwd=clone
+    )  # a new commit, the same state
+    supervised(og, registry, monkeypatch, 4, again, notify="cos", console=True, fyi="post")
+    told_ = [e for e in events_of(registry) if "land ok on feat" in e["line"]]
+    assert len(told_) == 1
