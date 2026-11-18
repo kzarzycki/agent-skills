@@ -5887,7 +5887,8 @@ def end_of(over: dict) -> str:
     its last turn. News of a child's end is keyed on it, never on the waiter's turn (a reply to the
     news is a new waiter turn, so the same end would be news again each poll); a child that ends
     again, after a revive or a restart, has a new last message and so is news again."""
-    if over["state"] in ("failed", "archived"):  # a revive is a user message: a new failure after it
+    # a revive is a user message: a new failure after it
+    if over["state"] in ("failed", "archived"):
         return f"{over['turn']}|{over['last']}"
     return over["turn"] or f"{over['turn_at']:.0f}"
 
