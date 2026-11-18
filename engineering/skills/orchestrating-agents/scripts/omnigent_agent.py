@@ -7143,7 +7143,10 @@ def supervise_registry(
                         kind = "landed" if lead.get("wait") in ("supervisor", "cos") else "news"
                         say(f"{head}: {line}", lead_sid, f"landed:{repo}:{sha}:{lead_sid}", kind)
                         told_any = True
-                if not told_any:
+                if not merged_prs and merged.startswith("not read"):
+                    # no PR number to route by: the repo's first lead hears why, as before
+                    say(line, sid, f"landed:{repo}:{sha}", "landed")
+                elif not told_any:
                     print(
                         stamp(f"landed:{repo}:{sha}: recorded, no lead waits on it: {merged}"),
                         flush=True,
