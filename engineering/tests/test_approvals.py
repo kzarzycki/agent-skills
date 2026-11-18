@@ -1796,7 +1796,9 @@ def github(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     """Every write approvals.py makes, instead of making it."""
     calls: list[tuple[Any, ...]] = []
     monkeypatch.setattr(
-        approvals, "comment", lambda number, body: calls.append(("comment", number, body))
+        approvals,
+        "comment",
+        lambda number, body: calls.append(("comment", number, approvals.machine(body))),
     )
     monkeypatch.setattr(
         approvals, "label", lambda number, name, add: calls.append(("label", number, name, add))
@@ -2016,7 +2018,7 @@ def test_an_edit_after_the_owners_label_is_never_recorded_under_it(
     later = {**spec, "body": "the spec, edited", "lastEditedAt": "2026-10-01T12:00:00Z"}
     sent: list[str] = []
     monkeypatch.setattr(approvals, "label", lambda *args, **kwargs: sent.append("label"))
-    monkeypatch.setattr(approvals, "comment", lambda _n, body: sent.append(body))
+    monkeypatch.setattr(approvals, "comment", lambda _n, body: sent.append(approvals.machine(body)))
     monkeypatch.setattr(approvals, "issue_node", lambda _n: later)
     with pytest.raises(
         approvals.Refused, match=r"#1: the spec was edited after the owner's `approved:spec`"
@@ -2506,11 +2508,12 @@ def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
     assert review == {
         "commit_id": HEAD,
         "event": "COMMENT",
-        "body": (
-            f"{heading} on {HEAD[:7]}.\n\n"
+        "body": approvals.fold(
+            f"{heading} on {HEAD[:7]}.",
+            "VERDICT: 1 blocker, 0 major, 2 minor\nSATISFIED: no\nRisk: low — a test fixture",
             "## Criteria\n\n- A draft never merges on its skipped checks: Before merge line 1, its check.\n\n"
             f"- **{heading} · S1** (minor): a file outside the diff, at `docs/old.md:3`, a file outside the diff\n\n"
-            "The doc.\n\nVERDICT: 1 blocker, 0 major, 2 minor\nSATISFIED: no\nRisk: low — a test fixture\n"
+            "The doc.",
         ),
         "comments": [
             {
@@ -3470,7 +3473,8 @@ def lands(
         raise AssertionError(args)
 
     def comment(number: int, body: str) -> None:
-        state["comments"].append((number, body))
+        state["comments"].append((number, approvals.machine(body)))
+        state.setdefault("raw", []).append((number, body))
         pulls[number]["comments"]["nodes"].append(note(body))
 
     def listed() -> list[dict[str, Any]]:
@@ -3956,9 +3960,9 @@ def test_a_conflicting_pr_is_skipped_with_one_comment_per_head(lands: dict[str, 
     assert lands["merged"]() == ["7"]
     assert lands["land"]()[0] == 1  # alone on the new main it still conflicts, and says it no more
     [(number, body)] = [
-        (n, body) for n, body in lands["comments"] if body.startswith(approvals.CONFLICTS)
+        (n, body) for n, body in lands["raw"] if body.startswith(approvals.CONFLICTS)
     ]
-    assert (number, body.splitlines()[1]) == (8, f"Head: {head}")
+    assert (number, approvals.machine(body).splitlines()[1]) == (8, f"Head: {head}")
     assert "It conflicts with main plus #7 merged before it: merge origin/main in" in body
 
 
@@ -8104,7 +8108,9 @@ def test_batch_posts_the_proof_check_merge_reads(
     batched: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     posted: list[tuple[int, str]] = []
-    monkeypatch.setattr(approvals, "comment", lambda number, body: posted.append((number, body)))
+    monkeypatch.setattr(
+        approvals, "comment", lambda number, body: posted.append((number, approvals.machine(body)))
+    )
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     log = tmp_path / "gate.log"
     log.write_text("".join(f"line {n}\n" for n in range(1, 41)) + "gate: green\n")
@@ -8147,7 +8153,9 @@ def test_batch_posts_a_proof_for_a_head_admitted_on_its_head_proof_and_refuses_o
     head, merged, batch = batched["head"], batched["merge"], batched["batch"]
     loop = add(QUEUED, "loop", HEAD_PROOF)
     posted: list[str] = []
-    monkeypatch.setattr(approvals, "comment", lambda _number, body: posted.append(body))
+    monkeypatch.setattr(
+        approvals, "comment", lambda _number, body: posted.append(approvals.machine(body))
+    )
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
     log = tmp_path / "gate.log"
@@ -8986,7 +8994,7 @@ def delegating(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list
     posted: list[tuple[int, str]] = []
 
     def comment(number: int, body: str) -> None:
-        posted.append((number, body))
+        posted.append((number, approvals.machine(body)))
         landing["pull"]["comments"]["nodes"].append(note(body))
 
     monkeypatch.setattr(approvals, "comment", comment)
@@ -9805,7 +9813,7 @@ def ordering(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[s
     landing["posted"] = []
 
     def comment(number: int, body: str) -> None:
-        landing["posted"].append((number, body))
+        landing["posted"].append((number, approvals.machine(body)))
         landing["pull"]["comments"]["nodes"].append(note(body))
 
     def label(number: int, name: str, add: bool) -> None:
@@ -10595,7 +10603,7 @@ def test_over_rest_the_owners_label_is_recorded_only_when_nothing_changed_the_sp
         ]
     }
     sent: list[str] = []
-    monkeypatch.setattr(approvals, "comment", lambda _n, body: sent.append(body))
+    monkeypatch.setattr(approvals, "comment", lambda _n, body: sent.append(approvals.machine(body)))
     monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
     spec["updatedAt"] = LABELED
     approvals.adopted([spec], loop)

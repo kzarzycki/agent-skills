@@ -171,7 +171,9 @@ def red_group(queue: dict[str, Any], group: str, job: int) -> None:
 
 
 def notes_on(queue: dict[str, Any], number: int, title: str) -> list[str]:
-    return [body for n, body in queue["comments"] if n == number and body.startswith(title + "\n")]
+    return [
+        body for n, body in queue.get("raw", []) if n == number and body.startswith(title + "\n")
+    ]
 
 
 def test_a_bare_land_enqueues_every_landable_pr_oldest_first_pinned_to_its_head(
