@@ -460,9 +460,10 @@ A verifier `start` (`--role verifier.md`) whose brief has a `- Reviewed head: <s
 posts a message that owes no report, such as the owner's words for a top-level lead, and
 returns at once. It reads no file but the message, so the lead may run on another host.
 Exit 0: the message is in the lead's history, or a copy it has not replied to already is, so a
-rerun sends no second one. Exit 5: queued, held until the lead's current step ends (a long
-foreground command) or until a person answers the approval prompt it prints; it lands then
-with no further call. Exit 4: not deliverable, and why (archived, a revive that failed, or
+rerun sends no second one. A message held only by the lead's current step (a long
+foreground command) is exit 0 too: the line says `queued until the session's current step
+ends` and it lands then, with no further call, and a rerun sends no second copy. Exit 5: queued
+behind an approval prompt it prints, until a person answers it; it lands then. Exit 4: not deliverable, and why (archived, a revive that failed, or
 neither pending nor in the history within `--confirm-seconds`, default 60). Exit 7: `SENT_UNCONFIRMED`, the message was posted and a later read (the poll that confirms it) failed, so it is out and unconfirmed; run the command again, it finds the copy and posts no second one (a failure before the post stays exit 1). A reaped runner is
 revived in place first, as `send` does. A question card (`sys_ask_user_question`)
 leaves the lead free: a plain `relay` is delivered beside it (exit 0), its line names the card

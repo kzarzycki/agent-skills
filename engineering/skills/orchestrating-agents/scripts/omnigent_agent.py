@@ -593,7 +593,8 @@ WAIT_FOR_STALL = 300.0  # seconds of silence in a live run's log that wait-for c
 LOG_TAIL = 30  # the lines of a red run's log wait-for prints
 GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
-# could revive, or relay could not deliver; relay left the message queued in the session
+# could revive, or relay could not deliver; relay left the message queued behind an approval
+# prompt or a question (one held only by the session's running step exits 0: it lands then)
 # send or relay posted the message, then a read that confirms it failed (6 is wait-for's)
 SENT_UNCONFIRMED = 7
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
@@ -2173,8 +2174,9 @@ def relay(
     by: str = "",
     skip: bool = False,
 ) -> str:
-    """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
-    the session holds it, ``Gone`` when it cannot be delivered. A question card leaves the session
+    """Post ``text`` to ``sid`` and return the line saying it was delivered, or queued behind the
+    session's running step (it lands when the step ends); raise ``Queued`` while a prompt or
+    question holds it, ``Gone`` when it cannot be delivered. A question card leaves the session
     free: ``text`` is delivered beside it, never answering it, and the line names the card still
     open. A question the harness blocks on holds ``text`` behind it (``Queued``): an unrelated
     relay arriving while it is open must not become its answer. With ``answer``, a session blocked only on
@@ -2222,7 +2224,9 @@ def relay(
             held.append(f"an approval prompt (`approve` answers it): {'; '.join(approvals)}")
         if asks:
             held.append(f"a question: {'; '.join(asks)}")
-        why = f"behind {' and '.join(held)}" if held else "until the session's current step ends"
+        if not held:  # only the running step holds it: it lands then, a delivery, not a failure
+            return f"session {sid}: queued until the session's current step ends\nit lands then"
+        why = f"behind {' and '.join(held)}"
         lands = "it lands then"
         if asks:  # nothing withdraws a queued input, so a rerun with --answer would land it twice
             how = (
@@ -7788,7 +7792,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         "--answer",
         action="store_true",
         help="give the message as the answer to the session's open question; without it, a"
-        " session waiting on a question holds the message behind it (exit 5)",
+        " session waiting on a question holds the message behind it (exit 5); one held only"
+        " by the session's running step exits 0 with the queued line",
     )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser("broadcast", description="relay one message file to many sessions at once")
