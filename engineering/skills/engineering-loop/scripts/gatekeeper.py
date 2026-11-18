@@ -2464,7 +2464,8 @@ def tiered(
 def pin_target(pull: dict[str, Any]) -> str | None:
     """The released pack tag (PACK_TAG of PACK_REPO) the PR pins, when its diff touches only the pin (PIN_FILES) and
     the pack's vendored skill files, and every vendored file in it equals the tag's byte for byte (by blob SHA, a hash
-    of the bytes; a removed one is one the tag lacks, and one main's own lock lists); else None. The lock at the head names the target: its pack
+    of the bytes; a removed one is one the tag lacks, and one main's own lock lists), and so does every file the head's
+    lock deploys, in the diff or not, with every skill the tag ships deployed and all its files present (deployed_is_tag); else None. The lock at the head names the target: its pack
     dependency's `resolved_ref`, whose `resolved_commit` must be the tag's commit, with apm.yml pinning that ref; a
     `resolved_ref` that is a full commit SHA names the release tag at that commit (sha_tag); a
     vendored file is one either side's lock lists among the pack's `deployed_files`. The tag is read from the pack's
@@ -2489,6 +2490,9 @@ def pin_target(pull: dict[str, Any]) -> str | None:
             return None
         base = pinned_pack(file_at(pull["baseRefOid"], "apm.lock.yaml"))
         released = tag_tree(PACK_REPO, tag)
+        placed = tree(
+            pull["headRefOid"]
+        )  # one read of the head's tree, for deployed_is_tag() below
     except (
         subprocess.CalledProcessError,
         OSError,
@@ -2498,9 +2502,11 @@ def pin_target(pull: dict[str, Any]) -> str | None:
         yaml.YAMLError,
     ):
         return None
-    if released is None or released[0].lower() != str(commit).lower():
+    if released is None or placed is None or released[0].lower() != str(commit).lower():
         return None
     files = released[1]
+    if not deployed_is_tag(deployed, virtual, files, placed):
+        return None
     owned = set(base[3] if base else ())  # main's lock alone controls what a PR may remove
     vendored = set(deployed) | owned
 
@@ -2528,6 +2534,45 @@ def pin_target(pull: dict[str, Any]) -> str | None:
         elif want not in files or files[want][1] != change.get("sha"):
             return None
     return tag
+
+
+def deployed_is_tag(
+    deployed: list[str],
+    virtual: str,
+    tagged: dict[str, tuple[str, str]],
+    placed: dict[str, tuple[str, str]],
+) -> bool:
+    """Whether the head's deployed pack files, in the diff or not, are the tag's: every file under a `deployed_files`
+    entry that maps to the pack (VENDORED) is in the tag at the same blob SHA, each such entry names a file in the
+    head's tree, and every file the tag ships for those skills is in the head's tree under the entry's root and
+    covered by an entry (a skill the tag ships that no entry deploys fails). `tagged` is tag_tree()'s files, `placed` tree()'s. An entry outside the pack's skills is
+    none of its files and is skipped."""
+    entries = [(d, found) for d in deployed if (found := VENDORED.fullmatch(d))]
+    roots: dict[
+        str, set[str]
+    ] = {}  # skill -> the roots (`.claude`, `.agents`) the lock deploys it under
+    for entry, found in entries:
+        root = entry[: found.start(1) - len("/skills/")]
+        roots.setdefault(found[1].split("/")[0], set()).add(root)
+        here = [p for p in placed if p == entry or p.startswith(f"{entry}/")]
+        if not here:
+            return False
+        for path in here:
+            want = f"{virtual}/skills/{path[len(root) + len('/skills/') :]}"
+            if want not in tagged or tagged[want][1] != placed[path][1]:
+                return False
+    for want in tagged:
+        skill, _, rest = want.removeprefix(f"{virtual}/skills/").partition("/")
+        if not want.startswith(f"{virtual}/skills/") or not rest:
+            continue
+        if skill not in roots:  # a skill the tag ships and the lock does not deploy
+            return False
+        for root in roots[skill]:
+            path = f"{root}/skills/{skill}/{rest}"
+            covered = any(path == d or path.startswith(f"{d}/") for d, _ in entries)
+            if path not in placed or not covered:
+                return False
+    return True
 
 
 def sha_tag(sha: str) -> str | None:
