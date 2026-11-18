@@ -386,7 +386,7 @@ def test_a_green_group_already_in_main_is_read_as_merged_before_github_reports_i
     cloud_queue["built"]["g1"] = "g1"  # its merge base with main is itself: main holds it
     cloud_queue["out"](7)
     assert cloud_queue["land"]("7") == (
-        approvals.WAITING,
+        0,
         [f"PR #7 left the merge queue merged at {head}"],
     )
     assert len(cloud_queue["enqueued"]) == 1

@@ -6619,7 +6619,7 @@ def queue_step(
     # GitHub takes a PR out of the queue a moment before it reports the merge
     if reason == QUEUE_MERGED:
         print(f"{where} left the merge queue merged at {head}")
-        return WAITING, True
+        return 0, False
     # the queue tests an entry on top of those ahead of it, so its conflict may be with one of them, not with the base:
     # it holds only while GitHub reports one, and waits while GitHub works it out again after the base moved
     mergeable = pull.get("mergeable")
