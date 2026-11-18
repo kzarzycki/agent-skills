@@ -13035,6 +13035,20 @@ def test_a_waited_pr_that_ends_the_same_way_on_a_new_head_is_news_again(
     assert len(told()) == 2
 
 
+def test_pr_settled_carries_the_head_gh_reports(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The head keys a waited PR's end, so it is asked of GitHub and returned."""
+    asked = []
+
+    def gh(*args: str, timeout: float = 0) -> str:
+        asked.append(args)
+        check = {"name": "gate", "status": "COMPLETED", "conclusion": "FAILURE"}
+        return json.dumps({"state": "OPEN", "headRefOid": "b2", "statusCheckRollup": [check]})
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    assert omnigent_agent.pr_settled(976) == (1, "PR #976 checks red: gate", "b2")
+    assert "headRefOid" in asked[0][-1]
+
+
 def test_a_started_child_that_fails_again_after_a_revive_is_news_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
