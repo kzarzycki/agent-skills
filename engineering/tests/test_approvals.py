@@ -329,7 +329,7 @@ def test_a_tracker_block_off_its_schema_is_refused_naming_the_key(
 
 def test_a_pr_that_closes_no_issue_skipped_the_spec() -> None:
     assert problems([]) == [
-        "the PR names no issue: it needs a `Closes #<spec>` or `Part of #<spec>` line for an approved spec"
+        "the PR names no issue: it needs a `Closes #<issue>` line for an approved spec"
     ]
 
 
@@ -1553,10 +1553,7 @@ def test_a_revert_with_one_extra_line_gets_every_proof_of_any_pr(
                 "PR #3 is not an exact revert of #1: `billing/rate.py` has 1 line(s) beyond the"
                 " inverse of #1, 0 missing. It needs every proof of any PR"
             ),
-            (
-                "the PR names no issue: it needs a `Closes #<spec>` or `Part of #<spec>` line for an"
-                " approved spec"
-            ),
+            ("the PR names no issue: it needs a `Closes #<issue>` line for an approved spec"),
             "PR #3: no verifier review posted (approvals.py verdict)",
         ],
     )

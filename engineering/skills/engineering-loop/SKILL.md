@@ -430,10 +430,10 @@ form), and `verifier` (the verifier's review on the head). Nothing here forbids 
 skips (the pack can't know a project's e2e or coverage tasks). The pass is keyed by that env, so it never stands in for a
 full one; a batch queue and a project's own CI read the label themselves. Without an `incubating` section the label means nothing.
 An `incubating` issue stays open while the feature incubates: `check merge` refuses a PR that would close one unless its
-body also says `Graduates #<n>`, and a PR that says it owes the full loop, labelled `incubating` or not. A slice uses
-`Part of #<n>`.
+body also says `Graduates #<n>`, and a PR that says it owes the full loop, labelled `incubating` or not. A slice closes its own
+sub-issue (`Closes #<sub-issue>`), never the epic.
 `approvals.py graduate <epic> --pr <n>` graduates an epic once PR <n> has merged with `Graduates #<epic>`: it comments,
-removes the label and then closes. The graduating PR says `Part of #<epic>` beside `Graduates #<epic>`, so GitHub leaves
+removes the label and then closes. The graduating PR says `Part of #<epic>` beside `Graduates #<epic>` (and a `Closes` for the sub-issue it finishes), so GitHub leaves
 the epic for that command. The workflow `.github/workflows/incubating-epic.yml` (an adopting project copies it) reopens
 an `incubating` issue someone closed, and puts a dropped label back on an open `epic`, each with a comment; both leave
 an issue alone once a `Graduated by` comment is on it. Anyone with write access can still graduate by hand: the
@@ -557,7 +557,7 @@ gatekeeper.md's policy (Settings) holds:
   `Sign-off: owner` or `Sign-off: none`, and `owner` there asks for it where no rule does.
   The PR links such an issue with `Implements #<n>`, which GitHub does not close, so the
   issue stays open for the sign-off, and every other issue with `Closes #<n>`; `Part of
-  #<n>` suits both. `check merge` refuses the wrong keyword, and so does `check build` on
+  #<n>` suits both as a link, but the PR still needs a closing line for one open issue (`check build`). `check merge` refuses the wrong keyword, and so does `check build` on
   a PR, so it is fixed before the PR reaches `land`. Without a `signoff` section
   no keyword is checked, and `Implements` is a link like `Part of`.
 
@@ -1165,14 +1165,15 @@ Everything real the PR leaves unfixed is placed before the report. The test: wou
 closing the spec's issue without it be dishonest?
 
 - **Yes, it is within the issue's own acceptance:** the issue stays open, the PR says
-  `Part of #n` instead of `Closes #n`, and a comment on the issue names what remains (a
+  `Part of #n` and closes a new sub-issue of #n that holds the part done (`check build`
+  refuses a PR with no `Closes`), and a comment on the issue names what remains (a
   comment, since an edit to the spec needs approving again).
 - **No, it is outside it** (a ledger entry, or a bug, a flaky test or a problem only the
   owner can fix, `needs-owner`, found outside the spec's diff): a new issue stating
   problem, cause, fix, acceptance and a `Found while #n …` line. It is a native sub-issue
   of the originating issue's epic, or of the originating issue itself when that issue's
   own goal contains it and it has no parent, which makes it an epic
-  ([issues.md](issues.md), Epics): the PR then says `Part of #n`, since an epic stays open
+  ([issues.md](issues.md), Epics): the PR then says `Closes #<that issue>`, since an epic stays open
   until its sub-issues are done. Otherwise it stands alone. Attached, it counts toward
   the epic's progress instead of starting a chain of follow-ups the board shows as a flat
   list.
