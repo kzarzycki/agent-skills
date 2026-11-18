@@ -13249,6 +13249,9 @@ def test_a_failed_workspace_read_is_tried_again_not_taken_for_no_repo(
         ),
         ("STILL WORKING: waiting on CoS\nWaits: whatever the worker says", False),
         ("STILL WORKING: spec filed\nCoS: https://x/1", True),
+        ("STILL WORKING: waiting\nWaits: supervisor (spec approval)\nCoS: https://x/1", True),
+        ("STILL WORKING: waiting\nWaits: supervisor and a run", True),
+        ("STILL WORKING: waiting\nWaits: CoS approval of the spec", True),
         ("STILL WORKING: waiting\nWaits: supervisor", True),
     ],
 )
@@ -13256,6 +13259,13 @@ def test_a_waits_line_that_does_not_parse_is_no_wait_on_the_supervisor_and_a_cos
     text: str, expected: bool
 ) -> None:
     assert omnigent_agent.waits_on(text, {}, COS) is expected
+
+
+def test_an_unparsed_waits_line_naming_the_supervisors_id_is_a_wait_on_it_by_the_named_check() -> (
+    None
+):
+    text = f"STILL WORKING: waiting\nWaits: session {COS} (spec)"
+    assert omnigent_agent.waits_on(text, {"named": [COS]}, COS) is True
 
 
 def told_idle(og) -> list[str]:
