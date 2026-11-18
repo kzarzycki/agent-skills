@@ -3,32 +3,10 @@ name: Engineering capability pack
 on:
   # Every PR, since `qualify` is a required check: a skipped run never reports, so GitHub never merges it (#394).
   pull_request:
+  # Every push to main runs the full suite: the landing gate runs only the touched tests (mise check-fast).
   push:
     branches:
       - main
-    paths:
-      - .github/workflows/engineering-*.yml
-      - .agents/**
-      - .claude/**
-      - .gitattributes
-      - docs/agents/**
-      - apm.yml
-      - apm.lock.yaml
-      - engineering/**
-      - content/**
-      - experimental/**
-      - research/**
-      - playwright/**
-      - utilities/**
-      - tools/capability_pack/**
-      - tests/capability_pack/**
-      - tests/automation/**
-      - mise.toml
-      - pyproject.toml
-      - uv.lock
-      - .claude-plugin/marketplace.json
-      - README.md
-      - CLAUDE.md
 
 permissions:
   contents: read
