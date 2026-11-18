@@ -50,7 +50,8 @@ it is out, delivery unconfirmed, and running ``send`` again is safe, since it fi
 copy before it posts; a failure before the post stays exit 1.
 ``relay`` posts a message that owes no report (an owner's words for a lead) and returns at once:
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
-one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
+one), or when only the session's running step holds it (``queued until the session's current step
+ends``, it lands then), 5 while an approval prompt or a question holds it, 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
 a later read failed (delivered, unconfirmed: run it again, it posts no second copy). An open
 question card (``sys_ask_user_question``: elicitation id ``question_…``, not ``elicit_question_…``) holds
@@ -610,7 +611,8 @@ WAIT_FOR_STALL = 300.0  # seconds of silence in a live run's log that wait-for c
 LOG_TAIL = 30  # the lines of a red run's log wait-for prints
 GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
-# could revive, or relay could not deliver; relay left the message queued in the session
+# could revive, or relay could not deliver; relay left the message queued behind an approval
+# prompt or a question (one held only by the session's running step exits 0: it lands then)
 # send or relay posted the message, then a read that confirms it failed (6 is wait-for's)
 SENT_UNCONFIRMED = 7
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
@@ -2190,8 +2192,9 @@ def relay(
     by: str = "",
     skip: bool = False,
 ) -> str:
-    """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
-    the session holds it, ``Gone`` when it cannot be delivered. A question card leaves the session
+    """Post ``text`` to ``sid`` and return the line saying it was delivered, or queued behind the
+    session's running step (it lands when the step ends); raise ``Queued`` while a prompt or
+    question holds it, ``Gone`` when it cannot be delivered. A question card leaves the session
     free: ``text`` is delivered beside it, never answering it, and the line names the card still
     open. A question the harness blocks on holds ``text`` behind it (``Queued``): an unrelated
     relay arriving while it is open must not become its answer. With ``answer``, a session blocked only on
@@ -2239,7 +2242,9 @@ def relay(
             held.append(f"an approval prompt (`approve` answers it): {'; '.join(approvals)}")
         if asks:
             held.append(f"a question: {'; '.join(asks)}")
-        why = f"behind {' and '.join(held)}" if held else "until the session's current step ends"
+        if not held:  # only the running step holds it: it lands then, a delivery, not a failure
+            return f"session {sid}: queued until the session's current step ends\nit lands then"
+        why = f"behind {' and '.join(held)}"
         lands = "it lands then"
         if asks:  # nothing withdraws a queued input, so a rerun with --answer would land it twice
             how = (
@@ -3591,6 +3596,25 @@ def harness_signature(env: dict[str, str] | None = None, home: Path | None = Non
     return signature("?", None)
 
 
+def newer_generation(model: str, listed: list[str]) -> list[str]:
+    """The listed models of the newest generation, when it is newer than ``model``'s: Codex's ids
+    are ``gpt-<generation>-<tier>`` and a generation may drop tiers (6.2 lists only sol and
+    astra), so any tier of a newer generation supersedes ``model``. Empty for an id of another
+    shape, since Claude's tiers carry versions of their own (fable 5.2 beside sonnet 5.5) and
+    never supersede each other. ponytail: Codex's naming only; add a family's pattern here when
+    another needs it."""
+
+    def generation(i: str) -> tuple[int, ...] | None:
+        found = re.fullmatch(r"gpt-(\d+(?:\.\d+)*)-[a-z]+", i)
+        return tuple(map(int, found[1].split("."))) if found else None
+
+    mine = generation(model)
+    newer = sorted(
+        ((g, i) for i in listed if mine and (g := generation(i)) and g > mine), reverse=True
+    )
+    return [i for g, i in newer if g == newer[0][0]]
+
+
 def model_for(agent: str, model: str | None = None) -> tuple[str | None, str]:
     """The model ``agent`` runs on and where it came from: ``model`` (``--model``), else
     ``$OMNIGENT_MODEL_<AGENT>`` (``-`` as ``_``), else ``DEFAULT_MODELS``; None for an agent with
@@ -3625,6 +3649,7 @@ def start(
     subscriber: str = "",
     pr: int | None = None,
     files: list[Path] | None = None,
+    allow_older_model: bool = False,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
@@ -3709,6 +3734,13 @@ def start(
             listed = [chosen]
         if chosen not in listed:
             raise Fail(f"{source}: {agent} lists no such model; it lists {', '.join(listed)}")
+        if (newer := newer_generation(chosen, listed)) and not allow_older_model:
+            raise Fail(
+                f"{source}: {chosen} is an older generation; {agent} lists {', '.join(newer)}."
+                " Run on the newest generation's model of the tier, else of the next tier up"
+                " (engineering-loop SKILL.md, Models), or pass --allow-older-model for a"
+                " deliberate pin"
+            )
     # The variable names only exist for the two aliases, like OMNIGENT_MODEL_<AGENT>.
     variable = f"OMNIGENT_EFFORT_{agent.upper()}"
     if picked := effort or (agent in AGENTS and os.environ.get(variable)) or None:
@@ -6579,7 +6611,7 @@ def supervise_registry(
                     raise Fail("it waits on a prompt, which the supervisor never answers")
                 relay(og, sid, text, ACTION_SECONDS)
             except (Queued, SentUnconfirmed):
-                pass  # held by the session's current step, or out and unconfirmed: it landed or lands
+                pass  # held behind a prompt or question, or out and unconfirmed: it lands or landed
             except Exception as e:  # noqa: BLE001 - never fatal; the chief of staff is told
                 intent["status"] = "failed"
                 head = f"{sid} {state['leads'].get(sid, {}).get('title') or ''}".rstrip()
@@ -7180,6 +7212,23 @@ def supervise_registry(
         last = max(float(info.get("updated_at") or 0), active(other))
         return time.time() - last < DEADLINE_SECONDS
 
+    def wait_repo(sid: str, named: str) -> str:
+        """The repository a wait's PR ref reads from: the one it names (``owner/repo#N``), else the
+        one ``sid``'s ``omni.pr`` label names, else the origin of its workspace (``repos``, read once),
+        since the supervisor's own directory may hold no remote. Empty when none resolves: ``gh``
+        then reads this directory's, and its refusal is the reason shown."""
+        if named:
+            return named
+        label = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
+        if label:
+            return label[0]
+        if sid not in repos:
+            try:
+                repos[sid] = workspace_repo(og, sid)
+            except Exception:  # noqa: BLE001 - not known: read again next poll
+                return ""
+        return repos[sid]
+
     def settled(lead: dict, pr: int, repo: str, fresh: bool = False):
         """``pr_settled`` for ``lead``, read at most once per ``PR_POLL_SECONDS`` unless ``fresh``,
         so the overdue check and the news check share one GitHub read."""
@@ -7215,7 +7264,7 @@ def supervise_registry(
             return False
         if ref := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", wait):  # a PR: GitHub says
             try:  # open with a check pending is a wait that is live; ended, it is news instead
-                return settled(lead, int(ref[2]), ref[1] or "") is None
+                return settled(lead, int(ref[2]), wait_repo(sid, ref[1] or "")) is None
             except Exception:  # noqa: BLE001 - unread: not known to be moving
                 return False
         if re.fullmatch(r"b(?=[a-z]{0,7}[0-9])[a-z0-9]{8}", wait):  # its own background job
@@ -7419,7 +7468,7 @@ def supervise_registry(
         for item in items:
             if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", item):
                 try:
-                    found = settled(lead, int(m[2]), m[1] or "", fresh=True)
+                    found = settled(lead, int(m[2]), wait_repo(sid, m[1] or ""), fresh=True)
                 except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
                     log(("pr", sid), f"{sid}: PR #{m[2]} not read: {reason(e)}")
                     pending = True
@@ -7989,6 +8038,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             " sonnet for claude-cloud and the harness default for any other agent)",
         )
         p.add_argument(
+            "--allow-older-model",
+            action="store_true",
+            help="run --model although the host lists a newer generation of its family",
+        )
+        p.add_argument(
             "--effort",
             help="reasoning effort, as the harness names its levels (claude: low, medium, high, xhigh, max)"
             " (default: $OMNIGENT_EFFORT_<AGENT>, e.g. OMNIGENT_EFFORT_CODEX, else the harness default)",
@@ -8083,7 +8137,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         "--answer",
         action="store_true",
         help="give the message as the answer to the session's open question; without it, a"
-        " session waiting on a question holds the message behind it (exit 5)",
+        " session waiting on a question holds the message behind it (exit 5); one held only"
+        " by the session's running step exits 0 with the queued line",
     )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser("broadcast", description="relay one message file to many sessions at once")
@@ -8890,6 +8945,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 args.role,
                 args.confirm_seconds,
                 model=args.model,
+                allow_older_model=args.allow_older_model,
                 effort=args.effort,
                 permission_mode=args.permission_mode,
                 top_level=args.top_level,

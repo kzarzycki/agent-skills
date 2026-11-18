@@ -67,7 +67,7 @@ time to compare.
 server refuses an ACP session that names no model, else its harness's default (Codex:
 `~/.codex/config.toml`), a verifier included. `start` refuses a model the agent's harness doesn't list on the host the child runs on
 (`GET /v1/hosts/<host>/harnesses/<harness>/model-options`: each row's `id` and `model`, so `sonnet` and
-`claude-sonnet-5-5` both pass), naming the ids it does, and one it can't check because the list doesn't load (an ACP harness has no host list: `start` passes the id on, saying so):
+`claude-sonnet-5-5` both pass), naming the ids it does, refuses a Codex model (`gpt-<generation>-<tier>`) when the list has a newer generation, naming it (`--allow-older-model` for a deliberate pin), and one it can't check because the list doesn't load (an ACP harness has no host list: `start` passes the id on, saying so):
 Omnigent launches an unlisted id on the harness default with no error. Pass `--model` on every start: the owner's model, the project's, else one fit for the job (engineering-loop SKILL.md, Models). A
 tier the project names resolves against the family's lineup (engineering-loop SKILL.md, Models): Codex lists
 its models in `~/.codex/models_cache.json`, each `slug` naming its generation and its `description` its role; a Claude Code
@@ -460,9 +460,10 @@ A verifier `start` (`--role verifier.md`) whose brief has a `- Reviewed head: <s
 posts a message that owes no report, such as the owner's words for a top-level lead, and
 returns at once. It reads no file but the message, so the lead may run on another host.
 Exit 0: the message is in the lead's history, or a copy it has not replied to already is, so a
-rerun sends no second one. Exit 5: queued, held until the lead's current step ends (a long
-foreground command) or until a person answers the approval prompt it prints; it lands then
-with no further call. Exit 4: not deliverable, and why (archived, a revive that failed, or
+rerun sends no second one. A message held only by the lead's current step (a long
+foreground command) is exit 0 too: the line says `queued until the session's current step
+ends` and it lands then, with no further call, and a rerun sends no second copy. Exit 5: queued
+behind an approval prompt it prints, until a person answers it; it lands then. Exit 4: not deliverable, and why (archived, a revive that failed, or
 neither pending nor in the history within `--confirm-seconds`, default 60). Exit 7: `SENT_UNCONFIRMED`, the message was posted and a later read (the poll that confirms it) failed, so it is out and unconfirmed; run the command again, it finds the copy and posts no second one (a failure before the post stays exit 1). A reaped runner is
 revived in place first, as `send` does. A question card (`sys_ask_user_question`)
 leaves the lead free: a plain `relay` is delivered beside it (exit 0), its line names the card

@@ -7077,14 +7077,18 @@ def test_relay_to_an_idle_session_is_delivered(
     assert omnigent_agent.text_of(og.sessions[sid][-1]) == "[relayed by cos]\ngo"
 
 
-def test_relay_to_a_session_in_a_long_step_returns_queued_and_a_rerun_sends_no_second_copy(
+def test_relay_held_only_by_a_running_step_exits_0_with_the_queued_line_and_a_rerun_sends_no_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = FakeOmnigent(hold=10**6)  # a foreground command that outlasts the call
     sid = og.create("claude", "lead")
-    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
-    assert "queued until the session's current step ends\nit lands then" in capsys.readouterr().err
-    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    out = capsys.readouterr()
+    assert (
+        out.out == f"session {sid}: queued until the session's current step ends\nit lands then\n"
+    )
+    assert out.err == ""
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
     assert og.posts == 1
 
 
@@ -7251,7 +7255,7 @@ def test_relay_rerun_answers_a_question_raised_behind_its_own_pending_copy(
     """Its own copy is no other input: waiting on it would exit 5 behind the question for good."""
     og = FakeOmnigent(hold=10**6)
     sid = og.create("claude", "lead")
-    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
     og.prompts = [QUESTION]
     assert relay(og, sid, tmp_path, monkeypatch, "go", "--answer") == 0
     assert og.resolved == [(sid, "e1", "accept", {"Which base?": "go"})]
@@ -13166,6 +13170,73 @@ def test_an_open_pr_a_lead_waits_on_costs_one_github_read_a_minute(
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("labelled", [False, True])
+def test_a_bare_pr_wait_is_read_from_the_leads_repo_not_the_supervisors_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, labelled: bool
+) -> None:
+    """The supervisor can run where no git remote exists, so ``gh pr view N`` there fails: the repo
+    comes from the lead's omni.pr label, else its workspace's origin."""
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976", m={"status": "idle"})
+    if labelled:
+        og.snaps["m"]["labels"] = {omnigent_agent.PR_LABEL: "o/r#12"}
+    else:
+        in_checkout(og)
+    calls: list[tuple] = []
+
+    def gh(*args: str, **_: object) -> str:
+        calls.append(args)
+        if "-R" not in args:
+            raise omnigent_agent.Fail("gh pr view 976: no git remotes found")
+        return '{"state":"OPEN","statusCheckRollup":[],"headRefOid":"h"}'
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert calls and all(c[c.index("-R") + 1] == "o/r" for c in calls if "pr" in c), calls
+
+
+def bare_pr_wait_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait: str, og_setup
+) -> list[str]:
+    """The ``-R`` repo of each ``gh pr view`` the supervisor makes for a lead's wait, two polls."""
+    registry, og = manager(tmp_path, f"STILL WORKING: x\nWaits: {wait}", m={"status": "idle"})
+    og_setup(og)
+    calls: list[str] = []
+
+    def gh(*args: str, **_: object) -> str:
+        if args[:2] == ("pr", "view"):
+            calls.append(args[args.index("-R") + 1] if "-R" in args else "")
+        return '{"state":"OPEN","statusCheckRollup":[],"headRefOid":"h"}'
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    return calls
+
+
+def test_a_ref_that_names_its_repo_keeps_it_over_the_leads_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    label = lambda og: og.snaps["m"].update(labels={omnigent_agent.PR_LABEL: "o/r#12"})
+    assert set(bare_pr_wait_reads(tmp_path, monkeypatch, "x/y#976", label)) == {"x/y"}
+
+
+def test_a_failed_workspace_read_is_tried_again_not_taken_for_no_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def flaky(og) -> None:
+        in_checkout(og)
+        read, failed = og.read_file, []
+
+        def read_file(sid: str, path: str) -> str:
+            if not failed:  # the server is restarting: the first read fails
+                failed.append(path)
+                raise omnigent_agent.Fail("HTTP 502")
+            return read(sid, path)
+
+        og.read_file = read_file
+
+    assert bare_pr_wait_reads(tmp_path, monkeypatch, "#976", flaky)[-1] == "o/r"
+
+
 def told_idle(og) -> list[str]:
     return [t for s, t in og.inbox if s == "m" and "went idle" in t]
 
@@ -13275,3 +13346,49 @@ def test_a_childs_news_carries_the_first_line_of_its_last_message(
     og.histories[WORKER] = [ending("Report: all 12 checks pass, nothing to fix.", 100)]
     supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
     assert "all 12 checks pass" in told_idle(og)[0]
+
+
+def test_start_refuses_a_model_a_newer_generation_supersedes(tmp_path: Path) -> None:
+    """6.2 lists only sol and astra, so a mid-tier 6.1 terra is older than any of them; a pin may stay."""
+    og = FakeOmnigent()
+    og.listed = ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "gpt-6-luna", "sonnet"]
+    run = lambda m, **k: omnigent_agent.start(
+        og, "codex", "t", "do X", tmp_path / "r.md", None, 0, model=m, **k
+    )
+    with pytest.raises(
+        omnigent_agent.Fail,
+        match="gpt-6.1-terra is an older generation.*gpt-6.2-sol, gpt-6.2-astra",
+    ):
+        run("gpt-6.1-terra")
+    assert not og.sessions
+    run("gpt-6.2-sol")
+    run("gpt-6.1-terra", allow_older_model=True)
+    assert omnigent_agent.newer_generation("sonnet", og.listed) == []
+    assert omnigent_agent.newer_generation("gpt-6.2-sol", og.listed) == []
+    assert omnigent_agent.newer_generation("gpt-6-luna", og.listed) == [
+        "gpt-6.2-sol",
+        "gpt-6.2-astra",
+    ]  # only the newest generation: a hint from 6.1 would be refused again
+
+
+@pytest.mark.parametrize(("flags", "code"), [([], 1), (["--allow-older-model"], 0)])
+def test_start_cli_passes_allow_older_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    code: int,
+) -> None:
+    """The flag reaches start(): refused without it, a session with it."""
+    og = FakeOmnigent()
+    og.listed = ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra"]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "codex", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main([*argv, "--model", "gpt-6.1-terra", *flags]) == code
+    if code:
+        assert "gpt-6.2-sol, gpt-6.2-astra" in capsys.readouterr().err
+        assert not og.sessions
+    else:
+        assert og.sessions

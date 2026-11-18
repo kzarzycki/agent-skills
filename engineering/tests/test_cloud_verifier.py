@@ -7,6 +7,7 @@ import base64
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import time
 import urllib.error
@@ -387,7 +388,8 @@ def checkout(tmp_path, monkeypatch):
             return subprocess.CompletedProcess(cmd, 137, "", "")  # killed: no message
         if cmd[:2] == ("gh", "api"):
             assert "body=@-" in cmd  # the body goes in through stdin
-            posted.append(kw["input"])
+            # the Seconds: footer is the timing's (test_cloud_verifier_pass_seconds.py), not the report's
+            posted.append(re.sub(r"\n\nSeconds: start.*\Z", "\n", kw["input"], flags=re.DOTALL))
             return subprocess.CompletedProcess(cmd, 0, "https://example.com/comment/1\n", "")
         return real_run(*cmd, check=check, **kw)
 
@@ -663,7 +665,7 @@ def test_the_report_is_posted_with_its_line_ends_and_odd_bytes_do_not_fail_the_p
     work, _, brief, posted, seen = checkout
     seen["do"] = lambda: (work / "tmp/loop/pr7-v1.md").write_bytes(b"# R\r\nSATISFIED: yes\r\n\xff")
     assert cv.verify(7, brief, None, None) == 0
-    assert posted == ["# R\r\nSATISFIED: yes\r\n\ufffd"]
+    assert posted == ["# R\r\nSATISFIED: yes\r\n\ufffd\n"]  # the footer ends it with a line end
 
 
 def test_a_report_at_the_top_of_the_checkout_exempts_only_itself(checkout) -> None:
