@@ -170,7 +170,7 @@ the rest, exiting 1 when a finish failed; it keeps a ``--pr`` worker, ``--force`
 repository its label names) is merged or closed, saying why, and a PR it can't read keeps it; ``reap --merged [--pr N]``
 also finishes every live ``--pr`` worker whose PR is merged or closed (``approvals.py land`` starts it detached for each PR it merged); it cannot tell a child still owing its report from a finished one, so it runs once every
 report is in. Finishing archives the session, which keeps its transcript; nothing here deletes a
-session. A session running with no new history item for ``OMNIGENT_STUCK_SECONDS`` (default 1800, longer than a foreground
+session. A session running with no new item the agent wrote (``agent_progress_at``: a message, reasoning, tool call or result, and, once it has acted, a new brief or revive; not a nudge or a server heartbeat) for ``OMNIGENT_STUCK_SECONDS`` (default 1800, longer than a foreground
 command or a heavy-slot wait) is stuck: ``status`` and ``watch`` report it once as ``stuck (no activity for N min)`` (``run``'s and ``supervise``'s look at a child owing a report says so once too, naming ``reap --force``), and
 ``reap --force`` stops its turn and archives it, printing its workspace to check with ``git status`` (a dead mutation run can
 leave its patch applied); a running session with recent activity stays kept.
@@ -505,6 +505,8 @@ LEADS_FIELD = "leads="
 DIRECT_FIELD = "direct"
 # The supervisor's own lines to a followed lead, which start no new progress chain.
 OWN_LINES = ("Supervisor: ", REVIVED, NO_REPORT)
+# Those of them that are no progress for the agent: a revive starts a new runner, which counts.
+NO_PROGRESS_LINES = tuple(l for l in OWN_LINES if l != REVIVED)
 # A followed lead's turn end that names one of these is news at once; any other waits for quiet.
 ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED)\b", re.MULTILINE)
 # A followed lead and its live children writing nothing for this long since a turn end: the end
@@ -5062,13 +5064,51 @@ def reap(
     return lines, failed
 
 
+def agent_progress_at(items: list[dict]) -> float | None:
+    """When the agent last wrote a history item, None when it wrote none (or none is dated). The
+    one definition of progress, shared by ``stuck_minutes`` and the supervisor's progress deadline.
+    The agent's items are an assistant message, a reasoning item, a tool call and its result (a
+    type ending ``_call`` or ``_call_output``). Once the agent has written one, the newest user
+    message (a new brief, a relay) counts too, since it starts the agent's turn; a session whose
+    agent wrote nothing has no progress (``stuck_minutes`` counts it from its brief). Every server
+    item (``resource_event``, a heartbeat, a status or system event) is never its progress,
+    however recent: the server writes them whether or not the agent works."""
+    dated = [i for i in items if i.get("created_at")]
+    wrote = [
+        float(i["created_at"])
+        for i in dated
+        if (i.get("type") == "message" and i.get("role") == "assistant")
+        or str(i.get("type")).endswith(("_call", "_call_output"))
+        or i.get("type") == "reasoning"
+    ]
+    if not wrote:
+        return None
+    # once it has acted, the newest instruction to it (a new brief, a relay) starts its turn: the
+    # clock runs from there, not from the previous turn's last item. A revive line counts (it starts
+    # a new runner); the supervisor's nudges and every server item do not.
+    briefs = [
+        float(i["created_at"])
+        for i in dated
+        if i.get("type") == "message"
+        and i.get("role") == "user"
+        and not text_of(i).strip().startswith(NO_PROGRESS_LINES)
+    ]
+    return max(wrote + briefs)
+
+
 def stuck_minutes(info: dict, items: list[dict]) -> int | None:
-    """Whole minutes a running session has written no history item, once that passes
-    ``STUCK_SECONDS``, else None. A history with no dated item says nothing, so it is not stuck."""
+    """Whole minutes a running session has made no progress (``agent_progress_at``), once that
+    passes ``STUCK_SECONDS``, else None. A session whose agent wrote nothing counts from its first
+    item, the brief's arrival; a history with no dated item says nothing, so it is not stuck."""
     if str(info.get("status")) not in RUNNING:
         return None
     dated = [float(i["created_at"]) for i in items if i.get("created_at")]
-    quiet = time.time() - max(dated, default=time.time())
+    since = agent_progress_at(items)
+    if since is None:
+        since = min(dated, default=None)
+    if since is None:
+        return None
+    quiet = time.time() - since
     return int(quiet // 60) if quiet > STUCK_SECONDS else None
 
 
@@ -6150,12 +6190,18 @@ def waits_on(text: str, lead: dict, notify: str | None) -> bool:
     """Whether a lead's ``STILL WORKING`` wait names the session the supervisor notifies: a
     ``Waits: supervisor`` line, its full id, the words ``pm``, ``pm's``, ``manager``, ``you``,
     ``CoS`` or ``chief of staff`` after "waiting on", or a ``CoS:`` request line in the turn. A
-    ``Waits:`` line naming anything else is exact: prose then decides nothing."""
+    ``Waits:`` line naming anything else is exact: prose then decides nothing, and a ``Waits:`` line that
+    does not parse decides alone too: a wait on the supervisor when it says ``supervisor``, ``CoS`` or ``chief of staff``, else none."""
     if tr := trailer_of(text):
         return "supervisor" in tr or bool(notify and tr.get("session") == notify)
     if notify and notify in (lead.get("named") or []):
         return True
     start = text.find("STILL WORKING")
+    # a Waits: line that does not parse still says what the lead waits on: it decides, not the prose or footer
+    if start >= 0 and (found := TRAILER.findall(text[start:])):
+        return bool(
+            re.search(r"\b(?:supervisor|cos|chief\s+of\s+staff)\b", found[-1], re.IGNORECASE)
+        )
     return start >= 0 and bool(SUPERVISOR_WAIT.search(text[start:]) or COS_LINE.search(text))
 
 
@@ -7016,22 +7062,10 @@ def supervise_registry(
         if lead["state"] in ("blocked", "failed") and lead["state"] != was:
             # a new failure or prompt, also with the same error: its own event, kept on restart
             lead["occurrences"] = lead.get("occurrences", 0) + 1
-        # its own history counts, not a message to it: a nudge is no progress
-        own = [
-            float(i.get("created_at") or 0)
-            for i in items
-            if not from_user(i) and i.get("type") != "resource_event"
-        ]
-        # once it has acted or been seen, a new instruction to it (a relay, the owner typing)
-        # starts a new chain too; the supervisor's own lines do not. On first sight progress
-        # counts from then, not from its brief.
-        own += [
-            float(i.get("created_at") or 0)
-            for i in items
-            if (own or lead.get("progress_at"))
-            and from_user(i)
-            and not text_of(i).strip().startswith(OWN_LINES)
-        ]
+        # the one definition of progress: ``agent_progress_at`` (a nudge is none, a new brief once
+        # it has acted is one); with no activity at all, progress counts from first sight
+        progress = agent_progress_at(items)
+        own = [progress] if progress else []
         if time.monotonic() - looked.get(sid, -LABEL_SECONDS) >= LABEL_SECONDS:
             looked[sid] = time.monotonic()  # its children too, one read a minute
             own.append(active(sid))

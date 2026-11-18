@@ -62,7 +62,7 @@ def waiting(monkeypatch: pytest.MonkeyPatch, lands: dict[str, Any], pushed: None
 
 def moved(state: dict[str, Any], tmp: Path) -> str:
     """Another land merges a change to the script into origin's main: the new tip."""
-    other = tmp / "other"
+    other = tmp / f"other{len(list(tmp.glob('other*')))}"
     git_in(tmp, "clone", "-q", str(state["origin"]), str(other))
     (other / SCRIPT).write_text((other / SCRIPT).read_text() + "\n# another land's change\n")
     git_in(
@@ -104,9 +104,14 @@ def test_a_waiting_land_whose_base_moved_its_script_follows_the_base_and_lands(
     "checkout",
     ["an edited tracked file", "a detached head", "another branch", "a commit the base lacks"],
 )
-def test_any_other_checkout_keeps_the_refusal(
-    waiting: dict[str, Any], tmp_path: Path, checkout: str
+def test_any_other_checkout_runs_again_from_a_fresh_worktree_of_the_base(
+    waiting: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    checkout: str,
 ) -> None:
+    """A lead's linked worktree on a PR branch or a detached head (#1314): its own files are never moved, and the run
+    again is from a detached worktree of the fetched base, whose script is the base's."""
     work = waiting["work"]
     if checkout == "an edited tracked file":
         (work / "app.py").write_text("value = 2\n")
@@ -117,11 +122,35 @@ def test_any_other_checkout_keeps_the_refusal(
             work, "switch", "-q", *(["--detach"] if checkout == "a detached head" else ["-c", "pr"])
         )
     before = git_in(work, "rev-parse", "HEAD").strip()
-    moved(waiting, tmp_path)
-    with pytest.raises(approvals.Drifted, match="a PR's own copy would judge it"):
+    status = git_in(work, "status", "--porcelain")
+    tip = moved(waiting, tmp_path)
+    cwd = Path.cwd()
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(sys, "argv", [str(work / SCRIPT), "land", "7", "--wait"])
+    with pytest.raises(Restarted):
         approvals.land(7, wait=True)
-    assert git_in(work, "rev-parse", "HEAD").strip() == before
-    assert waiting["execs"] == []
+    fresh = Path.cwd()
+    monkeypatch.chdir(cwd)
+    assert git_in(work, "rev-parse", "HEAD").strip() == before  # the checkout is left as it was
+    assert git_in(work, "status", "--porcelain") == status
+    assert fresh != work and git_in(fresh, "rev-parse", "HEAD").strip() == tip
+    assert git_in(fresh, "branch", "--show-current").strip() == ""  # detached
+    [(path, argv, deadline)] = waiting["execs"]
+    assert (
+        path == sys.executable
+        and argv[1:] == [str(fresh / SCRIPT), "land", "7", "--wait"]
+        and deadline
+    )
+    assert (fresh / SCRIPT).read_text().endswith("# another land's change\n")
+    # the run in place of this one removes the worktree when it ends
+    monkeypatch.chdir(fresh)
+    monkeypatch.setattr(approvals, "landing", lambda _pr, _only=False: (0, False))
+    registered: list[Any] = []
+    monkeypatch.setattr(approvals.atexit, "register", lambda *call: registered.append(call))
+    assert approvals.land(7, wait=True) == 0
+    [(reap, *args)] = registered
+    reap(*args)
+    assert not fresh.exists()
 
 
 def test_a_drift_the_fast_forward_leaves_keeps_the_refusal(waiting: dict[str, Any]) -> None:
@@ -133,6 +162,24 @@ def test_a_drift_the_fast_forward_leaves_keeps_the_refusal(waiting: dict[str, An
     with pytest.raises(approvals.Drifted):
         approvals.land(7, wait=True)
     assert waiting["execs"] == []
+
+
+def test_a_base_without_the_running_script_leaves_no_worktree_and_keeps_the_refusal(
+    waiting: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = waiting["work"]
+    git_in(work, "switch", "-q", "--detach")
+    other = tmp_path / "other"
+    git_in(tmp_path, "clone", "-q", str(waiting["origin"]), str(other))
+    git_in(other, "rm", "-q", SCRIPT)
+    git_in(other, "-c", "user.email=l@example.com", "-c", "user.name=l", "commit", "-qm", "drop it")
+    git_in(other, "push", "-q", "origin", "HEAD:refs/heads/main")
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(sys, "argv", [str(work / SCRIPT), "land", "7", "--wait"])
+    with pytest.raises(approvals.Drifted):
+        approvals.land(7, wait=True)
+    assert waiting["execs"] == []
+    assert git_in(work, "worktree", "list").count("\n") == 1
 
 
 def test_the_lock_is_released_before_the_run_again(
@@ -177,3 +224,33 @@ def test_the_run_again_keeps_the_first_runs_ceiling(
         approvals.time, "sleep", lambda _s: pytest.fail("waited past the first run's ceiling")
     )
     assert approvals.land(7, wait=True) == approvals.WAITING  # at once: no fresh 2 hours
+
+
+def test_two_base_moves_leave_no_worktree_behind(
+    waiting: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """execv runs no atexit, so each run again hands the earlier worktrees on: the last run removes all (B2)."""
+    work = waiting["work"]
+    git_in(work, "switch", "-q", "--detach")
+    cwd = Path.cwd()
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(sys, "argv", [str(work / SCRIPT), "land", "7", "--wait"])
+    fresh: list[Path] = []
+    for _ in range(2):  # each run is a new process: it starts with the environment alone
+        monkeypatch.setattr(approvals, "made", [])
+        moved(waiting, tmp_path)
+        with pytest.raises(Restarted):
+            approvals.land(7, wait=True)
+        fresh.append(Path.cwd())
+        monkeypatch.setattr(sys, "argv", [str(fresh[-1] / SCRIPT), "land", "7", "--wait"])
+        monkeypatch.setattr(approvals, "RUNNING", (str(fresh[-1] / SCRIPT),))
+    assert len(set(fresh)) == 2 and all(path.exists() for path in fresh)
+    monkeypatch.setattr(approvals, "made", [])
+    monkeypatch.setattr(approvals, "landing", lambda _pr, _only=False: (0, False))
+    registered: list[Any] = []
+    monkeypatch.setattr(approvals.atexit, "register", lambda *call: registered.append(call))
+    assert approvals.land(7, wait=True) == 0
+    for reap, *args in registered:
+        reap(*args)
+    monkeypatch.chdir(cwd)
+    assert not any(path.exists() for path in fresh)

@@ -352,7 +352,7 @@ which installs what its inline header declares. `scripts/browse.py` renders a we
 asked, and screenshots it (worker.md, Report; its docstring has the flags). `scripts/mutate.py` applies
 each mutation patch alone, runs the tests and restores the tree, writing a log stamped with the head: the worker
 runs it before its report and the verifier in review (verifier.md, Mutation-check the new tests; its
-docstring has the log format and exit codes).
+docstring has the log format and exit codes). `scripts/events.py` writes and reads a step's state as a git ref (`emit`, `read`, `wait`, `clear`); the kinds, states, beat intervals and `event.json` fields are in [events.md](events.md), which a producer or a reader of an event reads first.
 
 **Acceptance checks.** Each scriptable Before merge line of a spec becomes a check committed in
 its PR, so a later change that breaks the example fails a run rather than a reader's memory.
@@ -430,10 +430,10 @@ form), and `verifier` (the verifier's review on the head). Nothing here forbids 
 skips (the pack can't know a project's e2e or coverage tasks). The pass is keyed by that env, so it never stands in for a
 full one; a batch queue and a project's own CI read the label themselves. Without an `incubating` section the label means nothing.
 An `incubating` issue stays open while the feature incubates: `check merge` refuses a PR that would close one unless its
-body also says `Graduates #<n>`, and a PR that says it owes the full loop, labelled `incubating` or not. A slice uses
-`Part of #<n>`.
+body also says `Graduates #<n>`, and a PR that says it owes the full loop, labelled `incubating` or not. A slice closes its own
+sub-issue (`Closes #<sub-issue>`), never the epic.
 `approvals.py graduate <epic> --pr <n>` graduates an epic once PR <n> has merged with `Graduates #<epic>`: it comments,
-removes the label and then closes. The graduating PR says `Part of #<epic>` beside `Graduates #<epic>`, so GitHub leaves
+removes the label and then closes. The graduating PR says `Part of #<epic>` beside `Graduates #<epic>` (and a `Closes` for the sub-issue it finishes), so GitHub leaves
 the epic for that command. The workflow `.github/workflows/incubating-epic.yml` (an adopting project copies it) reopens
 an `incubating` issue someone closed, and puts a dropped label back on an open `epic`, each with a comment; both leave
 an issue alone once a `Graduated by` comment is on it. Anyone with write access can still graduate by hand: the
@@ -557,7 +557,7 @@ gatekeeper.md's policy (Settings) holds:
   `Sign-off: owner` or `Sign-off: none`, and `owner` there asks for it where no rule does.
   The PR links such an issue with `Implements #<n>`, which GitHub does not close, so the
   issue stays open for the sign-off, and every other issue with `Closes #<n>`; `Part of
-  #<n>` suits both. `check merge` refuses the wrong keyword, and so does `check build` on
+  #<n>` suits both as a link, but the PR still needs a closing line for one open issue (`check build`). `check merge` refuses the wrong keyword, and so does `check build` on
   a PR, so it is fixed before the PR reaches `land`. Without a `signoff` section
   no keyword is checked, and `Implements` is a link like `Part of`.
 
@@ -580,8 +580,8 @@ print whose go they used. Into the default branch it is refused unless the polic
 `origin/<base>` sets `delegate: all` under `loop` (a branch's own edit of it is not the owner's;
 a base with no policy file leaves the default branch's), and there a delegate's go counts only while it does; without the
 key (`feature`) the owner's go alone covers the default branch. A status covers one commit, so
-it never covers code the approver did not see; it carries to a head whose commits since are
-only merges of the base, once the verifier's pass there says `Logic change: none`. Into the default branch these are the only go:
+it never covers code the approver did not see; it carries to a head that only takes the base in
+(the catch-up rule below), else to one whose commits since are only merges of the base, once the verifier's pass there says `Logic change: none`. Into the default branch these are the only go:
 anyone with triage rights can add a label, so `approved:merge` there is no go. On a change whose level asks no go
 `approved:merge` means nothing. On a PR into a feature branch (any base but the default
 branch) the label added after the head's push is a go too, and it may be the delegated
@@ -687,7 +687,7 @@ read again right after is the head pin. `approvals.py`'s docstring has each rule
 
 `land <pr>... --only` lands those PRs alone and leaves every other PR untouched, for a lead that must not land another lead's work.
 With `--wait` it is one background command that ends when the PR landed or needs someone
-(exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction; on a base with GitHub's merge queue it ends once the PR is enqueued, exit 0, and polls nothing). A land that waits from a clean checkout of the base follows the base when another land changes the loop's scripts or policy, so no caller needs to pull and start it again. Never run `gh pr
+(exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction; on a base with GitHub's merge queue it ends once the PR is enqueued, exit 0, and polls nothing). A land that waits follows the base when another land changes the loop's scripts or policy, so no caller needs to pull and start it again: from a clean checkout of the base it fast-forwards that checkout, from any other (a linked worktree on a PR branch or a detached head, an edited tracked file) it leaves the checkout alone and runs again from a fresh detached worktree of the fetched base, removed when it ends. Never run `gh pr
 ready` or `gh pr merge` by hand, because `land` is what refuses a PR whose proof is missing. A repo with
 neither `docs/agents/gatekeeper.md` nor `docs/agents/loop.md` has no rules: `land` there needs each named issue to carry
 `approved:spec` and not `needs-owner`, and the PR's own proofs. A post that names a private project, its repo or a host can't be taken back, since
@@ -706,6 +706,16 @@ and `ci: false` still work for one release and print a `deprecated:` line each, 
 keeps landing while it adopts the batch `land`: `land` gates the merged result itself, so a
 queue of its own, a carried verdict and a `local-ci` pass on the head add nothing. Adopting
 means deleting the project's queue and those keys from gatekeeper.md.
+
+A verdict, and the owner's go, recorded on head H stay valid for a new head H' that only takes the base in with no hand edit,
+so `land` and `check merge` ask for no new verifier pass and no new `Logic change: none`. The gate computes the proof
+(`catch_up`, one function for the verdict and the go) and prints which one carried it and from which head: for a rebase,
+`git range-diff` of `merge-base(H, base)..H` against `merge-base(H', base)..H'` marks every commit `=`, with none added or
+dropped; for a merge of the base, every commit after H is a merge of the base whose first parent is the previous head and
+whose `git show --remerge-diff` is empty. A resolved conflict, a changed or new commit, or a dropped one keeps the old
+rule: no verdict on H' until a verifier reviews it, and the go carries only on `Logic change: none`. A clean catch-up
+changes no line the PR wrote, so only what the old pass would have read for how main's new code meets the PR's is left
+to the head's own gate; a project that sets `carry_over_main` keeps its own `except` rule for the verdict instead.
 
 Deprecated: with gatekeeper.md's `carry_over_main` section, merging main into a PR head H keeps H's verdict
 when git shows the merges changed nothing the PR's code reads: every commit from the new
@@ -1049,6 +1059,9 @@ or the owner's private network.
   found on the way) waits for that PR to land and starts from main, because on its branch
   it restarts the PR's review and CI and couples two concerns; chains of follow-up PRs come
   from PRs landing slower than they are produced, and fast landing makes the wait cheap.
+  `approvals.py overlap <pr>` (or `overlap --files <path>...` for a story with no PR yet) lists the other open
+  PRs into the same base that change a file this one does, with each side's hunk lines and whether the two heads
+  merge cleanly (`brief` prints it on stderr), so the lead lands or orders the overlapping ones first.
   Never push to a PR someone else owns, since that rewrites work under its owner: comment
   on it, or wait for it to land and start from main. Before filing an issue or starting a
   fix, search the open issues and PRs of this repo, and of the repo that owns the cause,
@@ -1159,14 +1172,15 @@ Everything real the PR leaves unfixed is placed before the report. The test: wou
 closing the spec's issue without it be dishonest?
 
 - **Yes, it is within the issue's own acceptance:** the issue stays open, the PR says
-  `Part of #n` instead of `Closes #n`, and a comment on the issue names what remains (a
+  `Part of #n` and closes a new sub-issue of #n that holds the part done (`check build`
+  refuses a PR with no `Closes`), and a comment on the issue names what remains (a
   comment, since an edit to the spec needs approving again).
 - **No, it is outside it** (a ledger entry, or a bug, a flaky test or a problem only the
   owner can fix, `needs-owner`, found outside the spec's diff): a new issue stating
   problem, cause, fix, acceptance and a `Found while #n …` line. It is a native sub-issue
   of the originating issue's epic, or of the originating issue itself when that issue's
   own goal contains it and it has no parent, which makes it an epic
-  ([issues.md](issues.md), Epics): the PR then says `Part of #n`, since an epic stays open
+  ([issues.md](issues.md), Epics): the PR then says `Closes #<that issue>`, since an epic stays open
   until its sub-issues are done. Otherwise it stands alone. Attached, it counts toward
   the epic's progress instead of starting a chain of follow-ups the board shows as a flat
   list.

@@ -148,11 +148,15 @@ def _status_follows_the_pull(
 
 @pytest.fixture(autouse=True)
 def _brief_head_merges(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """approvals.py's brief checks the PR's head merges into its base with git: its other tests have no such repo, so
-    the check reads clean there. test_approvals_brief_conflict.py runs the real one."""
+    """approvals.py's brief checks the PR's head merges into its base with git, and lists the open PRs that change the
+    same files: its other tests have no such repo, so the check reads clean there and no open PR is listed, which keeps
+    them off the live `gh`. test_approvals_brief_conflict.py runs the real merge check, test_approvals_overlap.py its
+    own list."""
     module = request.module
     if module.__name__ != "test_approvals_brief_conflict" and hasattr(module, "approvals"):
         monkeypatch.setattr(module.approvals, "conflicted", lambda _pr, _base, _head: [])
+    if module.__name__ != "test_approvals_overlap" and hasattr(module, "approvals"):
+        monkeypatch.setattr(module.approvals, "open_pull_files", lambda _limit: [])
 
 
 @pytest.fixture(autouse=True)

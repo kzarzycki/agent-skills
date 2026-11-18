@@ -99,8 +99,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    blocks what, environment facts, gates, the model and session id of each agent, and every worktree and
    branch the run creates (step 10 removes them). Agents get its path, never its content.
    The spec is the only issue for the work itself; SKILL.md, Triage places what the PR
-   leaves unfixed, and the PR says `Part of` instead of `Closes` when that leaves the spec
-   open. A workspace holding several repos (a change that needs them together) changes
+   leaves unfixed. Every PR carries a `Closes` line for an open issue, since GitHub shows a PR in an
+   issue's Development panel only for a closing keyword and `check build` refuses a PR without one: a slice
+   of an epic closes its own sub-issue, never the epic. A PR that finishes only part of a spec closes a
+   new sub-issue of it that holds the part done, and says `Part of` for the spec. A workspace holding several repos (a change that needs them together) changes
    only where things go: each PR's issue, branch, worktree, gates and landing follow its
    own repo's `docs/agents/` files, and the notes say which repo each PR is in. Read each
    repo's `AGENTS.md` or `CLAUDE.md` and `docs/agents/` yourself, since a harness loads
@@ -118,6 +120,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
    both are yours (worker.md, Gates and push). Its model: SKILL.md, Models.
+   Before starting a worker, run `approvals.py overlap --files <the files the story names>`: another open PR that
+   changes the same files is landed first, or the story is ordered after it or stacked on it, since two PRs in one
+   function cost the second a merge round and a pass.
    Before the first worker starts, write the verifier's priority checks once, from the spec and
    its comments (a later comment can narrow the spec), into `tmp/loop/priorities-<pr>.md`, the
    file `approvals.py brief <pr> --priorities <file>` takes at step 7. Paste its lines into each
