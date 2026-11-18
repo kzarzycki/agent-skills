@@ -4431,7 +4431,7 @@ def pr_view(pr: int, timeout: float, repo: str = "") -> dict:
         str(pr),
         *(["-R", repo] if repo else []),
         "--json",
-        "state,statusCheckRollup",
+        "state,statusCheckRollup,headRefOid",
         timeout=timeout,
     )
     return json.loads(view)
@@ -4470,13 +4470,15 @@ def pr_outcome(
     return 0, f"PR #{pr} checks green ({len(checks)})"
 
 
-def pr_settled(pr: int, repo: str = "") -> tuple[int, str] | None:
+def pr_settled(pr: int, repo: str = "") -> tuple[int, str, str] | None:
     """A PR's end read from GitHub, not from any agent's words: closed or merged, else its checks
-    finished; None while it is open with a check pending or none registered yet."""
+    finished; None while it is open with a check pending or none registered yet. The code, the
+    line and the head the end belongs to: a push is a new head, so its end is a new end."""
     data = pr_view(pr, HTTP_SECONDS, repo)  # one read decides both conditions
-    return pr_outcome(pr, "closed", HTTP_SECONDS, repo, data) or pr_outcome(
+    end = pr_outcome(pr, "closed", HTTP_SECONDS, repo, data) or pr_outcome(
         pr, "checks", HTTP_SECONDS, repo, data
     )
+    return end and (*end, data.get("headRefOid") or "")
 
 
 def kill_group(pid: int) -> None:
@@ -7422,16 +7424,14 @@ def supervise_registry(
                     pending = True
                     continue
                 log(("pr", sid), None)
-                gen = lead.setdefault("pr_gen", {})
                 if found is None:
                     pending = True
-                    gen[item] = gen.get(item, 0) + 1  # new checks run: its next end is news again
                 elif found[0]:
                     failed = failed or found[1]
-                    ends.append(f"{found[1]}@{gen.get(item, 0)}")
+                    ends.append(f"{found[1]}@{found[2] if len(found) > 2 else ''}")
                 else:
                     done.append(found[1])
-                    ends.append(f"{found[1]}@{gen.get(item, 0)}")
+                    ends.append(f"{found[1]}@{found[2] if len(found) > 2 else ''}")
             elif (
                 item == "CI"
             ):  # not read here: a set naming it is not over; the deadline is the net

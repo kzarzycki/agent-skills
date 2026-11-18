@@ -13012,22 +13012,24 @@ def test_a_pr_a_lead_waits_on_that_merged_is_news_to_it_from_github_once(
     assert len(told_m) == 1 and reads  # once, however often it is read
 
 
-def test_a_waited_pr_red_again_after_a_fix_push_is_news_again(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("end", [(1, "PR #976 checks red: gate"), (0, "PR #976 checks green (3)")])
+def test_a_waited_pr_that_ends_the_same_way_on_a_new_head_is_news_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, end: tuple[int, str]
 ) -> None:
+    """A push is a new head, so the PR's next end is news though its text repeats and no poll saw
+    its checks pending; the same head after the lead's reply is not."""
     wait = "STILL WORKING: fix pushed\nWaits: #976"
     registry, og = manager(tmp_path, wait, m={"status": "idle"})
-    outcome = [(1, "PR #976 checks red: gate")]
-    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": outcome[0])
-    told = lambda: [t for s, t in og.inbox if s == "m" and "PR #976 checks red: gate" in t]
+    head = ["a1"]
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (*end, head[0]))
+    told = lambda: [t for s, t in og.inbox if s == "m" and end[1] in t]
     run = lambda: supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
     run()
-    assert len(told()) == 1
-    og.histories["m"].append(ending(wait, 0))  # the lead pushes a fix and waits again
-    outcome[0] = None  # CI runs on the new head
+    og.histories["m"].append(ending(wait, 0))  # a new lead turn, the PR unchanged
     skewed(monkeypatch)[0] = 4000.0
     run()
-    outcome[0] = (1, "PR #976 checks red: gate")  # red again, same text
+    assert len(told()) == 1
+    head[0] = "b2"  # the fix was pushed while the lead waited on something else
     skewed(monkeypatch)[0] = 8000.0
     run()
     assert len(told()) == 2
