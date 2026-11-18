@@ -360,6 +360,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      otherwise the base's merge closes issues whose work isn't on main. Once the work is on the default branch, close each issue a PR on the
      way names with `Closes` (never `Part of` or `Implements`) that is still open
      (`gh issue close <n> --comment "Landed in #<pr> (<merge sha>)."`) and move it to `Done`.
+   Every status comment you post follows github.md, Comment shape: a short result in view, the rest under `<details>`.
      When that was an epic's last open sub-issue, close and move the epic the same way. Where
      gatekeeper.md has a `signoff` section, each issue it names with `Implements` stays open for the
      owner's sign-off: move it to

@@ -55,7 +55,7 @@ report's own folder pass: a fresh clone ignores `tmp/loop/` only where the proje
 out the PR's head detached, so nothing the verifier does moves the worker's branch, runs `codex exec` on the brief with Codex's own sandbox
 off (the VM is the sandbox, and the verifier needs Docker and the network), under an `AGENT_SIGNATURE=` line
 naming the model and effort it was given, and posts the report as one comment on
-the PR through REST, with a footer of four lines, `Seconds: start|setup|review|post <n|unknown>`, and prints one
+the PR through REST, its closing `Head:`/`VERDICT:`/`SATISFIED:`/`Risk:` lines in view and the whole report folded under them (folding.py), with a folded footer of four lines, `Seconds: start|setup|review|post <n|unknown>`, and prints one
 JSON line, `{"pass_seconds": {...}, "pr": N, "head": "..."}` (`null` for an unknown phase), then the comment's URL as
 its last line. The phases, in whole seconds: `start`, from `--requested` (the unix time the carrier's lead asked for
 the pass; without it `unknown`) to `verify`'s own start; `setup`, from there to the CLI's start (install, fetch,
@@ -114,6 +114,10 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
+
+# importing folding.py would cache its bytecode in the installed skill folder, an untracked change there
+sys.dont_write_bytecode = True
+from folding import fold
 
 VAR = "CODEX_AUTH_JSON"
 HOSTS = ["chatgpt.com", "*.chatgpt.com", "auth.openai.com", "api.openai.com"]
@@ -689,8 +693,13 @@ def publish(pr: int, body: str, phases: dict[str, int | None]) -> None:
         )
 
     plain = body.rstrip("\n") + "\n\n"
+
+    def timed(times: dict[str, int | None]) -> str:
+        # folded, so the visible part stays the report's summary; each `Seconds:` line still starts its own line
+        return f"{plain}<details><summary>Timing</summary>\n\n{footer(times)}\n\n</details>\n"
+
     began = time.time()
-    url, ident = post(pr, f"{plain}{footer(phases)}\n")
+    url, ident = post(pr, timed(phases))
     took = round(time.time() - began)
     try:
         if ident:
@@ -702,7 +711,7 @@ def publish(pr: int, body: str, phases: dict[str, int | None]) -> None:
                 f"repos/{{owner}}/{{repo}}/issues/comments/{ident}",
                 "-F",
                 "body=@-",
-                input=f"{plain}{footer({**phases, 'post': took})}\n",
+                input=timed({**phases, "post": took}),
             )
             phases = {**phases, "post": took}  # the JSON line says what the comment says
     except (Refused, OSError, ValueError) as e:
@@ -822,7 +831,7 @@ def verify(
             return 4 if stuck else 1
         if not code and ask.strip():
             # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
-            publish(pr, f"## Verifier question\n\n{ask}", phases)
+            publish(pr, fold("## Verifier question", ask.strip().splitlines()[0], ask), phases)
             return 4 if stuck else 3
         if code or not re.search(r"^SATISFIED:", body, re.MULTILINE):
             print(
@@ -830,12 +839,25 @@ def verify(
             )
             print(pass_line(pr, phases))
             return 4 if stuck else 1
-        publish(pr, body, phases)
+        publish(pr, folded_report(body), phases)
     except (Refused, OSError, ValueError) as e:  # not posted, so a failed pass
         print(f"cloud_verifier: {e}", file=sys.stderr)
         print(pass_line(pr, phases))  # a failed pass's time counts too
         return 4 if stuck else 1
     return 4 if stuck else 0
+
+
+# the lines a reader of the comment needs in view: the verdict, as omnigent_agent.py's verdict_outcome reads them
+VERDICT_LINES = re.compile(r"^(?:Head|VERDICT|SATISFIED|Risk|Logic change):.*$", re.MULTILINE)
+
+
+def folded_report(body: str) -> str:
+    """The report as one comment: its closing `Head:`/`VERDICT:`/`SATISFIED:`/`Risk:` lines in view, the whole report
+    folded below them (folding.py). A `## Verifier question` stays unfolded and first, as the lead's wait reads it."""
+    last = {m.group(0).split(":")[0]: m.group(0).strip() for m in VERDICT_LINES.finditer(body)}
+    if not last:
+        return body
+    return fold("## Verifier report", "\n".join(last.values()), body.strip())
 
 
 def post(pr: int, body: str) -> tuple[str, str | None]:

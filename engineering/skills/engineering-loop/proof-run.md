@@ -28,6 +28,6 @@ listed (an acceptance line, an instance or device proof, a gate step), each in i
    empty, since a run that leaves the tree changed taints the next one.
 
 Write each log to `tmp/loop/<name>.log` and name each in your one report comment on PR
-#<n>, so it comes back as a file block and one that would pass the comment's size limit is
+#<n> (a short result and the log names in view, the rest under `<details>`, as github.md's Comment shape says), so it comes back as a file block and one that would pass the comment's size limit is
 cut to its last lines.
 ```

@@ -389,7 +389,7 @@ def checkout(tmp_path, monkeypatch):
         if cmd[:2] == ("gh", "api"):
             assert "body=@-" in cmd  # the body goes in through stdin
             # the Seconds: footer is the timing's (test_cloud_verifier_pass_seconds.py), not the report's
-            posted.append(re.sub(r"\n\nSeconds: start.*\Z", "\n", kw["input"], flags=re.DOTALL))
+            posted.append(re.sub(r"\n\n<details><summary>Timing</summary>.*\Z", "\n", kw["input"], flags=re.DOTALL))
             return subprocess.CompletedProcess(cmd, 0, "https://example.com/comment/1\n", "")
         return real_run(*cmd, check=check, **kw)
 
@@ -427,7 +427,10 @@ def test_a_pass_runs_on_the_pr_head_posts_the_report_file_and_returns_the_checko
     assert seen["head"] == head  # Codex ran on the PR's head, not the worker's branch
     assert seen["brief"] == "AGENT_SIGNATURE=codex/x/med\n" + brief.read_text()
     assert seen["cmd"][-5:] == ["-m", "gpt-x", "-c", "model_reasoning_effort=medium", "-"]
-    assert posted == [seen["report"]]  # the file the brief names, byte for byte
+    # the file the brief names, whole, folded under its closing lines (folding.py)
+    [comment] = posted
+    assert comment == cv.folded_report(seen["report"])
+    assert seen["report"].strip() in comment and "SATISFIED: yes" in comment.split("<details>")[0]
     assert capsys.readouterr().out.strip().endswith("https://example.com/comment/1")
     assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
 
@@ -436,7 +439,7 @@ def test_the_final_message_is_the_report_when_the_brief_names_no_file(checkout) 
     _, _, brief, posted, seen = checkout
     brief.write_text("Review PR #7.\n")
     assert cv.verify(7, brief, None, None) == 0
-    assert posted == ["final\nSATISFIED: yes\n"]
+    assert posted == [cv.folded_report("final\nSATISFIED: yes\n")]
     assert (
         "-m" not in seen["cmd"] and "-c" not in seen["cmd"]
     )  # no model named: Codex's configured default
@@ -450,7 +453,10 @@ def test_a_final_message_linking_the_report_file_yields_it_but_a_link_outside_th
     seen["do"] = lambda: (work / "tmp/loop/pr12-v2.md").write_text(report)
     seen["final"] = "Report: [pr12-v2.md](tmp/loop/pr12-v2.md)\n"
     assert cv.verify(7, brief, None, None) == 0
-    assert posted == [report] and "read from tmp/loop/pr12-v2.md" in capsys.readouterr().out
+    assert (
+        posted == [cv.folded_report(report)]
+        and "read from tmp/loop/pr12-v2.md" in capsys.readouterr().out
+    )
     posted.clear()
     outside = tmp_path / "outside.md"
     outside.write_text(report)
@@ -464,7 +470,7 @@ def test_a_final_message_with_its_own_verdict_beats_the_file_it_links(checkout) 
     seen["do"] = lambda: (work / "tmp/loop/pr12-v2.md").write_text("SATISFIED: yes\n")
     seen["final"] = "SATISFIED: no\nReport: [pr12-v2.md](tmp/loop/pr12-v2.md)\n"
     assert cv.verify(7, brief, None, None) == 0
-    assert posted == [seen["final"]]
+    assert posted == [cv.folded_report(seen["final"])]
 
 
 def test_a_report_without_a_satisfied_line_is_not_posted(checkout) -> None:
@@ -498,7 +504,13 @@ def test_a_question_is_posted_instead_of_a_report_and_an_earlier_pass_is_not_reu
         final="tmp/loop/pr7-v1.md.question\n", question="Please run the gate at this head.\n"
     )
     assert cv.verify(7, brief, None, None) == 3
-    assert posted == ["## Verifier question\n\nPlease run the gate at this head.\n"]
+    assert posted == [
+        cv.fold(
+            "## Verifier question",
+            "Please run the gate at this head.",
+            "Please run the gate at this head.\n",
+        )
+    ]
 
 
 def edit_gitignore(work: Path) -> None:
@@ -533,7 +545,7 @@ def test_a_tree_the_verifier_changed_is_reported_and_nothing_in_it_is_deleted(
         (work / name).write_text(text)
     seen.update(report="# Report\nSATISFIED: no\n", do=lambda: LEFTOVERS[leftover](work))
     assert cv.verify(7, brief, None, None) == 4
-    assert posted == [seen["report"]]  # the report still counts
+    assert posted == [cv.folded_report(seen["report"])]  # the report still counts
     assert "stays as it is" in capsys.readouterr().err
     assert {name: (work / name).read_text() for name in older} == older
     assert git(work, "rev-parse", "HEAD") == head  # where the verifier left it, for someone to look
@@ -567,7 +579,7 @@ def test_a_commit_by_the_verifier_never_moves_the_workers_branch(checkout) -> No
         "stray",
     )
     assert cv.verify(7, brief, None, None) == 0
-    assert posted == ["final\nSATISFIED: yes\n"]
+    assert posted == [cv.folded_report("final\nSATISFIED: yes\n")]
     assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
     assert git(work, "rev-parse", "claude/worker") == head
 
@@ -588,7 +600,7 @@ def test_an_ignored_file_in_the_way_of_the_return_stays_and_is_reported(checkout
     (work / ".git/info/exclude").write_text("old.txt\n")
     seen["do"] = lambda: (work / "old.txt").write_text("the verifier's notes\n")
     assert cv.verify(7, brief, None, None) == 4
-    assert posted == ["final\nSATISFIED: yes\n"]
+    assert posted == [cv.folded_report("final\nSATISFIED: yes\n")]
     assert (work / "old.txt").read_text() == "the verifier's notes\n"
     assert "old.txt" in capsys.readouterr().err
     assert git(work, "rev-parse", "HEAD") == head
@@ -665,7 +677,7 @@ def test_the_report_is_posted_with_its_line_ends_and_odd_bytes_do_not_fail_the_p
     work, _, brief, posted, seen = checkout
     seen["do"] = lambda: (work / "tmp/loop/pr7-v1.md").write_bytes(b"# R\r\nSATISFIED: yes\r\n\xff")
     assert cv.verify(7, brief, None, None) == 0
-    assert posted == ["# R\r\nSATISFIED: yes\r\n\ufffd\n"]  # the footer ends it with a line end
+    assert posted == [cv.folded_report("# R\r\nSATISFIED: yes\r\n\ufffd")]
 
 
 def test_a_report_at_the_top_of_the_checkout_exempts_only_itself(checkout) -> None:
@@ -689,7 +701,10 @@ def test_a_change_still_showing_after_the_return_is_reported(checkout, capsys, m
 
     monkeypatch.setattr(cv, "uncommitted", uncommitted)
     assert cv.verify(7, brief, None, None) == 4
-    assert posted == ["final\nSATISFIED: yes\n"] and " M sub" in capsys.readouterr().err
+    assert (
+        posted == [cv.folded_report("final\nSATISFIED: yes\n")]
+        and " M sub" in capsys.readouterr().err
+    )
 
 
 @pytest.mark.parametrize("before_codex", [True, False])
@@ -1023,12 +1038,12 @@ def test_a_second_question_with_the_line_and_a_first_question_are_passed_on(chec
     asked = "New in the answer: tmp/loop/a.log shows a failure.\nRun X.\n"
     seen.update(question=asked)
     assert cv.verify(7, brief, None, None) == 3
-    assert posted == [f"## Verifier question\n\n{asked}"]
+    assert posted == [cv.fold("## Verifier question", asked.strip().splitlines()[0], asked)]
     posted.clear()
     brief.write_text("Review PR #7.\n- Report: tmp/loop/pr7-v1.md\n")  # no answer yet
     seen.update(question="Run all of it.\n")
     assert cv.verify(7, brief, None, None) == 3
-    assert posted == ["## Verifier question\n\nRun all of it.\n"]
+    assert posted == [cv.fold("## Verifier question", "Run all of it.", "Run all of it.\n")]
 
 
 def test_the_thread_route_refuses_a_repeat_question_too(route_1b, monkeypatch) -> None:

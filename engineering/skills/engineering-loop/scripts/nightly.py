@@ -48,6 +48,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+# importing folding.py would cache its bytecode in the installed skill folder, an untracked change there
+sys.dont_write_bytecode = True
+from folding import fold
+
 # the environment variable naming the local deny list, a file kept outside the repo (gatekeeper.py's DENY_LIST)
 DENY_LIST = "LOOP_DENY_LIST"
 TITLE = "Nightly red since {}"
@@ -278,17 +282,14 @@ def red(args: argparse.Namespace) -> int:
     marker = MARKER.format(green, failed)
     if existing is None:
         lines = listing(hub, green, failed) or ["- none: the red commit is the last green one"]
-        body = "\n".join(
-            [
+        body = (
+            fold(
                 f"The nightly is red since `{green[:SHORT]}`, its last green commit; "
                 + f"it failed on `{failed[:SHORT]}`: {args.run}",
-                "",
-                "Merged on the default branch since the last green, oldest first; bisect from these:",
-                "",
-                *lines,
-                "",
-                marker,
-            ]
+                details="Merged on the default branch since the last green, oldest first; bisect from these:\n\n"
+                + "\n".join(lines),
+            )
+            + f"\n{marker}"
         )
     else:
         posts = [existing.get("body") or ""] + [
@@ -299,16 +300,12 @@ def red(args: argparse.Namespace) -> int:
         lines = listing(hub, since, failed) or [
             f"- none since `{since[:SHORT]}`, the red commit the last post names"
         ]
-        body = "\n".join(
-            [
+        body = (
+            fold(
                 f"Still red on `{failed[:SHORT]}`: {args.run}",
-                "",
-                f"Merged since `{since[:SHORT]}`, oldest first:",
-                "",
-                *lines,
-                "",
-                marker,
-            ]
+                details=f"Merged since `{since[:SHORT]}`, oldest first:\n\n" + "\n".join(lines),
+            )
+            + f"\n{marker}"
         )
     denied(body)
     if args.dry_run:

@@ -621,7 +621,7 @@ approval`, `record verdict` and `record checks`, and `report --json <report>` pr
 verifier report's facts as JSON, for a flow engine that should not parse the prose. It reaches
 the tracker, the forge and the evidence only through its ports, each run by the adapter the
 policy's `adapters` names (Settings); `scripts/github_adapter.py` is GitHub's, the default,
-read when a GitHub call misbehaves. Its own commit status counts under `loop:approvals` and,
+read when a GitHub call misbehaves. `scripts/folding.py` builds and reads the folded comments (github.md, Comment shape). Its own commit status counts under `loop:approvals` and,
 for one release line, under `gatekeeper`: a ruleset may require either, and the gate waits
 for neither. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land [<pr>...]` (the
 project's `loop:land` task). It lands every landable PR through the base's merge queue, the
