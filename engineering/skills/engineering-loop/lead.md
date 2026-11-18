@@ -491,6 +491,14 @@ of another harness or a cloud run that answers in its report does, which counts 
 any other only when it came after your own turn) reaches you as news within a minute of its end, named or not, and a PR your
 wait names that merged, closed or finished its checks the same, read from GitHub; an intermediate `STILL WORKING` turn of a
 child is no end, so the line only has to name what you wait on.
+`wait-on` also writes your state as the `lead` event on your branch (events.md): `waiting`. End `DONE` and `USER NEEDED` the
+same way, pasting the line printed: `omnigent_agent.py end-on done <result> --report <path>` (event `ok`) and
+`end-on needs-owner --question <file> --report <path>` (event `needs-owner`, with the whole question in `question.md`
+and its first line in the printed line). Write the question to a file, never into the line: the supervisor sends the owner
+the file's whole text, where a summary cuts a long one short. Once your branch has an event, the supervisor reads
+that and your parsed `Waits:` line and ignores a `CoS:` footer and prose waits; a `Waits:` line that does not parse
+gets one notice naming the accepted forms. A lead with no branch yet writes no event (its `needs-owner` is the issue's
+label), and a host whose push fails still prints the line: the event only reports the step.
 A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
 supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline
