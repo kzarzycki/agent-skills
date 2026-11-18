@@ -70,8 +70,8 @@ def test_relay_delivers_past_a_card_but_queues_behind_a_parked_question() -> Non
         omnigent_agent.relay(fake(PARKED, hold=10**6), "s1", "hi", 0)
     with pytest.raises(omnigent_agent.Queued, match="behind an approval prompt"):
         omnigent_agent.relay(fake(APPROVAL, hold=10**6), "s1", "hi", 0)
-    with pytest.raises(omnigent_agent.Queued, match="until the session's current step ends"):
-        omnigent_agent.relay(fake(CARD, hold=10**6), "s1", "hi", 0)
+    line = omnigent_agent.relay(fake(CARD, hold=10**6), "s1", "hi", 0)  # a step holds it: no raise
+    assert line == "session s1: queued until the session's current step ends\nit lands then"
 
 
 @pytest.mark.parametrize("held", [PARKED, APPROVAL])

@@ -7077,14 +7077,18 @@ def test_relay_to_an_idle_session_is_delivered(
     assert omnigent_agent.text_of(og.sessions[sid][-1]) == "[relayed by cos]\ngo"
 
 
-def test_relay_to_a_session_in_a_long_step_returns_queued_and_a_rerun_sends_no_second_copy(
+def test_relay_held_only_by_a_running_step_exits_0_with_the_queued_line_and_a_rerun_sends_no_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = FakeOmnigent(hold=10**6)  # a foreground command that outlasts the call
     sid = og.create("claude", "lead")
-    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
-    assert "queued until the session's current step ends\nit lands then" in capsys.readouterr().err
-    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    out = capsys.readouterr()
+    assert (
+        out.out == f"session {sid}: queued until the session's current step ends\nit lands then\n"
+    )
+    assert out.err == ""
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
     assert og.posts == 1
 
 
@@ -7251,7 +7255,7 @@ def test_relay_rerun_answers_a_question_raised_behind_its_own_pending_copy(
     """Its own copy is no other input: waiting on it would exit 5 behind the question for good."""
     og = FakeOmnigent(hold=10**6)
     sid = og.create("claude", "lead")
-    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
     og.prompts = [QUESTION]
     assert relay(og, sid, tmp_path, monkeypatch, "go", "--answer") == 0
     assert og.resolved == [(sid, "e1", "accept", {"Which base?": "go"})]
