@@ -10112,7 +10112,7 @@ def test_a_direct_lead_s_question_and_quiet_report_stay_with_the_owner() -> None
     assert omnigent_agent.route(done, no_model)[1] == "done"
 
 
-def test_a_later_instruction_to_a_lead_with_no_output_starts_a_new_chain(
+def test_a_later_instruction_to_a_lead_with_no_output_starts_no_new_chain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = following(tmp_path)
@@ -10126,7 +10126,9 @@ def test_a_later_instruction_to_a_lead_with_no_output_starts_a_new_chain(
             og.histories["a"].append(told("carry on with the revised task", 0))
 
     supervised(og, registry, monkeypatch, 3, later, notify="cos", console=True, fyi="post")
-    assert deadlines(registry) == []
+    # agent_progress_at is the one definition: a lead whose agent never wrote has no progress
+    # for a new brief to extend, so its deadline runs from first sight
+    assert len(deadlines(registry)) == 1
 
 
 def test_direct_marks_and_clears_a_registry_line_keeping_its_other_fields(
@@ -11924,6 +11926,44 @@ def test_a_session_with_an_old_agent_item_and_a_recent_user_item_is_kept_by_reap
     lines, failed = omnigent_agent.reap(og, ["k"], force=True)
     assert not failed and og.interrupted == [] and og.archived == []
     assert lines[0].startswith("k kid: kept (running)")
+
+
+def test_revived_session_is_kept_until_its_first_item() -> None:
+    og = running_session(60)
+    now = time.time()
+    og.sessions["k"] = [
+        {"id": "b", "type": "message", "role": "user", "created_at": now - 3 * 3600},
+        {"id": "a", "type": "message", "role": "assistant", "created_at": now - 2 * 3600},
+        {
+            "id": "r",
+            "type": "message",
+            "role": "user",
+            "created_at": now - 5,
+            "content": [
+                {"type": "input_text", "text": omnigent_agent.revive_line(Path("/r.md"), [])}
+            ],
+        },
+    ]
+    assert omnigent_agent.stuck_minutes({"status": "running"}, og.sessions["k"]) is None
+    lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert not failed and og.archived == [] and lines[0].startswith("k kid: kept (running)")
+
+
+def test_supervisor_and_stuck_agree_on_a_never_acted_lead_given_a_new_brief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000))
+    og.snap = {"status": "running"}
+    kw = {"notify": "cos", "console": True, "fyi": "post"}
+    supervised(og, registry, monkeypatch, 1, **kw)  # first sight
+    state = state_of(registry)
+    first = state["leads"]["a"]["progress_at"] = time.time() - 2000  # first seen a while ago
+    registry.with_suffix(".state.json").write_text(json.dumps(state))
+    og.histories["a"].append(told("Owner's answer: carry on.", 5))
+    supervised(og, registry, monkeypatch, 1, **kw)
+    assert omnigent_agent.agent_progress_at(og.histories["a"]) is None
+    assert state_of(registry)["leads"]["a"]["progress_at"] == first  # no second definition
 
 
 def test_a_session_whose_items_carry_no_date_is_not_stuck() -> None:

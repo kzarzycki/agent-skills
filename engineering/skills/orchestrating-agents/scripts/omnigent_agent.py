@@ -170,7 +170,7 @@ the rest, exiting 1 when a finish failed; it keeps a ``--pr`` worker, ``--force`
 repository its label names) is merged or closed, saying why, and a PR it can't read keeps it; ``reap --merged [--pr N]``
 also finishes every live ``--pr`` worker whose PR is merged or closed (``approvals.py land`` starts it detached for each PR it merged); it cannot tell a child still owing its report from a finished one, so it runs once every
 report is in. Finishing archives the session, which keeps its transcript; nothing here deletes a
-session. A session running with no new item the agent wrote (``agent_progress_at``: a message, reasoning, tool call or result; not the brief or a server heartbeat) for ``OMNIGENT_STUCK_SECONDS`` (default 1800, longer than a foreground
+session. A session running with no new item the agent wrote (``agent_progress_at``: a message, reasoning, tool call or result, and, once it has acted, a new brief or revive; not a nudge or a server heartbeat) for ``OMNIGENT_STUCK_SECONDS`` (default 1800, longer than a foreground
 command or a heavy-slot wait) is stuck: ``status`` and ``watch`` report it once as ``stuck (no activity for N min)`` (``run``'s and ``supervise``'s look at a child owing a report says so once too, naming ``reap --force``), and
 ``reap --force`` stops its turn and archives it, printing its workspace to check with ``git status`` (a dead mutation run can
 leave its patch applied); a running session with recent activity stays kept.
@@ -505,6 +505,8 @@ LEADS_FIELD = "leads="
 DIRECT_FIELD = "direct"
 # The supervisor's own lines to a followed lead, which start no new progress chain.
 OWN_LINES = ("Supervisor: ", REVIVED, NO_REPORT)
+# Those of them that are no progress for the agent: a revive starts a new runner, which counts.
+NO_PROGRESS_LINES = tuple(l for l in OWN_LINES if l != REVIVED)
 # A followed lead's turn end that names one of these is news at once; any other waits for quiet.
 ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED)\b", re.MULTILINE)
 # A followed lead and its live children writing nothing for this long since a turn end: the end
@@ -5055,14 +5057,14 @@ def agent_progress_at(items: list[dict]) -> float | None:
     if not wrote:
         return None
     # once it has acted, the newest instruction to it (a new brief, a relay) starts its turn: the
-    # clock runs from there, not from the previous turn's last item. The supervisor's own lines
-    # and every server item do not count.
+    # clock runs from there, not from the previous turn's last item. A revive line counts (it starts
+    # a new runner); the supervisor's nudges and every server item do not.
     briefs = [
         float(i["created_at"])
         for i in dated
         if i.get("type") == "message"
         and i.get("role") == "user"
-        and not text_of(i).strip().startswith(OWN_LINES)
+        and not text_of(i).strip().startswith(NO_PROGRESS_LINES)
     ]
     return max(wrote + briefs)
 
@@ -7027,19 +7029,10 @@ def supervise_registry(
         if lead["state"] in ("blocked", "failed") and lead["state"] != was:
             # a new failure or prompt, also with the same error: its own event, kept on restart
             lead["occurrences"] = lead.get("occurrences", 0) + 1
-        # its own history counts, not a message to it: a nudge is no progress
+        # the one definition of progress: ``agent_progress_at`` (a nudge is none, a new brief once
+        # it has acted is one); with no activity at all, progress counts from first sight
         progress = agent_progress_at(items)
         own = [progress] if progress else []
-        # once it has acted or been seen, a new instruction to it (a relay, the owner typing)
-        # starts a new chain too; the supervisor's own lines do not. On first sight progress
-        # counts from then, not from its brief.
-        own += [
-            float(i.get("created_at") or 0)
-            for i in items
-            if (own or lead.get("progress_at"))
-            and from_user(i)
-            and not text_of(i).strip().startswith(OWN_LINES)
-        ]
         if time.monotonic() - looked.get(sid, -LABEL_SECONDS) >= LABEL_SECONDS:
             looked[sid] = time.monotonic()  # its children too, one read a minute
             own.append(active(sid))
