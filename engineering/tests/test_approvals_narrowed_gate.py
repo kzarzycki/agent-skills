@@ -107,6 +107,15 @@ def test_a_base_git_cannot_resolve_runs_the_full_check_and_says_so(
     )
 
 
+def test_without_the_line_no_base_is_resolved(
+    repo: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo["loop"]("# Loop\n")
+    assert approvals.main(["affected-tests", "--base", "0" * 40]) == 0
+    assert repo["ran"]() == ["mise run check base=unset"]
+    assert "is no commit here" not in capsys.readouterr().err
+
+
 def test_the_opt_out_runs_the_full_check(repo: dict[str, Any]) -> None:
     repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n\nGate: full\n")
     assert approvals.main(["affected-tests", "--base", repo["base"]()]) == 0
@@ -170,6 +179,8 @@ def test_gate_steps_keep_their_steps_under_a_narrowed_base(repo: dict[str, Any])
     )
     with approvals.narrowed_to(repo["base"]()):
         assert [step["command"] for step in approvals.gate_plan()] == ["mise run unit"]
+        assert approvals.narrowed_gate() is None
+        assert approvals.gate()[0] == "unit: mise run unit"
 
 
 # --- land's batch gate ---
