@@ -24,9 +24,9 @@ EVENTS = omnigent_agent._load_events()
 WAIT = "STILL WORKING: waiting on #12"
 GREEN = (
     0,
-    "PR #12 checks green (1)",
+    "PR #12 is draft",
     "s1",
-)  # its checks are in: only a required check can keep it live
+)  # an open PR whose checks are settled and that is not waiting on checks: only events or a required check keep it live
 
 
 def git(cwd: Path, *args: str) -> None:
