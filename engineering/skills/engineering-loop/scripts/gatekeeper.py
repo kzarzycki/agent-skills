@@ -702,7 +702,7 @@ HELD, FREE = "landing lock: held", "landing lock: free"
 # seconds was left by a land that died, and is broken. A lock without the word is a land of an earlier version's: CEILING.
 # waiting order (#1216): a `land --wait` keeps one ref per waiting land, stamped at every poll, holding when it began to
 # wait; a free lock goes to the longest waiter that still stamps (younger than WAITER_STALE, above a poll with its jitter)
-WAITING = "refs/heads/loop-waiting/{}/{}"
+WAIT_REF = "refs/heads/loop-waiting/{}/{}"
 WAITER_STALE = 420
 waiting, waited = False, {"since": 0.0, "id": "", "base": ""}
 BEAT, STALE, BEATS, BEAT_PUSH = 300, 900, "beats", 120
@@ -5066,7 +5066,7 @@ def stamp_wait(base: str, pr: int | None) -> None:
             "--no-verify",
             "--force",
             "origin",
-            f"{commit}:{WAITING.format(base, waited['id'])}",
+            f"{commit}:{WAIT_REF.format(base, waited['id'])}",
         ],
         capture_output=True,
         text=True,
@@ -5081,7 +5081,7 @@ def waiter_ahead(base: str) -> str | None:
     try:
         refs = [
             x.split("\t")[1]
-            for x in git("ls-remote", "origin", WAITING.format(base, "*")).splitlines()
+            for x in git("ls-remote", "origin", WAIT_REF.format(base, "*")).splitlines()
         ]
         if refs:
             git(
@@ -5126,7 +5126,7 @@ def unwait() -> None:
                 "--no-verify",
                 "origin",
                 "--delete",
-                WAITING.format(waited["base"], waited["id"]),
+                WAIT_REF.format(waited["base"], waited["id"]),
             ],
             capture_output=True,
             text=True,

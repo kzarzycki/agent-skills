@@ -20,14 +20,27 @@ def waiter(lands: dict[str, Any], who: str, since: float, aged: int = 0) -> None
     when = f"@{int(time.time()) - aged} +0000"
     tree = git_in(lands["work"], "hash-object", "-t", "tree", "-w", os.devnull).strip()
     commit = subprocess.run(
-        ["git", "commit-tree", "-m", f"waiting [skip ci]\n\nsince {since:.0f}, PR #99, pid 1, nonce 0", tree],
+        [
+            "git",
+            "commit-tree",
+            "-m",
+            f"waiting [skip ci]\n\nsince {since:.0f}, PR #99, pid 1, nonce 0",
+            tree,
+        ],
         cwd=lands["work"],
         env={**os.environ, "GIT_COMMITTER_DATE": when},
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
-    git_in(lands["work"], "push", "-q", "-f", "origin", f"{commit}:{approvals.WAITING.format('main', who)}")
+    git_in(
+        lands["work"],
+        "push",
+        "-q",
+        "-f",
+        "origin",
+        f"{commit}:{approvals.WAIT_REF.format('main', who)}",
+    )
 
 
 @pytest.fixture
@@ -51,7 +64,9 @@ def test_a_land_that_began_waiting_later_leaves_the_free_lock_to_the_older_waite
     assert len(refs(lands)) == 2  # its own place is kept while it waits
 
 
-def test_a_waiter_that_stopped_stamping_does_not_hold_up_the_next(lands: dict[str, Any], waits: None) -> None:
+def test_a_waiter_that_stopped_stamping_does_not_hold_up_the_next(
+    lands: dict[str, Any], waits: None
+) -> None:
     waiter(lands, "aaaa", time.time() - 600, aged=approvals.WAITER_STALE + 60)
     assert approvals.locked("main", [], 7) is True
 
@@ -61,7 +76,9 @@ def test_a_younger_waiter_does_not_block_the_older(lands: dict[str, Any], waits:
     assert approvals.locked("main", [], 7) is True
 
 
-def test_taking_the_lock_deletes_the_lands_own_waiting_ref(lands: dict[str, Any], waits: None) -> None:
+def test_taking_the_lock_deletes_the_lands_own_waiting_ref(
+    lands: dict[str, Any], waits: None
+) -> None:
     assert approvals.locked("main", [], 7) is True
     assert refs(lands) == []
 
@@ -72,7 +89,7 @@ def test_a_land_without_wait_ignores_waiters_and_leaves_no_ref(
     monkeypatch.setattr(approvals, "waiting", False)
     waiter(lands, "aaaa", time.time() - 600)
     assert approvals.locked("main", [], 7) is True
-    assert refs(lands) == [approvals.WAITING.format("main", "aaaa")]
+    assert refs(lands) == [approvals.WAIT_REF.format("main", "aaaa")]
 
 
 def test_unwait_deletes_the_ref_and_forgets_the_place(lands: dict[str, Any], waits: None) -> None:
