@@ -7654,11 +7654,7 @@ def supervise_registry(
             for i in looks.get(sid, ({}, []))[1]
             if i.get("type") == "message" and i.get("role") == "assistant"
         ]
-        if (
-            said
-            and not has_event(sid)
-            and (bad := unparsed_trailer(text_of(said[-1]).strip()))
-        ):
+        if said and not has_event(sid) and (bad := unparsed_trailer(text_of(said[-1]).strip())):
             say(  # once per turn: the event id holds the turn
                 f"{sid} {lead['title']}".rstrip()
                 + f": your last line `Waits: {bad[:80]}` did not parse, so the supervisor reads it as "
