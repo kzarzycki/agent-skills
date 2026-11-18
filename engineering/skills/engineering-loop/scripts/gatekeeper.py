@@ -654,9 +654,12 @@ GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 # a finished check run or a set status that is not green: it turns green only when run again, never by waiting
 RED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"}
 # the commit status the project's approvals workflow posts: check merge's own output, under its name before #614 and,
-# for one release line, also under the gatekeeper's; the gate accepts either and waits for neither (OWN)
+# for one release line, also under the gatekeeper's; the gate accepts either and waits for neither (OWN, below)
 APPROVALS, GATEKEEPER = "loop:approvals", "gatekeeper"
-OWN = {APPROVALS, GATEKEEPER}
+# the commit status land posts on a head right before its merge call; a base that requires it must not make land wait for it
+LAND = "land"
+# every status the loop posts itself: a wait on the base's required checks never waits for them, a head_proof can't take them
+OWN = {APPROVALS, GATEKEEPER, LAND}
 # a URL in a `## Demo` comment; gh's --attach embeds a video or image as a bare user-attachments one, which plays inline
 URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
 ATTACHMENT = "https://github.com/user-attachments/"
@@ -4856,7 +4859,7 @@ def landing_here(
     not have readied goes back to draft (unreadied), and a verdict readied() kept for a draft it refused is reused only
     when the policy is unchanged."""
     # the base's rules pick the merge queue: GitHub's where they require one, else the local one, never a mix of the two;
-    # `loop:approvals` and `gatekeeper` are check merge's own statuses, on the proofs land reads itself
+    # `loop:approvals`, `gatekeeper` and `land` are the loop's own statuses (OWN), on the proofs land reads itself
     rules = required_checks(base) if rules is None else rules
     required = rules - OWN
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
@@ -5343,7 +5346,7 @@ def unreadied(
     """The named PRs once the policy changed while the land waited for the lock: each draft readied() marked ready that
     `landable` under the new policy would not ready goes back to draft, with a line
     saying why, and is returned as a draft with that verdict, so the batch leaves it out; the rest as they were."""
-    required = required_checks(base) - {APPROVALS}
+    required = required_checks(base) - OWN
     found = []
     for pull in named:
         if not pull.get("readied"):
@@ -6722,9 +6725,7 @@ def merges(
                 # repo's delete_branch_on_merge removes the remote one
                 body = land_body(pull) if method == "squash" else None
                 print(f"{where} lands as a {method}")
-                post_status(
-                    head, "land", f"Landing under the lock {lock_name(base)}, nonce {nonce}"
-                )
+                post_status(head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}")
                 posted = True
                 try:
                     port("forge").merge(pull["number"], method, body, head)
@@ -6748,7 +6749,7 @@ def merges(
                 # GitHub keeps the newest status per context: an error replaces the success, so a later merge of
                 # this head made without land is refused again
                 try:
-                    post_status(head, "land", f"Not merged: {why}"[:140], "error")
+                    post_status(head, LAND, f"Not merged: {why}"[:140], "error")
                 except subprocess.CalledProcessError as failure:
                     print(
                         f"{where}: its `land` success could not be withdrawn: {stderr_of(failure)}"
