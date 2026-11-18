@@ -28,6 +28,7 @@
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
+    uv run scripts/approvals.py heavy --plan               # the host's gate slot count and the limit that set it
 
 gatekeeper.py is the gatekeeper; approvals.py, its name before #614, runs it for one release line, every verb above
 unchanged. Its own names for three of them, and one verb more:
@@ -334,8 +335,14 @@ counts for nothing. A step without `paths`, with an empty list, or whose paths m
 the tree, as above; a change to `gate_steps` changes every keyed step's key. A cloud session runs no `host` step: `local-ci --record` there runs the rest, says
 which step it left and exits 0, with no head proof and no pass on the whole gate, which `local-ci <pr>` and `land` need
 and refuse there. Each step that runs, or the one gate, holds the host gate slot (an exclusive flock on
-`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, n up to `GATE_SLOTS`, a third of the cores by default) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
-path so a wrapper in it takes no lock of its own, and none when this process already runs under it; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
+`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, n up to the host's slot count) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
+path so a wrapper in it takes no lock of its own, and none when this process already runs under it. The count is `GATE_SLOTS`
+when it is a whole number from 1; else, where loop.md has the line `Gate cost: <cores> cores, <GB> GB` (optional
+`, reserve <GB> GB`, by default a quarter of the host's total memory, at least 4 GB), the smaller of the cores ÷ the
+cost's cores and (total memory − reserve) ÷ the cost's GB, at least 1; without the line, a third of the cores, at least
+1. `GATE_SLOTS=off` takes no slot at all. `heavy --plan` prints the count and the limit that set it, `slots <n>:
+<cores|memory|GATE_SLOTS|off> (<cores> cores, <GB> GB, cost <c> cores <m> GB, reserve <r> GB)`, as the template's
+`gate-slot --plan` does, and a wait for a slot says the same line; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
 nothing and exits with the check's code, so it is the gate while iterating too and its clean green run, the last one,
 records itself.
 Unless it already leads its own session, `local-ci` starts itself again in a new one, stdin from /dev/null, and follows
@@ -555,6 +562,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 from types import ModuleType
 from typing import Any, NamedTuple, NoReturn
@@ -1899,7 +1907,9 @@ def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
         number, owners = issue["number"], assignees(issue)
         if not owners and (login := approver(issue)):
             try:
-                comment(number, f"{ASSIGNED}{login}\nBy: loop\nPR: #{pull['number']}\n")
+                comment(
+                    number, fold(f"{ASSIGNED}{login}", details=f"By: loop\nPR: #{pull['number']}")
+                )
             except subprocess.CalledProcessError as exc:
                 found.append(
                     f"#{number}: did not assign @{login}: could not record the claim ({(exc.stderr or '').strip() or exc})"
@@ -2055,7 +2065,7 @@ def spec_holder(issue: dict[str, Any]) -> dict[str, Any]:
 
 def parsed(body: str, point: str) -> dict[str, str] | None:
     """An `Approved: <point>` comment's lower-cased `Key: value` lines; None for any other comment."""
-    lines = body.strip().splitlines()
+    lines = machine(body).strip().splitlines()
     if lines and lines[0].strip() in VOICED.values():  # the plain line atop a merge record
         lines = lines[1:]
     if not lines or lines[0].strip() != f"Approved: {point}":
@@ -3186,7 +3196,7 @@ def queued(pull: dict[str, Any], loop: str | None = None) -> list[str] | None:
     ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
     where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
     for note in notes(pull):
-        lines = note["body"].strip().splitlines()
+        lines = machine(note["body"]).strip().splitlines()
         if not lines or lines[0].strip() != BATCHED:
             continue
         header = itertools.takewhile(
@@ -3560,21 +3570,19 @@ def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
         tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
     except OSError:
         tail = []
-    body = (
-        f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n"
+    body = fold(
+        BATCHED,
+        f"The merge queue's batch {'passed' if code == 0 else 'failed'} the gate with {head[:7]} in it (exit {code}).",
+        f"Head: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n"
         + (
             f"{env_line(record['env'])}Gated: {record['time']}\n"
             if record
             else f"Admitted: {entry}\n"
         )
-        + f"Log: {log}\n"
+        + f"Log: {log}",
     )
     if tail:
-        body += (
-            "\n<details><summary>The gate's last lines</summary>\n\n````\n"
-            + "\n".join(tail)
-            + "\n````\n</details>\n"
-        )
+        body += "\n" + folded("The gate's last lines", tail)
     comment(pr, body)
     return 0
 
@@ -3800,14 +3808,28 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
         post_status(
             head, OWNER_GO, f"{who.capitalize()} withdrew their go on {head[:12]}", state="failure"
         )
-        comment(number, f"Withdrawn: merge\nBy: {by}\nHead: {head}\n")
+        comment(
+            number,
+            fold(
+                "Withdrawn: merge",
+                f"{who.capitalize()} withdrew their go on {head[:7]}.",
+                f"By: {by}\nHead: {head}",
+            ),
+        )
         print(f"PR #{number}: {who}'s go on {head} is withdrawn")
         return 0
     if by == DELEGATE:
         post_status(head, OWNER_GO, f"The delegate's go on {head[:12]}{DELEGATED}")
     else:
         post_status(head, OWNER_GO, f"The owner's go on {head[:12]}")
-    comment(number, f"{VOICED[by]}\nApproved: merge\nBy: {by}\nHead: {head}\n")
+    comment(
+        number,
+        fold(
+            VOICED[by],
+            f"Go to merge {head[:7]}.",
+            f"Approved: merge\nBy: {by}\nHead: {head}",
+        ),
+    )
     print(f"PR #{number}: {who}'s go is on {head}{DELEGATED if by == DELEGATE else ''}")
     if by != DELEGATE and NEEDS_OWNER in names(pull):
         # the owner's go names this PR, so the hold it waited on is theirs to lift; the delegate's never is
@@ -4200,6 +4222,9 @@ def sibling(name: str) -> ModuleType:
 
 
 github = sibling("github_adapter")
+# every comment the loop writes: a heading, a short summary and the rest folded (folding.py)
+folding = sibling("folding")
+fold, machine = folding.fold, folding.machine
 # the adapters a policy's `adapters` section may name, by name; another team's adapter is added here
 ADAPTERS: dict[str, Any] = {"github": github}
 # each port's adapter while main() runs, read from the policy at the first call (port); GitHub's outside main()
@@ -6230,8 +6255,12 @@ def conflict_note(pull: dict[str, Any], base: str, ahead: str = "") -> None:
     ):
         comment(
             pull["number"],
-            f"{CONFLICTS}\nHead: {head}\n\nIt conflicts with {base}{ahead}: merge origin/{base} in, rerun the gates,"
-            " get a verdict on the merge (lead.md step 8), then land again.\n",
+            fold(
+                CONFLICTS,
+                f"It conflicts with {base}{ahead}: merge origin/{base} in, rerun the gates, get a verdict on the"
+                " merge (lead.md step 8), then land again.",
+                f"Head: {head}",
+            ),
         )
 
 
@@ -6342,11 +6371,15 @@ def pre_landed(
     ):
         comment(
             pull["number"],
-            f"{PRE_LAND}\nHead: {head}\n\n`{command}` refused it against {base} at {tip}, exiting {ran.returncode}: fix"
-            " what it says, then land again.\n\n````\n"
-            # its end, where a check says why, within GitHub's 65536 characters a comment holds
-            + ran.stdout.rstrip("\n")[-60000:]
-            + "\n````\n",
+            fold(
+                PRE_LAND,
+                f"`{command}` refused it against {base} at {tip}, exiting {ran.returncode}: fix what it says, then"
+                " land again.",
+                f"Head: {head}\n\n````\n"
+                # its end, where a check says why, within GitHub's 65536 characters a comment holds
+                + ran.stdout.rstrip("\n")[-60000:]
+                + "\n````",
+            ),
         )
     return False
 
@@ -6665,7 +6698,8 @@ def evicted(
     port("forge").ready(number, undo=True)
     comment(
         number,
-        f"{title}\nHead: {head}\n\n{why}: fix it, then `land {number}` marks it ready again.\n\n"
+        fold(title, f"{why}: fix it, then `land {number}` marks it ready again.", f"Head: {head}")
+        + "\n"
         + folded(what, tail),
     )
 
@@ -6823,8 +6857,13 @@ def queue_step(
         ):
             comment(
                 pull["number"],
-                f"{QUEUE_RED}\nHead: {head}\nGroup: {group}\n\n{why}: enqueued once more, in case it was a flake."
-                " A second red on this head turns it back to draft.\n\n"
+                fold(
+                    QUEUE_RED,
+                    f"{why}: enqueued once more, in case it was a flake. A second red on this head turns it back"
+                    " to draft.",
+                    f"Head: {head}\nGroup: {group}",
+                )
+                + "\n"
                 + folded("The failed job's last lines", tail),
             )
     return enqueue(pull, method)
@@ -6993,7 +7032,11 @@ def landed_comment(pull: dict[str, Any], merged: dict[str, Any]) -> None:
     )
     comment(
         pull["number"],
-        f"{LANDED}\nBase: {commit}\nTree: {tree}\nGate: merge queue, {', '.join(runs) or 'no run on the commit'}\n",
+        fold(
+            LANDED,
+            f"Merged by the merge queue as {commit[:7]}.",
+            f"Base: {commit}\nTree: {tree}\nGate: merge queue, {', '.join(runs) or 'no run on the commit'}",
+        ),
     )
     archive_workers(pull["number"])
 
@@ -7285,7 +7328,11 @@ def merges(
     for pull, tree, gated, how in done:
         comment(
             pull["number"],
-            f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}{waited}\n",
+            fold(
+                LANDED,
+                f"Merged as {tip[:7]}.",
+                f"Base: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}{waited}",
+            ),
         )
         archive_workers(pull["number"])
 
@@ -7345,7 +7392,10 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
         for _, found in earlier
     ):
         record += CHANGED[point]
-    comment(number, f"Approved: {point}\nBy: owner\n{record}")
+    comment(
+        number,
+        fold(f"Approved: {point}", f"The owner approved the {point}.", f"By: owner\n{record}"),
+    )
     for note, _ in earlier:
         if not note.get("isMinimized") and note.get("viewerCanMinimize"):
             minimize(note["id"])
@@ -7375,7 +7425,10 @@ def delegate(number: int) -> int:
     # the label first, so the record is never older than the label it names
     label(number, MERGE_LABEL, add=True)
     try:
-        comment(number, f"Approved: merge\nBy: {DELEGATE}\n")
+        comment(
+            number,
+            fold("Approved: merge", "The delegate approved the merge.", f"By: {DELEGATE}"),
+        )
     except subprocess.CalledProcessError:
         # a label with no record names no one: take it off again
         label(number, MERGE_LABEL, add=False)
@@ -7636,18 +7689,15 @@ def verdict(pr: int, report: Path) -> int:
     text = read(report)
     # the criteria first, as the verifier wrote them before the worker's evidence, and each line taken on that evidence
     taken = [line.strip() for line in text.splitlines() if line.strip().startswith(ACCEPTED)]
-    summary = "\n\n".join(
-        [
-            first,
-            f"## Criteria\n\n{criteria(text)}",
-            *outside,
-            *(["\n".join(taken)] if taken else []),
-            "\n".join(closing),
-        ]
+    # the verdict lines stay in view, as the gate reads them (passes); the criteria and the rest fold
+    summary = fold(
+        first,
+        "\n".join(closing),
+        "\n\n".join(
+            [f"## Criteria\n\n{criteria(text)}", *outside, *(["\n".join(taken)] if taken else [])]
+        ),
     )
-    post_review(
-        pr, {"commit_id": head, "event": "COMMENT", "body": summary + "\n", "comments": comments}
-    )
+    post_review(pr, {"commit_id": head, "event": "COMMENT", "body": summary, "comments": comments})
     return 0
 
 
@@ -7828,7 +7878,11 @@ def ran_gate(
 
 def heavy(words: list[str]) -> int:
     """`heavy <command> [args...]`: run one command as a heavy step (run_heavy), for the role files' shell recipes, and
-    exit with its exit code (128 plus the signal that ended it); 127 for a command that can't start, as a shell says."""
+    exit with its exit code (128 plus the signal that ended it); 127 for a command that can't start, as a shell says.
+    `heavy --plan` prints the host's slot count and the limit that set it (slot_plan's line) and exits 0."""
+    if words == ["--plan"]:
+        print(slot_plan()[1])
+        return 0
     if words[:1] == ["--"]:
         words = words[1:]
     if not words:
@@ -7983,15 +8037,115 @@ def slot_file(name: str) -> str:
     return os.path.join(cache, "engineering-loop", name)
 
 
-def gate_slots() -> int:
-    """How many heavy gates the host runs at once: `GATE_SLOTS` when it is a whole number from 1, else a third of the
-    host's cores, at least 1 (the template's `scripts/gate-slot` reads the same variable). `GATE_SLOTS=1` keeps one
-    gate at a time. A runner under a slot takes at most the host's cores divided by this number as its `GATE_JOBS`,
-    since this many gates load the host at once and a larger share would oversubscribe it."""
-    said = os.environ.get("GATE_SLOTS", "")
+# loop.md's line stating what one heavy gate run costs, measured on the project's heaviest gate (SKILL.md, One heavy
+# gate per host slot): `Gate cost: <cores> cores, <GB> GB`, optionally `, reserve <GB> GB`
+GATE_COST = re.compile(
+    r"^Gate cost:[ \t]*`?(?P<cores>\d+(?:\.\d+)?) cores?,[ \t]*(?P<gb>\d+(?:\.\d+)?) GB"
+    r"(?:,[ \t]*reserve (?P<reserve>\d+(?:\.\d+)?) GB)?`?[ \t]*$"
+)
+GIB = 1 << 30
+
+
+def slot_rule(
+    cores: int,
+    memory: Fraction | None,
+    cost: tuple[Fraction, Fraction] | None,
+    reserve: Fraction | None,
+    said: str,
+) -> tuple[int, str, Fraction | None]:
+    """The host's heavy slot count, the limit that set it (`off`, `GATE_SLOTS`, `cores` or `memory`) and the reserve
+    it used, from the host's cores and total memory in GB (None when unread), the gate's cost per run (cores, GB; None
+    when loop.md states none), loop.md's reserve (None for the default) and `GATE_SLOTS`. `off` is 0 slots: every run
+    goes with no lock. A whole number from 1 is the count. Otherwise the smaller of cores ÷ cost cores and (memory −
+    reserve) ÷ cost GB, at least 1, a tie being the cores'; with no cost, a third of the cores, at least 1. The reserve
+    defaults to a quarter of the memory, at least 4 GB. The template's `gate-slot` follows the same rule, and the
+    table in tests/fixtures/gate-slots.tsv holds both to it."""
+    if reserve is None and memory is not None:
+        reserve = max(Fraction(4), memory / 4)
+    if said == "off":
+        return 0, "off", reserve
     if said.isdigit() and int(said) >= 1:
-        return int(said)
-    return max(1, (os.cpu_count() or 1) // 3)
+        return int(said), "GATE_SLOTS", reserve
+    if cost is None:
+        return max(1, cores // 3), "cores", reserve
+    by_cores = int(cores // cost[0])
+    if memory is None or reserve is None:
+        return max(1, by_cores), "cores", reserve
+    by_memory = int((memory - reserve) // cost[1])
+    if by_memory < by_cores:
+        return max(1, by_memory), "memory", reserve
+    return max(1, by_cores), "cores", reserve
+
+
+def total_memory() -> Fraction | None:
+    """The host's total memory in whole GB (GiB, rounded), never its available memory, so the count stays put between
+    runs and a waiter never waits on a slot that no longer exists: page size × physical pages from `os.sysconf`, which
+    macOS and Linux both answer and which runs no command, so a test's stand-in for `subprocess.run` is never asked;
+    None where it is not known."""
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        found = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return Fraction((found + GIB // 2) // GIB) if found > 0 else None
+    return None
+
+
+def gate_cost() -> tuple[tuple[Fraction, Fraction] | None, Fraction | None]:
+    """loop.md's `Gate cost:` line (GATE_COST) in the checkout this runs in, as read from its root as the template's
+    `gate-slot` greps it: ((cores, GB), reserve or None), or (None, None) outside a repo or without the line. The root
+    is the nearest directory up from here holding `.git`, found without running git, since a heavy step's caller may
+    run anywhere and this is read on every slot it takes. A line off its form, or a cost of 0, is refused, naming the
+    line, since a stated cost ignored would oversubscribe the host."""
+    here = Path.cwd()
+    top = next((d for d in (here, *here.parents) if (d / ".git").exists()), None)
+    with contextlib.suppress(OSError):
+        text = "" if top is None else (top / LOOP).read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            if not line.startswith("Gate cost:"):
+                continue
+            found = GATE_COST.match(line.rstrip())
+            if found is None or not Fraction(found["cores"]) or not Fraction(found["gb"]):
+                raise Refused(
+                    f"loop.md's {line.strip()!r} is not `Gate cost: <cores> cores, <GB> GB`"
+                    " (optional `, reserve <GB> GB`), each cost above 0"
+                )
+            reserve = found["reserve"]
+            return (Fraction(found["cores"]), Fraction(found["gb"])), (
+                None if reserve is None else Fraction(reserve)
+            )
+    return None, None
+
+
+def plan_number(value: Fraction | None) -> str:
+    """A count of cores or GB as the plan line prints it: `4`, `1.5`, `?` when unread."""
+    return "?" if value is None else f"{float(value):g}"
+
+
+def slot_plan() -> tuple[int, str]:
+    """The host's heavy slot count (slot_rule on this host) and the line saying it, the same as the template's
+    `gate-slot --plan`: `slots <n>: <limit> (<cores> cores, <GB> GB, cost <c> cores <m> GB, reserve <r> GB)`, with
+    `cost none` where loop.md states no cost."""
+    cores = os.cpu_count() or 1
+    memory = total_memory()
+    cost, reserve = gate_cost()
+    count, limit, reserve = slot_rule(
+        cores, memory, cost, reserve, os.environ.get("GATE_SLOTS", "")
+    )
+    stated = "none" if cost is None else f"{plan_number(cost[0])} cores {plan_number(cost[1])} GB"
+    return count, (
+        f"slots {count}: {limit} ({cores} cores, {plan_number(memory)} GB, cost {stated},"
+        f" reserve {plan_number(reserve)} GB)"
+    )
+
+
+def gate_slots() -> int:
+    """How many heavy gates the host runs at once (slot_plan), 0 under `GATE_SLOTS=off`, when every run goes with no
+    lock. A runner under a slot takes at most the host's cores divided by this number as its `GATE_JOBS`, since this
+    many gates load the host at once and a larger share would oversubscribe it."""
+    return slot_plan()[0]
+
+
+def slots_off() -> bool:
+    """Whether `GATE_SLOTS=off` turns the host gate off: every heavy run, the short lane's too, goes with no lock."""
+    return os.environ.get("GATE_SLOTS") == "off"
 
 
 def slot_path(number: int = 1) -> str:
@@ -8027,20 +8181,23 @@ def take_slot(
 ) -> tuple[int | None, str]:
     """Hold the first free heavy slot's exclusive flock and return (its fd, its path); closing the fd frees the lock,
     as does the process dying. A run already under a holder of a slot (held_slot) takes none: (None, that path), since
-    it would wait on its own parent. With every slot held, `waiting` is called, again every SLOT_SAY_SECONDS, and the slots
+    it would wait on its own parent. Under `GATE_SLOTS=off` it takes none either: (None, ""). With every slot held, `waiting` is called, again every SLOT_SAY_SECONDS, and the slots
     are tried again until one frees. A land's gate step (`land`) holds the landing lock of its base while it waits, which blocks every other
     land, so it takes a freed slot ahead of any PR gate: flock has no priority, so a waiting land marks itself (a shared
     flock on `gate.land.lock`, held only while it waits) and a PR gate that finds the mark takes no slot, trying again
     until no land waits."""
     if (held := held_slot()) is not None:
         return None, held
+    count = gate_slots()
+    if not count:  # GATE_SLOTS=off: no lock, and no slot named to the run
+        return None, ""
     os.makedirs(os.path.dirname(slot_path()), exist_ok=True)
     mark = os.open(slot_file("gate.land.lock"), os.O_WRONLY | os.O_CREAT, 0o644) if land else None
     if mark is not None:
         fcntl.flock(mark, fcntl.LOCK_SH)
     said = None  # when the wait is next said
     try:
-        if land and gate_slots() == 1:
+        if land and count == 1:
             # one slot: block in the kernel, as a gate wrapper's own flock does, so a land competes evenly with a
             # wrapper waiter instead of losing every race to it by polling; PR gates poll and yield to the mark
             fd = os.open(slot_path(), os.O_WRONLY | os.O_CREAT, 0o644)
@@ -8052,8 +8209,8 @@ def take_slot(
             return fd, slot_path()
         while True:
             if land or not land_waiting():
-                for number in range(1, gate_slots() + 1):
-                    path = slot_path(number)
+                for slot in range(1, count + 1):
+                    path = slot_path(slot)
                     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
                     try:
                         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -8327,11 +8484,14 @@ def saying(text: str) -> Any:
 @contextlib.contextmanager
 def heavy_slot(name: str, out: Any = None, land: bool = False) -> Any:
     """Hold a host gate slot (take_slot, `land` as it takes it) for one gate step: (its path, the whole seconds
-    waited for it). A wait is said as `local-ci: <step>: waiting for the host gate slot`, again every SLOT_SAY_SECONDS."""
+    waited for it). A wait is said as `local-ci: <step>: waiting for the host gate slot: <slot_plan's line>`, again
+    every SLOT_SAY_SECONDS, so the log shows how many slots the host has and which limit set that."""
     began = time.monotonic()
     fd, path = take_slot(
         lambda: print(
-            f"local-ci: {name}: waiting for the host gate slot", file=out or sys.stderr, flush=True
+            f"local-ci: {name}: waiting for the host gate slot: {slot_plan()[1]}",
+            file=out or sys.stderr,
+            flush=True,
         ),
         land,
     )
@@ -9522,7 +9682,11 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
         publish(head, record)
     comment(
         pr,
-        f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
+        fold(
+            CHECKED,
+            f"The gate passed on {head[:7]}.",
+            f"Head: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
+        ),
     )
     print(f"{CHECKED} on {head}: posted on PR #{pr}")
     return 0
@@ -9896,6 +10060,7 @@ def main(argv: list[str]) -> int:
     hooking.add_argument("message", type=Path)
     commands.add_parser("affected-tests")
     wrapping = commands.add_parser("heavy")
+    wrapping.add_argument("--plan", action="store_true")
     wrapping.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
     args = parser.parse_args(aliased(argv))
     if args.command == "record":  # each kind runs as the verb it was before #614
@@ -9928,7 +10093,11 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "affected-tests":
         return affected_tests()
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
-        return heavy(args.words)
+        if args.plan and args.words:
+            raise Refused(
+                "heavy --plan takes no command: it prints the host's slot count and runs nothing"
+            )
+        return heavy(["--plan"] if args.plan else args.words)
     if (
         args.command == "check" and args.point == "setup"
     ):  # reads the policy itself, to list it beside the rest

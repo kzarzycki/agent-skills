@@ -56,11 +56,10 @@ def test_a_low_risk_report_accepting_a_manual_line_on_evidence_is_posted_with_it
     assert approvals.main(["verdict", "7", str(report)]) == 0
     [(pr, review)] = posting
     assert (pr, review["commit_id"]) == (7, HEAD)
-    assert review["body"] == (
-        f"Verifier (codex/terra-6.1/med), pass 1 on {HEAD[:7]}.\n\n"
-        f"## Criteria\n\n{CRITERIA}\n\n"
-        f"{ACCEPTED}\n\n"
-        "VERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: low — a test fixture\n"
+    assert review["body"] == approvals.fold(
+        f"Verifier (codex/terra-6.1/med), pass 1 on {HEAD[:7]}.",
+        "VERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: low — a test fixture",
+        f"## Criteria\n\n{CRITERIA}\n\n{ACCEPTED}",
     )
 
 

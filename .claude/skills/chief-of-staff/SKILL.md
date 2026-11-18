@@ -217,8 +217,8 @@ the foreground and never poll the lead afterwards:
 
 | Exit | Means | You do |
 |---|---|---|
-| 0 | Delivered, or already in the lead's history unanswered (a rerun sends no second copy) | Tell the owner it went |
-| 5 | Queued: the lead holds it until its current step ends, or until the approval prompt it names is answered; the line says which | Tell the owner it lands when that clears; for a prompt, which session waits and on what |
+| 0 | Delivered, already in the lead's history unanswered (a rerun sends no second copy), or `queued until the session's current step ends; it lands then` | Tell the owner it went, or that it lands when the lead's step ends |
+| 5 | Queued behind an approval prompt or a question; the line says which | Tell the owner it lands once that is answered, which session waits and on what |
 | 4 | Not deliverable: archived, a failed revive, or lost; the line says which | Tell the owner, and start a new lead when the ask still stands |
 | 7 | Posted, not confirmed: a read after the post failed | Tell the owner it went but is unconfirmed; run the same relay again, it posts no second copy |
 

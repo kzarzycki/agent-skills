@@ -87,3 +87,15 @@ def test_threads_neither_route_reads_raise(
         approvals.github.rest_threads(7)
     assert raised in error.value.stderr
     assert len(calls) == (2 if graphql_error else 1)
+
+
+def test_rest_only_mode_is_forced_by_an_environment_variable(monkeypatch):
+    """GATEKEEPER_REST_ONLY=1 starts a run in REST-only mode, so a check can walk the path a refused token takes."""
+    import importlib
+
+    import github_adapter
+
+    monkeypatch.setenv("GATEKEEPER_REST_ONLY", "1")
+    assert importlib.reload(github_adapter)._rest_only is True
+    monkeypatch.delenv("GATEKEEPER_REST_ONLY")
+    assert importlib.reload(github_adapter)._rest_only is False

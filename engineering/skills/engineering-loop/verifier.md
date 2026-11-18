@@ -220,6 +220,8 @@ keep these lines exact:
   sub-heading and posts nothing. `verdict` refuses a `### ` heading with a `(<severity>)`
   it can't read, and finding headings that don't add up to the `VERDICT:` counts, rather
   than leave a finding off the review.
+- The report is posted folded (github.md, Comment shape): `verdict` keeps the closing lines in view and puts the
+  criteria under `<details>`, so write the closing lines as below, each alone on its line, and keep prose out of them.
 - End with `Head: <sha>`, the full commit you reviewed (`git rev-parse HEAD` in your
   worktree), then `VERDICT: <n> blocker, <n> major, <n> minor`, `SATISFIED: yes|no` and
   `Risk: low — <reason>` or `Risk: high — <reason>` (Steering, Judge the risk). The gate

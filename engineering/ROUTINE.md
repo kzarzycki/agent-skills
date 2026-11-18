@@ -116,8 +116,7 @@ Commit, push and rerun the gates.
 2. When the required `qualify` check passes, run `gh pr merge --squash --delete-branch`.
    If it fails, fix, commit and go back to step 4; a third failure is blocked. If main
    moved, update the branch and wait again. Never use `--admin`, and never push to main.
-3. For a release, tag the merge commit and push the tag:
-   `git tag -a engineering-vX.Y.Z -m engineering-vX.Y.Z <merge sha> && git push origin engineering-vX.Y.Z`.
+3. For a release, follow [RELEASING.md](RELEASING.md): the pre-tag smoke run and `release-check` come before the tag.
    The tag check re-qualifies the release and opens the consumer-sync PR, which step 1
    of the next run merges.
 

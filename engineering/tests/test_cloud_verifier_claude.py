@@ -76,7 +76,7 @@ def test_a_claude_pass_posts_the_report_file_returns_the_checkout_and_passes_the
     assert got["head"] == head  # it ran in the checkout, at the PR's head
     assert got["seeded"] is False  # the seeded Codex login stays out of the verifier's environment
     assert "cmd" not in seen  # Codex never ran
-    assert posted == ["# Report\nVERDICT: 0 blocker\nSATISFIED: yes\n"]
+    assert posted == [cv.folded_report("# Report\nVERDICT: 0 blocker\nSATISFIED: yes\n")]
     out = capsys.readouterr()
     assert out.out.strip().endswith("https://example.com/comment/1")
     assert "a warning on stderr" in out.err
@@ -89,7 +89,7 @@ def test_a_claude_pass_without_a_report_file_posts_its_final_message_and_no_mode
     _, _, brief, posted, _, _, call = claude
     assert cv.verify(7, brief, None, None, "claude") == 0
     # stdout only: the stderr warning never joins the report
-    assert posted == ["# Report\nSATISFIED: yes, from the final message\n"]
+    assert posted == [cv.folded_report("# Report\nSATISFIED: yes, from the final message\n")]
     assert "--model" not in call()["argv"]
 
 
@@ -116,7 +116,9 @@ def test_claude_with_an_effort_exits_2_before_any_checkout(claude, monkeypatch, 
 def test_verify_without_a_harness_still_runs_codex(checkout) -> None:  # noqa: F811
     _, _, brief, posted, seen = checkout
     assert cv.command(["verify", "--pr", "7", "--brief", str(brief)]) == 0
-    assert seen["cmd"][:2] == ["codex", "exec"] and posted == ["final\nSATISFIED: yes\n"]
+    assert seen["cmd"][:2] == ["codex", "exec"] and posted == [
+        cv.folded_report("final\nSATISFIED: yes\n")
+    ]
     assert seen["brief"].startswith("AGENT_SIGNATURE=codex/?/?\n")
 
 
