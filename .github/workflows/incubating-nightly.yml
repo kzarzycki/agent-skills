@@ -53,7 +53,7 @@ jobs:
           now=$(date -u +%s)
           failed=0
           tick=$(printf '\x60')
-          mise install && uv sync --frozen || exit 1
+          ready=0
           for n in $NUMBERS; do
             body=$(gh api "repos/$REPO/issues/$n" --jq .body)
             # the first time the label went on, so a label put back after a drop doesn't restart the clock
@@ -83,6 +83,10 @@ jobs:
               gh api "repos/$REPO/issues/$n/comments" --silent -f body="Still incubating: this epic has been incubating for $age days. Graduate it (a full-loop PR that says \`Graduates #$n\`, then \`approvals.py graduate\`) or say here why it stays."
             fi
             if [ -n "$cmd" ] && [ -n "$flag" ] && [ "$flag" != none ]; then
+              # the toolchain is needed only here, so a broken install never hides the listing above
+              if [ "$ready" = 0 ]; then
+                if mise install && uv sync --frozen; then ready=1; else failed=1; continue; fi
+              fi
               # shellcheck disable=SC2086 # `mise run <task>` is matched above: two words, no glob
               if ! env "$flag=1" $cmd; then
                 failed=1
