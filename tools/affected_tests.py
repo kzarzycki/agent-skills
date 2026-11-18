@@ -1,7 +1,7 @@
 """The tests a change touches, for the landing gate (`mise run check-fast`): prints one pytest target per line.
 
 The changed files come from `git diff` against the base (origin/main, or argv[1]). A changed test file runs. A changed
-script or module runs every test file that names its stem. Any other file (a skill's prose, docs, config) runs only
+script runs every test file that names its stem (any other non-markdown file: its file name). Any other file (a skill's prose, docs, config) runs only
 the cheap repo-wide checks, `tests/test_skill_*.py`. No base to diff, or a change to the test setup itself
 (pyproject.toml, uv.lock, mise.toml, tools/), runs everything, since the map cannot say what that touches.
 """
@@ -19,7 +19,7 @@ CHEAP = sorted(str(p) for p in Path("tests").glob("test_skill_*.py"))
 
 def changed(base: str) -> list[str] | None:
     done = subprocess.run(
-        ["git", "diff", "--name-only", f"{base}...HEAD"],
+        ["git", "diff", "--name-only", "--no-renames", f"{base}...HEAD"],
         capture_output=True,
         text=True,
         check=False,
@@ -28,7 +28,9 @@ def changed(base: str) -> list[str] | None:
 
 
 def targets(files: list[str] | None) -> list[str]:
-    if files is None or any(f.startswith(EVERYTHING) for f in files):
+    if files is None or any(
+        f.startswith(EVERYTHING) or Path(f).name == "conftest.py" for f in files
+    ):
         return ALL
     tests = [
         p for r in ALL for p in sorted(Path(r).rglob("test_*.py")) if "/e2e/" not in p.as_posix()
@@ -38,8 +40,9 @@ def targets(files: list[str] | None) -> list[str]:
         path = Path(f)
         if path.name.startswith("test_") and path.suffix == ".py" and path.exists():
             picked.add(f)
-        elif path.suffix == ".py":
-            picked.update(str(t) for t in tests if path.stem in t.read_text(errors="ignore"))
+        elif path.suffix != ".md":
+            needle = path.stem if path.suffix == ".py" else path.name
+            picked.update(str(t) for t in tests if needle in t.read_text(errors="ignore"))
     return sorted(picked)
 
 

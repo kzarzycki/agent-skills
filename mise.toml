@@ -124,7 +124,7 @@ uv run python tools/gate_slot.py sh -c 'uv run pytest -q -m "not live_agent" $(u
 uv run ruff check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts engineering/skills/chief-of-staff/scripts engineering/skills/omnigent-telemetry/scripts engineering/hooks && uv run ruff format --check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts engineering/skills/chief-of-staff/scripts engineering/skills/omnigent-telemetry/scripts engineering/hooks"""
 
 [tasks.check]
-description = "The gates CI runs, in its order: vendor-engineering-check, test, test-engineering-package"
+description = "The full suite, nightly in CI: vendor-engineering-check, test, test-engineering-package"
 run = [
   "mise run vendor-engineering-check",
   "mise run test",
