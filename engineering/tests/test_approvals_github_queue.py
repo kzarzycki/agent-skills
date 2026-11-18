@@ -331,13 +331,13 @@ def test_any_other_removal_counts_for_nothing_and_the_pr_is_enqueued_again(
     assert queue["enqueued"] == [(7, head)] and queue["comments"] == []
 
 
-def test_a_pr_the_queue_has_just_merged_is_waited_on_not_enqueued_again(
+def test_a_pr_the_queue_has_just_merged_exits_0_and_is_not_enqueued_again(
     queue: dict[str, Any],
 ) -> None:
     head = queue["opened"](7)
     queue["remove"](7, approvals.QUEUE_MERGED, at=AGAIN_AT)
     assert queue["land"]("7") == (
-        approvals.WAITING,
+        0,
         [f"PR #7 left the merge queue merged at {head}"],
     )
     assert queue["enqueued"] == []

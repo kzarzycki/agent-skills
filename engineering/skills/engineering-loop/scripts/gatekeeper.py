@@ -6616,7 +6616,7 @@ def queue_step(
         return enqueue(pull, method)
     removals = queue_removals(pull)
     reason = removals[-1].get("reason") if removals else None
-    # GitHub takes a PR out of the queue a moment before it reports the merge
+    # GitHub takes a PR out of the queue a moment before it reports the merge: it is merged, nothing to do (exit 0)
     if reason == QUEUE_MERGED:
         print(f"{where} left the merge queue merged at {head}")
         return 0, False
