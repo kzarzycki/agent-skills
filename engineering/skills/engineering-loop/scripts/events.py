@@ -125,7 +125,7 @@ def local_sha(cwd: Path | str | None, ref: str) -> str | None:
 def sha_by_ref(listing: str) -> dict[str, str]:
     """The `<sha> <ref>` lines of `ls-remote` or `for-each-ref --format='%(objectname) %(refname)'` as {ref: sha}."""
     words = listing.split()
-    return dict(zip(words[1::2], words[0::2], strict=True))
+    return dict(zip(words[1::2], words[0::2]))
 
 
 def remote_refs(cwd: Path | str | None, pattern: str) -> dict[str, str]:
