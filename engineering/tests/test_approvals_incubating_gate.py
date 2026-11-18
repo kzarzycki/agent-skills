@@ -59,8 +59,16 @@ def test_local_ci_of_a_pr_runs_the_gate_with_the_tier(monkeypatch: pytest.Monkey
     monkeypatch.setattr(approvals, "settings", lambda _l: {"incubating": {}})
     monkeypatch.setattr(approvals, "pull_request", lambda _n: made())
     monkeypatch.setattr(approvals, "closing_issues", lambda _p: [])
-    monkeypatch.setattr(approvals, "reusable", lambda head, passed=(), why=None: seen.update(reuse=list(passed)))
-    monkeypatch.setattr(approvals, "run_local_ci", lambda pr, head, passed=(): seen.update(ran=list(passed)) or {"command": "c", "env": {}, "published": True})
+    monkeypatch.setattr(
+        approvals, "reusable", lambda head, passed=(), why=None: seen.update(reuse=list(passed))
+    )
+    monkeypatch.setattr(
+        approvals,
+        "run_local_ci",
+        lambda pr, head, passed=(): (
+            seen.update(ran=list(passed)) or {"command": "c", "env": {}, "published": True}
+        ),
+    )
     monkeypatch.setattr(approvals, "comment", lambda *_a: None)
     approvals.pr_local_ci(7, True)
     assert seen["reuse"] == NAMES and seen["ran"] == NAMES
@@ -73,7 +81,17 @@ def test_local_ci_of_a_pr_reads_no_pr_without_an_incubating_section(
     monkeypatch.setattr(approvals, "project", lambda: (None, "loop"))
     monkeypatch.setattr(approvals, "settings", lambda _l: {})
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pytest.fail("the PR was read"))
-    monkeypatch.setattr(approvals, "reusable", lambda head, passed=(), why=None: {"head": "h", "time": "t", "command": "c", "env": {}, "published": True})
+    monkeypatch.setattr(
+        approvals,
+        "reusable",
+        lambda head, passed=(), why=None: {
+            "head": "h",
+            "time": "t",
+            "command": "c",
+            "env": {},
+            "published": True,
+        },
+    )
     monkeypatch.setattr(approvals, "comment", lambda *_a: None)
     assert approvals.pr_local_ci(7, False) == 0
 
@@ -85,7 +103,9 @@ def test_check_merge_without_ci_looks_for_the_tiered_pass(monkeypatch: pytest.Mo
     monkeypatch.setattr(approvals, "closing_issues", lambda _p: [])
     monkeypatch.setattr(approvals, "settings", lambda _l: {"incubating": {}})
     monkeypatch.setattr(
-        approvals, "reusable", lambda head, passed=(), why=None: seen.append(list(passed)) or {"head": "h"}
+        approvals,
+        "reusable",
+        lambda head, passed=(), why=None: seen.append(list(passed)) or {"head": "h"},
     )
     assert approvals.ran(made(), "loop") == []
     assert seen == [NAMES]

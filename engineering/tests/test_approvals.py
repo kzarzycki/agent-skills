@@ -8270,7 +8270,9 @@ def queueing(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[s
     )
     landing["records"] = {HEAD}
     monkeypatch.setattr(
-        approvals, "reusable", lambda head, _p=(): {"head": head} if head in landing["records"] else None
+        approvals,
+        "reusable",
+        lambda head, _p=(): {"head": head} if head in landing["records"] else None,
     )
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     return landing
@@ -8881,7 +8883,9 @@ def test_without_the_line_check_merge_and_land_read_no_git(
     )
     monkeypatch.setattr(approvals, "git", trees)
     monkeypatch.setattr(approvals, "fetched", lambda sha: pytest.fail(f"fetched {sha}"))
-    monkeypatch.setattr(approvals, "reusable", lambda head, _p=(): None)  # the merge proof, not a carry
+    monkeypatch.setattr(
+        approvals, "reusable", lambda head, _p=(): None
+    )  # the merge proof, not a carry
     monkeypatch.setattr(approvals, "elsewhere", lambda head: "")  # and what its refusal adds
     pr = carried_pull(case)
     assert approvals.judged(pr, NO_CI) is None
