@@ -11873,6 +11873,7 @@ def test_a_brief_with_heartbeats_is_not_stuck_before_the_limit_from_its_start() 
         {"type": "message", "role": "assistant"},
         {"type": "function_call"},
         {"type": "function_call_output"},
+        {"type": "reasoning"},
     ],
 )
 def test_a_recent_agent_item_keeps_a_session_from_being_stuck(item: dict) -> None:
@@ -11891,8 +11892,38 @@ def test_agent_progress_at_counts_only_what_the_agent_wrote() -> None:
         {"type": "function_call", "created_at": 200.0},
         {"type": "message", "role": "assistant"},  # undated
     ]
-    assert omnigent_agent.agent_progress_at(items) == 200.0
+    assert omnigent_agent.agent_progress_at(items) == 500.0  # the newest brief, once it acted
+    assert omnigent_agent.agent_progress_at(items[1:5]) == 200.0
     assert omnigent_agent.agent_progress_at(items[:3]) is None
+    assert omnigent_agent.agent_progress_at([{"type": "reasoning", "created_at": 300.0}]) == 300.0
+
+
+def test_a_freshly_resumed_session_is_not_stuck_and_reap_force_keeps_it() -> None:
+    og = running_session(60)
+    now = time.time()
+    og.sessions["k"] = [
+        {"id": "b0", "type": "message", "role": "user", "created_at": now - 4 * 3600},
+        {"id": "a0", "type": "message", "role": "assistant", "created_at": now - 3 * 3600},
+        {"id": "b1", "type": "message", "role": "user", "created_at": now - 20},
+        {"id": "h", "type": "heartbeat", "created_at": now - 5},
+    ]
+    assert omnigent_agent.stuck_minutes({"status": "running"}, og.sessions["k"]) is None
+    assert omnigent_agent.observe(og, "k", {})[0] == ("running",)
+    lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert not failed and og.archived == [] and lines[0].startswith("k kid: kept (running)")
+
+
+def test_a_session_with_an_old_agent_item_and_a_recent_user_item_is_kept_by_reap_force() -> None:
+    og = running_session(60)
+    now = time.time()
+    og.sessions["k"] = [
+        {"id": "a", "type": "message", "role": "assistant", "created_at": now - 10**5},
+        {"id": "u", "type": "message", "role": "user", "created_at": now - 60},
+    ]
+    assert omnigent_agent.observe(og, "k", {})[0] == ("running",)
+    lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert not failed and og.interrupted == [] and og.archived == []
+    assert lines[0].startswith("k kid: kept (running)")
 
 
 def test_a_session_whose_items_carry_no_date_is_not_stuck() -> None:

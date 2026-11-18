@@ -5039,22 +5039,32 @@ def agent_progress_at(items: list[dict]) -> float | None:
     """When the agent last wrote a history item, None when it wrote none (or none is dated). The
     one definition of progress, shared by ``stuck_minutes`` and the supervisor's progress deadline.
     The agent's items are an assistant message, a reasoning item, a tool call and its result (a
-    type ending ``_call`` or ``_call_output``). The user's messages (the brief, a nudge) and every
-    server item (``resource_event``, a heartbeat, a status or system event) are not its progress,
+    type ending ``_call`` or ``_call_output``). Once the agent has written one, the newest user
+    message (a new brief, a relay) counts too, since it starts the agent's turn; a session whose
+    agent wrote nothing has no progress (``stuck_minutes`` counts it from its brief). Every server
+    item (``resource_event``, a heartbeat, a status or system event) is never its progress,
     however recent: the server writes them whether or not the agent works."""
-    return max(
-        (
-            float(i["created_at"])
-            for i in items
-            if i.get("created_at")
-            and (
-                (i.get("type") == "message" and i.get("role") == "assistant")
-                or str(i.get("type")).endswith(("_call", "_call_output"))
-                or i.get("type") == "reasoning"
-            )
-        ),
-        default=None,
-    )
+    dated = [i for i in items if i.get("created_at")]
+    wrote = [
+        float(i["created_at"])
+        for i in dated
+        if (i.get("type") == "message" and i.get("role") == "assistant")
+        or str(i.get("type")).endswith(("_call", "_call_output"))
+        or i.get("type") == "reasoning"
+    ]
+    if not wrote:
+        return None
+    # once it has acted, the newest instruction to it (a new brief, a relay) starts its turn: the
+    # clock runs from there, not from the previous turn's last item. The supervisor's own lines
+    # and every server item do not count.
+    briefs = [
+        float(i["created_at"])
+        for i in dated
+        if i.get("type") == "message"
+        and i.get("role") == "user"
+        and not text_of(i).strip().startswith(OWN_LINES)
+    ]
+    return max(wrote + briefs)
 
 
 def stuck_minutes(info: dict, items: list[dict]) -> int | None:
