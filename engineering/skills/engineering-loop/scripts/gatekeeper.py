@@ -4968,7 +4968,9 @@ def land_event_of(pr: int | Sequence[int] | None, state: str, question: str | No
     for number in [] if pr is None else [pr] if isinstance(pr, int) else list(dict.fromkeys(pr)):
         try:
             pull = pull_request(number)
-            if pull["state"] == "OPEN":  # one merged during this wait has its `ok`, which a ceiling must not replace
+            if (
+                pull["state"] == "OPEN"
+            ):  # one merged during this wait has its `ok`, which a ceiling must not replace
                 land_event(pull, state, question=question)
         except Exception as exc:  # noqa: BLE001 -- the same: a failed read of the PR ends nothing
             print(f"PR #{number}: land event not written: {stderr_of(exc)}", file=sys.stderr)
@@ -5258,7 +5260,9 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
             code, again = landing_here(
                 named, base, worst, tracker, loop, only, not fetch.returncode, rules
             )
-        if waiting and again:  # the beat of a wait that goes on: each poll rewrites it, but never an end of this round
+        if (
+            waiting and again
+        ):  # the beat of a wait that goes on: each poll rewrites it, but never an end of this round
             for pull in named:
                 if pull["headRefName"] not in ended:
                     land_event(pull, "waiting")

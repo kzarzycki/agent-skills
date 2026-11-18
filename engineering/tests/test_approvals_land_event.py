@@ -6,8 +6,6 @@ import io
 import json
 import os
 import stat
-import subprocess
-import sys
 import threading
 import time as real_time
 from typing import Any
@@ -388,7 +386,9 @@ def test_land_batch_wait_keeps_the_ok_of_a_pr_that_merged(
     seen = batch_wait(lands, monkeypatch, one_round)
     assert seen == [(1, "ok")], seen
     assert len(calls) > 2  # the rounds went on, with 8 alone once 7 was merged
-    assert (events_of(lands, 8) or {}).get("state") == "needs-owner"  # the ceiling asks for the PR still open
+    assert (events_of(lands, 8) or {}).get(
+        "state"
+    ) == "needs-owner"  # the ceiling asks for the PR still open
     event = events_of(lands, 7)
     assert event and (event["state"], event["seq"]) == ("ok", 1)  # and leaves the one that merged
 
@@ -493,12 +493,10 @@ def test_comment_returns_the_url_of_the_comment_it_posts(
     )
     fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
-    assert (
-        approvals.github.comment(7, "a note") == "https://example.test/pull/7#issuecomment-9"
-    )
+    assert approvals.github.comment(7, "a note") == "https://example.test/pull/7#issuecomment-9"
 
 
-def test_rest_pull_and_the_graphql_query_carry_the_pr_url(cloud: Cloud) -> None:  # noqa: F811
+def test_rest_pull_and_the_graphql_query_carry_the_pr_url(cloud: Cloud) -> None:
     """Both ways a PR is read give its `url`, which every `land` event points to."""
     assert "number url title" in approvals.github.PULL
     cloud.routes.update(
