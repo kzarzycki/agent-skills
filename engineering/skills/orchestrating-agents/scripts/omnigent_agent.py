@@ -5880,6 +5880,14 @@ def write_state(path: Path, state: dict) -> None:
     os.replace(tmp, path)
 
 
+def end_of(over: dict) -> str:
+    """The id of a session's own end, from its ``lead_status``: its last message, else the time of
+    its last turn. News of a child's end is keyed on it, never on the waiter's turn (a reply to the
+    news is a new waiter turn, so the same end would be news again each poll); a child that ends
+    again, after a revive or a restart, has a new last message and so is news again."""
+    return over["turn"] or f"{over['turn_at']:.0f}"
+
+
 def lead_status(info: dict, items: list[dict]) -> dict:
     """A session's state (``running``, ``idle``, ``blocked``, ``failed``, ``archived``), its last
     message's ending and first line, what it waits on: ``parked``, the wait its ``STILL
@@ -7318,7 +7326,7 @@ def supervise_registry(
                 at = datetime.fromtimestamp(over["turn_at"], timezone.utc).strftime("%H:%MZ")
                 head = f"{sid} {lead['title']}".rstrip()
                 line = f"{head}: {other} ended {over['ending']} at {at}; your wait still names it"
-                say(line, sid, f"deadline:{sid}:{other}:{lead.get('turn')}", "news")
+                say(line, sid, f"deadline:{sid}:{other}:{end_of(over)}", "news")
         quiet = time.time() - lead["progress_at"]
         spent = lead.get("nudged_at") == lead["progress_at"]
         if due is not None and lead["progress_at"] < due:
@@ -7365,14 +7373,16 @@ def supervise_registry(
         done: list[str] = []  # members that ended well
         failed = ""
         pending = False
+        ends: list[str] = []  # each member's end, the id of its news
 
         def said_of(over: dict) -> str:
             """The first line of the session's last message, so the lead reads the answer a child
             put in its final message and not in a report file."""
             return f": {over['last_line'][:160]}" if over["last_line"] else ""
 
-        def session_end(other: str, named: bool = True) -> tuple[str, bool] | None:
-            """How ``other`` ended: a line and whether it failed; None while it has not. A session
+        def session_end(other: str, named: bool = True) -> tuple[str, bool, str] | None:
+            """How ``other`` ended: a line, whether it failed, and the end's id (``end_of``); None
+            while it has not. A session
             idle with a last message that is no ``STILL WORKING`` and has no ending word (a
             verifier or a cloud run whose answer is its report, a harness that never writes
             ``DONE``) has ended too: its turn is over and nothing will wake it. For a session the
@@ -7386,11 +7396,10 @@ def supervise_registry(
             log(("kin", other), None)
             at = datetime.fromtimestamp(over["turn_at"], timezone.utc).strftime("%H:%MZ")
             if over["state"] in ("failed", "archived"):
-                return f"{other} {over['state']}", True
+                return f"{other} {over['state']}", True, end_of(over)
             if over["state"] == "idle" and over["ending"]:
-                return f"{other} ended {over['ending']} at {at}{said_of(over)}", over[
-                    "ending"
-                ] != "DONE"
+                line = f"{other} ended {over['ending']} at {at}{said_of(over)}"
+                return line, over["ending"] != "DONE", end_of(over)
             if (
                 over["state"] == "idle"
                 and over["turn"]
@@ -7398,7 +7407,7 @@ def supervise_registry(
                 and not over["asked"]
                 and (named or over["turn_at"] > float(lead.get("turn_at") or 0))
             ):
-                return f"{other} went idle at {at}{said_of(over)}", False
+                return f"{other} went idle at {at}{said_of(over)}", False, end_of(over)
             return None
 
         for item in items:
@@ -7414,8 +7423,10 @@ def supervise_registry(
                     pending = True
                 elif found[0]:
                     failed = failed or found[1]
+                    ends.append(found[1])
                 else:
                     done.append(found[1])
+                    ends.append(found[1])
             elif (
                 item == "CI"
             ):  # not read here: a set naming it is not over; the deadline is the net
@@ -7426,12 +7437,16 @@ def supervise_registry(
                     pending = True
                 elif end[1]:
                     failed = failed or end[0]
+                    ends.append(f"{item}@{end[2]}")
                 else:
                     done.append(end[0])
+                    ends.append(f"{item}@{end[2]}")
         if failed or (items and not pending and done):
             line = f"{head}: {failed or '; '.join(done)}; your wait names it"
             kind = "fail" if failed else "all"
-            say(line, sid, f"wait:{sid}:{lead.get('turn')}:{kind}:{(failed or wait)[:60]}", "news")
+            # keyed on the members' ends, not the lead's turn: its reply is a new turn
+            key = hashlib.sha1("|".join(ends).encode()).hexdigest()[:16]
+            say(line, sid, f"wait:{sid}:{kind}:{key}", "news")
         try:
             kin = [k for k in og.kin(sid) if k != notify and k not in items]
         except Exception as e:  # noqa: BLE001 - unread: only what the wait names is told
@@ -7441,7 +7456,7 @@ def supervise_registry(
             end = session_end(other, named=False)
             if end and (end[1] or not pending):
                 line = f"{head}: {end[0]}; a session it started"
-                say(line, sid, f"deadline:{sid}:{other}:{lead.get('turn')}", "news")
+                say(line, sid, f"deadline:{sid}:{other}:{end[2]}", "news")
 
     def due(sid: str, lead: dict) -> None:
         """Send a transient failure's revive once its backoff (``retrying.at``) has passed, through
