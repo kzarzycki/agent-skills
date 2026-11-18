@@ -3376,8 +3376,15 @@ def catch_up(pull: dict[str, Any], old: str) -> str | None:
         shown = git("range-diff", "--no-color", f"{first}..{old}", f"{second}..{head}").splitlines()
     except (subprocess.CalledProcessError, OSError):
         return None
-    # one line per commit pair: `1:  abc1234 = 1:  def5678 subject`; a changed one is followed by its indented diff
-    marks = [line.split()[2] for line in shown if line.strip() and not line[0].isspace()]
+    # one line per commit pair (`1:  abc1234 = 1:  def5678 subject`, padded with a leading space once a side has 10+
+    # commits), a changed one followed by its 4-space-indented diff; any other line is not understood: not clean
+    pair = re.compile(r"^\s*(?:\d+|-):\s+\S+\s+([=!<>])\s+(?:\d+|-):")
+    marks: list[str] = []
+    for line in shown:
+        if found := pair.match(line):
+            marks.append(found[1])
+        elif line.strip() and not line.startswith("    "):
+            return None
     if marks and set(marks) == {"="}:
         return f"`git range-diff` against {base} shows every commit unchanged: a rebase with no added or dropped commit"
     return None

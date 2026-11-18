@@ -111,3 +111,43 @@ def test_a_new_commit_carries_nothing(repo: Repo) -> None:
     repo("switch", "-qc", "dropped", "main")
     repo("cherry-pick", old + "~1")
     assert approvals.catch_up(pr(repo, repo("rev-parse", "HEAD"), tip), old) is None
+
+
+def long_rebase(repo: Repo, change: str | None) -> tuple[str, str, str]:
+    """A 12-commit PR rebased onto a moved main: (old head, new head, tip). `change` edits commit 2 by hand
+    ("changed"), leaves it out ("dropped") or adds a commit after it ("added"); git range-diff pads commit numbers
+    of 10+ commits, so lines for the first nine start with a space."""
+    repo("switch", "-qc", "feature")
+    for n in range(1, 13):
+        repo.write(f"f{n}.txt", f"{n}\n", f"c{n}")  # type: ignore[attr-defined]
+    old = repo("rev-parse", "HEAD")
+    tip = moved(repo)
+    repo("switch", "-q", "feature")
+    repo("rebase", "-q", "main")
+    if change:
+        base = repo("rev-parse", "main")
+        picks = repo("rev-list", "--reverse", f"{base}..HEAD").split()
+        repo("reset", "-q", "--hard", base)
+        for n, commit in enumerate(picks, 1):
+            if n == 2 and change == "dropped":
+                continue
+            repo("cherry-pick", commit)
+            if n == 2 and change == "changed":
+                Path("f2.txt").write_text("edited by hand\n")
+                repo("commit", "-qa", "--amend", "-m", "c2")
+            if n == 2 and change == "added":
+                repo.write("extra.txt", "x\n", "extra")  # type: ignore[attr-defined]
+    return old, repo("rev-parse", "HEAD"), tip
+
+
+def test_a_rebase_of_ten_or_more_commits_carries_when_clean(repo: Repo) -> None:
+    old, head, tip = long_rebase(repo, None)
+    assert approvals.catch_up(pr(repo, head, tip), old)
+
+
+@pytest.mark.parametrize("change", ["changed", "dropped", "added"])
+def test_a_rebase_of_ten_or_more_commits_carries_nothing_for_a_change_among_the_first_nine(
+    repo: Repo, change: str
+) -> None:
+    old, head, tip = long_rebase(repo, change)
+    assert approvals.catch_up(pr(repo, head, tip), old) is None
