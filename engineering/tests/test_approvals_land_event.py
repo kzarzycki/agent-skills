@@ -233,3 +233,20 @@ def test_land_exit_codes_without_origin_push(
     assert got == code, lines
     assert not git_in(lands["origin"], "for-each-ref", "refs/loop").strip()
     assert (("pr", "ready", "--undo", "7") in lands["calls"]) == (code == 1)
+
+
+def test_land_wait_ceiling_asks_the_owner(
+    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wait that reaches its ceiling ends `needs-owner`, the whole question in `question.md`."""
+    lands = events_pushed
+    monkeypatch.setattr(approvals, "time", Clock())
+    monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)
+    lands["open"](7, {"7.txt": "7\n"})
+    hold_lock(lands)
+    code, lines = lands["land"]("7", "--wait")
+    assert code == approvals.WAITING, lines
+    event = lands["event"]("pr7")
+    assert event and event["state"] == "needs-owner"
+    question = git_in(lands["origin"], "show", "refs/loop/land/pr7:question.md")
+    assert "stopped after 2 hours" in question
