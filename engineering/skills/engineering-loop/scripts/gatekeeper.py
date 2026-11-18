@@ -703,8 +703,10 @@ HELD, FREE = "landing lock: held", "landing lock: free"
 # waiting order (#1216): a `land --wait` keeps one ref per waiting land, stamped at every poll, holding when it began to
 # wait; a free lock goes to the longest waiter that still stamps (younger than WAITER_STALE, above a poll with its jitter)
 WAIT_REF = "refs/heads/loop-waiting/{}/{}"
-WAITER_STALE = 420
-waiting, waited = False, {"since": 0.0, "id": "", "base": ""}
+WAITER_STALE = 600  # above the longest gap between stamps: LOW_POLL + POLL_JITTER, and the reads before the lock
+waiting = False
+waited = {"since": 0.0, "id": "", "base": "", "tip": ""}
+WAIT_ENV = "LOOP_LAND_WAIT"  # the place in the waiting order, across a land run again on the base's new code
 BEAT, STALE, BEATS, BEAT_PUSH = 300, 900, "beats", 120
 beating = (
     threading.Lock()
@@ -4658,11 +4660,23 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
         return landing(pr, only)[0]
     global waiting
     waiting = True  # locked() now stamps this land's place in the waiting order
+    if place := os.environ.pop(WAIT_ENV, ""):
+        since, ident, base, tip = place.split(":")
+        waited.update(since=float(since), id=ident, base=base, tip=tip)
+    # a stop (SIGTERM, SIGHUP) unwinds the whole wait, so the finally frees this land's place; landing_here sets the same
+    # handler for the lock's own release and puts this one back
+    previous = {sig: signal.getsignal(sig) for sig in STOPS}
+    for sig, handler in previous.items():
+        if handler is not signal.SIG_IGN:
+            signal.signal(sig, stopped)
     try:
         return wait_loop(pr, only)
     finally:
+        for sig, handler in previous.items():
+            if handler is not None:
+                signal.signal(sig, handler)
         waiting = False
-        unwait()
+        unwait(forget=True)
 
 
 def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
@@ -4772,6 +4786,10 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
         flush=True,
     )
     os.environ[DEADLINE_ENV] = repr(deadline)
+    if waited["id"]:
+        os.environ[WAIT_ENV] = ":".join(
+            [repr(waited["since"]), waited["id"], waited["base"], waited["tip"]]
+        )
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
@@ -5044,38 +5062,44 @@ def stopped(signum: int, _frame: Any) -> None:
     sys.exit(128 + signum)
 
 
-def stamp_wait(base: str, pr: int | None) -> None:
-    """Stamp this waiting land's ref: a commit whose date is now and whose body holds when the land began to wait.
-    A failed push (the network) leaves the last stamp, which stays live for WAITER_STALE."""
-    waited["since"] = waited["since"] or time.time()
-    waited["id"] = waited["id"] or os.urandom(6).hex()
-    waited["base"] = base
+def wait_push(title: str, base: str, body: str) -> None:
+    """Push a `title` child of this land's last waiting commit to its waiting ref: a fast-forward (the first one
+    creates the branch), never a force or a delete, so a host that may only create and fast-forward branches (a cloud
+    session) takes part. A failed push (the network) leaves the last stamp in place, which stays live for
+    WAITER_STALE; one whose answer was lost is found again on origin."""
+    ref = WAIT_REF.format(base, waited["id"])
     empty = git("hash-object", "-t", "tree", "-w", os.devnull).strip()
-    named = f", PR #{pr}" if pr is not None else ""
     commit = git(
         "commit-tree",
+        *(["-p", waited["tip"]] if waited["tip"] else []),
         "-m",
-        f"waiting [skip ci]\n\nsince {waited['since']:.0f}{named}, pid {os.getpid()}, nonce {os.urandom(4).hex()}",
+        f"{title} [skip ci]\n\n{body}, pid {os.getpid()}, nonce {os.urandom(4).hex()}",
         empty,
     ).strip()
-    subprocess.run(
-        [
-            "git",
-            "push",
-            "-q",
-            "--no-verify",
-            "--force",
-            "origin",
-            f"{commit}:{WAIT_REF.format(base, waited['id'])}",
-        ],
+    pushed = subprocess.run(
+        ["git", "push", "-q", "--no-verify", "origin", f"{commit}:{ref}"],
         capture_output=True,
         text=True,
         check=False,
     )
+    if not pushed.returncode or git("ls-remote", "origin", ref).split()[:1] == [commit]:
+        waited["tip"] = commit
+
+
+def stamp_wait(base: str, pr: int | None) -> None:
+    """Stamp this waiting land's place: a commit dated now, its body holding when the land began to wait (to the
+    millisecond, as `waiter_ahead` compares it, so two lands never read each other's order differently)."""
+    waited["since"] = waited["since"] or round(time.time(), 3)
+    waited["id"] = waited["id"] or os.urandom(6).hex()
+    waited["base"] = base
+    wait_push(
+        "waiting", base, f"since {waited['since']:.3f}" + (f", PR #{pr}" if pr is not None else "")
+    )
 
 
 def waiter_ahead(base: str) -> str | None:
-    """The PR text of the longest live waiter that began before this land (None: none does, or origin can't be read)."""
+    """The PR text of the longest live waiter that began before this land (None: none does, or origin can't be read).
+    A ref marked done, or whose land has not stamped for CEILING (it died), is dropped where origin lets us delete."""
     mine = (waited["since"], waited["id"])
     ahead = None
     try:
@@ -5091,17 +5115,26 @@ def waiter_ahead(base: str) -> str | None:
                 *(f"+{r}:{r.replace('refs/heads/', 'refs/remotes/origin/')}" for r in refs),
             )
         for ref in refs:
-            stamp, body = git(
+            stamp, title, body = git(
                 "log",
                 "-1",
-                "--format=%ct%x00%b",
+                "--format=%ct%x00%s%x00%b",
                 ref.replace("refs/heads/", "refs/remotes/origin/"),
             ).split("\0")
-            since = re.search(r"since (\d+)", body)
+            age = time.time() - int(stamp)
+            if title.startswith("done") or age > CEILING:
+                subprocess.run(
+                    ["git", "push", "-q", "--no-verify", "origin", "--delete", ref],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                continue
+            since = re.search(r"since (\d+(?:\.\d+)?)", body)
             theirs = (float(since[1]) if since else 0.0, ref.rsplit("/", 1)[1])
             if (
                 theirs[1] != waited["id"]
-                and time.time() - int(stamp) <= WAITER_STALE
+                and age <= WAITER_STALE
                 and theirs < mine
                 and (ahead is None or theirs < ahead[0])
             ):
@@ -5115,9 +5148,12 @@ def waiter_ahead(base: str) -> str | None:
     return ahead[1] if ahead else None
 
 
-def unwait() -> None:
-    """Delete this land's waiting ref: it holds the lock, or stopped waiting."""
-    if waited["id"]:
+def unwait(forget: bool = False) -> None:
+    """This land stops counting as a waiter: a done child of its ref (a fast-forward, which every host may push), then a
+    delete where the host may. `forget`: the wait is over, so its place goes too; otherwise (the land took the lock)
+    the place is kept, so a land that takes it and lands nothing does not rejoin at the back."""
+    if waited["id"] and waited["tip"]:
+        wait_push("done", waited["base"], f"since {waited['since']:.3f}")
         subprocess.run(
             [
                 "git",
@@ -5132,7 +5168,8 @@ def unwait() -> None:
             text=True,
             check=False,
         )
-    waited.update(since=0.0, id="", base="")
+    if forget:
+        waited.update(since=0.0, id="", base="", tip="")
 
 
 def lock_name(base: str) -> str:
