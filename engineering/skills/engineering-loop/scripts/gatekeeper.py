@@ -1259,27 +1259,57 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
     )
 
 
+REST_FILE_CAP = 3000  # the most files GitHub's REST list of a PR holds
+
+
+def changed(pull: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The PR's REST file list (pr_changes), read once per PR and kept on the pull; None when GitHub can't give it."""
+    if "changes" not in pull:
+        try:
+            pull["changes"] = pr_changes(pull["number"])
+        except (subprocess.CalledProcessError, OSError, ValueError, KeyError):
+            return None
+    return pull["changes"]
+
+
 def paths(pull: dict[str, Any]) -> list[str] | None:
-    """The files the PR changes; None past the one page of 100 the gate reads. A rule on paths reads touched(),
-    which adds a moved file's old name."""
+    """The files the PR changes. Past the one page of 100 GraphQL gives, the full list comes from REST (changed());
+    None when that read fails or GitHub capped it (3000 files, or fewer than the PR's count), so a rule on paths holds
+    rather than misses one. A rule on paths reads touched(), which adds a moved file's old name."""
     files = pull["files"]
     found = [file["path"] for file in files["nodes"]]
-    return None if (files.get("totalCount") or 0) > len(found) else found
+    total = files.get("totalCount") or 0
+    if total <= len(found):
+        return found
+    changes = changed(pull)
+    if changes is None:
+        return None
+    found = [change["filename"] for change in changes if change.get("filename")]
+    return None if len(found) >= REST_FILE_CAP or len(found) < total else found
 
 
 def touched(pull: dict[str, Any]) -> list[str] | None:
     """Every path the PR touches on either side of the change: each file's path (a deleted file's is its old one), and
     a renamed or copied file's old name too (previous), since moving a file across a boundary changes both sides;
-    None past the one page of 100 the gate reads, or when any moved file's old name can't be read, so a rule on paths
-    holds rather than misses one. The one place the gate reads renames (#791 reads them here too)."""
+    None when the file list can't be read in full (paths()), or when any moved file's old name can't be read, so a rule
+    on paths holds rather than misses one. The one place the gate reads renames (#791 reads them here too)."""
     found = paths(pull)
     if found is None:
         return None
-    moved = [
-        file["path"]
-        for file in pull["files"]["nodes"]
-        if file.get("changeType") in ("RENAMED", "COPIED")
-    ]
+    files = pull["files"]
+    if (files.get("totalCount") or 0) > len(files["nodes"]):
+        # GraphQL's page is incomplete: the moved files are the REST entries' own
+        moved = [
+            change["filename"]
+            for change in changed(pull) or []
+            if change.get("status") in ("renamed", "copied")
+        ]
+    else:
+        moved = [
+            file["path"]
+            for file in files["nodes"]
+            if file.get("changeType") in ("RENAMED", "COPIED")
+        ]
     if moved:
         old = previous(pull)
         # every moved file needs its own old name: a response that lacks one (an entry without it, a file list that
@@ -1291,19 +1321,16 @@ def touched(pull: dict[str, Any]) -> list[str] | None:
 
 
 def previous(pull: dict[str, Any]) -> dict[str, str] | None:
-    """Each renamed or copied file's old name by its new one, which GitHub's GraphQL omits, read once per PR from its
-    REST file list (pr_changes); None when GitHub can't give the list."""
-    if "previousPaths" not in pull:
-        try:
-            changes = pr_changes(pull["number"])
-        except (subprocess.CalledProcessError, OSError, ValueError, KeyError):
-            return None
-        pull["previousPaths"] = {
-            change["filename"]: change["previous_filename"]
-            for change in changes
-            if change.get("filename") and change.get("previous_filename")
-        }
-    return pull["previousPaths"]
+    """Each renamed or copied file's old name by its new one, which GitHub's GraphQL omits, read from the PR's REST
+    file list (changed()); None when GitHub can't give the list."""
+    changes = changed(pull)
+    if changes is None:
+        return None
+    return {
+        change["filename"]: change["previous_filename"]
+        for change in changes
+        if change.get("filename") and change.get("previous_filename")
+    }
 
 
 def ruled(
