@@ -3,10 +3,12 @@ name: Engineering capability pack
 on:
   # Every PR, since `qualify` is a required check: a skipped run never reports, so GitHub never merges it (#394).
   pull_request:
-  # Every push to main runs the full suite: the landing gate runs only the touched tests (mise check-fast).
+  # A push to main runs the tests it touches, like a PR; the full suite runs nightly (mise check-fast, tools/affected_tests.py).
   push:
     branches:
       - main
+  schedule:
+    - cron: "17 2 * * *"
 
 permissions:
   contents: read
@@ -25,12 +27,15 @@ jobs:
           install: false
       - run: mise install
       - run: uv sync --frozen
-      # A PR runs lint and the tests it touches (tools/affected_tests.py); the full suite runs on push to main.
-      - if: github.event_name == 'pull_request'
+      # A PR or a push runs lint and the tests it touches; the nightly schedule runs the full suite.
+      - if: github.event_name != 'schedule'
+        env:
+          GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: mise run check-fast
-      - if: github.event_name != 'pull_request'
+      - if: github.event_name == 'schedule'
         run: mise run check
       - name: Check changed-file whitespace
+        if: github.event_name != 'schedule'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
