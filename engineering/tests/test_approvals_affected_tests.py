@@ -57,7 +57,7 @@ def worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.delenv("GATE_BASE", raising=False)
     monkeypatch.delenv("MY_BASE", raising=False)
-    monkeypatch.setattr(approvals, "policy_base", lambda _root, _base=None: None)
+    monkeypatch.setenv(approvals.WORKING_TREE_POLICY, "1")
     monkeypatch.setattr(
         approvals, "open_pulls", list
     )  # no PR for the branch: the default branch is the base

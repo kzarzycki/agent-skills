@@ -190,46 +190,30 @@ def test_a_bare_land_enqueues_every_landable_pr_oldest_first_pinned_to_its_head(
     assert (queue["tips"](), queue["runs"](), queue["merged"]()) == ([], 0, [])
 
 
-def test_land_wait_follows_the_entry_until_the_queue_merges_it_then_comments_landed(
+def test_land_wait_on_a_queue_base_enqueues_and_exits_without_a_sleep_or_another_read(
     queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The queue is GitHub's to watch: `--wait` never waits on the queue, so a session holds no slot and spends no quota."""
     head = queue["opened"](7)
-    polls: list[float] = []
-
-    def slept(seconds: float) -> None:
-        polls.append(seconds)
-        if len(polls) == 2:
-            queue["queue_merge"](7)
-
-    monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)  # one sleep a round
-    monkeypatch.setattr(approvals.github.random, "randint", lambda low, high: 0)  # no jitter
-    monkeypatch.setattr(approvals.time, "sleep", slept)
+    monkeypatch.setattr(approvals.time, "sleep", lambda seconds: pytest.fail("polled the queue"))
     code, lines = queue["land"]("7", "--wait")
-    assert code == 0, lines
-    assert len(polls) == 2 and queue["enqueued"] == [(7, head)]
-    assert f"PR #7 enqueued at {head}, position 1" in lines
-    assert f"PR #7 is in the merge queue at {head}, position 1" in lines
-    assert lines[-1] == "PR #7 is merged"
-    [landed] = notes_on(queue, 7, approvals.LANDED)
-    commit = queue["main"]()
-    assert landed == (
-        f"Landed\nBase: {commit}\nTree: {queue['main']('^{tree}')}\n"
-        "Gate: merge queue, https://github.com/o/r/actions/runs/99\n"
-    )
-    # a land run again on the merged PR comments nothing more
-    assert queue["land"]("7")[0] == 0
-    assert len(notes_on(queue, 7, approvals.LANDED)) == 1
+    assert (code, lines) == (0, [f"PR #7 enqueued at {head}, position 1"])
+    assert queue["enqueued"] == [(7, head)]
+    # a second land, or a relayed event, finds it in the queue: said, exit 0, not enqueued twice
+    code, lines = queue["land"]("7", "--wait")
+    assert (code, lines) == (0, [f"PR #7 is in the merge queue at {head}, position 1"])
+    assert queue["enqueued"] == [(7, head)]
 
 
-def test_a_named_pr_enqueued_or_already_queued_exits_3_naming_its_position_and_head(
+def test_a_named_pr_enqueued_or_already_queued_exits_0_naming_its_position_and_head(
     queue: dict[str, Any],
 ) -> None:
     head = queue["opened"](7)
-    assert queue["land"]("7") == (approvals.WAITING, [f"PR #7 enqueued at {head}, position 1"])
+    assert queue["land"]("7") == (0, [f"PR #7 enqueued at {head}, position 1"])
     queue["pulls"][7]["mergeQueueEntry"]["position"] = 3
     code, lines = queue["land"]("7")
     assert (code, lines) == (
-        approvals.WAITING,
+        0,
         [f"PR #7 is in the merge queue at {head}, position 3"],
     )
     assert queue["enqueued"] == [(7, head)]  # left alone at the head it was queued at
@@ -253,7 +237,7 @@ def test_a_red_group_comments_the_failing_checks_tail_and_enqueues_the_pr_once_m
     queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
     red_group(queue, "g1", 410)
     code, lines = queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert queue["enqueued"] == [(7, head)]
     [note] = notes_on(queue, 7, approvals.QUEUE_RED)
     assert f"Head: {head}\nGroup: g1\n" in note
@@ -300,7 +284,7 @@ def test_a_red_on_a_new_head_counts_from_one_again(
     queue["remove"](7, approvals.FAILED_CHECKS, at=NEW_RED_AT, group="g3")
     red_group(queue, "g3", 430)
     code, lines = queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert queue["enqueued"][-1] == (7, new)
     assert not queue["pulls"][7]["isDraft"] and notes_on(queue, 7, approvals.QUEUE_EVICTED) == []
 
@@ -343,17 +327,17 @@ def test_any_other_removal_counts_for_nothing_and_the_pr_is_enqueued_again(
     queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
     queue["remove"](7, reason, at=AGAIN_AT)
     code, lines = queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert queue["enqueued"] == [(7, head)] and queue["comments"] == []
 
 
-def test_a_pr_the_queue_has_just_merged_is_waited_on_not_enqueued_again(
+def test_a_pr_the_queue_has_just_merged_exits_0_and_is_not_enqueued_again(
     queue: dict[str, Any],
 ) -> None:
     head = queue["opened"](7)
     queue["remove"](7, approvals.QUEUE_MERGED, at=AGAIN_AT)
     assert queue["land"]("7") == (
-        approvals.WAITING,
+        0,
         [f"PR #7 left the merge queue merged at {head}"],
     )
     assert queue["enqueued"] == []
@@ -378,7 +362,7 @@ def test_an_entry_awaiting_checks_github_never_started_is_dequeued_and_enqueued_
     head = queue["opened"](7)
     queue["pulls"][7]["mergeQueueEntry"] = entry(11)
     code, lines = queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert (queue["dequeued"], queue["enqueued"]) == ([7], [(7, head)])
 
 
@@ -391,7 +375,7 @@ def test_an_entry_waiting_less_long_with_a_check_suite_or_not_for_checks_is_left
 ) -> None:
     queue["opened"](7)
     queue["pulls"][7]["mergeQueueEntry"] = entry(minutes, suites, state)
-    assert queue["land"]("7")[0] == approvals.WAITING
+    assert queue["land"]("7")[0] == 0
     assert (queue["dequeued"], queue["enqueued"]) == ([], [])
 
 
@@ -480,7 +464,7 @@ def test_a_pr_marked_ready_after_its_eviction_counts_its_reds_anew(queue: dict[s
     queue["remove"](7, approvals.FAILED_CHECKS, at=NEW_RED_AT, group="g3")
     red_group(queue, "g3", 430)
     code, lines = queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert queue["enqueued"] == [(7, head)] and not queue["pulls"][7]["isDraft"]
 
 
@@ -489,7 +473,7 @@ def test_a_red_on_main_the_base_does_not_require_is_no_red_main(queue: dict[str,
     queue["remove"](7, approvals.FAILED_CHECKS, group="g1")
     red_group(queue, "g1", 410)
     queue["checks"]["main"] = [run("lint", "failure", 500), run("qualify", "success", 501)]
-    assert queue["land"]("7")[0] == approvals.WAITING
+    assert queue["land"]("7")[0] == 0
     assert queue["enqueued"] == [(7, head)]
 
 
@@ -524,7 +508,7 @@ def test_a_pr_body_loses_its_session_link_before_it_is_enqueued(queue: dict[str,
     head = queue["opened"](7, body=f"{BODY}\n\n{LINK}\n")
     queue["pulls"][7]["viewerCanUpdate"] = True
     code, lines = queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert queue["edits"] == {"repos/{owner}/{repo}/pulls/7": BODY}
     assert queue["enqueued"] == [(7, head)]
 
@@ -572,7 +556,7 @@ def test_two_reds_on_groups_built_on_a_red_main_evict_nobody_once_main_is_green(
     assert code == 1 and lines[-1].startswith("main itself is red"), lines
     queue["checks"]["main"] = [run("qualify", "success", 501)]
     code, lines = queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert (
         "PR #7 was red in the merge queue on a red main: it counts for nothing, enqueued again"
         in lines
@@ -590,7 +574,7 @@ def test_one_red_on_a_group_built_on_a_red_main_gets_no_red_comment_once_main_is
     queue["built"]["g1"] = "m1"
     queue["checks"]["m1"] = [run("qualify", "failure", 500)]
     code, lines = queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert notes_on(queue, 7, approvals.QUEUE_RED) == []
 
 
@@ -605,7 +589,7 @@ def test_a_red_under_a_red_main_then_one_under_a_green_main_is_the_prs_first(
     queue["checks"]["m1"] = [run("qualify", "failure", 500)]
     queue["checks"]["m2"] = [run("qualify", "success", 501)]
     code, lines = queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert not queue["pulls"][7]["isDraft"] and notes_on(queue, 7, approvals.QUEUE_EVICTED) == []
     [note] = notes_on(queue, 7, approvals.QUEUE_RED)
     assert "Group: g2\n" in note and queue["enqueued"] == [(7, head)]
@@ -630,7 +614,7 @@ def test_an_entry_queued_long_whose_group_was_just_built_is_left_alone(
     """Enqueued 40 minutes ago behind other entries, its group commit made a second ago, before GitHub's check suite."""
     queue["opened"](7)
     queue["pulls"][7]["mergeQueueEntry"] = {**entry(0), "enqueuedAt": "2026-10-02T09:00:00Z"}
-    assert queue["land"]("7")[0] == approvals.WAITING
+    assert queue["land"]("7")[0] == 0
     assert queue["dequeued"] == []
 
 
@@ -641,7 +625,7 @@ def test_a_conflict_removal_github_now_reports_mergeable_is_enqueued_again(
     head = queue["opened"](7)
     queue["remove"](7, approvals.MERGE_CONFLICT)
     code, lines = queue["land"]("7")
-    assert code == approvals.WAITING, lines
+    assert code == 0, lines
     assert queue["enqueued"] == [(7, head)] and queue["comments"] == []
 
 
@@ -650,7 +634,7 @@ def test_a_red_on_a_group_github_cannot_place_on_main_counts(queue: dict[str, An
     queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
     red_group(queue, "g1", 410)
     queue["built"]["g1"] = None  # GitHub compares no commit it no longer has
-    assert queue["land"]("7")[0] == approvals.WAITING
+    assert queue["land"]("7")[0] == 0
     assert len(notes_on(queue, 7, approvals.QUEUE_RED)) == 1
 
 
@@ -673,7 +657,7 @@ def test_an_entry_awaiting_checks_on_a_commit_github_names_no_date_for_is_left_a
         "position": 1,
         "headCommit": None,
     }
-    assert queue["land"]("7")[0] == approvals.WAITING
+    assert queue["land"]("7")[0] == 0
     assert (queue["dequeued"], queue["enqueued"]) == ([], [])
 
 
@@ -690,7 +674,7 @@ def test_the_prs_own_red_then_a_red_on_a_group_built_on_a_red_main_gets_no_comme
     queue["checks"]["fine"] = [run("qualify", "success", 701)]
     queue["checks"]["broken"] = [run("qualify", "failure", 700)]
     code, lines = queue["land"]("7")
-    assert code == approvals.WAITING and not queue["pulls"][7]["isDraft"], lines
+    assert code == 0 and not queue["pulls"][7]["isDraft"], lines
     assert [n for n in notes_on(queue, 7, approvals.QUEUE_RED) if "Group: gb\n" in n] == []
     assert queue["enqueued"] == [(7, head)]
 
@@ -780,7 +764,7 @@ def test_enqueue_labels_the_pr_and_a_bare_land_finds_one_the_queue_merged_long_a
 ) -> None:
     """The trail reads the label, not a window of merge dates: a PR merged a week before the next land still gets it."""
     queue["opened"](6)
-    assert queue["land"]("6")[0] == approvals.WAITING
+    assert queue["land"]("6")[0] == 0
     assert approvals.QUEUED in labels_of(queue, 6)
     queue["queue_merge"](6)
     assert queue["land"]()[0] == 0
@@ -824,41 +808,20 @@ def test_a_labelled_pr_that_already_has_landed_loses_the_label(queue: dict[str, 
     assert approvals.QUEUED not in labels_of(queue, 6)
 
 
-def test_land_wait_follows_an_unknown_mergeability_until_github_settles_it(
+def test_land_wait_on_an_unknown_mergeability_exits_3_at_once_and_a_later_land_enqueues(
     queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`land 8 --wait` after a conflict removal while GitHub reads UNKNOWN: it polls, and enqueues once MERGEABLE."""
+    """`land 8 --wait` after a conflict removal while GitHub reads UNKNOWN: exit 3 without a poll; once it reads
+    MERGEABLE, the next `land` enqueues."""
     head = queue["opened"](8)
     queue["pulls"][8]["mergeable"] = "UNKNOWN"
     queue["remove"](8, approvals.MERGE_CONFLICT)
-    polls: list[float] = []
-
-    def slept(seconds: float) -> None:
-        polls.append(seconds)
-        queue["pulls"][8]["mergeable"] = "MERGEABLE"
-
-    monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)  # one sleep a round
-    monkeypatch.setattr(approvals.github.random, "randint", lambda low, high: 0)  # no jitter
-    monkeypatch.setattr(approvals.time, "sleep", slept)
-    monkeypatch.setattr(approvals, "CEILING", 90)
+    monkeypatch.setattr(approvals.time, "sleep", lambda seconds: pytest.fail("polled the queue"))
     code, lines = queue["land"]("8", "--wait")
-    assert polls, f"land --wait stopped at once: exit {code}, {lines}"
+    assert code == approvals.WAITING and queue["enqueued"] == [], lines
+    queue["pulls"][8]["mergeable"] = "MERGEABLE"
+    assert queue["land"]("8", "--wait")[0] == 0
     assert queue["enqueued"] == [(8, head)]
-
-
-def test_land_wait_on_an_unknown_that_never_settles_stops_at_the_ceiling(
-    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """C6's wait is bounded: GitHub never settles the mergeability, so `--wait` ends exit 3 at CEILING."""
-    queue["opened"](8)
-    queue["pulls"][8]["mergeable"] = "UNKNOWN"
-    queue["remove"](8, approvals.MERGE_CONFLICT)
-    clock = [0.0]
-    monkeypatch.setattr(approvals.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(approvals.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
-    code, lines = queue["land"]("8", "--wait")
-    assert code == approvals.WAITING and lines[-1].startswith("land --wait stopped after 2 hours")
-    assert queue["comments"] == []
 
 
 def test_the_label_sync_keeps_loop_queued_and_gives_one_land_created_its_colour(
