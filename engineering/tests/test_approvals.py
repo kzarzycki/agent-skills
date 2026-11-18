@@ -3342,7 +3342,7 @@ def lands(
     monkeypatch.setattr(approvals, "archive_workers", lambda _number: None)
     # its tests rewrite the policy in the work tree after opening PRs, so it is read there, as in a checkout without
     # origin (test_approvals_policy_base.py tests the read from origin/<base>)
-    monkeypatch.setattr(approvals, "policy_base", lambda _root, _base=None: None)
+    monkeypatch.setenv(approvals.WORKING_TREE_POLICY, "1")
     origin, work = tmp_path / "origin.git", tmp_path / "work"
     git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     (origin / "hooks" / "pre-receive").write_text(NO_REWRITE)

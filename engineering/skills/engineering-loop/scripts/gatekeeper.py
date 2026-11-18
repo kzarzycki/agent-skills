@@ -4378,9 +4378,16 @@ def policy_file(root: Path, path: Path, base: str | None = None) -> str | None:
     return based
 
 
+# set to any value, project() reads the working tree's policy files, never `origin/<base>`'s: for tests and previews
+# that edit the policy after opening PRs. A real run leaves it unset, so a PR cannot loosen its own gate.
+WORKING_TREE_POLICY = "GATEKEEPER_POLICY_FROM_WORKING_TREE"
+
+
 def policy_base(root: str, base: str | None = None) -> tuple[str, str] | None:
     """The ref the policy is read from in the checkout at `root`, `origin/<base>` (`base`, else its default branch:
     default_base), and that ref's commit now, since `land` fetches it during a run; None without such a ref."""
+    if os.environ.get(WORKING_TREE_POLICY):  # a test or preview that edits the policy in the working tree
+        return None
     base = base or default_base(root) or ""  # none: `refs/remotes/origin/` names no commit
     tip = subprocess.run(
         [
@@ -4428,10 +4435,8 @@ def unbased(root: str) -> None:
     )
     if inside.returncode:
         return
-    print(
-        "approvals.py: no origin/<base> ref, so the policy is read from the working tree",
-        file=sys.stderr,
-    )
+    why = f"{WORKING_TREE_POLICY} is set" if os.environ.get(WORKING_TREE_POLICY) else "no origin/<base> ref"
+    print(f"approvals.py: {why}, so the policy is read from the working tree", file=sys.stderr)
 
 
 @functools.cache
