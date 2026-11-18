@@ -50,8 +50,18 @@ def github(
     return calls
 
 
+def waiting(*prs: str) -> base.Lead:
+    """A lead that ended its turn waiting on ``prs``: a landing reaches only a lead whose wait
+    names a merged PR."""
+    wait = ", ".join(prs)
+    og = base.Lead(base.told("brief", 60), base.ending(f"STILL WORKING: x\nWaits: {wait}", 5))
+    og.snap = {"status": "idle"}
+    return og
+
+
 def moved(og: base.Fleet, registry: Path, monkeypatch: pytest.MonkeyPatch, head: list[str]) -> None:
     base.in_checkout(og)
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": None)
     base.supervised(
         og, registry, monkeypatch, 2, lambda poll: head.__setitem__(0, NEW), console=True
     )
@@ -72,7 +82,7 @@ def test_a_lead_s_pr_beside_a_bot_s_and_a_teammate_s_is_the_only_one_named(
 ) -> None:
     registry, head = base.following(tmp_path), [OLD]
     github(monkeypatch, head, {"843": "release-bot[bot]", "844": "me", "845": "teammate"})
-    moved(base.Lead(base.told("brief", 60)), registry, monkeypatch, head)
+    moved(waiting("#844"), registry, monkeypatch, head)
     (event,) = base.landed(registry)
     assert event["line"].endswith(f"merged since {OLD[:12]}: #844")
 
@@ -93,7 +103,7 @@ def test_an_author_not_read_still_raises_the_landing_naming_why(
     github(
         monkeypatch, head, {"843": "release-bot[bot]", "846": "me"}, listing="gh pr list: HTTP 502"
     )
-    moved(base.Lead(base.told("brief", 60)), registry, monkeypatch, head)
+    moved(waiting("#846"), registry, monkeypatch, head)
     (event,) = base.landed(registry)
     assert event["line"].endswith("merged since " + OLD[:12] + ": not read: gh pr list: HTTP 502")
     assert "#843" not in event["line"]
@@ -114,6 +124,25 @@ def test_the_login_not_read_still_raises_the_landing_naming_why(
 ) -> None:
     registry, head = base.following(tmp_path), [OLD]
     github(monkeypatch, head, {"843": "release-bot[bot]", "844": "me"}, listing="gh api: HTTP 401")
-    moved(base.Lead(base.told("brief", 60)), registry, monkeypatch, head)
+    moved(waiting("#843", "#844"), registry, monkeypatch, head)
     (event,) = base.landed(registry)
     assert event["line"].endswith("not read: gh api: HTTP 401")
+
+
+def test_a_set_that_shares_the_supervisor_with_a_pr_still_hears_that_pr_land(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, head = base.following(tmp_path), [OLD]
+    github(monkeypatch, head, {"844": "me"})
+    moved(waiting("supervisor", "#844"), registry, monkeypatch, head)
+    (event,) = base.landed(registry)
+    assert event["action"] == "act"  # it waits on the supervisor, who has the step to take
+
+
+def test_a_pr_of_another_repo_that_a_wait_names_is_not_this_repos_landing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, head = base.following(tmp_path), [OLD]
+    github(monkeypatch, head, {"844": "me"})
+    moved(waiting("other/repo#844"), registry, monkeypatch, head)
+    assert base.landed(registry) == []

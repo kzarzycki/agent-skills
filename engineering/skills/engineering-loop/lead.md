@@ -155,7 +155,16 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    A verifier on a host starts on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
-   yours while it reviews and no commit of yours moves the head under review. Copy into its
+   yours while it reviews and no commit of yours moves the head under review.
+   **Shared worktree.** The verifier reviews in the worker's worktree instead, saving a
+   checkout, a dependency install and a fixture clone, when all hold: its HEAD is the pushed
+   head under review (`git rev-parse HEAD`); `git status --porcelain` is empty; an instance,
+   if the spec needs one, was built from that head with its data reset by the project's seed
+   step (loop.md § Proof on a branch); and the worker's session is stopped (no turn running),
+   since a turn could move the tree under review. Otherwise it gets its own detached worktree
+   as above. In a shared worktree a fix round's worker runs no gate beside the pass (worker.md,
+   Gates and push), since the verifier's mutation patches edit that tree; `land` and CI gate
+   the head. Copy into its
    `tmp/loop/` the priorities file from step 4 (it exists only in your checkout, and `brief
    --priorities` runs there), the proof logs and, on a later pass, the previous report (as the
    `tmp/loop/pr<pr>-v<n>.md` the brief names) and its repros, since a read outside its
@@ -218,7 +227,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    `WONT_FIX`, replying with its triage and the issue it waits in, and each rejected one
    `INVALID`, with the one-line why; then push. Each later pass gets a fresh verifier, started the same way in a
    worktree at the new head, plus the previous report's copy and head; reviving the old one re-reads its whole earlier
-   review every turn. Start it as soon as the fixer reports the pushed head, with the fix's gate
+   review every turn. With loop.md's `Verifier session: reuse` (SKILL.md, What the project states), keep the
+   verifier's session across passes instead: `send` it the next pass's brief (`approvals.py brief`, as above)
+   rather than starting one, and close it once the PR lands. Start it as soon as the fixer reports the pushed head, with the fix's gate
    still running, and wait on that gate yourself (`wait-for --log <log> --pid <pid>`): `land`
    needs a satisfied verdict and a green gate on the same head, so neither check weakens, and a
    red gate's failure joins that verdict's findings in the next fix round. A finding that doesn't make the PR wrong or unmergeable, a note on a
@@ -459,6 +470,18 @@ finished to the backend.
 A step only the owner can unblock is parked (SKILL.md, Owner steps park): a reported child's
 process still hung on one is yours to stop and release, since its owner has ended its turn.
 A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
+End every `STILL WORKING` with one last line from `python3 <orchestrating-agents' folder>/scripts/omnigent_agent.py wait-on
+supervisor|session <id>|pr <n>|ci|until <UTC time>`, pasted as printed (`Waits: supervisor`, `Waits: session <id>`,
+`Waits: #<pr>`, `Waits: CI`, `Waits: until 2026-10-21T23:17Z`): it refuses a malformed wait, and the supervisor reads
+that line exactly, where prose such as "waiting on the CoS spec approval" or "cloud session <id>" is only a fallback it
+can misread. `supervisor` is any wait on the chief of staff or project manager (a spec to approve, a decision), which
+they act on at once; for a wait on a session, name its full id. The line may name a set (`Waits: #12, #13 and session <id>`): the supervisor wakes you on the first failure, or when
+every member has ended, and records the successes between. A child you started that reaches a final state (`DONE`,
+`USER NEEDED`, `PARKED`, failed, archived; or idle with a last message that is no `STILL WORKING`, as a verifier
+of another harness or a cloud run that answers in its report does, which counts for a session your wait names, and for
+any other only when it came after your own turn) reaches you as news within a minute of its end, named or not, and a PR your
+wait names that merged, closed or finished its checks the same, read from GitHub; an intermediate `STILL WORKING` turn of a
+child is no end, so the line only has to name what you wait on.
 A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
 supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline
