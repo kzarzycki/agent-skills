@@ -7066,7 +7066,9 @@ def test_relay_held_only_by_a_running_step_exits_0_with_the_queued_line_and_a_re
     sid = og.create("claude", "lead")
     assert relay(og, sid, tmp_path, monkeypatch) == 0
     out = capsys.readouterr()
-    assert out.out == f"session {sid}: queued until the session's current step ends\nit lands then\n"
+    assert (
+        out.out == f"session {sid}: queued until the session's current step ends\nit lands then\n"
+    )
     assert out.err == ""
     assert relay(og, sid, tmp_path, monkeypatch) == 0
     assert og.posts == 1
