@@ -18,23 +18,13 @@ from approvals_harness import (
     HELD,
     SCRIPTS,
     TRACKER,
-    added,  # noqa: F401
     approvals,
     approved,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
     gatekeeper_md,
     git_in,
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
     note,
-    others_open,  # noqa: F401
     pull,
-    pushed,  # noqa: F401
     record,
-    refs,  # noqa: F401
-    required,  # noqa: F401
     status,
     verdict_on,
 )
@@ -71,7 +61,9 @@ class Memory:
             "comment": lambda n, body: self.comments.append((n, body)),
             "label": lambda n, name, add: self.labels.append((n, name, add)),
             "assign": lambda n, login, add: None,
+            "close_issue": lambda n: None,
             "pull_request": lambda n: self.pulls[n],
+            "pull_status": lambda n: self.pulls[n],
             "current_pr": lambda: None,
             "pr_changes": lambda n: [],
             "merged_pull": lambda n: None,
@@ -94,11 +86,14 @@ class Memory:
             "ready": lambda n, undo=False: None,
             "merge": lambda n, method, body, head: None,
             "edit_text": lambda method, path, body: None,
-            "enqueue_pull": lambda node, head: None,
-            "dequeue_pull": lambda node: None,
+            "enqueue_pull": lambda number, node, head, method: None,
+            "dequeue_pull": lambda number, node: None,
             "commit_checks": lambda ref: {},
             "job_log": lambda job: "",
             "commit_tree": lambda sha: sha,
+            "repo_tags": lambda repo: {},
+            "tag_tree": lambda repo, tag: None,
+            "file_at": lambda ref, path, repo=None: None,
             "statuses": lambda sha: self.statuses.get(sha, []),
             "post_status": lambda sha, context, description, state="success": None,
             "post_review": lambda pr, review: None,
@@ -198,6 +193,8 @@ def test_report_json_gives_the_reports_facts(
     assert approvals.main(["report", "--json", str(report)]) == 0
     facts = json.loads(capsys.readouterr().out)
     assert facts == {
+        "criteria": "- A draft never merges on its skipped checks: Before merge line 1, its check.",
+        "accepted_on_evidence": [],
         "verifier": {"family": "claude, same-family", "pass": 2, "qualifier": ""},
         "head": HEAD,
         "verdict": {"blocker": 1, "major": 0, "minor": 2},
@@ -238,7 +235,7 @@ def test_report_json_reads_a_satisfied_report_with_a_logic_change_line(
 ) -> None:
     report = tmp_path / "report.md"
     report.write_text(
-        f"Verifier: codex/terra-6.1/high, pass 3: mid\n\nHead: {HEAD}\n"
+        f"Verifier: codex/terra-6.1/high, pass 3: mid\n\n## Criteria\n\n- Billing holds.\n\nHead: {HEAD}\n"
         "VERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: high — billing\n"
         "Logic change: yes — the merge order\n"
     )

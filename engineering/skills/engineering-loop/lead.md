@@ -6,6 +6,9 @@ request itself when it has none), each on its own branch in a worktree of your o
 design, wireframes included for a UI, and delegate the rest. Every heavy run, a worker's or
 your own (a suite to sort failures, a build, an e2e run), goes where SKILL.md, Where heavy
 steps run says, which also gives your own run's recipe.
+Your own test or check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
+refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
+`claude-cloud-run` could not make or one that needs this host.
 
 Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
 edits and commits go to a Sonnet worker: your context is re-read on every call (about 150k
@@ -13,6 +16,8 @@ tokens), a worker's is short. A piece too small to justify a hand-off stays with
 a hand-off costs about $0.30 in wakes: a one-line check, or reading a failing gate to
 decide what to do, which needs your judgement. Starting a worker and then doing its work
 yourself is the one failure to avoid: your context then holds it twice.
+
+When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read that file with `git show origin/<default branch>:<path>` at the start of each real turn, both its sections (the owner's and the chief of staff's; a fetch doesn't update your checkout or your story branch, so read the remote copy): a rule change reaches you there, and only a stop order is posted to your session, since each live post is a wake turn re-reading about 150k tokens of your context.
 
 1. **Intent.** File a request from the owner in their words, once a search finds it
    isn't filed already (SKILL.md, One concern per PR), with its category and
@@ -150,7 +155,16 @@ yourself is the one failure to avoid: your context then holds it twice.
    A verifier on a host starts on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
-   yours while it reviews and no commit of yours moves the head under review. Copy into its
+   yours while it reviews and no commit of yours moves the head under review.
+   **Shared worktree.** The verifier reviews in the worker's worktree instead, saving a
+   checkout, a dependency install and a fixture clone, when all hold: its HEAD is the pushed
+   head under review (`git rev-parse HEAD`); `git status --porcelain` is empty; an instance,
+   if the spec needs one, was built from that head with its data reset by the project's seed
+   step (loop.md § Proof on a branch); and the worker's session is stopped (no turn running),
+   since a turn could move the tree under review. Otherwise it gets its own detached worktree
+   as above. In a shared worktree a fix round's worker runs no gate beside the pass (worker.md,
+   Gates and push), since the verifier's mutation patches edit that tree; `land` and CI gate
+   the head. Copy into its
    `tmp/loop/` the priorities file from step 4 (it exists only in your checkout, and `brief
    --priorities` runs there), the proof logs and, on a later pass, the previous report (as the
    `tmp/loop/pr<pr>-v<n>.md` the brief names) and its repros, since a read outside its
@@ -213,7 +227,9 @@ yourself is the one failure to avoid: your context then holds it twice.
    `WONT_FIX`, replying with its triage and the issue it waits in, and each rejected one
    `INVALID`, with the one-line why; then push. Each later pass gets a fresh verifier, started the same way in a
    worktree at the new head, plus the previous report's copy and head; reviving the old one re-reads its whole earlier
-   review every turn. Start it as soon as the fixer reports the pushed head, with the fix's gate
+   review every turn. With loop.md's `Verifier session: reuse` (SKILL.md, What the project states), keep the
+   verifier's session across passes instead: `send` it the next pass's brief (`approvals.py brief`, as above)
+   rather than starting one, and close it once the PR lands. Start it as soon as the fixer reports the pushed head, with the fix's gate
    still running, and wait on that gate yourself (`wait-for --log <log> --pid <pid>`): `land`
    needs a satisfied verdict and a green gate on the same head, so neither check weakens, and a
    red gate's failure joins that verdict's findings in the next fix round. A finding that doesn't make the PR wrong or unmergeable, a note on a
@@ -364,6 +380,16 @@ yourself is the one failure to avoid: your context then holds it twice.
    merge list of `none`, or none at all, means no acceptance runs here, and your report says
    `After merge: none`. A failure is reverted the same way, and the fix
    forward is a new change through this loop, never a patch on main.
+   With loop.md's `Verifier session: reuse`, send the spec's After merge list to the kept
+   verifier right after the merge, before you finish its session, since that session already
+   knows the change and a new agent would learn it again: it runs each line on the merged
+   default branch and reports each result, and you read that report as a worker's.
+   Otherwise, or once that verifier's session has ended, run the list as above.
+   **Epic handoff note.** When the merge closed an epic's last open sub-issue (step 8), once the
+   After merge list has run, comment on the epic: each story's PR and merge commit, each spec's
+   acceptance checks (the acceptance command with its issue, SKILL.md, Acceptance checks), the
+   After merge results, and what the next nightly must confirm (SKILL.md, Nightly), so the owner
+   reads one note on what landed and what is still to be confirmed. The epic closes as step 8 says.
 10. **Clean up** once acceptance has run, pass or fail. Close the agents, and stop only the
    processes you started, as worker.md, Report says, since a shared pattern kills other
    agents' runs too. For every
@@ -444,6 +470,18 @@ finished to the backend.
 A step only the owner can unblock is parked (SKILL.md, Owner steps park): a reported child's
 process still hung on one is yours to stop and release, since its owner has ended its turn.
 A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
+End every `STILL WORKING` with one last line from `python3 <orchestrating-agents' folder>/scripts/omnigent_agent.py wait-on
+supervisor|session <id>|pr <n>|ci|until <UTC time>`, pasted as printed (`Waits: supervisor`, `Waits: session <id>`,
+`Waits: #<pr>`, `Waits: CI`, `Waits: until 2026-10-21T23:17Z`): it refuses a malformed wait, and the supervisor reads
+that line exactly, where prose such as "waiting on the CoS spec approval" or "cloud session <id>" is only a fallback it
+can misread. `supervisor` is any wait on the chief of staff or project manager (a spec to approve, a decision), which
+they act on at once; for a wait on a session, name its full id. The line may name a set (`Waits: #12, #13 and session <id>`): the supervisor wakes you on the first failure, or when
+every member has ended, and records the successes between. A child you started that reaches a final state (`DONE`,
+`USER NEEDED`, `PARKED`, failed, archived; or idle with a last message that is no `STILL WORKING`, as a verifier
+of another harness or a cloud run that answers in its report does, which counts for a session your wait names, and for
+any other only when it came after your own turn) reaches you as news within a minute of its end, named or not, and a PR your
+wait names that merged, closed or finished its checks the same, read from GitHub; an intermediate `STILL WORKING` turn of a
+child is no end, so the line only has to name what you wait on.
 A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
 supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline

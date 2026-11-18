@@ -72,6 +72,51 @@ def test_lock_provenance_and_mappings_share_one_source_identity() -> None:
     )
 
 
+# The After merge list in the kept verifier, the epic handoff note and the Nightly section (#1158).
+
+
+def _flat(name: str) -> str:
+    return " ".join((PACKAGE / "skills" / "engineering-loop" / name).read_text().split())
+
+
+def _step(name: str, number: int) -> str:
+    text = _flat(name)
+    start = text.index(f" {number}. **")
+    end = text.index(f" {number + 1}. **", start)
+    return text[start:end]
+
+
+def test_lead_step_9_sends_the_after_merge_list_to_the_kept_verifier_with_reuse() -> None:
+    accept = _step("lead.md", 9)
+    assert "`Verifier session: reuse`" in accept
+    assert "send the spec's After merge list to the kept verifier right after the merge" in accept
+    assert "Otherwise, or once that verifier's session has ended, run the list as above." in accept
+
+
+def test_lead_step_9_leaves_the_epic_handoff_note_at_the_last_sub_issue_merge() -> None:
+    accept = _step("lead.md", 9)
+    assert "**Epic handoff note.**" in accept
+    for item in (
+        "each story's PR and merge commit",
+        "each spec's acceptance checks",
+        "the After merge results",
+        "what the next nightly must confirm",
+    ):
+        assert item in accept
+
+
+def test_skill_has_a_nightly_section_naming_nightly_py_red() -> None:
+    skill = _flat("SKILL.md")
+    start = skill.index("**Nightly.**")
+    nightly_section = skill[start : skill.index("**", start + len("**Nightly.**"))]
+    assert "full suite" in nightly_section
+    assert "scripts/acceptance.py --all" in nightly_section
+    assert (
+        "uv run <this skill's folder>/scripts/nightly.py red --last-green <sha> --red <sha> --run <url>"
+        in nightly_section
+    )
+
+
 def test_owned_overlay_is_canonical_and_reproduced() -> None:
     policy, provenance, _ = _data()
     assert provenance["excluded_skills"] == policy["exclusions"]
@@ -161,6 +206,15 @@ def test_the_to_spec_template_holds_both_acceptance_lists() -> None:
         assert _acceptance(text) == ["### Before merge", "### After merge"]
         assert text.index("## Testing Decisions") < text.index("## Acceptance")
         assert text.index("## Acceptance") < text.index("## Out of Scope")
+
+
+def test_the_to_spec_template_before_merge_list_shows_a_check_and_a_manual_line() -> None:
+    for root in ("overlays", "."):
+        text = (PACKAGE / root / "skills" / "to-spec" / "SKILL.md").read_text()
+        before = text.split("### Before merge")[1].split("### After merge")[0]
+        lines = [line for line in before.splitlines() if line.startswith("- ")]
+        assert any("Check: `" in line for line in lines)
+        assert any(line.startswith("- Manual:") and "Evidence:" in line for line in lines)
 
 
 def test_the_board_setup_issue_template_holds_both_acceptance_lists() -> None:

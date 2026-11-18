@@ -243,6 +243,14 @@ class FakeOmnigent:
     def items(self, sid: str) -> list[dict]:
         return self.sessions[sid]
 
+    def older(self, sid: str, after: str = "") -> dict:  # a page of 100, newest first
+        newest = list(reversed(self.sessions[sid]))
+        ids = [str(i.get("id")) for i in newest]
+        start = ids.index(after) + 1 if after else 0
+        data = newest[start : start + 100]
+        more = start + 100 < len(newest)
+        return {"data": data, "last_id": data[-1].get("id") if data else None, "has_more": more}
+
     def info(self, sid: str) -> dict:
         for held in list(self.held):
             self.held.remove(held)
@@ -324,6 +332,7 @@ def no_model(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
+    monkeypatch.setattr(omnigent_agent, "LATE_BRIEF_SECONDS", 0)  # its tests set their own
     monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
     monkeypatch.delenv("OMNIGENT_SUPERVISE_REGISTRY", raising=False)  # else run arms a real one
 
@@ -548,6 +557,199 @@ def test_an_interrupt_while_confirming_a_found_session_keeps_it_and_prints_its_i
     assert "status s0" in out.err
 
 
+class LateBrief(FakeOmnigent):
+    """Session s0's brief is taken late: it lands as an item on the ``land_at``-th history read,
+    and waits in ``pending_inputs`` until then when ``queued``."""
+
+    def __init__(self, land_at: int | None, queued: bool, brief: bool = True) -> None:
+        super().__init__(deaf={0})
+        self.land_at, self.queued, self.reads, self.text = land_at, queued, 0, ""
+        self.brief = brief  # False: only an agent item arrives, not the brief
+
+    def send(self, sid: str, text: str) -> None:
+        super().send(sid, text)
+        if sid == "s0":
+            self.text = text
+
+    def items(self, sid: str) -> list[dict]:
+        if sid == "s0" and self.text and self.land_at is not None:
+            self.reads += 1
+            if self.reads == self.land_at:
+                if self.brief:
+                    self.land(sid, self.text)
+                else:
+                    self.sessions[sid].append({"id": "t1", "type": "function_call"})
+        return super().items(sid)
+
+    def info(self, sid: str) -> dict:
+        info = super().info(sid)
+        if sid == "s0" and self.queued and self.text and self.land_at != 0:
+            landed = any(i.get("role") == "user" for i in self.sessions[sid])
+            info["pending_inputs"] = [] if landed else [{"content": [{"text": self.text}]}]
+        return info
+
+
+@pytest.fixture
+def quick_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(omnigent_agent, "LATE_BRIEF_SECONDS", 0.5)
+    monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0.01)
+
+
+@pytest.mark.parametrize(
+    ("land_at", "queued"),
+    [(3, True), (4, True), (2, False)],  # pending at the deadline then an item; an item at once
+)
+def test_start_keeps_a_session_whose_brief_lands_within_the_grace(
+    tmp_path: Path, quick_grace: None, land_at: int, queued: bool
+) -> None:
+    og = LateBrief(land_at, queued)
+    assert omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0) == (
+        "s0",
+        [],
+    )
+    assert og.archived == [] and list(og.sessions) == ["s0"]
+
+
+def test_a_brief_landing_late_exits_0_through_main_with_one_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_grace: None
+) -> None:
+    og = LateBrief(3, True)
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    assert list(og.sessions) == ["s0"] and og.archived == []
+
+
+def test_start_keeps_a_queued_session_that_shows_an_item_during_the_grace(
+    tmp_path: Path, quick_grace: None
+) -> None:
+    og = LateBrief(3, True, brief=False)
+    assert omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)[0] == "s0"
+    assert og.archived == []
+
+
+def test_a_brief_that_never_arrives_waits_the_grace_then_exits_1_through_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_grace: None
+) -> None:
+    og = FakeOmnigent(deaf={0, 1})  # nothing pending, history empty
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    began = time.monotonic()
+    assert omnigent_agent.main(argv) == 1
+    assert time.monotonic() - began >= 0.9  # the 0.5 s grace, once per attempt
+    assert og.archived == ["s0", "s1"]
+
+
+def test_a_brief_landing_in_the_grace_with_nothing_pending_at_the_deadline_is_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_grace: None
+) -> None:
+    og = LateBrief(6, False)  # empty history and nothing pending until it lands
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    assert list(og.sessions) == ["s0"] and og.archived == []
+
+
+def test_a_host_over_capacity_past_the_wait_exits_1_through_main_and_makes_no_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "capacity", lambda **_: (False, "cpu 2% idle"))
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0.05)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    assert "over capacity for 0s: cpu 2% idle" in capsys.readouterr().err
+    assert og.sessions == {}
+
+
+def test_a_runner_launch_error_is_no_start_and_is_abandoned_after_the_grace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_grace: None
+) -> None:
+    og = FakeOmnigent(deaf={0, 1})
+    real_items = og.items
+    monkeypatch.setattr(og, "items", lambda sid: [*real_items(sid), {"type": "error"}])
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    assert og.archived == ["s0", "s1"]
+
+
+def test_start_abandons_a_brief_that_stops_pending_without_landing_after_a_whole_grace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_grace: None
+) -> None:
+    og = LateBrief(None, True)  # pending, then gone without ever being an item
+    real_info, calls = og.info, [0]
+
+    def info(sid: str) -> dict:
+        calls[0] += 1
+        out = real_info(sid)
+        if sid == "s0" and calls[0] > 80:  # past one grace (0.5 s / 0.01 s): the grace restarted
+            out["pending_inputs"] = []
+        return out
+
+    monkeypatch.setattr(og, "info", info)
+    began = time.monotonic()
+    assert omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)[0] == "s1"
+    assert og.archived == ["s0"]
+    assert time.monotonic() - began >= 0.9  # the pending time plus a whole grace after it
+
+
+def test_a_brief_pending_past_the_grace_then_landing_is_kept_through_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_grace: None
+) -> None:
+    og = LateBrief(200, True)  # pending ~2 s, four graces, then an item
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    assert list(og.sessions) == ["s0"] and og.archived == []
+
+
+@pytest.mark.parametrize(("flags", "seconds"), [([], 300.0), (["--confirm-seconds", "7"], 7.0)])
+def test_start_confirms_for_300_seconds_unless_the_flag_overrides_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], seconds: float
+) -> None:
+    og = FakeOmnigent()
+    waits: list[float] = []
+
+    def delivered(_og: object, _sid: str, _text: str, secs: float, *_a: object) -> bool:
+        waits.append(secs)
+        return True
+
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "delivered", delivered)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    assert omnigent_agent.main(["start", "claude", "t", "brief.md", "r.md", *flags]) == 0
+    assert waits[-1] == seconds
+
+
+def test_a_failed_start_with_no_attempt_started_exits_non_zero_through_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(deaf={0, 1})
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", "brief.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    assert og.archived == ["s0", "s1"]
+
+
 def test_start_fails_after_two_deaf_sessions(tmp_path: Path) -> None:
     with pytest.raises(
         omnigent_agent.Fail, match="s0: brief not in history.*s1: brief not in history"
@@ -698,6 +900,124 @@ def test_wait_notify_tells_loop_notify_once_the_report_is_in(
     (repo / "r.md").write_text("ok")
     assert omnigent_agent.main(["wait", sid, "r.md", "--notify"]) == 0
     assert calls.read_text().splitlines() == [f"exit 0: {repo / 'r.md'}"]
+
+
+def test_wait_takes_no_report_older_than_the_sessions_last_message_until_it_is_rewritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    report = repo / "r.md"
+    report.write_text("old run")
+    past = time.time() - 600
+    os.utime(report, (past, past))
+    og.land(sid, "second brief")  # a later message the old report does not answer
+    og.sessions[sid][-1]["created_at"] = time.time() - 300
+    assert (
+        omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1
+    )  # the old one is not taken
+    info = og.info
+    og.info = lambda s: (report.write_text("new run"), info(s))[1]  # type: ignore[method-assign]
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+    assert report.read_text() == "new run"
+
+
+def test_wait_takes_a_report_written_after_the_sessions_last_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    og.sessions[sid][-1]["created_at"] = time.time() - 300
+    (repo / "r.md").write_text("ok")
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+
+
+def stale_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, og: FakeOmnigent
+) -> tuple[str, Path]:
+    """A session and its report file, written ten minutes ago."""
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    report = repo / "r.md"
+    report.write_text("old run")
+    past = time.time() - 600
+    os.utime(report, (past, past))
+    return sid, report
+
+
+def say(og: FakeOmnigent, sid: str, role: str, text: str, ago: float, **more: object) -> None:
+    kind = "output_text" if role == "assistant" else "input_text"
+    og.sessions[sid].append(
+        {
+            "id": f"m{len(og.sessions[sid])}",
+            "type": "message",
+            "role": role,
+            "created_at": time.time() - ago,
+            "content": [{"type": kind, "text": text}],
+            **more,
+        }
+    )
+
+
+def test_wait_floors_at_the_newest_of_two_messages_not_the_oldest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, _ = stale_report(tmp_path, monkeypatch, og)
+    og.sessions[sid][:] = []
+    say(og, sid, "user", "brief", 900)  # before the report
+    say(og, sid, "user", "follow-up", 300)  # after it
+    assert omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1
+
+
+def test_wait_does_not_floor_at_the_supervisors_nudge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, report = stale_report(tmp_path, monkeypatch, og)
+    og.sessions[sid][:] = []
+    say(og, sid, "user", "brief", 900)
+    nudge = omnigent_agent.NUDGE.format(report=report.resolve())
+    say(og, sid, "user", nudge, 10)  # after the report: it does not make it stale
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+
+
+def test_wait_floors_at_the_sessions_creation_when_no_message_is_in_the_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, _ = stale_report(tmp_path, monkeypatch, og)
+    og.sessions[sid][:] = []
+    info = og.info
+    og.info = lambda s: {**info(s), "created_at": time.time() - 300}  # type: ignore[method-assign]
+    assert omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1
+
+
+def test_wait_finds_a_message_behind_the_newest_page_of_the_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid, _ = stale_report(tmp_path, monkeypatch, og)
+    og.sessions[sid][:] = []
+    say(og, sid, "user", "second brief", 300)
+    for n in range(100):  # the turn's steps since: the real items() page holds only these
+        say(og, sid, "assistant", f"step {n}", 200)
+    og.items = lambda s: og.sessions[s][-100:]  # type: ignore[method-assign]
+    assert omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"]) == 1
+
+
+def test_wait_takes_a_far_report_only_if_written_after_the_brief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: box, mac\n")
+    assert omnigent_agent.main([*VERIFY_FAR, "--file", "gate.log"]) == 0
+    path = "/there/repo/tmp/loop/pr7-v1.md"
+    og.files[path] = "VERDICT: 0 blocker\nSATISFIED: yes\n"
+    og.times[path] = time.time() - 600  # an earlier pass's, before this brief
+    argv = ["wait", "s0", path, "--verdict", "--timeout", "1"]
+    assert omnigent_agent.main(argv) == 1
+    og.sessions["s0"][-1]["created_at"] = time.time() - 300
+    og.times[path] = time.time() - 60  # the verifier wrote it after its brief
+    assert omnigent_agent.main(argv) == 0
 
 
 def test_run_notify_tells_loop_notify_once_the_report_is_in(
@@ -3111,7 +3431,7 @@ def test_without_top_level_the_create_body_and_brief_are_unchanged(
         tmp_path / "r.md.brief"
     ).read_text() == "AGENT_SIGNATURE=cc/?/?\n" + lock + DEFAULT_PREAMBLE.format(
         report=tmp_path / "r.md", role="Your role file is roles/worker.md; read it first.\n"
-    ) + "do X"
+    ).removesuffix("\n") + omnigent_agent.HOST_RUN_NOTE + "\n" + "do X"  # a host child (#1233)
     assert og.top_level == [False] and og.roles == ["roles/worker.md"]
 
 
@@ -3153,6 +3473,7 @@ def test_children_of_one_lead_share_one_heavy_lock_and_another_lead_s_get_their_
     assert lock_line("w5") == first
 
 
+@pytest.mark.needs_tool("perl")
 def test_worker_md_s_heavy_lock_command_waits_for_the_lock_and_passes_the_exit_through(
     tmp_path: Path,
 ) -> None:
@@ -4914,6 +5235,59 @@ def aged(path: Path, ago: float) -> Path:
     return path
 
 
+class Paged(Owing):
+    """Owing whose history is longer than the newest 100 items ``items`` returns."""
+
+    def __init__(self, history: list[dict], *infos: dict) -> None:
+        super().__init__(history[-100:], *infos)
+        self.history = history
+
+    def older(self, sid: str, after: str = "") -> dict:
+        newest = list(reversed(self.history))
+        ids = [str(i.get("id")) for i in newest]
+        start = ids.index(after) + 1 if after else 0
+        data = newest[start : start + 100]
+        last = data[-1]["id"] if data else None
+        return {"data": data, "last_id": last, "has_more": start + 100 < len(newest)}
+
+
+def steps(n: int, ago: float) -> list[dict]:
+    return [
+        {**said("assistant", f"s{k}", f"a{k}"), "created_at": time.time() - ago} for k in range(n)
+    ]
+
+
+def test_check_counts_a_report_written_after_an_instruction_behind_the_page(tmp_path: Path) -> None:
+    report = aged(tmp_path / "r.md", 300)  # after the brief, before the page's oldest item
+    og = Paged([told("brief", 600), *steps(150, 100)], {})
+    event, since = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert event == f"a coord: report written: {report}"
+    assert abs(since - (time.time() - 600)) < 5
+
+
+def test_check_refuses_a_report_older_than_an_instruction_behind_the_page(tmp_path: Path) -> None:
+    report = aged(tmp_path / "r.md", 900)
+    og = Paged([told("brief", 600), *steps(150, 100)], {})
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert event == ""
+
+
+def test_check_with_no_instruction_in_the_history_floors_at_the_pages_oldest_item(
+    tmp_path: Path,
+) -> None:
+    report = aged(tmp_path / "r.md", 150)
+    og = Paged(steps(150, 100), {})
+    _, since = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert abs(since - (time.time() - 100)) < 5
+
+
+def test_a_page_short_of_100_items_is_read_without_a_page_back(tmp_path: Path) -> None:
+    og = Paged([told("brief", 600), *steps(5, 100)], {})
+    og.older = lambda *a, **k: pytest.fail("read back a whole history")  # type: ignore[method-assign]
+    assert omnigent_agent.last_instruction(og, "a", og.items("a"), "") is not None
+    assert omnigent_agent.last_instruction(og, "a", steps(5, 1), "") is None
+
+
 def test_supervise_returns_a_report_written_since_the_last_instruction(tmp_path: Path) -> None:
     report = aged(tmp_path / "r.md", 60)
     og = Owing([told("brief", 120)], {})
@@ -6639,7 +7013,7 @@ def test_send_arms_only_once_its_message_is_in_the_history(
 
     def reporting(s: str) -> dict:
         if not stale and f"{sid}=" in (registry.read_text() if registry.exists() else ""):
-            since, _ = omnigent_agent.instructed(og.items(sid), "")
+            since, _ = omnigent_agent.instructed(og, sid, og.items(sid), "")
             stale.append(report.stat().st_mtime > since)  # the supervisor's view once armed
             report.write_text("fixed")
         return info(s)
@@ -7040,7 +7414,73 @@ def broadcast(
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
     (tmp_path / "m.md").write_text(text)
-    return omnigent_agent.main(["broadcast", str(tmp_path / "m.md"), *args])
+    live = [] if "--decisions" in args else ["--stop"]
+    return omnigent_agent.main(["broadcast", str(tmp_path / "m.md"), *live, *args])
+
+
+def test_a_broadcast_without_stop_writes_the_decisions_file_and_posts_to_no_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    board = tmp_path / "board.md"
+    board.write_text("# Board\n\n## Standing decisions\n- merge on green\n\n## Closed\n- x\n")
+    before = list(og.sessions[lead])
+    args = ("--include", lead, "--decisions", str(board))
+    assert broadcast(og, tmp_path, monkeypatch, *args, text="pause\nto save tokens") == 0
+    assert "posted to no session" in capsys.readouterr().out
+    assert og.sessions[lead] == before
+    assert omnigent_agent.standing(board) == "- merge on green"  # the owner's section, unchanged
+    text = board.read_text()
+    assert "## Chief of staff decisions\n- pause to save tokens\n" in text
+    assert "## Standing decisions\n- merge on green\n\n## Closed\n- x" in text
+    fresh = tmp_path / "fresh.md"
+    assert broadcast(og, tmp_path, monkeypatch, "--decisions", str(fresh)) == 0
+    assert "- rule" in fresh.read_text()
+    assert omnigent_agent.standing(fresh) == ""  # not the owner's section
+
+
+def test_a_dry_run_without_stop_writes_nothing_and_no_flag_is_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    board = tmp_path / "board.md"
+    args = ("--include", lead, "--decisions", str(board), "--dry-run")
+    assert broadcast(og, tmp_path, monkeypatch, *args) == 0
+    assert not board.exists()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "m.md").write_text("rule")
+    assert omnigent_agent.main(["broadcast", str(tmp_path / "m.md"), "--include", lead]) == 1
+    assert "only a stop order" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        omnigent_agent.main(["broadcast", "x", "--stop", "--decisions", str(board)])
+
+
+def test_the_loop_contract_names_the_file_a_lead_reads_and_a_decisions_target_is_that_file() -> (
+    None
+):
+    skills = Path(omnigent_agent.__file__).resolve().parents[2]
+    for doc in ("engineering-loop/SKILL.md", "engineering-loop/lead.md", "chief-of-staff/SKILL.md"):
+        assert "Standing decisions:" in (skills / doc).read_text()
+    # only the new text has these: the lead reads the remote copy, the chief of staff writes its own section
+    assert (
+        "git show origin/<default branch>:<path>"
+        in (skills / "engineering-loop/lead.md").read_text()
+    )
+    cos = (skills / "chief-of-staff/SKILL.md").read_text()
+    assert "git show origin/<default branch>:<path>" in cos
+    assert "under `## Chief of staff decisions`" in cos
+
+
+def test_a_stop_order_still_posts_to_the_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    assert broadcast(og, tmp_path, monkeypatch, "--include", lead, text="STOP") == 0
+    assert "delivered" in capsys.readouterr().out
+    assert omnigent_agent.text_of(og.sessions[lead][-1]).endswith("STOP")
 
 
 def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_archived_or_automations(
@@ -10587,6 +11027,7 @@ def test_the_lead_preamble_asks_for_the_ending_line_with_the_report_path() -> No
     assert omnigent_agent.wait_of(wait) == "verifier"
 
 
+@pytest.mark.needs_tool("perl")
 def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Path) -> None:
     """The launcher the long-run rule names starts the command in its own session and returns at once."""
     rule = long_run_rule()
@@ -10929,21 +11370,34 @@ def in_checkout(og: Fleet) -> None:
     og.files[".git/config"] = GIT_CONFIG
 
 
-def github(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> list[tuple[str, ...]]:
+S1, S2, S3 = "1" * 40, "2" * 40, "3" * 40
+COMPARE = f"{S1}\t2026-11-01T10:00:00Z\n{S2}\t2026-11-02T10:00:00Z\n{S3}\t2026-11-03T10:00:00Z\n"
+
+
+def pr_list(*merged: tuple[int, str]) -> str:
+    """What ``gh pr list --json number,mergeCommit`` prints for PRs merged as the given shas."""
+    return json.dumps([{"number": n, "mergeCommit": {"oid": sha}} for n, sha in merged])
+
+
+def github(
+    monkeypatch: pytest.MonkeyPatch, head: list[str], prs: str | None = None
+) -> list[tuple[str, ...]]:
     """``gh`` faked: the default branch's head is ``head[0]``, which a test moves between polls;
-    a comparison lists two merges, both PRs opened by the login it runs as. Each call is
-    recorded."""
+    a comparison lists three commits, and the login's merged PRs (``prs``, by default #12 as the
+    first commit's squash merge and #13 as the second's) come from one ``pr list``. Any lookup of
+    a single PR or of the login raises. Each call is recorded."""
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 0)
     calls: list[tuple[str, ...]] = []
+    mine = prs if prs is not None else pr_list((13, S2), (12, S1), (99, "f" * 40))
 
     def gh(*args: str, timeout: float = 0) -> str:
         calls.append(args)
         if args[1] == "repos/o/r/commits/HEAD":
             return head[0] + "\n"
-        if args[1] == "user" or args[1].startswith("repos/o/r/pulls/"):
-            return "me\n"
         if args[1] == f"repos/o/r/compare/{OLD}...{NEW}":
-            return "Fix the gate (#12)\nSupervisor: one more (#781) (#13)\nchore: bump\n"
+            return COMPARE
+        if args[:2] == ("pr", "list"):
+            return mine
         raise AssertionError(args)
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
@@ -10952,17 +11406,21 @@ def github(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> list[tuple[str, 
 
 def landed(registry: Path) -> list[dict]:
     path = registry.with_suffix(".events.jsonl")
-    return [e for e in events_of(registry) if e["kind"] == "landed"] if path.exists() else []
+    return (
+        [e for e in events_of(registry) if e["id"].startswith("landed:")] if path.exists() else []
+    )
 
 
 def test_a_moved_default_branch_raises_one_act_event_for_its_new_head_and_then_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = following(tmp_path)
-    og = Lead(told("brief", 60), ending("STILL WORKING: waiting on the verifier", 5))
+    og = Lead(told("brief", 60), ending("STILL WORKING: spec filed\nWaits: #12", 5))
+    og.snap = {"status": "idle"}
     in_checkout(og)
     head = [OLD]
     github(monkeypatch, head)
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": None)
     seen: list[int] = []
 
     def later(poll: int) -> None:
@@ -10973,10 +11431,58 @@ def test_a_moved_default_branch_raises_one_act_event_for_its_new_head_and_then_n
     supervised(og, registry, monkeypatch, 4, later, notify="cos", console=True)
     assert seen == [0, 0, 1]  # nothing for the same head twice, one once it moved, none after
     (event,) = landed(registry)
-    assert event["id"] == f"landed:o/r:{NEW}"
-    assert (event["settled"], event["action"]) == ("rule", "act")
+    assert event["id"] == f"landed:o/r:{NEW}:{event['session']}"  # only the lead waiting on #12
+    assert (event["settled"], event["action"]) == ("rule", "tell")
     assert NEW in event["line"] and "#12, #13" in event["line"]
     assert state_of(registry)["heads"] == {"o/r": NEW}
+
+
+def test_a_range_of_foreign_numbers_lists_the_repos_own_merges_in_a_fixed_number_of_calls() -> None:
+    """A fork's range holds the upstream's `(#n)` subjects, none a PR of the fork: the notice
+    lists only the fork's own merges (a squash, then a queue's merge commit) and reads the
+    repo twice however many commits there are, never once per number."""
+    queue = "4" * 40
+    commits = "".join(f"{c}\t2026-11-0{n}T10:00:00Z\n" for n, c in enumerate([S1, S2, queue], 1))
+    commits += "".join(f"{n:040x}\t2026-11-09T10:00:00Z\n" for n in range(80))
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, timeout: float = 0) -> str:
+        calls.append(args)
+        if args[1].startswith("repos/o/r/compare/"):
+            return commits
+        if args[:2] == ("pr", "list"):
+            return pr_list((9, queue), (7, S1), (8, "e" * 40))  # #8 merged outside the range
+        raise AssertionError(args)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(omnigent_agent, "gh", gh)
+        assert omnigent_agent.merged_since("o/r", OLD, NEW) == "#7, #9"
+    assert len(calls) == 2
+    listing = calls[1]
+    assert listing[:4] == ("pr", "list", "--repo", "o/r")
+    assert "--author" in listing and listing[listing.index("--author") + 1] == "@me"
+    assert "merged:>=2026-11-01" in listing[listing.index("--search") + 1]
+
+
+def test_a_range_none_of_whose_commits_is_a_merged_pr_of_the_login_lists_nothing() -> None:
+    def gh(*args: str, timeout: float = 0) -> str:
+        return COMPARE if args[0] == "api" else pr_list((5, "e" * 40))
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(omnigent_agent, "gh", gh)
+        assert omnigent_agent.merged_since("o/r", OLD, NEW) == ""
+
+
+def test_a_merged_pr_list_that_cannot_be_read_is_named_so_the_landing_is_still_raised() -> None:
+    def gh(*args: str, timeout: float = 0) -> str:
+        if args[0] == "api":
+            return COMPARE
+        raise omnigent_agent.Fail("gh pr list: HTTP 502")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(omnigent_agent, "gh", gh)
+        got = omnigent_agent.merged_since("o/r", OLD, NEW)
+    assert got == "not read: gh pr list: HTTP 502"
 
 
 def test_the_first_head_seen_for_a_repo_is_stored_and_raises_nothing(
@@ -10996,15 +11502,19 @@ def test_a_restart_reports_a_landing_made_while_it_was_down_but_not_one_it_repor
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = following(tmp_path)
-    og = Lead(told("brief", 60))
+    og = Lead(told("brief", 60), ending("STILL WORKING: x\nWaits: #12", 5))
+    og.snap = {"status": "idle"}
     in_checkout(og)
     head = [OLD]
     github(monkeypatch, head)
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": None)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
     head[0] = NEW
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
-    assert [e["id"] for e in landed(registry)] == [f"landed:o/r:{NEW}"]
+    assert [e["id"] for e in landed(registry)] == [
+        f"landed:o/r:{NEW}:{landed(registry)[0]['session']}"
+    ]
 
 
 def test_two_leads_in_one_repo_raise_one_event_for_one_new_head(
@@ -11012,13 +11522,25 @@ def test_two_leads_in_one_repo_raise_one_event_for_one_new_head(
 ) -> None:
     registry = tmp_path / "registry"
     registry.write_text(f"a={tmp_path / 'a.md'}\tfollow\nb={tmp_path / 'b.md'}\tfollow\n")
-    og = Fleet(a=[told("brief", 60)], b=[told("brief", 60)])
+    og = Leads(
+        a=[told("brief", 60)], b=[told("brief", 60), ending("STILL WORKING: x\nWaits: #13", 5)]
+    )
+    og.snaps["b"] = {"status": "idle"}
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": None)
     in_checkout(og)
     head = [OLD]
     calls = github(monkeypatch, head)
-    supervised(og, registry, monkeypatch, 2, lambda poll: head.__setitem__(0, NEW), console=True)
-    (event,) = landed(registry)
-    assert (event["session"], event["id"]) == ("a", f"landed:o/r:{NEW}")
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        2,
+        lambda poll: head.__setitem__(0, NEW),
+        notify="cos",
+        console=True,
+    )
+    (event,) = landed(registry)  # a waits on nothing: only b, whose wait names #13, is told
+    assert (event["session"], event["id"]) == ("b", f"landed:o/r:{NEW}:b")
     assert [c[1] for c in calls].count("repos/o/r/commits/HEAD") == 2  # one read per poll
 
 
@@ -11039,25 +11561,31 @@ def test_a_landing_the_lead_wrote_under_a_named_wait_reaches_the_manager(
     assert own == ("rule", "record", "names its wait: second")  # its own words reach no one
     moved = lambda poll: head.__setitem__(0, NEW)
     supervised(og, registry, monkeypatch, 2, moved, notify="cos", console=True)
-    (post,) = posted(og)
-    line = f"o/r: its default branch moved to {NEW}; merged since {OLD[:12]}: #12, #13"
-    assert f"[act] {line} (its default branch moved: a step owed after a landing)" in post
+    assert posted(og) == [] and landed(registry) == []  # no lead waits on #12 or #13: recorded only
 
 
 FAR = "until 2099-01-01T00:00Z"  # a timed wait's end: the supervisor raises no deadline before it
 
 
 def heads_moving(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> None:
-    """``gh`` faked: the default branch's head is ``head[0]``, any comparison one merge of a PR the
-    login it runs as opened."""
+    """``gh`` faked: the default branch's head is ``head[0]``, any comparison one commit, the
+    squash merge of a PR the login it runs as opened."""
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 0)
 
     def gh(*args: str, timeout: float = 0) -> str:
-        if args[1] == "user" or args[1].startswith("repos/o/r/pulls/"):
-            return "me\n"
-        return head[0] + "\n" if args[1] == "repos/o/r/commits/HEAD" else "Fix the gate (#12)\n"
+        if args[:2] == ("pr", "list"):
+            return pr_list((12, S1))
+        if args[1] == "repos/o/r/commits/HEAD":
+            return head[0] + "\n"
+        return f"{S1}\t2026-11-01T10:00:00Z\n"
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
+
+
+def landings_posted(og: Fleet) -> list[str]:
+    """The posts to the chief of staff that carry a landing (a lead waiting on the supervisor
+    also raises its own ends and deadlines, which these tests leave aside)."""
+    return [p for p in posted(og) if "its default branch moved" in p]
 
 
 def test_a_turn_end_from_before_the_run_is_in_no_post_though_its_label_shows_it(
@@ -11068,8 +11596,10 @@ def test_a_turn_end_from_before_the_run_is_in_no_post_though_its_label_shows_it(
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
     # a wait timed far ahead: no deadline, so it never settles
-    old = f"STILL WORKING: waiting on the verifier {FAR}; an outage notice from weeks ago"
+    old = "STILL WORKING: an outage notice from weeks ago\nWaits: supervisor"
+    first_line = old.splitlines()[0]
     og = Lead(told("brief", 30 * 86400), ending(old, 29 * 86400))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}}  # its PR: a landing is its news
     in_checkout(og)
     head = ["1" * 40]
     heads_moving(monkeypatch, head)
@@ -11080,10 +11610,10 @@ def test_a_turn_end_from_before_the_run_is_in_no_post_though_its_label_shows_it(
             head[0] = str(poll + 1) * 40
 
     supervised(og, registry, monkeypatch, 5, land, notify="cos", console=True)
-    posts = posted(og)
+    posts = landings_posted(og)
     assert len(posts) == 2 and all("its default branch moved" in p for p in posts)
-    assert all("\na t-a: idle · " in p and old not in p and "turn ended" not in p for p in posts)
-    assert [l["status.line"] for s, l in og.labels if s == "a"][-1].endswith(f": {old}")
+    assert all("\na t-a: idle · " in p and old not in p and "turn ended ·" not in p for p in posts)
+    assert [l["status.line"] for s, l in og.labels if s == "a"][-1].endswith(f": {first_line}")
 
 
 def test_a_turn_end_in_the_run_is_posted_once_also_across_restarts(
@@ -11094,13 +11624,14 @@ def test_a_turn_end_in_the_run_is_posted_once_also_across_restarts(
     another restart give it no more; the key it was told under is kept in the state."""
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    og = Lead(told("brief", 600), ending("STILL WORKING: waiting on the verifier", 500))
+    og = Lead(told("brief", 600), ending("STILL WORKING: x\nWaits: supervisor", 500))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}}  # its PR: a landing is its news
     in_checkout(og)
     head = ["1" * 40]
     heads_moving(monkeypatch, head)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # the run that saw it
     offset[0] = 60.0
-    new = "STILL WORKING: waiting on the verifier for the second fix"
+    new = "STILL WORKING: the second fix\nWaits: supervisor"
     og.histories["a"].append(ending(new, 0))  # written while the supervisor is down
     offset[0], head[0] = 120.0, "2" * 40
 
@@ -11110,10 +11641,10 @@ def test_a_turn_end_in_the_run_is_posted_once_also_across_restarts(
     supervised(og, registry, monkeypatch, 2, land, notify="cos", console=True)  # a restart
     offset[0], head[0] = 120.0 + 602.0, "4" * 40
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # another restart
-    posts = posted(og)
+    posts = landings_posted(og)
     assert len(posts) == 3 and all("its default branch moved" in p for p in posts)
-    assert [new in p for p in posts] == [True, False, False]
-    assert f"\na t-a: turn ended · waits on verifier: {new}" in posts[0]
+    assert [new.splitlines()[0] in p for p in posts] == [True, False, False]
+    assert f"\na t-a: turn ended · waits on supervisor: {new.splitlines()[0]}" in posts[0]
     lead = state_of(registry)["leads"]["a"]
     assert lead["told_turn"] == lead["turn"] == f"m{new}0"
 
@@ -11126,12 +11657,16 @@ def test_a_turn_end_without_an_id_is_keyed_by_its_time_and_each_is_posted_once(
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
     anon = lambda text, ago: {k: v for k, v in ending(text, ago).items() if k != "id"}
-    og = Lead(told("brief", 600), anon("STILL WORKING: waiting on the verifier", 500))
+    og = Lead(told("brief", 600), anon("STILL WORKING: x\nWaits: supervisor", 500))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}}  # its PR: a landing is its news
     in_checkout(og)
     head = ["1" * 40]
     heads_moving(monkeypatch, head)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # the run that saw it
-    first, second = "STILL WORKING: waiting on CI", "STILL WORKING: waiting on the verifier again"
+    first, second = (
+        "STILL WORKING: first\nWaits: supervisor",
+        "STILL WORKING: second\nWaits: supervisor",
+    )
     offset[0] = 60.0
     og.histories["a"].append(anon(first, 0))  # written while the supervisor is down
     offset[0], head[0] = 120.0, "2" * 40
@@ -11143,9 +11678,9 @@ def test_a_turn_end_without_an_id_is_keyed_by_its_time_and_each_is_posted_once(
     supervised(og, registry, monkeypatch, 2, land, notify="cos", console=True)  # a restart
     offset[0], head[0] = 120.0 + 602.0, "4" * 40
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # another restart
-    posts = posted(og)
+    posts = landings_posted(og)
     assert len(posts) == 3 and all("its default branch moved" in p for p in posts)
-    assert [(first in p, second in p) for p in posts] == [
+    assert [(first.splitlines()[0] in p, second.splitlines()[0] in p) for p in posts] == [
         (True, False),
         (False, True),
         (False, False),
@@ -11161,8 +11696,9 @@ def test_a_state_kept_before_seen_from_reports_no_old_turn_end(
     reads it, so its old last message is not the turn end of the next post."""
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    old = f"STILL WORKING: waiting on the verifier {FAR}, since last month"  # it never settles
+    old = "STILL WORKING: since last month\nWaits: supervisor"
     og = Lead(told("brief", 30 * 86400), ending(old, 29 * 86400))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}}  # its PR: a landing is its news
     in_checkout(og)
     head = ["1" * 40]
     heads_moving(monkeypatch, head)
@@ -11171,11 +11707,11 @@ def test_a_state_kept_before_seen_from_reports_no_old_turn_end(
     for key in ("seen_from", "told_turn"):  # as an older supervisor wrote it
         state["leads"]["a"].pop(key, None)
     registry.with_suffix(".state.json").write_text(json.dumps(state))
-    offset[0], head[0] = 120.0, "2" * 40
+    offset[0], head[0] = 120.0 + 301.0, "2" * 40
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # a restart
-    [post] = posted(og)
+    [post] = landings_posted(og)
     assert "its default branch moved" in post
-    assert "\na t-a: idle · " in post and old not in post and "turn ended" not in post
+    assert "\na t-a: idle · " in post and old not in post and "turn ended ·" not in post
 
 
 def test_without_console_a_landing_is_posted_as_a_line(
@@ -11187,8 +11723,7 @@ def test_without_console_a_landing_is_posted_as_a_line(
     head = [OLD]
     github(monkeypatch, head)
     supervised(og, registry, monkeypatch, 2, lambda poll: head.__setitem__(0, NEW), notify="cos")
-    line = f"o/r: its default branch moved to {NEW}; merged since {OLD[:12]}: #12, #13"
-    assert posted(og) == [f"Supervisor: {line}"]
+    assert posted(og) == []  # no lead waits on a merged PR: recorded, not posted
 
 
 def test_a_lead_outside_a_checkout_or_a_failed_head_read_raises_nothing_and_logs_once(
@@ -11469,6 +12004,7 @@ def test_a_verifier_starts_on_a_host_loop_md_lists_with_its_files_there_and_repo
     assert og.files["/there/repo/tmp/loop/gate.log"] == "abc\nok\n"
     report = "VERDICT: 0 blocker\nSATISFIED: yes\n"
     og.files["/there/repo/tmp/loop/pr7-v1.md"] = report
+    og.times["/there/repo/tmp/loop/pr7-v1.md"] = time.time()  # written after the brief
     capsys.readouterr()
     argv = ["wait", "s0", "/there/repo/tmp/loop/pr7-v1.md", "--verdict", "--timeout", "5"]
     assert omnigent_agent.main(argv) == 0
@@ -11854,6 +12390,136 @@ def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_
     assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
     assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
     assert not any("Which base?" in p for p in posted(og))
+
+
+def owner_posts_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, previews: list[str]
+) -> list[str]:
+    """The posts to ``cos`` when a lead blocks on one approval prompt per preview, each answered
+    before the next, with the post window passed between them."""
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "PROMPT_CONFIRM_SECONDS", 0.0)
+    og = Lead(told("brief", 60), ending("STILL WORKING: its worker runs", 5))
+
+    def prompt(n: int) -> dict:
+        item = {"elicitation_id": f"e{n}", "params": {"content_preview": previews[n]}}
+        return {"status": "running", "pending_elicitations": [item]}
+
+    og.snap = prompt(0)
+
+    def later(poll: int) -> None:
+        offset[0] = poll * 400.0
+        og.snap = prompt(poll) if poll < len(previews) else {"status": "running"}
+
+    supervised(og, registry, monkeypatch, len(previews) + 1, later, notify="cos", console=True)
+    return posted(og)
+
+
+def test_the_same_owner_item_at_a_later_turn_end_is_posted_as_info(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = owner_posts_for(tmp_path, monkeypatch, ["Bash(ls)", "Bash(ls)"])
+    assert "[owner] a t-a: blocked on a prompt: e0: Bash(ls)" in first
+    assert second.startswith("Supervisor [info] b-")
+    assert "[info] a t-a: blocked on a prompt: e1: Bash(ls)" in second
+
+
+def test_an_owner_item_ignores_the_elicitation_id_a_re_raised_prompt_gets() -> None:
+    line = "a t-a: blocked on a prompt: {}: Bash(ls)"
+    assert omnigent_agent.owner_item(line.format("e0")) == omnigent_agent.owner_item(
+        line.format("e1")
+    )
+    joined = "a t-a: blocked on a prompt: {}: Bash(ls); {}: Bash(rm x)"
+    assert omnigent_agent.owner_item(joined.format("e0", "e1")) == omnigent_agent.owner_item(
+        joined.format("e2", "e3")
+    )
+
+
+def test_a_changed_owner_item_is_posted_as_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = owner_posts_for(tmp_path, monkeypatch, ["Bash(ls)", "Bash(rm x)"])
+    assert second.startswith("Supervisor [owner] b-")
+    assert "[owner] a t-a: blocked on a prompt: e1: Bash(rm x)" in second
+    assert "[owner] a t-a: blocked on a prompt: e0: Bash(ls)" in first
+
+
+def test_a_new_session_s_first_owner_item_is_posted_as_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    [post] = owner_posts_for(tmp_path, monkeypatch, ["Bash(ls)"])
+    assert post.startswith("Supervisor [owner] b-")
+
+
+def owner_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, looks: list[tuple[dict, str]]
+) -> list[str]:
+    """The route of each post to ``cos`` when the lead shows one look per poll, the post window
+    passed between them: a look is its ``snap`` and, unless empty, the turn end it then writes."""
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "PROMPT_CONFIRM_SECONDS", 0.0)
+    og = Lead(told("brief", 60), ending("STILL WORKING: its worker runs", 5))
+
+    def show(n: int) -> None:
+        snap, text = looks[n]
+        og.snap = snap
+        if text:
+            og.histories["a"].append({**ending(text, 0), "id": f"end{n}"})
+
+    show(0)
+
+    def later(poll: int) -> None:
+        offset[0] = poll * 400.0
+        if poll < len(looks):
+            show(poll)
+        else:
+            og.snap = {"status": "running"}
+
+    supervised(og, registry, monkeypatch, len(looks) + 1, later, notify="cos", console=True)
+    return [re.match(r"Supervisor \[(\w+)\]", p).group(1) for p in posted(og)]  # type: ignore[union-attr]
+
+
+def prompt_look(n: int, title: str, queued: int) -> tuple[dict, str]:
+    item = {"elicitation_id": f"e{n}", "params": {"content_preview": "Bash(ls)"}}
+    inputs = [{"id": f"i{k}"} for k in range(queued)]
+    return {
+        "status": "running",
+        "pending_elicitations": [item],
+        "title": title,
+        "pending_inputs": inputs,
+    }, ""
+
+
+@pytest.mark.parametrize(
+    ("looks", "routes"),
+    [
+        pytest.param(
+            [({}, "USER NEEDED: approve A"), ({}, "USER NEEDED: approve B")],
+            ["owner", "owner"],
+            id="two-different-requests",
+        ),
+        pytest.param(
+            [
+                ({}, "USER NEEDED: approve A"),
+                ({}, "DONE: step one"),
+                ({}, "USER NEEDED: approve A"),
+            ],
+            ["owner", "act", "info"],
+            id="one-request-twice",
+        ),
+        pytest.param(
+            [prompt_look(0, "t-a", 0), prompt_look(1, "t-a renamed", 2)],
+            ["owner", "info"],
+            id="one-prompt-under-a-new-title-and-queue",
+        ),
+    ],
+)
+def test_an_owner_item_is_keyed_on_what_the_owner_acts_on_not_its_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, looks: list, routes: list[str]
+) -> None:
+    assert owner_routes(tmp_path, monkeypatch, looks) == routes
 
 
 # --- a child never falls back to the runner's host, and a host verifier runs at the PR's head (#917) ---
@@ -12305,3 +12971,170 @@ def test_reap_merged_takes_an_owner_repo_pr(monkeypatch):
     except SystemExit as e:
         code = e.code
     assert code != 2
+
+
+def test_a_session_the_lead_started_that_ended_is_news_though_its_wait_names_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(
+        tmp_path,
+        "STILL WORKING: waiting on the check. Report: m.md",
+        m={"status": "idle"},
+        **{WORKER: gone},
+    )
+    og.histories[WORKER] = [ending("DONE: checked. Report: w.md", 1300)]
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    told_m = [
+        t for s, t in og.inbox if s == "m" and "ended DONE" in t and "a session it started" in t
+    ]
+    assert len(told_m) == 1 and WORKER in told_m[0]  # once, not once per poll
+
+
+def test_a_pr_a_lead_waits_on_that_merged_is_news_to_it_from_github_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    reads = []
+    monkeypatch.setattr(
+        omnigent_agent,
+        "pr_settled",
+        lambda pr, repo="": reads.append(pr) or (0, f"PR #{pr} merged"),
+    )
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    told_m = [t for s, t in og.inbox if s == "m" and "PR #976 merged; your wait names it" in t]
+    assert len(told_m) == 1 and reads  # once, however often it is read
+
+
+def test_a_set_that_names_ci_is_not_over_when_only_its_pr_ended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976, CI", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    assert [t for s, t in og.inbox if s == "m" and "your wait names it" in t] == []
+
+
+def test_an_open_pr_a_lead_waits_on_costs_one_github_read_a_minute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976", m={"status": "idle"})
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        omnigent_agent,
+        "gh",
+        lambda *a, **k: calls.append(a) or '{"state":"OPEN","statusCheckRollup":[]}',
+    )
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    assert len(calls) == 1
+
+
+def told_idle(og) -> list[str]:
+    return [t for s, t in og.inbox if s == "m" and "went idle" in t]
+
+
+def test_a_named_session_idle_with_no_ending_word_is_news_to_its_waiter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a verifier of another harness, or a cloud run, whose answer is its report: no DONE line
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(
+        tmp_path,
+        f"STILL WORKING: waiting on session {WORKER}",
+        m={"status": "idle"},
+        **{WORKER: gone},
+    )
+    og.histories[WORKER] = [ending("Verdict written. SATISFIED: yes", 100)]
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert len(told_idle(og)) == 1 and WORKER in told_idle(og)[0]
+
+
+def test_a_session_the_lead_started_that_went_idle_after_its_turn_is_news_but_an_old_one_is_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    for age, expect in ((100, 1), (2000, 0)):  # the lead's turn was 600 s ago
+        (tmp_path / str(age)).mkdir()
+        registry, og = manager(
+            tmp_path / str(age),
+            "STILL WORKING: waiting on the check. Report: m.md",
+            m={"status": "idle"},
+            **{WORKER: gone},
+        )
+        og.histories["m"] = [ending("STILL WORKING: waiting on the check. Report: m.md", 600)]
+        og.histories[WORKER] = [ending("Pass 4 written. SATISFIED: yes", age)]
+        supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+        assert len(told_idle(og)) == expect
+
+
+def test_a_session_that_ended_on_a_still_working_turn_or_was_just_prompted_is_not_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    for n, history in enumerate(
+        (
+            [ending("STILL WORKING: compiling", 100)],  # idle between turns, not finished
+            [ending("Pass 4 written.", 100), said("user", "now pass 5", "u1")],  # prompted since
+            # prompted, then tool calls only: the interrupted turn has no answer yet
+            [
+                ending("Pass 4 written.", 100),
+                said("user", "now pass 5", "u1"),
+                {"id": "t1", "type": "function_call"},
+            ],
+        )
+    ):
+        (tmp_path / str(n)).mkdir()
+        registry, og = manager(
+            tmp_path / str(n),
+            f"STILL WORKING: waiting on session {WORKER}",
+            m={"status": "idle"},
+            **{WORKER: gone},
+        )
+        og.histories[WORKER] = history
+        supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+        assert told_idle(og) == []
+
+
+def test_a_failed_github_read_is_asked_again_only_after_a_minute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976", m={"status": "idle"})
+    calls: list[tuple] = []
+
+    def down(*a, **k):
+        calls.append(a)
+        raise omnigent_agent.Fail("gh: HTTP 502")
+
+    monkeypatch.setattr(omnigent_agent, "gh", down)
+    supervised(og, registry, monkeypatch, 6, notify=COS, console=True, fyi="post")
+    assert len(calls) <= 2  # one for the news read, at most one for the moving check
+
+
+def test_a_wait_on_a_pr_whose_github_read_failed_is_not_moving_for_that_minute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976", m=gone)
+
+    def down(*a, **k):
+        raise omnigent_agent.Fail("gh: HTTP 502")
+
+    monkeypatch.setattr(omnigent_agent, "gh", down)
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    assert stalls(og)  # unread is not "open and pending": the quiet lead is still flagged
+
+
+def test_a_childs_news_carries_the_first_line_of_its_last_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a worker that put its report in its final message, not in the report file
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(
+        tmp_path,
+        f"STILL WORKING: waiting on session {WORKER}",
+        m={"status": "idle"},
+        **{WORKER: gone},
+    )
+    og.histories[WORKER] = [ending("Report: all 12 checks pass, nothing to fix.", 100)]
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    assert "all 12 checks pass" in told_idle(og)[0]

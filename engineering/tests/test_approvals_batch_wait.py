@@ -8,20 +8,10 @@ from typing import Any
 import pytest
 from approvals_harness import (
     GITHUB_RULE,
-    added,  # noqa: F401
     approvals,
-    assigned,  # noqa: F401
-    attached,  # noqa: F401
-    board_risks,  # noqa: F401
     git_in,
-    graphql_answers,  # noqa: F401
-    hub,  # noqa: F401
     lands,  # noqa: F401
     loop_md,
-    others_open,  # noqa: F401
-    pushed,  # noqa: F401
-    refs,  # noqa: F401
-    required,  # noqa: F401
 )
 
 
@@ -48,6 +38,7 @@ class Clock:
 def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
     stub = Clock()
     monkeypatch.setattr(approvals, "time", stub)
+    monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)  # these tests count 30 s rounds
     return stub
 
 
@@ -356,6 +347,6 @@ def test_a_land_with_no_working_tree_names_the_wait_in_its_landed_comment(
     monkeypatch.setattr(approvals, "toplevel", lambda: None)
     monkeypatch.setattr(approvals, "git", lambda *_a: "b" * 40)
     monkeypatch.setattr(approvals, "merged_trees", lambda *_a: [(pull, "t", "t", "pass")])
-    monkeypatch.setattr(approvals, "merges", lambda *a: seen.append(a[-1]))
+    monkeypatch.setattr(approvals, "merges", lambda *a: seen.append(a[6]))
     approvals.local_queue([pull], "main", None, None, {"check"})
     assert seen == [" (waited 60 s, joined: none)"]

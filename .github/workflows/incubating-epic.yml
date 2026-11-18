@@ -1,0 +1,43 @@
+# An `incubating` issue stays open and labelled until `approvals.py graduate` graduates it (engineering-loop, Incubating).
+# GitHub can't block closing an issue or removing a label, so this reverts either and says why. REST only (gh api).
+name: incubating-epic
+on:
+  issues:
+    types: [closed, unlabeled]
+permissions:
+  issues: write
+jobs:
+  keep:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      NUMBER: ${{ github.event.issue.number }}
+      ACTION: ${{ github.event.action }}
+      DROPPED: ${{ github.event.label.name }}
+      LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
+      IS_PR: ${{ github.event.issue.pull_request != null }}
+    steps:
+      - name: Reopen a closed incubating issue, or restore a dropped label
+        run: |
+          set -euo pipefail
+          [ "$IS_PR" = "false" ] || exit 0
+          api() { gh api "repos/$REPO/issues/$NUMBER$1" "${@:2}"; }
+          # a graduation names its PR in a comment before it drops the label
+          graduated=$(api /comments --paginate --jq '[.[].body | startswith("Graduated by #")] | any')
+          if echo "$graduated" | grep -q true; then exit 0; fi
+          case "$ACTION" in
+            closed)
+              case ",$LABELS," in *,incubating,*) ;; *) exit 0 ;; esac
+              api "" -X PATCH -f state=open --silent
+              api /comments -f body="Reopened: this issue is labelled \`incubating\`, so it stays open until a PR graduates it (\`Graduates #$NUMBER\`, then \`approvals.py graduate\`)." --silent
+              ;;
+            unlabeled)
+              [ "$DROPPED" = incubating ] || exit 0
+              case ",$LABELS," in *,epic,*) ;; *) exit 0 ;; esac
+              state=$(api "" --jq .state)
+              [ "$state" = open ] || exit 0
+              api /labels -f "labels[]=incubating" --silent
+              api /comments -f body="Restored the \`incubating\` label: it comes off only when a PR graduates this epic (\`approvals.py graduate\`)." --silent
+              ;;
+          esac

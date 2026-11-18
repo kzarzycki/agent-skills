@@ -40,6 +40,21 @@ The decisions made: modules built or modified and their changed interfaces, arch
 
 What makes a good test here (external behaviour, not implementation details), which modules get tested, and prior art for those tests in the codebase.
 
+## Acceptance
+
+### Before merge
+
+The examples run on the change's branch before review, each a check with its expected result and the reference it checks against (a fixture, a spec, the output of a tool the change did not write).
+
+Each line ends with its check: a test name, or `acceptance/<issue>/<file>`. A line no command can check starts with `Manual:` and names the evidence it needs.
+
+- <the behaviour, its expected result and its reference>. Check: `<test name or acceptance/<issue>/<file>>`.
+- Manual: <what a person looks at>. Evidence: <the log, screenshot or output it leaves>.
+
+### After merge
+
+Only the checks that need the merged default branch or a deployed environment, each with its reference, or `none`.
+
 ## Out of Scope
 
 What this spec does not cover.
