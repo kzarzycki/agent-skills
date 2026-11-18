@@ -1252,7 +1252,13 @@ def ineligible(
         ):
             continue
         return f"it changes existing code (`{path}`, {str(kind).lower()})"
-    if why := risk(pull, issues, loop):
+    # risk() drops a term the spec hold answered (`spec.auto`), which would let an added `.github/` file through; the
+    # paths a rule names are existing code's boundary here whoever approved the spec, so read them directly
+    if (
+        why := risk(pull, issues, loop)
+        or ruled(names(pull), touched(pull), loop)
+        or critical(pull, loop)
+    ):
         return f"it rates high or critical ({why})"
     return None
 
