@@ -120,16 +120,16 @@ run = """uv run ruff check tools tests engineering/tests engineering/skills/engi
 
 [tasks.check-land]
 description = "The landing gate: vendor check and lint, nothing else, about a minute."
-# ponytail: a landing runs no tests, so a break reaches main until the PR's own `affected-tests` run and the nightly full
-# suite catch it; fix it forward. Interim until the approvals tests run in seconds; then check-fast is the gate again.
+# ponytail: a landing runs no tests, so a break reaches main until the PR's `qualify` check (check-fast) or the nightly full
+# suite catches it; fix it forward. Interim until the approvals tests run in seconds; then check-fast is the gate again.
 run = """mise run vendor-engineering-check
 mise run lint"""
 
 [tasks.check-fast]
-description = "The landing gate: vendor check, lint, and only the tests the change touches (tools/affected_tests.py). The full suite runs nightly in CI."
-# ponytail: a batch of PRs is gated on its own touched tests only, so a combination of PRs that breaks an untouched test
-# reaches main; the nightly full run catches it, a bisect names the PR, and the fix goes forward on main.
-# Upgrade path: a suite that runs in seconds lets `check` come back as the gate.
+description = "The PR check (`qualify`): vendor check, lint, and only the tests the change touches (tools/affected_tests.py). The full suite runs nightly in CI."
+# ponytail: a PR runs its own touched tests only, so a combination that breaks an untouched test reaches main; the nightly
+# full run catches it, a bisect names the PR, and the fix goes forward on main. Upgrade path: a suite that runs in seconds
+# lets `check` come back as the gate.
 run = """mise run vendor-engineering-check
 uv run python tools/gate_slot.py sh -c 'uv run pytest -q -m "not live_agent" $(uv run python tools/affected_tests.py ${GATE_BASE:-origin/main})'
 mise run lint"""
