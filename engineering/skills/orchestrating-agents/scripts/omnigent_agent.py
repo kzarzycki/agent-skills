@@ -533,6 +533,13 @@ WAIT = re.compile(
 # reference there ("#916", "owner/repo#916", either as a markdown link's text "[#916](url)") is that
 # reference, since agents told to link what they name write the link form on every turn (#919).
 REF = r"(?:[\w.-]+/[\w.-]+)?#\d+"
+RUN_URL = (
+    r"https://github\.com/[\w.-]+/[\w.-]+/actions/runs/\d+"  # a GitHub Actions run: its end is news
+)
+ACCEPTED_WAITS = (
+    "supervisor, session <32-hex id>, #<pr> or owner/repo#<pr>, CI, until <YYYY-MM-DDTHH:MMZ>, "
+    "or a GitHub Actions run URL"
+)
 NAMED = re.compile(
     r"STILL WORKING\b.*?\b(?i:wait(?:s|ing)?\s+(?:on|for)\s+(?:(?:the|an?|your|my|our|their|its)\s+)?`?)"
     rf"(?:(?=\[?{REF})|(?!(?i:it|this|that|these|those|them|me|you|the|an?|your|my|our|their|its)\b))"
@@ -558,7 +565,7 @@ WAIT_WORD = re.compile(r"\bwait(?:s|ing|ed)?\b", re.IGNORECASE)
 TRAILER = re.compile(r"^[\s*_>-]*Waits:[ \t]*(.+?)[\s*_]*$", re.MULTILINE | re.IGNORECASE)
 TRAILER_FORMS = re.compile(
     rf"(?P<supervisor>supervisor)|session\s+`?(?P<session>[0-9a-f]{{32}})`?|"
-    rf"(?P<ref>\[?{REF}\]?)|(?P<ci>CI)|until\s+(?P<until>\d{{4}}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d)?)\s*(?:Z|UTC)?",
+    rf"(?P<ref>\[?{REF}\]?)|(?P<ci>CI)|(?P<run>{RUN_URL})|until\s+(?P<until>\d{{4}}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d)?)\s*(?:Z|UTC)?",
     re.IGNORECASE,
 )
 # Supervisor words in prose ("waiting on the CoS spec approval"), and a ``CoS:`` request line.
@@ -4515,6 +4522,47 @@ def pr_settled(pr: int, repo: str = "") -> tuple[int, str, str] | None:
     return end and (*end, data.get("headRefOid") or "")
 
 
+def run_settled(run: int, repo: str) -> tuple[int, str, str] | None:
+    """A GitHub Actions run's end read from GitHub: 0 or 1 (it failed, was cancelled or timed out)
+    with a line and the run id (a re-run is the same id), None while it is queued or in progress."""
+    data = json.loads(
+        gh(
+            "run",
+            "view",
+            str(run),
+            "-R",
+            repo,
+            "--json",
+            "status,conclusion,attempt",
+            timeout=HTTP_SECONDS,
+        )
+    )
+    if data.get("status") != "completed":
+        return None
+    ok = data.get("conclusion") in ("success", "skipped", "neutral")
+    # the attempt is part of the end: a re-run that fails again is a new end, as a push is for a PR
+    return (
+        (0 if ok else 1),
+        f"run {repo}#{run} {data.get('conclusion')}",
+        f"{run}.{data.get('attempt', 1)}",
+    )
+
+
+def check_bare_ref(line: str) -> None:
+    """Refuse a ``Waits: #N`` line when this checkout's repo has no PR or issue ``N``: the
+    supervisor reads a bare ``#N`` against the lead's repo, so a number from another repo is a
+    wait that never ends. Only a not-found answer refuses; GitHub unread passes."""
+    if not (m := re.fullmatch(r"Waits: #(\d+)", line)):
+        return
+    try:
+        gh("api", f"repos/{{owner}}/{{repo}}/issues/{m[1]}")
+    except Fail as e:
+        if "404" in str(e) or "Not Found" in str(e):
+            raise Fail(
+                f"wait-on: no PR or issue #{m[1]} in this repo; name the repo as owner/repo#{m[1]}"
+            ) from e
+
+
 def kill_group(pid: int) -> None:
     """SIGTERM ``pid``'s process group (the detached recipe's ``setsid`` makes the pid its leader;
     any other pid gets the signal alone, never this process's own group), then SIGKILL after
@@ -6072,6 +6120,15 @@ def trailer_items(text: str) -> list[tuple[str, str]]:
     return items
 
 
+def unparsed_trailer(text: str) -> str:
+    """The last ``Waits:`` line of a ``STILL WORKING`` message when it names no form (the line
+    ``trailer_items`` drops), else empty: the lead is told once that it did not parse."""
+    if "STILL WORKING" not in text or trailer_items(text):
+        return ""
+    found = TRAILER.findall(text[text.find("STILL WORKING") :])
+    return found[-1].strip() if found else ""
+
+
 def trailer_of(text: str) -> dict[str, str]:
     """The first form the ``Waits:`` line names (``trailer_items``) as ``{form: value}``; a
     ``supervisor`` anywhere in it wins, since the supervisor is the one who must act then."""
@@ -6084,13 +6141,17 @@ def wait_line(words: list[str]) -> str:
     ``until <UTC time>``), refusing any other with a ``Fail``: a lead pastes what this prints as the
     last line of its ``STILL WORKING``, so the line is well-formed by construction."""
     form, rest = (words[0].lower() if words else ""), " ".join(words[1:])
-    text = {"pr": f"#{rest.lstrip('#')}", "ci": "CI", "supervisor": "supervisor"}.get(
-        form, f"{form} {rest}".strip()
-    )
+    text = {
+        "pr": f"#{rest.lstrip('#')}",
+        "ci": "CI",
+        "supervisor": "supervisor",
+        "run": rest,
+    }.get(form, f"{form} {rest}".strip())
     m = TRAILER_FORMS.fullmatch(text)
-    if not m or (form in ("ci", "supervisor") and rest) or (form == "pr" and not rest):
+    if not m or (form in ("ci", "supervisor") and rest) or (form in ("pr", "run") and not rest):
         raise Fail(
-            "wait-on takes supervisor, session <32-hex id>, pr <n>, ci, or until <YYYY-MM-DDTHH:MMZ>"
+            "wait-on takes supervisor, session <32-hex id>, pr <n>, ci, run <actions run URL>, "
+            "or until <YYYY-MM-DDTHH:MMZ>"
         )
     if m.group("until"):
         try:
@@ -7263,17 +7324,18 @@ def supervise_registry(
                 return ""
         return repos[sid]
 
-    def settled(lead: dict, pr: int, repo: str, fresh: bool = False):
-        """``pr_settled`` for ``lead``, read at most once per ``PR_POLL_SECONDS`` unless ``fresh``,
-        so the overdue check and the news check share one GitHub read."""
+    def settled(lead: dict, pr: int, repo: str, fresh: bool = False, run: bool = False):
+        """``pr_settled`` (``run_settled`` for an Actions run) for ``lead``, read at most once per
+        ``PR_POLL_SECONDS`` unless ``fresh``, so the overdue check and the news check share one
+        GitHub read."""
         seen = lead.setdefault("pr_seen", {})
-        key = f"{repo}#{pr}"
+        key = f"{'run ' if run else ''}{repo}#{pr}"
         if not fresh and key in seen and time.time() - seen[key][0] < PR_POLL_SECONDS:
             if len(seen[key]) > 2:  # a failed read counts as a read: GitHub is asked once a minute
                 raise Fail(seen[key][2])
             return seen[key][1] and tuple(seen[key][1])
         try:
-            found = pr_settled(pr, repo)
+            found = run_settled(pr, repo) if run else pr_settled(pr, repo)
         except Exception as e:
             seen[key] = [time.time(), None, reason(e)]
             raise
@@ -7299,6 +7361,11 @@ def supervise_registry(
         if ref := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", wait):  # a PR: GitHub says
             try:  # open with a check pending is a wait that is live; ended, it is news instead
                 return settled(lead, int(ref[2]), wait_repo(sid, ref[1] or "")) is None
+            except Exception:  # noqa: BLE001 - unread: not known to be moving
+                return False
+        if run := re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/actions/runs/(\d+)", wait):
+            try:  # a run in progress is live; its end is news
+                return settled(lead, int(run[2]), run[1], run=True) is None
             except Exception:  # noqa: BLE001 - unread: not known to be moving
                 return False
         if re.fullmatch(r"b(?=[a-z]{0,7}[0-9])[a-z0-9]{8}", wait):  # its own background job
@@ -7450,6 +7517,21 @@ def supervise_registry(
         set has no pending member. An intermediate ``STILL WORKING`` turn is no end."""
         if lead.get("state") != "idle" or lead.get("direct"):
             return
+        said = [
+            i
+            for i in looks.get(sid, ({}, []))[1]
+            if i.get("type") == "message" and i.get("role") == "assistant"
+        ]
+        if said and (bad := unparsed_trailer(text_of(said[-1]).strip())):
+            say(  # once per turn: the event id holds the turn
+                f"{sid} {lead['title']}".rstrip()
+                + f": your last line `Waits: {bad[:80]}` did not parse, so the supervisor reads it as "
+                f"prose, not exactly. Accepted: {ACCEPTED_WAITS}. `omnigent_agent.py wait-on ...` "
+                "prints a line that parses.",
+                sid,
+                f"trailer:{sid}:{said[-1].get('id') or said[-1].get('created_at')}",
+                "news",
+            )
         now = time.time()
         if now - float(lead.get("news_at") or 0) < PR_POLL_SECONDS:
             return
@@ -7505,6 +7587,18 @@ def supervise_registry(
                     found = settled(lead, int(m[2]), wait_repo(sid, m[1] or ""), fresh=True)
                 except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
                     log(("pr", sid), f"{sid}: PR #{m[2]} not read: {reason(e)}")
+                    if "Could not resolve" in str(e) and not m[1] and (own := wait_repo(sid, "")):
+                        try:  # told only when the lead's repo is known and has no such PR or issue
+                            gh("api", f"repos/{own}/issues/{m[2]}")
+                        except Fail as no:
+                            if "404" in str(no) or "Not Found" in str(no):
+                                say(
+                                    f"{head}: no PR or issue #{m[2]} in {own}, so this wait never "
+                                    f"ends; name its repo as owner/repo#{m[2]} in your Waits: line",
+                                    sid,
+                                    f"badref:{sid}:{m[2]}",
+                                    "news",
+                                )
                     pending = True
                     continue
                 log(("pr", sid), None)
@@ -7516,6 +7610,24 @@ def supervise_registry(
                 else:
                     done.append(found[1])
                     ends.append(f"{found[1]}@{found[2] if len(found) > 2 else ''}")
+            elif run := re.fullmatch(
+                r"https://github\.com/([\w.-]+/[\w.-]+)/actions/runs/(\d+)", item
+            ):
+                try:
+                    found = settled(lead, int(run[2]), run[1], fresh=True, run=True)
+                except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
+                    log(("pr", sid), f"{sid}: {item} not read: {reason(e)}")
+                    pending = True
+                    continue
+                log(("pr", sid), None)
+                if found is None:
+                    pending = True
+                elif found[0]:
+                    failed = failed or found[1]
+                    ends.append(f"{found[1]}@{found[2]}")
+                else:
+                    done.append(found[1])
+                    ends.append(f"{found[1]}@{found[2]}")
             elif (
                 item == "CI"
             ):  # not read here: a set naming it is not over; the deadline is the net
@@ -8524,7 +8636,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             print(running_signature(session=session))
             return 0
         if args.cmd == "wait-on":
-            print(wait_line(args.wait))
+            line = wait_line(args.wait)
+            check_bare_ref(line)
+            print(line)
             return 0
         if args.cmd == "wait-until":
             cmd = args.until[1:] if args.until[:1] == ["--"] else args.until
