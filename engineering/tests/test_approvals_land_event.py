@@ -581,6 +581,8 @@ def gated_wait(
     events = approvals.loop_events
     monkeypatch.setitem(events.BEATS, "land", beat)
     monkeypatch.setattr(approvals, "BEAT", beat)
+    # the `ok` stays readable: a waiter polling every 0.2 s must not find the ref cleared before it reads the end
+    monkeypatch.setattr(approvals, "EVENT_GRACE", 3600)
     monkeypatch.setattr(
         approvals, "LOCAL_CI", ["sh", "-c", f'sleep {gate}; exec "$0" "$@"', *approvals.LOCAL_CI]
     )
