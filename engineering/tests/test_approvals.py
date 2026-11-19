@@ -6537,7 +6537,8 @@ def gate_faked(
         "#!/bin/sh\n"
         + (
             f"echo gate started\necho started >> {tmp_path / 'starts'}\n"
-            f"n=0; while [ ! -e {tmp_path / 'release'} ] && [ $n -lt 3000 ]; do sleep 0.02; n=$((n+1)); done\n"
+            f"end=$(( $(date +%s) + 60 ))\n"
+            f'while [ ! -e {tmp_path / "release"} ] && [ "$(date +%s)" -lt "$end" ]; do sleep 0.02; done\n'
             if held
             else f"sleep {seconds}\n"
         )
@@ -6703,6 +6704,7 @@ def test_a_second_local_ci_on_a_running_head_follows_it(tmp_path: Path) -> None:
     second = None
     try:
         polled(lambda: pid.exists() and pid.read_text())  # detach() writes it once the child runs
+        claimed = pid.read_text()
         second = caller(repo, env, "--record")
         status = subprocess.run(
             [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", "HEAD"],
@@ -6723,6 +6725,8 @@ def test_a_second_local_ci_on_a_running_head_follows_it(tmp_path: Path) -> None:
             if select.select([second.stdout], [], [], 0.1)[0]:
                 seen += os.read(second.stdout.fileno(), 4096).decode()
         assert (tmp_path / "starts").read_text() == "started\n"
+        # a follower never writes the claim; a second caller that started its own run replaces it
+        assert pid.read_text() == claimed
     finally:
         (tmp_path / "release").touch()
     assert (
