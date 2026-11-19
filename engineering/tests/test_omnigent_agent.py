@@ -69,6 +69,7 @@ class FakeOmnigent:
         self.created: dict[str, float] = {}  # when each session was made, as child_sessions says
         self.top_level: list[bool] = []  # per create, and per lookup after a failed one
         self.roles: list[str | None] = []  # per create
+        self.prs: list[str] = []
         self.workspaces: list[str | None] = []
         self.hosts_of: dict[str, str] = {}  # each created session's host
         self.others: list[dict] = []  # sessions this script did not create, as the list shows them
@@ -174,6 +175,7 @@ class FakeOmnigent:
         host_id: str | None = None,
         role: str | None = None,
         effort: str | None = None,
+        pr: str = "",
     ) -> str:
         if title in self.taken:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
@@ -182,6 +184,7 @@ class FakeOmnigent:
         self.overrides[sid] = omnigent_agent.model_for(agent, model)[0]  # as the real body
         self.top_level.append(top_level)
         self.roles.append(role)
+        self.prs.append(pr)
         self.efforts[sid] = effort
         self.workspaces.append(workspace)
         self.hosts_of[sid] = host_id or self.host_id
@@ -2983,11 +2986,7 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     og = FakeOmnigent(deaf={0})
     titles: list[str] = []
     create = og.create
-    og.create = (
-        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None, host_id=None, role=None, effort=None: (
-            titles.append(title) or create(agent, title)
-        )
-    )  # type: ignore[method-assign]
+    og.create = lambda agent, title, *_: titles.append(title) or create(agent, title)  # type: ignore[method-assign]
     og.fail.add("archive")
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
     assert titles == ["t", "t-r2"]
@@ -4872,7 +4871,7 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     og = FakeOmnigent(reply="done")
     og.listed = ["named", "flag"]
     create = og.create
-    og.create = lambda a, t, m=None, top=False, w=None, p=None, h=None, r=None, e=None: (
+    og.create = lambda a, t, m=None, *_: (
         models.append(m),
         create(a, t, m),
     )[1]  # type: ignore[method-assign]
@@ -12772,6 +12771,7 @@ def test_a_verifier_on_a_host_for_a_pr_starts_at_the_prs_head_never_the_base(
     argv += ["--pr", "7", "--role", str(VERIFIER_MD), "--workspace", str(tmp_path)]
     assert omnigent_agent.main(argv) == 0 and len(og.sessions) == 1
     assert run("rev-parse", "HEAD") == head
+    assert og.prs[-1].endswith("#7")  # labelled omni.pr with the PR it reviews (#945)
     # a checkout with tracked changes is refused, never moved under them
     run("checkout", "-q", "--detach", base)
     (tmp_path / "b.md").write_text("edited\n")
