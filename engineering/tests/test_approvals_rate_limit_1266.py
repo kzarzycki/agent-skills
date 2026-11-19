@@ -110,6 +110,12 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     monkeypatch.setattr(
         approvals.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)
     )
+
+    def unreadable_quota(*args: str, **kwargs: Any) -> str:
+        """The wait's quota read (`gh api rate_limit`) is not what these tests check: a failed read keeps the base poll."""
+        raise subprocess.CalledProcessError(1, ["gh", *args], "", "quota unread")
+
+    monkeypatch.setattr(github, "gh", unreadable_quota)
     return now
 
 

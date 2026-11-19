@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from approvals_harness import (
     approvals,
+    committed,
     gatekeeper_md,
     git_in,
     heavy_by_run,
@@ -41,13 +42,7 @@ def steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     `commands` holds each step's command, `ran()` the names run so far, `set_policy(text)` sets another policy."""
     repo, runs, script = tmp_path / "repo", tmp_path / "runs.log", tmp_path / "step.py"
     script.write_text(STEP)
-    repo.mkdir()
-    git_in(repo, "init", "-q")
-    git_in(repo, "config", "user.email", "loop@example.com")
-    git_in(repo, "config", "user.name", "loop")
-    (repo / "app.py").write_text("value = 1\n")
-    git_in(repo, "add", "-A")
-    git_in(repo, "commit", "-qm", "base")
+    committed(repo)
     commands = {
         name: f"{sys.executable} {script} {name} {runs}" for name in ("lint", "unit", "apple")
     }

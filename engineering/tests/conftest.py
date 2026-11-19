@@ -24,6 +24,7 @@ from approvals_harness import (  # noqa: F401
     others_open,
     pushed,
     refs,
+    repo_template,
     required,
 )
 
