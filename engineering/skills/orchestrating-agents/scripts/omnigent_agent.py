@@ -792,6 +792,20 @@ CLOUD_NUDGE = (
 CLOUD_LEAD_ENDING = re.compile(r"[\s*_#>-]*(DONE|USER NEEDED|STILL WORKING|PARKED):")
 
 
+def role_line(role: str | None, cloud: bool) -> str:
+    """The preamble's role sentence. A cloud VM has none of this host's files, so its brief carries
+    the role file's text; any other child reads the file at its path."""
+    if not role:
+        return ""
+    if not cloud:
+        return f"Your role file is {role}; read it first.\n"
+    return (
+        "Your role file follows, since this VM may hold no copy of it: the other files it names may"
+        " not be in this checkout; where they are not, work from what it and this brief state.\n"
+        f"<role-file>\n{Path(role).read_text().rstrip()}\n</role-file>\n"
+    )
+
+
 def cloud_preamble(preamble: str, pr: int | None) -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
     ``CLOUD_RUN_LINE``, ``CLOUD_NOTE`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
@@ -3885,7 +3899,7 @@ def start(
             report=report,
             pr=pr,
             unposted=UNPOSTED,
-            role=f"Your role file is {role}; read it first.\n" if role else "",
+            role=role_line(role, cloud),
         )
         + brief
     )

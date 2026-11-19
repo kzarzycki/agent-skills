@@ -10663,9 +10663,11 @@ def test_every_brief_points_to_the_role_file_s_long_run_rule_and_carries_no_copy
     monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
     og = CloudFake() if cloud else FakeOmnigent()
     report = tmp_path / "r.md"
+    role = tmp_path / "worker.md"  # a cloud brief reads the file, so it must exist
+    role.write_text("# Worker\n")
     agent = "claude-cloud" if cloud else "claude"
     sid, _ = omnigent_agent.start(
-        og, agent, "t", "do X", report, "roles/worker.md", 0, top_level=top_level, pr=pr
+        og, agent, "t", "do X", report, str(role), 0, top_level=top_level, pr=pr
     )
     brief_file = omnigent_agent.brief_of(report)
     brief = (
@@ -13846,3 +13848,23 @@ def test_an_open_pr_a_lead_waits_on_is_live_after_its_checks_settle(
     monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": end)
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
     assert any("no progress" in p for p in fyis(og)) is deadline
+
+
+def test_a_cloud_child_gets_its_role_file_s_text_and_a_host_child_its_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The VM holds none of this host's files, so a path to the role file reads nothing there."""
+    monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+    role = tmp_path / "worker.md"
+    role.write_text("# Worker\nRULE-X\n")
+    cloud = CloudFake()
+    sid, _ = omnigent_agent.start(
+        cloud, "claude-cloud", "t", "do X", tmp_path / "r.md", str(role), 0
+    )
+    text = omnigent_agent.text_of(cloud.sessions[sid][1])
+    assert "<role-file>\n# Worker\nRULE-X\n</role-file>" in text and "Your role file is" not in text
+    assert "other files it names may not be in this checkout" in text
+    host = FakeOmnigent()
+    omnigent_agent.start(host, "claude", "h", "do X", tmp_path / "h.md", str(role), 0)
+    brief = omnigent_agent.brief_of(tmp_path / "h.md").read_text()
+    assert f"Your role file is {role}; read it first." in brief and "RULE-X" not in brief

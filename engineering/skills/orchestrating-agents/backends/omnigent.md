@@ -196,8 +196,7 @@ workspace is, since the report is the file `wait` writes here, and takes only a 
 created after the report already there, so a turn that ends on the old comment's link, or on
 none, gets the nudge and then fails. `--pr` arms no supervisor registry, since the supervisor reads the report file and
 would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
-with `wait <session> <report> --pr <n>`. A `--role` path names the role file by its path in
-the repo, since the VM has the checkout but not this host's paths. The preamble also tells the
+with `wait <session> <report> --pr <n>`. The preamble also tells the
 worker that its checkout is the branch checked out in the workspace the session started from,
 not necessarily the PR's; that a foreground command there stops at 10 minutes, so a long one
 runs detached and is polled within the same turn, is the role file's long-run rule. It forbids an interactive
@@ -206,6 +205,7 @@ and ends each commit message with the co-author line and no session link, since 
 reaches a public repository. A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
+A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, not its path: the VM has none of this host's paths, and a target repo without the pack installed holds no copy, so a path would read nothing. The skill's other files that the role names may not be in the checkout either; the brief says so.
 Every `acp:claude-cloud` session's preamble, lead or worker, with or without `--pr`, says how to open a
 PR when its brief or role asks for one: `curl` to `https://api.github.com/repos/<owner>/<repo>/pulls` with a
 `Content-Type: application/json` header. The VM's HTTPS proxy authenticates that host as the GitHub App, so no
