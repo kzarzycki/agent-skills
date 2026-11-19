@@ -65,6 +65,20 @@ yourself, keeping standards and spec as separate axes.
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
   after a fix for a CI check red on a ready PR is the same: only the change since that
   report's head.
+- **Emit the `verifier` event** on the branch you review, so the lead waits on you as on `land` (events.md). A pass
+  that `cloud_verifier.py` runs (`verify` or `thread`) is emitted by the script: a child it starts emits nothing by
+  hand, since an `ok` written before the script posts the review would wake the lead on a review that is not there yet.
+  Any other pass emits with the same helper, from the repo's clone, `uv run <this skill's folder>/scripts/events.py
+  emit verifier <branch> <state>`:
+  - at the start, `waiting --beat 900`, and the same command again before 15 minutes pass while the review runs. A
+    wait reads a `waiting` ref silent after twice its `beat_s`, and a `wait-for` call blocks close to 10 minutes, so
+    the 5-minute default would read a long mutation or acceptance run as dead. Use a `--beat` at least as long as
+    your longest blocking call (900 s covers one), and beat between calls.
+  - at the end, once the report is written (the lead posts the review, not you): `ok` for `SATISFIED: yes`, `failed`
+    for `SATISFIED: no` or no report, `needs-owner --question <file>` when you write `<report>.question`, each with
+    `--url <the report path>`.
+  - the helper exits 0 whatever happens to the push, so it never changes the pass. A lead with no event reads the
+    report as before.
 - **A long or locked run is detached.** This is every role's rule for a long run, worker's
   and lead's too. A gate, repro or e2e run that may wait on a lock
   or a queue, or outlast one tool call, starts detached (in its own session) with its pid, output and exit code

@@ -888,12 +888,15 @@ def route_1b(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("CODEX_HOME", str(home))
     monkeypatch.setattr(cv, "USAGE_URL", "http://127.0.0.1:9/")
+    monkeypatch.setattr(
+        cv, "EVENTS", None
+    )  # the event is test_cloud_verifier_events.py's: no ref in this clone
     real = cv.run
     monkeypatch.setattr(
         cv,
         "run",
         lambda *a, **k: (
-            subprocess.CompletedProcess(a, 0, "abc123 o/r\n", "")
+            subprocess.CompletedProcess(a, 0, "abc123 o/r feat/pr\n", "")
             if a[:3] == ("gh", "pr", "view")
             else real(*a, **k)
         ),

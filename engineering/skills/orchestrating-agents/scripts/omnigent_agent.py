@@ -5163,6 +5163,36 @@ def pr_hold(repo: str, pr: int) -> str | None:
     return f"{repo}#{pr} is open" if state == "OPEN" else None
 
 
+def clear_closed_pr_events(repo: str, pr: int, workspace: object) -> None:
+    """Remove the loop events (refs of every kind) of the head branch of PR ``pr`` of ``repo``, here and on origin,
+    from the checkout ``workspace``: a closed PR's steps are over, and a ref no producer clears (an unmerged close, a
+    killed ``land``) would stay. Nothing when this host has no such checkout, no events module, an open PR still has that head branch, or a read fails."""
+    if EVENTS is None or not workspace or not Path(str(workspace)).is_dir():
+        return
+    try:
+        branch = json.loads(gh("pr", "view", str(pr), "--repo", repo, "--json", "headRefName"))[
+            "headRefName"
+        ]
+        if json.loads(
+            gh(
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--head",
+                branch,
+                "--state",
+                "open",
+                "--json",
+                "number",
+            )
+        ):
+            return  # a PR opened from this branch since is live: its events are not the closed one's
+        EVENTS.clear(branch, cwd=str(workspace))
+    except Exception as e:  # noqa: BLE001 - the session is finished all the same; the refs wait for a later reap
+        print(f"{repo}#{pr}: loop events not cleared: {e}", file=sys.stderr)
+
+
 def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
     """The live sessions labelled with a PR (``PR_LABEL``), of PR number ``pr`` when given."""
     page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
@@ -5203,10 +5233,11 @@ def reap(
 
     A ``--pr`` worker (labelled ``PR_LABEL`` ``owner/name#N``) is kept, ``force`` included, while its PR
     is open (or can't be read), since a fix round or the next verifier pass reaches it warm; it is
-    finished once the PR is merged or closed. ``merged`` also takes every live worker of a
+    finished once the PR is merged or closed, and the loop events of its branch are cleared (``clear_closed_pr_events``). ``merged`` also takes every live worker of a
     PR number (``pr``'s, when given), finishing those whose PR is merged or closed and leaving the open ones."""
     lines, failed = [], False
     held: dict[tuple[str, int], str | None] = {}
+    cleared: set[tuple[str, int]] = set()
     named = pr_workers(og, pr) if merged else []
     for sid in dict.fromkeys(sessions + (og.children(parent) if parent else []) + named):
         info = og.info(sid)
@@ -5221,6 +5252,9 @@ def reap(
             if why := held[found] if found else f"label {label!r} names no PR":
                 lines.append(f"{sid} {info.get('title') or ''}: kept ({why})")
                 continue
+            if found and found not in cleared and not elsewhere(og, info):
+                cleared.add(found)  # the PR is merged or closed: its steps' events are over
+                clear_closed_pr_events(*found, info.get("workspace"))
         # an open card is the owner's question: archiving ends its way back, --force too
         if cards := cards_of(info):
             lines.append(f"{sid} {info.get('title') or ''}: kept (card open: {'; '.join(cards)})")

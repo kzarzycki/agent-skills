@@ -244,6 +244,9 @@ def vm(world, tmp_path, monkeypatch):
         return stub(*cmd, check=check, **kw)
 
     monkeypatch.setattr(cv, "run", run)
+    monkeypatch.setattr(
+        cv, "EVENTS", None
+    )  # this clone has no origin: the event's push warning is not under test
     brief = tmp_path / "brief.md"
     brief.write_text("Review PR #7.\n")
     return ["verify", "--pr", "7", "--brief", str(brief)], seen

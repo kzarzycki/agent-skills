@@ -682,7 +682,7 @@ def seconds(requested, began, started, ended) -> dict[str, int | None]:
     }
 
 
-def publish(pr: int, body: str, phases: dict[str, int | None]) -> None:
+def publish(pr: int, body: str, phases: dict[str, int | None]) -> str:
     """Post the body with a `Seconds:` footer (post unknown, since it is known only afterwards), put the post time
     into that one comment, then print the pass's JSON line and the comment's URL, the last line. A failed edit is a
     warning: the comment is posted, so the pass stands."""
@@ -718,6 +718,7 @@ def publish(pr: int, body: str, phases: dict[str, int | None]) -> None:
         print(f"cloud_verifier: the post time was not added to the comment: {e}", file=sys.stderr)
     print(pass_line(pr, phases))
     print(url)
+    return url
 
 
 HEAD = [""]  # the head the running pass reviews, for its JSON line
@@ -727,6 +728,65 @@ def pass_line(pr: int, phases: dict[str, int | None]) -> str:
     return json.dumps({"pass_seconds": phases, "pr": pr, "head": HEAD[0]})
 
 
+def _load_events():
+    """events.py, the sibling that writes a step's state as a git ref, or None when this file runs without it: an
+    event reports the pass and is never part of it."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "loop_events", Path(__file__).with_name("events.py")
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001 - absent or broken: the pass runs and writes no event
+        return None
+
+
+EVENTS = _load_events()
+
+
+class PassEvent:
+    """The `verifier` event (events.md) of one pass, on the branch of the PR it reviews: `waiting` from the head's
+    fetch, beaten every `beat` seconds while the review runs, then the end the pass set (`ok` for `SATISFIED: yes`,
+    `failed` for anything else, `needs-owner` for a question). A write that fails never changes the pass."""
+
+    def __init__(self) -> None:
+        self.branch, self.state, self.url, self.question = "", "failed", "", None
+        self.stop = threading.Event()
+        self.beater: threading.Thread | None = None
+        self.beat = float(EVENTS.BEATS["verifier"]) if EVENTS else 300.0
+
+    def write(self, state: str, url: str = "", question: str | None = None) -> None:
+        if EVENTS and self.branch:
+            try:
+                EVENTS.emit("verifier", self.branch, state, url=url, question=question)
+            except Exception as e:  # noqa: BLE001
+                print(f"cloud_verifier: verifier event not written: {e}", file=sys.stderr)
+
+    def start(self, branch: str) -> None:
+        self.branch = branch
+        self.write("waiting")
+
+        def beating() -> None:
+            while not self.stop.wait(self.beat):
+                self.write("waiting")
+
+        self.beater = threading.Thread(target=beating, daemon=True)
+        self.beater.start()
+
+    def ended(self, body: str) -> None:
+        """Set the end from the report's last `SATISFIED:` line: `ok` for yes, else `failed`."""
+        said = re.findall(r"^SATISFIED:[ \t*_]*(\w+)", body, re.MULTILINE | re.IGNORECASE)
+        self.state = "ok" if said and said[-1].lower() == "yes" else "failed"
+
+    def finish(self) -> None:
+        self.stop.set()
+        if self.beater:  # a beat in flight lands before the end, never after it
+            self.beater.join()
+        self.write(self.state, self.url, self.question)
+
+
 def verify(
     pr: int,
     brief_file: Path,
@@ -734,6 +794,23 @@ def verify(
     effort: str | None,
     harness: str = "codex",
     requested: float | None = None,
+) -> int:
+    """One pass (`review`) that writes its `verifier` event: an exception leaves the event `failed`, the default."""
+    event = PassEvent()
+    try:
+        return review(pr, brief_file, model, effort, harness, requested, event)
+    finally:
+        event.finish()
+
+
+def review(
+    pr: int,
+    brief_file: Path,
+    model: str | None,
+    effort: str | None,
+    harness: str,
+    requested: float | None,
+    event: PassEvent,
 ) -> int:
     began = time.time()
     if harness == "claude" and effort:
@@ -754,6 +831,7 @@ def verify(
     pull = json.loads(run("gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}").stdout)
     head, ref = pull["head"]["sha"], pull["head"]["ref"]
     HEAD[0] = head
+    event.start(ref)
     was = (
         run("git", "symbolic-ref", "-q", "--short", "HEAD", check=False).stdout.strip()
         or run("git", "rev-parse", "HEAD").stdout.strip()
@@ -831,7 +909,10 @@ def verify(
             return 4 if stuck else 1
         if not code and ask.strip():
             # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
-            publish(pr, fold("## Verifier question", ask.strip().splitlines()[0], ask), phases)
+            event.url = publish(
+                pr, fold("## Verifier question", ask.strip().splitlines()[0], ask), phases
+            )
+            event.state, event.question = "needs-owner", ask
             return 4 if stuck else 3
         if code or not re.search(r"^SATISFIED:", body, re.MULTILINE):
             print(
@@ -839,7 +920,8 @@ def verify(
             )
             print(pass_line(pr, phases))
             return 4 if stuck else 1
-        publish(pr, folded_report(body), phases)
+        event.url = publish(pr, folded_report(body), phases)
+        event.ended(body)
     except (Refused, OSError, ValueError) as e:  # not posted, so a failed pass
         print(f"cloud_verifier: {e}", file=sys.stderr)
         print(pass_line(pr, phases))  # a failed pass's time counts too
@@ -1114,6 +1196,24 @@ def thread_verify(
     env: str,
     pending_head: str | None = None,
 ) -> int:
+    """One thread pass (`thread_review`) that writes its `verifier` event: an exit without a report ends it `failed`."""
+    event = PassEvent()
+    try:
+        return thread_review(pr, brief_file, model, effort, thread, env, pending_head, event)
+    finally:
+        event.finish()
+
+
+def thread_review(
+    pr: int,
+    brief_file: Path,
+    model: str | None,
+    effort: str | None,
+    thread: str | None,
+    env: str,
+    pending_head: str | None,
+    event: PassEvent,
+) -> int:
     """One pass on a Codex Cloud thread: clone the PR head (a later pass reuses the thread's checkout), run the brief,
     read the report back from the thread's checkout, else take its final message, and write it at the brief's path."""
     brief = brief_file.read_text()
@@ -1130,11 +1230,12 @@ def thread_verify(
         "view",
         str(pr),
         "--json",
-        "headRefOid,headRepository,headRepositoryOwner",
+        "headRefOid,headRepository,headRepositoryOwner,headRefName",
         "--jq",
-        '.headRefOid+" "+.headRepositoryOwner.login+"/"+.headRepository.name',
+        '.headRefOid+" "+.headRepositoryOwner.login+"/"+.headRepository.name+" "+.headRefName',
     ).stdout.split()
     head[0] = pending_head or head[0]
+    event.start(head[2])
     code, said = thread_exec(
         rpc,
         thread,
@@ -1182,6 +1283,7 @@ def thread_verify(
             question = out.with_name(out.name + ".question")
             question.write_text(asked)
             print(question)
+            event.state, event.url, event.question = "needs-owner", str(question), asked
             return 3
     if "SATISFIED:" not in body:
         # the final message may end on a link to a report written elsewhere in the checkout (never outside it)
@@ -1214,6 +1316,8 @@ def thread_verify(
         f"Verifier: {signature(model, effort)}, pass {nth[1] if nth else 1}\n\n{body.strip()}\n"
     )
     print(target)
+    event.url = str(target)
+    event.ended(body)
     return 0
 
 
