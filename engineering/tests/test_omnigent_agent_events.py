@@ -372,6 +372,9 @@ def test_a_beat_in_another_repository_holds_a_lead_of_this_one_live_for_no_one(
 ) -> None:
     """The lead's checkout is the second repository, whose PR 12 is on `feat`; a beating `feat` in the supervisor's
     own repository is another repository's event."""
+    monkeypatch.setattr(
+        omnigent_agent, "EVENT_SECONDS", 30.0
+    )  # the real throttle: a read per repository per window
     other = other_clone(tmp_path)
     EVENTS.emit("land", "feat", "waiting", cwd=clone)  # the supervisor's repository, not the lead's
     where = tmp_path / "run"
