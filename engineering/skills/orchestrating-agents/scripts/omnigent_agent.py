@@ -735,7 +735,11 @@ A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEED
 # clone lacks the host's .git/info/exclude, and a write under .git/ asks the cloud permission
 # policy, which nobody answers.
 CLOUD_NOTE = (
-    "This session runs in a cloud VM: never write under `.git/` (not even `.git/info/exclude`),"
+    "This session runs in a cloud VM, whose HTTPS proxy already authenticates `https://api.github.com`"
+    " for this repo (no token to set; `gh` is limited to search and the GitHub connector has no"
+    " credentials here): open a PR with `curl -sS -X POST -H 'Content-Type: application/json'"
+    " https://api.github.com/repos/<owner>/<repo>/pulls -d '<json>'`, since the proxy answers 415 to"
+    " a body without that header; never write under `.git/` (not even `.git/info/exclude`),"
     " since a write there waits on a permission prompt nobody in the cloud answers; `tmp/loop/` is"
     " scratch, ignored by the repo's `.gitignore`, and never committed.\n"
 )

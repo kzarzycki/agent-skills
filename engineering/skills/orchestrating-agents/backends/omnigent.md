@@ -206,7 +206,10 @@ and ends each commit message with the co-author line and no session link, since 
 reaches a public repository. A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
-Every `acp:claude-cloud` session's preamble, lead or worker, with or without `--pr`, also says
+Every `acp:claude-cloud` session's preamble, lead or worker, with or without `--pr`, says to open a
+PR with `curl` to `https://api.github.com/repos/<owner>/<repo>/pulls` and a `Content-Type:
+application/json` header: the VM's HTTPS proxy authenticates that host as the GitHub App, so no token is
+set, while `gh` is search-only there and the GitHub connector has no credentials. It also says
 never to write under `.git/`, since a write there waits on a permission prompt nobody in the
 cloud answers, and that `tmp/loop/` is scratch, never committed: a fresh clone lacks the host's
 `.git/info/exclude`, so the project's own `.gitignore` names `tmp/loop/`, and a session that
