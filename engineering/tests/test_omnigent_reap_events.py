@@ -15,7 +15,10 @@ BRANCH = "loop/x"
 
 def refs(repo: Path) -> str:
     return subprocess.run(
-        ["git", "-C", str(repo), "for-each-ref", "refs/loop/"], capture_output=True, text=True
+        ["git", "-C", str(repo), "for-each-ref", "refs/loop/"],
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout
 
 
@@ -45,11 +48,11 @@ def reap_with(og, clone: Path, monkeypatch, tmp_path: Path, state: str) -> None:
 
 @pytest.mark.parametrize("state", ["MERGED", "CLOSED"])
 def test_reap_of_a_closed_pr_clears_its_branchs_events_here_and_on_origin(
-    og,
+    og,  # noqa: F811
     clone,
     tmp_path,
     monkeypatch,
-    state,  # noqa: F811
+    state,
 ) -> None:
     reap_with(og, clone, monkeypatch, tmp_path, state)
     assert refs(clone) == "" and refs(tmp_path / "origin.git") == ""
