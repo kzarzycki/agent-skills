@@ -92,6 +92,7 @@ def test_a_non_python_file_runs_the_tests_that_name_its_file_name(tmp_path, monk
 
 def test_a_deleted_test_file_is_not_picked() -> None:
     assert "tests/test_gone_for_good.py" not in a.targets(["tests/test_gone_for_good.py"])
+    assert a.targets(["tests/gone/conftest.py"]) == a.CHEAP
 
 
 def test_e2e_tests_are_never_selected_by_name(tmp_path, monkeypatch) -> None:
