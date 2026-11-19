@@ -214,6 +214,10 @@ never to write under `.git/`, since a write there waits on a permission prompt n
 cloud answers, and that `tmp/loop/` is scratch, never committed: a fresh clone lacks the host's
 `.git/info/exclude`, so the project's own `.gitignore` names `tmp/loop/`, and a session that
 sees its report untracked has nothing to "fix".
+It closes with the owner's standing branch grant (`CLOUD_BRANCHES`): new `claude/ready-*` branches, one
+per PR, besides the one the session started on; no force-push, no deleting a branch it didn't create, nothing
+pushed to `main` or outside `claude/`. A cloud session takes a push grant only from its first user message and
+refuses a later relayed one, so a lead building several PRs gets its branches only this way.
 
 **Cloud environments.** Which claude.ai environment a cloud session runs in is the project's
 loop.md line `Cloud worker: <agent>, gate <task>, env <name>`; an environment id belongs to one
