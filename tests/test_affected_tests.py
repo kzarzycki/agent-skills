@@ -36,8 +36,19 @@ def test_test_setup_or_no_base_runs_everything() -> None:
     assert a.targets(None) == a.ALL
 
 
-def test_a_conftest_anywhere_runs_everything() -> None:
-    assert a.targets(["engineering/tests/conftest.py"]) == a.ALL
+def test_a_conftest_runs_only_the_tests_under_its_folder() -> None:
+    picked = a.targets(["engineering/tests/conftest.py"])
+    tests = [p for p in picked if p not in a.CHEAP]
+    assert tests
+    assert all(p.startswith("engineering/tests/") and "/e2e/" not in p for p in tests)
+    assert "engineering/tests/test_approvals.py" in picked
+    sub = a.targets(["tests/capability_pack/conftest.py"])
+    assert "tests/capability_pack/test_atomicity.py" in sub
+    assert not any(p.startswith("engineering/") for p in sub)
+
+
+def test_the_root_conftest_runs_everything() -> None:
+    assert a.targets(["conftest.py"]) == a.ALL
 
 
 def test_a_non_python_file_runs_the_tests_that_name_its_file_name(tmp_path, monkeypatch) -> None:
