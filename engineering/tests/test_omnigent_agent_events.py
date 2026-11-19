@@ -347,14 +347,72 @@ def test_an_unreadable_poll_after_a_read_keeps_what_was_known(
     skewed(monkeypatch)[0] = 60.0
     og = Lead(told("brief", 4000), ending(WAIT, 1500))
     og.snap = {"status": "running"}
-    real = omnigent_agent.read_loop_events
-    monkeypatch.setattr(
-        omnigent_agent,
-        "read_loop_events",
-        lambda cwd=None: real(cwd) if not og.__dict__.setdefault("n", [0]).append(0) else None,
-    )
+    real, reads = omnigent_agent.read_loop_events, []
+
+    def read(cwd=None):
+        reads.append(cwd)
+        return real(cwd) if len(reads) == 1 else None  # the first read works, every later one fails
+
+    monkeypatch.setattr(omnigent_agent, "read_loop_events", read)
     supervised(og, registry, monkeypatch, 4, notify="cos", console=True, fyi="post")
-    assert deadlines(registry) == []  # the first read said beating, the failed ones forgot nothing
+    assert len(reads) > 1  # the failed reads happened
+    assert deadlines(registry) == []  # and forgot nothing: the first read said beating
+
+
+def other_clone(tmp_path: Path) -> Path:
+    """A second repository, with its own remote and clone."""
+    bare, work = tmp_path / "other.git", tmp_path / "other"
+    git(tmp_path, "init", "-q", "--bare", str(bare))
+    git(tmp_path, "clone", "-q", str(bare), str(work))
+    return work
+
+
+def test_a_beat_in_another_repository_holds_a_lead_of_this_one_live_for_no_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    """The lead's checkout is the second repository, whose PR 12 is on `feat`; a beating `feat` in the supervisor's
+    own repository is another repository's event."""
+    other = other_clone(tmp_path)
+    EVENTS.emit("land", "feat", "waiting", cwd=clone)  # the supervisor's repository, not the lead's
+    where = tmp_path / "run"
+    where.mkdir()
+    registry = following(where)
+    skewed(monkeypatch)[0] = 60.0
+    og = Lead(told("brief", 4000), ending(WAIT, 1500))
+    og.snap = {"status": "running", "workspace": str(other)}
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert len(deadlines(registry)) == 1
+    EVENTS.emit("land", "feat", "waiting", cwd=other)  # the lead's own repository: its wait is live
+    where2 = tmp_path / "run2"
+    where2.mkdir()
+    registry = following(where2)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert deadlines(registry) == []
+
+
+def test_a_wait_on_another_repositorys_pr_is_not_kept_live_by_this_ones_beat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    """`waiting on o/x#12`: that PR's branch `feat` is in o/x, whose events are not read from here."""
+    EVENTS.emit("land", "feat", "waiting", cwd=clone)
+    monkeypatch.setattr(omnigent_agent, "workspace_repo", lambda og, sid: "o/r")
+    registry = following(tmp_path)
+    skewed(monkeypatch)[0] = 60.0
+    og = Lead(told("brief", 4000), ending("STILL WORKING: waiting on o/x#12", 1500))
+    og.snap = {"status": "running"}
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert len(deadlines(registry)) == 1
+
+
+def test_no_file_is_read_for_a_session_with_no_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    asked: list[str] = []
+    monkeypatch.setattr(
+        omnigent_agent, "workspace_repo", lambda og, sid: asked.append(sid) or "o/r"
+    )
+    wait_run(tmp_path, monkeypatch, 60.0)
+    assert "" not in asked
 
 
 def test_an_end_written_before_a_restart_but_after_the_last_poll_is_told(

@@ -7649,7 +7649,7 @@ def supervise_registry(
     prs: dict[
         tuple[str, int], tuple[float, dict | None]
     ] = {}  # PR -> (read at, pr_info), one read a minute
-    ev = {"at": -EVENT_SECONDS}
+    ev: dict[str, float] = {}  # when each repository's events were last read (monotonic)
     roots: dict[Path, str] = {}  # a workspace's git common dir, read once
 
     def pr_data(pr: int, repo: str = "") -> dict | None:
@@ -7701,7 +7701,7 @@ def supervise_registry(
         workspace = Path(str(info.get("workspace") or ""))
         if not info.get("workspace") or not workspace.is_dir() or elsewhere(og, info):
             workspace = Path.cwd()
-            if (named := wait_repo(sid, "")) and named != here_repo():
+            if sid and (named := wait_repo(sid, "")) and named != here_repo():
                 return (
                     f"other:{named}",
                     workspace,
@@ -7764,21 +7764,22 @@ def supervise_registry(
         ``EVENT_SECONDS``) and update ``state["events"]``: an event's ``stamp`` is when it last moved (from its ``at``
         on the first sight, as ``events.py wait`` counts), and an end it has not yet told stays ``pending``. An
         unreadable poll changes nothing."""
-        if not console or time.monotonic() - ev["at"] < EVENT_SECONDS:
+        if not console:
             return
-        ev["at"] = time.monotonic()
         wheres = {lead_root(sid) for sid in state["leads"]} | {lead_root("")}
-        wheres = {
-            w for w in wheres if not w[0].startswith("other:")
-        }  # a repository with no checkout here
-        now, kept, seen = time.time(), state["events"], set()
+        wheres = {  # not a repository with no checkout here, nor one read within EVENT_SECONDS
+            w
+            for w in wheres
+            if not w[0].startswith("other:")
+            and time.monotonic() - ev.get(w[0], -EVENT_SECONDS - 1) >= EVENT_SECONDS
+        }
+        now, kept, seen, read_roots = time.time(), state["events"], set(), set()
         for root, workspace in sorted(wheres):
+            ev[root] = time.monotonic()
             found = read_loop_events(workspace)
             if found is None:
-                seen.update(
-                    k for k, n in kept.items() if n["root"] == root
-                )  # unknown: keep what it knew
-                continue
+                continue  # unreadable: unknown, and its repository's notes stay as they were
+            read_roots.add(root)
             for e in found:
                 key = f"{root}\0{e['ref']}"
                 seen.add(key)
@@ -7810,11 +7811,10 @@ def supervise_registry(
                         and e["state"] != "waiting"
                         and (at is None or at + 2 >= cutoff or not first)
                     )
-        read_roots = {root for root, _ in wheres}
         for key in [k for k in kept if k not in seen and kept[k]["root"] in read_roots]:
             del kept[
                 key
-            ]  # a repository not followed this poll (a lead not yet read) keeps its notes
+            ]  # a repository not read this call (unreadable, or no lead resolved to it yet) keeps its notes
 
     def event_news() -> None:
         """Tell each pending end once, in the order owner questions, ``failed``, ``ok``; one line per kind per branch
@@ -7876,6 +7876,7 @@ def supervise_registry(
         lead["progress_at"] = max(lead["progress_at"], og.active(sid), written(sid, lead))
         silent = ""
         if due is None:
+            refresh_events()  # this lead's repository, read now when it was not yet (a first poll or a restart)
             live, silent = event_wait(sid, lead)
             if live:
                 return  # a beating event is the wait's own proof of life
