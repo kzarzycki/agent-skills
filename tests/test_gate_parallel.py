@@ -17,6 +17,59 @@ ROOT = Path(__file__).resolve().parents[1]
 PARALLEL = ["-p", "tools.gate_workers", "-n", "auto", "--dist", "loadfile"]
 
 
+def check_fast_words(tmp_path: Path, env: dict[str, str]) -> list[str]:
+    """The words `mise run check-fast` passes on to pytest: its run string under `sh -c` with a fake `mise` that
+    succeeds and a fake `uv` that runs the `gate_slot.py` payload, answers the selector and records pytest's words."""
+    run = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]["check-fast"]["run"]
+    calls = tmp_path / "calls"
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "mise").write_text("#!/bin/sh\nexit 0\n")
+    (fake / "uv").write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        '  *gate_slot.py*) shift 3; exec "$@" ;;\n'
+        "  *affected_tests.py*) echo tests/test_x.py ;;\n"
+        f'  *) printf "%s\\n" "$@" > "{calls}" ;;\n'
+        "esac\n"
+    )
+    for tool in ("mise", "uv"):
+        (fake / tool).chmod(0o755)
+    base = {k: v for k, v in os.environ.items() if k != "GATE_TEST_PARALLEL"}
+    subprocess.run(
+        ["sh", "-c", run],
+        env={**base, "PATH": f"{fake}:{base['PATH']}", **env},
+        check=True,
+        cwd=tmp_path,
+    )
+    words = calls.read_text().splitlines()
+    return words[words.index("pytest") :]
+
+
+@pytest.mark.parametrize("env", [{}, {"GATE_TEST_PARALLEL": "0"}, {"GATE_TEST_PARALLEL": ""}])
+def test_check_fast_runs_pytest_serially_unless_the_gate_turns_parallel_on(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    assert check_fast_words(tmp_path, env) == [
+        "pytest",
+        "-q",
+        "-m",
+        "not live_agent",
+        "tests/test_x.py",
+    ]
+
+
+def test_check_fast_with_gate_test_parallel_1_runs_pytest_on_xdist(tmp_path: Path) -> None:
+    assert check_fast_words(tmp_path, {"GATE_TEST_PARALLEL": "1"}) == [
+        "pytest",
+        "-q",
+        "-m",
+        "not live_agent",
+        *PARALLEL,
+        "tests/test_x.py",
+    ]
+
+
 def pytest_words(tmp_path: Path, env: dict[str, str]) -> list[str]:
     """The words `mise run test` passes on to pytest, from its run string under `sh -c` with a fake `uv` that records
     each call and succeeds, so the lock wrapper, pytest and ruff never run."""

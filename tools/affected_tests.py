@@ -5,8 +5,8 @@ script runs the tests that executed the lines it changed, read from the test map
 every test file that names its stem (any other non-markdown file: its file name). Any other file (a skill's prose,
 docs, config) runs only the cheap repo-wide checks, `tests/test_skill_*.py`. No base to diff, or a change to the test
 setup itself (pyproject.toml, uv.lock, mise.toml, tools/, the root conftest.py), runs everything, since the map cannot
-say what that touches. A changed conftest.py below the root runs the tests under its own folder, e2e included (the gate's `-m "not live_agent"` drops the live ones): pytest applies
-it to no others, and a test imports one only from its own folder (`from conftest import`). Its helper modules are scripts
+say what that touches. A changed conftest.py below the root runs its own folder (a target, so `collect_ignore` applies; e2e included, the gate's `-m "not live_agent"` drops
+the live ones): pytest applies it to no others, and a test imports one only from its own folder (`from conftest import`). Its helper modules are scripts
 like any other, so a change to one selects the tests that name it.
 
 The test map is `.test-map/` (env `TEST_MAP`): `coverage`, the nightly suite's coverage data with one context per test
@@ -137,7 +137,9 @@ def targets(files: list[str] | None, base: str | None = None) -> list[str]:
         path = Path(f)
         if path.name == "conftest.py":
             # a conftest applies to the tests under its own folder (a test imports it only from there)
-            picked.update(str(t) for t in Path(path.parent).rglob("test_*.py"))
+            # the folder, not its files: a file named on the command line ignores collect_ignore
+            if path.parent.is_dir():
+                picked.add(str(path.parent))
         elif path.name.startswith("test_") and path.suffix == ".py" and path.exists():
             picked.add(f)
         elif path.suffix != ".md":
@@ -155,7 +157,13 @@ def targets(files: list[str] | None, base: str | None = None) -> list[str]:
                 continue
             picked.update(str(t) for t in named)
     picked.update(n for n in node_files(ran) if n.split("::")[0] not in picked)
-    return sorted(picked)
+    folders = [Path(p) for p in picked if Path(p).is_dir()]
+    # a target under a picked folder is already collected there: naming it again would collect it twice
+    return sorted(
+        p
+        for p in picked
+        if Path(p).is_dir() or not any(Path(p.split("::")[0]).is_relative_to(d) for d in folders)
+    )
 
 
 if __name__ == "__main__":
