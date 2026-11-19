@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from approvals_repos import committed, git_in
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "engineering-loop" / "scripts"
 SPEC = importlib.util.spec_from_file_location("gatekeeper", SCRIPTS / "gatekeeper.py")
@@ -6174,37 +6175,6 @@ def test_a_local_ci_record_is_the_merge_proof_without_ci(
     posted = [body for kind, _pr, body in github if kind == "comment"]
     merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
     assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
-
-
-def git_in(where: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", "-c", "protocol.file.allow=always", "-C", str(where), *args],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-
-
-TEMPLATE: dict[str, Path] = {}  # the session's one built repo, set by conftest.py's `repo_template`
-
-
-def build_template(where: Path) -> Path:
-    """The repo every `committed` copy starts from: one file, one commit. Built once per session (per xdist worker)."""
-    where.mkdir(exist_ok=True)
-    git_in(where, "init", "-q")
-    git_in(where, "config", "user.email", "loop@example.com")
-    git_in(where, "config", "user.name", "loop")
-    (where / "app.py").write_text("value = 1\n")
-    git_in(where, "add", "-A")
-    git_in(where, "commit", "-qm", "base")
-    TEMPLATE["repo"] = where
-    return where
-
-
-def committed(where: Path) -> str:
-    """`where` as a copy of the session's template repo: independent of it and of every other test's copy."""
-    shutil.copytree(TEMPLATE["repo"], where, symlinks=True, dirs_exist_ok=True)
-    return git_in(where, "rev-parse", "HEAD").strip()
 
 
 def hidden_untracked(repo: Path) -> None:

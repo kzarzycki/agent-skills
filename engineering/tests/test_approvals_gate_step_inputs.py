@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from approvals_harness import (
     approvals,
+    committed,
     gatekeeper_md,
     git_in,
     pull,
@@ -52,10 +53,7 @@ def inputs(
     branches are the `refs` fixture's, read by inputs key as by name."""
     repo, runs, script = tmp_path / "repo", tmp_path / "runs.log", tmp_path / "step.py"
     script.write_text(STEP)
-    repo.mkdir()
-    git_in(repo, "init", "-q")
-    git_in(repo, "config", "user.email", "loop@example.com")
-    git_in(repo, "config", "user.name", "loop")
+    committed(repo)  # the template's one commit, then `first` below
     commands = {name: f"{sys.executable} {script} {name} {runs}" for name in PATHS}
 
     def commit(files: dict[str, str | None]) -> str:

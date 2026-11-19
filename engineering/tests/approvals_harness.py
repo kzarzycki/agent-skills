@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from approvals_repos import build_template, committed, git_in
 from test_approvals import (
     AS_WRITTEN,
     AUTO,
@@ -46,7 +47,6 @@ from test_approvals import (
     cloud,
     gatekeeper_md,
     gating,
-    git_in,
     github,
     heavy_by_run,
     held,
@@ -70,6 +70,7 @@ from test_approvals import (
 
 # The fixtures every test of approvals.py runs under, defined below; conftest.py turns each on.
 AUTOUSE = (
+    "repo_template",
     "attached",
     "pushed",
     "others_open",
@@ -81,6 +82,13 @@ AUTOUSE = (
     "board_risks",
     "graphql_answers",
 )
+
+
+@pytest.fixture(scope="session")
+def repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The one committed repo `committed` copies, built once per session; under xdist each worker's tmp_path_factory
+    is its own, so no two workers share a copy, and a test changes only its own."""
+    return build_template(tmp_path_factory.mktemp("repo-template") / "repo")
 
 
 @pytest.fixture
@@ -272,6 +280,7 @@ __all__ = [
     "by",
     "checkout",
     "cloud",
+    "committed",
     "gatekeeper_md",
     "gating",
     "git_in",
@@ -294,6 +303,7 @@ __all__ = [
     "pushed",
     "record",
     "refs",
+    "repo_template",
     "required",
     "rest_comment",
     "specced",

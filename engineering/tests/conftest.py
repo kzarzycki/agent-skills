@@ -24,17 +24,9 @@ from approvals_harness import (  # noqa: F401
     others_open,
     pushed,
     refs,
+    repo_template,
     required,
 )
-
-
-@pytest.fixture(scope="session", autouse=True)
-def repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """The one committed repo the tests copy (`committed`), built once per session; under xdist each worker's
-    tmp_path_factory is its own, so no two workers share a copy, and a test changes only its own."""
-    import test_approvals
-
-    return test_approvals.build_template(tmp_path_factory.mktemp("repo-template") / "repo")
 
 
 @pytest.fixture(autouse=True)
