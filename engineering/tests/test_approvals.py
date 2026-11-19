@@ -11,6 +11,7 @@ import itertools
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -6525,7 +6526,8 @@ def gate_faked(
     tmp_path: Path, exit_code: int = 0, seconds: float = 0, held: bool = False
 ) -> tuple[Path, str, dict[str, str]]:
     """A clean repo and an environment whose `mise` is a fake gate: it sleeps (`held`: until the test creates
-    `tmp_path / "release"`, so it ends when the test says and never on a timer), prints, counts its runs, exits."""
+    `tmp_path / "release"`, so it ends when the test says; it says `gate started` and appends to `starts` first, and
+    gives up after 60 s, so a red test leaves no process looping), prints, counts its runs, exits."""
     repo = tmp_path / "repo"
     head = committed(repo)
     bin_dir = tmp_path / "bin"
@@ -6534,7 +6536,8 @@ def gate_faked(
     fake.write_text(
         "#!/bin/sh\n"
         + (
-            f"while [ ! -e {tmp_path / 'release'} ]; do sleep 0.02; done\n"
+            f"echo gate started\necho started >> {tmp_path / 'starts'}\n"
+            f"n=0; while [ ! -e {tmp_path / 'release'} ] && [ $n -lt 3000 ]; do sleep 0.02; n=$((n+1)); done\n"
             if held
             else f"sleep {seconds}\n"
         )
@@ -6574,11 +6577,15 @@ def test_a_killed_caller_leaves_the_detached_check_to_finish_and_record(tmp_path
     common = repo / ".git" / "approvals" / "local-ci"
     run = caller(repo, env, "--record")
     pid = common / f"{head}.pid"
-    # detach() fills the pid file only after the child's setsid, so the kill can't reach it (#732)
-    polled(lambda: pid.exists() and pid.read_text())
-    os.killpg(run.pid, signal.SIGKILL)
-    run.wait()
-    (tmp_path / "release").touch()  # the gate was held through the kill, and ends now
+    try:
+        # detach() fills the pid file only after the child's setsid, so the kill can't reach it (#732)
+        polled(lambda: pid.exists() and pid.read_text())
+        os.killpg(run.pid, signal.SIGKILL)
+        run.wait()
+    finally:
+        (
+            tmp_path / "release"
+        ).touch()  # the gate was held through the kill, and ends now (or the test failed)
     polled(lambda: (common / f"{head}.exit").exists())
     assert (common / f"{head}.exit").read_text() == "0\n"
     [record] = common.glob("*.json")  # keyed by tree and env
@@ -6693,19 +6700,36 @@ def test_a_second_local_ci_on_a_running_head_follows_it(tmp_path: Path) -> None:
     repo, head, env = gate_faked(tmp_path, held=True)
     first = caller(repo, env, "--record")
     pid = repo / ".git" / "approvals" / "local-ci" / f"{head}.pid"
-    polled(lambda: pid.exists() and pid.read_text())  # detach() writes it once the child runs
-    second = caller(repo, env, "--record")
-    status = subprocess.run(
-        [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", "HEAD"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
+    second = None
+    try:
+        polled(lambda: pid.exists() and pid.read_text())  # detach() writes it once the child runs
+        second = caller(repo, env, "--record")
+        status = subprocess.run(
+            [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", "HEAD"],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert status.returncode == 3 and status.stdout.startswith(f"running on {head}")
+        # the held gate is released only once the second caller shows the run's output: it has joined the run, and a
+        # second that started its own would have written a second line to `starts` by then
+        assert second.stdout is not None
+        seen = ""
+        deadline = time.monotonic() + 30
+        while "gate started\n" not in seen:
+            assert time.monotonic() < deadline, "the second caller never showed the run's output"
+            if select.select([second.stdout], [], [], 0.1)[0]:
+                seen += os.read(second.stdout.fileno(), 4096).decode()
+        assert (tmp_path / "starts").read_text() == "started\n"
+    finally:
+        (tmp_path / "release").touch()
+    assert (
+        first.communicate(timeout=60)[0]
+        .replace(UNBASED, "")
+        .startswith("gate started\ngate done\n")
     )
-    assert status.returncode == 3 and status.stdout.startswith(f"running on {head}")
-    (tmp_path / "release").touch()
-    assert first.communicate(timeout=60)[0].replace(UNBASED, "").startswith("gate done\n")
     second.communicate(timeout=60)
     assert (first.returncode, second.returncode) == (0, 0)
     assert (tmp_path / "runs").read_text() == "run\n"  # one gate ran
@@ -6727,8 +6751,10 @@ def test_a_caller_starts_no_gate_while_another_holds_the_pid_file(tmp_path: Path
     with open(common / f"{head}.pid", "a+") as claim:
         fcntl.flock(claim, fcntl.LOCK_EX)
         run = caller(repo, env, "--record")
-        time.sleep(1.5)  # long enough for an unlocked caller to start the gate and finish
+        time.sleep(2)  # long enough for an unlocked caller to start the gate and finish
+        # an unlocked caller writes its claim into the pid file, and opens the log, well before the gate ends
         assert (run.poll(), (tmp_path / "runs").exists()) == (None, False)
+        assert (common / f"{head}.pid").read_text() == "" and not (common / f"{head}.log").exists()
     run.communicate(timeout=30)
     assert (run.returncode, (tmp_path / "runs").read_text()) == (0, "run\n")
 
