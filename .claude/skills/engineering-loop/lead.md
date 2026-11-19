@@ -79,7 +79,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    whose consequences call for the owner's eye at merge (a risk, not urgency: urgency is
    the tracker's priority, issues.md, Risk). The verifier judges risk on every pass (verifier.md, its `Risk:` line):
    you may raise it, with `risk:high` on the PR, or dispute a `Risk: high` by answering in
-   its thread with your reasoning, which the next pass re-judges; never lower it yourself,
+   its thread with your reasoning, which only a pass that says `Scope: full` re-judges (ask for one in the brief: "re-review the whole PR diff against the base and write `Scope: full`"), since a delta pass cannot lower it; never lower it yourself,
    since the lead is the author's side of the review.
 3. **Branch and notes.** In a checkout whose remotes name more than one GitHub repo (a
    fork with `upstream`), run `gh repo set-default <owner>/<repo>` once, naming the repo the
@@ -99,8 +99,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    blocks what, environment facts, gates, the model and session id of each agent, and every worktree and
    branch the run creates (step 10 removes them). Agents get its path, never its content.
    The spec is the only issue for the work itself; SKILL.md, Triage places what the PR
-   leaves unfixed, and the PR says `Part of` instead of `Closes` when that leaves the spec
-   open. A workspace holding several repos (a change that needs them together) changes
+   leaves unfixed. Every PR carries a `Closes` line for an open issue, since GitHub shows a PR in an
+   issue's Development panel only for a closing keyword and `check build` refuses a PR without one: a slice
+   of an epic closes its own sub-issue, never the epic. A PR that finishes only part of a spec closes a
+   new sub-issue of it that holds the part done, and says `Part of` for the spec. A workspace holding several repos (a change that needs them together) changes
    only where things go: each PR's issue, branch, worktree, gates and landing follow its
    own repo's `docs/agents/` files, and the notes say which repo each PR is in. Read each
    repo's `AGENTS.md` or `CLAUDE.md` and `docs/agents/` yourself, since a harness loads
@@ -118,6 +120,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
    both are yours (worker.md, Gates and push). Its model: SKILL.md, Models.
+   Before starting a worker, run `approvals.py overlap --files <the files the story names>`: another open PR that
+   changes the same files is landed first, or the story is ordered after it or stacked on it, since two PRs in one
+   function cost the second a merge round and a pass.
    Before the first worker starts, write the verifier's priority checks once, from the spec and
    its comments (a later comment can narrow the spec), into `tmp/loop/priorities-<pr>.md`, the
    file `approvals.py brief <pr> --priorities <file>` takes at step 7. Paste its lines into each
@@ -283,7 +288,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    - A project's own batching merge queue (`check queue`, `batch`) is deprecated: where the
      project's instructions still name one, enqueue there as they say until it adopts `land`.
    - Run `uv run <this skill's folder>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
-     with `--wait`) once no local objection is left: the gate of record passed on the head (the worker's `affected-tests`, or `mise run check` where loop.md has no `Affected tests:` line; `land`'s batch gate runs the full tier), the
+     with `--wait`) once no local objection is left: the gate of record passed on the head (the worker's `affected-tests`, or `mise run check` where loop.md has no `Affected tests:` line or has `Gate: full`; with `ci: false`, the worker's `local-ci --record`, a narrowed pass where loop.md has the line; `land`'s batch gate runs the `Affected tests:` command against the base tip it merges onto where loop.md has the line, else the project's `loop.gate`: SKILL.md, Adopting the loop), the PR's required check is green (it runs CI's selection of the affected tests, so where `ci` is not `false` and no `gate_steps` step runs on the host, the host runs no gate of its own before the go: no `check-fast`, no full suite), the
      newest verifier review, satisfied with no core finding open, covers it, and every review
      thread is resolved (SKILL.md, Review trail on the PR). Start it as a background
      command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work
@@ -355,6 +360,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      otherwise the base's merge closes issues whose work isn't on main. Once the work is on the default branch, close each issue a PR on the
      way names with `Closes` (never `Part of` or `Implements`) that is still open
      (`gh issue close <n> --comment "Landed in #<pr> (<merge sha>)."`) and move it to `Done`.
+   Every status comment you post follows github.md, Comment shape: a short result in view, the rest under `<details>`.
      When that was an epic's last open sub-issue, close and move the epic the same way. Where
      gatekeeper.md has a `signoff` section, each issue it names with `Implements` stays open for the
      owner's sign-off: move it to
@@ -475,8 +481,8 @@ A step only the owner can unblock is parked (SKILL.md, Owner steps park): a repo
 process still hung on one is yours to stop and release, since its owner has ended its turn.
 A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
 End every `STILL WORKING` with one last line from `python3 <orchestrating-agents' folder>/scripts/omnigent_agent.py wait-on
-supervisor|session <id>|pr <n>|ci|until <UTC time>`, pasted as printed (`Waits: supervisor`, `Waits: session <id>`,
-`Waits: #<pr>`, `Waits: CI`, `Waits: until 2026-10-21T23:17Z`): it refuses a malformed wait, and the supervisor reads
+supervisor|session <id>|pr <n>|ci|run <Actions run URL>|until <UTC time>`, pasted as printed (`Waits: supervisor`, `Waits: session <id>`,
+`Waits: #<pr>`, `Waits: CI`, `Waits: https://github.com/<owner>/<repo>/actions/runs/<n>`, `Waits: until 2026-10-21T23:17Z`): it refuses a malformed wait, and the supervisor reads
 that line exactly, where prose such as "waiting on the CoS spec approval" or "cloud session <id>" is only a fallback it
 can misread. `supervisor` is any wait on the chief of staff or project manager (a spec to approve, a decision), which
 they act on at once; for a wait on a session, name its full id. The line may name a set (`Waits: #12, #13 and session <id>`): the supervisor wakes you on the first failure, or when
@@ -486,6 +492,14 @@ of another harness or a cloud run that answers in its report does, which counts 
 any other only when it came after your own turn) reaches you as news within a minute of its end, named or not, and a PR your
 wait names that merged, closed or finished its checks the same, read from GitHub; an intermediate `STILL WORKING` turn of a
 child is no end, so the line only has to name what you wait on.
+`wait-on` also writes your state as the `lead` event on your branch (events.md): `waiting`. End `DONE` and `USER NEEDED` the
+same way, pasting the line printed: `omnigent_agent.py end-on done <result> --report <path>` (event `ok`) and
+`end-on needs-owner --question <file> --report <path>` (event `needs-owner`, with the whole question in `question.md`
+and its first line in the printed line). Write the question to a file, never into the line: the supervisor sends the owner
+the file's whole text, where a summary cuts a long one short. Once your branch has an event, the supervisor reads
+that and your parsed `Waits:` line and ignores a `CoS:` footer and prose waits; a `Waits:` line that does not parse
+gets one notice naming the accepted forms. A lead with no branch yet writes no event (its `needs-owner` is the issue's
+label), and a host whose push fails still prints the line: the event only reports the step.
 A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
 supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline

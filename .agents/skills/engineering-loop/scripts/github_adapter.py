@@ -10,6 +10,7 @@ session's proxy does. Reads return GitHub's GraphQL node shapes (ISSUE, PULL), w
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import subprocess
@@ -150,6 +151,48 @@ def open_pulls(limit: int) -> list[dict[str, Any]]:
     return found
 
 
+def open_pull_files(limit: int) -> list[dict[str, Any]]:
+    """Up to `limit` open PRs, each with its number, base, head commit and the paths it changes (`files`), in one call.
+    `gh pr list` names a PR's first 100 files only, so a PR with 100 has all of its files re-read through REST's pages
+    (GitHub's own cap there is 3000), and an overlap past the 100th file is never missed."""
+
+    def every_file(number: int) -> list[str]:
+        # objects, not `.[].filename`: `gh --jq` prints a string raw, which rest_pages can't read as JSON
+        return [file["filename"] for file in rest_pages(f"pulls/{number}/files?per_page=100")]
+
+    return fast(  # type: ignore[no-any-return]
+        lambda: [
+            {
+                **pull,
+                "files": every_file(pull["number"])
+                if len(pull["files"]) >= 100
+                else [file["path"] for file in pull["files"]],
+            }
+            for pull in json.loads(
+                gh(
+                    "pr",
+                    "list",
+                    "--state",
+                    "open",
+                    "--limit",
+                    str(limit),
+                    "--json",
+                    "number,baseRefName,headRefOid,files",
+                )
+            )
+        ],
+        lambda: [
+            {
+                "number": other["number"],
+                "baseRefName": other["base"]["ref"],
+                "headRefOid": other["head"]["sha"],
+                "files": every_file(other["number"]),
+            }
+            for other in rest_pages("pulls?state=open&per_page=100")[:limit]
+        ],
+    )
+
+
 def texts(data: str) -> list[str]:
     """The text GitHub will publish from a post's `data`: every string a JSON payload holds, decoded (a review's body
     and its inline comments), else the data itself (a comment's body)."""
@@ -265,8 +308,9 @@ def refused(stderr: str | None) -> bool:
     return any(text in (stderr or "") for text in REFUSALS)
 
 
-# set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again
-_rest_only = False
+# set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again; GATEKEEPER_REST_ONLY=1
+# sets it from the start, so a check can force the REST path on a token GraphQL would answer
+_rest_only = os.environ.get("GATEKEEPER_REST_ONLY") == "1"
 
 
 Answer = TypeVar("Answer")
@@ -1267,6 +1311,7 @@ forge = Port(
     "head_pushed",
     "merged_labelled",
     "open_pulls",
+    "open_pull_files",
     "open_heads",
     "required_checks",
     "default_branch",

@@ -242,6 +242,13 @@ reviewer must be of the other family is the caller's policy.
 `start` and `wait <session> <report>` are the two halves, for a start whose wait runs
 elsewhere.
 
+**Cold start.** `start` (after waiting up to `COLD_START_SECONDS`, 20 s, for a first turn), `wait` and
+`run` print on stderr `cold start: <n|unknown> s to first turn`: the seconds from the session record's
+`created_at` (set by the create call) to the `created_at` of its first assistant item (a message or
+tool call of the assistant), read from the session's oldest items so a long session still times it.
+A time the API does not give, or a session with no turn yet, prints
+`unknown`, never 0; `wait` prints it again once the turn exists. The lead's log keeps the line.
+
 **Signature.** `python3 scripts/omnigent_agent.py signature` prints `<harness>/<model>/<effort>` of the session it
 runs in, read at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and transcript), so it holds
 however the session started. It reads the session's Omnigent record first (`llm_model` once the harness has
@@ -688,7 +695,7 @@ wait comes from the lead's last message: `parked` for a `PARKED` ending, the thi
 WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`, a child's session id, or a
 background task id such as `bz3jp5aod`, `b` and 8 lowercase letters and digits with one digit at
 least, opening it or after `on`/`for`), else
-`unknown`. A last line `Waits: supervisor|session <id>|#<pr>|CI|until <UTC>` (printed by `omnigent_agent.py wait-on`, which refuses any other form) is read first and exactly, and one that names no supervisor makes prose decide nothing about routing to it; without one, prose decides: any single 32-hex id in the wait paragraph is a named wait, and `CoS`, `chief of staff` or a `CoS:` line count as waiting on the supervisor like `pm`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
+`unknown`. A last line `Waits: supervisor|session <id>|#<pr>|CI|until <UTC>|<Actions run URL>` (printed by `omnigent_agent.py wait-on`, which refuses any other form, and a bare `#<pr>` that this repo has no PR or issue for; a run's end is news once, and a line that does not parse is told to its lead once, with these forms) is read first and exactly, and a line that does not parse still decides alone: a wait on the supervisor only when it names it (supervisor, CoS or chief of staff), else none, so prose and a `CoS:` footer decide nothing; without one, prose decides: any single 32-hex id in the wait paragraph is a named wait, and `CoS`, `chief of staff` or a `CoS:` line count as waiting on the supervisor like `pm`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
 UTC`) is a timed wait, `until <time>`: no deadline before that time plus 20 minutes, then the
 named-wait rule. A last message that
 is only a report's path takes its ending and wait from the report's first line, read once per

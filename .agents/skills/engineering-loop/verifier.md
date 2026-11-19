@@ -150,7 +150,8 @@ yourself, keeping standards and spec as separate axes.
   `risk` (docs/agents/gatekeeper.md) your `Risk:` line rates the change, and the policy's `levels` say what each
   rating needs at merge (by default a high change waits for the owner's go, a low one for the gates alone), so
   judge it on the diff, not on how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
-  again on its reasoning in this pass, and say why the risk stands or falls.
+  again on its reasoning in this pass, and say why the risk stands or falls; a delta pass cannot lower it, so a
+  verdict that it falls needs the whole PR diff re-reviewed and a closing `Scope: full` line.
 - **A run the sandbox refuses.** A gate, mutation or instance run the sandbox won't let you
   make (a lock or path it can't write, such as a read-only heavy-slot lock) ends in a question
   at once, not a report: a report with no finding but `SATISFIED: no` spends a pass, can reach
@@ -219,6 +220,8 @@ keep these lines exact:
   sub-heading and posts nothing. `verdict` refuses a `### ` heading with a `(<severity>)`
   it can't read, and finding headings that don't add up to the `VERDICT:` counts, rather
   than leave a finding off the review.
+- The report is posted folded (github.md, Comment shape): `verdict` keeps the closing lines in view and puts the
+  criteria under `<details>`, so write the closing lines as below, each alone on its line, and keep prose out of them.
 - End with `Head: <sha>`, the full commit you reviewed (`git rev-parse HEAD` in your
   worktree), then `VERDICT: <n> blocker, <n> major, <n> minor`, `SATISFIED: yes|no` and
   `Risk: low — <reason>` or `Risk: high — <reason>` (Steering, Judge the risk). The gate
@@ -226,6 +229,11 @@ keep these lines exact:
   The gate sets the board's `Risk` field from it (github.md, Board).
   On a delta of merges of the base alone, add `Logic change: none` when its conflict fixes
   change no behaviour, which carries the owner's go to the head, else `Logic change: <what>`.
+  `Risk:` names the PR's risk, not the delta's: the gate takes the highest `Risk:` of the passes since the last one
+  that reviewed the whole change (your first pass, or a later pass with a `Scope: full` line), so a `low` on a delta cannot
+  lower an earlier `high`, and a `high` the lead disputes is re-judged only on a `Scope: full` pass. Write `Scope: full`, as the whole value of a closing line, when you re-reviewed the whole PR diff against the base (a fresh
+  verifier, or a request for a full pass); its `Risk:` then names the PR's risk and may lower an earlier one.
+  Write no `Scope:` line on a pass that reviewed only the diff since the last reviewed head, as every later pass does.
   The merge reads the review as covering that commit only, so a push after your review
   needs its own, unless the new head has your commit's tree (`git rev-parse <sha>^{tree}`),
   as after a reword of commit messages only: every file you reviewed is the same, so your
