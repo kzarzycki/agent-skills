@@ -59,7 +59,8 @@ The intervals are the kinds' starting values: the code that writes a kind may se
   Each poll reads the local ref, then origin's, and takes the later `at`.
 - `clear <branch>`: removes the branch's refs of every kind here and on origin. `land` runs it in a detached process
   120 s after a PR merges, so a `wait` polling slower than that, or started later, finds no ref and runs to its timeout
-  (exit 3).
+  (exit 3). `omnigent_agent.py reap` runs it too for the head branch of each merged or closed PR whose worker it
+  finishes, from that worker's checkout, so a PR closed unmerged leaves no ref behind.
 
 ## Degraded
 
