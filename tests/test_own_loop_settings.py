@@ -45,3 +45,10 @@ def test_hook_script_the_settings_name_is_tracked() -> None:
         ["git", "ls-files", script], cwd=root, capture_output=True, text=True, check=True
     )
     assert tracked.stdout.strip() == script
+    # --no-index: git skips ignore rules for a tracked path, so the plain command passes with the ignore line back
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", "--no-index", ".claude/hooks"], cwd=root, check=False
+    )
+    assert ignored.returncode == 1, (
+        ".claude/hooks/ is git-ignored: a later hook would miss a fresh checkout"
+    )
