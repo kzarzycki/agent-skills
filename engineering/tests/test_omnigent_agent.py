@@ -7977,7 +7977,7 @@ ROUTES = [
     ("quiet, mid-work", {"kind": "ended", "last": "on it"}, "none", ("model", "record")),
     ("quiet, stalled", {"kind": "ended", "last": "on it"}, "act", ("model", "nudge")),
     ("quiet, for the owner", {"kind": "ended", "last": "hm"}, "owner", ("model", "owner")),
-    ("quiet, no model answer", {"kind": "ended", "last": "hm"}, "unsure", ("model", "act")),
+    ("quiet, no model answer", {"kind": "ended", "last": "hm"}, "unsure", ("model", "nudge")),
     ("deadline, unknown", {"kind": "deadline", "last": "on it"}, None, ("rule", "nudge")),
     (
         "deadline, after a nudge",
@@ -8173,16 +8173,19 @@ def test_the_small_model_is_one_headless_call_with_the_event_cut_on_stdin(
         "missing",
     ],
 )
-def test_an_unparseable_failed_or_timed_out_model_answer_routes_to_act(
+def test_an_unparseable_failed_or_timed_out_model_answer_routes_a_question_to_act_and_a_quiet_end_to_a_nudge(
     monkeypatch: pytest.MonkeyPatch, answer: object
 ) -> None:
     model_answers(monkeypatch, answer)
     route, why = REAL_TRIAGE("an event", "")
     assert route == "unsure" and why
     ask = lambda: REAL_TRIAGE("an event", "d")
-    for last in ("USER NEEDED: x", "on it"):  # a question, a quiet end: act, never a nudge
+    for last, action in (
+        ("USER NEEDED: x", "act"),
+        ("on it", "nudge"),
+    ):  # a quiet end posts nothing
         event = {"kind": "ended", "last": last, "decisions": True}
-        assert omnigent_agent.route(event, ask)[:2] == ("model", "act")
+        assert omnigent_agent.route(event, ask)[:2] == ("model", action)
 
 
 def test_standing_decisions_are_their_section_else_the_whole_file_else_none(
@@ -9288,7 +9291,7 @@ def test_a_send_whose_copy_was_already_there_and_whose_poll_fails_is_exit_1(
 
 
 @pytest.mark.parametrize("why", ["model failed", "allowance spent"])
-def test_a_quiet_end_the_model_could_not_route_goes_to_the_chief_of_staff_not_a_nudge(
+def test_a_quiet_end_the_model_could_not_route_is_nudged_and_posts_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
 ) -> None:
     registry = following(tmp_path)
@@ -9309,9 +9312,9 @@ def test_a_quiet_end_the_model_could_not_route_goes_to_the_chief_of_staff_not_a_
         notify="cos",
         console=True,
     )
-    assert [s for s, t in og.inbox] == ["cos"]  # no nudge to the lead
-    assert events_of(registry)[-1]["action"] == "act"
-    assert "[act] a t-a: turn ended, quiet 301s" in posted(og)[0]
+    assert [s for s, t in og.inbox] == ["a"]  # a nudge to the lead, no post to the chief of staff
+    assert events_of(registry)[-1]["action"] == "nudge"
+    assert posted(og) == []
 
 
 @pytest.mark.parametrize("needed_by", ["action", "model call", "post"])

@@ -147,7 +147,7 @@ itself (no post, a nudge, a revive, telling the leads registered ``after=`` it o
 what its rules can't settle, and posts what needs the notified session or the owner as
 ``Supervisor [act] b-<id>: …`` or ``Supervisor [owner] b-<id>: …``, at most one post per 5
 minutes (an owner item it already raised for that session, same text, goes as ``[info]``, which wakes no
-one; a new or changed item raises ``[owner]``), and for a lead marked ``direct`` nothing but a failed turn
+one; a new or changed item raises ``[owner]``), for a lead marked ``direct`` nothing but a failed turn
 that lost its runner, which the owner can't see in its session; ``--fyi post`` posts every line as without it too,
 ``--decisions`` names the owner's standing decisions for the small model. Without it, it writes none of these and posts every line.
 A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
@@ -6416,8 +6416,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     ``head`` is the ``report_head`` of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
     end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
     ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no allowance left),
-    and only picks the route, since its input holds a lead's own words. Only its ``act`` on a
-    quiet end nudges; ``unsure`` acts.
+    and only picks the route, since its input holds a lead's own words. On a quiet end its
+    ``act`` and ``unsure`` nudge; on a ``USER NEEDED`` it acts, since that waits on a person.
 
     Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``wake`` (a timed
     wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``park`` (a usage limit:
@@ -6521,7 +6521,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     if wait != "unknown":
         return "rule", "record", f"names its wait: {wait}"
     answer, why = ask()
-    return "model", {"none": "record", "owner": "owner", "act": "nudge"}.get(answer, "act"), why
+    # ``unsure`` (the model failed) nudges the lead and posts nothing: a failed model call is no event
+    return "model", {"none": "record", "owner": "owner"}.get(answer, "nudge"), why
 
 
 def triage(event: str, decisions: str, prompt: str = ROUTING_PROMPT) -> tuple[str, str]:
@@ -7477,16 +7478,17 @@ def supervise_registry(
         seen[key] = [time.time(), found]
         return found
 
-    def moving(sid: str, lead: dict, wait: str = "") -> bool:
+    def moving(sid: str, lead: dict, wait: str = "") -> bool | None:
         """Whether every session ``sid``'s wait names shows life (``alive``). A wait names X by
         a full session id in ``sid``'s follow set: one of its leads (the sessions its line's
         ``leads=`` registry follows) or of its ``kin`` (its live children and subscriptions, a
         lead's worker); for a manager, ``lead`` names its leads as a group; any other word (a kind
         such as ``worker``, a title word, a short id) names each of its kin whose title holds it
-        as a word or whose id opens with it; a background task id names ``sid``'s own job, alive
+        as a word or whose id opens with it (a manager's followed leads count as kin); a background task id names ``sid``'s own job, alive
         while ``sid`` declares a live background task. A wait on anything else (the notified
-        session, a session outside its follow set, the owner, a word no kin answers), a named
-        session that shows no life or is not read, and a registry or kin not read, are False:
+        session, a session outside its follow set, the owner, a named
+        session that shows no life or is not read, and a registry or kin not read, are False; a
+        word no kin answers is None (no session named):
         the deadline is raised as without it."""
         wait = wait or lead["wait"]
         if ", " in wait:  # a set is live while any one of its members is
@@ -7523,7 +7525,8 @@ def supervise_registry(
             named = [wait]
         else:  # not one of its leads: one of its own children or subscriptions, else outside
             try:
-                kin = [k for k in og.kin(sid) if k != notify]
+                # its followed leads too: a lead started through its registry is no child
+                kin = [k for k in dict.fromkeys([*og.kin(sid), *followed]) if k != notify]
             except Exception as e:  # noqa: BLE001 - the deadline is raised as without it
                 log(("kin", sid), f"{sid}: children not read: {reason(e)}")
                 return False
@@ -7548,14 +7551,14 @@ def supervise_registry(
                 return False
             if not alive(other, info):
                 return False
-        return bool(named)
+        return bool(named) or None  # None: the wait resolved to no session at all
 
     def overdue(sid: str, lead: dict) -> None:
         """Raise a followed lead's ``deadline`` events: ``DEADLINE_SECONDS`` with no progress, and
         for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. A timed
         wait with no progress since its time raises one at its time, which wakes the lead, and
-        once woken one more ``DEADLINE_SECONDS`` after it. Each is one event per ``progress_at``,
-        so new progress starts a new chain. None while every session its wait names shows life
+        once woken one more ``DEADLINE_SECONDS`` after it. Each is one event per ``progress_at``
+        (one per wait text when the wait names no session), so new progress starts a new chain. None while every session its wait names shows life
         (``moving``), since it is waiting, not stalled."""
         if lead.get("direct"):
             return  # the owner drives it in its own session: they are its follower
@@ -7574,7 +7577,8 @@ def supervise_registry(
             return
         # read only once due
         lead["progress_at"] = max(lead["progress_at"], og.active(sid), written(sid, lead))
-        if due is None and moving(sid, lead):
+        names = None if due is not None else moving(sid, lead)
+        if names:
             return  # what it waits on all shows life: no stall of its own
         # a session its STILL WORKING line names that shows life is progress, one that is archived,
         # unknown or unread is quiet
@@ -7640,7 +7644,11 @@ def supervise_registry(
                 line = f"{head}: {what}\nlast message: {lead['last_line']}"
                 if quiet_named:
                     line += f"\nquiet: {', '.join(quiet_named)}"
-                say(line, sid, f"deadline:{sid}:{lead['progress_at']:.0f}{nudged}", "deadline")
+                # a wait that names no session is one event per wait text, not per progress chain
+                chain = (
+                    lead["wait"] if names is None and due is None else f"{lead['progress_at']:.0f}"
+                )
+                say(line, sid, f"deadline:{sid}:{chain}{nudged}", "deadline")
 
     def has_event(sid: str) -> bool:  # an event settles what a prose wait would
         try:
