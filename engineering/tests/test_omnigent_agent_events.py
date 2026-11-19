@@ -5,6 +5,7 @@ The seam is `supervise_registry` with the fake fleet of test_omnigent_agent and 
 
 import json
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from test_omnigent_agent import (
 )
 
 EVENTS = omnigent_agent._load_events()
+real_sleep = time.sleep  # `supervised` replaces the module-wide `time.sleep`
 WAIT = "STILL WORKING: waiting on #12"
 GREEN = (
     0,
@@ -40,6 +42,9 @@ def clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     git(tmp_path, "init", "-q", "--bare", str(bare))
     git(tmp_path, "clone", "-q", str(bare), str(work))
     monkeypatch.chdir(work)
+    # the clone's origin reads as `o/r` (the lead's repository), though pushes still reach the bare remote
+    git(work, "config", f"url.{bare}.insteadOf", "https://github.com/o/r.git")
+    git(work, "remote", "set-url", "origin", "https://github.com/o/r.git")
     monkeypatch.setattr(omnigent_agent, "EVENT_SECONDS", 0.0)
     branches = {12: "feat", 13: "feat2"}
     monkeypatch.setattr(
@@ -155,6 +160,10 @@ def test_owner_question_sorts_before_news(
         if e["kind"] in ("loop-owner", "news") and " on feat" in e["line"]
     ]
     assert [e["kind"] for e in told_] == ["loop-owner"] + ["news"] * 5
+    assert any(
+        "needs the owner: May the gate be skipped?" in t and "The whole text." in t
+        for t in posted(og)
+    )
     assert "needs the owner: May the gate be skipped?" in told_[0]["line"]
     assert [e["line"].split(": ", 1)[1].split(" on ")[0] for e in told_[1:]] == [
         "gate failed",
@@ -226,16 +235,141 @@ def test_a_lead_needs_owner_event_is_not_told_twice(
     ]
 
 
-def test_an_event_in_another_directory_is_no_life_for_a_plain_directory_lead(
+def lead_repo_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lead's repository is o/r (the supervisor's directory's too); PR 12 is read only through that repository."""
+    monkeypatch.setattr(omnigent_agent, "workspace_repo", lambda og, sid: "o/r")
+
+    def pr_info(pr: int, repo: str = "") -> dict:
+        if repo != "o/r":
+            raise omnigent_agent.Fail(f"HTTP 404: no PR {pr} in the supervisor's own repository")
+        return {"state": "open", "branch": "feat", "sha": "s1", "base": "main"}
+
+    monkeypatch.setattr(omnigent_agent, "pr_info", pr_info)
+
+
+def test_a_bare_pr_wait_is_read_in_the_leads_repository(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
 ) -> None:
-    """A lead whose workspace is no git checkout reads the supervisor's repository, and a beat of the same branch name
-    in a repository that is not its own does not hold its wait live."""
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    other = tmp_path / "other"
-    other.mkdir()
-    git(tmp_path, "init", "-q", "--bare", str(tmp_path / "other.git"))
-    git(tmp_path, "clone", "-q", str(tmp_path / "other.git"), str(other / "c"))
-    EVENTS.emit("land", "feat", "waiting", cwd=other / "c")  # `feat` of another repository
-    assert len(wait_run(tmp_path / "run", monkeypatch, 60.0)) == 1
+    lead_repo_only(monkeypatch)
+    EVENTS.emit("land", "feat", "waiting", cwd=clone)
+    lines = wait_run(tmp_path, monkeypatch, 900.0)
+    assert len(lines) == 1 and "land event silent 15m" in lines[0]
+
+
+def test_a_bare_pr_waits_end_and_question_reach_the_lead_and_the_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    lead_repo_only(monkeypatch)
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending(WAIT, 30))
+    og.snap = {"status": "idle"}
+
+    def write(poll: int) -> None:
+        EVENTS.emit("land", "feat", "failed", url="https://x/log", cwd=clone)
+        EVENTS.emit("gate", "feat", "needs-owner", question="Skip?\n", cwd=clone)
+
+    supervised(og, registry, monkeypatch, 3, write, notify="cos", console=True, fyi="skip")
+    assert [e for e in events_of(registry) if "land failed on feat" in e["line"]]
+    assert [e for e in events_of(registry) if e["kind"] == "loop-owner"]
+
+
+def test_a_step_question_reaches_the_owner_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending(WAIT, 30))
+    og.snap = {"status": "idle"}
+    question = "May the gate be skipped?\nSecond line: the reason.\nThird line: the risk.\n"
+    write = lambda poll: EVENTS.emit("gate", "feat", "needs-owner", question=question, cwd=clone)
+    supervised(og, registry, monkeypatch, 3, write, notify="cos", console=True, fyi="skip")
+    posts = "\n".join(posted(og))
+    assert "May the gate be skipped?" in posts and "Third line: the risk." in posts
+
+
+def test_a_lead_of_another_repository_takes_no_life_from_this_directorys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    """Its workspace is no checkout here, and its repository is not this directory's: a beat of a same-named branch
+    in this directory's repository holds nothing live."""
+    monkeypatch.setattr(omnigent_agent, "workspace_repo", lambda og, sid: "o/x")
+    assert len(wait_run(tmp_path / "ref", monkeypatch, 60.0)) == 1
+    EVENTS.emit("land", "feat", "waiting", cwd=clone)
+    assert len(wait_run(tmp_path / "beat", monkeypatch, 60.0)) == 1
+
+
+def test_a_word_wait_on_the_leads_own_pr_is_live_while_its_event_beats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    """`waiting on land`, no PR ref: only the beating event on the lead's own PR's branch keeps it live."""
+    monkeypatch.setattr(omnigent_agent, "workspace_repo", lambda og, sid: "o/r")
+
+    def run(where: Path) -> list[str]:
+        where.mkdir(exist_ok=True)
+        registry = following(where)
+        skewed(monkeypatch)[0] = 60.0
+        og = Lead(told("brief", 4000), ending("STILL WORKING: waiting on land", 1500))
+        og.snap = {"status": "running", "labels": {omnigent_agent.PR_LABEL: "o/r#12"}}
+        supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+        return deadlines(registry)
+
+    assert len(run(tmp_path / "ref")) == 1
+    EVENTS.emit("land", "feat", "waiting", cwd=clone)
+    assert run(tmp_path / "beat") == []
+
+
+def test_a_silent_event_decides_over_the_prs_running_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    monkeypatch.setattr(
+        omnigent_agent, "pr_settled", lambda pr, repo="": None
+    )  # checks still running
+    assert (
+        wait_run(tmp_path / "ref", monkeypatch, 900.0) == []
+    )  # no events: the old rule reads it live
+    EVENTS.emit("land", "feat", "waiting", cwd=clone)
+    lines = wait_run(tmp_path / "silent", monkeypatch, 900.0)
+    assert len(lines) == 1 and "land event silent" in lines[0]
+
+
+@pytest.mark.parametrize(("age", "deadlines_"), [(400.0, 0), (700.0, 1)])
+def test_live_means_changed_within_twice_the_beat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path, age: float, deadlines_: int
+) -> None:
+    EVENTS.emit("land", "feat", "waiting", cwd=clone)  # a 300 s beat
+    assert len(wait_run(tmp_path, monkeypatch, age)) == deadlines_
+
+
+def test_an_unreadable_poll_after_a_read_keeps_what_was_known(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    EVENTS.emit("land", "feat", "waiting", cwd=clone)
+    registry = following(tmp_path)
+    skewed(monkeypatch)[0] = 60.0
+    og = Lead(told("brief", 4000), ending(WAIT, 1500))
+    og.snap = {"status": "running"}
+    real = omnigent_agent.read_loop_events
+    monkeypatch.setattr(
+        omnigent_agent,
+        "read_loop_events",
+        lambda cwd=None: real(cwd) if not og.__dict__.setdefault("n", [0]).append(0) else None,
+    )
+    supervised(og, registry, monkeypatch, 4, notify="cos", console=True, fyi="post")
+    assert deadlines(registry) == []  # the first read said beating, the failed ones forgot nothing
+
+
+def test_an_end_written_before_a_restart_but_after_the_last_poll_is_told(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    registry = following(tmp_path)
+
+    def run() -> Lead:
+        og = Lead(told("brief", 60), ending(WAIT, 30))
+        og.snap = {"status": "idle"}
+        supervised(og, registry, monkeypatch, 2, notify="cos", console=True, fyi="post")
+        return og
+
+    run()  # the supervisor polls, saves, and stops
+    EVENTS.emit("land", "feat", "ok", cwd=clone)  # written while it was down
+    real_sleep(3)  # past the 2 s a whole-second `at` is allowed to trail a start
+    run()  # restarted: it was not told this end
+    assert [e for e in events_of(registry) if "land ok on feat" in e["line"]]

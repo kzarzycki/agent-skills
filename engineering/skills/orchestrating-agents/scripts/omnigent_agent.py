@@ -6815,6 +6815,8 @@ def supervise_registry(
     headed: dict[str, float] = {}  # when each repo's default-branch head was last read
     window = time.monotonic()
     started = time.time()  # a lead first seen in this run reports no turn end from before it
+    # an end written after the last poll of the run before is news, though it predates this run's start
+    cutoff = min(started, float(state.get("written_at") or started))
     script = script or Path(os.path.realpath(__file__))
     try:
         ran = script.stat().st_mtime_ns
@@ -7092,7 +7094,7 @@ def supervise_registry(
         elif action == "tell":
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
         elif action in ("act", "owner") or action == "done" and not event["direct"]:
-            item = line.splitlines()[0]
+            item = line if kind == "loop-owner" else line.splitlines()[0]
             if asked := question_for(lead_ev, parsed):
                 item = f"{item}\n{asked}"  # the whole question, never cut
             to = "owner" if action == "owner" else "act"
@@ -7673,14 +7675,37 @@ def supervise_registry(
         prs[(repo, pr)] = (time.time(), info)
         return info
 
+    def here_repo() -> str:
+        """``owner/name`` of the supervisor's own directory's origin, empty when it has none (read once)."""
+        if "here" not in repos:
+            try:
+                url = subprocess.run(
+                    ["git", "config", "--get", "remote.origin.url"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=HTTP_SECONDS,
+                ).stdout
+            except (OSError, subprocess.SubprocessError):
+                url = ""
+            repos["here"] = (
+                origin_repo(f'[remote "origin"]\n url = {url.strip()}') if url.strip() else ""
+            )
+        return repos["here"]
+
     def lead_root(sid: str) -> tuple[str, Path]:
         """The repository ``sid``'s events live in: the git common dir of its workspace checkout (worktrees of one
         repository share it) and a directory to run git in; the supervisor's own directory when the workspace is not
         a local checkout. A lead whose repository is another one's is read from its own, never from here."""
         info = looks.get(sid, ({}, []))[0]
-        workspace = Path(str(info.get("workspace") or "")) if info.get("workspace") else Path.cwd()
-        if not workspace.is_dir() or elsewhere(og, info):
+        workspace = Path(str(info.get("workspace") or ""))
+        if not info.get("workspace") or not workspace.is_dir() or elsewhere(og, info):
             workspace = Path.cwd()
+            if (named := wait_repo(sid, "")) and named != here_repo():
+                return (
+                    f"other:{named}",
+                    workspace,
+                )  # the lead's repository is not this directory's: no events of its own here
         if workspace not in roots:
             try:
                 out = subprocess.run(
@@ -7705,6 +7730,7 @@ def supervise_registry(
             if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", item.strip()):
                 found.add((m[1] or "", int(m[2])))
         mine = wait_repo(sid, "")
+        found = {(repo or mine, pr) for repo, pr in found}  # a bare #N is the lead's repository's
         infos = (pr_data(pr, repo) for repo, pr in sorted(found) if not repo or repo == mine)
         return {i["branch"] for i in infos if i}
 
@@ -7742,6 +7768,9 @@ def supervise_registry(
             return
         ev["at"] = time.monotonic()
         wheres = {lead_root(sid) for sid in state["leads"]} | {lead_root("")}
+        wheres = {
+            w for w in wheres if not w[0].startswith("other:")
+        }  # a repository with no checkout here
         now, kept, seen = time.time(), state["events"], set()
         for root, workspace in sorted(wheres):
             found = read_loop_events(workspace)
@@ -7779,10 +7808,13 @@ def supervise_registry(
                     note["pending"] = (
                         changed
                         and e["state"] != "waiting"
-                        and (at is None or at + 2 >= started or not first)
+                        and (at is None or at + 2 >= cutoff or not first)
                     )
-        for key in [k for k in kept if k not in seen]:
-            del kept[key]
+        read_roots = {root for root, _ in wheres}
+        for key in [k for k in kept if k not in seen and kept[k]["root"] in read_roots]:
+            del kept[
+                key
+            ]  # a repository not followed this poll (a lead not yet read) keeps its notes
 
     def event_news() -> None:
         """Tell each pending end once, in the order owner questions, ``failed``, ``ok``; one line per kind per branch
