@@ -32,6 +32,8 @@ def test_a_changed_test_file_runs() -> None:
 
 def test_test_setup_or_no_base_runs_everything() -> None:
     assert a.targets(["pyproject.toml"]) == a.ALL
+    assert a.targets(["uv.lock"]) == a.ALL
+    assert a.targets(["mise.toml"]) == a.ALL
     assert a.targets(["tools/gate_workers.py"]) == a.ALL
     assert a.targets(None) == a.ALL
 
@@ -40,7 +42,10 @@ def test_a_conftest_runs_only_the_tests_under_its_folder() -> None:
     picked = a.targets(["engineering/tests/conftest.py"])
     tests = [p for p in picked if p not in a.CHEAP]
     assert tests
-    assert all(p.startswith("engineering/tests/") and "/e2e/" not in p for p in tests)
+    assert all(p.startswith("engineering/tests/") for p in tests)
+    e2e = "engineering/tests/e2e/test_static_discovery.py"
+    assert e2e in picked
+    assert e2e in a.targets(["engineering/tests/e2e/conftest.py"])
     assert "engineering/tests/test_approvals.py" in picked
     sub = a.targets(["tests/capability_pack/conftest.py"])
     assert "tests/capability_pack/test_atomicity.py" in sub

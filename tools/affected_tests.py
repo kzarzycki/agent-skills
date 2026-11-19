@@ -5,7 +5,7 @@ script runs the tests that executed the lines it changed, read from the test map
 every test file that names its stem (any other non-markdown file: its file name). Any other file (a skill's prose,
 docs, config) runs only the cheap repo-wide checks, `tests/test_skill_*.py`. No base to diff, or a change to the test
 setup itself (pyproject.toml, uv.lock, mise.toml, tools/, the root conftest.py), runs everything, since the map cannot
-say what that touches. A changed conftest.py below the root runs the tests under its own folder (not e2e): pytest applies
+say what that touches. A changed conftest.py below the root runs the tests under its own folder, e2e included (the gate's `-m "not live_agent"` drops the live ones): pytest applies
 it to no others, and a test imports one only from its own folder (`from conftest import`). Its helper modules are scripts
 like any other, so a change to one selects the tests that name it.
 
@@ -137,7 +137,7 @@ def targets(files: list[str] | None, base: str | None = None) -> list[str]:
         path = Path(f)
         if path.name == "conftest.py":
             # a conftest applies to the tests under its own folder (a test imports it only from there)
-            picked.update(str(t) for t in tests if t.is_relative_to(path.parent))
+            picked.update(str(t) for t in Path(path.parent).rglob("test_*.py"))
         elif path.name.startswith("test_") and path.suffix == ".py" and path.exists():
             picked.add(f)
         elif path.suffix != ".md":
