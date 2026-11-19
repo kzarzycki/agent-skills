@@ -13858,7 +13858,9 @@ def test_a_cloud_child_gets_its_role_file_s_text_and_a_host_child_its_path(
     role = tmp_path / "worker.md"
     role.write_text("# Worker\nRULE-X\n")
     cloud = CloudFake()
-    sid, _ = omnigent_agent.start(cloud, "claude-cloud", "t", "do X", tmp_path / "r.md", str(role), 0)
+    sid, _ = omnigent_agent.start(
+        cloud, "claude-cloud", "t", "do X", tmp_path / "r.md", str(role), 0
+    )
     text = omnigent_agent.text_of(cloud.sessions[sid][1])
     assert "<role-file>\n# Worker\nRULE-X\n</role-file>" in text and "Your role file is" not in text
     assert "other files it names may not be in this checkout" in text
