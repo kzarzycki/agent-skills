@@ -5,6 +5,7 @@ of refusing every land in this repo (#548, #613)."""
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -34,3 +35,20 @@ def test_this_repos_policy_and_tracker_settings_parse(copy: str, monkeypatch) ->
     # qualify's QUALIFY_TIMEOUT exit (tools/capability_pack/cli.py), so a gate timed out on a loaded host is a
     # machine fault that land reruns and then stops on, never an eviction (#851)
     assert approvals.settings(policy).get("machine_exit") == 78
+
+
+def test_hook_script_the_settings_name_is_tracked() -> None:
+    """A fresh checkout must hold the script settings.json runs, or every Bash call fails (#1432)."""
+    root = Path(__file__).resolve().parents[1]
+    script = ".claude/hooks/engineering/hooks/heavy_run_guard.py"
+    tracked = subprocess.run(
+        ["git", "ls-files", script], cwd=root, capture_output=True, text=True, check=True
+    )
+    assert tracked.stdout.strip() == script
+    # --no-index: git skips ignore rules for a tracked path, so the plain command passes with the ignore line back
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", "--no-index", ".claude/hooks"], cwd=root, check=False
+    )
+    assert ignored.returncode == 1, (
+        ".claude/hooks/ is git-ignored: a later hook would miss a fresh checkout"
+    )

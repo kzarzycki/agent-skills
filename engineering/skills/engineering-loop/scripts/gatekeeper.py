@@ -20,10 +20,10 @@
     uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
     uv run scripts/approvals.py overlap <pr>|--files <path>... [--base <b>]  # other open PRs changing the same files: hunks, and whether the heads merge
     uv run scripts/approvals.py local-ci <pr> [--head <sha>] [--run]  # --head: the commit just pushed, refused if GitHub's head stays another; with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
-    uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
+    uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed under `ci: false` or with --base (Narrowed mode)
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
-    uv run scripts/approvals.py affected-tests   # the worker's gate on a draft head: loop.md's `Affected tests:` command, else `check`
+    uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's gate on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; else `check`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
@@ -391,6 +391,21 @@ publishes the pass as the commit status `<context>` instead of `gate`, described
 `land` reads it, the one status a decision reads for a pass: a green status of that context on the head commit itself, naming the head's tree,
 by the account running this or a writer. A status on an older head never counts, since a status belongs to one commit.
 Which tier a change needs is the project's rule; `land` checks only that a head proof exists.
+Narrowed mode: loop.md's line `Affected tests: <command>` without the line `Gate: full`, the opt-out (narrowing). Its
+command is the whole narrowed check: the project's selector plus its cheap whole-repo lint and type checks, reading the
+base from the variable `Gate base:` names, else `GATE_BASE`. `affected-tests` runs it against `--base <rev>` (a PR's
+base SHA, a push's previous tip), else the merge base with the branch's base; a `<rev>` git can't resolve (all zeros,
+a new branch) runs `mise run check`, said in one line, as do the opt-out and a loop.md without the line. In narrowed
+mode `land`'s batch gate runs that command with the variable set to the base tip the batch merges onto, so it selects
+over the batch's combined diff, in place of the gate: under the same slot, `machine_exit`, records and cloud gate (whose
+`local-ci --record` it passes `--base <tip>`). Under `ci: false`, `local-ci --record` runs it against `--base`, else the
+merge base, as the ready head's gate of record, and `check merge` takes that pass on the head's tree, against the merge
+base of the head and the PR's base, in place of a full one; `local-ci <pr>` posts it. A narrowed pass's command is the
+variable's assignment, the command, then ` (narrowed)`, which no gate command can hold, so its record and key never
+equal a full pass's, and nothing that wants a full pass (`ci: false` without narrowed mode, a batch proof's head pass)
+takes it. Its `gate` status and record branch say `narrowed vs <base>`, and `local-ci --status` says `narrowed against <base>`. A project with
+`gate_steps` keeps its steps everywhere, since each narrows by its `paths`. Without the `Affected tests:` line, `check
+build` says in one line that every gate runs the full check (not with the opt-out, which chose it).
 Deprecated: a project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
 full gate once on the result, push the batch) instead of one `land` per PR, opting in with `batch_queue: true` under
 loop.md's `loop`; without it `check queue` refuses and no batch proof counts, so a project that never set one up gets
@@ -3174,16 +3189,17 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
     """One line per check the merge waits for on the head: ci()'s `required` (None: the base branch's required checks but
     `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass on the head's
-    tree under today's gate command (reusable)."""
+    tree under today's gate command (reusable), or in narrowed mode a narrowed pass (narrowed_pass)."""
     where = f"PR #{pull['number']}"
     if batch_queue(loop) and queued(pull, loop) is None:
         return []
     if no_ci(loop):
         # the proof is the pass itself (reusable), never the `Local check passed` comment, which anyone who can
         # comment may write and which says nothing about today's gate command
+        passed = tier(pull, loop)
         found = (
             []
-            if reusable(pull["headRefOid"], tier(pull, loop))
+            if reusable(pull["headRefOid"], passed) or narrowed_pass(pull, passed)
             else [
                 (
                     f"{where}: the project has no CI ({source(loop)} `ci: false`), and no local check passed on the head"
@@ -3197,6 +3213,31 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
             required = required_checks(pull["baseRefName"]) - OWN or None
         found = ci(where, pull, required)
     return found
+
+
+def merge_base_of(base: str, head: str) -> str | None:
+    """`git merge-base origin/<base> <head>`, origin's `base` fetched first, else None where git can't answer."""
+    with contextlib.suppress(subprocess.CalledProcessError, OSError):
+        git("fetch", "-q", "--no-tags", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+    with contextlib.suppress(subprocess.CalledProcessError, OSError):
+        return git("merge-base", f"origin/{base}", head).strip()
+    return None
+
+
+def narrowed_pass(pull: dict[str, Any], passed: list[str]) -> dict[str, Any] | None:
+    """In narrowed mode (narrowing, narrowed_gate), a narrowed pass on the PR head's tree against the merge base of the
+    head and the PR's base (merge_base_of), as `local-ci --record` makes one under `ci: false`; else None. It stands
+    in for a full pass only where `check merge` reads the `ci: false` gate of record, never for one a decision needs in
+    full."""
+    if (
+        narrowing() is None
+        or (base := merge_base_of(pull["baseRefName"], pull["headRefOid"])) is None
+    ):
+        return None
+    with narrowed_to(base):
+        if narrowed_gate(passed) is None:
+            return None
+        return reusable(pull["headRefOid"], passed)
 
 
 def queued(pull: dict[str, Any], loop: str | None = None) -> list[str] | None:
@@ -4876,6 +4917,8 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
     """`check <point>`: with a PR, under the policy of the base it merges onto (policy_from), else the default
     branch's."""
     toplevel()  # outside a checkout, refused before GitHub is asked
+    if point == "build":
+        full_check_line()
     if issue is not None:
         return unbuilt(issue, *project())
     if pr is None and (pr := current_pr()) is None:
@@ -4900,6 +4943,19 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
         raise
     with policy_from(pull["baseRefName"]):
         return checked(point, pull, head)
+
+
+def full_check_line() -> None:
+    """The one line `check build` says, on stderr and never fatal, when loop.md has no `Affected tests:` line, so a
+    project running the full check at every gate sees why; nothing with the opt-out `Gate: full`, which chose it."""
+    with contextlib.suppress(Refused, OSError, subprocess.CalledProcessError):
+        text = loop_md()
+        if not AFFECTED.search(text) and not FULL_GATE.search(text):
+            print(
+                "loop.md has no `Affected tests:` line, so every gate runs the full check: name the project's"
+                " selector there (SKILL.md, Adopting the loop)",
+                file=sys.stderr,
+            )
 
 
 def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
@@ -6043,20 +6099,25 @@ def local_queue(
                 " land where the files are checked out"
             )
         tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
-        landed = merged_trees(candidates, base, tip, failed)
-        if landed and held:
-            repointed(base, held, landed[-1][0]["number"])
-        if landed:
-            merges(landed, base, tip, None, loop, failed, waited, held)
-    elif candidates:
-        with batch_tree(base) as work:
-            tip = run_in(work, "rev-parse", "HEAD")
-            candidates = [pull for pull in candidates if pre_landed(pull, base, work, loop, failed)]
-            landed = merge_batch(candidates, base, work, failed)
+        # narrowed mode: the batch gate selects against the tip the batch merges onto (narrowed_gate)
+        with narrowed_to(tip):
+            landed = merged_trees(candidates, base, tip, failed)
             if landed and held:
                 repointed(base, held, landed[-1][0]["number"])
             if landed:
-                merges(landed, base, tip, work, loop, failed, waited, held)
+                merges(landed, base, tip, None, loop, failed, waited, held)
+    elif candidates:
+        with batch_tree(base) as work:
+            tip = run_in(work, "rev-parse", "HEAD")
+            with narrowed_to(tip):
+                candidates = [
+                    pull for pull in candidates if pre_landed(pull, base, work, loop, failed)
+                ]
+                landed = merge_batch(candidates, base, work, failed)
+                if landed and held:
+                    repointed(base, held, landed[-1][0]["number"])
+                if landed:
+                    merges(landed, base, tip, work, loop, failed, waited, held)
     # each named PR's exit: its wait's, else 0 when it merged, else 1
     done = {pull["number"] for pull, *_ in landed} - failed
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
@@ -6196,7 +6257,10 @@ def merge_batch(
             continue
         if green == tip and not base_green:
             reset(work, tip)
-            if not gate_batch(work, [])[1]:
+            # the full gate: at the tip itself the narrowed one selects nothing, so it reads a red base green
+            with narrowed_to(None):
+                base_ok = gate_batch(work, [])[1]
+            if not base_ok:
                 print(
                     f"{base} itself is red at {tip}: nothing lands and nobody is evicted until it is fixed"
                 )
@@ -6273,6 +6337,12 @@ def conflict_note(pull: dict[str, Any], base: str, ahead: str = "") -> None:
         )
 
 
+def recording_base() -> str:
+    """` --base <tip>` in narrowed mode (narrowed_gate), the base the batch gate selects against, so the `local-ci
+    --record` a message names records the pass the lookup then finds; empty for the full gate."""
+    return f" --base {NARROW_BASE.get()}" if narrowed_gate() is not None else ""
+
+
 def merged_trees(
     candidates: list[dict[str, Any]], base: str, tip: str, failed: set[int]
 ) -> list[tuple[dict[str, Any], str, str, str]]:
@@ -6325,7 +6395,7 @@ def merged_trees(
         raise Refused(
             f"Tree {tree} (the batch of {numbers} on {base} at {tip}): {', '.join(f'`{m}`' for m in missing)} has no"
             " recorded pass on it, and land runs no gate in a clone with no working tree: pass it where the files are"
-            " checked out (`approvals.py local-ci --record` on a head with this tree), then land again"
+            f" checked out (`approvals.py local-ci --record{recording_base()}` on a head with this tree), then land again"
         )
     print(f"Tree {tree}: `{gate()[0]}` passed on it before, reused")
     return [(pull, own, tree, "reused") for pull, own in zip(merged, trees, strict=True)]
@@ -6607,12 +6677,14 @@ def ask_cloud_gate(tree: str) -> str:
     is mid-turn takes the message queued. One that is gone, or a start that fails, is closed and its launch dir
     removed. The reason it could not be asked, else empty."""
     script, branch = agent_script(), LAND_BRANCH.format(tree).removeprefix("refs/heads/")
+    # a narrowed batch gate (narrowed_gate) selects against the base tip the batch merges onto
+    narrowed = recording_base()
     if not script.is_file():
         return f"{script.name} is not installed"
     # the command as worker.md names it: the cloud VM has its own skill install, never this host's paths
     task = (
         f"Gate the branch {branch}: fetch it from origin, check it out, run `uv run"
-        " <engineering-loop skill>/scripts/approvals.py local-ci --record` on it (the gate and its environment as the"
+        f" <engineering-loop skill>/scripts/approvals.py local-ci --record{narrowed}` on it (the gate and its environment as the"
         " project's loop.md names them) and let the record branch be pushed. Touch no other branch. Then end the"
         f" turn with `DONE: recorded {tree}`, or `DONE: red {tree}` when the gate ran and failed (an exit that"
         " loop.md's `machine_exit` names is a machine fault, not red: end with `DONE: no record` then). More branches arrive as messages, each the same task."
@@ -7322,7 +7394,7 @@ def merges(
             else:
                 print(
                     f"Tree {actual}: no recorded pass, and land runs no gate in a clone with no working tree: pass {tip}"
-                    " where the files are checked out (`approvals.py local-ci --record`)"
+                    f" where the files are checked out (`approvals.py local-ci --record{recording_base()}`)"
                 )
         else:
             reset(work, tip)
@@ -7728,7 +7800,10 @@ def gate(passed: list[str] | tuple[str, ...] = ()) -> tuple[str, list[str], dict
     head proof's names (head_proof), each one this process's environment sets is set to that value, over the
     command's own assignment of it, and the command returned names it, so its record and status say so. With
     `gate_steps` (gate_plan), the gate as people read it: `<name>: <command>` for each step, joined by `; `, no words
-    (each step runs its own), and the variables every step sets."""
+    (each step runs its own), and the variables every step sets. Under narrowed_to a base in narrowed mode, the
+    narrowed gate (narrowed_gate) instead."""
+    if (narrow := narrowed_gate(passed)) is not None:
+        return narrow
     loop = settings(project()[1])
     if not loop.get("gate_steps"):
         return command_line(loop.get("gate") or shlex.join(LOCAL_CI), "gate", passed)
@@ -7925,35 +8000,119 @@ def gate_base_variable() -> str:
     return variable
 
 
-def affected_tests() -> int:
-    """`affected-tests`: the worker's test run on a head, from loop.md's line `Affected tests: <command>` (the command
-    selects and runs the tests a change affects against the base it reads from the variable the line `Gate base:`
-    names, else `GATE_BASE`). The base is `git merge-base origin/<base> HEAD`, `<base>` being the base of the open PR
-    for the checked-out branch, else the default branch; a shallow clone is deepened first (deepened), as `local-ci`
-    does. Without the line it runs `mise run check`, with the variable unset, so a project that names no selector runs
-    its whole suite. Either runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its
-    exit passes through: a selector that selects nothing exits 0 itself. Only this verb sets the variable: `land` and
-    `local-ci` never do, and gate_env clears it from their environment, apart from a head proof's own `env` names."""
+# loop.md's narrowed mode (SKILL.md, Adopting the loop): its `Affected tests:` command is the whole narrowed check, and
+# the line `Gate: full` opts the project out, so every gate runs the full check as it does without the selector
+AFFECTED = re.compile(r"^Affected tests:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+FULL_GATE = re.compile(r"^Gate:[ \t]*`?full`?[ \t]*$", re.MULTILINE)
+# the end of a narrowed gate's command (narrowed_gate): `(` is a shell operator command_line refuses, and the command it
+# returns is shlex-quoted, so no full gate's command, record or key can ever equal a narrowed one
+NARROWED = " (narrowed)"
+# the base a narrowed gate selects against, set by narrowed_to; None runs the full gate
+NARROW_BASE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "NARROW_BASE", default=None
+)
+
+
+def loop_md() -> str:
+    """loop.md's text as project() reads it: its policy when that is loop.md's (no gatekeeper.md), else the file
+    (policy_file); empty without one. A policy project() refuses is no reason to refuse a line outside it."""
+    with contextlib.suppress(Refused):
+        loop = project()[1]
+        if loop is not None and not isinstance(loop, Policy):
+            return loop
+    return policy_file(toplevel(), LOOP, POLICY_BASE.get()) or ""
+
+
+def narrowing(text: str | None = None) -> str | None:
+    """loop.md's `Affected tests:` command (of `text`, else loop_md), or None: no line, or the opt-out `Gate: full`."""
+    text = loop_md() if text is None else text
+    found = AFFECTED.search(text)
+    if found is None or FULL_GATE.search(text):
+        return None
+    return found.group(1).strip().strip("`")
+
+
+@contextlib.contextmanager
+def narrowed_to(base: str | None) -> Any:
+    """Within the block, gate() and gate_plan() are the narrowed gate against `base` (narrowed_gate); None: full."""
+    token = NARROW_BASE.set(base)
+    try:
+        yield
+    finally:
+        NARROW_BASE.reset(token)
+
+
+def narrowed_gate(
+    passed: list[str] | tuple[str, ...] = (),
+) -> tuple[str, list[str], dict[str, str]] | None:
+    """Under narrowed_to a base, in narrowed mode (narrowing) and with no `gate_steps` (whose steps narrow by their
+    `paths`): the `Affected tests:` command (with `passed`, as gate() reads them), with the `Gate base:` variable
+    (gate_base_variable) set to the base, as gate() returns a gate; else None. Its command is that variable's
+    assignment first, then the rest, then NARROWED, so a record of it is keyed by the command and the base and never
+    stands for a full pass."""
+    base = NARROW_BASE.get()
+    if base is None or settings(project()[1]).get("gate_steps"):
+        return None
+    if (written := narrowing()) is None:
+        return None
+    _, words, sets = command_line(written, "Affected tests", passed)
+    variable = gate_base_variable()
+    sets = {variable: base, **{name: value for name, value in sets.items() if name != variable}}
+    command = shlex.join([*(f"{name}={value}" for name, value in sets.items()), *words])
+    return command + NARROWED, words, sets
+
+
+def narrowed_base(command: str) -> str | None:
+    """The base a narrowed gate's command (narrowed_gate) selected against, None for a full gate's command."""
+    if not command.endswith(NARROWED):
+        return None
+    return shlex.split(command[: -len(NARROWED)])[0].split("=", 1)[1]
+
+
+def selection_base(given: str | None) -> str | None:
+    """The commit a narrowed run selects against: `given` (`--base`) resolved, else `git merge-base origin/<base>
+    HEAD`, `<base>` being the base of the open PR for the checked-out branch, else the default branch, a shallow clone
+    deepened first (deepened). None, with one line saying the full check runs, for a `given` git can't resolve (all
+    zeros, the push of a new branch)."""
+    if given is not None:
+        try:
+            return git("rev-parse", "--verify", "--quiet", f"{given}^{{commit}}").strip()
+        except subprocess.CalledProcessError:
+            print(f"the base {given} is no commit here: running the full check", file=sys.stderr)
+            return None
+    base = pr_base_of_head() or base_branch(None)
+    if base is None:
+        raise Refused("no default branch to select the affected tests against: fetch origin")
+    with policy_from(base):
+        deepened(None)
+    try:
+        return git("merge-base", f"origin/{base}", "HEAD").strip()
+    except subprocess.CalledProcessError as exc:
+        raise Refused(
+            f"no merge base of origin/{base} and HEAD: fetch origin/{base} deeper"
+        ) from exc
+
+
+def affected_tests(given: str | None = None) -> int:
+    """`affected-tests [--base <rev>]`: the worker's test run on a head, from loop.md's line `Affected tests:
+    <command>` (the command selects and runs the tests a change affects against the base it reads from the variable
+    the line `Gate base:` names, else `GATE_BASE`). The base is `<rev>`, else the merge base (selection_base). Without
+    the line, with the opt-out `Gate: full` (narrowing), or with a `<rev>` git can't resolve, it runs `mise run check`,
+    with the variable unset, so a project that names no selector runs its whole suite. Either runs under the host gate
+    slot (heavy_slot, run_heavy), as a `local-ci` step does. Its exit passes through: a selector that selects nothing
+    exits 0 itself. gate_env clears the variable from `land`'s and `local-ci`'s environment, apart from a head proof's
+    own `env` names: they set it themselves in narrowed mode (narrowed_gate)."""
     root = toplevel()
-    text = policy_file(root, LOOP, POLICY_BASE.get()) or ""
-    found = re.search(r"^Affected tests:[ \t]*(.+?)[ \t]*$", text, re.MULTILINE)
+    written = narrowing()
     variable = gate_base_variable()
     env = {name: value for name, value in os.environ.items() if name != variable}
-    if found is None:
-        words, sets = [*LOCAL_CI[:-1], "check"], {}
-    else:
-        _, words, sets = command_line(found.group(1).strip().strip("`"), "Affected tests")
-        base = pr_base_of_head() or base_branch(None)
-        if base is None:
-            raise Refused("no default branch to select the affected tests against: fetch origin")
-        with policy_from(base):
-            deepened(None)
-        try:
-            env[variable] = git("merge-base", f"origin/{base}", "HEAD").strip()
-        except subprocess.CalledProcessError as exc:
-            raise Refused(
-                f"no merge base of origin/{base} and HEAD: fetch origin/{base} deeper"
-            ) from exc
+    words, sets = [*LOCAL_CI[:-1], "check"], {}
+    if written is not None and (base := selection_base(given)) is not None:
+        _, words, sets = command_line(written, "Affected tests")
+        sets = {
+            name: value for name, value in sets.items() if name != variable
+        }  # the base is the run's, not the line's
+        env[variable] = base
     print(f"affected-tests: {shlex.join(words)}", file=sys.stderr, flush=True)
     try:
         with heavy_slot("affected-tests") as (slot, _):
@@ -8541,13 +8700,17 @@ def gate_key(command: str) -> str:
 
 def described(tree: str, commit: str, command: str) -> str:
     """A published pass's status description: the tree, the commit it ran on, and the command, or its digest when the
-    command doesn't fit, so another host reads what ran and a refusal can name it."""
-    line = f"Tree {tree} on {commit[:12]}: {command}"
-    return (
-        line
-        if len(line) <= DESCRIBED
-        else f"Tree {tree} on {commit[:12]}: sha256 {gate_key(command)}"
-    )
+    command doesn't fit, so another host reads what ran and a refusal can name it; a narrowed pass's (narrowed_gate)
+    says `narrowed vs <base's first 12>` first."""
+    said = command
+    if (base := narrowed_base(command)) is not None:
+        # the base is said once, by its first 12, so the command after it fits more often
+        said = f"narrowed vs {base[:12]}: {shlex.join(shlex.split(command[: -len(NARROWED)])[1:])}"
+    line = f"Tree {tree} on {commit[:12]}: {said}"
+    if len(line) <= DESCRIBED:
+        return line
+    narrowed = f"narrowed vs {base[:12]}, " if base is not None else ""
+    return f"Tree {tree} on {commit[:12]}: {narrowed}sha256 {gate_key(command)}"
 
 
 # how long tree_of waits for one commit's fetch, so a check never hangs on the network
@@ -9067,6 +9230,8 @@ def local_ci_status(head: str) -> int:
         return 1
     if code is not None:
         under = f" under `{command}`" if commands != plain else ""
+        if bases := sorted({base for one in commands if (base := narrowed_base(one))}):
+            under += f", narrowed against {', '.join(bases)}"
         print(f"{'passed' if code == 0 else f'failed (exit {code})'} on {head}{under}: log {log}")
         return 0 if code == 0 else 1
     started = going(pid.read_text() if pid.exists() else "", exit_file)
@@ -9701,7 +9866,11 @@ def settled_head(pr: int, want: str | None) -> str:
 
 
 def local_ci(
-    pr: int | None, proof: dict[str, Any] | None = None, run: bool = False, want: str | None = None
+    pr: int | None,
+    proof: dict[str, Any] | None = None,
+    run: bool = False,
+    want: str | None = None,
+    given: str | None = None,
 ) -> int:
     """With a PR: post a pass on its head, from a recorded pass on its tree; with `run`, from a run now when there is
     none, and without it refuse then (no_pass). Without a PR: on a
@@ -9712,7 +9881,19 @@ def local_ci(
     others run; in a cloud session a `host` step is left for a host, said, and the steps that passed are published,
     but no head proof, nor a pass for a PR, since the gate as a whole has none. With a PR the gate is the policy of the
     base it merges onto (policy_from); without one, the default branch's. With a PR it prints one line naming the
-    head it posted on; `want` (`--head <sha>`) is the head the caller just pushed (settled_head)."""
+    head it posted on; `want` (`--head <sha>`) is the head the caller just pushed (settled_head). Without a PR or
+    `proof`, in narrowed mode (narrowing) under `ci: false` or with `given` (`--base <rev>`), the gate is the narrowed
+    one against `given`, else the merge base (selection_base, narrowed_gate)."""
+    if (
+        pr is None
+        and proof is None
+        and NARROW_BASE.get() is None
+        and narrowing() is not None
+        and (given is not None or no_ci(project()[1]))
+        and (base := selection_base(given))
+    ):
+        with narrowed_to(base):
+            return local_ci(None, None, run, want)
     if pr is None:
         passed = proof["env"] if proof else ()
         # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
@@ -9759,6 +9940,16 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
     loop = project()[1]
     # the PR is read only for a policy with an `incubating` section: no other project pays the read
     passed = tier(pull_request(pr), loop) if INCUBATING in settings(loop) else []
+    # narrowed mode's gate of record on a `ci: false` head (narrowed_pass); a full pass on it is taken first
+    if (
+        NARROW_BASE.get() is None
+        and no_ci(loop)
+        and not reusable(head, passed)
+        and (base := merge_base_of(pull_status(pr)["baseRefName"], head)) is not None
+    ):
+        with narrowed_to(base):
+            if narrowed_gate(passed) is not None:
+                return pr_local_ci(pr, run, want)
     if record := reusable(head, passed, why=why):
         source = f"{reused(record)}\n"
         gate_event(gate_branch(), "ok", lambda: gate_url(record))
@@ -10129,6 +10320,8 @@ def main(argv: list[str]) -> int:
     recording.add_argument("--status", metavar="HEAD")
     recording.add_argument("--head-proof", action="store_true")
     recording.add_argument("--head", metavar="SHA")
+    # --base: in narrowed mode, the commit `--record` selects against (land's cloud gate passes its batch's base tip)
+    recording.add_argument("--base", metavar="REV")
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int, nargs="*")
     merging.add_argument("--wait", action="store_true")
@@ -10151,7 +10344,8 @@ def main(argv: list[str]) -> int:
     graduating.add_argument("--pr", type=int, required=True)
     hooking = commands.add_parser("commit-msg")
     hooking.add_argument("message", type=Path)
-    commands.add_parser("affected-tests")
+    # --base: the commit to select against (a PR's base SHA, a push's previous tip), over the merge base
+    commands.add_parser("affected-tests").add_argument("--base", metavar="REV")
     wrapping = commands.add_parser("heavy")
     wrapping.add_argument("--plan", action="store_true")
     wrapping.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
@@ -10184,7 +10378,7 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "commit-msg":  # the same: git hands the hook its message file
         return commit_msg(args.message)
     if args.command == "affected-tests":
-        return affected_tests()
+        return affected_tests(args.base)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
         if args.plan and args.words:
             raise Refused(
@@ -10240,13 +10434,19 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             )
         if args.head and args.pr is None:
             raise Refused("local-ci --head goes with a PR: --record gates HEAD itself")
+        if args.base and not args.record:
+            raise Refused(
+                "local-ci --base goes with --record: the base a narrowed run on HEAD selects against"
+            )
         proof = None
         if args.head_proof and (proof := head_proof(project()[1])) is None:
             raise Refused("loop.md sets no `head_proof`: --head-proof has no status to publish")
         if args.head_proof and not args.record:
             raise Refused("--head-proof goes with --record: the head proof is the checkout's")
         return (
-            local_ci(args.pr, proof, args.run, args.head) if leads_its_session() else detach(argv)
+            local_ci(args.pr, proof, args.run, args.head, args.base)
+            if leads_its_session()
+            else detach(argv)
         )
     if args.command == "land":
         if args.only and not args.pr:
