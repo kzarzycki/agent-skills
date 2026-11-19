@@ -1,9 +1,11 @@
 import os
 import shutil
+import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
+from typing import Any
 
 # The engineering loop's script tests load modules from a shipped skill folder;
 # a bytecode cache written there would ship with the package. The variable carries
@@ -28,6 +30,28 @@ from approvals_harness import (  # noqa: F401
     repo_template,
     required,
 )
+
+
+@pytest.fixture
+def no_origin(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """The checkout under test has no origin, as a fresh `git init` has: a `git fetch` or `git ls-remote` of origin fails
+    at once as git says it does there, instead of spending 0.4 s on the real checkout's own remote. A test that takes it
+    is not about a remote; one that is brings a bare repo of its own. The argv of each refused call is the fixture's value."""
+    asked: list[list[str]] = []
+    real = subprocess.run
+
+    def run(argv: Any, *args: Any, **kw: Any) -> Any:
+        words = [str(word) for word in argv] if isinstance(argv, list) else []
+        if words[:1] == ["git"] and "origin" in words and {"fetch", "ls-remote"} & set(words):
+            asked.append(words)
+            error = "fatal: 'origin' does not appear to be a git repository"
+            if kw.get("check"):
+                raise subprocess.CalledProcessError(128, words, "", error)
+            return subprocess.CompletedProcess(words, 128, "", error)
+        return real(argv, *args, **kw)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return asked
 
 
 @pytest.fixture(autouse=True)
