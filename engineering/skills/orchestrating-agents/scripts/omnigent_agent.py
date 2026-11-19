@@ -172,7 +172,7 @@ finishing it, so the supervisor posts no ``archived`` for a finish its notified 
 ``run`` and ``wait`` finish the session whose report or verdict they return, not one that asked a
 question, nor one given ``--keep``, nor a worker given ``--pr`` unless ``--no-keep`` (``--keep`` stays accepted):
 a fix round or the next verifier pass reaches a kept worker with ``send``, warm, where a fresh one repeats its setup.
-``start --pr`` labels the worker ``omni.pr=<owner/name>#<n>``, and fails, archiving the session, when it can't. ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
+``start --pr`` labels the worker ``omni.pr=<owner/name>#<n>``, and fails, archiving the session, when it can't. A verifier for ``--pr`` carries the same label, so its spend groups by PR beside the worker's, but ``reap`` never holds a verifier on it. ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
 the rest, exiting 1 when a finish failed; it keeps a ``--pr`` worker, ``--force`` included, until its PR (looked up in the
 repository its label names) is merged or closed, saying why, and a PR it can't read keeps it; ``reap --merged [--pr N]``
 also finishes every live ``--pr`` worker whose PR is merged or closed (``approvals.py land`` starts it detached for each PR it merged); it cannot tell a child still owing its report from a finished one, so it runs once every
@@ -1317,6 +1317,7 @@ class Omnigent:
         host_id: str | None = None,
         role: str | None = None,
         effort: str | None = None,
+        pr: str = "",
     ) -> str:
         body: dict[str, object] = {
             "agent_id": self.agent_id(agent),
@@ -1364,9 +1365,13 @@ class Omnigent:
             # The server's own field: it answers the VM's tool requests itself under bypass, since
             # the VM starts in its default stance whatever it is launched with (#987).
             body["permission_mode"] = mode
-        # The loop role, which Omnigent's usage metrics split spend by: a role file's name.
-        if role and (name := Path(role).stem) in ROLES:
-            body["labels"] = {"omni.role": name}
+        # The loop role, which Omnigent's usage metrics split spend by: a role file's name; and the PR a
+        # verifier reviews (``owner/repo#N``), so its spend groups by PR as a worker's does (#945).
+        labels = {"omni.role": name} if role and (name := Path(role).stem) in ROLES else {}
+        if pr:
+            labels[PR_LABEL] = pr
+        if labels:
+            body["labels"] = labels
         return str(self.call("POST", "/v1/sessions", body)["id"])
 
     def host(self, name: str) -> str:
@@ -3749,6 +3754,7 @@ def start(
     pr: int | None = None,
     files: list[Path] | None = None,
     allow_older_model: bool = False,
+    about: int | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
@@ -3757,7 +3763,8 @@ def start(
     session on another host or in the cloud is held to the capacity of the host it lands on
     (``host_id``, else this one) since #849, not to this host's load. ``files`` (local
     paths, for a session on another host) are written beside ``report`` on that host through the
-    session's file API before its brief is sent, so it finds them when it starts."""
+    session's file API before its brief is sent, so it finds them when it starts. ``about`` is the PR a
+    verifier reviews, labelled ``PR_LABEL`` on it as a ``--pr`` worker is, so its spend groups by PR (#945)."""
     harness = agent if agent in AGENTS else og.harness(agent)
     agy = harness == AGY_HARNESS
 
@@ -3968,6 +3975,16 @@ def start(
         if pr and not reviews(role)
         else ""
     )
+    # a verifier's PR label, set at create: a repository that doesn't resolve leaves the bare number,
+    # since on a verifier the label is telemetry only (reap holds no verifier) and never stops a start
+    label = ""
+    if about and reviews(role):
+        try:
+            label = (
+                f"{pr_repo(about, workspace, not host_id or host_id == og.host_id)}#{int(about)}"
+            )
+        except Fail:
+            label = f"#{int(about)}"
     # Omnigent refuses a sibling with a title an earlier child holds, archived or not, abandoned
     # here or left by an earlier run: each refusal and each abandon moves to the next <title>-r<n>.
     n = 0
@@ -3990,6 +4007,7 @@ def start(
                         host_id,
                         role,
                         effort,
+                        label,
                     ),
                     None,
                 )
@@ -5202,12 +5220,19 @@ def clear_closed_pr_events(repo: str, pr: int, workspace: object) -> None:
         print(f"{repo}#{pr}: loop events not cleared: {e}", file=sys.stderr)
 
 
+def held_by(session: dict) -> str:
+    """The ``PR_LABEL`` that holds ``session`` until its PR closes: a worker's, never a verifier's, whose
+    label only groups its spend by PR (#945) and which ends with its verdict."""
+    labels = session.get("labels") or {}
+    return "" if labels.get("omni.role") == "verifier" else str(labels.get(PR_LABEL, ""))
+
+
 def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
     """The live sessions labelled with a PR (``PR_LABEL``), of PR number ``pr`` when given."""
     page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
     found = []
     for s in page.get("data", []):
-        label = pr_label((s.get("labels") or {}).get(PR_LABEL, ""))
+        label = pr_label(held_by(s))
         named = getattr(pr, "repo", "")
         if (
             not s.get("archived")
@@ -5254,7 +5279,7 @@ def reap(
         if info.get("archived"):
             lines.append(f"{sid} {info.get('title') or ''}: already archived")
             continue
-        if label := (info.get("labels") or {}).get(PR_LABEL):
+        if label := held_by(info):
             found = pr_label(label)
             if found and found not in held:
                 held[found] = pr_hold(*found)
@@ -9662,6 +9687,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 subscriber=lead,
                 pr=args.pr,
                 files=args.file,
+                about=verifies,
             )
             survivors.extend(abandoned)
             # a supervisor reads the report file, which for --pr only wait writes: it would revive

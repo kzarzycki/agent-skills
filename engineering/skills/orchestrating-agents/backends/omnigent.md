@@ -890,8 +890,10 @@ kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent wit
 session that is done (not running, no prompt or input waiting), printing `archived` for
 each and `already archived` for one finished before, and prints which it kept. It keeps a `--pr` worker, `--force` included, until its PR is merged or closed, saying why: `start --pr`
 labels the session `omni.pr=<owner>/<name>#<n>` (a start whose label fails archives the session and fails), and
-`reap` looks the PR up in that repository, never the caller's checkout; a PR it can't read keeps the worker. A
-verdict does not release it, since the landing gate alone judges a verdict. `reap --merged [--pr <n>]` also
+`reap` looks the PR up in that repository, never the caller's checkout; a PR it can't read keeps the worker. A verifier
+started with `--pr` carries the same label, so its spend groups by PR, but neither `reap` nor `reap --merged` holds or finds one
+on it: a verifier ends with its verdict. A
+verdict does not release a worker, since the landing gate alone judges a verdict. `reap --merged [--pr <n>]` also
 finishes every live `--pr` worker whose PR is merged or closed, leaving an open PR's; `approvals.py land` starts it
 detached for each PR it merged, so a slow server never holds the land, and the outcome goes to a log it names. A finish that fails is printed and the rest still run, and
 `reap` then exits 1. It cannot tell an idle child whose report is still
