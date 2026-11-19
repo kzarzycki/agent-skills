@@ -5147,13 +5147,28 @@ def pr_hold(repo: str, pr: int) -> str | None:
 def clear_closed_pr_events(repo: str, pr: int, workspace: object) -> None:
     """Remove the loop events (refs of every kind) of the head branch of PR ``pr`` of ``repo``, here and on origin,
     from the checkout ``workspace``: a closed PR's steps are over, and a ref no producer clears (an unmerged close, a
-    killed ``land``) would stay. Nothing when this host has no such checkout, no events module or the read fails."""
+    killed ``land``) would stay. Nothing when this host has no such checkout, no events module, an open PR still has that head branch, or a read fails."""
     if EVENTS is None or not workspace or not Path(str(workspace)).is_dir():
         return
     try:
         branch = json.loads(gh("pr", "view", str(pr), "--repo", repo, "--json", "headRefName"))[
             "headRefName"
         ]
+        if json.loads(
+            gh(
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--head",
+                branch,
+                "--state",
+                "open",
+                "--json",
+                "number",
+            )
+        ):
+            return  # a PR opened from this branch since is live: its events are not the closed one's
         EVENTS.clear(branch, cwd=str(workspace))
     except Exception as e:  # noqa: BLE001 - the session is finished all the same; the refs wait for a later reap
         print(f"{repo}#{pr}: loop events not cleared: {e}", file=sys.stderr)

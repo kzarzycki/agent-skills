@@ -176,8 +176,10 @@ def _host_has_room(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPat
     """A start reads this host's CPU and memory and waits up to 600 s while either is short, so a test's start on a
     host busy with the gate running it waits and fails. Every module that loads omnigent_agent gets a host with room,
     whether or not it imports test_omnigent_agent's fixtures; a test of the real check calls `monkeypatch.undo()`."""
-    agent = getattr(request.module, "omnigent_agent", None)
-    if agent is not None:
+    # the module is the one test_omnigent_agent registered, found by identity and not by the name a test binds it to
+    # (`oa`, `omnigent_agent`), so a later alias is covered too
+    agent = sys.modules.get("omnigent_agent")
+    if agent is not None and any(v is agent for v in vars(request.module).values()):
         monkeypatch.setattr(agent, "capacity", lambda **_: (True, ""))
 
 
