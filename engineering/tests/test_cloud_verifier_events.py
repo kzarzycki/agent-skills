@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 import time
+import types
 
 import pytest
 from test_cloud_verifier import checkout, cv  # noqa: F401 - `checkout` is a fixture
@@ -90,3 +92,110 @@ def test_a_failed_write_never_changes_the_pass(events, monkeypatch, capsys) -> N
     seen["report"] = REPORT.format("yes")
     assert cv.verify(7, brief, None, None) == 0
     assert "verifier event not written" in capsys.readouterr().err
+
+
+def test_an_exception_after_the_start_ends_the_event_failed(events, monkeypatch) -> None:
+    """A fetch that raises leaves no `waiting` ref behind for a lead's `wait` to read as silent."""
+    _, brief, _, wrote = events
+    inner = cv.run
+
+    def run(*cmd, **kw):
+        if cmd[:2] == ("git", "fetch"):
+            raise cv.subprocess.CalledProcessError(128, cmd)
+        return inner(*cmd, **kw)
+
+    monkeypatch.setattr(cv, "run", run)
+    with pytest.raises(cv.subprocess.CalledProcessError):
+        cv.verify(7, brief, None, None)
+    assert [w[0] for w in wrote] == ["waiting", "failed"]
+
+
+def test_a_checkout_that_shows_changes_ends_the_event_failed(events, monkeypatch) -> None:
+    _, brief, _, wrote = events
+    monkeypatch.setattr(cv, "showing", lambda report: " M a.txt")
+    monkeypatch.setattr(cv, "returned", lambda was, report: "")
+    with pytest.raises(cv.Refused, match="shows changes of its own"):
+        cv.verify(7, brief, None, None)
+    assert [w[0] for w in wrote] == ["waiting", "failed"]
+
+
+def test_a_beat_in_flight_when_the_pass_ends_lands_before_the_end(monkeypatch) -> None:
+    """The ref ends on the end state, never on a beat that was mid-push when the pass finished."""
+    done: list[str] = []
+
+    def emit(kind, branch, state, **kw):
+        if state == "waiting" and threading.current_thread() is not threading.main_thread():
+            time.sleep(0.3)  # a beat's ls-remote and push
+        done.append(state)
+
+    monkeypatch.setattr(cv, "EVENTS", types.SimpleNamespace(emit=emit, BEATS={"verifier": 0.1}))
+    event = cv.PassEvent()
+    event.start("loop/b")
+    time.sleep(0.15)  # a beat is now mid-push
+    event.state = "ok"
+    event.finish()
+    time.sleep(0.5)
+    assert done[-1] == "ok" and done.count("ok") == 1
+
+
+class Thread:
+    """The Codex Cloud thread's side of `thread_verify`: what its VM answers to each call."""
+
+    def __init__(self, monkeypatch, tmp_path, *, report: str, question: str = "") -> None:
+        self.report, self.question = report, question
+        monkeypatch.setattr(cv, "host_token", lambda: "t")
+        monkeypatch.setattr(cv, "quota", lambda token: "ok")
+        monkeypatch.setattr(cv, "Rpc", lambda token: object())
+        monkeypatch.setattr(cv, "thread_start", lambda rpc, model, effort: ("th", "env"))
+        monkeypatch.setattr(cv, "thread_exec", self.answer)
+        monkeypatch.setattr(cv, "thread_turn", lambda *a: "final message")
+        real = cv.run
+        monkeypatch.setattr(
+            cv,
+            "run",
+            lambda *cmd, **kw: (
+                cv.subprocess.CompletedProcess(cmd, 0, "abc123 o/r feat/pr\n", "")
+                if cmd[:3] == ("gh", "pr", "view")
+                else real(*cmd, **kw)
+            ),
+        )
+        self.brief = tmp_path / "brief.md"
+        self.brief.write_text(f"Review.\n- Report: {tmp_path / 'out.md'}\n")
+
+    def answer(self, rpc, thread, env, command):
+        if not command.startswith("cat "):
+            return 0, "/vm/pr7\n"  # the checkout, and the clearing of an earlier report
+        asked = ".question" in command
+        got = self.question if asked else self.report
+        return (0, got) if got else (1, "")
+
+
+@pytest.fixture
+def thread(events, monkeypatch, tmp_path):
+    _, _, _, wrote = events
+    return lambda **kw: (Thread(monkeypatch, tmp_path, **kw), wrote)
+
+
+@pytest.mark.parametrize(
+    ("verdict", "end"), [("yes", "ok"), ("no", "failed")], ids=["satisfied", "unsatisfied"]
+)
+def test_a_thread_pass_emits_the_event_with_the_report_path_as_url(
+    thread, tmp_path, verdict, end
+) -> None:
+    run, wrote = thread(report=REPORT.format(verdict))
+    assert cv.thread_verify(7, run.brief, None, None, None, "env") == 0
+    assert [w[0] for w in wrote] == ["waiting", end]
+    assert wrote[-1][1] == str(tmp_path / "out.md")
+
+
+def test_a_thread_pass_that_asks_is_needs_owner(thread, tmp_path) -> None:
+    run, wrote = thread(report="", question="Which gate?\n")
+    assert cv.thread_verify(7, run.brief, None, None, None, "env") == 3
+    assert [w[0] for w in wrote] == ["waiting", "needs-owner"]
+    assert wrote[-1][2] == "Which gate?\n" and wrote[-1][1].endswith("out.md.question")
+
+
+def test_a_thread_pass_with_no_verdict_ends_failed(thread) -> None:
+    run, wrote = thread(report="no verdict here")
+    assert cv.thread_verify(7, run.brief, None, None, None, "env") == 1
+    assert [w[0] for w in wrote] == ["waiting", "failed"]

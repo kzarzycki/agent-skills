@@ -754,6 +754,7 @@ class PassEvent:
     def __init__(self) -> None:
         self.branch, self.state, self.url, self.question = "", "failed", "", None
         self.stop = threading.Event()
+        self.beater: threading.Thread | None = None
         self.beat = float(EVENTS.BEATS["verifier"]) if EVENTS else 300.0
 
     def write(self, state: str, url: str = "", question: str | None = None) -> None:
@@ -771,10 +772,18 @@ class PassEvent:
             while not self.stop.wait(self.beat):
                 self.write("waiting")
 
-        threading.Thread(target=beating, daemon=True).start()
+        self.beater = threading.Thread(target=beating, daemon=True)
+        self.beater.start()
+
+    def ended(self, body: str) -> None:
+        """Set the end from the report's last `SATISFIED:` line: `ok` for yes, else `failed`."""
+        said = re.findall(r"^SATISFIED:[ \t*_]*(\w+)", body, re.MULTILINE | re.IGNORECASE)
+        self.state = "ok" if said and said[-1].lower() == "yes" else "failed"
 
     def finish(self) -> None:
         self.stop.set()
+        if self.beater:  # a beat in flight lands before the end, never after it
+            self.beater.join()
         self.write(self.state, self.url, self.question)
 
 
@@ -912,8 +921,7 @@ def review(
             print(pass_line(pr, phases))
             return 4 if stuck else 1
         event.url = publish(pr, folded_report(body), phases)
-        said = re.findall(r"^SATISFIED:[ \t*_]*(\w+)", body, re.MULTILINE | re.IGNORECASE)
-        event.state = "ok" if said[-1].lower() == "yes" else "failed"
+        event.ended(body)
     except (Refused, OSError, ValueError) as e:  # not posted, so a failed pass
         print(f"cloud_verifier: {e}", file=sys.stderr)
         print(pass_line(pr, phases))  # a failed pass's time counts too
@@ -1188,6 +1196,24 @@ def thread_verify(
     env: str,
     pending_head: str | None = None,
 ) -> int:
+    """One thread pass (`thread_review`) that writes its `verifier` event: an exit without a report ends it `failed`."""
+    event = PassEvent()
+    try:
+        return thread_review(pr, brief_file, model, effort, thread, env, pending_head, event)
+    finally:
+        event.finish()
+
+
+def thread_review(
+    pr: int,
+    brief_file: Path,
+    model: str | None,
+    effort: str | None,
+    thread: str | None,
+    env: str,
+    pending_head: str | None,
+    event: PassEvent,
+) -> int:
     """One pass on a Codex Cloud thread: clone the PR head (a later pass reuses the thread's checkout), run the brief,
     read the report back from the thread's checkout, else take its final message, and write it at the brief's path."""
     brief = brief_file.read_text()
@@ -1204,11 +1230,12 @@ def thread_verify(
         "view",
         str(pr),
         "--json",
-        "headRefOid,headRepository,headRepositoryOwner",
+        "headRefOid,headRepository,headRepositoryOwner,headRefName",
         "--jq",
-        '.headRefOid+" "+.headRepositoryOwner.login+"/"+.headRepository.name',
+        '.headRefOid+" "+.headRepositoryOwner.login+"/"+.headRepository.name+" "+.headRefName',
     ).stdout.split()
     head[0] = pending_head or head[0]
+    event.start(head[2])
     code, said = thread_exec(
         rpc,
         thread,
@@ -1256,6 +1283,7 @@ def thread_verify(
             question = out.with_name(out.name + ".question")
             question.write_text(asked)
             print(question)
+            event.state, event.url, event.question = "needs-owner", str(question), asked
             return 3
     if "SATISFIED:" not in body:
         # the final message may end on a link to a report written elsewhere in the checkout (never outside it)
@@ -1288,6 +1316,8 @@ def thread_verify(
         f"Verifier: {signature(model, effort)}, pass {nth[1] if nth else 1}\n\n{body.strip()}\n"
     )
     print(target)
+    event.url = str(target)
+    event.ended(body)
     return 0
 
 
