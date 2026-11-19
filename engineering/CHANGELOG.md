@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.33.1 - 2026-11-19
+
+- orchestrating-agents: `omnigent_agent.py supervise --console` no longer wakes `--notify` for what needs nothing from it: a quiet end the small model could not route is nudged, not posted; a manager's wait that names one of its followed leads by title word or short id is not a stall while that lead runs; and a wait that names no session raises one `deadline` per wait text (#1426, #1403).
+
 ## 0.33.0 - 2026-11-19
 
 - engineering-loop: `approvals.py overlap <pr>` lists the other open PRs into the same base that change a file this PR changes, with each side's hunk lines and whether the two heads merge cleanly (`conflicts` or `merges cleanly`), and names a conflict either PR has with the base alone, since a merge of two heads on different bases shows it as theirs; `overlap --files <path>...` lists the same for a story with no PR yet. `brief` prints the list as a warning on stderr, so the verifier's brief is unchanged, and lead.md's worker-start step runs `overlap --files` to order or stack overlapping stories. (#1035)
