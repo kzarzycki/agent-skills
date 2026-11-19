@@ -32,10 +32,15 @@ as ends and leaves a ref it cannot read or parse as `unknown`, never as ended; t
 | Kind | Writer | Beat interval | `url` points to |
 |---|---|---|---|
 | `lead` | the lead's own script, when it waits or needs the owner | 300 s | the PR or issue the lead's item is |
-| `land` | `approvals.py land` | 300 s | the PR, and on `failed` the failing log |
+| `land` | `approvals.py land` | 300 s | the PR, and on `failed` the eviction comment, which holds the log's last lines |
 | `gate` | the gate run, `local-ci` (slice #1379); the main-commit `gate` status that `land` writes (`publish(tip, landed_pass(...))`) stays | 120 s | the `local-ci` record; on `failed`, the detached run's log when there is one, else empty |
 | `verifier` | the verifier run | 300 s | the verifier's report or PR comment |
 | `probe` | `events.py` tests and the one-off check below only | 60 s | nothing |
+
+`land` writes its event for each PR it names: `waiting` only under `--wait`, once per round (about every 2 to 6 minutes)
+and from the lock's heartbeat while a round gates, never over an end of the same round; `ok` once a PR merges (by `land`,
+the merge queue or by hand); `failed` when it is evicted, or when `--wait` exits non-zero with the PR neither merged nor ended (main is red, say); `needs-owner` when the PR waits for the owner's go (a draft
+too) and when `--wait` reaches its 2-hour ceiling.
 
 A wait is **live** while its ref changed within twice its `beat_s`. `wait` ends with exit 4 on a `waiting` event that
 did not change for longer, counted from its `at` on the first sight and from the moment its sha moved after that.
@@ -48,8 +53,9 @@ The intervals are the kinds' starting values: the code that writes a kind may se
   when this clone first saw the sha. The cache is `loop-events-seen.json` in the git dir.
 - `wait <kind> <branch>`: exit 0 `ok`, 1 `failed`, 2 `needs-owner` (the question is printed), 3 timeout, 4 silent.
   Each poll reads the local ref, then origin's, and takes the later `at`.
-- `clear <branch>`: removes the branch's refs of every kind here and on origin. `land` calls it when a PR merges
-  and `reap` for a closed one.
+- `clear <branch>`: removes the branch's refs of every kind here and on origin. `land` runs it in a detached process
+  120 s after a PR merges, so a `wait` polling slower than that, or started later, finds no ref and runs to its timeout
+  (exit 3).
 
 ## Degraded
 

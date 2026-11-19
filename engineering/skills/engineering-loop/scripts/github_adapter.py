@@ -66,7 +66,7 @@ ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENT
 THREADS = f"reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}"
 
 
-PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
+PULL = f"""id number url title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType additions deletions }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
   {THREADS}
@@ -581,6 +581,7 @@ def rest_pull(pr: int) -> dict[str, Any]:
     return {
         "id": found["node_id"],
         "number": found["number"],
+        "url": found.get("html_url", ""),
         "title": found["title"],
         "isCrossRepository": (head.get("repo") or {}).get("full_name") != base["repo"]["full_name"],
         "author": actor(found.get("user")),
@@ -878,15 +879,17 @@ def close_issue(number: int) -> None:
     )
 
 
-def comment(number: int, body: str) -> None:
-    gh(
+def comment(number: int, body: str) -> str:
+    """Post `body` on PR or issue `number`; the new comment's URL."""
+    return gh(
         "api",
         f"repos/{{owner}}/{{repo}}/issues/{number}/comments",
         "-F",
         "body=@-",
-        "--silent",
+        "--jq",
+        ".html_url",
         data=public(body),
-    )
+    ).strip()
 
 
 def minimize(comment_id: str) -> None:
