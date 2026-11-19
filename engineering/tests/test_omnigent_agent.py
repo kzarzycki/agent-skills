@@ -322,6 +322,13 @@ def this_repo(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def no_loop_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No loop events on origin: the supervisor's `ls-remote` is a real git call whose time would move these tests'
+    clocks (#1377; test_omnigent_agent_events.py reads a bare remote)."""
+    monkeypatch.setattr(omnigent_agent, "read_loop_events", lambda cwd=None: None)
+
+
+@pytest.fixture(autouse=True)
 def no_model(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The small model faked: never a real call. Each event it is asked about is recorded, and
     it answers ``none`` (mid-work)."""
@@ -5633,9 +5640,13 @@ def supervised(
     **kwargs: object,
 ) -> None:
     """Run ``supervise_registry`` for ``polls`` polls, calling ``between`` after each but the last."""
-    count = [0]
+    count, real = [0], time.sleep
 
-    def sleep(_: float) -> None:
+    def sleep(seconds: float) -> None:
+        if sys._getframe(1).f_globals["__name__"] == "subprocess":
+            return real(
+                seconds
+            )  # a git call with a timeout polls with sleep: it is no supervisor poll
         count[0] += 1
         if count[0] >= polls:
             raise Stop
@@ -13311,7 +13322,10 @@ def test_an_open_pr_a_lead_waits_on_costs_one_github_read_a_minute(
     monkeypatch.setattr(
         omnigent_agent,
         "gh",
-        lambda *a, **k: calls.append(a) or '{"state":"OPEN","statusCheckRollup":[]}',
+        lambda *a, **k: (
+            calls.append(a)
+            or '{"state":"OPEN","statusCheckRollup":[],"headRefName":"feat","headRefOid":"s1","baseRefName":"main"}'
+        ),
     )
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
     assert len(calls) == 1

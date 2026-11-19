@@ -141,7 +141,10 @@ settled), appends each event to ``<registry stem>.events.jsonl``, labels each se
 time raises it once that time has passed, which the supervisor settles by waking the lead, and
 none for a lead marked ``direct``,
 which the owner drives in its own session: ``start --top-level --direct`` sets the mark at launch,
-``direct <session> [--off]`` later); and it routes each event instead of posting it: the supervisor settles the routine ones
+``direct <session> [--off]`` later); it reads engineering-loop's loop events (``refs/loop/*``, one ``ls-remote`` a poll) for the
+branches of the PRs a lead waits on: a ``waiting`` event changed within twice its beat is life (no deadline), a silent one
+is named in the deadline, a pending required check on the PR's head is life, and an end is told once, a ``needs-owner``
+question first, while a branch with no events keeps today's timing; and it routes each event instead of posting it: the supervisor settles the routine ones
 itself (no post, a nudge, a revive, telling the leads registered ``after=`` it of a lead's
 ``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
 what its rules can't settle, and posts what needs the notified session or the owner as
@@ -236,6 +239,7 @@ own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists i
 from __future__ import annotations
 
 import argparse
+import calendar
 import contextlib
 import copy
 import errno
@@ -4522,6 +4526,11 @@ def log_outcome(log: Path, code: int, run: str | None = None) -> str:
     return "\n".join([f"exit {code}", *(body[-LOG_TAIL:] if code else body[-1:])])
 
 
+PR_VIEWS: dict[
+    tuple[str, int], tuple[float, dict]
+] = {}  # (repo, PR) -> (read at, the last ``pr_view``)
+
+
 def pr_view(pr: int, timeout: float, repo: str = "") -> dict:
     """PR ``pr``'s state and checks from one ``gh pr view``, which gets ``timeout`` seconds."""
     view = gh(
@@ -4530,10 +4539,15 @@ def pr_view(pr: int, timeout: float, repo: str = "") -> dict:
         str(pr),
         *(["-R", repo] if repo else []),
         "--json",
-        "state,statusCheckRollup,headRefOid",
+        "state,statusCheckRollup,headRefOid,headRefName,baseRefName",
         timeout=timeout,
     )
-    return json.loads(view)
+    data = json.loads(view)
+    if data.get(
+        "headRefName"
+    ):  # the supervisor maps a wait to its events' branch from this read, with no second one
+        PR_VIEWS[(repo, pr)] = (time.time(), data)
+    return data
 
 
 def pr_outcome(
@@ -4578,6 +4592,66 @@ def pr_settled(pr: int, repo: str = "") -> tuple[int, str, str] | None:
         pr, "checks", HTTP_SECONDS, repo, data
     )
     return end and (*end, data.get("headRefOid") or "")
+
+
+# Loop events (engineering-loop's events.py, contract events.md): the supervisor reads them for what a wait is doing.
+EVENT_SECONDS = (
+    30.0  # origin's refs/loop/* are listed at most this often (one ls-remote for every branch)
+)
+
+
+def event_epoch(text: object) -> float | None:
+    """An event's ``at`` (``YYYY-MM-DDTHH:MM:SSZ``) as epoch seconds, None when it does not parse."""
+    try:
+        return float(calendar.timegm(time.strptime(str(text), "%Y-%m-%dT%H:%M:%SZ")))
+    except ValueError:
+        return None
+
+
+def read_loop_events(cwd: Path | None = None) -> list[dict] | None:
+    """Every loop event on origin (``events.read``: one ``ls-remote``), None when the module is absent or the read
+    failed, which is "unknown" to the caller and never an end."""
+    if EVENTS is None:
+        return None
+    try:
+        return EVENTS.read(cwd=cwd)
+    except Exception:  # noqa: BLE001 - unreadable: unknown, the deadline stays the net
+        return None
+
+
+def pr_info(pr: int, repo: str = "") -> dict:
+    """PR ``pr``'s ``state``, head ``branch`` and ``sha`` and ``base`` branch, through REST."""
+    out = json.loads(
+        gh("api", f"repos/{repo or '{owner}/{repo}'}/pulls/{pr}", timeout=HTTP_SECONDS)
+    )
+    return {
+        "state": out["state"],
+        "branch": out["head"]["ref"],
+        "sha": out["head"]["sha"],
+        "base": out["base"]["ref"],
+    }
+
+
+def required_pending(info: dict, repo: str = "") -> bool:
+    """Whether a check the base branch requires is queued or running on the PR's head (``info`` from ``pr_info``).
+    A required check no run has registered is not pending, so a check that never starts cannot hold a wait live for
+    good. Needs no producer."""
+    # ponytail: `--cache` bounds the reads to one a minute per URL; an ETag read would spare the quota entirely
+    slug = repo or "{owner}/{repo}"
+    rules = json.loads(gh("api", "--cache", "1m", f"repos/{slug}/rules/branches/{info['base']}"))
+    required = {
+        c["context"]
+        for rule in rules
+        if rule.get("type") == "required_status_checks"
+        for c in rule.get("parameters", {}).get("required_status_checks", [])
+    }
+    if not required or info["state"] != "open":
+        return False
+    runs = json.loads(gh("api", "--cache", "1m", f"repos/{slug}/commits/{info['sha']}/check-runs"))
+    return any(
+        r.get("name") in required and r.get("status") != "completed"
+        for r in runs.get("check_runs", [])
+    )
 
 
 def run_settled(run: int, repo: str) -> tuple[int, str, str] | None:
@@ -6033,6 +6107,7 @@ def fresh_state() -> dict:
         "rate": {"next_post_at": 0, "model_calls": []},
         "notify_label": {},
         "heads": {},
+        "events": {},  # loop event refs: sha, stamp (when it last moved), state, beat, told
     }
 
 
@@ -6433,6 +6508,10 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "absorb", "archived: drop its row"
     error = event.get("line", "").partition("\n")[0]  # the status line, not the lead's own words
     lost = kind == "failed" and (event.get("offline") or LOST_RUNNER.search(error))
+    if (
+        kind == "loop-owner"
+    ):  # a step's needs-owner event: its question is the owner's, whoever drives the lead
+        return "rule", "owner", "a loop step needs the owner's answer"
     if event.get("direct") and kind != "ended" and not lost:  # its turn end: below, read first
         return "rule", "record", "the owner drives it directly: they see it in its session"
     if kind == "blocked":
@@ -6736,6 +6815,8 @@ def supervise_registry(
     headed: dict[str, float] = {}  # when each repo's default-branch head was last read
     window = time.monotonic()
     started = time.time()  # a lead first seen in this run reports no turn end from before it
+    # an end written after the last poll of the run before is news, though it predates this run's start
+    cutoff = min(started, float(state.get("written_at") or started))
     script = script or Path(os.path.realpath(__file__))
     try:
         ran = script.stat().st_mtime_ns
@@ -7013,7 +7094,7 @@ def supervise_registry(
         elif action == "tell":
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
         elif action in ("act", "owner") or action == "done" and not event["direct"]:
-            item = line.splitlines()[0]
+            item = line if kind == "loop-owner" else line.splitlines()[0]
             if asked := question_for(lead_ev, parsed):
                 item = f"{item}\n{asked}"  # the whole question, never cut
             to = "owner" if action == "owner" else "act"
@@ -7497,8 +7578,20 @@ def supervise_registry(
             return False
         if ref := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", wait):  # a PR: GitHub says
             try:  # an open PR is live, its checks settled or not; merged or closed, it is news
-                end = settled(lead, int(ref[2]), wait_repo(sid, ref[1] or ""))
-                return end is None or " checks " in end[1]
+                repo = wait_repo(sid, ref[1] or "")
+                end = settled(lead, int(ref[2]), repo)
+                info = pr_data(int(ref[2]), repo)
+                if info and info["state"] == "open":
+                    # a branch with a `waiting` event: the event decides (beating is live, silent is not), and a
+                    # check the base branch requires that is queued or running on its head also counts as live
+                    live, silent = branch_events(
+                        sid, {info["branch"]} if not ref[1] or repo == wait_repo(sid, "") else set()
+                    )
+                    if live or silent:
+                        return live or required_pending(info, repo)
+                if end is None or " checks " in end[1]:
+                    return True
+                return bool(info) and required_pending(info, repo)
             except Exception:  # noqa: BLE001 - unread: not known to be moving
                 return False
         if run := re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/actions/runs/(\d+)", wait):
@@ -7553,6 +7646,210 @@ def supervise_registry(
                 return False
         return bool(named) or None  # None: the wait resolved to no session at all
 
+    prs: dict[
+        tuple[str, int], tuple[float, dict | None]
+    ] = {}  # PR -> (read at, pr_info), one read a minute
+    ev: dict[str, float] = {}  # when each repository's events were last read (monotonic)
+    roots: dict[Path, str] = {}  # a workspace's git common dir, read once
+
+    def pr_data(pr: int, repo: str = "") -> dict | None:
+        """``pr_info`` read at most once per ``PR_POLL_SECONDS``; None when unread (the failure kept for that long)."""
+        got = prs.get((repo, pr))
+        if got and time.time() - got[0] < PR_POLL_SECONDS:
+            return got[1]
+        if (view := PR_VIEWS.get((repo, pr))) and time.time() - view[0] < PR_POLL_SECONDS:
+            data = view[1]  # the wait's own read, which the PR poll already made
+            return {
+                "state": str(data.get("state", "")).lower(),
+                "branch": data["headRefName"],
+                "sha": data.get("headRefOid") or "",
+                "base": data.get("baseRefName") or "",
+            }
+        try:
+            info: dict | None = pr_info(pr, repo)
+        except Exception as e:  # noqa: BLE001 - unread: no branch, no event for this wait
+            log(("prinfo", repo, pr), f"PR #{pr} not read: {reason(e)}")
+            info = None
+        else:
+            log(("prinfo", repo, pr), None)
+        prs[(repo, pr)] = (time.time(), info)
+        return info
+
+    def here_repo() -> str:
+        """``owner/name`` of the supervisor's own directory's origin, empty when it has none (read once)."""
+        if "here" not in repos:
+            try:
+                url = subprocess.run(
+                    ["git", "config", "--get", "remote.origin.url"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=HTTP_SECONDS,
+                ).stdout
+            except (OSError, subprocess.SubprocessError):
+                url = ""
+            repos["here"] = (
+                origin_repo(f'[remote "origin"]\n url = {url.strip()}') if url.strip() else ""
+            )
+        return repos["here"]
+
+    def lead_root(sid: str) -> tuple[str, Path]:
+        """The repository ``sid``'s events live in: the git common dir of its workspace checkout (worktrees of one
+        repository share it) and a directory to run git in; the supervisor's own directory when the workspace is not
+        a local checkout. A lead whose repository is another one's is read from its own, never from here."""
+        info = looks.get(sid, ({}, []))[0]
+        workspace = Path(str(info.get("workspace") or ""))
+        if not info.get("workspace") or not workspace.is_dir() or elsewhere(og, info):
+            workspace = Path.cwd()
+            if sid and (named := wait_repo(sid, "")) and named != here_repo():
+                return (
+                    f"other:{named}",
+                    workspace,
+                )  # the lead's repository is not this directory's: no events of its own here
+        if workspace not in roots:
+            try:
+                out = subprocess.run(
+                    ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                    cwd=workspace,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=HTTP_SECONDS,
+                ).stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                out = ""
+            roots[workspace] = out or str(workspace)
+        return roots[workspace], workspace
+
+    def lead_branches(sid: str, lead: dict) -> set[str]:
+        """The head branches of the PRs ``lead``'s wait names and of its own (its ``PR_LABEL``) in its own repository:
+        its events' branches. A PR of another repository has its events there, which are not read."""
+        own = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
+        found = {(own[0], own[1])} if own else set()
+        for item in (lead.get("wait") or "").split(", "):
+            if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", item.strip()):
+                found.add((m[1] or "", int(m[2])))
+        mine = wait_repo(sid, "")
+        found = {(repo or mine, pr) for repo, pr in found}  # a bare #N is the lead's repository's
+        infos = (pr_data(pr, repo) for repo, pr in sorted(found) if not repo or repo == mine)
+        return {i["branch"] for i in infos if i}
+
+    def branch_events(sid: str, branches: set[str]) -> tuple[bool, str]:
+        """Whether a ``waiting`` loop event on ``branches`` of ``sid``'s repository changed within twice its beat
+        (live), else the longest-silent one's words (``land event silent 15m``), else none."""
+        now, silent, root = time.time(), ("", 0.0), lead_root(sid)[0]
+        for note in state["events"].values():
+            if (
+                note.get("state") != "waiting"
+                or note["root"] != root
+                or note["branch"] not in branches
+            ):
+                continue
+            age = now - note["stamp"]
+            if age <= 2 * note["beat"]:
+                return True, ""
+            if age > silent[1]:
+                silent = (f"{note['kind']} event silent {age / 60:.0f}m", age)
+        return False, silent[0]
+
+    def event_wait(sid: str, lead: dict) -> tuple[bool, str]:
+        """``branch_events`` on the lead's own branches. No event on them: (False, "") and the deadline runs on
+        today's timing."""
+        if not state["events"]:
+            return False, ""  # nothing on origin: no branch to look up, today's timing
+        return branch_events(sid, lead_branches(sid, lead))
+
+    def refresh_events() -> None:
+        """Read the loop events of each followed lead's repository (one ``ls-remote`` each, at most once per
+        ``EVENT_SECONDS``) and update ``state["events"]``: an event's ``stamp`` is when it last moved (from its ``at``
+        on the first sight, as ``events.py wait`` counts), and an end it has not yet told stays ``pending``. An
+        unreadable poll changes nothing."""
+        if not console:
+            return
+        wheres = {lead_root(sid) for sid in state["leads"]} | {lead_root("")}
+        wheres = {  # not a repository with no checkout here, nor one read within EVENT_SECONDS
+            w
+            for w in wheres
+            if not w[0].startswith("other:")
+            and time.monotonic() - ev.get(w[0], -EVENT_SECONDS - 1) >= EVENT_SECONDS
+        }
+        now, kept, seen, read_roots = time.time(), state["events"], set(), set()
+        for root, workspace in sorted(wheres):
+            ev[root] = time.monotonic()
+            found = read_loop_events(workspace)
+            if found is None:
+                continue  # unreadable: unknown, and its repository's notes stay as they were
+            read_roots.add(root)
+            for e in found:
+                key = f"{root}\0{e['ref']}"
+                seen.add(key)
+                note = kept.get(key)
+                if e.get("state") == "unknown":
+                    continue  # unreadable or malformed: neither live nor ended
+                at = event_epoch(e.get("at"))
+                if note is None or note["sha"] != e["sha"]:
+                    first = note is None
+                    stamp_ = min(now, at) if first and at is not None else now
+                    changed = first or note["state"] != e["state"]
+                    kept[key] = note = {
+                        "sha": e["sha"],
+                        "root": root,
+                        "ref": e["ref"],
+                        "stamp": stamp_,
+                        "state": e["state"],
+                        "beat": float(e.get("beat_s") or 300),
+                        "kind": e["kind"],
+                        "branch": e["branch"],
+                        "url": e.get("url") or "",
+                        "question": e.get("question") or "",
+                        "at": e.get("at") or "",
+                        "pending": False,
+                    }
+                    # a state change to an end is news once; an end from before this run (at is whole seconds) is none
+                    note["pending"] = (
+                        changed
+                        and e["state"] != "waiting"
+                        and (at is None or at + 2 >= cutoff or not first)
+                    )
+        for key in [k for k in kept if k not in seen and kept[k]["root"] in read_roots]:
+            del kept[
+                key
+            ]  # a repository not read this call (unreadable, or no lead resolved to it yet) keeps its notes
+
+    def event_news() -> None:
+        """Tell each pending end once, in the order owner questions, ``failed``, ``ok``; one line per kind per branch
+        (a beat is no change, so it is no news). The lead whose branches hold it, in its repository, hears it. A
+        ``lead`` event's question is not told here: the lead's own turn end (``USER NEEDED``) raised it with the
+        whole question already."""
+        owners: dict[tuple[str, str], list[str]] = {}
+        if not any(n["pending"] for n in state["events"].values()):
+            return
+        for sid, lead in state["leads"].items():
+            if sid in owed:
+                for branch in lead_branches(sid, lead):
+                    owners.setdefault((lead_root(sid)[0], branch), []).append(sid)
+        rank = {"needs-owner": 0, "failed": 1, "ok": 2}
+        for n in state["events"].values():
+            if n["pending"] and n["kind"] == "lead" and n["state"] == "needs-owner":
+                n["pending"] = False
+        due_ = [
+            n
+            for n in state["events"].values()
+            if n["pending"] and owners.get((n["root"], n["branch"]))
+        ]
+        for n in sorted(due_, key=lambda x: (rank[x["state"]], x["ref"])):
+            ref, sid = n["ref"], owners[(n["root"], n["branch"])][0]
+            head = f"{sid} {state['leads'][sid].get('title') or ''}".rstrip()
+            eid, url = f"event:{ref}:{n['state']}:{n['at']}", f" {n['url']}" * bool(n["url"])
+            if n["state"] == "needs-owner":
+                ask = n["question"].strip()
+                first = ask.splitlines()[0] if ask else ""
+                line = f"{head}: {n['kind']} on {n['branch']} needs the owner: {first}{url}"
+                say(line + ("\n" + ask if "\n" in ask else ""), sid, eid, "loop-owner")
+            else:
+                say(f"{head}: {n['kind']} {n['state']} on {n['branch']}{url}", sid, eid, "news")
+            n["pending"] = False
+
     def overdue(sid: str, lead: dict) -> None:
         """Raise a followed lead's ``deadline`` events: ``DEADLINE_SECONDS`` with no progress, and
         for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. A timed
@@ -7577,6 +7874,12 @@ def supervise_registry(
             return
         # read only once due
         lead["progress_at"] = max(lead["progress_at"], og.active(sid), written(sid, lead))
+        silent = ""
+        if due is None:
+            refresh_events()  # this lead's repository, read now when it was not yet (a first poll or a restart)
+            live, silent = event_wait(sid, lead)
+            if live:
+                return  # a beating event is the wait's own proof of life
         names = None if due is not None else moving(sid, lead)
         if names:
             return  # what it waits on all shows life: no stall of its own
@@ -7640,7 +7943,7 @@ def supervise_registry(
                 head = f"{sid} {lead['title']}".rstrip()
                 then = " after a wake" if due is not None else " after a nudge"
                 why = f"no progress {quiet / 60:.0f}m{then * (nudged == ':nudged')}"
-                what = mutual or f"{why} ({lead['wait']})"
+                what = mutual or f"{why} ({lead['wait']}{'; ' * bool(silent)}{silent})"
                 line = f"{head}: {what}\nlast message: {lead['last_line']}"
                 if quiet_named:
                     line += f"\nquiet: {', '.join(quiet_named)}"
@@ -7907,6 +8210,7 @@ def supervise_registry(
                 os.execv(sys.executable, [sys.executable, str(script), *sys.argv[1:]])
             except Fail:
                 pass
+        refresh_events()
         if console:
             recover()
             for again in retry[:]:
@@ -7969,6 +8273,11 @@ def supervise_registry(
                 continue
             window = time.monotonic()
             say(event, sid, eid, kind, (sid, report, since))
+        if console:  # the owner's question goes out ahead of the poll's other items
+            try:
+                event_news()
+            except Exception as e:  # noqa: BLE001 - never fatal; told again next poll
+                log("events-news", f"loop events not told: {reason(e)}")
         landings()
         if console:
             if read:  # a session gone from the registry leaves the state with it
