@@ -79,7 +79,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    whose consequences call for the owner's eye at merge (a risk, not urgency: urgency is
    the tracker's priority, issues.md, Risk). The verifier judges risk on every pass (verifier.md, its `Risk:` line):
    you may raise it, with `risk:high` on the PR, or dispute a `Risk: high` by answering in
-   its thread with your reasoning, which the next pass re-judges; never lower it yourself,
+   its thread with your reasoning, which only a pass that says `Scope: full` re-judges (ask for one in the brief: "re-review the whole PR diff against the base and write `Scope: full`"), since a delta pass cannot lower it; never lower it yourself,
    since the lead is the author's side of the review.
 3. **Branch and notes.** In a checkout whose remotes name more than one GitHub repo (a
    fork with `upstream`), run `gh repo set-default <owner>/<repo>` once, naming the repo the
@@ -288,7 +288,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    - A project's own batching merge queue (`check queue`, `batch`) is deprecated: where the
      project's instructions still name one, enqueue there as they say until it adopts `land`.
    - Run `uv run <this skill's folder>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
-     with `--wait`) once no local objection is left: the gate of record passed on the head (the worker's `affected-tests`, or `mise run check` where loop.md has no `Affected tests:` line; `land`'s batch gate runs the project's `loop.gate`), the PR's required check is green (it runs CI's selection of the affected tests, so where `ci` is not `false` and no `gate_steps` step runs on the host, the host runs no gate of its own before the go: no `check-fast`, no full suite), the
+     with `--wait`) once no local objection is left: the gate of record passed on the head (the worker's `affected-tests`, or `mise run check` where loop.md has no `Affected tests:` line or has `Gate: full`; with `ci: false`, the worker's `local-ci --record`, a narrowed pass where loop.md has the line; `land`'s batch gate runs the `Affected tests:` command against the base tip it merges onto where loop.md has the line, else the project's `loop.gate`: SKILL.md, Adopting the loop), the PR's required check is green (it runs CI's selection of the affected tests, so where `ci` is not `false` and no `gate_steps` step runs on the host, the host runs no gate of its own before the go: no `check-fast`, no full suite), the
      newest verifier review, satisfied with no core finding open, covers it, and every review
      thread is resolved (SKILL.md, Review trail on the PR). Start it as a background
      command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work

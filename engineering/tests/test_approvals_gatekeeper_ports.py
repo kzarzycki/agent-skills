@@ -202,6 +202,7 @@ def test_report_json_gives_the_reports_facts(
         "satisfied": False,
         "risk": {"level": "low", "reason": "a test fixture"},
         "logic_change": None,
+        "scope": None,
         "findings": [
             {
                 "id": "C1",

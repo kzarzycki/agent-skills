@@ -35,6 +35,8 @@ v=0.46.0; step vendir fetch https://github.com/carvel-dev/vendir/releases/downlo
   https://github.com/carvel-dev/vendir/releases/download/v$v/checksums.txt vendir-linux-amd64 \
   "$HOME/.local/share/mise/installs/ubi-carvel-dev-vendir/$v/bin/vendir"
 step mise-install mise install
+# the files apm deploys and git ignores (.claude/hooks/...): settings.json's Bash hook fails closed without them
+step apm-install mise exec -- apm install --frozen --target claude,codex
 step uv-sync mise exec -- uv sync --frozen
 missing=""
 for tool in mise python uv node vendir apm ssh-keygen codex; do

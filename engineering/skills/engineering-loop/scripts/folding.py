@@ -42,3 +42,8 @@ def machine(body: str) -> str:
         return body
     first, rest = body.lstrip().split("\n", 1)[0], body[found.end() :].lstrip("\n")
     return first + "\n" + found[1] + ("\n\n" + rest if rest.strip() else "\n")
+
+
+def visible(body: str) -> str:
+    """The body as a person reads it before opening the fold: the heading and the summary, with the folded lines gone."""
+    return _FOLD.sub("", body)
