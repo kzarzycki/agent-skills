@@ -1,1 +1,0 @@
-- engineering-loop: an `incubating` PR that adds a file on a `risk.paths` path is no longer eligible under `spec.auto: true`, which had hidden that rule from the eligibility check (#1288).
