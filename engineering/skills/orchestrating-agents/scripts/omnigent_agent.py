@@ -791,8 +791,8 @@ def role_line(role: str | None, cloud: bool) -> str:
     if not cloud:
         return f"Your role file is {role}; read it first.\n"
     return (
-        "Your role file follows, since this VM holds no copy of the engineering-loop skill: the"
-        " other files it names are not here, so work from what it and this brief state.\n"
+        "Your role file follows, since this VM may hold no copy of it: the other files it names may"
+        " not be in this checkout; where they are not, work from what it and this brief state.\n"
         f"<role-file>\n{Path(role).read_text().rstrip()}\n</role-file>\n"
     )
 
