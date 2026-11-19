@@ -13319,7 +13319,10 @@ def test_an_open_pr_a_lead_waits_on_costs_one_github_read_a_minute(
     monkeypatch.setattr(
         omnigent_agent,
         "gh",
-        lambda *a, **k: calls.append(a) or '{"state":"OPEN","statusCheckRollup":[]}',
+        lambda *a, **k: (
+            calls.append(a)
+            or '{"state":"OPEN","statusCheckRollup":[],"headRefName":"feat","headRefOid":"s1","baseRefName":"main"}'
+        ),
     )
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
     assert len(calls) == 1

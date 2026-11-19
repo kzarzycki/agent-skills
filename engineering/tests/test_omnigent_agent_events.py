@@ -146,7 +146,7 @@ def test_owner_question_sorts_before_news(
         ]:
             EVENTS.emit(kind, branch, "waiting", cwd=clone)
             EVENTS.emit(kind, branch, state, cwd=clone)  # a beat before the end: one news per ref
-        EVENTS.emit("lead", "feat", "needs-owner", question=question, cwd=clone)
+        EVENTS.emit("probe", "feat", "needs-owner", question=question, cwd=clone)
 
     supervised(og, registry, monkeypatch, 3, write, notify="cos", console=True, fyi="post")
     told_ = [
@@ -210,3 +210,32 @@ def test_an_end_written_again_with_the_same_state_is_told_once(
     supervised(og, registry, monkeypatch, 4, again, notify="cos", console=True, fyi="post")
     told_ = [e for e in events_of(registry) if "land ok on feat" in e["line"]]
     assert len(told_) == 1
+
+
+def test_a_lead_needs_owner_event_is_not_told_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    """The lead's own `needs-owner` is raised by its turn end; the event poll adds no second item for it."""
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending(WAIT, 30))
+    og.snap = {"status": "idle"}
+    write = lambda poll: EVENTS.emit("lead", "feat", "needs-owner", question="Q?\n", cwd=clone)
+    supervised(og, registry, monkeypatch, 3, write, notify="cos", console=True, fyi="post")
+    assert not [
+        e for e in events_of(registry) if e["kind"] == "loop-owner" and " on feat" in e["line"]
+    ]
+
+
+def test_an_event_in_another_directory_is_no_life_for_a_plain_directory_lead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
+) -> None:
+    """A lead whose workspace is no git checkout reads the supervisor's repository, and a beat of the same branch name
+    in a repository that is not its own does not hold its wait live."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    git(tmp_path, "init", "-q", "--bare", str(tmp_path / "other.git"))
+    git(tmp_path, "clone", "-q", str(tmp_path / "other.git"), str(other / "c"))
+    EVENTS.emit("land", "feat", "waiting", cwd=other / "c")  # `feat` of another repository
+    assert len(wait_run(tmp_path / "run", monkeypatch, 60.0)) == 1
