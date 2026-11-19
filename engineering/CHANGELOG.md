@@ -5,6 +5,16 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.33.2 - 2026-11-19
+
+- `orchestrating-agents`: the supervisor reads loop events. A wait whose `refs/loop/*` event changed within twice its beat is live and raises no deadline; a silent one raises it, naming the kind; a pending required check on a PR's head keeps its wait live; an end (`ok`, `failed`) is told to the lead once, and a `needs-owner` question goes to the owner ahead of any news. A branch with no events behaves as before (#1377).
+- `land` writes the `land` event of each PR's branch (`waiting` at every poll of `--wait` and from the lock's heartbeat while a round gates, never over an end of the same round; `ok` once when merged, by `land`, the merge queue or by hand; `failed` with the eviction comment's URL; `needs-owner` at the owner's go, ready or draft, or at the 2-hour ceiling) and clears the merged branch's refs a grace later from the repository's git dir, so a native lead blocks on it with `events.py wait land <branch>`; a failed write changes none of `land`'s exit codes (#1378).
+- `engineering-loop`: a verifier pass writes the `verifier` event on the branch it reviews: `waiting` from its start and beating while it runs, then `ok` or `failed` by the report's `SATISFIED:` line, or `needs-owner` for a question, `url` the posted review. `cloud_verifier.py` does it itself on both routes (`verify` and `thread`, the latter with the report path as `url`) and ends it `failed` when the pass dies; a native or by-hand pass uses `events.py emit` (verifier.md) (#1380).
+- `orchestrating-agents`: `reap` clears the loop events of the head branch of a merged or closed PR whose worker it finishes, unless an open PR has that head branch, so a PR closed unmerged leaves no ref behind (#1380).
+- A cloud child's brief now carries its role file's text instead of a host path its VM lacks, so a worker in a repo without the pack reads its role (#1471).
+- A cloud worker opens its PR with `curl` to the GitHub REST API, which the VM's proxy authenticates, so no token or connector setup is needed (#1473)
+- `omnigent_agent.py`: every `claude-cloud` session's first prompt carries the owner's standing branch grant (`CLOUD_BRANCHES`): it may push new `claude/ready-*` branches, one per PR, besides the one it started on, and never force-pushes, deletes a branch it didn't create, or pushes to `main` or outside `claude/`. A cloud session takes a push grant only from its first message, so projects can drop their per-brief copy (#1485).
+
 ## 0.33.1 - 2026-11-19
 
 - orchestrating-agents: `omnigent_agent.py supervise --console` no longer wakes `--notify` for what needs nothing from it: a quiet end the small model could not route is nudged, not posted; a manager's wait that names one of its followed leads by title word or short id is not a stall while that lead runs; and a wait that names no session raises one `deadline` per wait text (#1426, #1403).
