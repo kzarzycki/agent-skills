@@ -284,13 +284,22 @@ def test_a_heavy_step_leaves_each_stop_handler_as_it_found_it() -> None:
 
 
 def alive(pgid: int) -> bool:
+    """Whether the group `pgid` has a process that has not ended: a zombie has, and only waits for its parent (or init,
+    which may take seconds on a host) to reap it."""
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    return True
+    states = subprocess.run(
+        ["ps", "-A", "-o", "pgid=,stat="], capture_output=True, text=True, check=False
+    ).stdout
+    return any(
+        line.split()[0] == str(pgid) and not line.split()[1].startswith("Z")
+        for line in states.splitlines()
+        if len(line.split()) == 2
+    )
 
 
 def gone(pgid: int, within: float = 10) -> bool:
