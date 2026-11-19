@@ -6185,7 +6185,11 @@ def git_in(where: Path, *args: str) -> str:
     ).stdout
 
 
-def committed(where: Path) -> str:
+TEMPLATE: dict[str, Path] = {}  # the session's one built repo, set by conftest.py's `repo_template`
+
+
+def build_template(where: Path) -> Path:
+    """The repo every `committed` copy starts from: one file, one commit. Built once per session (per xdist worker)."""
     where.mkdir(exist_ok=True)
     git_in(where, "init", "-q")
     git_in(where, "config", "user.email", "loop@example.com")
@@ -6193,6 +6197,13 @@ def committed(where: Path) -> str:
     (where / "app.py").write_text("value = 1\n")
     git_in(where, "add", "-A")
     git_in(where, "commit", "-qm", "base")
+    TEMPLATE["repo"] = where
+    return where
+
+
+def committed(where: Path) -> str:
+    """`where` as a copy of the session's template repo: independent of it and of every other test's copy."""
+    shutil.copytree(TEMPLATE["repo"], where, symlinks=True, dirs_exist_ok=True)
     return git_in(where, "rev-parse", "HEAD").strip()
 
 
