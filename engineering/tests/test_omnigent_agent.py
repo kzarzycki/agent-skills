@@ -10620,7 +10620,7 @@ def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its
     )
     brief = omnigent_agent.text_of(og.sessions[sid][1])
     assert "never write under `.git/`" in brief and "`tmp/loop/` is scratch" in brief
-    assert brief.endswith("never committed.\n\ndo X")
+    assert "never committed.\n" in brief and brief.endswith("outside `claude/`.\n\ndo X")
     assert (
         "curl -sS -X POST -H 'Content-Type: application/json'" in brief
         and "api.github.com/repos/<owner>/<repo>/pulls" in brief
@@ -10634,6 +10634,36 @@ def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its
     assert "Write your final report to" not in brief
     if top_level:
         assert "opening with its ending line" in brief and f"Report: {report}`" in brief
+
+
+@pytest.mark.parametrize(
+    ("cloud", "top_level", "pr"),
+    [(True, True, None), (True, False, 7), (False, True, None), (False, False, None)],
+)
+def test_only_a_cloud_start_s_first_prompt_grants_claude_ready_branches_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cloud: bool, top_level: bool, pr: int | None
+) -> None:
+    """A cloud session takes a branch grant only in its first message, so every start carries it (#1485)."""
+    monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+    og = CloudFake() if cloud else FakeOmnigent()
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(
+        og,
+        "claude-cloud" if cloud else "claude",
+        "t",
+        "do X",
+        report,
+        None,
+        0,
+        top_level=top_level,
+        pr=pr,
+    )
+    text = (
+        omnigent_agent.text_of(og.sessions[sid][1])
+        if cloud
+        else omnigent_agent.brief_of(report).read_text()
+    )
+    assert text.count(omnigent_agent.CLOUD_BRANCHES) == (1 if cloud else 0)
 
 
 def test_a_host_session_s_preamble_is_unchanged(tmp_path: Path) -> None:

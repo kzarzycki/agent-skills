@@ -744,6 +744,15 @@ CLOUD_NOTE = (
     " since a write there waits on a permission prompt nobody in the cloud answers; `tmp/loop/` is"
     " scratch, ignored by the repo's `.gitignore`, and never committed.\n"
 )
+# Every acp:claude-cloud session's first prompt (#1485): a cloud session pushes only to the branch it
+# started on unless its first user message grants more, and a later relayed grant is refused, so a
+# cloud lead building several PRs gets one branch per PR only from this standing grant.
+CLOUD_BRANCHES = (
+    "Branches (the owner's standing permission for this session): you may create and push any number"
+    " of new branches named `claude/ready-*`, one per PR, besides the branch this session started on."
+    " Push each PR to its own new branch. Never force-push, never delete a branch you didn't create"
+    " in this session, and never push to `main` or to any branch outside `claude/`.\n"
+)
 # A child placed on a host (any harness but the cloud one, never a top-level lead, whose own heavy
 # runs go to the cloud): its placement already chose the host, so it prefixes heavy runs past the
 # engineering pack's hook, which refuses one on a host without the prefix (#1233).
@@ -808,12 +817,12 @@ def role_line(role: str | None, cloud: bool) -> str:
 
 def cloud_preamble(preamble: str, pr: int | None) -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
-    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE`` and ``CLOUD_BRANCHES`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
     preamble = preamble.replace(DETACH_LINE, CLOUD_RUN_LINE)
-    return preamble.removesuffix("\n") + CLOUD_NOTE + "\n"
+    return preamble.removesuffix("\n") + CLOUD_NOTE + CLOUD_BRANCHES + "\n"
 
 
 def cloud_reply(items: list[dict], verdict: bool = False) -> tuple[str, str] | None:
