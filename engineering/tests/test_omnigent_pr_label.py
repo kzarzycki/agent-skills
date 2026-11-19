@@ -73,3 +73,14 @@ def test_reap_finishes_a_verifier_whose_pr_is_open_and_holds_the_worker(
     og.sessions["v"] = og.sessions["w"] = []
     lines, _ = omnigent_agent.reap(og, ["v", "w"])
     assert og.archived == ["v"] and "kept (PR open)" in lines[1]
+
+
+def test_reap_merged_finds_the_worker_of_a_merged_pr_never_its_verifier() -> None:
+    og = base.FakeOmnigent()
+    live = [
+        {"id": "v", "labels": {"omni.role": "verifier", "omni.pr": "o/r#7"}},
+        {"id": "w", "labels": {"omni.role": "worker", "omni.pr": "o/r#7"}},
+    ]
+    og.call = lambda method, path, *_: {"data": live}  # type: ignore[method-assign]
+    assert omnigent_agent.pr_workers(og) == ["w"]
+    assert omnigent_agent.pr_workers(og, omnigent_agent.pr_ref("o/r#7")) == ["w"]
