@@ -10621,6 +10621,10 @@ def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its
     brief = omnigent_agent.text_of(og.sessions[sid][1])
     assert "never write under `.git/`" in brief and "`tmp/loop/` is scratch" in brief
     assert brief.endswith("never committed.\n\ndo X")
+    assert (
+        "curl -sS -X POST -H 'Content-Type: application/json'" in brief
+        and "api.github.com/repos/<owner>/<repo>/pulls" in brief
+    )
     if pr:
         assert "comment on PR #7" in brief and "your last message" not in brief
         return
