@@ -4,7 +4,6 @@
 tmp/loop/
 .worktrees/
 .claude/settings.local.json
-.claude/hooks/
 .pi/
 __pycache__/
 *.pyc
