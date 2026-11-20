@@ -19,3 +19,8 @@ def test_every_pinned_tool_but_node_is_fetched_before_mise_install() -> None:
     install = SETUP.index("step mise-install ")
     for tool in set(tools) - {"node"}:
         assert -1 < SETUP.find(f"pin {tool})") < install or -1 < SETUP.find(f'pin {tool}")') < install, tool
+
+
+def test_mise_prefers_offline_before_it_installs() -> None:
+    """Offline, mise counts the fetched tools as installed; online it exits 1 and drops them from a task's PATH (#1536)."""
+    assert -1 < SETUP.find("step mise-offline mise settings set prefer_offline true") < SETUP.index("step mise-install ")

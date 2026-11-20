@@ -20,8 +20,9 @@ step() {  # step <name> <command...>: run it, log its seconds and exit code
 # unpacked into <dest> less <strip> leading path parts. mise resolves a github:, aqua: or ubi:
 # release, and core:python's build list, through mise-versions.jdx.dev and then api.github.com:
 # the proxy refuses the first and answers 403 from the second for repos outside the session, while
-# github.com's release downloads pass. A tool at mise's own install path counts as installed, so
-# `mise install` and `mise run` skip it.
+# github.com's release downloads pass. A tool at mise's own install path counts as installed once
+# mise prefers offline (the mise-offline step): without it, `mise install` exits 1 on the version
+# list it cannot fetch and `mise run` leaves that tool off the task's PATH.
 fetch() {
   local a="${1##*/}" d; d=$(mktemp -d)
   curl -fsSL -o "$d/$a" "$1" && curl -fsSL -o "$d/sums" "$2" \
@@ -40,6 +41,8 @@ step apt sh -c 'apt-get update -qq && apt-get install -y -qq openssh-client'
 command -v codex >/dev/null || step codex npm install -g -s @openai/codex
 cd "$repo" 2>/dev/null || { echo "FAILED: no checkout at $repo" >> "$log"; exit 0; }
 step mise-trust mise trust -q --all
+# global config, so every later mise call in the session, the gate's `mise run` included, uses it
+step mise-offline mise settings set prefer_offline true
 # ponytail: x86_64 Linux assets only, the cloud image's platform; another one needs its asset names
 mi="$HOME/.local/share/mise/installs" gh=https://github.com
 v=$(pin ubi:carvel-dev/vendir); a=$gh/carvel-dev/vendir/releases/download/v$v
