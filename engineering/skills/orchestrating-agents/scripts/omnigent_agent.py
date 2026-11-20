@@ -4772,7 +4772,9 @@ def kill_group(pid: int) -> None:
         send(signal.SIGKILL)
 
 
-COMMITS: dict[str, Any] = {}  # git/commits/<sha> answers, kept for the process: a sha's commit is immutable
+COMMITS: dict[
+    str, Any
+] = {}  # git/commits/<sha> answers, kept for the process: a sha's commit is immutable
 
 
 def pr_rest(path: str, end: float, pages: bool = False) -> Any:
@@ -4950,7 +4952,11 @@ def wait_for(
                 elif outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
                     return outcome
             except RateLimited as e:  # retrying keeps the limit drained: sleep to its reset
-                print(f"GitHub rate limit: waiting {e.wait:.0f}s for its reset", file=sys.stderr, flush=True)
+                print(
+                    f"GitHub rate limit: waiting {e.wait:.0f}s for its reset",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 time.sleep(min(e.wait, max(deadline - time.monotonic(), 0)))
                 continue
             except BLIPS:  # a GitHub blip: the next poll asks again
@@ -5058,7 +5064,10 @@ def rate_wait(stderr: str) -> float | None:
     try:
         reset = subprocess.run(
             ["gh", "api", "rate_limit", "--jq", ".resources.core.reset"],
-            capture_output=True, text=True, timeout=HTTP_SECONDS, check=True,
+            capture_output=True,
+            text=True,
+            timeout=HTTP_SECONDS,
+            check=True,
         ).stdout.strip()
         return max(float(reset) - time.time(), 0.0) + 1.0
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -5172,7 +5181,9 @@ def origin_repo(config: str) -> str:
 def default_head(repo: str) -> str:
     """The sha the default branch of GitHub repo ``repo`` points at (``commits/HEAD``)."""
     # --cache: gh keeps the answer on disk for HEAD_SECONDS, shared by every supervise on this host
-    sha = gh("api", "--cache", f"{int(HEAD_SECONDS)}s", f"repos/{repo}/commits/HEAD", "--jq", ".sha").strip()
+    sha = gh(
+        "api", "--cache", f"{int(HEAD_SECONDS)}s", f"repos/{repo}/commits/HEAD", "--jq", ".sha"
+    ).strip()
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise Fail(f"{repo}: no default-branch head in {sha[:80]!r}")
     return sha
@@ -7613,7 +7624,9 @@ def supervise_registry(
         for repo, sid in first.items():
             if time.monotonic() - headed.get(repo, -HEAD_SECONDS) < HEAD_SECONDS:
                 continue
-            if time.monotonic() < limited[0]:  # GitHub's limit is account-wide: no repo asks before its reset
+            if (
+                time.monotonic() < limited[0]
+            ):  # GitHub's limit is account-wide: no repo asks before its reset
                 continue
             headed[repo] = time.monotonic()
             try:
@@ -7621,7 +7634,10 @@ def supervise_registry(
             except RateLimited as e:
                 limited[0] = time.monotonic() + e.wait
                 headed.pop(repo, None)
-                log(("head", repo), f"GitHub rate limit: default branches not read for {e.wait:.0f}s, until its reset")
+                log(
+                    ("head", repo),
+                    f"GitHub rate limit: default branches not read for {e.wait:.0f}s, until its reset",
+                )
                 continue
             except Exception as e:  # noqa: BLE001 - read again at the next HEAD_SECONDS
                 log(("head", repo), f"{repo}: default branch not read: {reason(e)}")
