@@ -13898,3 +13898,24 @@ def test_a_cloud_child_gets_its_role_file_s_text_and_a_host_child_its_path(
     omnigent_agent.start(host, "claude", "h", "do X", tmp_path / "h.md", str(role), 0)
     brief = omnigent_agent.brief_of(tmp_path / "h.md").read_text()
     assert f"Your role file is {role}; read it first." in brief and "RULE-X" not in brief
+
+
+def test_brief_prints_the_first_message_start_sends_a_cloud_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A cloud lead reaches Omnigent only through its MCP tools, so it composes a child's message with
+    `brief` and passes it to sys_session_create: it must be the message `start` sends (#1508)."""
+    monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+    role = tmp_path / "worker.md"
+    role.write_text("# Worker\nrule\n")
+    og = CloudFake()
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", str(role), 0)
+    sent = omnigent_agent.text_of(og.sessions[sid][1])
+    assert (
+        omnigent_agent.main(
+            ["brief", "do X", str(tmp_path / "r.md"), "--cloud", "--role", str(role)]
+        )
+        == 0
+    )
+    printed = capsys.readouterr().out.removesuffix("\n")
+    assert "<role-file>\n# Worker\nrule\n</role-file>" in printed and sent.endswith(printed)

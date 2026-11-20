@@ -418,6 +418,13 @@ notice. One that still owes its report is covered by your supervisor's registry,
 and `send` armed (Supervising sessions, below); for one that owes none, keep
 `watch --children "$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` running in the background.
 
+**A child's message without a server.** `python3 scripts/omnigent_agent.py brief <brief> <report> [--cloud]
+[--role FILE] [--top-level] [--pr N]` prints the first message `start` would send that child (its preamble,
+the role line or, with `--cloud`, the role file's text, then the brief), reading no server. A `claude-cloud`
+session reaches Omnigent only through its `omnigent` MCP tools, which the cloud bridge serves over the
+claude.ai events API (the VM has no route to the server), so a cloud lead passes this text as
+`sys_session_create`'s `message`.
+
 **Top-level leads.** `python3 scripts/omnigent_agent.py start --top-level <claude|codex|AGENT>
 <title> <brief-file> <report-path>` starts a lead with no parent session, still filed under
 the repo's project: the owner opens it from the sidebar and talks to it, its own children

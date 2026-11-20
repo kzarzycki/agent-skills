@@ -815,6 +815,23 @@ def role_line(role: str | None, cloud: bool) -> str:
     )
 
 
+def first_message(
+    cloud: bool, top_level: bool, pr: int | None, report: Path | str, role: str | None, brief: str
+) -> str:
+    """A child's brief as ``start`` sends it: its preamble, then ``brief``. It reads no server, so a
+    cloud lead, which reaches Omnigent only through its MCP tools, prints it with ``brief`` and passes
+    it to ``sys_session_create``."""
+    preamble = pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE
+    if cloud:
+        preamble = cloud_preamble(preamble, pr)
+    elif not top_level:
+        preamble = preamble.removesuffix("\n") + HOST_RUN_NOTE + "\n"
+    return (
+        preamble.format(report=report, pr=pr, unposted=UNPOSTED, role=role_line(role, cloud))
+        + brief
+    )
+
+
 def cloud_preamble(preamble: str, pr: int | None) -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
     ``CLOUD_RUN_LINE``, ``CLOUD_NOTE`` and ``CLOUD_BRANCHES`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
@@ -3904,20 +3921,8 @@ def start(
     lock = heavy_lock() if by_file and not top_level else ""
     # The AGENT_SIGNATURE line goes atop it once the session exists: its model is the one the
     # server took for it, never the id asked for.
-    preamble = pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE
-    if harness == CLOUD_HARNESS:
-        preamble = cloud_preamble(preamble, pr)
-    elif not top_level:
-        preamble = preamble.removesuffix("\n") + HOST_RUN_NOTE + "\n"
-    body = (
-        (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "")
-        + preamble.format(
-            report=report,
-            pr=pr,
-            unposted=UNPOSTED,
-            role=role_line(role, cloud),
-        )
-        + brief
+    body = (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "") + first_message(
+        cloud, top_level, pr, report, role, brief
     )
     brief_file = brief_of(report)
 
@@ -8917,6 +8922,17 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         "signature", description="print <harness>/<model>/<effort> of the session this runs in"
     )
     p = sub.add_parser(
+        "brief",
+        description="print the first message start would send a child, reading no server: a cloud"
+        " lead passes it to sys_session_create",
+    )
+    p.add_argument("brief", help="the task specifics: a file, or the text itself")
+    p.add_argument("report")
+    p.add_argument("--role", help="worker/verifier role file, inlined for a cloud child")
+    p.add_argument("--cloud", action="store_true", help="the child runs in a Claude cloud VM")
+    p.add_argument("--top-level", action="store_true")
+    p.add_argument("--pr", type=int)
+    p = sub.add_parser(
         "direct",
         description="mark a followed lead as driven by the owner directly: no deadline or nudge",
     )
@@ -9274,6 +9290,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             return cloud_run(
                 args.checkout, line, args.timeout, lambda argv: command(argv, {}), args.server
             )
+        if args.cmd == "brief":
+            text = Path(args.brief).read_text() if Path(args.brief).is_file() else args.brief
+            print(first_message(args.cloud, args.top_level, args.pr, args.report, args.role, text))
+            return 0
         if args.cmd == "launch-dir":
             launch_dir(args.remote, args.branch, args.env, args.path, args.trust, clone=args.clone)
             return 0
