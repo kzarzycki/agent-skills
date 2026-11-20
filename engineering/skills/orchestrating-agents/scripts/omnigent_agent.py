@@ -6,6 +6,7 @@
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py claude-cloud-env <checkout>   # alias: cloud-env
     python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>
+    python3 scripts/omnigent_agent.py ssh <host> --why <purpose> -- <command...>
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
@@ -8651,6 +8652,48 @@ def uninstall_service(registry: Path) -> None:
     print(f"removed {name}")
 
 
+SSH_CHECK = 75  # EX_TEMPFAIL: the host's SSH check asks the owner to approve; post the card, rerun
+SSH_LOGIN = re.compile(r"To authenticate, visit:\s*(\S+)")
+
+
+def ssh_step(host: str, why: str, command: list[str], server: str = "") -> int:
+    """Run ``command`` on ``host`` over ``ssh -o BatchMode=yes``, its output and exit code passed
+    through. When ssh prints the SSH check's ``To authenticate, visit:`` line, stop it (it hangs
+    there, BatchMode or not) and print the question card text for the owner, naming who asks,
+    the host, the command, why and the login link; exit ``SSH_CHECK``."""
+    proc = subprocess.Popen(
+        ["ssh", "-o", "BatchMode=yes", host, *command],
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    link = None
+    for line in proc.stderr:  # the banner is ssh's stderr; stdout passes through untouched
+        sys.stderr.write(line)
+        if m := SSH_LOGIN.search(line):
+            link = m.group(1)
+            proc.terminate()
+            break
+    code = proc.wait()
+    if link is None:
+        return code
+    sid = own_id()
+    try:  # outside a session, or no server: the id alone
+        title = (Omnigent(server).info(sid).get("title") or "") if sid else ""
+    except (Fail, OSError):
+        title = ""
+    who = " ".join(x for x in (title, f"({sid})" if sid else "", harness_signature()) if x)
+    print(
+        f"SSH check on {host}: approve this connection?\n\n"
+        f"- Asking: {who or 'an agent outside Omnigent'}\n"
+        f"- Host: {host}\n"
+        f"- Command: {shlex.join(command)}\n"
+        f"- Why: {why}\n"
+        f"- Approve at: {link}\n\n"
+        "Options: Done (approved; the agent runs it again)"
+    )
+    return SSH_CHECK
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run one command; with ``--notify`` on run, send or wait, tell ``$LOOP_NOTIFY`` how it ended."""
     ended: dict[str, str] = {}
@@ -9050,6 +9093,16 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("--limit", type=float, required=True, help="seconds before giving up")
     p.add_argument("until", nargs=argparse.REMAINDER, metavar="-- CMD")
     p = sub.add_parser(
+        "ssh",
+        description="run a host step over ssh -o BatchMode=yes; on the host's SSH check, print the"
+        f" owner's question card and exit {SSH_CHECK}",
+    )
+    p.add_argument("host")
+    p.add_argument(
+        "--why", required=True, help="the step's purpose, shown to the owner on the card"
+    )
+    p.add_argument("command", nargs="+", help="after --: the command to run on the host")
+    p = sub.add_parser(
         "wait-for",
         description="block on a run's log or pid, or a PR condition, up to --budget; print only the outcome",
     )
@@ -9125,6 +9178,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             "owner-said",
             "wait-until",
             "wait-for",
+            "ssh",
         ):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
         if p.prog.split()[-1] in ("run", "start", "send", "wait", "reap", "direct"):
@@ -9190,6 +9244,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 raise Fail(f"{registry}: no line for {sid}")
             print(f"{sid}: {'not ' * args.off}driven by the owner directly")
             return 0
+        if args.cmd == "ssh":
+            return ssh_step(args.host, args.why, args.command, args.server)
         if args.cmd == "signature":
             try:  # outside a session, or no server: the harness's files alone
                 session = Omnigent(args.server or "").info(own) if (own := own_id()) else None

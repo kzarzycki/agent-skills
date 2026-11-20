@@ -263,6 +263,16 @@ reported it, and `reasoning_effort`), since a Codex child's rollout sits under a
 `AGENT_SIGNATURE=` line `start` puts atop a brief names the model the server took for the session (its
 `model_override`, `?` for the harness default), never the id asked for.
 
+**Host steps over SSH.** Run a step on another host as `python3 scripts/omnigent_agent.py ssh <host> --why
+<purpose> -- <command...>`, never a bare `ssh`, since a host whose SSH layer asks the owner to approve each
+connection (an SSH check) shows the owner a login link with no word of who asks or why. It runs `ssh -o
+BatchMode=yes <host> <command>` and passes its output and exit code through. When ssh prints the check's
+`To authenticate, visit:` line it stops ssh, which otherwise waits there however long the approval takes, prints a
+question card's text on stdout (the session asking, the host, the command, `--why` and the link, with a **Done**
+option) and exits 75. Post that text as an owner card (`sys_ask_user_question`), or, in a child, as its
+`<report>.question` (Questions), wait for **Done**, then run the same command again. It answers no card and opens
+no link itself: the approval is the owner's.
+
 **Usage.** `python3 scripts/omnigent_agent.py usage [<session>...]` prints the tokens and cost of the session it
 runs in and of each session named, one line each, read from each session's record (`usage_by_model`,
 `total_cost_usd`), which totals its whole spawn tree, archived children included; then a `Tokens spent:
