@@ -772,15 +772,25 @@ def far_policy_texts(
     og: Omnigent, workspace: str, host_id: str, gk: Any
 ) -> tuple[str | None, str | None] | None:
     """The default branch's ``docs/agents/loop.md`` and gatekeeper.md texts (None for one it lacks, as ``base_policy``
-    reads the base) of the checkout at ``workspace`` on host ``host_id``, which has no git to ask: its ``.git/config``
-    is read through the host's file API for the ``origin`` repo, and the files come from GitHub's default branch
+    reads the base) of the checkout at ``workspace`` on host ``host_id``, which has no git to ask: its git config
+    (through a worktree's gitdir and commondir, as ``workspace_head`` resolves them) is read through the host's file API for the ``origin`` repo, and the files come from GitHub's default branch
     through ``gh``. None when ``workspace`` is no checkout; a ``Fail`` when the origin or a file can't be read."""
     root = far_checkout_root(og, host_id, workspace, str(gk.POLICY))
     if root is None:
         return None
-    config = root / ".git" / "config"
     try:
-        found = ORIGIN_URL.search(read_on_host(og, host_id, str(config)))
+        top = read_on_host(og, host_id, f"{root}/.git")
+    except (Gone, Fail):
+        top = ""  # a directory, as in a plain clone, can't be read as a file
+    gitdir = gitdir_from(str(root), top)
+    try:  # a linked worktree's config is in its common dir; a submodule's gitdir has its own
+        common = read_on_host(og, host_id, f"{gitdir}/commondir").strip()
+        gitdir = posixpath.normpath(posixpath.join(gitdir, common))
+    except Gone:
+        pass
+    config = f"{gitdir}/config"
+    try:
+        found = ORIGIN_URL.search(read_on_host(og, host_id, config))
     except Gone as e:
         raise Fail(f"{config}: not found on the host") from e
     if not (found and (repo := GITHUB_REPO.search(found.group(1)))):
@@ -5230,16 +5240,20 @@ def rate_wait(stderr: str) -> float | None:
         return 60.0
 
 
+def gitdir_from(workspace: str, top: str) -> str:
+    """The git dir of ``workspace``, given the text of its ``.git`` when that is a file (``gitdir: <path>``, relative
+    to the checkout unless absolute), else ``<workspace>/.git`` itself."""
+    if top.startswith("gitdir:"):
+        return posixpath.normpath(posixpath.join(workspace, top.split(":", 1)[1].strip()))
+    return f"{workspace}/.git"
+
+
 def workspace_head(og: Omnigent, sid: str, workspace: str) -> str:
     """The commit ``workspace`` (absolute, on ``sid``'s host) has checked out, resolved from its
     ``.git`` through the file API (a worktree's ``.git`` is a file naming its gitdir); a branch is
     read from the gitdir, else its common dir. Raises ``Gone`` when a file is not there."""
     top = og.read_file(sid, f"{workspace}/.git")
-    gitdir = (
-        posixpath.join(workspace, top.split(":", 1)[1].strip())
-        if top.startswith("gitdir:")
-        else f"{workspace}/.git"
-    )
+    gitdir = gitdir_from(workspace, top)
     head = og.read_file(sid, f"{gitdir}/HEAD").strip()
     if not head.startswith("ref:"):
         return head
