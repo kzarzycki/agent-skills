@@ -741,7 +741,6 @@ DELEGATION = """\
 The owner delegated this project's specs and merges to you (its policy sets `loop.delegate: all`), so a spec or a merge is no reason to end `USER NEEDED`. Settle a spec as the policy's spec rule says; `approve spec` takes only `--by owner`, so never run it.
 Merge a PR, `risk:high` included, once its gate is green and its verifier satisfied. Give the go on the head the verifier saw with engineering-loop's `scripts/approvals.py approve merge <pr> --head <sha> --by delegate`, since a go is pinned to one head and a push voids it.
 A change on the policy's `risk.critical_paths` stays the owner's: the script refuses the delegate's go there. Ask the owner with a question card (`sys_ask_user_question`), never in prose, since a prose question ends your turn where nobody answers.
-
 """
 
 
