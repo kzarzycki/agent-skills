@@ -1054,7 +1054,10 @@ def test_a_label_approves_a_high_risk_merge_into_a_feature_branch_only(
     assert merge(given_go(by_hand, hub), [approved(1, "area:web")]) == []
     feature = into_feature(pull(reviews=(VERDICT,), labels=("risk:high",)))
     assert merge(feature, [approved(1, "area:web")]) == [
-        HELD.replace("; into main `approved:merge` is no go; `loop.delegate: all` in the policy file lets a delegate's go count", ", or `approved:merge`")
+        HELD.replace(
+            "; into main `approved:merge` is no go; `loop.delegate: all` in the policy file lets a delegate's go count",
+            ", or `approved:merge`",
+        )
         + "`risk:high` is on PR #7"
     ]
 

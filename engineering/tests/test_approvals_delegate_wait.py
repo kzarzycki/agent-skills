@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from approvals_harness import HEAD, approvals, gating, judged_pr, judging, lands, loop_md  # noqa: F401
+from approvals_harness import (  # noqa: F401
+    HEAD,
+    approvals,
+    gating,
+    judged_pr,
+    judging,
+    lands,
+    loop_md,
+)
 
 OWNER = f"`approve merge 7 --head {HEAD} --by owner`"
 DELEGATE = f"`approve merge 7 --head {HEAD} --by delegate`"
@@ -23,7 +31,9 @@ def test_a_delegating_base_names_both_go_commands(gating, capsys, monkeypatch) -
     assert f"({OWNER}, or the delegate's: {DELEGATE};" in out
 
 
-def test_a_base_that_does_not_delegate_names_the_owner_and_the_setting(gating, capsys, monkeypatch) -> None:
+def test_a_base_that_does_not_delegate_names_the_owner_and_the_setting(
+    gating, capsys, monkeypatch
+) -> None:
     out = wait(gating, capsys, monkeypatch, "loop:\n  delegate: feature\n", labels=("risk:high",))
     assert OWNER in out and "--by delegate" not in out
     assert "`loop.delegate: all` in the policy file lets a delegate's go count" in out

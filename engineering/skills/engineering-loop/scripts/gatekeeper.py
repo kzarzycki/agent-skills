@@ -3688,7 +3688,10 @@ def owner_waits(
             ask = f"{command}, or the delegate's: `approve merge {pull['number']} --head {pull['headRefOid']} --by delegate`"
             more = ""
         else:
-            ask, more = command, "; `loop.delegate: all` in the policy file lets a delegate's go count"
+            ask, more = (
+                command,
+                "; `loop.delegate: all` in the policy file lets a delegate's go count",
+            )
         return [
             (
                 f"{where} waits for the owner's go on its head ({ask}; into {pull['baseRefName']} `{MERGE_LABEL}`"
