@@ -41,32 +41,46 @@ def test_a_lock_the_heartbeat_lost_mid_gate_refuses_with_no_merge(
     assert merged == []
 
 
-@pytest.mark.parametrize("lost_after", [0, 1])
+@pytest.mark.parametrize("signed", [False, True])
+@pytest.mark.parametrize("lost_at", ["entry", "unlink_pull", "post_status", "merged"])
 def test_a_lock_the_heartbeat_lost_during_the_merges_stops_the_next_merge(
-    lost_after: int, monkeypatch: pytest.MonkeyPatch
+    lost_at: str, signed: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The heartbeat empties `held` at each step that reaches GitHub before a merge call, or after PR 7's merge."""
+    if signed and lost_at == "post_status":
+        pytest.skip("a signed squash posts no status before its push")
     held = ["ours"]
     pulls = [{"number": n, "headRefOid": str(n) * 40} for n in (7, 8)]
     landed = [(pull, "t", "t", "run") for pull in pulls]
     merged: list[int] = []
 
-    def merge(number: int, *_a: Any) -> None:
-        merged.append(number)
-        if len(merged) == lost_after:
-            held.clear()  # what heartbeat() does when another land's tip holds the lock
+    def step(name: str) -> Any:
+        def run(*_a: Any) -> None:
+            if lost_at == name and not merged:
+                held.clear()  # what heartbeat() does when another land's tip holds the lock
 
-    if lost_after == 0:
+        return run
+
+    def merge(pull_or_number: Any, *_a: Any) -> str:
+        merged.append(pull_or_number["number"] if signed else pull_or_number)
+        if lost_at == "merged":
+            held.clear()
+        return "t"
+
+    if lost_at == "entry":
         held.clear()
-    monkeypatch.setattr(approvals, "signed", lambda loop: None)
+    monkeypatch.setattr(approvals, "signed", lambda loop: ("key", "keys") if signed else None)
+    monkeypatch.setattr(approvals, "signed_squash", merge)
     monkeypatch.setattr(approvals, "gate", lambda: ("gate",))
     monkeypatch.setattr(approvals, "git", lambda *a: "nonce n" if a[0] == "log" else "t")
     monkeypatch.setattr(approvals, "port", lambda name: SimpleNamespace(merge=merge))
     monkeypatch.setattr(approvals, "pull_status", lambda number: {"state": "MERGED"})
+    monkeypatch.setattr(approvals, "merge_method", lambda *a: "squash")
+    monkeypatch.setattr(approvals, "land_body", lambda pull: "")
     stubbed = ("unlink_pull", "post_status", "publish", "landed_pass", "drop_records", "comment")
     for name in (*stubbed, "archive_workers", "land_ended"):
-        monkeypatch.setattr(approvals, name, lambda *a: None)
-    monkeypatch.setattr(approvals, "merge_method", lambda *a: "merge")
+        monkeypatch.setattr(approvals, name, step(name))
     failed: set[int] = set()
     approvals.merges(landed, "main", "t", None, None, failed, "", held)
-    assert merged == [7][:lost_after]
+    assert merged == ([7] if lost_at == "merged" else [])
     assert failed == {7, 8} - set(merged)

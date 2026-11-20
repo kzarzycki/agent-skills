@@ -7470,15 +7470,20 @@ def merges(
     base's ruleset can require, so only a land merges (#1289); a merge GitHub then refuses, or leaves open, turns it to
     an error."""
     local, command, done = signed(loop), gate()[0], []
+
+    def owned() -> str | None:
+        """The lock commit `held` ends with (None: no lock), read under `beating` so the heartbeat can't empty it
+        between the check and the read; [] is a lock the heartbeat lost, which stops the batch. Checked again right
+        before each merge call, since the steps before it reach GitHub too; a call already made can't be taken back."""
+        with beating:
+            if held is not None and not held:
+                raise Refused(f"another land took the landing lock {lock_name(base)}")
+            return held[-1] if held else None
+
     for pull, tree, gated, how in landed:
         where, head, posted = f"PR #{pull['number']}", pull["headRefOid"], False
         try:
-            # read under `beating`, so the heartbeat can't empty `held` between the check and the read; [] is a lock
-            # the heartbeat lost, which stops the batch here (a merge call already made can't be taken back)
-            with beating:
-                if held is not None and not held:
-                    raise Refused(f"another land took the landing lock {lock_name(base)}")
-                ours = held[-1] if held else None
+            ours = owned()
             nonce = (
                 git("log", "-1", "--format=%b", ours).rsplit("nonce ", 1)[-1].strip()
                 if ours
@@ -7487,6 +7492,7 @@ def merges(
             unlink_pull(pull)
             method = merge_method(pull, loop)
             if local:
+                owned()
                 tip = signed_squash(pull, local[1], (tip, tree))
                 print(f"{where} lands as a {method}")
                 print(f"{where} landed in {base} as {tip}, signed by a key in {local[1]}")
@@ -7498,6 +7504,7 @@ def merges(
                 post_status(head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}")
                 posted = True
                 try:
+                    owned()
                     port("forge").merge(pull["number"], method, body, head)
                 except subprocess.CalledProcessError as exc:
                     merge = merged_anyway(pull["number"], head, exc)
