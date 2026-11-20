@@ -3,6 +3,7 @@ the loop's roles to write, run and hand them over (#1156)."""
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -118,21 +119,79 @@ def test_a_check_that_cannot_start_fails(repo: Path) -> None:
     assert verdicts(result.stdout) == ["FAIL acceptance/7/noshebang"]
 
 
-@pytest.mark.parametrize("shebang", ["#!/bin/bash", "#!/usr/bin/env bash", "#!/bin/sh"])
-def test_a_shell_check_that_does_not_parse_fails_before_it_runs(repo: Path, shebang: str) -> None:
-    # bash 3.2 (macOS's /bin/bash) runs the EXIT trap on a syntax error and exits with the trap's 0 (#1545)
-    check(
-        repo,
-        "acceptance/7/01-broken.sh",
-        f"{shebang}\nset -e\ntrap 'true' EXIT\necho ran\nX=1 \\\nfor a in b; do\n echo $a\ndone\n",
-    )
+BROKEN = "trap 'true' EXIT\necho ran\nX=1 \\\nfor a in b; do\n echo $a\ndone\n"
+
+
+@pytest.mark.parametrize(
+    "shebang",
+    [
+        "#!/bin/bash -e",
+        "#!/usr/bin/env bash\nset -e",
+        "#!/usr/bin/env -S /bin/bash -e",
+        "#!/bin/sh -e",
+    ],
+)
+def test_a_shell_check_bash_stops_on_a_syntax_error_fails(repo: Path, shebang: str) -> None:
+    # under set -e, bash 3.2 (macOS's /bin/bash) runs the EXIT trap on a syntax error and exits with its 0 (#1545)
+    check(repo, "acceptance/7/01-broken.sh", f"{shebang}\n{BROKEN}")
 
     result = acceptance(repo, "7")
 
     assert result.returncode == 1, result
     assert verdicts(result.stdout) == ["FAIL acceptance/7/01-broken.sh"]
     assert "does not parse" in result.stdout
-    assert "ran" not in result.stdout.split()
+    assert (
+        "syntax error near unexpected token" in result.stderr
+    )  # the check's stderr still passes through
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "#!/bin/bash --\necho ran\n",
+        "#!/bin/bash\nshopt -s extglob\ncase abc in +(abc)) echo ran;; esac\n",
+        "#!/bin/bash\nset -e\neval 'for x in; do' || true\nbash -c 'for x in; do' || true\necho ran\n",
+    ],
+    ids=["end of options", "grammar set in the body", "a syntax error the check catches"],
+)
+def test_a_check_that_runs_to_its_end_passes(repo: Path, body: str) -> None:
+    check(repo, "acceptance/7/01-ok.sh", body)
+
+    result = acceptance(repo, "7")
+
+    assert result.returncode == 0, result
+    assert verdicts(result.stdout) == ["PASS acceptance/7/01-ok.sh"]
+    assert "ran" in result.stdout.split()
+
+
+def test_a_process_the_check_leaves_running_does_not_hold_the_run(repo: Path) -> None:
+    # the leftover process holds the check's stderr open after the check exits
+    check(repo, "acceptance/7/01-server.sh", "#!/bin/sh\nsleep 20 >/dev/null &\necho ran\n")
+
+    result = subprocess.run(
+        [sys.executable, str(ACCEPTANCE), "7"],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result
+    assert verdicts(result.stdout) == ["PASS acceptance/7/01-server.sh"]
+
+
+def test_an_execute_only_program_runs(repo: Path) -> None:
+    true = repo / "acceptance" / "7" / "true"
+    true.parent.mkdir(parents=True)
+    shutil.copy("/usr/bin/true", true)
+    true.chmod(0o111)
+
+    result = acceptance(repo, "7")
+
+    assert result.returncode == 0, result
+    assert verdicts(result.stdout) == ["PASS acceptance/7/true"]
 
 
 def test_all_runs_every_folder_in_issue_order_and_exits_1_when_one_fails(repo: Path) -> None:

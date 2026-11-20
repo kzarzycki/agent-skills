@@ -18,8 +18,8 @@ a subfolder are not checks and are skipped. Each check's own output passes throu
     PASS acceptance/7/01-ok.sh (0.1s)
     FAIL acceptance/7/02-broken.sh (2.3s)
 
-A file that cannot be started (no shebang, say) is a FAIL with the reason, and so is a shell check
-(its shebang names sh or bash) that does not parse, which `<shell> -n` checks before it runs. `--all` runs every
+A file that cannot be started (no shebang, say) is a FAIL with the reason, and so is a shell check that
+bash stopped on a syntax error, whatever its exit code (its stderr names the check's line). `--all` runs every
 `acceptance/*/` folder in issue order, for the nightly. The last line is the total:
 `TOTAL <n> checks, <passed> passed, <failed> failed (<s>s)`.
 
@@ -41,6 +41,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -98,40 +99,37 @@ def issue_order(folder: Path) -> tuple[int, int, str]:
     return (0, int(name), name) if name.isdigit() else (1, 0, name)
 
 
-SHELLS = {"sh", "bash", "dash", "ksh", "zsh"}
-
-
-def parser(check: Path) -> list[str] | None:
-    """The shell a check's shebang starts (`#!/bin/bash`, `#!/usr/bin/env bash`), to parse it with first: bash 3.2,
-    macOS's /bin/bash, runs the EXIT trap on a syntax error and exits with the trap's status, so a check that never
-    ran past the error would PASS (#1545). None for any other check."""
-    with check.open("rb") as file:
-        line = file.readline(256)
-    if not line.startswith(b"#!"):
-        return None
-    words = line[2:].decode(errors="replace").split()
-    if words[:1] and Path(words[0]).name == "env":  # `env bash`; `env -S ...` is left unparsed
-        words = words[:2] if len(words) > 1 and not words[1].startswith("-") else []
-        program = words[-1] if words else ""
-    else:  # the shebang's own flags stay (`#!/bin/bash -e`), so it parses as it runs
-        program = words[0] if words else ""
-    return words if Path(program).name in SHELLS else None
-
-
 def run(check: Path, root: Path) -> bool:
     """Run one check from the repo root and print its PASS or FAIL line."""
     shown = check.relative_to(root).as_posix()
     sys.stdout.flush()
     started = time.monotonic()
     try:
-        shell = parser(check)
-        if shell and subprocess.run([*shell, "-n", str(check)], cwd=root, check=False).returncode:
-            code, reason = 2, ", does not parse"
-        else:
-            code = subprocess.run(
-                [str(check)], cwd=root, stdin=subprocess.DEVNULL, check=False
-            ).returncode
-            reason = "" if code == 0 else f", exit {code}"
+        # bash prints `<script>: line <n>: syntax error ...` when it stops a script it cannot parse; under `set -e`,
+        # bash 3.2 (macOS's /bin/bash) then runs the EXIT trap and exits with the trap's status, often 0 (#1545)
+        stopped = re.compile(rb"^" + re.escape(str(check).encode()) + rb": line \d+: syntax error")
+        child = subprocess.Popen(
+            [str(check)], cwd=root, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE
+        )
+        unparsed = threading.Event()
+
+        def relay() -> None:  # the check's stderr passes through as it comes
+            for line in child.stderr:
+                sys.stderr.buffer.write(line)
+                sys.stderr.flush()
+                if stopped.match(line):
+                    unparsed.set()
+
+        reader = threading.Thread(target=relay, daemon=True)
+        reader.start()
+        code = child.wait()
+        # bash's line is in the pipe before it exits; a process the check left running may hold the pipe open, so
+        # the run ends with the check and that process's later output still passes through
+        reader.join(timeout=1)
+        reason = (
+            ", does not parse" if unparsed.is_set() else ("" if code == 0 else f", exit {code}")
+        )
+        code = code or int(unparsed.is_set())
     except OSError as error:
         code, reason = -1, f", not started: {error.strerror or error}"
     seconds = time.monotonic() - started
