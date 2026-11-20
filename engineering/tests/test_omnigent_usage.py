@@ -97,4 +97,7 @@ def test_a_poll_reads_the_slim_record_and_usage_the_full_one(monkeypatch) -> Non
     og = object.__new__(omnigent_agent.Omnigent)
     og.info("s1")
     og.info("s1", usage=True)
-    assert paths == [f"/v1/sessions/s1{omnigent_agent.SLIM}", "/v1/sessions/s1"]
+    assert paths == [
+        "/v1/sessions/s1?include_items=false&include_usage=false",
+        "/v1/sessions/s1",
+    ]
