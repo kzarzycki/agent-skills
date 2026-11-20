@@ -1292,8 +1292,10 @@ def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_
     locked_at: list[float] = []
 
     def take_the_lock() -> None:
+        locked_at.append(
+            time.monotonic()
+        )  # before the write: the wait can see `locked` the moment it lands
         log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")
-        locked_at.append(time.monotonic())
 
     # a loaded or niced host fires the timer late, so the budget is measured from the write
     threading.Timer(0.05, take_the_lock).start()
@@ -1302,7 +1304,7 @@ def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_
     ended = time.monotonic()
     # the lock came inside the entry's budget (else nothing is proven), and the budget ran on from it
     assert locked_at and locked_at[0] - began < 0.3
-    assert ended - locked_at[0] >= 0.29
+    assert ended - locked_at[0] >= 0.3
     assert capsys.readouterr().out == "still running\nrunning\n"
     log.write_text(f"lock {lock}\n")  # waiting past the lock ceiling: no verdict
     os.utime(log, (time.time() - 7300, time.time() - 7300))
@@ -1998,7 +2000,7 @@ def test_create_files_the_session_under_the_project(
             "/v1/projects": {"data": [{"name": "other", "id": "p0"}, {"name": "shop", "id": "p1"}]},
             "/v1/sessions": {"id": "s1"},
             "/v1/sessions/coord": {},  # a lead filed nowhere
-        }[path]
+        }[path.removesuffix(omnigent_agent.SLIM)]
 
     monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
     monkeypatch.setattr(
@@ -2044,7 +2046,7 @@ def test_create_files_the_session_under_its_caller_s_project(
             bodies.append(body or {})
             return {"id": "s1"}
         if path.startswith("/v1/sessions/"):
-            sid = path.removeprefix("/v1/sessions/")
+            sid = path.removeprefix("/v1/sessions/").removesuffix(omnigent_agent.SLIM)
             if sid not in sessions:
                 raise omnigent_agent.Fail(f"GET {path}: HTTP 404 Not Found")
             return sessions[sid]
@@ -3312,7 +3314,7 @@ def test_active_counts_a_subscribed_top_level_helper_like_a_child(
             if subscriptions_fail:
                 raise omnigent_agent.Fail("GET subscriptions: HTTP 404 Not Found")
             return {"data": [{"subscriber_id": "lead", "session_id": h} for h in helpers]}
-        sid = path.removeprefix("/v1/sessions/")
+        sid = path.removeprefix("/v1/sessions/").removesuffix(omnigent_agent.SLIM)
         if sid == "gone":
             raise omnigent_agent.Gone("GET: HTTP 404 Not Found")
         updated, archived = helpers[sid]
@@ -3518,6 +3520,8 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     og = FakeOmnigent()
     og.fail.add("create")  # the lookup after a failed create is the top-level one too
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    # the checkout's own policy delegates (#1551): the plain wording is what a policy without it gets
+    monkeypatch.setattr(omnigent_agent, "lead_delegation", lambda *_: "")
     sid, _ = omnigent_agent.start(
         og, "claude", "t", "do X", tmp_path / "r.md", None, 0, top_level=True
     )
@@ -5631,6 +5635,11 @@ class Stop(BaseException):
     """Ends the supervisor's loop: not an Exception, which the loop logs and survives."""
 
 
+# The sleep before any test patched it: a second `supervised` in one test would otherwise take the first
+# one's wrapper for the real one, and a git call's poll-sleep under load would count as a poll of the first.
+REAL_SLEEP = time.sleep
+
+
 def supervised(
     og: Fleet,
     registry: Path,
@@ -5640,7 +5649,7 @@ def supervised(
     **kwargs: object,
 ) -> None:
     """Run ``supervise_registry`` for ``polls`` polls, calling ``between`` after each but the last."""
-    count, real = [0], time.sleep
+    count, real = [0], REAL_SLEEP
 
     def sleep(seconds: float) -> None:
         if sys._getframe(1).f_globals["__name__"] == "subprocess":
@@ -5655,6 +5664,25 @@ def supervised(
     monkeypatch.setattr(omnigent_agent.time, "sleep", sleep)
     with pytest.raises(Stop):
         omnigent_agent.supervise_registry(og, registry, **kwargs)  # type: ignore[arg-type]
+
+
+def test_a_second_supervised_run_counts_only_its_own_polls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={tmp_path / 'a.md'}\n")
+    og = Fleet(a=[told("brief", 60)])
+    supervised(og, registry, monkeypatch, 2)
+    seen: list[int] = []
+
+    def between(poll: int) -> None:
+        seen.append(poll)
+        subprocess.run(
+            ["sleep", "0.05"], timeout=5, check=False
+        )  # a call with a timeout poll-sleeps, as git does under load
+
+    supervised(og, registry, monkeypatch, 3, between)
+    assert seen == [1, 2]
 
 
 STAMP = r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d "
@@ -5778,7 +5806,10 @@ def test_a_followed_lead_ending_with_a_named_ending_is_news_at_once_and_once(
     registry = following(tmp_path)
     og = Lead(told("brief", 60), ending(f"**{word}** the result", 1))
     supervised(og, registry, monkeypatch, 3, notify="cos")
-    assert posted(og) == [f"Supervisor: a t-a: turn ended\nlast message: **{word}** the result"]
+    turn = (
+        omnigent_agent.UNASKED_LINE if word == "USER NEEDED" else "turn ended"
+    )  # no card is open (#1551)
+    assert posted(og) == [f"Supervisor: a t-a: {turn}\nlast message: **{word}** the result"]
 
 
 def test_a_live_child_updated_within_the_window_keeps_a_followed_lead_quiet_pending(
@@ -7815,8 +7846,9 @@ def serve_files(monkeypatch: pytest.MonkeyPatch, files: dict[str, dict]) -> list
 
     class Files(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            seen.append(self.path)
-            body = files.get(self.path)
+            path = self.path.removesuffix(omnigent_agent.SLIM)
+            seen.append(path)
+            body = files.get(path)
             self.send_response(404 if body is None else 200)
             self.end_headers()
             self.wfile.write(json.dumps(body or {}).encode())
@@ -9565,6 +9597,7 @@ def _agent_server(monkeypatch: pytest.MonkeyPatch, pages: dict[str, object]) -> 
     calls: list[tuple] = []
 
     def call(self, method: str, path: str, body: dict | None = None) -> object:
+        path = path.removesuffix(omnigent_agent.SLIM)
         calls.append((method, path, body))
         return pages[path]
 
@@ -10620,7 +10653,7 @@ def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its
     )
     brief = omnigent_agent.text_of(og.sessions[sid][1])
     assert "never write under `.git/`" in brief and "`tmp/loop/` is scratch" in brief
-    assert "never committed.\n" in brief and brief.endswith("outside `claude/`.\n\ndo X")
+    assert "never committed.\n" in brief and brief.endswith(omnigent_agent.CLOUD_NO_PUSH + "\ndo X")
     assert (
         "curl -sS -X POST -H 'Content-Type: application/json'" in brief
         and "api.github.com/repos/<owner>/<repo>/pulls" in brief
@@ -10664,6 +10697,23 @@ def test_only_a_cloud_start_s_first_prompt_grants_claude_ready_branches_once(
         else omnigent_agent.brief_of(report).read_text()
     )
     assert text.count(omnigent_agent.CLOUD_BRANCHES) == (1 if cloud else 0)
+
+
+@pytest.mark.parametrize("top_level", [True, False])
+@pytest.mark.parametrize("pr", [None, 7])
+def test_every_cloud_preamble_never_pushes_a_report_or_asks_where(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, top_level: bool, pr: int | None
+) -> None:
+    """A report, log or verifier output travels in a comment, never a push; a push question never reaches the owner (#1534)."""
+    monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+    og = CloudFake()
+    sid, _ = omnigent_agent.start(
+        og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, top_level=top_level, pr=pr
+    )
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    assert "Reports, logs and verifier output are never committed or pushed, to any branch" in brief
+    assert "A push target or branch question never goes to the owner" in brief
+    assert "put the file in your comment and end the turn" in brief
 
 
 def test_a_host_session_s_preamble_is_unchanged(tmp_path: Path) -> None:
@@ -11483,6 +11533,10 @@ def github(
     mine = prs if prs is not None else pr_list((13, S2), (12, S1), (99, "f" * 40))
 
     def gh(*args: str, timeout: float = 0) -> str:
+        # default_head's `--cache <n>s` is gh's own on-disk cache: not part of what these tests read
+        args = tuple(
+            x for i, x in enumerate(args) if x != "--cache" and not (i and args[i - 1] == "--cache")
+        )
         calls.append(args)
         if args[1] == "repos/o/r/commits/HEAD":
             return head[0] + "\n"
@@ -11667,7 +11721,7 @@ def heads_moving(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> None:
     def gh(*args: str, timeout: float = 0) -> str:
         if args[:2] == ("pr", "list"):
             return pr_list((12, S1))
-        if args[1] == "repos/o/r/commits/HEAD":
+        if "repos/o/r/commits/HEAD" in args:
             return head[0] + "\n"
         return f"{S1}\t2026-11-01T10:00:00Z\n"
 

@@ -218,6 +218,7 @@ It closes with the owner's standing branch grant (`CLOUD_BRANCHES`): new `claude
 per PR, besides the one the session started on; no force-push, no deleting a branch it didn't create, nothing
 pushed to `main` or outside `claude/`. A cloud session takes a push grant only from its first user message and
 refuses a later relayed one, so a lead building several PRs gets its branches only this way.
+It ends with the no-push rule (`CLOUD_NO_PUSH`): reports, logs and verifier output are never committed or pushed, since a commit on the PR's branch moves the head under review and the branch grant is for code; the gate record that `approvals.py local-ci --record` pushes itself is the one exception; they travel in the report comment (or the final message with no PR), a file too large for one comment goes in a short follow-up comment or is trimmed with its path named, and a push target or branch question never goes to the owner.
 
 **Cloud environments.** Which claude.ai environment a cloud session runs in is the project's
 loop.md line `Cloud worker: <agent>, gate <task>, env <name>`; an environment id belongs to one
@@ -262,6 +263,17 @@ however the session started. It reads the session's Omnigent record first (`llm_
 reported it, and `reasoning_effort`), since a Codex child's rollout sits under a private `CODEX_HOME`. The
 `AGENT_SIGNATURE=` line `start` puts atop a brief names the model the server took for the session (its
 `model_override`, `?` for the harness default), never the id asked for.
+
+**Host steps over SSH.** Run a step on another host as `python3 scripts/omnigent_agent.py ssh <host> --why
+<purpose> -- <command...>`, never a bare `ssh`, since a host whose SSH layer asks the owner to approve each
+connection (an SSH check) shows the owner a login link with no word of who asks or why. It runs `ssh -o
+BatchMode=yes <host> <command>` (one word after `--` is a shell command as written; several are joined as
+argv, quoted for the remote shell) and passes its output and exit code through. When ssh prints the check's
+`To authenticate, visit:` line it stops ssh, which otherwise waits there however long the approval takes, prints a
+question card's text on stdout (the session asking, the host, the command, `--why` and the link, with a **Done**
+option) and exits 75. Post that text as an owner card (`sys_ask_user_question`), or, in a child, as its
+`<report>.question` (Questions), wait for **Done**, then run the same command again. It answers no card and opens
+no link itself: the approval is the owner's.
 
 **Usage.** `python3 scripts/omnigent_agent.py usage [<session>...]` prints the tokens and cost of the session it
 runs in and of each session named, one line each, read from each session's record (`usage_by_model`,
@@ -433,7 +445,18 @@ the repo's project: the owner opens it from the sidebar and talks to it, its own
 report to it, and archiving it ends only its own runner. Its brief opens with the lead
 preamble: only the owner's own words, quoted with where they were said, approve, the rest
 of the brief is a colleague's guidance, the lead asks the owner in its own session rather
-than in a question file, and it writes its final report to the path. How it asks and where
+than in a question file, and it writes its final report to the path. Where the base policy
+of its workspace's checkout (`origin/<default branch>`'s policy file, read by engineering-loop's
+`base_policy` and `delegation`) sets `loop.delegate: all`, the preamble adds the delegation: the
+lead settles specs and gives the merge go itself (`approve merge <pr> --head <sha> --by delegate`,
+`risk:high` included) once its gate is green and its verifier satisfied, and asks the owner by
+question card only for a change on `risk.critical_paths`. Without that setting, or without the
+engineering-loop skill, the wording is unchanged. A workspace on another host has no git to ask: its `.git/config` is read through the host's file API for the
+`origin` repo, and `gatekeeper.md` and `loop.md` come from that repo's default branch on GitHub (`gh`; a 404 means the file
+is absent), chosen by gatekeeper's `chosen`, so it follows the base's policy as a local lead does. A read that fails keeps
+today's wording and prints one stderr line; a workspace outside a checkout keeps it silently. A followed lead whose turn ends `USER NEEDED` with no question card open is reported
+as an `unasked` event, which tells its waiter to post a card or act under the delegation; with a card
+open it is reported as any turn end. How it asks and where
 it parks a question is its role's (`--role`; under the engineering loop, `lead.md`). `run --top-level` exits 1, since a lead writes no
 question for `run` to return: follow it with `watch <session>`, and once its report is in,
 archive it with `reap <session>`.

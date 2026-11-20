@@ -106,13 +106,12 @@ delegate's, a head whose level asks a go has. Into the default branch these are 
 label is anyone's with triage rights, the delegated approver's included, so `approved:merge` there is no go, nor is
 an `owner` status an older gate wrote from the label (marked as from it). On a change whose level asks no go the
 label means nothing. Risk is a rating, and the policy's `levels` say what each level asks (rating, levels): `high` is
-`risk:high` on the PR or an issue it names, a risk rule matching (below), or a review at the cap or later not
-satisfied or with a blocker or major open (`cap`, SKILL.md § The cap); `critical` a path `risk.critical_paths` names
+`risk:high` on the PR or an issue it names, or a risk rule matching (below); `critical` a path `risk.critical_paths` names
 (below); `low` anything else. Each level asks `policy` or `owner` of the spec and `gates`, `go` (a person's go on the
 head, as above) or `owner` (the owner's own go on the head, into any branch, no delegate's go nor label counting) of
 the merge; the merge takes the strictest any of its terms asks. The defaults are `low` {policy, gates}, `high`
 {policy, go}, or under `spec.auto: true` {owner, gates}, and `critical` {policy, owner}. A term the spec's hold never
-reads (the label, a revert, the `verifier` term, the cap) rates the change only after its spec was approved, and asks
+reads (the label, a revert, the `verifier` term) rates the change only after its spec was approved, and asks
 `go` where its level asks `owner` of the spec and `gates` of the merge, since the owner never saw that rating.
 `check merge` and `land` print the level and the merge action on stderr (`PR #7: risk: high (<why>); merge: go`). When
 the gate rates a change high or critical, `check merge` and `land` add `risk:high` to the PR, reporting a failure to
@@ -512,8 +511,8 @@ way, epics included, except one opened by an account without write access, or on
 whose `spec` is `owner` (by default `high` there: the risk rule on the labels of the issue and the PR and the PR's
 files, at `check build` the files pushed so far): those need the owner's record and label, and `check` says why. A
 level asking `owner` of the spec holds a spec a `spec.auto` kind covers too. Under `spec.auto: true` the risk rule
-holds the spec instead of the merge by default, since the owner approved the change before it was built; `risk:high`,
-the `verifier` term and the cap still hold the merge. The list may also
+holds the spec instead of the merge by default, since the owner approved the change before it was built; `risk:high`
+and the `verifier` term still hold the merge. The list may also
 hold a `paths` term (`- paths: [mise.toml, docs/agents/**]`), globs as a rule's `paths` are: it approves by policy the
 spec of an issue labelled `spec:paths`, which the lead adds to declare that the change stays inside them, since the
 gate can't tell that from the spec alone and the setting alone would approve every spec until its merge. `check build`
@@ -640,9 +639,16 @@ PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
 # a tier below the default a `Verifier model:` line names, a word of its own after the signature in the review's
 # family (`codex/terra-6.1/med mid`, verifier.md): a model id holding the word (`sol-mid-preview`) names no tier
 LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
-# The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
+# The cap, the last pass the loop runs on its own (a core finding open after it is the lead's call), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
+# the lead's decision at the cap to land with majors open, filed as a follow-up issue, as a PR body line of its own:
+# `Cap: #<follow-up>` (SKILL.md § The cap); a quoted line (`>`, a code span or block) is an example, not the record. ponytail: the gate trusts the number the lead names; fetch the issue and
+# check its `Found while` line if a lead ever names one it never filed.
+# at most 3 spaces before it, since 4 or a tab make the line an indented code block: an example, not the decision
+CAP_DECISION = re.compile(
+    r"^ {0,3}(?:[*-][ \t]+)?\**Cap\**:?\**[ \t]*#\d+\b", re.MULTILINE | re.IGNORECASE
+)
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
@@ -658,8 +664,15 @@ CLOSES, IMPLEMENTS, PART = "closes", "implements", "part of"
 SIGNOFF = re.compile(
     r"^[ \t>*-]*\**Sign-off\**:?\**[ \t]*`?(owner|none)\b", re.MULTILINE | re.IGNORECASE
 )
-# code and comments: an example, not a closing line
-QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE)
+# code (a ``` or ~~~ block, a code span) and comments: an example, not a closing line. A block closes on a line of
+# its fence character at least as long as its opening, CRLF included; an unclosed one quotes nothing, since what
+# Markdown closes it on (the end of a quote or list) is beyond a regex. A ``` opening with a later backtick is a span.
+QUOTED = re.compile(
+    r"^[ \t>]*(`{3,})(?![^\n]*`).*?^[ \t>]*\1`*[ \t]*\r?$"
+    r"|^[ \t>]*(~{3,}).*?^[ \t>]*\2~*[ \t]*\r?$"
+    r"|`[^`\n]*`|<!--.*?-->",
+    re.DOTALL | re.MULTILINE,
+)
 # the first line of the comment flag() leaves when the verifier's `Risk:` line made it add `risk:high`, which says the
 # label is the gate's to take off again when a later pass judges the risk low
 FLAGGED = f"`{RISK_LABEL}` added by the gate"
@@ -709,12 +722,12 @@ POLL, CEILING = 30, 2 * 60 * 60
 # seconds after the last run, unless it holds a lock (RECHECK): a merge queue or a check takes minutes to move, so
 # 30 s polls spend the account's quota, and its per-minute limit, on answers that did not change. POLL is the step
 # the sleep goes in, so the log is never silent and a lock that moved is seen at once
-QUEUE_POLL = 120
+QUEUE_POLL = 300
 # a wait on a held lock whose ref is unchanged runs landing() (the GitHub calls) again only after this many seconds: the
 # lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
 RECHECK = 300
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
-LOW_POLL, LOW_QUOTA = 300, 0.1
+LOW_POLL, LOW_QUOTA = 600, 0.1
 POLL_JITTER = 60  # most seconds of random delay added to a land --wait poll
 # a wait that meets this many network failures in a row (NETWORK) fails with the last one
 MISSES = 3
@@ -1497,10 +1510,9 @@ def terms(
     """The risk terms that hold on the change, in the order the gate quotes them, each as (level, after, why): `high`
     for `risk:high` on the PR or an issue it names (or, for a feature branch's merge to the default branch, on a PR
     merged into it), an exact revert of a high-risk change, a risk rule's `always`, `labels` or `paths` (ruled) on the
-    labels of the PR and its issues and its files, its `verifier` term on the verifier's `Risk:` line (judged), and a
-    review at the cap not satisfied or with a blocker or major open (capped); `critical` for a path
-    `risk.critical_paths` names (critical). `after` marks a term the spec's own hold never reads (spec_owned), the
-    label, the revert, the verifier and the cap, so it rates the change only after its spec was approved. Lazy, so a
+    labels of the PR and its issues and its files, and its `verifier` term on the verifier's `Risk:` line (judged);
+    `critical` for a path `risk.critical_paths` names (critical). `after` marks a term the spec's own hold never reads
+    (spec_owned), the label, the revert and the verifier, so it rates the change only after its spec was approved. Lazy, so a
     caller that needs the first term reads no more. An exact revert's issues (gated's `named`) count as its issues."""
     issues = issues + pull.get("named", [])
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
@@ -1526,16 +1538,6 @@ def terms(
             yield "high", True, f"it matches a risk rule's `verifier` term: {why}"
         else:
             yield "high", True, f"it matches a risk rule (verifier): {why}"
-    limit = cap(loop)
-    if capped(pull, limit):
-        yield (
-            "high",
-            True,
-            (
-                f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open,"
-                " so the owner decides"
-            ),
-        )
 
 
 def merge_for(level: str, after: bool, table: dict[str, dict[str, str]]) -> str:
@@ -2840,15 +2842,6 @@ def cap(loop: str | None) -> int:
     return int(found[1])
 
 
-def capped(pull: dict[str, Any], limit: int) -> bool:
-    """Whether a verifier review at the cap (pass `limit`) or later left a blocker or major open, or was not
-    satisfied: the owner then decides between a fix with one scoped pass more and leaving the code untouched."""
-    found = passes(pull)
-    return not isinstance(found, str) and any(
-        number >= limit and not held(lines) for _, number, lines in found
-    )
-
-
 def reviewed(
     where: str,
     pull: dict[str, Any],
@@ -2859,7 +2852,8 @@ def reviewed(
     since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried: on
     the same tree, or where loop.md opts in, which prints a line either way), or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
-    blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
+    blocker or a major open; majors with no blocker at the cap or later pass once the PR body records the lead's
+    decision (CAP_DECISION). A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
     needs none (exempt). `verdicts` is passes()'s, when the caller has read it."""
     verdicts = passes(pull) if verdicts is None else verdicts
     if isinstance(verdicts, str):
@@ -2874,16 +2868,25 @@ def reviewed(
         return [
             f"{where}: a verifier review lacks its commit, or a `VERDICT:` or `SATISFIED:` line (approvals.py verdict)"
         ]
+    pairs = [pair for pair in map(counts, same) if pair is not None]
+    blocker, major = sum(pair[0] for pair in pairs), sum(pair[1] for pair in pairs)
+    # at the cap the lead decides: majors filed as a follow-up (CAP_DECISION) land on this verdict; a blocker never does
+    decided = (
+        not blocker
+        and major
+        and last >= cap(loop)
+        and CAP_DECISION.search(QUOTED.sub("", pull.get("body") or "")) is not None
+    )
     found = []
     if pull["headRefOid"].lower() != head and not carries(where, pull, loop, head):
         found.append(
             f"{where}: the newest verifier review is on {head}, not on the head {pull['headRefOid']}:"
             " every commit after a verdict needs a verdict of its own"
         )
+    if decided:
+        return found
     if any(lines["SATISFIED"].lower().split()[:1] != ["yes"] for lines in same):
         found.append(f"{where}: a verifier review on {head} is not satisfied: fix and verify again")
-    pairs = [pair for pair in map(counts, same) if pair is not None]
-    blocker, major = sum(pair[0] for pair in pairs), sum(pair[1] for pair in pairs)
     if blocker or major:
         found.append(
             f"{where}: the verifier reviews on {head} have {blocker} blocker and {major} major open: fix and verify again"
@@ -3435,7 +3438,8 @@ def same_tree(head: str, old: str) -> str | None:
 def catch_up(pull: dict[str, Any], old: str) -> str | None:
     """What shows, mechanically, that the PR's head only takes the base in since `old` (an earlier head), with no hand
     edit, or None: the proof's words, which carried() and whose() print. Either (a rebase) `git range-diff` of
-    `merge-base(old, tip)..old` against `merge-base(head, tip)..head` marks every commit `=` with none added or dropped,
+    `merge-base(old, tip)..old` against `merge-base(head, tip)..head` marks every commit `=` with none added or dropped
+    and neither range holds a merge commit, which range-diff does not show (#1497),
     or (a merge of the base) every commit since `old` is a merge of the base (base_merges) and `git show --remerge-diff`
     of each is empty, so no conflict was resolved by hand. A verdict (carried) and a go (carried_go) on `old` carry to
     the head by this one test, which nobody asserts. Fail-closed: a git error, or a commit origin lacks, is None (#1314)."""
@@ -3453,6 +3457,12 @@ def catch_up(pull: dict[str, Any], old: str) -> str | None:
                 return f"every commit since is a merge of {base} whose `git show --remerge-diff` is empty: no conflict was resolved by hand"
             return None
         first, second = (git("merge-base", commit, tip).strip() for commit in (old, head))
+        # range-diff leaves merge commits out, so a merge whose tree adds an edit would still show every commit `=`
+        if any(
+            git("rev-list", "--merges", span).strip()
+            for span in (f"{first}..{old}", f"{second}..{head}")
+        ):
+            return None
         shown = git("range-diff", "--no-color", f"{first}..{old}", f"{second}..{head}").splitlines()
     except (subprocess.CalledProcessError, OSError):
         return None
@@ -6246,7 +6256,8 @@ def local_queue(
         # narrowed mode: the batch gate selects against the tip the batch merges onto (narrowed_gate)
         with narrowed_to(tip):
             landed = merged_trees(candidates, base, tip, failed)
-            if landed and held:
+            # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
+            if landed and held is not None:
                 repointed(base, held, landed[-1][0]["number"])
             if landed:
                 merges(landed, base, tip, None, loop, failed, waited, held)
@@ -6258,7 +6269,8 @@ def local_queue(
                     pull for pull in candidates if pre_landed(pull, base, work, loop, failed)
                 ]
                 landed = merge_batch(candidates, base, work, failed)
-                if landed and held:
+                # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
+                if landed and held is not None:
                     repointed(base, held, landed[-1][0]["number"])
                 if landed:
                     merges(landed, base, tip, work, loop, failed, waited, held)
@@ -7458,26 +7470,40 @@ def merges(
     loop: str | None,
     failed: set[int],
     waited: str = "",
-    held: Sequence[str] = (),
+    held: Sequence[str] | None = None,
 ) -> None:
     """Merge each PR through GitHub in the batch's order, pinned to its head (or, with loop.md's `land` section, as a
     signed squash of the tree it lands on the commit before it), stopping at the first one GitHub refuses or leaves
-    open, then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
+    open, or before the next once the heartbeat lost the lock (`held` emptied; None: no lock), then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
     the batch partial, or someone merged meanwhile) the tip is gated here, or with no worktree (`work` None) its pass
     reused where one is recorded and the tree named where none is. Each landed PR gets a `Landed` comment. Right before
     its merge call a PR's head gets the `land` status naming the nonce of the lock commit `held` ends with, which the
     base's ruleset can require, so only a land merges (#1289); a merge GitHub then refuses, or leaves open, turns it to
     an error."""
     local, command, done = signed(loop), gate()[0], []
-    nonce = (
-        git("log", "-1", "--format=%b", held[-1]).rsplit("nonce ", 1)[-1].strip() if held else ""
-    )
+
+    def owned() -> str | None:
+        """The lock commit `held` ends with (None: no lock), read under `beating` so the heartbeat can't empty it
+        between the check and the read; [] is a lock the heartbeat lost, which stops the batch. Checked again right
+        before each merge call, since the steps before it reach GitHub too; a call already made can't be taken back."""
+        with beating:
+            if held is not None and not held:
+                raise Refused(f"another land took the landing lock {lock_name(base)}")
+            return held[-1] if held else None
+
     for pull, tree, gated, how in landed:
         where, head, posted = f"PR #{pull['number']}", pull["headRefOid"], False
         try:
+            ours = owned()
+            nonce = (
+                git("log", "-1", "--format=%b", ours).rsplit("nonce ", 1)[-1].strip()
+                if ours
+                else ""
+            )
             unlink_pull(pull)
             method = merge_method(pull, loop)
             if local:
+                owned()
                 tip = signed_squash(pull, local[1], (tip, tree))
                 print(f"{where} lands as a {method}")
                 print(f"{where} landed in {base} as {tip}, signed by a key in {local[1]}")
@@ -7489,6 +7515,7 @@ def merges(
                 post_status(head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}")
                 posted = True
                 try:
+                    owned()
                     port("forge").merge(pull["number"], method, body, head)
                 except subprocess.CalledProcessError as exc:
                     merge = merged_anyway(pull["number"], head, exc)

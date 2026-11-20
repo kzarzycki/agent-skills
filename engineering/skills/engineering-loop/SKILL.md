@@ -302,7 +302,7 @@ harness hook. A commit runs the `lint:` tasks on the staged files, and a push ru
 reversible and a draft can't merge: `loop:approvals build` runs when the branch is cut, and
 `loop:approvals merge` on ready PRs in CI.
 
-A PR stays a draft until no core finding is open (Review trail on the PR), so CI skips its
+A PR stays a draft until no core finding is open, bar the cap's majors (Review trail on the PR), so CI skips its
 jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) and push runs have no draft and run as before. A project with an `Affected tests:` line gets a narrowed batch gate on this version: add the push-to-main and nightly runs first, or set `Gate: full` until you do, and check that the `Affected tests:` command runs the project's lint and type checks too, since it becomes the whole batch gate (a line written for draft heads may run tests only). The project template ships those runs with a following release; until then the push and ready-PR runs call `approvals.py affected-tests --base <the PR's base SHA, or github.event.before on a push>`, and the nightly runs the full check and calls `nightly.py red` on red (Nightly, below). Narrowed mode is loop.md's `Affected tests: <command>` line without the opt-out line `Gate: full`. Its command is the whole narrowed check: the project's selector plus its cheap whole-repo lint and type checks, as one task (such as `mise run check-fast`), reading the base from the `Gate base:` variable, else `GATE_BASE`. It selects from the diff against that base and from nothing else the pack provides: every gate runs it on a clean checkout, often a fresh clone, a cloud VM or a CI runner, with only the base variable set. A stateful selector such as pytest-testmon, which keys on a local data file, says in the project's `docs/agents/` files how the project supplies that state (CI caching it keyed on the base commit, say), and without the state it selects every test, which is safe and as slow as the full check, since a selector that selects less without its state would pass a change it never tested. In narrowed mode every gate runs that command and none runs the full suite, which the nightly runs (Nightly): the check on each head the worker pushes, draft or ready, a fix round's too, is `uv run <this skill's folder>/scripts/approvals.py affected-tests`, against the merge base with the branch's base (the commit hook's `lint:` tasks ran at commit; it replaces a `GATE_BASE=<last green>` delta run); the project's CI on a ready PR and on a push to main runs `affected-tests --base <rev>` with the PR's base SHA or the push's previous main tip, and a `<rev>` git can't resolve (the all-zeros SHA of a new branch) runs the full `mise run check`, said in one line; and `land`'s batch gate runs the command with the variable set to the base tip the batch merges onto, so it selects over the batch's combined diff, under the same gate slot, `machine_exit`, records and cloud gate as the full gate. The `gate` line's variable assignments do not apply to the narrowed command: a project writes any variable its checks need on the `Affected tests:` line itself. A project with `gate_steps` keeps its steps in `land`, since each already narrows by its `paths`. No role reruns the full unit tier on a PR head, and, where `ci` is not `false` and no `gate_steps` step runs on the host, none reruns a gate on the host for a ready PR whose required check is green. Who runs what: a draft head, the worker's `affected-tests`; a ready PR, CI's selection; the verifier, on a draft head, reads the worker's report (its command and exit code) and runs the PR's own tests, the `gate` status and `loop-gate/` record being a ready head's. With `ci: false` the gate of record on the ready head is `approvals.py local-ci --record`, run by the worker once when the PR goes ready (again only if the head moves after that, or its merge base with the PR's base does: a stacked PR whose parent lands, a retarget, since a narrowed record is keyed by that merge base): in narrowed mode it runs the `Affected tests:` command against the merge base and records a narrowed pass, which `check merge` takes in place of a full one; otherwise it runs the full gate, and `check merge` takes only a full pass; this holds with or without a `head_proof`. A narrowed pass's command names its base and ends in ` (narrowed)`, which no gate command can hold, so its record and key never equal a full pass's; its `gate` status says `narrowed vs <base>` and `local-ci --status` says `narrowed against <base>`, and nothing that requires a full pass takes it. `local-ci` and `land` clear the `Gate base:` variable from the caller's environment, unless a head proof's `env` names it, and set it themselves only in narrowed mode, so a caller's base never narrows a recorded pass.
@@ -538,8 +538,8 @@ gatekeeper.md's policy (Settings) holds:
   policy, merge: gates}`, `high` `{spec: policy, merge: go}`, or under `spec.auto: true`
   `{spec: owner, merge: gates}`, and `critical` `{spec: policy, merge: owner}`. A change
   rated by several terms takes the strictest `merge` any of them asks. A term the spec's
-  hold never reads (`risk:high`, an exact revert of a high-risk change, the `verifier` term,
-  the cap) rates the change only after its spec was approved: it takes its level's `merge`,
+  hold never reads (`risk:high`, an exact revert of a high-risk change, the `verifier` term)
+  rates the change only after its spec was approved: it takes its level's `merge`,
   or `go` where that level's `spec` is `owner` and its `merge` is `gates`, since the owner
   never saw that rating. `high: {merge: gates}` lands high risk on the gates in a low-stakes
   repo, and the rating still shows as `risk:high`; `low: {merge: go}` holds every merge for
@@ -570,7 +570,7 @@ gatekeeper.md's policy (Settings) holds:
   no keyword is checked, and `Implements` is a link like `Part of`.
 
 A change rates `high` when `risk:high` is on the PR or an issue it closes, a risk rule
-matches, or the cap was reached with a blocker or major open (The cap), and `critical`
+matches, and `critical`
 when it touches `risk.critical_paths`. A high-risk spec covered by policy is still built
 and PR'd; where its level asks a go (by default `high`, but for a rule that held its spec
 under `spec.auto: true`, and `critical`), its merge waits for the owner's go on its head,
@@ -604,7 +604,7 @@ rule that held the spec at a level on `{spec: owner, merge: gates}` (the default
 `spec.auto: true`), or a level whose `merge` is lighter than that rating's, such as
 `critical: {merge: gates}` beside the default `high`. Where the level asks `gates`,
 the merge approval is the gates themselves: every verifier review on the newest pass's
-commit satisfied with no blocker or major open, that commit covering the head that lands,
+commit satisfied with no blocker or major open (at the cap, majors under the lead's `Cap:` line: The cap), that commit covering the head that lands,
 every review thread resolved, no review requesting changes, and the base's required checks
 green. A pass counts whichever model family wrote it (Independent verification).
 
@@ -783,7 +783,7 @@ A brief that names a host worktree for a test run says where the code is, not wh
 
 Where the orchestration backend is native (no Omnigent), a heavy run's cloud route is orchestrating-agents' `scripts/claude_cloud.py start <task file>`, which pushes the branch and starts the cloud session from any agent's Bash, since a bare `claude --cloud` needs a terminal a subagent lacks. The lead or subagent then waits on the session's results through the branch's PR (`gh pr view`, `gh pr checks`). Where the project's cloud environment is missing, `start` prints one line naming `claude-cloud:setup` and exits 2: the step then runs locally, and the report says so in one line that names `claude-cloud:setup`, since the colleague who has not run it is the one who can fix it.
 
-With a cloud worker, a host makes no gate pass, since the worker's VM already holds the checkout and build and the host's cores run the sessions. When `local-ci <pr>` on a host finds no pass for the head, have the worker run `local-ci --record` on that head and push its record, then run `local-ci <pr>` again; never `--run` it, or `--record` it, on the host. Two steps stay on the host because no cloud pass can cover them: a `host` step of `gate_steps`, and `land`'s gate of a batch tree that no recorded pass covers.
+With a cloud worker, a host makes no gate pass, since the worker's VM already holds the checkout and build and the host's cores run the sessions. When `local-ci <pr>` on a host finds no pass for the head, have the worker run `local-ci --record` on that head and push its record, then run `local-ci <pr>` again; never `--run` it, or `--record` it, on the host. Two steps stay on the host because no cloud pass can cover them: a `host` step of `gate_steps`, and `land`'s gate of a batch tree that no recorded pass covers. A lead that reaches a host step over SSH runs it through orchestrating-agents' `omnigent_agent.py ssh <host> --why <purpose> -- <command>` and posts the card it prints when the host's SSH check asks the owner to approve (its Omnigent backend, Host steps over SSH).
 
 ## Cloud worker
 
@@ -819,7 +819,7 @@ or the owner's private network.
   pass is pushed as its record branch as a host's is, and the host's `local-ci <pr>`,
   `check merge` and `land` reuse it from there, so nobody pastes or copies the record. Its brief names the role
   file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs in the worker's VM by default (Where heavy steps run), else on a host in a detached worktree at the head, or on another host loop.md's `Placement: hosts:` line lists, as lead.md step 7 says.
-- **The PR is the interface for content.** The code is the worker's pushed branch. Its
+- **The PR is the interface for content.** The code is the worker's pushed branch; reports, logs and verifier output are never pushed, only posted as comments (a file too large for one goes in a follow-up comment, or is trimmed with its path named). Its
   report is one comment on the PR: its branch and head SHA, each light-gate command with its
   exit code, what it left out and why. If the post fails, since the session's proxy-injected
   `GH_TOKEN` can expire 10 to 20 min in, its reply is `UNPOSTED REPORT` and then the body
@@ -1103,7 +1103,7 @@ or the owner's private network.
   override any resolution, and alone dismisses a teammate's `CHANGES_REQUESTED`; an agent
   dismisses one only when the owner asks for that review in the session, quoting the ask
   in the dismissal. A human review follows the same pattern. The PR is marked ready once no core finding (blocker or major)
-  is open, and squashed on merge. The PR keeps a public trail of what was found, fixed and
+  is open, or at the cap only majors under the lead's `Cap:` line (The cap), and squashed on merge. The PR keeps a public trail of what was found, fixed and
   iterated, and the project's CI skips draft PRs, so it doesn't run on half-done work:
   the worker's `Affected tests:` selection (`approvals.py affected-tests`, else `mise run check`) on each pushed head is the check while a PR is a draft.
 - **Remove, don't append.** Remove a thing as if it never existed. Edit and compress
@@ -1143,7 +1143,8 @@ or the owner's private network.
   links to the spec, the PR and the instance, what is blocked, what the owner must do (or
   "nothing"), and each open question restated. Past about 150K tokens of context, at a
   natural break, offer the owner a ready compact command with the summary it should keep.
-- **Landing.** Land starts once the last verdict is triaged with no core finding open and
+- **Landing.** Land starts once the last verdict is triaged with no core finding open (or, at
+  the cap, only majors open under the lead's `Cap:` line: The cap) and
   the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr> --wait`,
   which marks it ready and lands it with every other landable PR in one gated batch. The PR merges only when the newest
   verdict covers the head that lands, the required checks are green there, and, where the
@@ -1211,13 +1212,21 @@ up to the cap reviews the diff since the previous report and reruns its repros. 
 lands without review: every head that lands has a satisfied verdict on that exact head,
 so any commit after the last verdict, a merge of main included, gets a verifier pass of
 its own. The one exception is gatekeeper.md's `carry_over_main`: clean merges of main that touch
-none of the PR's files keep the verdict (Approvals and proof).
+none of the PR's files keep the verdict (Approvals and proof). The other is the lead's cap
+decision below: a head at the cap with majors open, none a blocker, lands under a `Cap:` line.
 
-- **The last pass under the cap leaves a blocker or major open:** stop and ask the owner,
-  since the fix keeps regressing and only they decide what happens next. They have two
-  options. One is a fix followed by one pass past the cap, scoped to the open items. The
-  other is leaving the code untouched, and parking or closing the PR. You never fix and
-  land on your own call: `land` holds such a PR for the owner's go on its head.
+- **The last pass under the cap leaves a blocker or major open:** the lead decides, since
+  more passes alone would keep the fix regressing. It picks one of three:
+  - Fix the open items and run one pass past the cap, scoped to them. The PR lands on that
+    pass's satisfied verdict.
+  - Leave the code untouched, file the majors as a follow-up issue (Triage), and put a line
+    `Cap: #<follow-up>` in the PR body. That line is the lead's recorded decision: with it
+    `check merge` accepts majors open on a pass at the cap or later, and the PR lands on that
+    verdict. A blocker still refuses, since it means the change is wrong as it stands, so a
+    blocker leaves only the fix or the next option.
+  - Park or close the PR.
+
+  The cap adds no risk: the PR's own rating decides whether its merge waits for a go.
 - **The last pass under the cap leaves only minor or edge findings open:** ledger them and
   file their issue (Triage), leave the code untouched, and land on the satisfied verdict.
   There is no owner stop.

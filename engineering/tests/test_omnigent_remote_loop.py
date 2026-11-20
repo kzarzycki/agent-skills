@@ -139,7 +139,11 @@ class Stop(Exception):
     ],
 )
 def test_a_start_reads_the_remote_loop_md_once_and_only_when_a_claude_session_needs_it(
-    agent: str, host: str, top_level: bool, role: str | None, reads: int
+    agent: str,
+    host: str,
+    top_level: bool,
+    role: str | None,
+    reads: int,
 ) -> None:
     og = Server({**CHECKOUT, LOOP: "Lead autocompact: 150k\n"})
 
