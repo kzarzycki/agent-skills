@@ -5739,10 +5739,12 @@ def fyis(og: Fleet) -> list[str]:
 
 
 def skewed(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """The wall and monotonic clocks, ahead of the real ones by the number in the returned list."""
-    offset, real, mono = [0.0], time.time, time.monotonic
-    monkeypatch.setattr(omnigent_agent.time, "time", lambda: real() + offset[0])
-    monkeypatch.setattr(omnigent_agent.time, "monotonic", lambda: mono() + offset[0])
+    """The wall and monotonic clocks, frozen at their value now and ahead of it by the number in
+    the returned list. Frozen, so a slow runner cannot move a test across a window it measures
+    in seconds; only the test moves time."""
+    offset, real, mono = [0.0], time.time(), time.monotonic()
+    monkeypatch.setattr(omnigent_agent.time, "time", lambda: real + offset[0])
+    monkeypatch.setattr(omnigent_agent.time, "monotonic", lambda: mono + offset[0])
     return offset
 
 
