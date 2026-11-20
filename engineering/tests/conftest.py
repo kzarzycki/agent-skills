@@ -64,14 +64,16 @@ def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
             inside.now = False
 
     def setitem(environ: os._Environ[str], key: str, value: str) -> None:
-        # a name the OS refuses raises in the direct write, before monkeypatch records an undo whose deletion would
+        # os.environb shares the class, so its bytes key goes straight through before the name check reads it as str.
+        # A name the OS refuses raises in the direct write, before monkeypatch records an undo whose deletion would
         # raise too; a refused value leaves an undo that teardown makes, so the one native write is the assignment's
-        refused = not key or "=" in key or "\0" in key
         if (
             environ is not os.environ
             or key == "PYTEST_CURRENT_TEST"
             or not isinstance(value, str)
-            or refused
+            or not key
+            or "=" in key
+            or "\0" in key
         ):
             return _SET(environ, key, value)
         through(lambda: monkeypatch.setenv(key, value), lambda: _SET(environ, key, value))
