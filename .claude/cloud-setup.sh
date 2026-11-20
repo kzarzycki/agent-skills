@@ -31,12 +31,6 @@ fetch() {
     *) install -D -m755 "$d/$a" "$3" ;;
   esac
 }
-# python_by_uv <version>: core:python's build through uv, whose own list names the
-# python-build-standalone release on github.com, linked where mise looks for it
-python_by_uv() {
-  local p; "$uv" python install "$1" && p=$("$uv" python find --managed-python "$1") \
-    && mkdir -p "$mi/python" && ln -sfn "$(dirname "$(dirname "$p")")" "$mi/python/$1"
-}
 pin() { mise current "$1"; }  # the version mise.toml pins
 repo=/home/user/agent-skills
 echo "setup start $(date -u +%FT%TZ) user=$(id -un) home=$HOME repo_present=$([ -d "$repo" ] && echo yes || echo no)" >> "$log"
@@ -52,10 +46,13 @@ v=$(pin ubi:carvel-dev/vendir); a=$gh/carvel-dev/vendir/releases/download/v$v
 step vendir fetch "$a/vendir-linux-amd64" "$a/checksums.txt" "$mi/ubi-carvel-dev-vendir/$v/bin/vendir"
 v=$(pin uv); a=$gh/astral-sh/uv/releases/download/$v/uv-x86_64-unknown-linux-gnu.tar.gz
 step uv fetch "$a" "$a.sha256" "$mi/uv/$v"
-uv="$mi/uv/$v/uv-x86_64-unknown-linux-gnu/uv"
 v=$(pin github:microsoft/apm); a=$gh/microsoft/apm/releases/download/v$v/apm-linux-x86_64.tar.gz
 step apm fetch "$a" "$a.sha256" "$mi/github-microsoft-apm/$v" 1
-step python python_by_uv "$(pin python)"
+# core:python's build from python-build-standalone, which keeps only each minor's newest patch in a
+# release, so the release that holds the pinned one is named here and moves with the pin
+v=$(pin python) pbs=20260804
+a=$gh/astral-sh/python-build-standalone/releases/download/$pbs
+step python fetch "$a/cpython-$v+$pbs-x86_64-unknown-linux-gnu-install_only.tar.gz" "$a/SHA256SUMS" "$mi/python/$v" 1
 step mise-install mise install
 # the files apm deploys and git ignores (.claude/hooks/...): settings.json's Bash hook fails closed without them
 step apm-install mise exec -- apm install --frozen --target claude,codex
