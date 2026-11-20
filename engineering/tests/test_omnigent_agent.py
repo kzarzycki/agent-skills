@@ -5663,6 +5663,25 @@ def supervised(
         omnigent_agent.supervise_registry(og, registry, **kwargs)  # type: ignore[arg-type]
 
 
+def test_a_second_supervised_run_counts_only_its_own_polls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={tmp_path / 'a.md'}\n")
+    og = Fleet(a=[told("brief", 60)])
+    supervised(og, registry, monkeypatch, 2)
+    seen: list[int] = []
+
+    def between(poll: int) -> None:
+        seen.append(poll)
+        subprocess.run(
+            ["sleep", "0.05"], timeout=5, check=False
+        )  # a call with a timeout poll-sleeps, as git does under load
+
+    supervised(og, registry, monkeypatch, 3, between)
+    assert seen == [1, 2]
+
+
 STAMP = r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d "
 
 
