@@ -1291,7 +1291,9 @@ def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_
     locked_at: list[float] = []
 
     def take_the_lock() -> None:
-        locked_at.append(time.monotonic())  # before the write: the wait can see `locked` the moment it lands
+        locked_at.append(
+            time.monotonic()
+        )  # before the write: the wait can see `locked` the moment it lands
         log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")
 
     # a loaded or niced host fires the timer late, so the budget is measured from the write
