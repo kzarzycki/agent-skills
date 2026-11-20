@@ -36,7 +36,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    every message to your session, your children's reports and the supervisor's notices
    included, until the owner replies. Omnigent's `sys_ask_user_question` is the way to ask
    without stopping: it posts a card and returns at once, so keep working, and act on the
-   answer when it arrives as a message (`[answer to <question id>]`); otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
+   answer when it arrives as a message (`[answer to <question id>]`; once you settle a card's question, withdraw the card: orchestrating-agents' backends/omnigent.md, Settle it); otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
    answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
    `--by owner` records their word and removes the label. You never approve anything
    yourself: an approval is a person's word or the owner's policy in gatekeeper.md. An issue
