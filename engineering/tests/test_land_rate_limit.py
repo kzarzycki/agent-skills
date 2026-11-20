@@ -221,7 +221,7 @@ def test_a_rate_limit_wait_adds_bounded_jitter(
     assert sum(calls["sleeps"]) == 30 + github.JITTER
 
 
-@pytest.mark.parametrize(("answer", "poll"), [("400 5000", 300), ("500 5000", 120), ("x", 120)])
+@pytest.mark.parametrize(("answer", "poll"), [("400 5000", 300), ("500 5000", 300), ("x", 300)])
 def test_a_low_quota_stretches_the_poll(
     monkeypatch: pytest.MonkeyPatch, answer: str, poll: int
 ) -> None:

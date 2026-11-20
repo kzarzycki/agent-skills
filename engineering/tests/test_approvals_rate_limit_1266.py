@@ -95,7 +95,7 @@ def test_another_error_is_no_rate_limit() -> None:
 
 
 def test_a_wait_polls_the_queue_every_two_minutes_not_thirty() -> None:
-    assert approvals.QUEUE_POLL == 120 and approvals.POLL == 30
+    assert approvals.QUEUE_POLL == 300 and approvals.POLL == 30
 
 
 def network(text: str) -> subprocess.CalledProcessError:

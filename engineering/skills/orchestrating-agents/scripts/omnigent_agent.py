@@ -613,16 +613,17 @@ Standing decisions:
 # A lead's unchanged status labels are written again once the last write is this old.
 # ponytail: a knob; the browser marks a line stale past 10 min, so keep it well under that.
 LABEL_SECONDS = 60.0
-# A repo's default-branch head is read from GitHub at most this often: a landing is news within a
-# minute, and a 5 s poll would spend 720 calls an hour per repo.
-HEAD_SECONDS = 60.0
+# A repo's default-branch head is read from GitHub at most this often, through gh's on-disk cache that
+# every supervise on the host shares (N instances cost about one read): a landing is news within five
+# minutes, and a 60 s poll per instance drained the account's REST limit.
+HEAD_SECONDS = 300.0
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
 # wait-for's default budget: under a 10-minute tool call with room for the call's own start and exit
 WAIT_FOR_BUDGET = 570.0
 WAIT_FOR_EVERY = 2.0  # a local read: a log or a pid
-WAIT_FOR_PR_EVERY = 30.0  # a GitHub call, so fewer
+WAIT_FOR_PR_EVERY = 120.0  # a poll is several GitHub calls, and several waiters run at once
 LOCK_CEILING = 7200.0  # seconds a run may wait on the gate lock, as long as the landing lock's wait
 PID_SLACK = 5.0  # seconds a pid file may be written after its process starts (ps rounds down too)
 KILL_GRACE = 5.0  # seconds a stalled run gets after SIGTERM before SIGKILL
@@ -972,6 +973,15 @@ def write_failed(og: Omnigent, sid: str | None, report: Path, e: Fail) -> None:
         report.write_text(f"FAILED: {code.replace(' ', '_')}: {message}\n")
     except OSError as err:
         print(f"{report}: FAILED line not written: {reason(err)}", file=sys.stderr)
+
+
+class RateLimited(Fail):
+    """GitHub refused for its rate limit; ``wait`` is the seconds until the limit resets. A poller sleeps
+    that long, since retrying early keeps the limit drained for every project on the account."""
+
+    def __init__(self, message: str, wait: float):
+        super().__init__(message)
+        self.wait = wait
 
 
 class Gone(Fail):
@@ -4762,12 +4772,20 @@ def kill_group(pid: int) -> None:
         send(signal.SIGKILL)
 
 
+COMMITS: dict[str, Any] = {}  # git/commits/<sha> answers, kept for the process: a sha's commit is immutable
+
+
 def pr_rest(path: str, end: float, pages: bool = False) -> Any:
     """``repos/{owner}/{repo}/<path>`` through REST (``{owner}/{repo}`` from this clone, which a launch dir with no
     working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list."""
     timeout = max(0.01, min(HTTP_SECONDS, end - time.monotonic()))
     if not pages:
-        return json.loads(gh("api", f"repos/{{owner}}/{{repo}}/{path}", timeout=timeout))
+        if path in COMMITS:  # a commit never changes
+            return COMMITS[path]
+        got = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/{path}", timeout=timeout))
+        if path.startswith("git/commits/"):
+            COMMITS[path] = got
+        return got
     out = gh(
         "api", "--paginate", f"repos/{{owner}}/{{repo}}/{path}", "--jq", ".[]", timeout=timeout
     )
@@ -4810,12 +4828,25 @@ QUESTION = re.compile(r"\s*## Verifier question\b")
 SATISFIED = re.compile(r"^SATISFIED:\s*(\S+)", re.MULTILINE)
 
 
-def verdict_outcome(pr: int, end: float, since: float | None = None) -> tuple[int, str] | None:
+def verdict_outcome(
+    pr: int, end: float, since: float | None = None, seen: dict | None = None
+) -> tuple[int, str] | None:
     """The newest verifier word on PR ``pr``'s current head, from its comments and reviews: a report whose ``Head:``
     line names the head and that holds a ``SATISFIED:`` line (0 for yes, 1 otherwise), or a ``## Verifier question``
     comment posted after the head's commit (1); None while there is neither. A report on an older head, and any word
-    posted before ``since`` (seconds), is ignored."""
-    head = pr_rest(f"pulls/{pr}", end)["head"]["sha"]
+    posted before ``since`` (seconds), is ignored. ``seen`` is one wait's memo: a PR whose head and ``updated_at``
+    (a comment or review bumps it) are those of the last empty look is not read again."""
+    view = pr_rest(f"pulls/{pr}", end)
+    head = view["head"]["sha"]
+    if seen is not None and seen.get("stamp") == (head, view.get("updated_at")):
+        return None
+    result = _verdict(pr, head, end, since)
+    if seen is not None:
+        seen["stamp"] = None if result else (head, view.get("updated_at"))
+    return result
+
+
+def _verdict(pr: int, head: str, end: float, since: float | None) -> tuple[int, str] | None:
     committed = pr_rest(f"git/commits/{head}", end)["committer"]["date"]
     said = [(c["created_at"], c) for c in pr_rest(f"issues/{pr}/comments", end, pages=True)]
     said += [
@@ -4864,6 +4895,7 @@ def wait_for(
     deadline = time.monotonic() + budget
     every = WAIT_FOR_PR_EVERY if pr is not None else WAIT_FOR_EVERY
     settled = {"gate": gate_outcome, "verdict": verdict_outcome}.get(until)
+    seen: dict = {}
 
     def ended() -> tuple[int, str] | None:
         """The log's exit line: with ``--pid``, only one after the marker of the run it names, so a
@@ -4912,10 +4944,15 @@ def wait_for(
                 return None
             try:  # a query may not outlast the budget
                 if settled is not None:
-                    if outcome := settled(pr, time.monotonic() + left, since):
+                    extra = {"seen": seen} if until == "verdict" else {}
+                    if outcome := settled(pr, time.monotonic() + left, since, **extra):
                         return outcome
                 elif outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
                     return outcome
+            except RateLimited as e:  # retrying keeps the limit drained: sleep to its reset
+                print(f"GitHub rate limit: waiting {e.wait:.0f}s for its reset", file=sys.stderr, flush=True)
+                time.sleep(min(e.wait, max(deadline - time.monotonic(), 0)))
+                continue
             except BLIPS:  # a GitHub blip: the next poll asks again
                 pass
         elif pid and pid_of(pid) is None:
@@ -5005,7 +5042,27 @@ def gh(*args: str, timeout: float = HTTP_SECONDS, cwd: Path | None = None) -> st
         ).stdout
     except (OSError, subprocess.SubprocessError) as e:
         why = (getattr(e, "stderr", "") or str(e)).strip()
+        if wait := rate_wait(why):
+            raise RateLimited(f"gh {' '.join(args)}: {why}", wait) from e
         raise Fail(f"gh {' '.join(args)}: {why}") from e
+
+
+def rate_wait(stderr: str) -> float | None:
+    """Seconds until GitHub's REST limit resets when ``stderr`` is a 403/429 rate-limit refusal, else None. A
+    primary limit reads the reset time from ``gh api rate_limit`` (it costs no quota), a secondary one the
+    ``Retry-After`` its text shows, else a minute."""
+    if not re.search(r"rate limit|HTTP 429", stderr, re.IGNORECASE):
+        return None
+    if found := re.search(r"retry[- ]after:? *(\d+)", stderr, re.IGNORECASE):
+        return float(found[1])
+    try:
+        reset = subprocess.run(
+            ["gh", "api", "rate_limit", "--jq", ".resources.core.reset"],
+            capture_output=True, text=True, timeout=HTTP_SECONDS, check=True,
+        ).stdout.strip()
+        return max(float(reset) - time.time(), 0.0) + 1.0
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return 60.0
 
 
 def workspace_head(og: Omnigent, sid: str, workspace: str) -> str:
@@ -5114,7 +5171,8 @@ def origin_repo(config: str) -> str:
 
 def default_head(repo: str) -> str:
     """The sha the default branch of GitHub repo ``repo`` points at (``commits/HEAD``)."""
-    sha = gh("api", f"repos/{repo}/commits/HEAD", "--jq", ".sha").strip()
+    # --cache: gh keeps the answer on disk for HEAD_SECONDS, shared by every supervise on this host
+    sha = gh("api", "--cache", f"{int(HEAD_SECONDS)}s", f"repos/{repo}/commits/HEAD", "--jq", ".sha").strip()
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise Fail(f"{repo}: no default-branch head in {sha[:80]!r}")
     return sha
@@ -6901,6 +6959,7 @@ def supervise_registry(
     outbox: list[tuple[str | None, tuple[str, Path, float] | None, str, str, str]] = []
     repos: dict[str, str] = {}  # each followed lead's repo, empty for none; read once
     headed: dict[str, float] = {}  # when each repo's default-branch head was last read
+    limited = [0.0]  # monotonic time before which GitHub's rate limit refuses us
     window = time.monotonic()
     started = time.time()  # a lead first seen in this run reports no turn end from before it
     # an end written after the last poll of the run before is news, though it predates this run's start
@@ -7554,9 +7613,16 @@ def supervise_registry(
         for repo, sid in first.items():
             if time.monotonic() - headed.get(repo, -HEAD_SECONDS) < HEAD_SECONDS:
                 continue
+            if time.monotonic() < limited[0]:  # GitHub's limit is account-wide: no repo asks before its reset
+                continue
             headed[repo] = time.monotonic()
             try:
                 sha = default_head(repo)
+            except RateLimited as e:
+                limited[0] = time.monotonic() + e.wait
+                headed.pop(repo, None)
+                log(("head", repo), f"GitHub rate limit: default branches not read for {e.wait:.0f}s, until its reset")
+                continue
             except Exception as e:  # noqa: BLE001 - read again at the next HEAD_SECONDS
                 log(("head", repo), f"{repo}: default branch not read: {reason(e)}")
                 continue
