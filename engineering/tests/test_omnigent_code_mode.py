@@ -257,3 +257,20 @@ def test_the_script_takes_the_flag_on_start_and_run() -> None:
 
 def test_a_service_does_not_carry_the_mode() -> None:
     assert "OMNIGENT_CODE_MODE" not in omnigent_agent.SERVICE_VARIABLES
+
+
+def test_the_command_line_flag_reaches_the_create_and_a_bad_one_starts_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed(tmp_path, monkeypatch, "code-mode@claude-mods")
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", str(tmp_path / "brief.md"), "tmp/lead.md", "--top-level"]
+    assert omnigent_agent.main([*argv, "--code-mode", "preferred"]) == 0
+    assert og.code_modes == ["preferred"]
+    assert omnigent_agent.main([*argv, "--code-mode", "always"]) == 1
+    assert "--code-mode always: not a code mode" in capsys.readouterr().err
+    assert len(og.sessions) == 1
