@@ -13904,7 +13904,7 @@ def test_brief_prints_the_first_message_start_sends_a_cloud_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A cloud lead reaches Omnigent only through its MCP tools, so it composes a child's message with
-    `brief` and passes it to sys_session_create: it must be the message `start` sends (#1508)."""
+    `brief` and passes it to sys_session_create: it must be the message `start` sends (#1509)."""
     monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
     role = tmp_path / "worker.md"
     role.write_text("# Worker\nrule\n")
