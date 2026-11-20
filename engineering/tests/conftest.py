@@ -1,7 +1,8 @@
 import os
 import shutil
 import sys
-from collections.abc import Callable, Iterable
+import threading
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
 # The engineering loop's script tests load modules from a shipped skill folder;
@@ -33,6 +34,60 @@ from approvals_harness import (  # noqa: F401
 def _no_wait_place(monkeypatch: pytest.MonkeyPatch) -> None:
     """A test that mocks the rerun's execv leaves the wait's place in the environment; the next land would resume it."""
     monkeypatch.delenv("LOOP_LAND_WAIT", raising=False)
+
+
+_Environ = type(os.environ)
+_SET, _DEL = _Environ.__setitem__, _Environ.__delitem__
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
+    """A test that runs a script's cli() in this process lets it edit os.environ directly, which monkeypatch never
+    undoes: approvals' leave_own_environment drops the venv from PATH, so a later subprocess's python3 loses its
+    packages (a fake vendir's `import yaml`). During the call, each such edit is made through the test's own
+    monkeypatch instead, so its teardown undoes it in order with the test's patches, before any wider fixture's
+    teardown. pytest's PYTEST_CURRENT_TEST is left to pytest, which sets it for every phase.
+    ponytail: a direct edit made in a fixture's setup is not undone; none leaks today."""
+    monkeypatch = getattr(item, "funcargs", {}).get("monkeypatch")
+    if monkeypatch is None:  # every test here takes it through the autouse fixtures above
+        return (yield)
+    # per thread, so another thread's edit is never taken for monkeypatch's own write
+    inside = threading.local()
+
+    def through(edit: Callable[[], None], direct: Callable[[], None]) -> None:
+        if getattr(inside, "now", False):  # monkeypatch's own write
+            return direct()
+        inside.now = True
+        try:
+            edit()
+        finally:
+            inside.now = False
+
+    def setitem(environ: os._Environ[str], key: str, value: str) -> None:
+        # os.environb shares the class, so its bytes key goes straight through before the name check reads it as str.
+        # A name the OS refuses raises in the direct write, before monkeypatch records an undo whose deletion would
+        # raise too; a refused value leaves an undo that teardown makes, so the one native write is the assignment's
+        if (
+            environ is not os.environ
+            or key == "PYTEST_CURRENT_TEST"
+            or not isinstance(value, str)
+            or not key
+            or "=" in key
+            or "\0" in key
+        ):
+            return _SET(environ, key, value)
+        through(lambda: monkeypatch.setenv(key, value), lambda: _SET(environ, key, value))
+
+    def delitem(environ: os._Environ[str], key: str) -> None:
+        if environ is not os.environ or key == "PYTEST_CURRENT_TEST" or key not in environ:
+            return _DEL(environ, key)
+        through(lambda: monkeypatch.delenv(key), lambda: _DEL(environ, key))
+
+    _Environ.__setitem__, _Environ.__delitem__ = setitem, delitem  # type: ignore[method-assign]
+    try:
+        return (yield)
+    finally:
+        _Environ.__setitem__, _Environ.__delitem__ = _SET, _DEL  # type: ignore[method-assign]
 
 
 # The fixtures that run a tool beyond git and Python: pytest ignores a mark on a fixture, so each test that takes
