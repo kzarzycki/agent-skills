@@ -10653,7 +10653,8 @@ def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its
     brief = omnigent_agent.text_of(og.sessions[sid][1])
     assert "never write under `.git/`" in brief and "`tmp/loop/` is scratch" in brief
     assert (
-        "whatever branch the brief names" in brief and "Never ask the owner which branch" in brief
+        "whatever other branch the brief names" in brief
+        and "Never ask the owner which branch" in brief
     )
     assert "never committed.\n" in brief and brief.endswith(omnigent_agent.CLOUD_NO_PUSH + "\ndo X")
     assert (
