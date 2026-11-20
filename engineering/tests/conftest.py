@@ -35,53 +35,48 @@ def _no_wait_place(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LOOP_LAND_WAIT", raising=False)
 
 
-# os.environ as each phase of a test found it: before setup, before the call, after the call
-_ENVIRON = pytest.StashKey[dict[str, dict[str, str]]]()
-
-
-@pytest.hookimpl(wrapper=True)
-def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
-    item.stash[_ENVIRON] = {"setup": dict(os.environ)}
-    return (yield)
+_Environ = type(os.environ)
+_SET, _DEL = _Environ.__setitem__, _Environ.__delitem__
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
-    seen = item.stash[_ENVIRON]
-    seen["call"] = dict(os.environ)
-    try:
-        return (yield)
-    finally:
-        seen["called"] = dict(os.environ)
-
-
-@pytest.hookimpl(wrapper=True)
-def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
     """A test that runs a script's cli() in this process lets it edit os.environ directly, which monkeypatch never
     undoes: approvals' leave_own_environment drops the venv from PATH, so a later subprocess's python3 loses its
-    packages (a fake vendir's `import yaml`). After every fixture's teardown, a variable the call changed is put back
-    to its value before the call when it is still as the call left it and not as it was before setup. That leaves
-    alone:
-    - a monkeypatch the call made, since its undo has already put the value back
-    - an early `monkeypatch.undo()`, since it leaves the value as it was before setup
-    - a session fixture's variable, which the call found set
-    - pytest's PYTEST_CURRENT_TEST, which the call never changes
-    A monkeypatch recorded after a direct edit brings the call's value back at its undo, which this then undoes.
+    packages (a fake vendir's `import yaml`). During the call, each such edit is made through the test's own
+    monkeypatch instead, so its teardown undoes it in order with the test's patches, before any wider fixture's
+    teardown. pytest's PYTEST_CURRENT_TEST is left to pytest, which sets it for every phase.
     ponytail: a direct edit made in a fixture's setup is not undone; none leaks today."""
+    monkeypatch = getattr(item, "funcargs", {}).get("monkeypatch")
+    if monkeypatch is None:  # every test here takes it through the autouse fixtures above
+        return (yield)
+    inside = False
+
+    def through(edit: Callable[[], None], direct: Callable[[], None]) -> None:
+        nonlocal inside
+        if inside:  # monkeypatch's own write
+            return direct()
+        inside = True
+        try:
+            edit()
+        finally:
+            inside = False
+
+    def setitem(environ: os._Environ[str], key: str, value: str) -> None:
+        if environ is not os.environ or key == "PYTEST_CURRENT_TEST" or not isinstance(value, str):
+            return _SET(environ, key, value)
+        through(lambda: monkeypatch.setenv(key, value), lambda: _SET(environ, key, value))
+
+    def delitem(environ: os._Environ[str], key: str) -> None:
+        if environ is not os.environ or key == "PYTEST_CURRENT_TEST" or key not in environ:
+            return _DEL(environ, key)
+        through(lambda: monkeypatch.delenv(key), lambda: _DEL(environ, key))
+
+    _Environ.__setitem__, _Environ.__delitem__ = setitem, delitem  # type: ignore[method-assign]
     try:
         return (yield)
     finally:
-        seen = item.stash.get(_ENVIRON, {})
-        if "called" in seen:
-            setup, before, after = seen["setup"], seen["call"], seen["called"]
-            for key in before.keys() | after.keys():
-                now = os.environ.get(key)
-                changed = before.get(key) != after.get(key)
-                if changed and now == after.get(key) and now != setup.get(key):
-                    if key in before:
-                        os.environ[key] = before[key]
-                    else:
-                        del os.environ[key]
+        _Environ.__setitem__, _Environ.__delitem__ = _SET, _DEL  # type: ignore[method-assign]
 
 
 # The fixtures that run a tool beyond git and Python: pytest ignores a mark on a fixture, so each test that takes

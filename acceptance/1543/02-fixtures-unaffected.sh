@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# The restore undoes only what a test call changed and nothing put back: a direct edit, also one a monkeypatch
-# recorded after it, is undone for the next test, under xdist too; a session fixture keeps its variable, and a
-# module fixture still sees its teardown phase.
+# A test call's direct edits are undone for the next test, under xdist too, in order with the test's own monkeypatch:
+# a PATH patch made after the CLI strips the venv, and a CLI deletion of a session fixture's variable, are both put
+# back; a session fixture keeps its variable, and a module fixture still sees its teardown phase. Each run clears the
+# caller's PYTEST_ADDOPTS, so the serial run stays serial.
 
 root=$(git rev-parse --show-toplevel)
 probe=$(mktemp -d)
@@ -20,7 +21,8 @@ VENV_BIN = os.path.join(sys.prefix, "bin")
 
 
 @pytest.fixture(scope="session")
-def session_env(worker_id):
+def session_env():
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "master")
     key = "PROBE_1543_SESSION"
     assert key not in os.environ
     os.environ[key] = worker_id
@@ -60,6 +62,31 @@ def test_mixed_restore():
     assert VENV_BIN in os.get_exec_path()
 
 
+def test_prepend_leak(monkeypatch, tmp_path):
+    approvals.leave_own_environment()
+    assert VENV_BIN not in os.get_exec_path()
+    monkeypatch.setenv("PATH", str(tmp_path), prepend=os.pathsep)
+
+
+def test_prepend_restore():
+    assert VENV_BIN in os.get_exec_path()
+
+
+@pytest.fixture(scope="session")
+def fixture_venv():
+    os.environ["PROBE_1543_VENV"] = sys.prefix
+    yield
+    os.environ.pop("PROBE_1543_VENV", None)
+
+
+def test_session_delete_leak(fixture_venv):
+    del os.environ["PROBE_1543_VENV"]
+
+
+def test_session_delete_restore(fixture_venv):
+    assert os.environ.get("PROBE_1543_VENV") == sys.prefix
+
+
 @pytest.fixture(scope="module")
 def observe_teardown_phase():
     yield
@@ -72,5 +99,5 @@ PY
 
 cd "$root"
 export PYTHONPATH="$root/engineering/tests${PYTHONPATH:+:$PYTHONPATH}"
-uv run pytest -q --tb=short -p no:cacheprovider --rootdir "$probe" "$probe/test_environ_probe.py"
-uv run pytest -q --tb=short -p no:cacheprovider --rootdir "$probe" -n 2 --dist loadfile "$probe/test_environ_probe.py"
+PYTEST_ADDOPTS= uv run pytest -q --tb=short -p no:cacheprovider -p no:xdist --rootdir "$probe" "$probe/test_environ_probe.py"
+PYTEST_ADDOPTS= uv run pytest -q --tb=short -p no:cacheprovider --rootdir "$probe" -n 2 --dist loadfile "$probe/test_environ_probe.py"
