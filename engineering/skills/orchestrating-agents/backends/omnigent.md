@@ -266,7 +266,8 @@ reported it, and `reasoning_effort`), since a Codex child's rollout sits under a
 **Host steps over SSH.** Run a step on another host as `python3 scripts/omnigent_agent.py ssh <host> --why
 <purpose> -- <command...>`, never a bare `ssh`, since a host whose SSH layer asks the owner to approve each
 connection (an SSH check) shows the owner a login link with no word of who asks or why. It runs `ssh -o
-BatchMode=yes <host> <command>` and passes its output and exit code through. When ssh prints the check's
+BatchMode=yes <host> <command>` (one word after `--` is a shell command as written; several are joined as
+argv, quoted for the remote shell) and passes its output and exit code through. When ssh prints the check's
 `To authenticate, visit:` line it stops ssh, which otherwise waits there however long the approval takes, prints a
 question card's text on stdout (the session asking, the host, the command, `--why` and the link, with a **Done**
 option) and exits 75. Post that text as an owner card (`sys_ask_user_question`), or, in a child, as its

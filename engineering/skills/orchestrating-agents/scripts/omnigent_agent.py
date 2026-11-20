@@ -8661,8 +8661,10 @@ def ssh_step(host: str, why: str, command: list[str], server: str = "") -> int:
     through. When ssh prints the SSH check's ``To authenticate, visit:`` line, stop it (it hangs
     there, BatchMode or not) and print the question card text for the owner, naming who asks,
     the host, the command, why and the login link; exit ``SSH_CHECK``."""
+    # ssh hands the remote shell one string: one word is a shell command as written, several are argv
+    remote = command[0] if len(command) == 1 else shlex.join(command)
     proc = subprocess.Popen(
-        ["ssh", "-o", "BatchMode=yes", host, *command],
+        ["ssh", "-o", "BatchMode=yes", host, remote],
         stderr=subprocess.PIPE,
         text=True,
     )
@@ -8686,7 +8688,7 @@ def ssh_step(host: str, why: str, command: list[str], server: str = "") -> int:
         f"SSH check on {host}: approve this connection?\n\n"
         f"- Asking: {who or 'an agent outside Omnigent'}\n"
         f"- Host: {host}\n"
-        f"- Command: {shlex.join(command)}\n"
+        f"- Command: {remote}\n"
         f"- Why: {why}\n"
         f"- Approve at: {link}\n\n"
         "Options: Done (approved; the agent runs it again)"
@@ -9101,7 +9103,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument(
         "--why", required=True, help="the step's purpose, shown to the owner on the card"
     )
-    p.add_argument("command", nargs="+", help="after --: the command to run on the host")
+    p.add_argument(
+        "command",
+        nargs="+",
+        help="after --: the command to run on the host; one word is a shell command as written, several are argv",
+    )
     p = sub.add_parser(
         "wait-for",
         description="block on a run's log or pid, or a PR condition, up to --budget; print only the outcome",

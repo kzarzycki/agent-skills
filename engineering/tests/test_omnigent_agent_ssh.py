@@ -5,11 +5,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).parents[1] / "skills/orchestrating-agents/scripts/omnigent_agent.py"
 LINK = "https://login.tailscale.com/a/abc123"
 
 
-def ssh(tmp_path: Path, fake: str) -> subprocess.CompletedProcess[str]:
+def ssh(
+    tmp_path: Path, fake: str, command: tuple[str, ...] = ("local-ci", "7")
+) -> subprocess.CompletedProcess[str]:
     """Run the helper with ``fake`` as the body of the ``ssh`` it finds on PATH."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -28,8 +32,7 @@ def ssh(tmp_path: Path, fake: str) -> subprocess.CompletedProcess[str]:
             "--why",
             "run the host gate for PR 7",
             "--",
-            "local-ci",
-            "7",
+            *command,
         ],
         env=env,
         capture_output=True,
@@ -59,7 +62,14 @@ def test_the_check_line_stops_ssh_and_prints_the_card(tmp_path: Path) -> None:
         assert part in card, (part, card)
 
 
-def test_any_other_ssh_ending_passes_through(tmp_path: Path) -> None:
-    done = ssh(tmp_path, "echo remote out\necho remote err >&2\nexit 3")
-    assert (done.returncode, done.stdout) == (3, "remote out\n")
+@pytest.mark.parametrize("code", [0, 3])
+def test_any_other_ssh_ending_passes_through(tmp_path: Path, code: int) -> None:
+    done = ssh(tmp_path, f"echo remote out\necho remote err >&2\nexit {code}")
+    assert (done.returncode, done.stdout) == (code, "remote out\n")
     assert "remote err" in done.stderr
+
+
+def test_several_words_reach_the_remote_shell_as_argv(tmp_path: Path) -> None:
+    # OpenSSH joins its arguments into one string for the remote shell: the fake runs it as that shell
+    done = ssh(tmp_path, 'sh -c "$4"', ("printf", "<%s>", "a b"))
+    assert (done.returncode, done.stdout) == (0, "<a b>")
