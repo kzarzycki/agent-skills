@@ -141,9 +141,63 @@ def test_supervise_asks_no_repo_before_the_limit_resets(monkeypatch, tmp_path):
     assert len(reads) == 1
 
 
-def test_land_wait_queue_polls_per_hour_are_bounded():
-    import approvals_harness as h  # noqa: F401  (loads approvals)
-    from approvals_harness import approvals
+def test_supervise_reads_the_default_branch_rarely_over_an_hour(monkeypatch, tmp_path):
+    """A fake clock runs one hour of supervise polls on an unmoved branch; the head reads stay at 12 or fewer
+    (one per HEAD_SECONDS). land --wait's loop honours QUEUE_POLL: test_approvals_rate_limit_1266."""
+    import test_omnigent_agent as t
 
-    assert HOUR / approvals.QUEUE_POLL <= 12
-    assert HOUR / oa.HEAD_SECONDS <= 12
+    now, reads = [0.0], []
+    monkeypatch.setattr(oa.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(oa, "HEAD_SECONDS", 300.0)
+
+    def gh(*args, timeout=0):
+        reads.append(args)
+        return "b" * 40 + "\n"
+
+    monkeypatch.setattr(oa, "gh", gh)
+    registry = t.following(tmp_path)
+    og = t.Lead(t.told("brief", 60))
+    t.in_checkout(og)
+    step = 60.0  # a poll every minute of fake time: an hour in 60 polls
+
+    def tick(_poll):
+        now[0] += step
+
+    t.supervised(og, registry, monkeypatch, int(HOUR / step) + 1, tick, notify="cos", console=True)
+    assert 1 <= len(reads) <= 13
+
+
+@pytest.mark.parametrize(
+    ("stderr", "bucket_answer", "want"),
+    [
+        (
+            "secondary rate limit (HTTP 403)",
+            "0 9999999999",
+            60.0,
+        ),  # a core bucket far from reset is not used
+        (
+            "GraphQL: API rate limit exceeded",
+            "graphql",
+            91.0,
+        ),  # the GraphQL bucket's reset, not core's
+        (
+            "API rate limit exceeded (HTTP 403)",
+            "5 9999999999",
+            60.0,
+        ),  # calls left: the per-minute limit
+    ],
+)
+def test_rate_wait_branches(monkeypatch, stderr, bucket_answer, want):
+    now = 1_000_000.0
+    monkeypatch.setattr(oa.time, "time", lambda: now)
+
+    def run(cmd, **kw):
+        jq = cmd[-1]
+        if bucket_answer == "graphql":  # only the graphql bucket is empty and resets soon
+            out = f"0 {int(now) + 90}" if ".graphql" in jq else "5 9999999999"
+        else:
+            out = bucket_answer
+        return subprocess.CompletedProcess(cmd, 0, stdout=out)
+
+    monkeypatch.setattr(oa.subprocess, "run", run)
+    assert oa.rate_wait(stderr) == want
