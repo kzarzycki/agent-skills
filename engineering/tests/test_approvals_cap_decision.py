@@ -48,6 +48,7 @@ def test_majors_open_at_the_cap_land_once_the_lead_records_its_decision_with_no_
         ),  # before the cap the loop fixes and verifies again
         # a quoted line is an example, not the record
         (at(CAP, "0 blocker, 1 major, 0 minor"), "```\nCap: #99\n```\n"),
+        (at(CAP, "0 blocker, 1 major, 0 minor"), "~~~\nCap: #99\n~~~\n"),
         (at(CAP, "0 blocker, 1 major, 0 minor"), "`Cap: #99`\n"),
         (at(CAP, "0 blocker, 1 major, 0 minor"), "> Cap: #99\n"),
     ],

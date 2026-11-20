@@ -661,8 +661,10 @@ CLOSES, IMPLEMENTS, PART = "closes", "implements", "part of"
 SIGNOFF = re.compile(
     r"^[ \t>*-]*\**Sign-off\**:?\**[ \t]*`?(owner|none)\b", re.MULTILINE | re.IGNORECASE
 )
-# code and comments: an example, not a closing line
-QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE)
+# code (a ``` or ~~~ block, a code span) and comments: an example, not a closing line
+QUOTED = re.compile(
+    r"^[ \t>]*(```|~~~).*?^[ \t>]*\1|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE
+)
 # the first line of the comment flag() leaves when the verifier's `Risk:` line made it add `risk:high`, which says the
 # label is the gate's to take off again when a later pass judges the risk low
 FLAGGED = f"`{RISK_LABEL}` added by the gate"
