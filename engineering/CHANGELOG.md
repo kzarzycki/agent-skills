@@ -5,6 +5,12 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.33.5 - 2026-11-20
+
+- A supervise poll reads each session's record without its items and spawn-tree usage (about 3.5 KB instead of about 88 KB), which spares the Omnigent server a usage read per lead every 5 s; `usage` still reads the full record (#1533).
+- A claude-cloud session never commits or pushes a report, log or verifier output (the gate record `local-ci --record` pushes itself is the exception) and never asks the owner where to push: it puts the file in its PR comment, or its final message with no PR (#1534).
+- Loop pollers no longer drain the account's GitHub REST limit: `wait-for --pr` polls every 120 s, caches commits and skips an unchanged PR's verdict read; `supervise` reads each default branch every 300 s through gh's shared on-disk cache; `land --wait` polls the queue every 300 s; all sleep to the rate limit's reset instead of retrying (#1537).
+
 ## 0.33.4 - 2026-11-20
 
 - orchestrating-agents: `omnigent_agent.py ssh <host> --why <purpose> -- <command>` runs a host step over `ssh -o BatchMode=yes`; when the host's SSH check prints its `To authenticate, visit:` line, it stops ssh and prints an owner card naming the session, host, command, purpose and link, exit 75. engineering-loop points host steps over SSH at it (#1491).
