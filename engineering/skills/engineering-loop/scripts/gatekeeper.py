@@ -3435,7 +3435,8 @@ def same_tree(head: str, old: str) -> str | None:
 def catch_up(pull: dict[str, Any], old: str) -> str | None:
     """What shows, mechanically, that the PR's head only takes the base in since `old` (an earlier head), with no hand
     edit, or None: the proof's words, which carried() and whose() print. Either (a rebase) `git range-diff` of
-    `merge-base(old, tip)..old` against `merge-base(head, tip)..head` marks every commit `=` with none added or dropped,
+    `merge-base(old, tip)..old` against `merge-base(head, tip)..head` marks every commit `=` with none added or dropped
+    and neither range holds a merge commit, which range-diff does not show (#1497),
     or (a merge of the base) every commit since `old` is a merge of the base (base_merges) and `git show --remerge-diff`
     of each is empty, so no conflict was resolved by hand. A verdict (carried) and a go (carried_go) on `old` carry to
     the head by this one test, which nobody asserts. Fail-closed: a git error, or a commit origin lacks, is None (#1314)."""
@@ -3453,6 +3454,9 @@ def catch_up(pull: dict[str, Any], old: str) -> str | None:
                 return f"every commit since is a merge of {base} whose `git show --remerge-diff` is empty: no conflict was resolved by hand"
             return None
         first, second = (git("merge-base", commit, tip).strip() for commit in (old, head))
+        # range-diff leaves merge commits out, so a merge whose tree adds an edit would still show every commit `=`
+        if any(git("rev-list", "--merges", span).strip() for span in (f"{first}..{old}", f"{second}..{head}")):
+            return None
         shown = git("range-diff", "--no-color", f"{first}..{old}", f"{second}..{head}").splitlines()
     except (subprocess.CalledProcessError, OSError):
         return None

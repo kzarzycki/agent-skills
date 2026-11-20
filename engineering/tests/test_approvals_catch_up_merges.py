@@ -1,0 +1,26 @@
+"""approvals.py: catch_up's range-diff proof refuses a range that holds a merge commit, since `git range-diff` leaves
+merges out and a merge whose tree adds an edit still shows every commit `=` (#1497). A plain rebase still carries:
+test_approvals_catch_up.test_a_clean_rebase_carries."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from approvals_harness import approvals
+from test_approvals_catch_up import Repo, feature, moved, pr, repo  # noqa: F401  (repo is a fixture)
+
+
+def test_a_rebase_with_a_merge_that_adds_a_file_carries_nothing(repo: Repo) -> None:
+    old = feature(repo)
+    old_base = repo("rev-parse", "main")
+    tip = moved(repo)
+    repo("switch", "-qc", "pr2", "main")
+    repo("cherry-pick", f"{old}~1", old)
+    Path("extra.txt").write_text("nobody reviewed this\n")
+    repo("add", "-A")
+    tree = repo("write-tree")
+    merge = repo("commit-tree", tree, "-p", "HEAD", "-p", old_base, "-m", "sneak")
+    shown = repo("range-diff", "--no-color", f"{old_base}..{old}", f"{tip}..{merge}")
+    assert [line.split()[2] for line in shown.splitlines()] == ["=", "="]  # the blind spot: range-diff shows all `=`
+    assert approvals.catch_up(pr(repo, merge, tip), old) is None
+
