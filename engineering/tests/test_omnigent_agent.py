@@ -1999,7 +1999,7 @@ def test_create_files_the_session_under_the_project(
             "/v1/projects": {"data": [{"name": "other", "id": "p0"}, {"name": "shop", "id": "p1"}]},
             "/v1/sessions": {"id": "s1"},
             "/v1/sessions/coord": {},  # a lead filed nowhere
-        }[path]
+        }[path.removesuffix(omnigent_agent.SLIM)]
 
     monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
     monkeypatch.setattr(
@@ -2045,7 +2045,7 @@ def test_create_files_the_session_under_its_caller_s_project(
             bodies.append(body or {})
             return {"id": "s1"}
         if path.startswith("/v1/sessions/"):
-            sid = path.removeprefix("/v1/sessions/")
+            sid = path.removeprefix("/v1/sessions/").removesuffix(omnigent_agent.SLIM)
             if sid not in sessions:
                 raise omnigent_agent.Fail(f"GET {path}: HTTP 404 Not Found")
             return sessions[sid]
@@ -3313,7 +3313,7 @@ def test_active_counts_a_subscribed_top_level_helper_like_a_child(
             if subscriptions_fail:
                 raise omnigent_agent.Fail("GET subscriptions: HTTP 404 Not Found")
             return {"data": [{"subscriber_id": "lead", "session_id": h} for h in helpers]}
-        sid = path.removeprefix("/v1/sessions/")
+        sid = path.removeprefix("/v1/sessions/").removesuffix(omnigent_agent.SLIM)
         if sid == "gone":
             raise omnigent_agent.Gone("GET: HTTP 404 Not Found")
         updated, archived = helpers[sid]
@@ -7840,8 +7840,9 @@ def serve_files(monkeypatch: pytest.MonkeyPatch, files: dict[str, dict]) -> list
 
     class Files(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            seen.append(self.path)
-            body = files.get(self.path)
+            path = self.path.removesuffix(omnigent_agent.SLIM)
+            seen.append(path)
+            body = files.get(path)
             self.send_response(404 if body is None else 200)
             self.end_headers()
             self.wfile.write(json.dumps(body or {}).encode())
@@ -9590,6 +9591,7 @@ def _agent_server(monkeypatch: pytest.MonkeyPatch, pages: dict[str, object]) -> 
     calls: list[tuple] = []
 
     def call(self, method: str, path: str, body: dict | None = None) -> object:
+        path = path.removesuffix(omnigent_agent.SLIM)
         calls.append((method, path, body))
         return pages[path]
 

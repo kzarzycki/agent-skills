@@ -1083,6 +1083,10 @@ def error_body(e: HTTPError) -> str:
     return f": {' '.join(text.split())}" if text else ""
 
 
+# The query that leaves a session record without its items and spawn-tree usage.
+SLIM = "?include_items=false&include_usage=false"
+
+
 class Omnigent:
     def __init__(self, named: str = "") -> None:
         text = CONFIG.read_text()
@@ -1471,9 +1475,12 @@ class Omnigent:
             f"{sid}: {len(matches)} sessions match:{named}"
         )  # a line each, as there may be hundreds
 
-    def info(self, sid: str) -> dict:
-        """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
-        return self.call("GET", f"/v1/sessions/{sid}")
+    def info(self, sid: str, usage: bool = False) -> dict:
+        """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads).
+        Without ``usage`` it skips the record's items and spawn-tree usage, which a poll never reads
+        (``items`` has its own call): the full record runs about 25 times larger and costs the
+        server a subtree usage read on every poll of every lead."""
+        return self.call("GET", f"/v1/sessions/{sid}{'' if usage else SLIM}")
 
     def read_file(self, sid: str, path: str) -> str:
         """``path`` through ``sid``'s file API, whichever host the session runs on: an absolute
@@ -1861,7 +1868,7 @@ def usage_lines(og: Omnigent, sids: list[str]) -> list[str]:
     lines, tokens, cost, uncounted, counted = [], 0, 0.0, [], 0
     for sid in named:
         try:
-            info = og.info(sid)
+            info = og.info(sid, usage=True)
         except Fail as e:
             lines.append(f"{sid}: uncounted (not read: {e})")
             uncounted.append(sid)
