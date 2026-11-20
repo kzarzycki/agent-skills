@@ -1,5 +1,7 @@
 """omnigent_agent.py: a lead's delegation text from the base policy, and a USER NEEDED with no card (#1551)."""
 
+import base64
+import json
 import subprocess
 from pathlib import Path
 
@@ -134,6 +136,7 @@ def far_host(
     files: dict[str, str],
     config: str | None = CONFIG,
     root: str | None = "/w",
+    host_files: dict[str, str] | None = None,
 ) -> list[list[str]]:
     """A checkout at ``/w`` on host ``far`` whose ``.git/config`` is ``config``, and GitHub's default branch ``trunk``
     of ``acme/repo`` holding ``files``, failing as the real APIs do (``Gone``, a ``Fail`` naming the 404); the ``gh``
@@ -144,7 +147,10 @@ def far_host(
     )
 
     def read_on_host(_og: object, _host: str, path: str) -> str:
-        if path == "/w/.git/config" and config is not None:
+        if host_files is not None:
+            if path in host_files:
+                return host_files[path]
+        elif path == "/w/.git/config" and config is not None:
             return config
         raise omnigent_agent.Gone(path)
 
@@ -155,7 +161,11 @@ def far_host(
             return '{"default_branch": "trunk"}'
         path, _, ref = endpoint.removeprefix("repos/acme/repo/contents/").partition("?ref=")
         if ref == "trunk" and path in files:
-            return files[path]
+            if "Accept: application/vnd.github.raw" in args:
+                return files[path]
+            return json.dumps(
+                {"encoding": "base64", "content": base64.b64encode(files[path].encode()).decode()}
+            )
         raise omnigent_agent.Fail(f"gh api {endpoint}: gh: Not Found (HTTP 404)")
 
     monkeypatch.setattr(omnigent_agent, "read_on_host", read_on_host)
@@ -190,6 +200,32 @@ def test_a_workspace_on_another_host_follows_the_origin_default_branch_s_policy(
     assert text == (omnigent_agent.DELEGATION if delegated else "")
     assert calls[0] == ["api", "repos/acme/repo"]
     assert all(c[-1].endswith("?ref=trunk") for c in calls[1:]) and len(calls) == 3
+
+
+WORKTREE = {
+    "/w/.git": "gitdir: /main/.git/worktrees/w\n",
+    "/main/.git/worktrees/w/commondir": "../..\n",
+    "/main/.git/config": CONFIG,
+}
+RELATIVE_WORKTREE = {**WORKTREE, "/w/.git": "gitdir: ../main/.git/worktrees/w\n"}
+SUBMODULE = {"/w/.git": "gitdir: ../.git/modules/w\n", "/.git/modules/w/config": CONFIG}
+
+
+@pytest.mark.parametrize("host_files", [WORKTREE, RELATIVE_WORKTREE, SUBMODULE])
+def test_a_far_worktree_or_submodule_workspace_reads_its_origin_through_its_gitdir(
+    monkeypatch: pytest.MonkeyPatch, host_files: dict[str, str]
+) -> None:
+    far_host(monkeypatch, BASE_FILES, host_files=host_files)
+    assert (
+        omnigent_agent.lead_delegation(base.FakeOmnigent(), "/w", "far")
+        == omnigent_agent.DELEGATION
+    )
+
+
+def test_the_far_policy_read_asks_for_the_raw_contents(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = far_host(monkeypatch, BASE_FILES)
+    omnigent_agent.lead_delegation(base.FakeOmnigent(), "/w", "far")
+    assert all("Accept: application/vnd.github.raw" in c for c in calls[1:])
 
 
 @pytest.mark.parametrize(
