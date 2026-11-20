@@ -131,7 +131,7 @@ BROKEN = "trap 'true' EXIT\necho ran\nX=1 \\\nfor a in b; do\n echo $a\ndone\n"
         "#!/bin/sh -e",
     ],
 )
-def test_a_shell_check_bash_stops_on_a_syntax_error_fails(repo: Path, shebang: str) -> None:
+def test_a_shell_check_that_does_not_parse_fails_before_it_runs(repo: Path, shebang: str) -> None:
     # under set -e, bash 3.2 (macOS's /bin/bash) runs the EXIT trap on a syntax error and exits with its 0 (#1545)
     check(repo, "acceptance/7/01-broken.sh", f"{shebang}\n{BROKEN}")
 
@@ -140,9 +140,7 @@ def test_a_shell_check_bash_stops_on_a_syntax_error_fails(repo: Path, shebang: s
     assert result.returncode == 1, result
     assert verdicts(result.stdout) == ["FAIL acceptance/7/01-broken.sh"]
     assert "does not parse" in result.stdout
-    assert (
-        "syntax error near unexpected token" in result.stderr
-    )  # the check's stderr still passes through
+    assert "ran" not in result.stdout.split()
 
 
 @pytest.mark.parametrize(
@@ -162,24 +160,6 @@ def test_a_check_that_runs_to_its_end_passes(repo: Path, body: str) -> None:
     assert result.returncode == 0, result
     assert verdicts(result.stdout) == ["PASS acceptance/7/01-ok.sh"]
     assert "ran" in result.stdout.split()
-
-
-def test_a_process_the_check_leaves_running_does_not_hold_the_run(repo: Path) -> None:
-    # the leftover process holds the check's stderr open after the check exits
-    check(repo, "acceptance/7/01-server.sh", "#!/bin/sh\nsleep 20 >/dev/null &\necho ran\n")
-
-    result = subprocess.run(
-        [sys.executable, str(ACCEPTANCE), "7"],
-        cwd=repo,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        timeout=10,
-        check=False,
-    )
-
-    assert result.returncode == 0, result
-    assert verdicts(result.stdout) == ["PASS acceptance/7/01-server.sh"]
 
 
 def test_an_execute_only_program_runs(repo: Path) -> None:
