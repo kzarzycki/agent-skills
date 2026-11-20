@@ -643,9 +643,9 @@ LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
 # the lead's decision at the cap to land with majors open, filed as a follow-up issue, as a PR body line of its own:
-# `Cap: #<follow-up>` (SKILL.md § The cap). ponytail: the gate trusts the number the lead names; fetch the issue and
+# `Cap: #<follow-up>` (SKILL.md § The cap); a quoted line (`>`, a code span or block) is an example, not the record. ponytail: the gate trusts the number the lead names; fetch the issue and
 # check its `Found while` line if a lead ever names one it never filed.
-CAP_DECISION = re.compile(r"^[ \t>*-]*\**Cap\**:?\**[ \t]*#\d+\b", re.MULTILINE | re.IGNORECASE)
+CAP_DECISION = re.compile(r"^[ \t*-]*\**Cap\**:?\**[ \t]*#\d+\b", re.MULTILINE | re.IGNORECASE)
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
