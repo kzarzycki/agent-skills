@@ -8939,6 +8939,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("--cloud", action="store_true", help="the child runs in a Claude cloud VM")
     p.add_argument("--top-level", action="store_true")
     p.add_argument("--pr", type=int)
+    p.add_argument(
+        "--remote",
+        action="store_true",
+        help="the child runs on another host (start's --host): REPORT is that host's path, kept as given",
+    )
     p = sub.add_parser(
         "direct",
         description="mark a followed lead as driven by the owner directly: no deadline or nudge",
@@ -9313,13 +9318,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 raise Fail(f"--role {args.role}: not a readable file; the child reads it first")
         if args.cmd == "brief":
             # the body only: start adds its signature, lock and title lines once a session exists
+            pr = report_pr(args.role, args.cloud, args.pr)
+            # as start's: a path on another host is neither resolved nor checked here
+            report = args.report.resolve() if not args.remote or pr else args.report
             body = first_message(
-                args.cloud,
-                args.top_level,
-                report_pr(args.role, args.cloud, args.pr),
-                args.report.resolve(),
-                args.role,
-                text_or_file(args.brief)[0],
+                args.cloud, args.top_level, pr, report, args.role, text_or_file(args.brief)[0]
             )
             sys.stdout.write(body)
             return 0

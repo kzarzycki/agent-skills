@@ -1,7 +1,7 @@
 """scripts/omnigent_agent.py with the Omnigent server faked."""
 
-import importlib.util
 import errno
+import importlib.util
 import inspect
 import io
 import json
@@ -13964,10 +13964,14 @@ def test_brief_prints_the_body_the_start_command_sends_with_pr(
     cloud = agent == "claude-cloud"
     og = CloudFake() if cloud else FakeOmnigent()
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: og)
+    for name in ("pin_environment", "refuse_untrusted_launch_dir"):  # this host's Claude setup
+        monkeypatch.setattr(omnigent_agent, name, lambda *a: None)
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(tmp_path)]
     subprocess.run([*git, "init", "-q"], check=True)
     subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "pr 7"], check=True)
-    head = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+    head = subprocess.run(
+        [*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout
     monkeypatch.setattr(omnigent_agent, "pr_head", lambda *a: head.strip())  # the checkout is at it
     argv = ["b.md", "r.md", "--role", role_file(role), "--pr", "7"]
     assert omnigent_agent.main(["start", agent, "t", *argv, "--same-family"]) == 0
@@ -13983,6 +13987,18 @@ def test_brief_prints_the_body_the_start_command_sends_with_pr(
     assert omnigent_agent.main(["brief", *argv, *["--cloud"] * cloud]) == 0
     assert capsys.readouterr().out == body
     assert ("PR #7" in body) == cloud
+
+
+def test_brief_keeps_another_hosts_report_path_as_given(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A path on the target host means nothing here, so --remote keeps it unresolved, as start does (#1509)."""
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: pytest.fail("brief read a server"))
+    far = "/there/repo/../repo/tmp/loop/r.md"
+    for remote, shown in ((True, far), (False, str(Path(far).resolve()))):
+        argv = ["brief", "do X", far, "--top-level"] + ["--remote"] * remote
+        assert omnigent_agent.main(argv) == 0
+        assert shown in capsys.readouterr().out
 
 
 def test_brief_refuses_an_unreadable_role_and_takes_a_long_brief(
