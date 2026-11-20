@@ -7,7 +7,8 @@
 # /tmp/cloud-setup.log, its output to /tmp/cloud-setup.log.out; a failed step is logged as
 # FAILED and the script still exits 0, since a non-zero exit fails the whole cloud session.
 set -u
-log=/tmp/cloud-setup.log
+# tests/test_cloud_setup.py runs it against its own release assets, checkout and log
+log=${CLOUD_SETUP_LOG:-/tmp/cloud-setup.log}
 export PATH="$HOME/.local/bin:/opt/node22/bin:/usr/local/bin:$PATH"
 t0=$(date +%s)
 step() {  # step <name> <command...>: run it, log its seconds and exit code
@@ -29,11 +30,11 @@ fetch() {
     && (cd "$d" && grep " \*\?$a\$" sums | sha256sum -c -) || return 1
   case "$a" in
     *.tar.gz) mkdir -p "$3" && tar -xzf "$d/$a" -C "$3" --strip-components="${4:-0}" ;;
-    *) install -D -m755 "$d/$a" "$3" ;;
+    *) mkdir -p "${3%/*}" && cp "$d/$a" "$3" && chmod 755 "$3" ;;
   esac
 }
 pin() { mise current "$1"; }  # the version mise.toml pins
-repo=/home/user/agent-skills
+repo=${CLOUD_SETUP_REPO:-/home/user/agent-skills}
 echo "setup start $(date -u +%FT%TZ) user=$(id -un) home=$HOME repo_present=$([ -d "$repo" ] && echo yes || echo no)" >> "$log"
 command -v mise >/dev/null || step mise npm install -g -s @jdxcode/mise
 step apt sh -c 'apt-get update -qq && apt-get install -y -qq openssh-client'
@@ -44,11 +45,11 @@ step mise-trust mise trust -q --all
 # global config, so every later mise call in the session, the gate's `mise run` included, uses it
 step mise-offline mise settings set prefer_offline true
 # ponytail: x86_64 Linux assets only, the cloud image's platform; another one needs its asset names
-mi="$HOME/.local/share/mise/installs" gh=https://github.com
+mi="$HOME/.local/share/mise/installs" gh=${CLOUD_SETUP_RELEASES:-https://github.com}
 v=$(pin ubi:carvel-dev/vendir); a=$gh/carvel-dev/vendir/releases/download/v$v
 step vendir fetch "$a/vendir-linux-amd64" "$a/checksums.txt" "$mi/ubi-carvel-dev-vendir/$v/vendir"
 v=$(pin uv); a=$gh/astral-sh/uv/releases/download/$v/uv-x86_64-unknown-linux-gnu.tar.gz
-step uv fetch "$a" "$a.sha256" "$mi/uv/$v"
+step uv fetch "$a" "$a.sha256" "$mi/uv/$v" 1
 v=$(pin github:microsoft/apm); a=$gh/microsoft/apm/releases/download/v$v/apm-linux-x86_64.tar.gz
 step apm fetch "$a" "$a.sha256" "$mi/github-microsoft-apm/$v" 1
 # core:python's build from python-build-standalone, which keeps only each minor's newest patch in a
@@ -61,9 +62,10 @@ step mise-install mise install
 step apm-install mise exec -- apm install --frozen --target claude,codex
 step uv-sync mise exec -- uv sync --frozen
 missing=""
-for tool in mise python uv node vendir apm ssh-keygen codex; do
-  mise which "$tool" >/dev/null 2>&1 || command -v "$tool" >/dev/null || missing="$missing $tool"
-done
+# a pinned tool counts only where mise resolves it, since another copy on PATH (the image's uv) hides
+# a fetch mise can't find, and a task then runs that copy instead of the pin
+for tool in python uv node vendir apm; do mise which "$tool" >/dev/null 2>&1 || missing="$missing $tool"; done
+for tool in mise ssh-keygen codex; do command -v "$tool" >/dev/null || missing="$missing $tool"; done
 [ -z "$missing" ] || echo "FAILED, missing:$missing" >> "$log"
 echo "setup done $(date -u +%FT%TZ), $(( $(date +%s) - t0 )) s total" >> "$log"
 exit 0
