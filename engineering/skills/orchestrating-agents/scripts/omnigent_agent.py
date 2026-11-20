@@ -5228,11 +5228,12 @@ def held_by(session: dict) -> str:
 
 
 def replaced(og: Omnigent, sid: str, info: dict) -> bool:
-    """Whether ``sid``, a ``--pr`` worker, was replaced: a live worker of the same PR (the same ``PR_LABEL``)
-    was made after it, which is how ``start --pr`` replaces one. A session with no PR label, or whose lists can't be
+    """Whether ``sid``, a ``--pr`` worker, was replaced: a live worker (``omni.role`` ``worker``, as ``sid`` is) of the same
+    PR (the same ``PR_LABEL``) was made after it, which is how ``start --pr`` replaces one; a proof run on the PR is no
+    replacement. A session with no PR label, or whose lists can't be
     read, is not known to be replaced."""
     label, made = held_by(info), float(info.get("created_at") or 0)
-    if not label or not made:
+    if not label or not made or (info.get("labels") or {}).get("omni.role") != "worker":
         return False
     try:
         page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
@@ -5242,28 +5243,33 @@ def replaced(og: Omnigent, sid: str, info: dict) -> bool:
         str(s.get("id")) != sid
         and not s.get("archived")
         and held_by(s) == label
+        and (s.get("labels") or {}).get("omni.role") == "worker"
         and float(s.get("created_at") or 0) > made
         for s in page.get("data", [])
     )
 
 
-# a turn end that waits on the owner: the owner's card already reaches them, so nobody above forwards it
-OWNER_WAIT = re.compile(
-    r"^[\s*_#>-]*(?:USER NEEDED\b|needs?[ -]owner\b|waiting on (?:a|the|an|its|your) (?:owner )?card\b)",
-    re.IGNORECASE | re.MULTILINE,
-)
-# a message that carries a question for the owner, which a card carries and a relay must not
-OWNER_QUESTION = re.compile(
-    r"^[\s*_#>-]*(?:USER NEEDED\b|needs?[ -]owner\b|question for the owner\b)",
-    re.IGNORECASE | re.MULTILINE,
+# the opening line of a message that is itself an owner question or a wait on the owner's card: the line's own words,
+# never a quoted (``>``) or bullet (``-``) line, which only mentions one
+OWNER_ASK = re.compile(
+    r"[\s*_#]*(?:USER NEEDED\b|needs?[ -]owner\s*:|question for the owner\s*:|"
+    r"waiting on (?:a|the|an|its|your) (?:owner )?card\b)",
+    re.IGNORECASE,
 )
 
 
-def waits_on_card(og: Omnigent, sid: str, info: dict, text: str) -> bool:
-    """Whether a turn end ``text`` of ``sid`` waits on an open owner card: ``info`` shows one, or ``og`` (the supervisor's
-    ``Uncarded``, which takes cards out of ``info``) kept one it read."""
-    cards = cards_of(info) or getattr(og, "cards", {}).get(sid)
-    return bool(cards) and bool(OWNER_WAIT.search(text))
+def asks_owner(text: str) -> bool:
+    """Whether the first line of ``text`` is an owner question (see ``OWNER_ASK``)."""
+    return bool(OWNER_ASK.match(next((x for x in text.splitlines() if x.strip()), "")))
+
+
+def waits_on_card(og: Omnigent, sid: str, text: str) -> bool:
+    """Whether a turn end ``text`` of ``sid`` waits on an open owner card: ``og`` (the supervisor's ``Uncarded``, which
+    takes cards out of ``info``) kept one it read, and the end itself is ``USER NEEDED`` or opens on the wait. A ``DONE``
+    that only mentions the owner is no wait."""
+    return bool(getattr(og, "cards", {}).get(sid)) and (
+        ending_of(text) == "USER NEEDED" or asks_owner(text)
+    )
 
 
 def withdraw(og: Omnigent, sid: str, card: str = "") -> list[str]:
@@ -5990,7 +5996,7 @@ def follow(
         return "", key
     items = og.items(sid)
     last = last_message(items)
-    if last and waits_on_card(og, sid, og.info(sid), text_of(last)):
+    if last and last.get("role") != "user" and waits_on_card(og, sid, text_of(last)):
         told[sid] = key  # its owner card reaches the owner; this end is no news above
         return "", key
     if not (last and last.get("role") != "user" and ENDING.search(text_of(last))):
@@ -8277,11 +8283,11 @@ def supervise_registry(
             return replaced(og, other, info)
         if over["state"] != "idle":
             return False
-        read = any(
-            float(i.get("created_at") or 0) > over["turn_at"] > 0
+        read = any(  # an item after the end that names the child: the lead's read of it, or Omnigent's notice
+            float(i.get("created_at") or 0) > over["turn_at"] > 0 and other in str(i)
             for i in looks.get(sid, ({}, []))[1]
         )
-        return read or waits_on_card(og, other, info, over["last_text"])
+        return read or waits_on_card(og, other, over["last_text"])
 
     def due(sid: str, lead: dict) -> None:
         """Send a transient failure's revive once its backoff (``retrying.at``) has passed, through
@@ -9432,7 +9438,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             print(og.read_file(sid, args.path))
             return 0
         if args.cmd == "relay":
-            if OWNER_QUESTION.search(text_or_file(args.message)[0]):
+            if not (args.answer or args.source) and asks_owner(text_or_file(args.message)[0]):
                 raise Fail(
                     "relay refused: the message carries a question for the owner, which is a card, never a relayed"
                     " line (post it with sys_ask_user_question); say the fact and the action wanted instead"
