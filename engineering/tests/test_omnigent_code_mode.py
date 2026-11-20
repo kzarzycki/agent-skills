@@ -20,8 +20,8 @@ from test_omnigent_agent import (  # noqa: F401  (the autouse fixtures apply by 
 HIDDEN = "Bash,Read,Edit,Write,Glob,Grep,NotebookEdit,WebFetch,WebSearch"
 
 
-def settings(mode: str, plugin: str = "code-mode@claude-mods") -> list[str]:
-    body = {"enabledPlugins": {plugin: True}, "env": {"OMNIGENT_CODE_MODE": mode}}
+def settings(mode: str) -> list[str]:
+    body = {"enabledPlugins": {"code-mode@claude-mods": True}, "env": {"OMNIGENT_CODE_MODE": mode}}
     return ["--settings", json.dumps(body)]
 
 
@@ -29,7 +29,6 @@ def settings(mode: str, plugin: str = "code-mode@claude-mods") -> list[str]:
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "OMNIGENT_CODE_MODE",
-        "OMNIGENT_CODE_MODE_PLUGIN",
         "OMNIGENT_PERMISSION_MODE",
         "CLAUDE_CONFIG_DIR",
     ):
@@ -142,9 +141,6 @@ def test_the_environment_is_the_default_and_the_flag_outranks_it(
     assert last(calls)["terminal_launch_args"] == settings("preferred")
     og.create("claude", "t", code_mode="exclusive")
     assert last(calls)["terminal_launch_args"][:2] == settings("exclusive")
-    monkeypatch.setenv("OMNIGENT_CODE_MODE_PLUGIN", "other@market")
-    og.create("claude", "t")
-    assert last(calls)["terminal_launch_args"] == settings("preferred", "other@market")
 
 
 def test_start_passes_the_mode_to_a_claude_create_once_the_plugin_is_installed(
@@ -179,9 +175,7 @@ def test_start_fails_before_any_session_when_the_plugin_is_not_installed(
     with pytest.raises(omnigent_agent.Fail, match="claude plugin install"):
         omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
     assert og.sessions == {}
-    # another plugin proves the path on a host without code-mode
-    monkeypatch.setenv("OMNIGENT_CODE_MODE_PLUGIN", "other@market")
-    installed(tmp_path / "again", monkeypatch, "other@market")
+    installed(tmp_path / "again", monkeypatch, "other@market", "code-mode@claude-mods")
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
     assert og.code_modes == ["preferred"]
 

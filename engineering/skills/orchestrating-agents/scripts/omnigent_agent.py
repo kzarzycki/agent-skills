@@ -285,7 +285,7 @@ COMPACT_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"  # outranks Claude Code's --auto
 # built-ins repl's scripts call, the list and order the claude-code-mode launcher hides.
 CODE_MODES = ("exclusive", "preferred")
 CODE_MODE_ENV = "OMNIGENT_CODE_MODE"
-CODE_MODE_PLUGIN = "code-mode@claude-mods"  # $OMNIGENT_CODE_MODE_PLUGIN names another copy
+CODE_MODE_PLUGIN = "code-mode@claude-mods"
 CODE_MODE_HIDDEN = "Bash,Read,Edit,Write,Glob,Grep,NotebookEdit,WebFetch,WebSearch"
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
 # The model an agent runs on when neither --model nor its OMNIGENT_MODEL_<AGENT> names one. The
@@ -1778,17 +1778,11 @@ def code_mode_of(flag: str | None) -> str:
     return mode
 
 
-def code_mode_plugin() -> str:
-    """The plugin that gives a session code mode: ``$OMNIGENT_CODE_MODE_PLUGIN``, else
-    ``CODE_MODE_PLUGIN``."""
-    return os.environ.get("OMNIGENT_CODE_MODE_PLUGIN") or CODE_MODE_PLUGIN
-
-
 def code_mode_args(mode: str) -> list[str]:
     """A Claude session's launch args for code ``mode``: the plugin enabled and the mode in its
     settings env, which its Bash and repl shells pass to the sessions they start; with ``exclusive``
     the built-ins hidden from the model (repl's scripts still call them)."""
-    settings = {"enabledPlugins": {code_mode_plugin(): True}, "env": {CODE_MODE_ENV: mode}}
+    settings = {"enabledPlugins": {CODE_MODE_PLUGIN: True}, "env": {CODE_MODE_ENV: mode}}
     args = ["--settings", json.dumps(settings)]
     return args + (["--disallowedTools", CODE_MODE_HIDDEN] if mode == "exclusive" else [])
 
@@ -1796,7 +1790,7 @@ def code_mode_args(mode: str) -> list[str]:
 def require_code_mode_plugin() -> None:
     """Fail unless Claude Code on this host has installed the code-mode plugin, since a session
     started without it would have its built-ins hidden and no repl to call them."""
-    plugin = code_mode_plugin()
+    plugin = CODE_MODE_PLUGIN
     config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
     listed = config / "plugins" / "installed_plugins.json"
     if plugin not in (read_json(listed).get("plugins") or {}):
@@ -8814,8 +8808,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             metavar="exclusive|preferred",
             help="a claude session with the code-mode plugin's repl tool, which its own starts inherit;"
             " exclusive also hides the built-in tools repl calls (default: $OMNIGENT_CODE_MODE, else"
-            " off); the plugin, $OMNIGENT_CODE_MODE_PLUGIN else code-mode@claude-mods, must be"
-            " installed; other agents take none",
+            " off); the code-mode@claude-mods plugin must be installed; other agents take none",
         )
         p.add_argument(
             "--author",

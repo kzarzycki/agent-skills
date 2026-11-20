@@ -89,7 +89,7 @@ A claude-cloud child takes `auto` or `bypassPermissions`, sent as the session cr
 
 **Code mode.** `--code-mode exclusive|preferred`, else `OMNIGENT_CODE_MODE`, starts a Claude child
 with code-mode's one `repl` tool: its `terminal_launch_args` gain `--settings` enabling the plugin
-(`code-mode@claude-mods`, else `OMNIGENT_CODE_MODE_PLUGIN`) with the mode in the settings `env`, and
+(`code-mode@claude-mods`) with the mode in the settings `env`, and
 with `exclusive` `--disallowedTools Bash,Read,Edit,Write,Glob,Grep,NotebookEdit,WebFetch,WebSearch`,
 which hides them from the model while repl's scripts still call them. The variable reaches the
 session's shells, so a lead started with it starts its Claude workers and verifier with it too; a
@@ -97,7 +97,7 @@ supervise service does not carry it. The session is labelled `omni.code_mode=<mo
 `omni.role`. Any other agent takes none: an explicit flag for one is named on stderr as not
 applied, the variable stays silent. A value outside the two fails, and so does a start on this host
 whose Claude Code has not installed the plugin (`installed_plugins.json` under `CLAUDE_CONFIG_DIR`,
-else `~/.claude/plugins/`), naming `claude plugin install <plugin>`, both before a session exists;
+else `~/.claude/plugins/`), naming `claude plugin install code-mode@claude-mods`, both before a session exists;
 another host's plugins are not checked.
 
 **Effort.** `--effort <level>` sets the child's reasoning effort, as its harness names the levels
