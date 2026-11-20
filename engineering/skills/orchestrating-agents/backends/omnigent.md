@@ -84,7 +84,8 @@ choice, set in the environment once. Omnigent applies it as the session's
 none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
 `start` refuses the flag for Codex and says on stderr that the variable's mode was not applied.
 A claude-cloud child takes `auto` or `bypassPermissions`, sent as the session create's
-`permission_mode` (the server answers the VM's tool requests itself under bypass), and
+`permission_mode` (the server answers the VM's tool requests itself under bypass), starts in
+`bypassPermissions` when neither the flag nor the variable names a mode (it runs unattended in a disposable VM), and
 `start` treats any other mode for it as it does a mode for Codex.
 
 **Effort.** `--effort <level>` sets the child's reasoning effort, as its harness names the levels
