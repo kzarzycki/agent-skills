@@ -665,10 +665,12 @@ SIGNOFF = re.compile(
     r"^[ \t>*-]*\**Sign-off\**:?\**[ \t]*`?(owner|none)\b", re.MULTILINE | re.IGNORECASE
 )
 # code (a ``` or ~~~ block, a code span) and comments: an example, not a closing line. A block closes on a line of
-# the same fence character at least as long as its opening, or at the end of the body, as Markdown renders it;
-# an opening line with a later backtick is a code span instead
+# its fence character at least as long as its opening, CRLF included; an unclosed one quotes nothing, since what
+# Markdown closes it on (the end of a quote or list) is beyond a regex. A ``` opening with a later backtick is a span.
 QUOTED = re.compile(
-    r"^[ \t>]*((`|~)\2{2,})(?![^\n]*`).*?(?:^[ \t>]*\1\2*[ \t]*$|\Z)|`[^`\n]*`|<!--.*?-->",
+    r"^[ \t>]*(`{3,})(?![^\n]*`).*?^[ \t>]*\1`*[ \t]*\r?$"
+    r"|^[ \t>]*(~{3,}).*?^[ \t>]*\2~*[ \t]*\r?$"
+    r"|`[^`\n]*`|<!--.*?-->",
     re.DOTALL | re.MULTILINE,
 )
 # the first line of the comment flag() leaves when the verifier's `Risk:` line made it add `risk:high`, which says the

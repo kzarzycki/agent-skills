@@ -54,13 +54,26 @@ def test_majors_open_at_the_cap_land_once_the_lead_records_its_decision_with_no_
         (at(CAP, "0 blocker, 1 major, 0 minor"), "    Cap: #99\n"),  # an indented code block
         # a longer fence around a fenced example closes only on its own length
         (at(CAP, "0 blocker, 1 major, 0 minor"), "````\n```\nCap: #99\n```\n````\n"),
-        (
-            at(CAP, "0 blocker, 1 major, 0 minor"),
-            "```\nCap: #99\n",
-        ),  # an unclosed block runs to the end
+        # a ~~~ fence may carry backticks in its info string
+        (at(CAP, "0 blocker, 1 major, 0 minor"), "~~~text title=`example`\nCap: #99\n~~~\n"),
     ],
 )
 def test_the_cap_decision_never_lands_a_blocker_an_early_pass_or_a_quoted_line(
     review: dict[str, Any], body: str
 ) -> None:
     assert UNSATISFIED in verified(review, body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "```text\r\nexample\r\n```\r\n\r\nCap: #99\r\n",  # CRLF line endings close the block
+        "> ```text\n> example\n\nCap: #99\n",  # the block ends with its quote
+        "```\nexample\n\nCap: #99\n",  # an unclosed block quotes nothing
+        "````\n```\nexample\n```\n````\nCap: #99\n",  # after a longer fence around a fenced example
+    ],
+)
+def test_a_decision_after_a_code_block_still_counts(body: str) -> None:
+    assert (
+        verified(at(CAP, "0 blocker, 1 major, 0 minor"), "## Evidence\n\nlog line\n\n" + body) == []
+    )
