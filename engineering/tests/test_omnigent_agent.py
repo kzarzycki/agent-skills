@@ -5803,7 +5803,10 @@ def test_a_followed_lead_ending_with_a_named_ending_is_news_at_once_and_once(
     registry = following(tmp_path)
     og = Lead(told("brief", 60), ending(f"**{word}** the result", 1))
     supervised(og, registry, monkeypatch, 3, notify="cos")
-    assert posted(og) == [f"Supervisor: a t-a: turn ended\nlast message: **{word}** the result"]
+    turn = (
+        omnigent_agent.UNASKED_LINE if word == "USER NEEDED" else "turn ended"
+    )  # no card is open (#1551)
+    assert posted(og) == [f"Supervisor: a t-a: {turn}\nlast message: **{word}** the result"]
 
 
 def test_a_live_child_updated_within_the_window_keeps_a_followed_lead_quiet_pending(
