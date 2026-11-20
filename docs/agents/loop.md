@@ -26,8 +26,9 @@ file carries the run's state across a compaction. Raise or remove the line if le
 
 Specs and merges are approved by policy, so work doesn't stop on them; the owner sees only
 what no automated check can settle. A `risk:high` PR into a feature branch lands on the chief
-of staff's `approved:merge` (`approvals.py delegate`), so dependent work doesn't stall; the
-branch's merge to main waits for the owner.
+of staff's `approved:merge` (`approvals.py delegate`), so dependent work doesn't stall; into
+main the chief of staff's go is `approvals.py approve merge --by delegate` on the head (`delegate: all` in
+gatekeeper.md).
 
 `land`'s batch gate runs the `Affected tests:` command (`check-fast`: the tests the batch's combined diff touches plus lint) against the tip the batch merges onto; `check-land`, the vendor check and lint without tests, is the `gate` line's full-mode command. The PR's `qualify` check runs the tests it touches and the nightly run covers the rest.
 
