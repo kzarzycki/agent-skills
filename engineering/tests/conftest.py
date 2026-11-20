@@ -1,7 +1,7 @@
 import os
 import shutil
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
 # The engineering loop's script tests load modules from a shipped skill folder;
@@ -33,6 +33,17 @@ from approvals_harness import (  # noqa: F401
 def _no_wait_place(monkeypatch: pytest.MonkeyPatch) -> None:
     """A test that mocks the rerun's execv leaves the wait's place in the environment; the next land would resume it."""
     monkeypatch.delenv("LOOP_LAND_WAIT", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _restore_environ() -> Iterator[None]:
+    """A test that runs a script's cli() in this process lets it edit os.environ directly, which monkeypatch never
+    undoes: approvals' leave_own_environment drops the venv from PATH, so a later subprocess's python3 loses its
+    packages (a fake vendir's `import yaml`)."""
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 # The fixtures that run a tool beyond git and Python: pytest ignores a mark on a fixture, so each test that takes
