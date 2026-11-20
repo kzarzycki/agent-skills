@@ -89,6 +89,16 @@ def _no_cold_start_wait(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_pr_views_from_another_test() -> None:
+    """`omnigent_agent.PR_VIEWS` outlives a test: a view an earlier test on the same xdist worker left for
+    PR 12 answers a later test's `pr_data(12)` with that test's branch, while its own stub is never asked, so
+    which tests fail depends on which ran before (#1526, #1474)."""
+    module = sys.modules.get("omnigent_agent")
+    if module:
+        module.PR_VIEWS.clear()
+
+
+@pytest.fixture(autouse=True)
 def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests run as if outside an Omnigent session; one that needs a session sets it."""
     for var in (
