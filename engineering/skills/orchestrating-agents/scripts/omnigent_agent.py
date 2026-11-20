@@ -280,6 +280,13 @@ LEAN_TOOLS = "Bash,Read,Edit,Write,Agent,Skill,ToolSearch,WebFetch,WebSearch"
 COLD_START_SECONDS = 20.0  # how long ``start`` waits for a first turn to time (``wait`` has one)
 LOOP_FILE = Path("docs") / "agents" / "loop.md"
 COMPACT_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"  # outranks Claude Code's --autocompact flag
+# Code mode (#1505): a Claude session with the code-mode plugin's one repl tool. The mode rides in
+# the session's settings env, so the session's own starts inherit it; exclusive also hides the
+# built-ins repl's scripts call, the list and order the claude-code-mode launcher hides.
+CODE_MODES = ("exclusive", "preferred")
+CODE_MODE_ENV = "OMNIGENT_CODE_MODE"
+CODE_MODE_PLUGIN = "code-mode@claude-mods"  # $OMNIGENT_CODE_MODE_PLUGIN names another copy
+CODE_MODE_HIDDEN = "Bash,Read,Edit,Write,Glob,Grep,NotebookEdit,WebFetch,WebSearch"
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
 # The model an agent runs on when neither --model nor its OMNIGENT_MODEL_<AGENT> names one. The
 # server refuses an acp session with no model, since it can't tell whether the default is blocked
@@ -1318,6 +1325,7 @@ class Omnigent:
         role: str | None = None,
         effort: str | None = None,
         pr: str = "",
+        code_mode: str | None = None,
     ) -> str:
         body: dict[str, object] = {
             "agent_id": self.agent_id(agent),
@@ -1356,6 +1364,8 @@ class Omnigent:
                 args += lean_args(str(body["workspace"]), stem, self, host_id)
             if top_level:
                 args += autocompact_args(str(body["workspace"]), self, host_id)
+            if coded := code_mode_of(code_mode):
+                args += code_mode_args(coded)
             if args:
                 body["terminal_launch_args"] = args
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
@@ -1368,6 +1378,8 @@ class Omnigent:
         # The loop role, which Omnigent's usage metrics split spend by: a role file's name; and the PR a
         # verifier reviews (``owner/repo#N``), so its spend groups by PR as a worker's does (#945).
         labels = {"omni.role": name} if role and (name := Path(role).stem) in ROLES else {}
+        if agent == "claude" and (coded := code_mode_of(code_mode)):
+            labels["omni.code_mode"] = coded
         if pr:
             labels[PR_LABEL] = pr
         if labels:
@@ -1754,6 +1766,44 @@ def autocompact_args(
             file=sys.stderr,
         )
     return ["--autocompact", size]
+
+
+def code_mode_of(flag: str | None) -> str:
+    """The code mode ``flag`` names, else ``$OMNIGENT_CODE_MODE``, else none (empty); a value
+    outside ``CODE_MODES`` from either fails, since a typo would start a session without it."""
+    mode = flag or os.environ.get(CODE_MODE_ENV, "")
+    if mode and mode not in CODE_MODES:
+        source = "--code-mode" if flag else CODE_MODE_ENV
+        raise Fail(f"{source} {mode}: not a code mode; pass {' or '.join(CODE_MODES)}")
+    return mode
+
+
+def code_mode_plugin() -> str:
+    """The plugin that gives a session code mode: ``$OMNIGENT_CODE_MODE_PLUGIN``, else
+    ``CODE_MODE_PLUGIN``."""
+    return os.environ.get("OMNIGENT_CODE_MODE_PLUGIN") or CODE_MODE_PLUGIN
+
+
+def code_mode_args(mode: str) -> list[str]:
+    """A Claude session's launch args for code ``mode``: the plugin enabled and the mode in its
+    settings env, which its Bash and repl shells pass to the sessions they start; with ``exclusive``
+    the built-ins hidden from the model (repl's scripts still call them)."""
+    settings = {"enabledPlugins": {code_mode_plugin(): True}, "env": {CODE_MODE_ENV: mode}}
+    args = ["--settings", json.dumps(settings)]
+    return args + (["--disallowedTools", CODE_MODE_HIDDEN] if mode == "exclusive" else [])
+
+
+def require_code_mode_plugin() -> None:
+    """Fail unless Claude Code on this host has installed the code-mode plugin, since a session
+    started without it would have its built-ins hidden and no repl to call them."""
+    plugin = code_mode_plugin()
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    listed = config / "plugins" / "installed_plugins.json"
+    if plugin not in (read_json(listed).get("plugins") or {}):
+        raise Fail(
+            f"code mode needs the {plugin} plugin, which {listed} does not list:"
+            f" run `claude plugin install {plugin}`"
+        )
 
 
 LEAD_TIERS = {"frontier": "fable", "top": "opus", "mid": "sonnet", "small": "haiku"}  # Claude's
@@ -3755,6 +3805,7 @@ def start(
     files: list[Path] | None = None,
     allow_older_model: bool = False,
     about: int | None = None,
+    code_mode: str | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
@@ -3807,6 +3858,19 @@ def start(
             " the harness default",
             file=sys.stderr,
         )
+    # Code mode is a Claude session's: a bad value of the flag or the variable fails for any agent,
+    # an explicit flag for another one is named as dropped, and the variable stays silent (#1505).
+    coded = code_mode_of(code_mode)
+    if coded and agent != "claude":
+        if code_mode:
+            print(
+                f"{agent} takes no code mode: --code-mode {coded} was not applied", file=sys.stderr
+            )
+        coded = ""
+    if coded and (not host_id or host_id == og.host_id):
+        # ponytail: another host's plugins are not read, so a session there without the plugin
+        # starts with its built-ins hidden. Upgrade: read that host's list through Omnigent.
+        require_code_mode_plugin()
     if (
         agent == "claude"
         and host_id
@@ -4008,6 +4072,7 @@ def start(
                         role,
                         effort,
                         label,
+                        coded or None,
                     ),
                     None,
                 )
@@ -8745,6 +8810,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             " else the harness default); claude-cloud takes auto or bypassPermissions, codex none",
         )
         p.add_argument(
+            "--code-mode",
+            metavar="exclusive|preferred",
+            help="a claude session with the code-mode plugin's repl tool, which its own starts inherit;"
+            " exclusive also hides the built-in tools repl calls (default: $OMNIGENT_CODE_MODE, else"
+            " off); the plugin, $OMNIGENT_CODE_MODE_PLUGIN else code-mode@claude-mods, must be"
+            " installed; other agents take none",
+        )
+        p.add_argument(
             "--author",
             choices=AGENTS,
             help="model family that wrote the diff; a verifier of the same family needs --same-family",
@@ -9688,6 +9761,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 pr=args.pr,
                 files=args.file,
                 about=verifies,
+                code_mode=args.code_mode,
             )
             survivors.extend(abandoned)
             # a supervisor reads the report file, which for --pr only wait writes: it would revive

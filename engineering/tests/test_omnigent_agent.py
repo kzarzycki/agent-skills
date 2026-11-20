@@ -70,6 +70,7 @@ class FakeOmnigent:
         self.top_level: list[bool] = []  # per create, and per lookup after a failed one
         self.roles: list[str | None] = []  # per create
         self.prs: list[str] = []
+        self.code_modes: list[str | None] = []  # per create
         self.workspaces: list[str | None] = []
         self.hosts_of: dict[str, str] = {}  # each created session's host
         self.others: list[dict] = []  # sessions this script did not create, as the list shows them
@@ -176,6 +177,7 @@ class FakeOmnigent:
         role: str | None = None,
         effort: str | None = None,
         pr: str = "",
+        code_mode: str | None = None,
     ) -> str:
         if title in self.taken:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
@@ -185,6 +187,7 @@ class FakeOmnigent:
         self.top_level.append(top_level)
         self.roles.append(role)
         self.prs.append(pr)
+        self.code_modes.append(code_mode)
         self.efforts[sid] = effort
         self.workspaces.append(workspace)
         self.hosts_of[sid] = host_id or self.host_id

@@ -79,6 +79,9 @@ its landing order.
   words the owner would use for the ask. `--top-level` makes the lead its own session, so
   its workers' notices reach the lead and not you, and the owner can open it. Take the
   harness the owner asked for, else the one they prefer, else your own.
+  When the owner asks for the work "with code mode on", add `--code-mode exclusive`, or
+  `--code-mode preferred` when they say preferred: exclusive when they don't say. The lead's
+  workers and Claude verifier inherit it, and a Codex lead or verifier takes none.
 - **Which repo.** An ask in your repo starts as above. An ask in a sibling repo, or one
   that needs several repos changed together, starts with `--workspace <dir>`: the
   directory holding every repo it touches, usually the parent of yours. A lead's
