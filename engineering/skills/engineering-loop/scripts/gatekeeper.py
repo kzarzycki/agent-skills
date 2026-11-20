@@ -106,13 +106,12 @@ delegate's, a head whose level asks a go has. Into the default branch these are 
 label is anyone's with triage rights, the delegated approver's included, so `approved:merge` there is no go, nor is
 an `owner` status an older gate wrote from the label (marked as from it). On a change whose level asks no go the
 label means nothing. Risk is a rating, and the policy's `levels` say what each level asks (rating, levels): `high` is
-`risk:high` on the PR or an issue it names, a risk rule matching (below), or a review at the cap or later not
-satisfied or with a blocker or major open (`cap`, SKILL.md § The cap); `critical` a path `risk.critical_paths` names
+`risk:high` on the PR or an issue it names, or a risk rule matching (below); `critical` a path `risk.critical_paths` names
 (below); `low` anything else. Each level asks `policy` or `owner` of the spec and `gates`, `go` (a person's go on the
 head, as above) or `owner` (the owner's own go on the head, into any branch, no delegate's go nor label counting) of
 the merge; the merge takes the strictest any of its terms asks. The defaults are `low` {policy, gates}, `high`
 {policy, go}, or under `spec.auto: true` {owner, gates}, and `critical` {policy, owner}. A term the spec's hold never
-reads (the label, a revert, the `verifier` term, the cap) rates the change only after its spec was approved, and asks
+reads (the label, a revert, the `verifier` term) rates the change only after its spec was approved, and asks
 `go` where its level asks `owner` of the spec and `gates` of the merge, since the owner never saw that rating.
 `check merge` and `land` print the level and the merge action on stderr (`PR #7: risk: high (<why>); merge: go`). When
 the gate rates a change high or critical, `check merge` and `land` add `risk:high` to the PR, reporting a failure to
@@ -512,8 +511,8 @@ way, epics included, except one opened by an account without write access, or on
 whose `spec` is `owner` (by default `high` there: the risk rule on the labels of the issue and the PR and the PR's
 files, at `check build` the files pushed so far): those need the owner's record and label, and `check` says why. A
 level asking `owner` of the spec holds a spec a `spec.auto` kind covers too. Under `spec.auto: true` the risk rule
-holds the spec instead of the merge by default, since the owner approved the change before it was built; `risk:high`,
-the `verifier` term and the cap still hold the merge. The list may also
+holds the spec instead of the merge by default, since the owner approved the change before it was built; `risk:high`
+and the `verifier` term still hold the merge. The list may also
 hold a `paths` term (`- paths: [mise.toml, docs/agents/**]`), globs as a rule's `paths` are: it approves by policy the
 spec of an issue labelled `spec:paths`, which the lead adds to declare that the change stays inside them, since the
 gate can't tell that from the spec alone and the setting alone would approve every spec until its merge. `check build`
@@ -640,9 +639,16 @@ PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
 # a tier below the default a `Verifier model:` line names, a word of its own after the signature in the review's
 # family (`codex/terra-6.1/med mid`, verifier.md): a model id holding the word (`sol-mid-preview`) names no tier
 LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
-# The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
+# The cap, the last pass the loop runs on its own (a core finding open after it is the lead's call), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
+# the lead's decision at the cap to land with majors open, filed as a follow-up issue, as a PR body line of its own:
+# `Cap: #<follow-up>` (SKILL.md § The cap); a quoted line (`>`, a code span or block) is an example, not the record. ponytail: the gate trusts the number the lead names; fetch the issue and
+# check its `Found while` line if a lead ever names one it never filed.
+# at most 3 spaces before it, since 4 or a tab make the line an indented code block: an example, not the decision
+CAP_DECISION = re.compile(
+    r"^ {0,3}(?:[*-][ \t]+)?\**Cap\**:?\**[ \t]*#\d+\b", re.MULTILINE | re.IGNORECASE
+)
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
@@ -658,8 +664,15 @@ CLOSES, IMPLEMENTS, PART = "closes", "implements", "part of"
 SIGNOFF = re.compile(
     r"^[ \t>*-]*\**Sign-off\**:?\**[ \t]*`?(owner|none)\b", re.MULTILINE | re.IGNORECASE
 )
-# code and comments: an example, not a closing line
-QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE)
+# code (a ``` or ~~~ block, a code span) and comments: an example, not a closing line. A block closes on a line of
+# its fence character at least as long as its opening, CRLF included; an unclosed one quotes nothing, since what
+# Markdown closes it on (the end of a quote or list) is beyond a regex. A ``` opening with a later backtick is a span.
+QUOTED = re.compile(
+    r"^[ \t>]*(`{3,})(?![^\n]*`).*?^[ \t>]*\1`*[ \t]*\r?$"
+    r"|^[ \t>]*(~{3,}).*?^[ \t>]*\2~*[ \t]*\r?$"
+    r"|`[^`\n]*`|<!--.*?-->",
+    re.DOTALL | re.MULTILINE,
+)
 # the first line of the comment flag() leaves when the verifier's `Risk:` line made it add `risk:high`, which says the
 # label is the gate's to take off again when a later pass judges the risk low
 FLAGGED = f"`{RISK_LABEL}` added by the gate"
@@ -1497,10 +1510,9 @@ def terms(
     """The risk terms that hold on the change, in the order the gate quotes them, each as (level, after, why): `high`
     for `risk:high` on the PR or an issue it names (or, for a feature branch's merge to the default branch, on a PR
     merged into it), an exact revert of a high-risk change, a risk rule's `always`, `labels` or `paths` (ruled) on the
-    labels of the PR and its issues and its files, its `verifier` term on the verifier's `Risk:` line (judged), and a
-    review at the cap not satisfied or with a blocker or major open (capped); `critical` for a path
-    `risk.critical_paths` names (critical). `after` marks a term the spec's own hold never reads (spec_owned), the
-    label, the revert, the verifier and the cap, so it rates the change only after its spec was approved. Lazy, so a
+    labels of the PR and its issues and its files, and its `verifier` term on the verifier's `Risk:` line (judged);
+    `critical` for a path `risk.critical_paths` names (critical). `after` marks a term the spec's own hold never reads
+    (spec_owned), the label, the revert and the verifier, so it rates the change only after its spec was approved. Lazy, so a
     caller that needs the first term reads no more. An exact revert's issues (gated's `named`) count as its issues."""
     issues = issues + pull.get("named", [])
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
@@ -1526,16 +1538,6 @@ def terms(
             yield "high", True, f"it matches a risk rule's `verifier` term: {why}"
         else:
             yield "high", True, f"it matches a risk rule (verifier): {why}"
-    limit = cap(loop)
-    if capped(pull, limit):
-        yield (
-            "high",
-            True,
-            (
-                f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open,"
-                " so the owner decides"
-            ),
-        )
 
 
 def merge_for(level: str, after: bool, table: dict[str, dict[str, str]]) -> str:
@@ -2840,15 +2842,6 @@ def cap(loop: str | None) -> int:
     return int(found[1])
 
 
-def capped(pull: dict[str, Any], limit: int) -> bool:
-    """Whether a verifier review at the cap (pass `limit`) or later left a blocker or major open, or was not
-    satisfied: the owner then decides between a fix with one scoped pass more and leaving the code untouched."""
-    found = passes(pull)
-    return not isinstance(found, str) and any(
-        number >= limit and not held(lines) for _, number, lines in found
-    )
-
-
 def reviewed(
     where: str,
     pull: dict[str, Any],
@@ -2859,7 +2852,8 @@ def reviewed(
     since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried: on
     the same tree, or where loop.md opts in, which prints a line either way), or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
-    blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
+    blocker or a major open; majors with no blocker at the cap or later pass once the PR body records the lead's
+    decision (CAP_DECISION). A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
     needs none (exempt). `verdicts` is passes()'s, when the caller has read it."""
     verdicts = passes(pull) if verdicts is None else verdicts
     if isinstance(verdicts, str):
@@ -2874,16 +2868,25 @@ def reviewed(
         return [
             f"{where}: a verifier review lacks its commit, or a `VERDICT:` or `SATISFIED:` line (approvals.py verdict)"
         ]
+    pairs = [pair for pair in map(counts, same) if pair is not None]
+    blocker, major = sum(pair[0] for pair in pairs), sum(pair[1] for pair in pairs)
+    # at the cap the lead decides: majors filed as a follow-up (CAP_DECISION) land on this verdict; a blocker never does
+    decided = (
+        not blocker
+        and major
+        and last >= cap(loop)
+        and CAP_DECISION.search(QUOTED.sub("", pull.get("body") or "")) is not None
+    )
     found = []
     if pull["headRefOid"].lower() != head and not carries(where, pull, loop, head):
         found.append(
             f"{where}: the newest verifier review is on {head}, not on the head {pull['headRefOid']}:"
             " every commit after a verdict needs a verdict of its own"
         )
+    if decided:
+        return found
     if any(lines["SATISFIED"].lower().split()[:1] != ["yes"] for lines in same):
         found.append(f"{where}: a verifier review on {head} is not satisfied: fix and verify again")
-    pairs = [pair for pair in map(counts, same) if pair is not None]
-    blocker, major = sum(pair[0] for pair in pairs), sum(pair[1] for pair in pairs)
     if blocker or major:
         found.append(
             f"{where}: the verifier reviews on {head} have {blocker} blocker and {major} major open: fix and verify again"
