@@ -10645,7 +10645,7 @@ def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its
     )
     brief = omnigent_agent.text_of(og.sessions[sid][1])
     assert "never write under `.git/`" in brief and "`tmp/loop/` is scratch" in brief
-    assert "never committed.\n" in brief and brief.endswith("outside `claude/`.\n\ndo X")
+    assert "never committed.\n" in brief and brief.endswith(omnigent_agent.CLOUD_NO_PUSH + "\ndo X")
     assert (
         "curl -sS -X POST -H 'Content-Type: application/json'" in brief
         and "api.github.com/repos/<owner>/<repo>/pulls" in brief
@@ -10689,6 +10689,23 @@ def test_only_a_cloud_start_s_first_prompt_grants_claude_ready_branches_once(
         else omnigent_agent.brief_of(report).read_text()
     )
     assert text.count(omnigent_agent.CLOUD_BRANCHES) == (1 if cloud else 0)
+
+
+@pytest.mark.parametrize("top_level", [True, False])
+@pytest.mark.parametrize("pr", [None, 7])
+def test_every_cloud_preamble_never_pushes_a_report_or_asks_where(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, top_level: bool, pr: int | None
+) -> None:
+    """A report, log or verifier output travels in a comment, never a push; a push question never reaches the owner (#1534)."""
+    monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+    og = CloudFake()
+    sid, _ = omnigent_agent.start(
+        og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, top_level=top_level, pr=pr
+    )
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    assert "Reports, logs and verifier output are never committed or pushed, to any branch" in brief
+    assert "A push target or branch question never goes to the owner" in brief
+    assert "put the file in your comment and end the turn" in brief
 
 
 def test_a_host_session_s_preamble_is_unchanged(tmp_path: Path) -> None:

@@ -819,7 +819,7 @@ or the owner's private network.
   pass is pushed as its record branch as a host's is, and the host's `local-ci <pr>`,
   `check merge` and `land` reuse it from there, so nobody pastes or copies the record. Its brief names the role
   file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs in the worker's VM by default (Where heavy steps run), else on a host in a detached worktree at the head, or on another host loop.md's `Placement: hosts:` line lists, as lead.md step 7 says.
-- **The PR is the interface for content.** The code is the worker's pushed branch. Its
+- **The PR is the interface for content.** The code is the worker's pushed branch; reports, logs and verifier output are never pushed, only posted as comments (a file too large for one goes in a follow-up comment, or is trimmed with its path named). Its
   report is one comment on the PR: its branch and head SHA, each light-gate command with its
   exit code, what it left out and why. If the post fails, since the session's proxy-injected
   `GH_TOKEN` can expire 10 to 20 min in, its reply is `UNPOSTED REPORT` and then the body
