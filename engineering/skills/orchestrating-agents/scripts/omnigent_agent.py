@@ -759,7 +759,8 @@ CLOUD_BRANCHES = (
 # branch moves the head a verifier reviewed.
 CLOUD_NO_PUSH = (
     "Reports, logs and verifier output are never committed or pushed, to any branch: a commit on the PR's"
-    " branch moves the head under review, and the `claude/ready-*` grant above is for code only. They travel"
+    " branch moves the head under review, and the `claude/ready-*` grant above is for code only. The one exception is the gate record that"
+    " `approvals.py local-ci --record` pushes itself, which is not a report. They travel"
     " in your report comment (or, with no PR, your final message); a file too large for one comment goes in a"
     " short follow-up comment, or is trimmed with its path named. A push target or branch question never goes"
     " to the owner: when unsure, put the file in your comment and end the turn.\n"
