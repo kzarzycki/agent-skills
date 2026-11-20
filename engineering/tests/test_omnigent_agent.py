@@ -11527,6 +11527,10 @@ def github(
     mine = prs if prs is not None else pr_list((13, S2), (12, S1), (99, "f" * 40))
 
     def gh(*args: str, timeout: float = 0) -> str:
+        # default_head's `--cache <n>s` is gh's own on-disk cache: not part of what these tests read
+        args = tuple(
+            x for i, x in enumerate(args) if x != "--cache" and not (i and args[i - 1] == "--cache")
+        )
         calls.append(args)
         if args[1] == "repos/o/r/commits/HEAD":
             return head[0] + "\n"
@@ -11711,7 +11715,7 @@ def heads_moving(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> None:
     def gh(*args: str, timeout: float = 0) -> str:
         if args[:2] == ("pr", "list"):
             return pr_list((12, S1))
-        if args[1] == "repos/o/r/commits/HEAD":
+        if "repos/o/r/commits/HEAD" in args:
             return head[0] + "\n"
         return f"{S1}\t2026-11-01T10:00:00Z\n"
 

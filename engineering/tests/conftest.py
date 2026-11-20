@@ -78,6 +78,15 @@ def _fresh_viewer() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _fresh_commit_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """omnigent_agent keeps `git/commits/<sha>` answers for the process (a commit never changes); tests reuse shas
+    with different dates, so each test starts with none (#1537)."""
+    module = sys.modules.get("omnigent_agent")
+    if module:
+        monkeypatch.setattr(module, "COMMITS", {})
+
+
+@pytest.fixture(autouse=True)
 def _no_cold_start_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     """`omnigent_agent start` polls up to 20 s for a first turn to time; a fake Omnigent never takes one, so each
     start a test lets succeed cost 20 s (#1420). A test of the wait passes its own `wait`."""

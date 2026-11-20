@@ -722,12 +722,12 @@ POLL, CEILING = 30, 2 * 60 * 60
 # seconds after the last run, unless it holds a lock (RECHECK): a merge queue or a check takes minutes to move, so
 # 30 s polls spend the account's quota, and its per-minute limit, on answers that did not change. POLL is the step
 # the sleep goes in, so the log is never silent and a lock that moved is seen at once
-QUEUE_POLL = 120
+QUEUE_POLL = 300
 # a wait on a held lock whose ref is unchanged runs landing() (the GitHub calls) again only after this many seconds: the
 # lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
 RECHECK = 300
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
-LOW_POLL, LOW_QUOTA = 300, 0.1
+LOW_POLL, LOW_QUOTA = 600, 0.1
 POLL_JITTER = 60  # most seconds of random delay added to a land --wait poll
 # a wait that meets this many network failures in a row (NETWORK) fails with the last one
 MISSES = 3
