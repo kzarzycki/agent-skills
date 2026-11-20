@@ -12,7 +12,6 @@ DELEGATE = f"`approve merge 7 --head {HEAD} --by delegate`"
 
 
 def wait(gating, capsys, monkeypatch, settings: str, **kwargs) -> str:
-    monkeypatch.setattr(approvals, "base_policy", lambda _base, checkout: checkout)
     state, _ = gating
     Path("docs/agents/loop.md").write_text(loop_md(settings))
     state["pull"] = judged_pr(judging("low — fine"), **kwargs)

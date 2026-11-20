@@ -9815,7 +9815,6 @@ def test_merge_paths_take_no_label_and_no_delegate_status_as_the_go(
     hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # the default branch's policy is the one passed here, not the repo's real origin/main (#842)
-    monkeypatch.setattr(approvals, "base_policy", lambda _base, checkout: checkout)
     labelled = into_feature(orders_pull(labels=("risk:high", "approved:merge")))
     held = ORDERS_HELD
     assert approvals.owner_waits(labelled, [], ORDERS) == [held]

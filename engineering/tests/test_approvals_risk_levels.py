@@ -137,7 +137,6 @@ def test_a_low_level_asking_the_owners_own_go_refuses_the_delegates(
 ) -> None:
     """With `owner` asked of a level other than `critical`, a delegate's go is refused on the rating, which reads the
     PR's issues itself."""
-    monkeypatch.setattr(approvals, "base_policy", lambda _base, checkout: checkout)
     state, _ = gating
     policy("loop:\n  delegate: all\nlevels:\n  low:\n    merge: owner\n")
     state["pull"] = judged_pr(judging("low — fine"))
@@ -225,7 +224,6 @@ def test_a_critical_path_refuses_the_delegates_go_under_either_name(
     hub: dict[str, list[dict[str, Any]]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(approvals, "base_policy", lambda _base, checkout: checkout)
     monkeypatch.setattr(approvals, "DEPRECATED", set())
     state, _ = gating
     policy(f"loop:\n  delegate: all\nrisk:\n  {key}:\n    - app.py\n")
