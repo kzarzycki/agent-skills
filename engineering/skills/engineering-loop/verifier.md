@@ -60,7 +60,7 @@ yourself, keeping standards and spec as separate axes.
   the diff since its head and the files it touches yourself, both axes in your own session
   with no axis subagents (code-review, step 4), not the whole change again. Rerun all of its
   repros from one script that prints each one's command, result and exit code, rather than
-  one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the owner asked for after a
+  one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the lead runs after a
   core finding stayed open reviews only the fix of those items; a pass on a merge of main
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
   after a fix for a CI check red on a ready PR is the same: only the change since that
@@ -168,8 +168,8 @@ yourself, keeping standards and spec as separate axes.
   verdict that it falls needs the whole PR diff re-reviewed and a closing `Scope: full` line.
 - **A run the sandbox refuses.** A gate, mutation or instance run the sandbox won't let you
   make (a lock or path it can't write, such as a read-only heavy-slot lock) ends in a question
-  at once, not a report: a report with no finding but `SATISFIED: no` spends a pass, can reach
-  the cap and makes the gate add `risk:high`. So does a gate or mutation run that waits for
+  at once, not a report: a report with no finding but `SATISFIED: no` spends a pass and can reach
+  the cap. So does a gate or mutation run that waits for
   the host's heavy slot past a 30-minute limit, waited on in the foreground as above. Stop the run (so its mutation can't apply after
   you), redo any patch you undid so the tree is as you found it, and write
   `<report>.question` asking the lead for a proof run with the brief in

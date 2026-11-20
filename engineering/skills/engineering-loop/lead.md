@@ -506,6 +506,7 @@ supervisor reads as a named wait. A wait of your own that ends at a known time (
 before then, and arms what wakes you then (a detached `sleep` to that time, or a scheduled
 message), since a time named only in text wakes nobody.
 
-A core finding still open at the cap goes to the owner and stops the landing: offer a fix
-with one pass past the cap, scoped to the open items, or leaving the code untouched
-(SKILL.md, The cap). Make no fix until they choose.
+A core finding still open at the cap is your decision: fix it with one pass past the cap,
+scoped to the open items; file the majors as a follow-up and record `Cap: #<follow-up>` in
+the PR body to land on the last verdict; or park or close the PR. A blocker is never landed
+on (SKILL.md, The cap).

@@ -538,8 +538,8 @@ gatekeeper.md's policy (Settings) holds:
   policy, merge: gates}`, `high` `{spec: policy, merge: go}`, or under `spec.auto: true`
   `{spec: owner, merge: gates}`, and `critical` `{spec: policy, merge: owner}`. A change
   rated by several terms takes the strictest `merge` any of them asks. A term the spec's
-  hold never reads (`risk:high`, an exact revert of a high-risk change, the `verifier` term,
-  the cap) rates the change only after its spec was approved: it takes its level's `merge`,
+  hold never reads (`risk:high`, an exact revert of a high-risk change, the `verifier` term)
+  rates the change only after its spec was approved: it takes its level's `merge`,
   or `go` where that level's `spec` is `owner` and its `merge` is `gates`, since the owner
   never saw that rating. `high: {merge: gates}` lands high risk on the gates in a low-stakes
   repo, and the rating still shows as `risk:high`; `low: {merge: go}` holds every merge for
@@ -570,7 +570,7 @@ gatekeeper.md's policy (Settings) holds:
   no keyword is checked, and `Implements` is a link like `Part of`.
 
 A change rates `high` when `risk:high` is on the PR or an issue it closes, a risk rule
-matches, or the cap was reached with a blocker or major open (The cap), and `critical`
+matches, and `critical`
 when it touches `risk.critical_paths`. A high-risk spec covered by policy is still built
 and PR'd; where its level asks a go (by default `high`, but for a rule that held its spec
 under `spec.auto: true`, and `critical`), its merge waits for the owner's go on its head,
@@ -1213,11 +1213,18 @@ so any commit after the last verdict, a merge of main included, gets a verifier 
 its own. The one exception is gatekeeper.md's `carry_over_main`: clean merges of main that touch
 none of the PR's files keep the verdict (Approvals and proof).
 
-- **The last pass under the cap leaves a blocker or major open:** stop and ask the owner,
-  since the fix keeps regressing and only they decide what happens next. They have two
-  options. One is a fix followed by one pass past the cap, scoped to the open items. The
-  other is leaving the code untouched, and parking or closing the PR. You never fix and
-  land on your own call: `land` holds such a PR for the owner's go on its head.
+- **The last pass under the cap leaves a blocker or major open:** the lead decides, since
+  more passes alone would keep the fix regressing. It picks one of three:
+  - Fix the open items and run one pass past the cap, scoped to them. The PR lands on that
+    pass's satisfied verdict.
+  - Leave the code untouched, file the majors as a follow-up issue (Triage), and put a line
+    `Cap: #<follow-up>` in the PR body. That line is the lead's recorded decision: with it
+    `check merge` accepts majors open on a pass at the cap or later, and the PR lands on that
+    verdict. A blocker still refuses, since it means the change is wrong as it stands, so a
+    blocker leaves only the fix or the next option.
+  - Park or close the PR.
+
+  The cap adds no risk: the PR's own rating decides whether its merge waits for a go.
 - **The last pass under the cap leaves only minor or edge findings open:** ledger them and
   file their issue (Triage), leave the code untouched, and land on the satisfied verdict.
   There is no owner stop.
