@@ -5729,6 +5729,12 @@ def reviews(role: str | None) -> bool:
     return bool(role) and Path(str(role)).name == "verifier.md"
 
 
+def report_pr(role: str | None, cloud: bool, pr: int | None) -> int | None:
+    """The PR a child reports on, if any: a verifier's --pr names the PR it reviews, so one on a host
+    writes its report file instead; only a cloud one, with no file the host can read, reports on it."""
+    return None if reviews(role) and not cloud else pr
+
+
 def file_unlink(og: Omnigent, sid: str, path: Path, far: bool) -> None:
     """Remove ``path`` on ``sid``'s host (``far``: another one), if it is there."""
     if not far:
@@ -9310,7 +9316,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             body = first_message(
                 args.cloud,
                 args.top_level,
-                args.pr,
+                report_pr(args.role, args.cloud, args.pr),
                 args.report.resolve(),
                 args.role,
                 text_or_file(args.brief)[0],
@@ -9489,8 +9495,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         if verifier and args.verifier_route != "codex":
             apply_route(args)
         verifies = args.pr if verifier else None
-        if verifier and args.pr and og.harness(args.agent) != CLOUD_HARNESS:
-            args.pr = None
+        if verifier:
+            args.pr = report_pr(args.role, og.harness(args.agent) == CLOUD_HARNESS, args.pr)
         cloud = os.environ.get("CLAUDE_CODE_REMOTE") == "true"
         if (
             args.cmd in ("run", "start")
