@@ -6256,7 +6256,8 @@ def local_queue(
         # narrowed mode: the batch gate selects against the tip the batch merges onto (narrowed_gate)
         with narrowed_to(tip):
             landed = merged_trees(candidates, base, tip, failed)
-            if landed and held:
+            # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
+            if landed and held is not None:
                 repointed(base, held, landed[-1][0]["number"])
             if landed:
                 merges(landed, base, tip, None, loop, failed, waited, held)
@@ -6268,7 +6269,8 @@ def local_queue(
                     pull for pull in candidates if pre_landed(pull, base, work, loop, failed)
                 ]
                 landed = merge_batch(candidates, base, work, failed)
-                if landed and held:
+                # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
+                if landed and held is not None:
                     repointed(base, held, landed[-1][0]["number"])
                 if landed:
                     merges(landed, base, tip, work, loop, failed, waited, held)
@@ -7468,26 +7470,40 @@ def merges(
     loop: str | None,
     failed: set[int],
     waited: str = "",
-    held: Sequence[str] = (),
+    held: Sequence[str] | None = None,
 ) -> None:
     """Merge each PR through GitHub in the batch's order, pinned to its head (or, with loop.md's `land` section, as a
     signed squash of the tree it lands on the commit before it), stopping at the first one GitHub refuses or leaves
-    open, then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
+    open, or before the next once the heartbeat lost the lock (`held` emptied; None: no lock), then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
     the batch partial, or someone merged meanwhile) the tip is gated here, or with no worktree (`work` None) its pass
     reused where one is recorded and the tree named where none is. Each landed PR gets a `Landed` comment. Right before
     its merge call a PR's head gets the `land` status naming the nonce of the lock commit `held` ends with, which the
     base's ruleset can require, so only a land merges (#1289); a merge GitHub then refuses, or leaves open, turns it to
     an error."""
     local, command, done = signed(loop), gate()[0], []
-    nonce = (
-        git("log", "-1", "--format=%b", held[-1]).rsplit("nonce ", 1)[-1].strip() if held else ""
-    )
+
+    def owned() -> str | None:
+        """The lock commit `held` ends with (None: no lock), read under `beating` so the heartbeat can't empty it
+        between the check and the read; [] is a lock the heartbeat lost, which stops the batch. Checked again right
+        before each merge call, since the steps before it reach GitHub too; a call already made can't be taken back."""
+        with beating:
+            if held is not None and not held:
+                raise Refused(f"another land took the landing lock {lock_name(base)}")
+            return held[-1] if held else None
+
     for pull, tree, gated, how in landed:
         where, head, posted = f"PR #{pull['number']}", pull["headRefOid"], False
         try:
+            ours = owned()
+            nonce = (
+                git("log", "-1", "--format=%b", ours).rsplit("nonce ", 1)[-1].strip()
+                if ours
+                else ""
+            )
             unlink_pull(pull)
             method = merge_method(pull, loop)
             if local:
+                owned()
                 tip = signed_squash(pull, local[1], (tip, tree))
                 print(f"{where} lands as a {method}")
                 print(f"{where} landed in {base} as {tip}, signed by a key in {local[1]}")
@@ -7499,6 +7515,7 @@ def merges(
                 post_status(head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}")
                 posted = True
                 try:
+                    owned()
                     port("forge").merge(pull["number"], method, body, head)
                 except subprocess.CalledProcessError as exc:
                     merge = merged_anyway(pull["number"], head, exc)
