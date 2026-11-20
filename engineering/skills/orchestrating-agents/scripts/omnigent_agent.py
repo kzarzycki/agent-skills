@@ -754,6 +754,16 @@ CLOUD_BRANCHES = (
     " Push each PR to its own new branch. Never force-push, never delete a branch you didn't create"
     " in this session, and never push to `main` or to any branch outside `claude/`.\n"
 )
+# Every acp:claude-cloud session's preamble (#1534): where a file goes is mechanics, so a session that
+# asks the owner where to push a report stalls on a card nobody answers, and a commit on the PR's
+# branch moves the head a verifier reviewed.
+CLOUD_NO_PUSH = (
+    "Reports, logs and verifier output are never committed or pushed, to any branch: a commit on the PR's"
+    " branch moves the head under review, and the `claude/ready-*` grant above is for code only. They travel"
+    " in your report comment (or, with no PR, your final message); a file too large for one comment goes in a"
+    " short follow-up comment, or is trimmed with its path named. A push target or branch question never goes"
+    " to the owner: when unsure, put the file in your comment and end the turn.\n"
+)
 # A child placed on a host (any harness but the cloud one, never a top-level lead, whose own heavy
 # runs go to the cloud): its placement already chose the host, so it prefixes heavy runs past the
 # engineering pack's hook, which refuses one on a host without the prefix (#1233).
@@ -818,12 +828,12 @@ def role_line(role: str | None, cloud: bool) -> str:
 
 def cloud_preamble(preamble: str, pr: int | None) -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
-    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE`` and ``CLOUD_BRANCHES`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_BRANCHES`` and ``CLOUD_NO_PUSH`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
     preamble = preamble.replace(DETACH_LINE, CLOUD_RUN_LINE)
-    return preamble.removesuffix("\n") + CLOUD_NOTE + CLOUD_BRANCHES + "\n"
+    return preamble.removesuffix("\n") + CLOUD_NOTE + CLOUD_BRANCHES + CLOUD_NO_PUSH + "\n"
 
 
 def cloud_reply(items: list[dict], verdict: bool = False) -> tuple[str, str] | None:

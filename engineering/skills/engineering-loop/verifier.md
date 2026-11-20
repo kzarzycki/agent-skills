@@ -11,6 +11,7 @@ the author's assumptions into the review. Call no memory tool, and when your ses
 recalled memories, leave them out of the review and say in the report that they were there.
 Where your test and mutation runs go is SKILL.md, Where heavy steps run. Unless loop.md's
 `Cloud worker:` line says `none`, name your evidence files for the PR (SKILL.md, Cloud worker).
+A cloud verifier's report, logs and evidence travel in its PR comment (the final message with no PR), never in a commit or push, and it never asks the owner where to push: a commit on the PR's branch moves the head it reviews.
 
 Check the tree first:
 

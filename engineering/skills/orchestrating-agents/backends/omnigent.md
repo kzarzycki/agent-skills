@@ -218,6 +218,7 @@ It closes with the owner's standing branch grant (`CLOUD_BRANCHES`): new `claude
 per PR, besides the one the session started on; no force-push, no deleting a branch it didn't create, nothing
 pushed to `main` or outside `claude/`. A cloud session takes a push grant only from its first user message and
 refuses a later relayed one, so a lead building several PRs gets its branches only this way.
+It ends with the no-push rule (`CLOUD_NO_PUSH`): reports, logs and verifier output are never committed or pushed, since a commit on the PR's branch moves the head under review and the branch grant is for code; they travel in the report comment (or the final message with no PR), a file too large for one comment goes in a short follow-up comment or is trimmed with its path named, and a push target or branch question never goes to the owner.
 
 **Cloud environments.** Which claude.ai environment a cloud session runs in is the project's
 loop.md line `Cloud worker: <agent>, gate <task>, env <name>`; an environment id belongs to one
