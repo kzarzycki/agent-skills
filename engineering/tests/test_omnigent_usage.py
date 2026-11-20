@@ -91,7 +91,9 @@ def test_the_lead_writes_its_estimate_on_the_draft_pr_and_the_actual_at_landing(
 
 def test_a_poll_reads_the_slim_record_and_usage_the_full_one(monkeypatch) -> None:
     paths: list[str] = []
-    monkeypatch.setattr(omnigent_agent.Omnigent, "call", lambda self, m, p, b=None: paths.append(p) or {})
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "call", lambda self, m, p, b=None: paths.append(p) or {}
+    )
     og = object.__new__(omnigent_agent.Omnigent)
     og.info("s1")
     og.info("s1", usage=True)
