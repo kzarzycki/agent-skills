@@ -18,7 +18,8 @@ a subfolder are not checks and are skipped. Each check's own output passes throu
     PASS acceptance/7/01-ok.sh (0.1s)
     FAIL acceptance/7/02-broken.sh (2.3s)
 
-A file that cannot be started (no shebang, say) is a FAIL with the reason. `--all` runs every
+A file that cannot be started (no shebang, say) is a FAIL with the reason, and so is a shell check
+(its shebang names sh or bash) that does not parse, which `<shell> -n` checks before it runs. `--all` runs every
 `acceptance/*/` folder in issue order, for the nightly. The last line is the total:
 `TOTAL <n> checks, <passed> passed, <failed> failed (<s>s)`.
 
@@ -97,16 +98,40 @@ def issue_order(folder: Path) -> tuple[int, int, str]:
     return (0, int(name), name) if name.isdigit() else (1, 0, name)
 
 
+SHELLS = {"sh", "bash", "dash", "ksh", "zsh"}
+
+
+def parser(check: Path) -> list[str] | None:
+    """The shell a check's shebang starts (`#!/bin/bash`, `#!/usr/bin/env bash`), to parse it with first: bash 3.2,
+    macOS's /bin/bash, runs the EXIT trap on a syntax error and exits with the trap's status, so a check that never
+    ran past the error would PASS (#1545). None for any other check."""
+    with check.open("rb") as file:
+        line = file.readline(256)
+    if not line.startswith(b"#!"):
+        return None
+    words = line[2:].decode(errors="replace").split()
+    if words[:1] and Path(words[0]).name == "env":  # `env bash`; `env -S ...` is left unparsed
+        words = words[:2] if len(words) > 1 and not words[1].startswith("-") else []
+        program = words[-1] if words else ""
+    else:  # the shebang's own flags stay (`#!/bin/bash -e`), so it parses as it runs
+        program = words[0] if words else ""
+    return words if Path(program).name in SHELLS else None
+
+
 def run(check: Path, root: Path) -> bool:
     """Run one check from the repo root and print its PASS or FAIL line."""
     shown = check.relative_to(root).as_posix()
     sys.stdout.flush()
     started = time.monotonic()
     try:
-        code = subprocess.run(
-            [str(check)], cwd=root, stdin=subprocess.DEVNULL, check=False
-        ).returncode
-        reason = "" if code == 0 else f", exit {code}"
+        shell = parser(check)
+        if shell and subprocess.run([*shell, "-n", str(check)], cwd=root, check=False).returncode:
+            code, reason = 2, ", does not parse"
+        else:
+            code = subprocess.run(
+                [str(check)], cwd=root, stdin=subprocess.DEVNULL, check=False
+            ).returncode
+            reason = "" if code == 0 else f", exit {code}"
     except OSError as error:
         code, reason = -1, f", not started: {error.strerror or error}"
     seconds = time.monotonic() - started

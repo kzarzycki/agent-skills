@@ -118,6 +118,23 @@ def test_a_check_that_cannot_start_fails(repo: Path) -> None:
     assert verdicts(result.stdout) == ["FAIL acceptance/7/noshebang"]
 
 
+@pytest.mark.parametrize("shebang", ["#!/bin/bash", "#!/usr/bin/env bash", "#!/bin/sh"])
+def test_a_shell_check_that_does_not_parse_fails_before_it_runs(repo: Path, shebang: str) -> None:
+    # bash 3.2 (macOS's /bin/bash) runs the EXIT trap on a syntax error and exits with the trap's 0 (#1545)
+    check(
+        repo,
+        "acceptance/7/01-broken.sh",
+        f"{shebang}\nset -e\ntrap 'true' EXIT\necho ran\nX=1 \\\nfor a in b; do\n echo $a\ndone\n",
+    )
+
+    result = acceptance(repo, "7")
+
+    assert result.returncode == 1, result
+    assert verdicts(result.stdout) == ["FAIL acceptance/7/01-broken.sh"]
+    assert "does not parse" in result.stdout
+    assert "ran" not in result.stdout.split()
+
+
 def test_all_runs_every_folder_in_issue_order_and_exits_1_when_one_fails(repo: Path) -> None:
     check(repo, "acceptance/10/ok.sh", PASSING)
     check(repo, "acceptance/9/broken.sh", FAILING)
