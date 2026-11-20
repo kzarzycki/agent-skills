@@ -22,7 +22,8 @@ class Records:
     def __init__(self, records: dict[str, dict]) -> None:
         self.records, self.reads = records, []
 
-    def info(self, sid: str) -> dict:
+    def info(self, sid: str, usage: bool = False) -> dict:
+        assert usage, "usage reads the full record: the slim poll record carries no usage"
         self.reads.append(sid)
         if sid not in self.records:
             raise omnigent_agent.Fail(f"GET /v1/sessions/{sid}: HTTP 404")
@@ -86,3 +87,12 @@ def test_the_lead_writes_its_estimate_on_the_draft_pr_and_the_actual_at_landing(
     assert land < spent < lead.index("9. **Accept.**")
     assert "omnigent_agent.py usage <session>..." in lead[spent:]
     assert "model and session id of each agent" in lead
+
+
+def test_a_poll_reads_the_slim_record_and_usage_the_full_one(monkeypatch) -> None:
+    paths: list[str] = []
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", lambda self, m, p, b=None: paths.append(p) or {})
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.info("s1")
+    og.info("s1", usage=True)
+    assert paths == [f"/v1/sessions/s1{omnigent_agent.SLIM}", "/v1/sessions/s1"]
