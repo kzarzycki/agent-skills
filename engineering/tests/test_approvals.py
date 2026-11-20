@@ -2924,74 +2924,11 @@ def test_a_review_on_an_older_commit_never_covers_the_head() -> None:
     assert verified(verdict_on(OLD), comments=("Triaged: fixed in the head, lands.",)) == [line]
 
 
-def capped(*reviews: dict[str, Any], loop: str = BARE, **fields: Any) -> list[str]:
-    """owner_waits on a project whose loop.md has no risk rule: only the cap asks for the owner's go."""
-    return approvals.owner_waits(pull(reviews=reviews, files=("app.py",), **fields), [], loop)
-
-
-def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfied_pass(
-    hub: dict[str, list[dict[str, Any]]],
-) -> None:
-    """The cap pass left a major open: only the owner decides the fix, so the scoped pass after it lands on their go."""
-    open_at_cap = verdict_on(
-        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading=f"Verifier (claude), pass {CAP}"
-    )
-    pass6 = verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")
-    assert verified(open_at_cap, pass6) == []
-    assert capped(open_at_cap, pass6) == [
-        (
-            HELD + f"a verifier review at the cap (pass {CAP}) or later"
-            " was not satisfied or left a blocker or major open, so the owner decides"
-        )
-    ]
-    hub[HEAD] = [status("owner", f"The owner's go on {HEAD[:12]}")]
-    assert capped(open_at_cap, pass6, comments=(record("merge", "owner", head=HEAD),)) == []
-
-
-@pytest.mark.parametrize(
-    ("counts", "satisfied"),
-    [("0 blocker, 1 major, 0 minor", "yes"), ("0 blocker, 0 major, 0 minor", "no")],
-)
-def test_a_review_at_the_cap_holds_on_a_core_finding_or_on_not_being_satisfied(
-    counts: str, satisfied: str
-) -> None:
-    at_cap = verdict_on(OLD, counts, satisfied=satisfied, heading=f"Verifier (claude), pass {CAP}")
-    assert capped(at_cap, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")) != []
-
-
-def test_minors_only_at_the_cap_or_core_findings_before_it_need_no_owner() -> None:
-    minors = verdict_on(
-        HEAD, "0 blocker, 0 major, 3 minor", heading=f"Verifier (claude), pass {CAP}"
-    )
-    assert capped(minors) == []
-    early = verdict_on(
-        OLD,
-        "1 blocker, 0 major, 0 minor",
-        satisfied="no",
-        heading=f"Verifier (claude), pass {CAP - 1}",
-    )
-    assert capped(early, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP}")) == []
-
-
 def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() -> None:
     assert approvals.cap(None) == approvals.cap(BARE) == 3  # SKILL.md § The cap
     assert approvals.cap(loop_md("loop:\n  cap: 4\n")) == 4
     with pytest.raises(approvals.Refused, match="`loop.cap` must be a whole number"):
         approvals.cap(loop_md("loop:\n  cap: 3 passes\n"))
-    major = verdict_on(
-        OLD,
-        "0 blocker, 1 major, 0 minor",
-        satisfied="no",
-        heading=f"Verifier (claude), pass {CAP - 1}",
-    )
-    later = verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP}")
-    assert capped(major, later) == []
-    assert capped(major, later, loop=loop_md(f"loop:\n  cap: {CAP - 1}\n")) == [
-        (
-            HELD + f"a verifier review at the cap (pass {CAP - 1}) or later"
-            " was not satisfied or left a blocker or major open, so the owner decides"
-        )
-    ]
 
 
 def test_only_a_review_by_the_prs_author_or_the_viewer_counts(
@@ -7113,45 +7050,6 @@ def test_check_merge_adds_risk_high_when_it_infers_high_risk_and_holds_for_the_o
     signed["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
     landing["pull"] = signed
     assert gate(capsys, "check", "merge", "7")[0] == 0
-
-
-def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reported_not_fatal(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    added: list[tuple[int, str, bool]],
-) -> None:
-    at_cap = verdict_on(
-        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading=f"Verifier (claude), pass {CAP}"
-    )
-    pr = pull(
-        reviews=(at_cap, verdict_on(HEAD, heading=f"Verifier (claude), pass {CAP + 1}")),
-        files=("app.py",),
-    )
-    pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
-    comments: list[tuple[int, str]] = []
-    monkeypatch.setattr(approvals, "comment", lambda number, body: comments.append((number, body)))
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
-    monkeypatch.chdir(PROJECT)
-    capped_line = (
-        HELD
-        + f"a verifier review at the cap (pass {CAP}) or later was not satisfied or left a blocker or major open, so the owner decides"
-    )
-    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
-    assert capsys.readouterr().out.splitlines() == [capped_line]
-    assert added == [(7, "risk:high", True)]
-    assert comments == [(7, f"`risk:high` added, since {capped_line.removeprefix(HELD)}.\n")]
-
-    def refused(number: int, name: str, add: bool) -> None:
-        raise subprocess.CalledProcessError(
-            1, "gh", stderr="gh: Resource not accessible by integration (HTTP 403)\n"
-        )
-
-    monkeypatch.setattr(approvals, "label", refused)
-    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
-    assert capsys.readouterr().out.splitlines() == [
-        capped_line,
-        "PR #7: could not add `risk:high` (gh: Resource not accessible by integration (HTTP 403)): add it by hand",
-    ]
 
 
 @pytest.mark.parametrize(

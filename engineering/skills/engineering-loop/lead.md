@@ -247,7 +247,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    file or brief, `AGENTS.md` and `CLAUDE.md`, the project's `docs/agents/` files, a prompt,
    and anything a tool parses each need the full verifier pass (gates, proof and repros),
    still reviewing only the change since the last verdict's head.
-8. **Land** once the last verdict is triaged with no core finding open; the merge itself
+8. **Land** once the last verdict is triaged with no core finding open, or at the cap with no
+   blocker open and your `Cap: #<follow-up>` line in the PR body (SKILL.md, The cap); the merge itself
    waits for the landing rule (SKILL.md):
    - Merge `origin/main` into the PR only when `land` comments that it conflicts with main
      (`Conflicts in the landing batch`): both merge queues test each head on top of main (the
@@ -289,7 +290,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      project's instructions still name one, enqueue there as they say until it adopts `land`.
    - Run `uv run <this skill's folder>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
      with `--wait`) once no local objection is left: the gate of record passed on the head (the worker's `affected-tests`, or `mise run check` where loop.md has no `Affected tests:` line or has `Gate: full`; with `ci: false`, the worker's `local-ci --record`, a narrowed pass where loop.md has the line; `land`'s batch gate runs the `Affected tests:` command against the base tip it merges onto where loop.md has the line, else the project's `loop.gate`: SKILL.md, Adopting the loop), the PR's required check is green (it runs CI's selection of the affected tests, so where `ci` is not `false` and no `gate_steps` step runs on the host, the host runs no gate of its own before the go: no `check-fast`, no full suite), the
-     newest verifier review, satisfied with no core finding open, covers it, and every review
+     newest verifier review, satisfied with no core finding open (or at the cap, majors only under a `Cap:` line), covers it, and every review
      thread is resolved (SKILL.md, Review trail on the PR). Start it as a background
      command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work
      on other items meanwhile. It lands every landable PR into main through main's merge
@@ -506,6 +507,7 @@ supervisor reads as a named wait. A wait of your own that ends at a known time (
 before then, and arms what wakes you then (a detached `sleep` to that time, or a scheduled
 message), since a time named only in text wakes nobody.
 
-A core finding still open at the cap goes to the owner and stops the landing: offer a fix
-with one pass past the cap, scoped to the open items, or leaving the code untouched
-(SKILL.md, The cap). Make no fix until they choose.
+A core finding still open at the cap is your decision: fix it with one pass past the cap,
+scoped to the open items; file the majors as a follow-up and record `Cap: #<follow-up>` in
+the PR body to land on the last verdict; or park or close the PR. A blocker is never landed
+on (SKILL.md, The cap).
