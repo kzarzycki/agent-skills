@@ -34,10 +34,12 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    `Affected tests:` line, run `uv run <this skill's folder>/scripts/approvals.py affected-tests` on every head, a fix
    round's too: it runs that selection against `git merge-base origin/<base> HEAD` (the base of the branch's open PR,
    else the default branch; a shallow clone is deepened) in the variable `Gate base:` names (else `GATE_BASE`), under the
-   host gate slot, in place of the full `mise run check`; without the line, run `mise run check` as today. A selector
-   that selects nothing exits 0. With `ci: false` the draft heads run `affected-tests` too, but the gate of record on the ready head is the full
-   `approvals.py local-ci --record` on the committed head, run once when the PR goes ready (again only if the head
-   moves after that), since `check merge` needs a plain pass on the head (SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
+   host gate slot, in place of the full `mise run check`; without the line, or with loop.md's `Gate: full`, it runs
+   `mise run check`. A selector that selects nothing exits 0. With `ci: false` the draft heads run `affected-tests` too,
+   and the gate of record on the ready head is `approvals.py local-ci --record` on the committed head, run once when the
+   PR goes ready (again only if the head moves after that, or its merge base with the PR's base does: a stacked PR whose parent lands, a retarget, since a narrowed record is keyed by that merge base): a narrowed pass against the merge base where loop.md has
+   the line and no `Gate: full`, which `check merge` takes, else the full gate, since then `check merge` needs a full
+   pass on the head (SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
    file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report with
    the run it came from (a CI run's id, else the time the gate started), since that run and
    the head are what make it one occurrence.
@@ -61,8 +63,8 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    passed) and `git merge-base --is-ancestor <it> HEAD` exits 0, put `GATE_BASE=<it>` (or the
    variable loop.md's `Gate base:` line names) in front of `mise run check`, so a check that
    reads it selects only what changed since that head; with `ci: false` run the check that way,
-   never `local-ci --record`, which clears the variable. The head that lands keeps the full selection, since `land`, CI
-   and `local-ci` never set it (the merge queue and `land`'s batch gate run full). The lead merges your branch and opens the PR: a
+   never `local-ci --record`, which clears the variable. The head that lands is gated by `land`, CI and `local-ci`,
+   which clear it and set their own base only in narrowed mode (SKILL.md, Adopting the loop). The lead merges your branch and opens the PR: a
    brief that asks for a PR means push the branch and report it. A spec or plan the brief
    asks for goes in a file under `tmp/loop/`, and you report its path: the lead
    posts it, since the spec lives on the issue. Your job ends at the push, and once the head is handed to the queue or for approval the branch is frozen: PR events (review comments, checks) are read-only to you, and a follow-up goes in a new PR. Don't wait for
@@ -122,7 +124,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    their runs too. Then write your
    report to a file and send the lead its path: the branch and head SHA, the PR, the gate
    exit codes, your signature (what orchestrating-agents' `scripts/omnigent_agent.py signature` prints, else
-   the `AGENT_SIGNATURE=` line atop your brief), the line `Spec deviations: none` or that line
+   the `AGENT_SIGNATURE=` line atop your brief), the line `First commit: <n> s after the brief` (the brief file's time to the first commit's committer date, `unknown` when no commit is made), the line `Spec deviations: none` or that line
    with one bullet per deviation quoting the spec line it narrows (each one already asked,
    above), anything else left out and why, and what you tried and dropped. The deviations
    line is fixed, so a narrowed item never sits among harmless choices where the lead skims

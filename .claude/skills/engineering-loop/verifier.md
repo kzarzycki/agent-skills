@@ -11,6 +11,7 @@ the author's assumptions into the review. Call no memory tool, and when your ses
 recalled memories, leave them out of the review and say in the report that they were there.
 Where your test and mutation runs go is SKILL.md, Where heavy steps run. Unless loop.md's
 `Cloud worker:` line says `none`, name your evidence files for the PR (SKILL.md, Cloud worker).
+A cloud verifier's report, logs and evidence travel in its PR comment (the final message with no PR), never in a commit or push, and it never asks the owner where to push: a commit on the PR's branch moves the head it reviews.
 
 Check the tree first:
 
@@ -60,11 +61,25 @@ yourself, keeping standards and spec as separate axes.
   the diff since its head and the files it touches yourself, both axes in your own session
   with no axis subagents (code-review, step 4), not the whole change again. Rerun all of its
   repros from one script that prints each one's command, result and exit code, rather than
-  one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the owner asked for after a
+  one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the lead runs after a
   core finding stayed open reviews only the fix of those items; a pass on a merge of main
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
   after a fix for a CI check red on a ready PR is the same: only the change since that
   report's head.
+- **Emit the `verifier` event** on the branch you review, so the lead waits on you as on `land` (events.md). A pass
+  that `cloud_verifier.py` runs (`verify` or `thread`) is emitted by the script: a child it starts emits nothing by
+  hand, since an `ok` written before the script posts the review would wake the lead on a review that is not there yet.
+  Any other pass emits with the same helper, from the repo's clone, `uv run <this skill's folder>/scripts/events.py
+  emit verifier <branch> <state>`:
+  - at the start, `waiting --beat 900`, and the same command again before 15 minutes pass while the review runs. A
+    wait reads a `waiting` ref silent after twice its `beat_s`, and a `wait-for` call blocks close to 10 minutes, so
+    the 5-minute default would read a long mutation or acceptance run as dead. Use a `--beat` at least as long as
+    your longest blocking call (900 s covers one), and beat between calls.
+  - at the end, once the report is written (the lead posts the review, not you): `ok` for `SATISFIED: yes`, `failed`
+    for `SATISFIED: no` or no report, `needs-owner --question <file>` when you write `<report>.question`, each with
+    `--url <the report path>`.
+  - the helper exits 0 whatever happens to the push, so it never changes the pass. A lead with no event reads the
+    report as before.
 - **A long or locked run is detached.** This is every role's rule for a long run, worker's
   and lead's too. A gate, repro or e2e run that may wait on a lock
   or a queue, or outlast one tool call, starts detached (in its own session) with its pid, output and exit code
@@ -150,11 +165,12 @@ yourself, keeping standards and spec as separate axes.
   `risk` (docs/agents/gatekeeper.md) your `Risk:` line rates the change, and the policy's `levels` say what each
   rating needs at merge (by default a high change waits for the owner's go, a low one for the gates alone), so
   judge it on the diff, not on how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
-  again on its reasoning in this pass, and say why the risk stands or falls.
+  again on its reasoning in this pass, and say why the risk stands or falls; a delta pass cannot lower it, so a
+  verdict that it falls needs the whole PR diff re-reviewed and a closing `Scope: full` line.
 - **A run the sandbox refuses.** A gate, mutation or instance run the sandbox won't let you
   make (a lock or path it can't write, such as a read-only heavy-slot lock) ends in a question
-  at once, not a report: a report with no finding but `SATISFIED: no` spends a pass, can reach
-  the cap and makes the gate add `risk:high`. So does a gate or mutation run that waits for
+  at once, not a report: a report with no finding but `SATISFIED: no` spends a pass and can reach
+  the cap. So does a gate or mutation run that waits for
   the host's heavy slot past a 30-minute limit, waited on in the foreground as above. Stop the run (so its mutation can't apply after
   you), redo any patch you undid so the tree is as you found it, and write
   `<report>.question` asking the lead for a proof run with the brief in
@@ -219,6 +235,8 @@ keep these lines exact:
   sub-heading and posts nothing. `verdict` refuses a `### ` heading with a `(<severity>)`
   it can't read, and finding headings that don't add up to the `VERDICT:` counts, rather
   than leave a finding off the review.
+- The report is posted folded (github.md, Comment shape): `verdict` keeps the closing lines in view and puts the
+  criteria under `<details>`, so write the closing lines as below, each alone on its line, and keep prose out of them.
 - End with `Head: <sha>`, the full commit you reviewed (`git rev-parse HEAD` in your
   worktree), then `VERDICT: <n> blocker, <n> major, <n> minor`, `SATISFIED: yes|no` and
   `Risk: low — <reason>` or `Risk: high — <reason>` (Steering, Judge the risk). The gate
@@ -226,6 +244,11 @@ keep these lines exact:
   The gate sets the board's `Risk` field from it (github.md, Board).
   On a delta of merges of the base alone, add `Logic change: none` when its conflict fixes
   change no behaviour, which carries the owner's go to the head, else `Logic change: <what>`.
+  `Risk:` names the PR's risk, not the delta's: the gate takes the highest `Risk:` of the passes since the last one
+  that reviewed the whole change (your first pass, or a later pass with a `Scope: full` line), so a `low` on a delta cannot
+  lower an earlier `high`, and a `high` the lead disputes is re-judged only on a `Scope: full` pass. Write `Scope: full`, as the whole value of a closing line, when you re-reviewed the whole PR diff against the base (a fresh
+  verifier, or a request for a full pass); its `Risk:` then names the PR's risk and may lower an earlier one.
+  Write no `Scope:` line on a pass that reviewed only the diff since the last reviewed head, as every later pass does.
   The merge reads the review as covering that commit only, so a push after your review
   needs its own, unless the new head has your commit's tree (`git rev-parse <sha>^{tree}`),
   as after a reword of commit messages only: every file you reviewed is the same, so your
