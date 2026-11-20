@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from approvals_harness import HEAD, approvals, gating, judged_pr, judging, lands, loop_md  # noqa: F401
 
 OWNER = f"`approve merge 7 --head {HEAD} --by owner`"
