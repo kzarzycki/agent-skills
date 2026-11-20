@@ -29,7 +29,11 @@ Gate = tuple[dict[str, Any], list[tuple[int, str]]]
 
 GO_ON_MAIN = (
     f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main"
-    " `approved:merge` is no go), since it is "
+    " `approved:merge` is no go; `loop.delegate: all` in the policy file lets a delegate's go count), since it is "
+)
+DELEGATED_GO_ON_MAIN = (
+    f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`, or the delegate's:"
+    f" `approve merge 7 --head {HEAD} --by delegate`; into main `approved:merge` is no go), since it is "
 )
 OWNER_ONLY = (
     f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; the delegate's go and"
@@ -195,7 +199,7 @@ def test_a_critical_level_asking_only_a_go_takes_the_delegates(
     state["pull"] = judged_pr(judging("low — fine"))
     code, out, err = check_merge(capsys)
     why = "it touches `app.py`, which `risk.critical_paths` names (`app.py`)"
-    assert (code, out) == (approvals.WAITING, [GO_ON_MAIN + f"critical risk: {why}"])
+    assert (code, out) == (approvals.WAITING, [DELEGATED_GO_ON_MAIN + f"critical risk: {why}"])
     assert f"PR #7: risk: critical ({why}); merge: go" in err
     state["pull"]["comments"]["nodes"].append(note(DELEGATE_RECORD))
     hub[HEAD] = [status("owner", DELEGATE_GO)]

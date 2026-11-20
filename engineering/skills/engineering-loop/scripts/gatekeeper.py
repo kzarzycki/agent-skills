@@ -3684,10 +3684,15 @@ def owner_waits(
     # why the go on an earlier head stops short of this one, so the lead knows what a new verdict could fix
     stale = [f"{where}: {carry}"] if isinstance(carry, str) else []
     if default(pull):
+        if delegation(base_policy(pull["baseRefName"], loop)) == "all":
+            ask = f"{command}, or the delegate's: `approve merge {pull['number']} --head {pull['headRefOid']} --by delegate`"
+            more = ""
+        else:
+            ask, more = command, "; `loop.delegate: all` in the policy file lets a delegate's go count"
         return [
             (
-                f"{where} waits for the owner's go on its head ({command}; into {pull['baseRefName']} `{MERGE_LABEL}`"
-                f" is no go), since it is {rated.source} risk: {why}"
+                f"{where} waits for the owner's go on its head ({ask}; into {pull['baseRefName']} `{MERGE_LABEL}`"
+                f" is no go{more}), since it is {rated.source} risk: {why}"
             ),
             *stale,
         ]
