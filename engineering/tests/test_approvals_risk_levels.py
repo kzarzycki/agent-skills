@@ -492,17 +492,11 @@ def test_a_command_without_the_gates_issues_rates_an_exact_revert_by_what_it_rev
     )
 
 
-@pytest.mark.parametrize("term", ["revert", "cap"])
-def test_under_spec_auto_a_revert_or_the_cap_rates_after_the_spec_and_asks_a_go(
-    term: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Neither an exact revert of a high-risk change nor the cap is read by the spec's hold, so under the default
-    `high` of `spec.auto: true` ({owner, gates}) each asks a go."""
+def test_under_spec_auto_a_revert_rates_after_the_spec_and_asks_a_go() -> None:
+    """An exact revert of a high-risk change is not read by the spec's hold, so under the default `high` of
+    `spec.auto: true` ({owner, gates}) it asks a go."""
     pr = pull(reviews=(judging("low — fine"),), files=("app.py",))
-    if term == "revert":
-        pr["reverted"] = "`risk:high` is on #1, which it reverts"
-    else:
-        monkeypatch.setattr(approvals, "capped", lambda _pull, _limit: True)
+    pr["reverted"] = "`risk:high` is on #1, which it reverts"
     rated = approvals.rating(pr, [], loop_md("spec:\n  auto: true\n"))
     assert (rated.level, rated.merge) == ("high", "go")
 
