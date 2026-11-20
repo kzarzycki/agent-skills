@@ -5,6 +5,12 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.33.3 - 2026-11-20
+
+- A verifier started for a PR now carries the label `omni.pr=<owner/name>#<n>`, as a `--pr` worker does, so the spend of both groups by PR; `reap` still holds only the worker until its PR closes (#945).
+- `approvals.py check setup` no longer flags a consumer's own script whose name ends in a pack script name (`scripts/pr_board.py`, `my-labels.py`) as the pack's: the name must start its path component (#1394).
+- A verdict and an owner's go no longer carry to a rebased head that holds a merge commit: `git range-diff` leaves merges out, so a merge whose tree adds an edit still showed every commit `=`. `catch_up()` now refuses the range-diff proof when either range holds a merge (#1497).
+
 ## 0.33.2 - 2026-11-19
 
 - `orchestrating-agents`: the supervisor reads loop events. A wait whose `refs/loop/*` event changed within twice its beat is live and raises no deadline; a silent one raises it, naming the kind; a pending required check on a PR's head keeps its wait live; an end (`ok`, `failed`) is told to the lead once, and a `needs-owner` question goes to the owner ahead of any news. A branch with no events behaves as before (#1377).
