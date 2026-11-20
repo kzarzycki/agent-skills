@@ -116,23 +116,45 @@ def test_a_child_turn_end_with_no_open_card_is_still_forwarded(tmp_path, monkeyp
     assert len(told_m(run(tmp_path, monkeypatch, {}, said=ASK))) == 1
 
 
-def test_a_done_that_mentions_needs_owner_is_forwarded_though_a_card_is_open(
-    tmp_path, monkeypatch
+CARDED = {"pending_elicitations": [CARD]}
+MENTIONING = [
+    "DONE: shipped. Report: w.md\n- USER NEEDED: x",
+    "DONE: shipped\n> USER NEEDED: x",
+    "DONE: shipped\nneeds-owner: label removed",
+]
+
+
+@pytest.mark.parametrize("said", MENTIONING)
+def test_a_done_that_mentions_the_owner_is_forwarded_though_a_card_is_open(
+    tmp_path, monkeypatch, said
 ) -> None:
-    said = "DONE: shipped. Report: w.md\nneeds-owner: label removed"
-    card = {"pending_elicitations": [CARD]}
-    assert len(told_m(run(tmp_path, monkeypatch, card, said=said))) == 1
+    assert len(told_m(run(tmp_path, monkeypatch, CARDED, said=said))) == 1
 
 
+@pytest.mark.parametrize(
+    "said",
+    [
+        ASK,
+        "Two options were compared at length.\nUSER NEEDED: Postgres or SQLite? Report: w.md",
+        "waiting on the card. Report: w.md",
+        "needs owner: pick one. Report: w.md",
+    ],
+)
 def test_a_child_turn_end_waiting_on_an_open_owner_card_is_not_forwarded(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, said
 ) -> None:
-    card = {"pending_elicitations": [CARD]}
-    assert told_m(run(tmp_path, monkeypatch, card, said=ASK)) == []
+    assert told_m(run(tmp_path, monkeypatch, CARDED, said=said)) == []
 
 
-def turn_ends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, card: bool) -> list[str]:
-    og = Lead(told("brief", 60), ending("USER NEEDED: pick one", 5))
+def turn_ends(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    card: bool,
+    said: str = ASK,
+    user_last: bool = False,
+) -> list[str]:
+    items = [told("brief", 60), ending(said, 5)] + ([told(said, 3)] if user_last else [])
+    og = Lead(*items)
     og.snap = {"status": "idle", **({"pending_elicitations": [CARD]} if card else {})}
     offset = base.skewed(monkeypatch)
     supervised(
@@ -155,14 +177,31 @@ def test_a_followed_lead_ending_with_no_open_card_is_still_forwarded(tmp_path, m
     assert len(turn_ends(tmp_path, monkeypatch, False)) == 1
 
 
+@pytest.mark.parametrize("said", MENTIONING)
+def test_a_followed_done_that_mentions_the_owner_is_forwarded_with_a_card_open(
+    tmp_path, monkeypatch, said
+) -> None:
+    assert len(turn_ends(tmp_path, monkeypatch, True, said)) == 1
+
+
+def test_a_followed_lead_whose_last_message_is_the_users_is_not_held_back_by_its_card(
+    tmp_path, monkeypatch
+) -> None:
+    assert len(turn_ends(tmp_path, monkeypatch, True, user_last=True)) == 1
+
+
 def test_relay_refuses_a_message_whose_own_line_is_an_owner_question(
     monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = base.FakeOmnigent()
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
-    assert omnigent_agent.main(["relay", "s1", "USER NEEDED: which one?"]) == 1
-    err = capsys.readouterr().err
-    assert "relay refused" in err and "sys_ask_user_question" in err
+    for text in (
+        "USER NEEDED: which one?",
+        "Compared both at length.\nUSER NEEDED: Postgres or SQLite?",
+    ):
+        assert omnigent_agent.main(["relay", "s1", text]) == 1
+        err = capsys.readouterr().err
+        assert "relay refused" in err and "sys_ask_user_question" in err
     assert og.posts == 0
 
 
@@ -172,6 +211,7 @@ def test_relay_refuses_a_message_whose_own_line_is_an_owner_question(
         "> USER NEEDED: which one?\nthe owner said B",
         "- needs-owner is on it",
         "Settled: carry on.\nUSER NEEDED is for the owner only",
+        "Body\n- USER NEEDED: x\n> needs owner: y",
         "needs-owner label removed",
     ],
 )
@@ -247,6 +287,20 @@ def test_reap_force_finishes_a_replaced_worker_while_its_pr_is_open(monkeypatch)
 def test_reap_force_holds_a_worker_with_no_live_newer_worker_of_its_pr(monkeypatch, newer) -> None:
     og, lines = reaped(monkeypatch, newer)
     assert og.archived == [] and "kept (o/r#7 is open)" in lines[0]
+
+
+def test_a_failed_proof_run_with_a_later_worker_still_alerts_and_stays_held(
+    tmp_path, monkeypatch
+) -> None:
+    proof = {"status": "failed", "labels": PROOF, "created_at": 100.0}
+    live = [{"id": "n" * 32, "labels": PR, "created_at": 200.0}]
+    assert len(told_m(run(tmp_path, monkeypatch, proof, live=live))) == 1
+    og = base.FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "pr_hold", lambda repo, pr: "o/r#7 is open")
+    infos = {"old": dict(proof), "new": {"labels": PR, "created_at": 200.0, "status": "running"}}
+    og.info = lambda sid: dict(infos[sid], id=sid)  # type: ignore[method-assign]
+    og.call = lambda method, path, *a: {"data": [dict(v, id=k) for k, v in infos.items()]}  # type: ignore[method-assign]
+    assert "kept" in omnigent_agent.reap(og, ["old"], force=True)[0][0] and og.archived == []
 
 
 def test_reap_without_force_holds_a_replaced_worker(monkeypatch) -> None:

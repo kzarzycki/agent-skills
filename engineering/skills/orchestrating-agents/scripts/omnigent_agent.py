@@ -5249,27 +5249,33 @@ def replaced(og: Omnigent, sid: str, info: dict) -> bool:
     )
 
 
-# the opening line of a message that is itself an owner question or a wait on the owner's card: the line's own words,
-# never a quoted (``>``) or bullet (``-``) line, which only mentions one
+# a line that is itself an owner question or a wait on the owner's card: the line's own words, never a quoted (``>``) or
+# bullet (``-``) line, and never a bare mention (``USER NEEDED`` takes its colon, as the others do)
 OWNER_ASK = re.compile(
-    r"[\s*_#]*(?:USER NEEDED\b|needs?[ -]owner\s*:|question for the owner\s*:|"
+    r"[\s*_#]*(?:(?:USER NEEDED|needs?[ -]owner|question for the owner)\s*:|"
     r"waiting on (?:a|the|an|its|your) (?:owner )?card\b)",
     re.IGNORECASE,
 )
 
 
 def asks_owner(text: str) -> bool:
-    """Whether the first line of ``text`` is an owner question (see ``OWNER_ASK``)."""
-    return bool(OWNER_ASK.match(next((x for x in text.splitlines() if x.strip()), "")))
+    """Whether any line of ``text`` is an owner question (see ``OWNER_ASK``): a turn end puts it last, after its body."""
+    return any(OWNER_ASK.match(line) for line in text.splitlines())
 
 
 def waits_on_card(og: Omnigent, sid: str, text: str) -> bool:
     """Whether a turn end ``text`` of ``sid`` waits on an open owner card: ``og`` (the supervisor's ``Uncarded``, which
-    takes cards out of ``info``) kept one it read, and the end itself is ``USER NEEDED`` or opens on the wait. A ``DONE``
-    that only mentions the owner is no wait."""
-    return bool(getattr(og, "cards", {}).get(sid)) and (
-        ending_of(text) == "USER NEEDED" or asks_owner(text)
+    takes cards out of ``info``) kept one it read, and the end asks the owner. A message whose first line opens ``DONE`` is
+    no wait, though it mentions the owner."""
+    first = next((x for x in text.splitlines() if x.strip()), "")
+    return (
+        bool(getattr(og, "cards", {}).get(sid))
+        and not ENDING_DONE.match(first)
+        and asks_owner(text)
     )
+
+
+ENDING_DONE = re.compile(r"[\s*_#]*DONE\b")
 
 
 def withdraw(og: Omnigent, sid: str, card: str = "") -> list[str]:
