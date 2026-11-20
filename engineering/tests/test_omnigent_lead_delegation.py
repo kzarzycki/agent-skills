@@ -122,62 +122,156 @@ def test_a_missing_or_broken_policy_reader_gives_todays_wording(
     assert omnigent_agent.lead_delegation(None, str(work)) == ""
 
 
-FAR = {
+BASE_FILES = {
     "docs/agents/gatekeeper.md": policy_with("loop:\n  delegate: all\n"),
     "docs/agents/loop.md": "# Loop facts\n",
 }
+CONFIG = '[core]\n\tbare = false\n[remote "origin"]\n\turl = https://github.com/acme/repo.git\n'
 
 
 def far_host(
-    monkeypatch: pytest.MonkeyPatch, files: dict[str, str], root: str | None = "/w"
-) -> None:
-    """Host ``h``'s checkout at ``/w`` holding ``files``, read as ``read_loop`` reads loop.md."""
+    monkeypatch: pytest.MonkeyPatch,
+    files: dict[str, str],
+    config: str | None = CONFIG,
+    root: str | None = "/w",
+) -> list[list[str]]:
+    """A checkout at ``/w`` on host ``far`` whose ``.git/config`` is ``config``, and GitHub's default branch ``trunk``
+    of ``acme/repo`` holding ``files``, failing as the real APIs do (``Gone``, a ``Fail`` naming the 404); the ``gh``
+    calls are returned."""
+    calls: list[list[str]] = []
     monkeypatch.setattr(
         omnigent_agent, "far_checkout_root", lambda *_: Path(root) if root else None
     )
 
-    def listing(_og: object, _host: str, folder: str, _what: str) -> list[str]:
-        names = [
-            Path(f).name for f in files if str(Path("/w") / f).startswith(folder.rstrip("/") + "/")
-        ]
-        if not names:
-            raise omnigent_agent.Gone(folder)
-        return names
+    def read_on_host(_og: object, _host: str, path: str) -> str:
+        if path == "/w/.git/config" and config is not None:
+            return config
+        raise omnigent_agent.Gone(path)
 
-    monkeypatch.setattr(omnigent_agent, "host_listing", listing)
-    monkeypatch.setattr(
-        omnigent_agent, "read_on_host", lambda _og, _h, path: files[path.removeprefix("/w/")]
-    )
+    def gh(*args: str, **_: object) -> str:
+        calls.append(list(args))
+        endpoint = args[-1]
+        if endpoint == "repos/acme/repo":
+            return '{"default_branch": "trunk"}'
+        path, _, ref = endpoint.removeprefix("repos/acme/repo/contents/").partition("?ref=")
+        if ref == "trunk" and path in files:
+            return files[path]
+        raise omnigent_agent.Fail(f"gh api {endpoint}: gh: Not Found (HTTP 404)")
+
+    monkeypatch.setattr(omnigent_agent, "read_on_host", read_on_host)
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    return calls
+
+
+SETTINGS_LOOP = "# Loop facts\n\n## Settings\n\n```yaml\nloop:\n  delegate: all\n```\n"
 
 
 @pytest.mark.parametrize(
     ("files", "delegated"),
     [
-        (FAR, True),
-        ({**FAR, "docs/agents/gatekeeper.md": policy_with("loop:\n  delegate: feature\n")}, False),
+        (BASE_FILES, True),
+        (
+            {
+                **BASE_FILES,
+                "docs/agents/gatekeeper.md": policy_with("loop:\n  delegate: feature\n"),
+            },
+            False,
+        ),
         ({"docs/agents/loop.md": "# Loop facts\n"}, False),
+        ({"docs/agents/loop.md": SETTINGS_LOOP}, True),  # the deprecated source, no gatekeeper.md
+        ({}, False),
     ],
 )
-def test_a_workspace_on_another_host_is_read_through_the_host_file_api(
+def test_a_workspace_on_another_host_follows_the_origin_default_branch_s_policy(
     monkeypatch: pytest.MonkeyPatch, files: dict[str, str], delegated: bool
 ) -> None:
-    far_host(monkeypatch, files)
-    text = omnigent_agent.lead_delegation(base.FakeOmnigent(), "/w", "h")
+    calls = far_host(monkeypatch, files)
+    text = omnigent_agent.lead_delegation(base.FakeOmnigent(), "/w", "far")
     assert text == (omnigent_agent.DELEGATION if delegated else "")
+    assert calls[0] == ["api", "repos/acme/repo"]
+    assert all(c[-1].endswith("?ref=trunk") for c in calls[1:]) and len(calls) == 3
 
 
-def test_a_failed_read_on_another_host_keeps_todays_wording_with_one_stderr_line(
+@pytest.mark.parametrize(
+    "config",
+    [None, "[core]\n\tbare = false\n", '[remote "origin"]\n\turl = /srv/local.git\n'],
+)
+def test_an_unreadable_origin_on_another_host_keeps_todays_wording_with_one_stderr_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config: str | None
+) -> None:
+    calls = far_host(monkeypatch, BASE_FILES, config=config)
+    assert omnigent_agent.lead_delegation(base.FakeOmnigent(), "/w", "far") == ""
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and "other host" in err[0] and calls == []
+
+
+def test_a_failed_gh_call_keeps_todays_wording_with_one_stderr_line(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    far_host(monkeypatch, FAR)
+    far_host(monkeypatch, BASE_FILES)
 
-    def refuse(*_: object) -> str:
-        raise omnigent_agent.Fail("no live session there to read it through")
+    def broken(*args: str, **_: object) -> str:
+        raise omnigent_agent.Fail(f"gh {' '.join(args)}: exit status 1")
 
-    monkeypatch.setattr(omnigent_agent, "read_on_host", refuse)
-    assert omnigent_agent.lead_delegation(base.FakeOmnigent(), "/w", "h") == ""
-    err = capsys.readouterr().err.strip().splitlines()
-    assert len(err) == 1 and "other host" in err[0]
+    monkeypatch.setattr(omnigent_agent, "gh", broken)
+    assert omnigent_agent.lead_delegation(base.FakeOmnigent(), "/w", "far") == ""
+    assert len(capsys.readouterr().err.strip().splitlines()) == 1
+
+
+def test_a_far_workspace_outside_a_checkout_keeps_todays_wording_silently(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = far_host(monkeypatch, BASE_FILES, root=None)
+    assert omnigent_agent.lead_delegation(base.FakeOmnigent(), "/w", "far") == ""
+    assert capsys.readouterr().err == "" and calls == []
+
+
+def started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str, work: Path | None
+) -> list[str]:
+    """What ``start`` added to a top-level lead's preamble (``lead_delegation``'s answers) on ``host``, workspace
+    ``work`` (else ``/w``); a brief for another host is written there, not here."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr(omnigent_agent, "host_capacity", lambda *_a, **_k: (True, ""))
+    answers: list[str] = []
+    real = omnigent_agent.lead_delegation
+
+    def record(*args: object) -> str:
+        answers.append(real(*args))
+        return answers[-1]
+
+    monkeypatch.setattr(omnigent_agent, "lead_delegation", record)
+    omnigent_agent.start(
+        base.FakeOmnigent(), "claude", "t", "do X", tmp_path / "r.md", None, 0,
+        top_level=True, workspace=str(work or "/w"), host_id=host,
+    )  # fmt: skip
+    return answers
+
+
+def test_a_top_level_lead_started_on_another_host_carries_the_far_policy_s_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    far_host(monkeypatch, BASE_FILES)
+    assert started(tmp_path, monkeypatch, "far", None) == [omnigent_agent.DELEGATION]
+    far_host(monkeypatch, {})
+    assert started(tmp_path / "2", monkeypatch, "far", None) == [""]
+
+
+def test_a_lead_started_on_this_host_named_reads_the_local_checkout_not_the_far_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    far_host(monkeypatch, {})  # a far read would find no policy and no text
+    work = checkout(tmp_path / "local", policy_with("loop:\n  delegate: all\n"))
+    ran: list[str] = []
+    real = omnigent_agent._load_gatekeeper
+
+    def spy() -> object:
+        ran.append("local")
+        return real()
+
+    monkeypatch.setattr(omnigent_agent, "_load_gatekeeper", spy)
+    brief = started(tmp_path, monkeypatch, "h", work)  # FakeOmnigent's own host id
+    assert ran == ["local"] and brief == [omnigent_agent.DELEGATION]
 
 
 def test_an_unasked_line_keys_the_owner_item_as_a_plain_turn_end_does() -> None:

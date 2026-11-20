@@ -763,22 +763,42 @@ def _load_gatekeeper() -> Any:
         return None
 
 
+ORIGIN_URL = re.compile(r'\[remote "origin"\][^\[]*?^\s*url\s*=\s*(\S+)', re.MULTILINE)
+GITHUB_REPO = re.compile(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+
+
 def far_policy_texts(
     og: Omnigent, workspace: str, host_id: str, gk: Any
-) -> tuple[str | None, str | None]:
-    """The checkout's ``docs/agents/loop.md`` and gatekeeper.md texts (None for one it lacks) on host ``host_id``, read
-    through the host's file API as ``Omnigent.read_loop`` reads loop.md: the working tree's, since no git runs there."""
+) -> tuple[str | None, str | None] | None:
+    """The default branch's ``docs/agents/loop.md`` and gatekeeper.md texts (None for one it lacks, as ``base_policy``
+    reads the base) of the checkout at ``workspace`` on host ``host_id``, which has no git to ask: its ``.git/config``
+    is read through the host's file API for the ``origin`` repo, and the files come from GitHub's default branch
+    through ``gh``. None when ``workspace`` is no checkout; a ``Fail`` when the origin or a file can't be read."""
     root = far_checkout_root(og, host_id, workspace, str(gk.POLICY))
     if root is None:
-        return None, None
+        return None
+    config = root / ".git" / "config"
+    try:
+        found = ORIGIN_URL.search(read_on_host(og, host_id, str(config)))
+    except Gone as e:
+        raise Fail(f"{config}: not found on the host") from e
+    if not (found and (repo := GITHUB_REPO.search(found.group(1)))):
+        raise Fail(f"{config}: no GitHub `origin` url to read the base policy from")
+    slug = f"{repo.group(1)}/{repo.group(2)}"
+    branch = json.loads(gh("api", f"repos/{slug}"))["default_branch"]
 
     def read(file: Path) -> str | None:
         try:
-            if file.name not in host_listing(og, host_id, str(root / file.parent), str(file)):
-                return None
-        except Gone:
-            return None
-        return read_on_host(og, host_id, str(root / file))
+            return gh(
+                "api",
+                "-H",
+                "Accept: application/vnd.github.raw",
+                f"repos/{slug}/contents/{file.as_posix()}?ref={branch}",
+            )
+        except Fail as e:
+            if "404" in str(e) or "Not Found" in str(e):
+                return None  # absent on the base
+            raise
 
     return read(gk.LOOP), read(gk.POLICY)
 
@@ -787,15 +807,17 @@ def lead_delegation(og: Omnigent | None, workspace: str | None, host_id: str = "
     """``DELEGATION`` when the base policy of the lead's own checkout (``workspace``, else here) sets
     ``loop.delegate: all``, read by engineering-loop's reader (``base_policy``, ``delegation``); else ``""``,
     today's wording, also when that skill is absent or fails. A checkout on another host (``host_id``) is read
-    through that host's file API, its working tree's files chosen by the reader's ``chosen``; a read that fails
-    keeps today's wording with one stderr line."""
+    through that host's file API and GitHub (``far_policy_texts``), its base's files chosen by the reader's ``chosen``;
+    a read that fails keeps today's wording with one stderr line."""
     gk = _load_gatekeeper()
     if gk is None:
         return ""
     if host_id:
         try:
             assert og is not None
-            loop, policy = far_policy_texts(og, workspace or os.getcwd(), host_id, gk)
+            if (texts := far_policy_texts(og, workspace or os.getcwd(), host_id, gk)) is None:
+                return ""  # outside a checkout, as locally
+            loop, policy = texts
             return DELEGATION if gk.delegation(gk.chosen(loop, policy)) == "all" else ""
         except (Exception, SystemExit) as e:  # noqa: BLE001 - unreadable there: today's wording
             print(

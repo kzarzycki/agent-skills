@@ -144,10 +144,7 @@ def test_a_start_reads_the_remote_loop_md_once_and_only_when_a_claude_session_ne
     top_level: bool,
     role: str | None,
     reads: int,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # a far lead's delegation read (#1551) reads the policy files too: this counts the autocompact read alone
-    monkeypatch.setattr(omnigent_agent, "lead_delegation", lambda *_: "")
     og = Server({**CHECKOUT, LOOP: "Lead autocompact: 150k\n"})
 
     def create(*args: object, **kwargs: object) -> str:
