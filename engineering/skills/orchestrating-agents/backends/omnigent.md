@@ -441,9 +441,10 @@ of its workspace's checkout (`origin/<default branch>`'s policy file, read by en
 `base_policy` and `delegation`) sets `loop.delegate: all`, the preamble adds the delegation: the
 lead settles specs and gives the merge go itself (`approve merge <pr> --head <sha> --by delegate`,
 `risk:high` included) once its gate is green and its verifier satisfied, and asks the owner by
-question card only for a change on `risk.critical_paths`. Without that setting, without the
-engineering-loop skill, or with its workspace on another host (one stderr line), the wording is
-unchanged. A followed lead whose turn ends `USER NEEDED` with no question card open is reported
+question card only for a change on `risk.critical_paths`. Without that setting, or without the
+engineering-loop skill, the wording is unchanged. A workspace on another host is read through that
+host's file API (its working tree's `gatekeeper.md` and `loop.md`, chosen by gatekeeper's `chosen`); a
+read that fails keeps today's wording and prints one stderr line. A followed lead whose turn ends `USER NEEDED` with no question card open is reported
 as an `unasked` event, which tells its waiter to post a card or act under the delegation; with a card
 open it is reported as any turn end. How it asks and where
 it parks a question is its role's (`--role`; under the engineering loop, `lead.md`). `run --top-level` exits 1, since a lead writes no

@@ -763,21 +763,46 @@ def _load_gatekeeper() -> Any:
         return None
 
 
-def lead_delegation(workspace: str | None, far: bool) -> str:
+def far_policy_texts(
+    og: Omnigent, workspace: str, host_id: str, gk: Any
+) -> tuple[str | None, str | None]:
+    """The checkout's ``docs/agents/loop.md`` and gatekeeper.md texts (None for one it lacks) on host ``host_id``, read
+    through the host's file API as ``Omnigent.read_loop`` reads loop.md: the working tree's, since no git runs there."""
+    root = far_checkout_root(og, host_id, workspace, str(gk.POLICY))
+    if root is None:
+        return None, None
+
+    def read(file: Path) -> str | None:
+        try:
+            if file.name not in host_listing(og, host_id, str(root / file.parent), str(file)):
+                return None
+        except Gone:
+            return None
+        return read_on_host(og, host_id, str(root / file))
+
+    return read(gk.LOOP), read(gk.POLICY)
+
+
+def lead_delegation(og: Omnigent | None, workspace: str | None, host_id: str = "") -> str:
     """``DELEGATION`` when the base policy of the lead's own checkout (``workspace``, else here) sets
     ``loop.delegate: all``, read by engineering-loop's reader (``base_policy``, ``delegation``); else ``""``,
-    today's wording, also when that skill is absent or fails, or the checkout is on another host (``far``)."""
-    if far:
-        # ponytail: a workspace on another host can't be read from here; upgrade: read its policy files over the
-        # host's file API.
-        print(
-            "lead delegation: its workspace is on another host, so its policy is not read",
-            file=sys.stderr,
-        )
-        return ""
+    today's wording, also when that skill is absent or fails. A checkout on another host (``host_id``) is read
+    through that host's file API, its working tree's files chosen by the reader's ``chosen``; a read that fails
+    keeps today's wording with one stderr line."""
     gk = _load_gatekeeper()
     if gk is None:
         return ""
+    if host_id:
+        try:
+            assert og is not None
+            loop, policy = far_policy_texts(og, workspace or os.getcwd(), host_id, gk)
+            return DELEGATION if gk.delegation(gk.chosen(loop, policy)) == "all" else ""
+        except (Exception, SystemExit) as e:  # noqa: BLE001 - unreadable there: today's wording
+            print(
+                f"lead delegation: its policy on the other host is not read: {reason(e)}",
+                file=sys.stderr,
+            )
+            return ""
     here = os.getcwd()
     try:
         os.chdir(workspace or here)  # base_policy reads the checkout it runs in
@@ -4003,8 +4028,8 @@ def start(
     # server took for it, never the id asked for.
     preamble = pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE
     if top_level and not pr:
-        far = bool(host_id and host_id != og.host_id)
-        preamble = preamble.removesuffix("\n") + lead_delegation(workspace, far) + "\n"
+        far = host_id if host_id and host_id != og.host_id else ""
+        preamble = preamble.removesuffix("\n") + lead_delegation(og, workspace, far) + "\n"
     if harness == CLOUD_HARNESS:
         preamble = cloud_preamble(preamble, pr)
     elif not top_level:
@@ -5539,7 +5564,7 @@ def owner_item(line: str) -> str:
     if (at := first.find(marker)) >= 0:
         head, text = first[at + 2 :].split(": ", 1)
         return f"{head}: " + re.sub(r"(^|; )[^\s:;]+: ", r"\1", text)
-    if re.search(r": turn ended(, quiet \d+s)?$", first) and rest:
+    if re.search(rf": (turn ended|{re.escape(UNASKED_LINE)})(, quiet \d+s)?$", first) and rest:
         return rest
     return line
 

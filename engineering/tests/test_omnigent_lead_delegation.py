@@ -63,7 +63,7 @@ def test_the_delegation_text_follows_the_base_policy(
     tmp_path: Path, policy: str | None, delegated: bool
 ) -> None:
     work = checkout(tmp_path, policy)
-    text = omnigent_agent.lead_delegation(str(work), False)
+    text = omnigent_agent.lead_delegation(None, str(work))
     assert text == (omnigent_agent.DELEGATION if delegated else "")
 
 
@@ -109,7 +109,7 @@ def test_a_missing_or_broken_policy_reader_gives_todays_wording(
 ) -> None:
     work = checkout(tmp_path, policy_with("loop:\n  delegate: all\n"))
     monkeypatch.setattr(omnigent_agent, "_load_gatekeeper", lambda: None)
-    assert omnigent_agent.lead_delegation(str(work), False) == ""
+    assert omnigent_agent.lead_delegation(None, str(work)) == ""
 
     class Broken:
         @staticmethod
@@ -119,14 +119,72 @@ def test_a_missing_or_broken_policy_reader_gives_todays_wording(
         toplevel = default_base
 
     monkeypatch.setattr(omnigent_agent, "_load_gatekeeper", lambda: Broken)
-    assert omnigent_agent.lead_delegation(str(work), False) == ""
+    assert omnigent_agent.lead_delegation(None, str(work)) == ""
 
 
-def test_a_workspace_on_another_host_keeps_todays_wording_and_says_so(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+FAR = {
+    "docs/agents/gatekeeper.md": policy_with("loop:\n  delegate: all\n"),
+    "docs/agents/loop.md": "# Loop facts\n",
+}
+
+
+def far_host(
+    monkeypatch: pytest.MonkeyPatch, files: dict[str, str], root: str | None = "/w"
 ) -> None:
-    assert omnigent_agent.lead_delegation(str(tmp_path), True) == ""
-    assert "another host" in capsys.readouterr().err
+    """Host ``h``'s checkout at ``/w`` holding ``files``, read as ``read_loop`` reads loop.md."""
+    monkeypatch.setattr(
+        omnigent_agent, "far_checkout_root", lambda *_: Path(root) if root else None
+    )
+
+    def listing(_og: object, _host: str, folder: str, _what: str) -> list[str]:
+        names = [
+            Path(f).name for f in files if str(Path("/w") / f).startswith(folder.rstrip("/") + "/")
+        ]
+        if not names:
+            raise omnigent_agent.Gone(folder)
+        return names
+
+    monkeypatch.setattr(omnigent_agent, "host_listing", listing)
+    monkeypatch.setattr(
+        omnigent_agent, "read_on_host", lambda _og, _h, path: files[path.removeprefix("/w/")]
+    )
+
+
+@pytest.mark.parametrize(
+    ("files", "delegated"),
+    [
+        (FAR, True),
+        ({**FAR, "docs/agents/gatekeeper.md": policy_with("loop:\n  delegate: feature\n")}, False),
+        ({"docs/agents/loop.md": "# Loop facts\n"}, False),
+    ],
+)
+def test_a_workspace_on_another_host_is_read_through_the_host_file_api(
+    monkeypatch: pytest.MonkeyPatch, files: dict[str, str], delegated: bool
+) -> None:
+    far_host(monkeypatch, files)
+    text = omnigent_agent.lead_delegation(base.FakeOmnigent(), "/w", "h")
+    assert text == (omnigent_agent.DELEGATION if delegated else "")
+
+
+def test_a_failed_read_on_another_host_keeps_todays_wording_with_one_stderr_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    far_host(monkeypatch, FAR)
+
+    def refuse(*_: object) -> str:
+        raise omnigent_agent.Fail("no live session there to read it through")
+
+    monkeypatch.setattr(omnigent_agent, "read_on_host", refuse)
+    assert omnigent_agent.lead_delegation(base.FakeOmnigent(), "/w", "h") == ""
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and "other host" in err[0]
+
+
+def test_an_unasked_line_keys_the_owner_item_as_a_plain_turn_end_does() -> None:
+    last = "\nlast message: USER NEEDED: q"
+    plain = omnigent_agent.owner_item(f"a t: turn ended{last}")
+    asked = omnigent_agent.owner_item(f"a t: {omnigent_agent.UNASKED_LINE}{last}")
+    assert plain == asked == last.lstrip("\n")
 
 
 def test_the_cloud_swaps_still_apply_to_a_delegating_lead_preamble() -> None:
