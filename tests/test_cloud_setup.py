@@ -10,6 +10,8 @@ import tarfile
 import tomllib
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = (ROOT / ".claude" / "cloud-setup.sh").read_text()
 PINS = tomllib.loads((ROOT / "mise.toml").read_text())["tools"]
@@ -88,9 +90,19 @@ def run_setup(tmp_path: Path, corrupt: str = "") -> tuple[str, Path, dict[str, s
     for d in (home, repo, bin_):
         d.mkdir()
     publish(releases, release_assets(re.search(r"pbs=(\d+)", SETUP)[1]))
-    if corrupt:
-        for sums in releases.rglob(f"{corrupt}*.sha256"):
-            sums.write_text("0" * 64 + sums.read_text()[64:])
+    if corrupt:  # the asset's line in whichever list its release ships: <asset>.sha256, checksums.txt, SHA256SUMS
+        hit = 0
+        for sums in (
+            f for f in releases.rglob("*") if f.name.endswith(("sha256", "SUMS", "checksums.txt"))
+        ):
+            lines = sums.read_text().splitlines(keepends=True)
+            bad = [
+                "0" * 64 + line[64:] if line.split()[-1].startswith(corrupt) else line
+                for line in lines
+            ]
+            hit += bad != lines
+            sums.write_text("".join(bad))
+        assert hit == 1, (corrupt, hit)
     pins = {tool: pin for tool, pin in PINS.items() if tool != "node"}
     (repo / "mise.toml").write_text(
         "[tools]\n" + "".join(f'"{t}" = "{p}"\n' for t, p in pins.items())
@@ -151,11 +163,26 @@ def test_every_pinned_tool_but_node_is_installed_where_mise_finds_it(tmp_path: P
         ), found.stdout
 
 
-def test_a_checksum_mismatch_installs_nothing(tmp_path: Path) -> None:
-    log, _repo, _env = run_setup(tmp_path, corrupt="uv-")
-    assert "FAILED: uv" in log
-    assert " uv" in log.split("FAILED, missing:")[1].split("\n")[0]
-    assert not (tmp_path / "home" / ".local" / "share" / "mise" / "installs" / "uv").exists()
+@pytest.mark.parametrize(
+    ("tool", "asset", "installs"),
+    [
+        ("vendir", "vendir-", "ubi-carvel-dev-vendir"),
+        ("uv", "uv-", "uv"),
+        ("apm", "apm-", "github-microsoft-apm"),
+        ("python", "cpython-", "python"),
+    ],
+)
+def test_a_checksum_mismatch_installs_nothing(
+    tmp_path: Path, tool: str, asset: str, installs: str
+) -> None:
+    """Each release's own checksum list is checked: a wrong line for one asset leaves only that tool missing."""
+    log, _repo, _env = run_setup(tmp_path, corrupt=asset)
+    assert f"FAILED: {tool}\n" in log, log
+    # node, which this checkout leaves unpinned, is the one other tool missing
+    assert sorted(log.split("FAILED, missing:")[1].split("\n")[0].split()) == sorted(
+        [tool, "node"]
+    ), log
+    assert not (tmp_path / "home" / ".local" / "share" / "mise" / "installs" / installs).exists()
 
 
 def test_mise_prefers_offline_before_it_installs() -> None:
