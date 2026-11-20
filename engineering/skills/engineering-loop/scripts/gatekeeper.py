@@ -6245,7 +6245,8 @@ def local_queue(
         # narrowed mode: the batch gate selects against the tip the batch merges onto (narrowed_gate)
         with narrowed_to(tip):
             landed = merged_trees(candidates, base, tip, failed)
-            if landed and held:
+            # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
+            if landed and held is not None:
                 repointed(base, held, landed[-1][0]["number"])
             if landed:
                 merges(landed, base, tip, None, loop, failed, waited, held)
@@ -6257,7 +6258,8 @@ def local_queue(
                     pull for pull in candidates if pre_landed(pull, base, work, loop, failed)
                 ]
                 landed = merge_batch(candidates, base, work, failed)
-                if landed and held:
+                # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
+                if landed and held is not None:
                     repointed(base, held, landed[-1][0]["number"])
                 if landed:
                     merges(landed, base, tip, work, loop, failed, waited, held)
