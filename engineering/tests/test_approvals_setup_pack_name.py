@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
+import string
 from pathlib import Path
 
 import pytest
+from test_approvals import approvals as pack
 from test_approvals_setup_check import (
     FENCED,
     FLOW,
@@ -21,6 +24,9 @@ OWN_SCRIPTS = [
     "scripts/my-board.py",
     "scripts/my+board.py",
     "scripts/my@labels.py",
+    "scripts/my:board.py",
+    "scripts/my=labels.py",
+    "scripts/my(approvals.py",
 ]
 PACK_SCRIPTS = [
     "scripts/board.py",
@@ -71,3 +77,21 @@ def test_a_mise_task_running_a_consumers_own_script_is_not_a_pack_task(
     }
     repo_with(tmp_path, monkeypatch, files)
     assert run_setup(capsys)[0] == 0
+
+
+# every character that can sit before the name inside one path component; the real starts are `/` and quotes
+# (a name after whitespace is its own word, covered by the plain `board.py` case above)
+INSIDE = [c for c in string.printable if not c.isspace() and c not in "/'\""] + ["é", "ß", "世"]
+
+
+@pytest.mark.parametrize("pattern", [pack.PACK_SCRIPT, pack.BARE_PYTHON])
+def test_the_name_starts_a_path_component_only_after_a_separator_or_quote(
+    pattern: re.Pattern[str],
+) -> None:
+    """The boundary as a table: all printable ASCII and some non-ASCII letters, so the set is closed here."""
+
+    def hit(before: str) -> bool:
+        return bool(pattern.search(f"python3 -u scripts{before}board.py x"))
+
+    assert [c for c in INSIDE if hit(f"/my{c}")] == []
+    assert hit("/") and hit("/'") and hit('/"')

@@ -4778,9 +4778,9 @@ NO_PULL = ("Could not resolve to a PullRequest", "Not Found")
 
 # the pack's scripts as a repo's mise tasks and workflows name them, and the one way each must not be run: a bare
 # python, which has no PyYAML; `uv run` (or the script's own shebang) installs it
-# a pack script's file name, which must start its path component (after the start or a separator: whitespace, `/`,
-# a quote, `=`, `:`, `(`), so a consumer's own `pr_board.py`, `my-board.py` or `my+board.py` is not the pack's
-PACK_NAME = r"(?<![^\s/'\"=:(])(?:approvals|gatekeeper|labels|board)\.py\b"
+# a pack script's file name, which must start its path component (after the start, whitespace, `/` or a quote,
+# the only real starts), so a consumer's own `pr_board.py`, `my:board.py` or `my+board.py` is not the pack's
+PACK_NAME = r"(?<![^\s/'\"])(?:approvals|gatekeeper|labels|board)\.py\b"
 PACK_SCRIPT = re.compile(PACK_NAME)
 BARE_PYTHON = re.compile(r"\bpython[\d.]*\s+(?:-\S+\s+)*\S*?" + PACK_NAME)
 MISE_CONFIGS = (
