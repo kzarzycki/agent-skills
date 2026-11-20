@@ -10,6 +10,7 @@ cat > "$bin/python3" <<SH
 exec "$py" -I -c 'import sys; sys.modules["yaml"] = None; sys.argv = sys.argv[1:]; import runpy; runpy.run_path(sys.argv[0], run_name="__main__")' "\$@"
 SH
 chmod +x "$bin/python3"
-PATH="$bin:$PATH" uv run pytest -q -p no:cacheprovider \
+# one process, whatever the caller's PYTEST_ADDOPTS: split across xdist workers, the drift tests would never see the leak
+PATH="$bin:$PATH" PYTEST_ADDOPTS= uv run pytest -q -p no:cacheprovider -p no:xdist \
   engineering/tests/test_approvals_gate_event.py::test_a_detached_run_that_wrote_its_end_is_not_ended_twice \
   tests/capability_pack/test_drift.py

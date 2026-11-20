@@ -35,36 +35,53 @@ def _no_wait_place(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LOOP_LAND_WAIT", raising=False)
 
 
-_CALL_ENVIRON = pytest.StashKey[tuple[dict[str, str], dict[str, str]]]()
+# os.environ as each phase of a test found it: before setup, before the call, after the call
+_ENVIRON = pytest.StashKey[dict[str, dict[str, str]]]()
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
+    item.stash[_ENVIRON] = {"setup": dict(os.environ)}
+    return (yield)
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
-    before = dict(os.environ)
+    seen = item.stash[_ENVIRON]
+    seen["call"] = dict(os.environ)
     try:
         return (yield)
     finally:
-        item.stash[_CALL_ENVIRON] = (before, dict(os.environ))
+        seen["called"] = dict(os.environ)
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
     """A test that runs a script's cli() in this process lets it edit os.environ directly, which monkeypatch never
     undoes: approvals' leave_own_environment drops the venv from PATH, so a later subprocess's python3 loses its
-    packages (a fake vendir's `import yaml`). After every fixture's teardown, a variable the call changed and nothing
-    put back is put back. A fixture's own changes, and pytest's PYTEST_CURRENT_TEST, are left alone: a monkeypatch
-    that recorded the call's value would otherwise restore the leak, and a session fixture's variable would go.
+    packages (a fake vendir's `import yaml`). After every fixture's teardown, a variable the call changed is put back
+    to its value before the call when it is still as the call left it and not as it was before setup. That leaves
+    alone:
+    - a monkeypatch the call made, since its undo has already put the value back
+    - an early `monkeypatch.undo()`, since it leaves the value as it was before setup
+    - a session fixture's variable, which the call found set
+    - pytest's PYTEST_CURRENT_TEST, which the call never changes
+    A monkeypatch recorded after a direct edit brings the call's value back at its undo, which this then undoes.
     ponytail: a direct edit made in a fixture's setup is not undone; none leaks today."""
     try:
         return (yield)
     finally:
-        before, after = item.stash.get(_CALL_ENVIRON, ({}, {}))
-        for key in before.keys() | after.keys():
-            if before.get(key) != after.get(key) and os.environ.get(key) == after.get(key):
-                if key in before:
-                    os.environ[key] = before[key]
-                else:
-                    del os.environ[key]
+        seen = item.stash.get(_ENVIRON, {})
+        if "called" in seen:
+            setup, before, after = seen["setup"], seen["call"], seen["called"]
+            for key in before.keys() | after.keys():
+                now = os.environ.get(key)
+                changed = before.get(key) != after.get(key)
+                if changed and now == after.get(key) and now != setup.get(key):
+                    if key in before:
+                        os.environ[key] = before[key]
+                    else:
+                        del os.environ[key]
 
 
 # The fixtures that run a tool beyond git and Python: pytest ignores a mark on a fixture, so each test that takes
