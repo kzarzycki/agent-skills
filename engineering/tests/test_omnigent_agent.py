@@ -5639,9 +5639,13 @@ def supervised(
     **kwargs: object,
 ) -> None:
     """Run ``supervise_registry`` for ``polls`` polls, calling ``between`` after each but the last."""
-    count, real = [0], time.sleep
+    count, real, mine = [0], time.sleep, threading.get_ident()
 
     def sleep(seconds: float) -> None:
+        # ``time`` is one module for the whole process: a stalled-server handler or a reaper
+        # thread left by an earlier test sleeps through this patch too, and its sleep is no poll
+        if threading.get_ident() != mine:
+            return real(seconds)
         if sys._getframe(1).f_globals["__name__"] == "subprocess":
             return real(
                 seconds
