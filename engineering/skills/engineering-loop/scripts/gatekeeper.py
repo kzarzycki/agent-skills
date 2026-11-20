@@ -3455,7 +3455,10 @@ def catch_up(pull: dict[str, Any], old: str) -> str | None:
             return None
         first, second = (git("merge-base", commit, tip).strip() for commit in (old, head))
         # range-diff leaves merge commits out, so a merge whose tree adds an edit would still show every commit `=`
-        if any(git("rev-list", "--merges", span).strip() for span in (f"{first}..{old}", f"{second}..{head}")):
+        if any(
+            git("rev-list", "--merges", span).strip()
+            for span in (f"{first}..{old}", f"{second}..{head}")
+        ):
             return None
         shown = git("range-diff", "--no-color", f"{first}..{old}", f"{second}..{head}").splitlines()
     except (subprocess.CalledProcessError, OSError):
