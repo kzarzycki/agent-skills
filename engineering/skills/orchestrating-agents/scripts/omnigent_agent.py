@@ -3940,7 +3940,11 @@ def start(
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
 
-    if harness == CLOUD_HARNESS and not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
+    if (
+        harness == CLOUD_HARNESS
+        and not permission_mode
+        and not os.environ.get("OMNIGENT_PERMISSION_MODE")
+    ):
         # A cloud session runs unattended in its own disposable VM: in `auto` a command the classifier
         # doubts waits on a prompt that reaches the owner's inbox, so it starts in bypass unless told otherwise.
         permission_mode = BYPASS
