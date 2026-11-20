@@ -3,11 +3,10 @@
 import time
 from pathlib import Path
 
+import omnigent_agent
 import pytest
 import test_omnigent_agent as base
 from test_omnigent_agent import COS, WORKER, Lead, ending, manager, supervised, told
-
-import omnigent_agent
 
 WAIT = "STILL WORKING: waiting on the check. Report: m.md"
 CARD = {
