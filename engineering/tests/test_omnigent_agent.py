@@ -1291,8 +1291,10 @@ def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_
     locked_at: list[float] = []
 
     def take_the_lock() -> None:
+        locked_at.append(
+            time.monotonic()
+        )  # before the write: the wait can see `locked` the moment it lands
         log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")
-        locked_at.append(time.monotonic())
 
     # a loaded or niced host fires the timer late, so the budget is measured from the write
     threading.Timer(0.05, take_the_lock).start()
@@ -1301,7 +1303,7 @@ def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_
     ended = time.monotonic()
     # the lock came inside the entry's budget (else nothing is proven), and the budget ran on from it
     assert locked_at and locked_at[0] - began < 0.3
-    assert ended - locked_at[0] >= 0.29
+    assert ended - locked_at[0] >= 0.3
     assert capsys.readouterr().out == "still running\nrunning\n"
     log.write_text(f"lock {lock}\n")  # waiting past the lock ceiling: no verdict
     os.utime(log, (time.time() - 7300, time.time() - 7300))
@@ -5630,6 +5632,11 @@ class Stop(BaseException):
     """Ends the supervisor's loop: not an Exception, which the loop logs and survives."""
 
 
+# The sleep before any test patched it: a second `supervised` in one test would otherwise take the first
+# one's wrapper for the real one, and a git call's poll-sleep under load would count as a poll of the first.
+REAL_SLEEP = time.sleep
+
+
 def supervised(
     og: Fleet,
     registry: Path,
@@ -5639,7 +5646,7 @@ def supervised(
     **kwargs: object,
 ) -> None:
     """Run ``supervise_registry`` for ``polls`` polls, calling ``between`` after each but the last."""
-    count, real = [0], time.sleep
+    count, real = [0], REAL_SLEEP
 
     def sleep(seconds: float) -> None:
         if sys._getframe(1).f_globals["__name__"] == "subprocess":
@@ -5654,6 +5661,25 @@ def supervised(
     monkeypatch.setattr(omnigent_agent.time, "sleep", sleep)
     with pytest.raises(Stop):
         omnigent_agent.supervise_registry(og, registry, **kwargs)  # type: ignore[arg-type]
+
+
+def test_a_second_supervised_run_counts_only_its_own_polls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={tmp_path / 'a.md'}\n")
+    og = Fleet(a=[told("brief", 60)])
+    supervised(og, registry, monkeypatch, 2)
+    seen: list[int] = []
+
+    def between(poll: int) -> None:
+        seen.append(poll)
+        subprocess.run(
+            ["sleep", "0.05"], timeout=5, check=False
+        )  # a call with a timeout poll-sleeps, as git does under load
+
+    supervised(og, registry, monkeypatch, 3, between)
+    assert seen == [1, 2]
 
 
 STAMP = r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d "
