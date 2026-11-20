@@ -1291,8 +1291,8 @@ def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_
     locked_at: list[float] = []
 
     def take_the_lock() -> None:
+        locked_at.append(time.monotonic())  # before the write: the wait can see `locked` the moment it lands
         log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")
-        locked_at.append(time.monotonic())
 
     # a loaded or niced host fires the timer late, so the budget is measured from the write
     threading.Timer(0.05, take_the_lock).start()
@@ -1301,7 +1301,7 @@ def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_
     ended = time.monotonic()
     # the lock came inside the entry's budget (else nothing is proven), and the budget ran on from it
     assert locked_at and locked_at[0] - began < 0.3
-    assert ended - locked_at[0] >= 0.29
+    assert ended - locked_at[0] >= 0.3
     assert capsys.readouterr().out == "still running\nrunning\n"
     log.write_text(f"lock {lock}\n")  # waiting past the lock ceiling: no verdict
     os.utime(log, (time.time() - 7300, time.time() - 7300))
