@@ -5630,6 +5630,11 @@ class Stop(BaseException):
     """Ends the supervisor's loop: not an Exception, which the loop logs and survives."""
 
 
+# The sleep before any test patched it: a second `supervised` in one test would otherwise take the first
+# one's wrapper for the real one, and a git call's poll-sleep under load would count as a poll of the first.
+REAL_SLEEP = time.sleep
+
+
 def supervised(
     og: Fleet,
     registry: Path,
@@ -5639,7 +5644,7 @@ def supervised(
     **kwargs: object,
 ) -> None:
     """Run ``supervise_registry`` for ``polls`` polls, calling ``between`` after each but the last."""
-    count, real = [0], time.sleep
+    count, real = [0], REAL_SLEEP
 
     def sleep(seconds: float) -> None:
         if sys._getframe(1).f_globals["__name__"] == "subprocess":
