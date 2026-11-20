@@ -128,7 +128,19 @@ BROKEN = "trap 'true' EXIT\necho ran\nX=1 \\\nfor a in b; do\n echo $a\ndone\n"
         "#!/bin/bash -e",
         "#!/usr/bin/env bash\nset -e",
         "#!/usr/bin/env -S /bin/bash -e",
+        '#!/usr/bin/env -S "/bin/bash" -e',
+        "#!/usr/bin/env -S/bin/bash -e",
         "#!/bin/sh -e",
+        "#!/bin/bash\nset -e\ncase abc in +(abc)) echo extglob is off;; esac",
+    ],
+    ids=[
+        "bash -e",
+        "env bash",
+        "env -S",
+        "env -S quoted",
+        "env -S attached",
+        "sh -e",
+        "extglob never on",
     ],
 )
 def test_a_shell_check_that_does_not_parse_fails_before_it_runs(repo: Path, shebang: str) -> None:
@@ -149,8 +161,22 @@ def test_a_shell_check_that_does_not_parse_fails_before_it_runs(repo: Path, sheb
         "#!/bin/bash --\necho ran\n",
         "#!/bin/bash\nshopt -s extglob\ncase abc in +(abc)) echo ran;; esac\n",
         "#!/bin/bash\nset -e\neval 'for x in; do' || true\nbash -c 'for x in; do' || true\necho ran\n",
+        "#!/bin/bash --posix\necho ran\n",
+        "#!/bin/bash +n\necho ran\n",
+        "#!/usr/bin/env -S /bin/bash -e # a comment env drops\necho ran\n",
+        "#!/bin/bash\nset -e\n!(case x in x) false;; esac) && echo ran\n",
+        '#!/usr/bin/env python3\nprint("ran")\n',
     ],
-    ids=["end of options", "grammar set in the body", "a syntax error the check catches"],
+    ids=[
+        "end of options",
+        "grammar set in the body",
+        "a syntax error the check catches",
+        "a long option first",
+        "a flag that undoes -n",
+        "env -S comment",
+        "a negated subshell, extglob off",
+        "not a shell",
+    ],
 )
 def test_a_check_that_runs_to_its_end_passes(repo: Path, body: str) -> None:
     check(repo, "acceptance/7/01-ok.sh", body)
@@ -159,7 +185,7 @@ def test_a_check_that_runs_to_its_end_passes(repo: Path, body: str) -> None:
 
     assert result.returncode == 0, result
     assert verdicts(result.stdout) == ["PASS acceptance/7/01-ok.sh"]
-    assert "ran" in result.stdout.split()
+    assert result.stdout.split().count("ran") == 1  # the parse runs nothing
 
 
 def test_an_execute_only_program_runs(repo: Path) -> None:

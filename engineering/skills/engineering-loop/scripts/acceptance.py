@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -98,27 +99,54 @@ def issue_order(folder: Path) -> tuple[int, int, str]:
     return (0, int(name), name) if name.isdigit() else (1, 0, name)
 
 
-def parser(check: Path) -> list[str] | None:
-    """The command that parses a sh or bash check without running it: its shebang's shell with `-n` first, then the
-    shebang's own flags (`#!/bin/bash -e`, `#!/usr/bin/env -S /bin/bash -e`), so the parse reads it as the run
-    would. bash 3.2, macOS's /bin/bash, runs the EXIT trap on a syntax error under `set -e` and exits with the trap's
-    status, so a check that never ran past the error would PASS (#1545). None for any other check, which runs as
-    before. ponytail: bash parses with extglob on, the one shopt that changes its grammar and that a check may turn on
-    in its body (`-n` runs no `shopt`); an alias that expands to syntax is not followed."""
+EXTGLOB = re.compile(rb"(?:\bshopt\s+-s|(?:^|\s)-O)\s+(?:[\w-]+\s+)*?extglob\b")
+
+
+def interpreter(line: bytes) -> str | None:
+    """The program a `#!` line runs, as the kernel and `env` find it: the first word, or for
+    `env` the first word after its assignments, its `-S` string split as `env -S` splits it
+    (quotes, `#` comments). None for no shebang, or an `env` option other than `-S`."""
+    if not line.startswith(b"#!"):
+        return None
+    text = line[2:].decode(errors="replace").strip()
+    program, _, rest = text.partition(" ")
+    if Path(program).name != "env":
+        return program or None
+    rest = rest.strip()
+    try:
+        words = shlex.split(rest[2:], comments=True) if rest.startswith("-S") else rest.split()
+    except ValueError:  # an unbalanced quote: env refuses it on the run
+        return None
+    while words and ASSIGNMENT.match(words[0]):
+        words.pop(0)
+    return None if not words or words[0].startswith("-") else words[0]
+
+
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def parsers(check: Path) -> list[list[str]]:
+    """The commands that parse a sh or bash check without running it, any of which parsing it
+    counts: `<shell> -n`, and for a bash check that turns extglob on (`shopt -s extglob`,
+    `-O extglob`) the same with `-O extglob`, the one shopt that changes bash's grammar. bash 3.2,
+    macOS's /bin/bash, runs the EXIT trap on a syntax error under `set -e` and exits with the
+    trap's status, so a check that never ran past the error would PASS (#1545). The shebang's own
+    flags stay off the parse, since one can undo `-n` (`+n`) or must come first (`--posix`). Empty
+    for any other check, and one that cannot be read, which runs as before. ponytail: an alias that
+    expands to syntax, and code parsed at run time (`eval`, `source`), are not followed."""
     try:
         with check.open("rb") as file:
             line = file.readline(256)
+            body = line + file.read()
     except OSError:  # an execute-only program runs unread
-        return None
-    words = line[2:].decode(errors="replace").split() if line.startswith(b"#!") else []
-    if words[:1] and Path(words[0]).name == "env":
-        words = words[2:] if words[1:2] == ["-S"] else words[1:]
-        if words[:1] and words[0].startswith("-"):  # another env option: left unparsed
-            return None
-    if not words or Path(words[0]).name not in ("sh", "bash"):
-        return None
-    extglob = ["-O", "extglob"] if Path(words[0]).name == "bash" else []
-    return [words[0], "-n", *extglob, *words[1:]]
+        return []
+    shell = interpreter(line)
+    if not shell or Path(shell).name not in ("sh", "bash"):
+        return []
+    plain = [shell, "-n"]
+    if Path(shell).name == "bash" and EXTGLOB.search(body):
+        return [plain, [shell, "-n", "-O", "extglob"]]
+    return [plain]
 
 
 def run(check: Path, root: Path) -> bool:
@@ -127,12 +155,12 @@ def run(check: Path, root: Path) -> bool:
     sys.stdout.flush()
     started = time.monotonic()
     try:
-        shell = parser(check)
-        if (
-            shell
-            and subprocess.run(
-                [*shell, str(check)], cwd=root, stdin=subprocess.DEVNULL, check=False
+        tries = parsers(check)
+        if tries and all(
+            subprocess.run(
+                [*command, str(check)], cwd=root, stdin=subprocess.DEVNULL, check=False
             ).returncode
+            for command in tries
         ):
             code, reason = 2, ", does not parse"
         else:
