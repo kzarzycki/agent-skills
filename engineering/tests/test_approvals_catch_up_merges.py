@@ -7,7 +7,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from approvals_harness import approvals
-from test_approvals_catch_up import Repo, feature, moved, pr, repo  # noqa: F401  (repo is a fixture)
+from test_approvals_catch_up import (  # noqa: F401  (repo is a fixture)
+    Repo,
+    feature,
+    moved,
+    pr,
+    repo,
+)
 
 
 def test_a_rebase_with_a_merge_that_adds_a_file_carries_nothing(repo: Repo) -> None:
@@ -21,6 +27,6 @@ def test_a_rebase_with_a_merge_that_adds_a_file_carries_nothing(repo: Repo) -> N
     tree = repo("write-tree")
     merge = repo("commit-tree", tree, "-p", "HEAD", "-p", old_base, "-m", "sneak")
     shown = repo("range-diff", "--no-color", f"{old_base}..{old}", f"{tip}..{merge}")
-    assert [line.split()[2] for line in shown.splitlines()] == ["=", "="]  # the blind spot: range-diff shows all `=`
+    # the blind spot: range-diff shows every commit `=`
+    assert [line.split()[2] for line in shown.splitlines()] == ["=", "="]
     assert approvals.catch_up(pr(repo, merge, tip), old) is None
-
