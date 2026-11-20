@@ -51,6 +51,13 @@ def test_majors_open_at_the_cap_land_once_the_lead_records_its_decision_with_no_
         (at(CAP, "0 blocker, 1 major, 0 minor"), "~~~\nCap: #99\n~~~\n"),
         (at(CAP, "0 blocker, 1 major, 0 minor"), "`Cap: #99`\n"),
         (at(CAP, "0 blocker, 1 major, 0 minor"), "> Cap: #99\n"),
+        (at(CAP, "0 blocker, 1 major, 0 minor"), "    Cap: #99\n"),  # an indented code block
+        # a longer fence around a fenced example closes only on its own length
+        (at(CAP, "0 blocker, 1 major, 0 minor"), "````\n```\nCap: #99\n```\n````\n"),
+        (
+            at(CAP, "0 blocker, 1 major, 0 minor"),
+            "```\nCap: #99\n",
+        ),  # an unclosed block runs to the end
     ],
 )
 def test_the_cap_decision_never_lands_a_blocker_an_early_pass_or_a_quoted_line(

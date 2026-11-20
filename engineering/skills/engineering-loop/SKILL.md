@@ -1212,7 +1212,8 @@ up to the cap reviews the diff since the previous report and reruns its repros. 
 lands without review: every head that lands has a satisfied verdict on that exact head,
 so any commit after the last verdict, a merge of main included, gets a verifier pass of
 its own. The one exception is gatekeeper.md's `carry_over_main`: clean merges of main that touch
-none of the PR's files keep the verdict (Approvals and proof).
+none of the PR's files keep the verdict (Approvals and proof). The other is the lead's cap
+decision below: a head at the cap with majors open, none a blocker, lands under a `Cap:` line.
 
 - **The last pass under the cap leaves a blocker or major open:** the lead decides, since
   more passes alone would keep the fix regressing. It picks one of three:

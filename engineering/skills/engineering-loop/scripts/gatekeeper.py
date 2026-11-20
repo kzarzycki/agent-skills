@@ -645,7 +645,10 @@ CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
 # the lead's decision at the cap to land with majors open, filed as a follow-up issue, as a PR body line of its own:
 # `Cap: #<follow-up>` (SKILL.md § The cap); a quoted line (`>`, a code span or block) is an example, not the record. ponytail: the gate trusts the number the lead names; fetch the issue and
 # check its `Found while` line if a lead ever names one it never filed.
-CAP_DECISION = re.compile(r"^[ \t*-]*\**Cap\**:?\**[ \t]*#\d+\b", re.MULTILINE | re.IGNORECASE)
+# at most 3 spaces before it, since 4 or a tab make the line an indented code block: an example, not the decision
+CAP_DECISION = re.compile(
+    r"^ {0,3}(?:[*-][ \t]+)?\**Cap\**:?\**[ \t]*#\d+\b", re.MULTILINE | re.IGNORECASE
+)
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
@@ -661,9 +664,12 @@ CLOSES, IMPLEMENTS, PART = "closes", "implements", "part of"
 SIGNOFF = re.compile(
     r"^[ \t>*-]*\**Sign-off\**:?\**[ \t]*`?(owner|none)\b", re.MULTILINE | re.IGNORECASE
 )
-# code (a ``` or ~~~ block, a code span) and comments: an example, not a closing line
+# code (a ``` or ~~~ block, a code span) and comments: an example, not a closing line. A block closes on a line of
+# the same fence character at least as long as its opening, or at the end of the body, as Markdown renders it;
+# an opening line with a later backtick is a code span instead
 QUOTED = re.compile(
-    r"^[ \t>]*(```|~~~).*?^[ \t>]*\1|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE
+    r"^[ \t>]*((`|~)\2{2,})(?![^\n]*`).*?(?:^[ \t>]*\1\2*[ \t]*$|\Z)|`[^`\n]*`|<!--.*?-->",
+    re.DOTALL | re.MULTILINE,
 )
 # the first line of the comment flag() leaves when the verifier's `Risk:` line made it add `risk:high`, which says the
 # label is the gate's to take off again when a later pass judges the risk low
