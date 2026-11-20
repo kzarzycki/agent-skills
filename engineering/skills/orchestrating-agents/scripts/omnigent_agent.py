@@ -8923,11 +8923,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     )
     p = sub.add_parser(
         "brief",
-        description="print the first message start would send a child, reading no server: a cloud"
-        " lead passes it to sys_session_create",
+        description="print, reading no server, the body of the first message start would send a"
+        " child: its preamble and the brief, without the signature, lock and title lines start adds"
+        " once the session exists. A cloud lead passes it as sys_session_create's message",
     )
     p.add_argument("brief", help="the task specifics: a file, or the text itself")
-    p.add_argument("report")
+    p.add_argument("report", type=Path)
     p.add_argument("--role", help="worker/verifier role file, inlined for a cloud child")
     p.add_argument("--cloud", action="store_true", help="the child runs in a Claude cloud VM")
     p.add_argument("--top-level", action="store_true")
@@ -9290,10 +9291,6 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             return cloud_run(
                 args.checkout, line, args.timeout, lambda argv: command(argv, {}), args.server
             )
-        if args.cmd == "brief":
-            text = Path(args.brief).read_text() if Path(args.brief).is_file() else args.brief
-            print(first_message(args.cloud, args.top_level, args.pr, args.report, args.role, text))
-            return 0
         if args.cmd == "launch-dir":
             launch_dir(args.remote, args.branch, args.env, args.path, args.trust, clone=args.clone)
             return 0
@@ -9304,10 +9301,22 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             ok, line = capacity()
             print(line)
             return 0 if ok else 1
-        if args.cmd in ("run", "start") and args.role is not None:
+        if args.cmd in ("run", "start", "brief") and args.role is not None:
             role_file = Path(args.role)
             if not (role_file.is_file() and os.access(role_file, os.R_OK)):
                 raise Fail(f"--role {args.role}: not a readable file; the child reads it first")
+        if args.cmd == "brief":
+            # the body only: start adds its signature, lock and title lines once a session exists
+            body = first_message(
+                args.cloud,
+                args.top_level,
+                args.pr,
+                args.report.resolve(),
+                args.role,
+                text_or_file(args.brief)[0],
+            )
+            sys.stdout.write(body)
+            return 0
         og = Omnigent(args.server) if args.server else Omnigent()
         if args.cmd == "capacity":
             target = og.host(args.host)

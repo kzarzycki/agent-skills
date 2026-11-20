@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-uv run pytest -q -p no:cacheprovider "engineering/tests/test_omnigent_agent.py::test_brief_prints_the_first_message_start_sends_a_cloud_child"
+uv run pytest -q -p no:cacheprovider engineering/tests/test_omnigent_agent.py -k "test_brief_prints_the_body_start_sends_a_child or test_brief_refuses_an_unreadable_role_and_takes_a_long_brief"

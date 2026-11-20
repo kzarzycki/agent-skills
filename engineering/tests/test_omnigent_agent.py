@@ -13900,22 +13900,56 @@ def test_a_cloud_child_gets_its_role_file_s_text_and_a_host_child_its_path(
     assert f"Your role file is {role}; read it first." in brief and "RULE-X" not in brief
 
 
-def test_brief_prints_the_first_message_start_sends_a_cloud_child(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("pr", [None, 7])
+@pytest.mark.parametrize("top_level", [False, True])
+@pytest.mark.parametrize("cloud", [False, True])
+@pytest.mark.parametrize("as_file", [False, True])
+def test_brief_prints_the_body_start_sends_a_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    cloud: bool,
+    top_level: bool,
+    pr: int | None,
+    as_file: bool,
 ) -> None:
     """A cloud lead reaches Omnigent only through its MCP tools, so it composes a child's message with
-    `brief` and passes it to sys_session_create: it must be the message `start` sends (#1509)."""
+    `brief` and passes it to sys_session_create: it prints, byte for byte and reading no server, the
+    body `start` sends under its signature, lock and title lines (#1509)."""
     monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+    monkeypatch.chdir(tmp_path)
     role = tmp_path / "worker.md"
     role.write_text("# Worker\nrule\n")
-    og = CloudFake()
-    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", str(role), 0)
-    sent = omnigent_agent.text_of(og.sessions[sid][1])
-    assert (
-        omnigent_agent.main(
-            ["brief", "do X", str(tmp_path / "r.md"), "--cloud", "--role", str(role)]
-        )
-        == 0
+    text = "do X\nthen Y\n"
+    brief = tmp_path / "brief.md"
+    brief.write_text(text)
+    report = tmp_path / "r.md"
+    og = CloudFake() if cloud else FakeOmnigent()
+    agent = "claude-cloud" if cloud else "claude"
+    sid, _ = omnigent_agent.start(
+        og, agent, "t", text, report, str(role), 0, top_level=top_level, pr=pr
     )
-    printed = capsys.readouterr().out.removesuffix("\n")
-    assert "<role-file>\n# Worker\nrule\n</role-file>" in printed and sent.endswith(printed)
+    sent = omnigent_agent.text_of(og.sessions[sid][1])
+    inline = sent.partition("Your brief:\n\n")[2]
+    full = inline or omnigent_agent.brief_of(report).read_text()
+    body = re.sub(r"\A(?:AGENT_SIGNATURE|LOOP_HEAVY_LOCK)=.*\n", "", full)
+    body = re.sub(r"\A(?:AGENT_SIGNATURE|LOOP_HEAVY_LOCK)=.*\n", "", body)
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: pytest.fail("brief read a server"))
+    argv = ["brief", str(brief) if as_file else text, "r.md", "--role", str(role)]
+    argv += ["--cloud"] * cloud + ["--top-level"] * top_level + ["--pr", str(pr)] * bool(pr)
+    assert omnigent_agent.main(argv) == 0
+    printed = capsys.readouterr().out
+    assert printed == body and printed.endswith(text)
+    assert ("<role-file>\n# Worker\nrule\n</role-file>" in printed) == cloud
+
+
+def test_brief_refuses_an_unreadable_role_and_takes_a_long_brief(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`brief` checks --role as start does, with a one-line error, and takes an inline brief too
+    long for a file name as text, where Path.is_file raises on some Pythons (#1509)."""
+    assert omnigent_agent.main(["brief", "do X", "r.md", "--cloud", "--role", "gone.md"]) == 1
+    assert "--role gone.md: not a readable file" in capsys.readouterr().err
+    long = "x" * 5000
+    assert omnigent_agent.main(["brief", long, "r.md", "--cloud"]) == 0
+    assert capsys.readouterr().out.endswith(long)
