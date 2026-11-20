@@ -43,7 +43,7 @@ step mise-trust mise trust -q --all
 # ponytail: x86_64 Linux assets only, the cloud image's platform; another one needs its asset names
 mi="$HOME/.local/share/mise/installs" gh=https://github.com
 v=$(pin ubi:carvel-dev/vendir); a=$gh/carvel-dev/vendir/releases/download/v$v
-step vendir fetch "$a/vendir-linux-amd64" "$a/checksums.txt" "$mi/ubi-carvel-dev-vendir/$v/bin/vendir"
+step vendir fetch "$a/vendir-linux-amd64" "$a/checksums.txt" "$mi/ubi-carvel-dev-vendir/$v/vendir"
 v=$(pin uv); a=$gh/astral-sh/uv/releases/download/$v/uv-x86_64-unknown-linux-gnu.tar.gz
 step uv fetch "$a" "$a.sha256" "$mi/uv/$v"
 v=$(pin github:microsoft/apm); a=$gh/microsoft/apm/releases/download/v$v/apm-linux-x86_64.tar.gz
