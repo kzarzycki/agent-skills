@@ -145,7 +145,9 @@ which the owner drives in its own session: ``start --top-level --direct`` sets t
 ``direct <session> [--off]`` later); it reads engineering-loop's loop events (``refs/loop/*``, one ``ls-remote`` a poll) for the
 branches of the PRs a lead waits on: a ``waiting`` event changed within twice its beat is life (no deadline), a silent one
 is named in the deadline, a pending required check on the PR's head is life, and an end is told once, a ``needs-owner``
-question first, while a branch with no events keeps today's timing; and it routes each event instead of posting it: the supervisor settles the routine ones
+question first, while a branch with no events keeps today's timing; a followed lead's turn that ends ``USER NEEDED`` with no
+question card open (elicitation id ``question_``) is its own ``unasked`` event, telling its waiter to post a card or act
+under the delegation (a start's lead preamble carries it where the base policy sets ``loop.delegate: all``); and it routes each event instead of posting it: the supervisor settles the routine ones
 itself (no post, a nudge, a revive, telling the leads registered ``after=`` it of a lead's
 ``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
 what its rules can't settle, and posts what needs the notified session or the owner as
@@ -733,6 +735,109 @@ A message that adds no task (a relay, a notice, a correction) is answered in the
 A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEEDED`, never `STILL WORKING`. Only a message that starts with `Park: ` tells you to park; after it, end `PARKED: <why>. Report: {report}`, and never otherwise.
 
 """
+# A top-level lead's extra brief where the project's base policy sets `loop.delegate: all` (#1551): the owner has
+# handed it the specs and merges, so it settles them instead of ending `USER NEEDED` on a go nobody answers. Only
+# the merge go has a command: `approve` takes `--by delegate` for a merge alone.
+DELEGATION = """\
+The owner delegated this project's specs and merges to you (its policy sets `loop.delegate: all`), so a spec or a merge is no reason to end `USER NEEDED`. Settle a spec as the policy's spec rule says; `approve spec` takes only `--by owner`, so never run it.
+Merge a PR, `risk:high` included, once its gate is green and its verifier satisfied. Give the go on the head the verifier saw with engineering-loop's `scripts/approvals.py approve merge <pr> --head <sha> --by delegate`, since a go is pinned to one head and a push voids it.
+A change on the policy's `risk.critical_paths` stays the owner's: the script refuses the delegate's go there. Ask the owner with a question card (`sys_ask_user_question`), never in prose, since a prose question ends your turn where nobody answers.
+"""
+
+
+def _load_gatekeeper() -> Any:
+    """The loop's gatekeeper module (``engineering-loop/scripts/gatekeeper.py``, a sibling skill's), loaded by path as
+    ``_load_events`` loads events.py, or ``None`` when this skill is installed without it or it fails to load."""
+    path = Path(__file__).resolve().parents[2] / "engineering-loop" / "scripts" / "gatekeeper.py"
+    try:
+        spec = importlib.util.spec_from_file_location(f"{__name__}_gatekeeper", path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module  # its dataclasses look themselves up there
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(spec.name, None)
+            raise
+        return module
+    except Exception:  # noqa: BLE001 - absent or broken: today's wording
+        return None
+
+
+ORIGIN_URL = re.compile(r'\[remote "origin"\][^\[]*?^\s*url\s*=\s*(\S+)', re.MULTILINE)
+GITHUB_REPO = re.compile(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+
+
+def far_policy_texts(
+    og: Omnigent, workspace: str, host_id: str, gk: Any
+) -> tuple[str | None, str | None] | None:
+    """The default branch's ``docs/agents/loop.md`` and gatekeeper.md texts (None for one it lacks, as ``base_policy``
+    reads the base) of the checkout at ``workspace`` on host ``host_id``, which has no git to ask: its ``.git/config``
+    is read through the host's file API for the ``origin`` repo, and the files come from GitHub's default branch
+    through ``gh``. None when ``workspace`` is no checkout; a ``Fail`` when the origin or a file can't be read."""
+    root = far_checkout_root(og, host_id, workspace, str(gk.POLICY))
+    if root is None:
+        return None
+    config = root / ".git" / "config"
+    try:
+        found = ORIGIN_URL.search(read_on_host(og, host_id, str(config)))
+    except Gone as e:
+        raise Fail(f"{config}: not found on the host") from e
+    if not (found and (repo := GITHUB_REPO.search(found.group(1)))):
+        raise Fail(f"{config}: no GitHub `origin` url to read the base policy from")
+    slug = f"{repo.group(1)}/{repo.group(2)}"
+    branch = json.loads(gh("api", f"repos/{slug}"))["default_branch"]
+
+    def read(file: Path) -> str | None:
+        try:
+            return gh(
+                "api",
+                "-H",
+                "Accept: application/vnd.github.raw",
+                f"repos/{slug}/contents/{file.as_posix()}?ref={branch}",
+            )
+        except Fail as e:
+            if "404" in str(e) or "Not Found" in str(e):
+                return None  # absent on the base
+            raise
+
+    return read(gk.LOOP), read(gk.POLICY)
+
+
+def lead_delegation(og: Omnigent | None, workspace: str | None, host_id: str = "") -> str:
+    """``DELEGATION`` when the base policy of the lead's own checkout (``workspace``, else here) sets
+    ``loop.delegate: all``, read by engineering-loop's reader (``base_policy``, ``delegation``); else ``""``,
+    today's wording, also when that skill is absent or fails. A checkout on another host (``host_id``) is read
+    through that host's file API and GitHub (``far_policy_texts``), its base's files chosen by the reader's ``chosen``;
+    a read that fails keeps today's wording with one stderr line."""
+    gk = _load_gatekeeper()
+    if gk is None:
+        return ""
+    if host_id:
+        try:
+            assert og is not None
+            if (texts := far_policy_texts(og, workspace or os.getcwd(), host_id, gk)) is None:
+                return ""  # outside a checkout, as locally
+            loop, policy = texts
+            return DELEGATION if gk.delegation(gk.chosen(loop, policy)) == "all" else ""
+        except (Exception, SystemExit) as e:  # noqa: BLE001 - unreadable there: today's wording
+            print(
+                f"lead delegation: its policy on the other host is not read: {reason(e)}",
+                file=sys.stderr,
+            )
+            return ""
+    here = os.getcwd()
+    try:
+        os.chdir(workspace or here)  # base_policy reads the checkout it runs in
+        try:
+            base = gk.default_base(str(gk.toplevel())) or "main"
+            return DELEGATION if gk.delegation(gk.base_policy(base, None)) == "all" else ""
+        finally:
+            os.chdir(here)
+    except (Exception, SystemExit):  # noqa: BLE001 - no readable policy: today's wording
+        return ""
+
+
 # Every acp:claude-cloud session's preamble, lead or worker, with or without --pr (#706): a fresh
 # clone lacks the host's .git/info/exclude, and a write under .git/ asks the cloud permission
 # policy, which nobody answers.
@@ -2087,6 +2192,26 @@ def questions_of(info: dict) -> list[str]:
 def cards_of(info: dict) -> list[str]:
     """What each open question card asks: shown as ``card open``, never as blocked."""
     return [_asks(e) for e in info.get("pending_elicitations") or [] if not holds_input(e)]
+
+
+UNASKED = "unasked"  # an event kind: a turn ended USER NEEDED with no question card open
+UNASKED_LINE = (
+    "turn ended USER NEEDED with no question card open: post a card (sys_ask_user_question) or, where the"
+    " project delegates the decision, act under the delegation; the owner sees only a card"
+)
+
+
+def unasked_end(
+    og: Omnigent, sid: str, info: dict, items: list[dict], carded: bool = False
+) -> bool:
+    """Whether ``sid``'s last message ends ``USER NEEDED`` (its ending line, which a lead's brief puts in the message itself) while it holds no open question
+    card (``CARD_ID``; ``carded`` when a ``Recorded`` look already took them out of ``info``): the owner is asked in
+    prose, where nobody answers, so its waiter must post the card or act."""
+    if carded or cards_of(info):
+        return False
+    said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
+    text = text_of(said[-1]).strip() if said else ""
+    return ending_of(text) == "USER NEEDED"
 
 
 def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:
@@ -3934,6 +4059,9 @@ def start(
     # The AGENT_SIGNATURE line goes atop it once the session exists: its model is the one the
     # server took for it, never the id asked for.
     preamble = pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE
+    if top_level and not pr:
+        far = host_id if host_id and host_id != og.host_id else ""
+        preamble = preamble.removesuffix("\n") + lead_delegation(og, workspace, far) + "\n"
     if harness == CLOUD_HARNESS:
         preamble = cloud_preamble(preamble, pr)
     elif not top_level:
@@ -5537,7 +5665,7 @@ def owner_item(line: str) -> str:
     if (at := first.find(marker)) >= 0:
         head, text = first[at + 2 :].split(": ", 1)
         return f"{head}: " + re.sub(r"(^|; )[^\s:;]+: ", r"\1", text)
-    if re.search(r": turn ended(, quiet \d+s)?$", first) and rest:
+    if re.search(rf": (turn ended|{re.escape(UNASKED_LINE)})(, quiet \d+s)?$", first) and rest:
         return rest
     return line
 
@@ -6687,6 +6815,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     prompt is the owner's."""
     # ``wait`` is the lead's, from its report when its last message is only the path
     kind, wait = event["kind"], event.get("wait") or wait_of(event.get("last") or "")
+    if kind == UNASKED:  # a turn end like any other: only its line tells the waiter more
+        kind = "ended"
     if kind == "landed":  # read from the repo, never from the lead's words
         return "rule", "act", "its default branch moved: a step owed after a landing"
     if kind == "archived":
@@ -8436,6 +8566,17 @@ def supervise_registry(
                         else {}
                     )
                     since, kind = time.time(), key[0]
+                    if kind == "ended" and event:
+                        looked_at = (rec.info(sid), rec.items(sid))
+                        carded = bool(getattr(rec, "cards", {}).get(sid))
+                        if unasked_end(rec, sid, *looked_at, carded):
+                            kind = UNASKED
+                            first, nl, rest = event.partition("\n")
+                            event = (
+                                re.sub(r": turn ended(, quiet \d+s)?$", f": {UNASKED_LINE}", first)
+                                + nl
+                                + rest
+                            )
                     nth = [str(lead.get("occurrences"))] if kind in ("blocked", "failed") else []
                     eid = ":".join((kind, sid, *nth, *key[1:]))
                     if kind != "archived":

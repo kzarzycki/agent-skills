@@ -3519,6 +3519,8 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     og = FakeOmnigent()
     og.fail.add("create")  # the lookup after a failed create is the top-level one too
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    # the checkout's own policy delegates (#1551): the plain wording is what a policy without it gets
+    monkeypatch.setattr(omnigent_agent, "lead_delegation", lambda *_: "")
     sid, _ = omnigent_agent.start(
         og, "claude", "t", "do X", tmp_path / "r.md", None, 0, top_level=True
     )
@@ -5803,7 +5805,10 @@ def test_a_followed_lead_ending_with_a_named_ending_is_news_at_once_and_once(
     registry = following(tmp_path)
     og = Lead(told("brief", 60), ending(f"**{word}** the result", 1))
     supervised(og, registry, monkeypatch, 3, notify="cos")
-    assert posted(og) == [f"Supervisor: a t-a: turn ended\nlast message: **{word}** the result"]
+    turn = (
+        omnigent_agent.UNASKED_LINE if word == "USER NEEDED" else "turn ended"
+    )  # no card is open (#1551)
+    assert posted(og) == [f"Supervisor: a t-a: {turn}\nlast message: **{word}** the result"]
 
 
 def test_a_live_child_updated_within_the_window_keeps_a_followed_lead_quiet_pending(
