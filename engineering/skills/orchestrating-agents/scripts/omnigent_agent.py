@@ -5054,22 +5054,32 @@ def gh(*args: str, timeout: float = HTTP_SECONDS, cwd: Path | None = None) -> st
 
 
 def rate_wait(stderr: str) -> float | None:
-    """Seconds until GitHub's REST limit resets when ``stderr`` is a 403/429 rate-limit refusal, else None. A
-    primary limit reads the reset time from ``gh api rate_limit`` (it costs no quota), a secondary one the
-    ``Retry-After`` its text shows, else a minute."""
+    """Seconds until GitHub's limit resets when ``stderr`` is a 403/429 rate-limit refusal, else None. A secondary
+    limit waits the ``Retry-After`` its text shows, else a minute; a primary one reads its bucket (GraphQL's for
+    a ``GraphQL:`` error, else REST's) from ``gh api rate_limit``, which costs no quota: an empty bucket waits to
+    its reset, one with calls left was refused for the per-minute limit and waits a minute."""
     if not re.search(r"rate limit|HTTP 429", stderr, re.IGNORECASE):
         return None
     if found := re.search(r"retry[- ]after:? *(\d+)", stderr, re.IGNORECASE):
         return float(found[1])
+    if re.search(r"secondary|abuse|HTTP 429", stderr, re.IGNORECASE):
+        return 60.0
+    bucket = "graphql" if "GraphQL:" in stderr else "core"
     try:
-        reset = subprocess.run(
-            ["gh", "api", "rate_limit", "--jq", ".resources.core.reset"],
+        remaining, reset = subprocess.run(
+            [
+                "gh",
+                "api",
+                "rate_limit",
+                "--jq",
+                f'.resources.{bucket} | "\\(.remaining) \\(.reset)"',
+            ],
             capture_output=True,
             text=True,
             timeout=HTTP_SECONDS,
             check=True,
-        ).stdout.strip()
-        return max(float(reset) - time.time(), 0.0) + 1.0
+        ).stdout.split()
+        return 60.0 if int(remaining) else max(float(reset) - time.time(), 0.0) + 1.0
     except (OSError, subprocess.SubprocessError, ValueError):
         return 60.0
 

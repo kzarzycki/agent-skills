@@ -21,7 +21,7 @@ def test_rate_limit_sleeps_to_reset(monkeypatch):
 
     def run(cmd, **kw):
         if cmd[:3] == ["gh", "api", "rate_limit"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{int(now) + 90}\n")
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"0 {int(now) + 90}\n")
         raise subprocess.CalledProcessError(1, cmd, stderr="gh: API rate limit exceeded (HTTP 403)")
 
     monkeypatch.setattr(oa.subprocess, "run", run)
@@ -83,3 +83,67 @@ def test_head_read_uses_shared_cache(monkeypatch):
     monkeypatch.setattr(oa, "gh", lambda *a, **k: seen.append(a) or "b" * 40)
     oa.default_head("o/r")
     assert "--cache" in seen[0] and "300s" in seen[0]
+
+
+def test_a_secondary_limit_waits_a_minute_not_to_the_core_reset():
+    assert oa.rate_wait("You have exceeded a secondary rate limit (HTTP 403)") == 60.0
+
+
+def test_wait_for_passes_its_memo_to_the_verdict_poll(monkeypatch):
+    """Through wait_for itself: an unchanged PR costs one pulls read per poll, four polls in all."""
+    asked = []
+    monkeypatch.setattr(oa, "COMMITS", {})
+    monkeypatch.setattr(oa, "WAIT_FOR_PR_EVERY", 0.0)
+    monkeypatch.setattr(oa.time, "sleep", lambda s: None)
+
+    def fake_gh(*args, **kw):
+        path = args[2] if args[1] == "--paginate" else args[1]
+        asked.append(path)
+        if path.endswith("pulls/5"):
+            return json.dumps({"head": {"sha": "a" * 40}, "updated_at": "t0"})
+        if "git/commits/" in path:
+            return json.dumps({"committer": {"date": "2026-01-01T00:00:00Z"}})
+        return ""
+
+    monkeypatch.setattr(oa, "gh", fake_gh)
+    polls = []
+    real = oa.verdict_outcome
+
+    def counted(*a, **k):
+        polls.append(1)
+        if len(polls) == 4:
+            return 0, "done"
+        return real(*a, **k)
+
+    monkeypatch.setattr(oa, "verdict_outcome", counted)
+    assert oa.wait_for(None, None, 5, "verdict", 100.0) == (0, "done")
+    assert (
+        len(asked) <= 3 + 3
+    )  # the first look reads the PR, its commit and the lists; the rest only the PR
+
+
+def test_supervise_asks_no_repo_before_the_limit_resets(monkeypatch, tmp_path):
+    """After one RateLimited head read, no repo is read until its reset, however many polls pass."""
+    import test_omnigent_agent as t
+
+    reads = []
+
+    def gh(*args, timeout=0):
+        reads.append(args)
+        raise oa.RateLimited("403", 600.0)
+
+    monkeypatch.setattr(oa, "HEAD_SECONDS", 0)
+    monkeypatch.setattr(oa, "gh", gh)
+    registry = t.following(tmp_path)
+    og = t.Lead(t.told("brief", 60))
+    t.in_checkout(og)
+    t.supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
+    assert len(reads) == 1
+
+
+def test_land_wait_queue_polls_per_hour_are_bounded():
+    import approvals_harness as h  # noqa: F401  (loads approvals)
+    from approvals_harness import approvals
+
+    assert HOUR / approvals.QUEUE_POLL <= 12
+    assert HOUR / oa.HEAD_SECONDS <= 12

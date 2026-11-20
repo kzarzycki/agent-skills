@@ -727,7 +727,7 @@ QUEUE_POLL = 300
 # lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
 RECHECK = 300
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
-LOW_POLL, LOW_QUOTA = 300, 0.1
+LOW_POLL, LOW_QUOTA = 600, 0.1
 POLL_JITTER = 60  # most seconds of random delay added to a land --wait poll
 # a wait that meets this many network failures in a row (NETWORK) fails with the last one
 MISSES = 3
