@@ -7459,23 +7459,31 @@ def merges(
     loop: str | None,
     failed: set[int],
     waited: str = "",
-    held: Sequence[str] = (),
+    held: Sequence[str] | None = None,
 ) -> None:
     """Merge each PR through GitHub in the batch's order, pinned to its head (or, with loop.md's `land` section, as a
     signed squash of the tree it lands on the commit before it), stopping at the first one GitHub refuses or leaves
-    open, then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
+    open, or before the next once the heartbeat lost the lock (`held` emptied; None: no lock), then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
     the batch partial, or someone merged meanwhile) the tip is gated here, or with no worktree (`work` None) its pass
     reused where one is recorded and the tree named where none is. Each landed PR gets a `Landed` comment. Right before
     its merge call a PR's head gets the `land` status naming the nonce of the lock commit `held` ends with, which the
     base's ruleset can require, so only a land merges (#1289); a merge GitHub then refuses, or leaves open, turns it to
     an error."""
     local, command, done = signed(loop), gate()[0], []
-    nonce = (
-        git("log", "-1", "--format=%b", held[-1]).rsplit("nonce ", 1)[-1].strip() if held else ""
-    )
     for pull, tree, gated, how in landed:
         where, head, posted = f"PR #{pull['number']}", pull["headRefOid"], False
         try:
+            # read under `beating`, so the heartbeat can't empty `held` between the check and the read; [] is a lock
+            # the heartbeat lost, which stops the batch here (a merge call already made can't be taken back)
+            with beating:
+                if held is not None and not held:
+                    raise Refused(f"another land took the landing lock {lock_name(base)}")
+                ours = held[-1] if held else None
+            nonce = (
+                git("log", "-1", "--format=%b", ours).rsplit("nonce ", 1)[-1].strip()
+                if ours
+                else ""
+            )
             unlink_pull(pull)
             method = merge_method(pull, loop)
             if local:
