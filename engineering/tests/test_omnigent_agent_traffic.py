@@ -3,10 +3,21 @@
 import time
 from pathlib import Path
 
-import omnigent_agent
 import pytest
 import test_omnigent_agent as base
-from test_omnigent_agent import COS, WORKER, Lead, ending, manager, supervised, told
+from test_omnigent_agent import (  # noqa: F401  (the fixtures apply here by name)
+    COS,
+    WORKER,
+    Lead,
+    ending,
+    manager,
+    no_model,
+    no_sleep,
+    supervised,
+    told,
+)
+
+omnigent_agent = base.omnigent_agent
 
 WAIT = "STILL WORKING: waiting on the check. Report: m.md"
 CARD = {
@@ -40,11 +51,13 @@ def run(
     return og
 
 
-def test_an_unread_done_and_a_failure_still_reach_the_lead_once(tmp_path, monkeypatch) -> None:
-    assert len(told_m(run(tmp_path / "a", monkeypatch, {}))) == 1
-    (tmp_path / "b").mkdir()
-    og = run(tmp_path / "b", monkeypatch, {"status": "failed"})
-    assert len(told_m(og)) == 1 and "failed" in told_m(og)[0]
+def test_an_unread_done_still_reaches_the_lead_once(tmp_path, monkeypatch) -> None:
+    assert len(told_m(run(tmp_path, monkeypatch, {}))) == 1
+
+
+def test_a_failed_worker_still_reaches_the_lead_once(tmp_path, monkeypatch) -> None:
+    told = told_m(run(tmp_path, monkeypatch, {"status": "failed"}))
+    assert len(told) == 1 and "failed" in told[0]
 
 
 def test_an_archived_worker_raises_no_alert(tmp_path, monkeypatch) -> None:
@@ -73,37 +86,42 @@ def test_a_failure_the_lead_has_read_still_alerts(tmp_path, monkeypatch) -> None
     assert len(told_m(run(tmp_path, monkeypatch, {"status": "failed"}, history=seen))) == 1
 
 
+ASK = "USER NEEDED: pick one. Report: w.md"
+
+
+def test_a_child_turn_end_with_no_open_card_is_still_forwarded(tmp_path, monkeypatch) -> None:
+    assert len(told_m(run(tmp_path, monkeypatch, {}, said=ASK))) == 1
+
+
 def test_a_child_turn_end_waiting_on_an_open_owner_card_is_not_forwarded(
     tmp_path, monkeypatch
 ) -> None:
-    ask = "USER NEEDED: pick one. Report: w.md"
-    assert len(told_m(run(tmp_path / "a", monkeypatch, {}, said=ask))) == 1  # no card: still news
     card = {"pending_elicitations": [CARD]}
-    assert told_m(run(tmp_path / "b", monkeypatch, card, said=ask)) == []
+    assert told_m(run(tmp_path, monkeypatch, card, said=ASK)) == []
 
 
-def test_a_followed_lead_ending_on_its_open_card_is_not_forwarded_but_without_one_is(
-    tmp_path, monkeypatch
-) -> None:
-    def turn_ends(card: bool) -> list[str]:
-        og = Lead(told("brief", 60), ending("USER NEEDED: pick one", 5))
-        og.snap = {"status": "idle", **({"pending_elicitations": [CARD]} if card else {})}
-        offset = base.skewed(monkeypatch)
-        supervised(
-            og,
-            base.following(tmp_path / ("c" if card else "n")),
-            monkeypatch,
-            3,
-            lambda poll: offset.__setitem__(0, poll * 400.0),
-            notify="cos",
-            console=True,
-        )
-        return [t for t in base.posted(og) if "turn ended" in t]
+def turn_ends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, card: bool) -> list[str]:
+    og = Lead(told("brief", 60), ending("USER NEEDED: pick one", 5))
+    og.snap = {"status": "idle", **({"pending_elicitations": [CARD]} if card else {})}
+    offset = base.skewed(monkeypatch)
+    supervised(
+        og,
+        base.following(tmp_path),
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, poll * 400.0),
+        notify="cos",
+        console=True,
+    )
+    return [t for t in base.posted(og) if "turn ended" in t]
 
-    for sub in ("c", "n"):
-        (tmp_path / sub).mkdir()
-    assert turn_ends(True) == []
-    assert len(turn_ends(False)) == 1
+
+def test_a_followed_lead_ending_on_its_open_card_is_not_forwarded(tmp_path, monkeypatch) -> None:
+    assert turn_ends(tmp_path, monkeypatch, True) == []
+
+
+def test_a_followed_lead_ending_with_no_open_card_is_still_forwarded(tmp_path, monkeypatch) -> None:
+    assert len(turn_ends(tmp_path, monkeypatch, False)) == 1
 
 
 def test_relay_refuses_a_message_carrying_an_owner_question(
