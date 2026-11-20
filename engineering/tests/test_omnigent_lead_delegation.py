@@ -158,3 +158,20 @@ def test_the_unasked_kind_routes_as_a_user_needed_turn_end_does() -> None:
     plain = {**event, "kind": "ended"}
     got = omnigent_agent.route(event, lambda: ("owner", ""))
     assert got == omnigent_agent.route(plain, lambda: ("owner", "")) and got[1] == "owner"
+
+
+@pytest.mark.parametrize(
+    ("text", "info", "carded", "expected"),
+    [
+        ("USER NEEDED: q", {}, False, True),
+        ("USER NEEDED: q", {"pending_elicitations": [CARD]}, False, False),
+        ("USER NEEDED: q", {}, True, False),
+        ("DONE: shipped", {}, False, False),
+        ("STILL WORKING: waiting on CI", {}, False, False),
+    ],
+)
+def test_unasked_end_wants_a_user_needed_ending_and_no_card(
+    text: str, info: dict, carded: bool, expected: bool
+) -> None:
+    items = [ending(text, 1)]
+    assert omnigent_agent.unasked_end(None, "a", info, items, carded) is expected
