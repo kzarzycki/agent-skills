@@ -1,6 +1,7 @@
 import os
 import shutil
 import sys
+import threading
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
@@ -50,21 +51,23 @@ def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
     monkeypatch = getattr(item, "funcargs", {}).get("monkeypatch")
     if monkeypatch is None:  # every test here takes it through the autouse fixtures above
         return (yield)
-    inside = False
+    # per thread, so another thread's edit is never taken for monkeypatch's own write
+    inside = threading.local()
 
     def through(edit: Callable[[], None], direct: Callable[[], None]) -> None:
-        nonlocal inside
-        if inside:  # monkeypatch's own write
+        if getattr(inside, "now", False):  # monkeypatch's own write
             return direct()
-        inside = True
+        inside.now = True
         try:
             edit()
         finally:
-            inside = False
+            inside.now = False
 
     def setitem(environ: os._Environ[str], key: str, value: str) -> None:
         if environ is not os.environ or key == "PYTEST_CURRENT_TEST" or not isinstance(value, str):
             return _SET(environ, key, value)
+        # a name or value the OS refuses raises here, before monkeypatch records an undo its teardown can't make
+        os.putenv(key, value)
         through(lambda: monkeypatch.setenv(key, value), lambda: _SET(environ, key, value))
 
     def delitem(environ: os._Environ[str], key: str) -> None:

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# A test call's direct edits are undone for the next test, under xdist too, in order with the test's own monkeypatch:
-# a PATH patch made after the CLI strips the venv, and a CLI deletion of a session fixture's variable, are both put
-# back; a session fixture keeps its variable, and a module fixture still sees its teardown phase. Each run clears the
-# caller's PYTEST_ADDOPTS, so the serial run stays serial.
+# A test call's direct edits are undone for the next test, serial and under xdist, in order with the test's own
+# monkeypatch: a PATH patch made after the CLI strips the venv, the CLI's deletion of a VIRTUAL_ENV a session fixture
+# set, an edit from a second thread while another is mid-edit, and the edits before one the OS refuses are all put
+# back. A session fixture keeps its variable, and a module fixture still sees its teardown phase. Each run clears the
+# caller's PYTEST_ADDOPTS, so the serial run stays serial, and starts without VIRTUAL_ENV, so only a fixture sets it.
 
 root=$(git rev-parse --show-toplevel)
 probe=$(mktemp -d)
@@ -13,6 +14,8 @@ ln -s "$root/engineering/tests/conftest.py" "$probe/conftest.py"
 cat > "$probe/test_environ_probe.py" <<'PY'
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
 from approvals_harness import approvals
@@ -38,20 +41,21 @@ def test_simple_leak(session_env):
         assert os.environ["PYTEST_XDIST_WORKER"] == worker
     os.environ[key] = "changed directly"
     os.environ["PROBE_1543_ADDED"] = "added directly"
-    del os.environ["VIRTUAL_ENV"]
+    del os.environ["PROBE_1543_INHERITED"]
 
 
 def test_simple_restore(session_env):
     key, worker = session_env
     assert os.environ[key] == worker
     assert "PROBE_1543_ADDED" not in os.environ
-    assert os.path.normpath(os.environ["VIRTUAL_ENV"]) == os.path.normpath(sys.prefix)
+    assert os.environ["PROBE_1543_INHERITED"] == "caller"
     assert os.environ["PYTEST_CURRENT_TEST"].endswith(" (call)")
     if worker != "master":
         assert os.environ["PYTEST_XDIST_WORKER"] == worker
 
 
 def test_mixed_leak(monkeypatch):
+    monkeypatch.setenv("VIRTUAL_ENV", sys.prefix)
     assert VENV_BIN in os.get_exec_path()
     approvals.leave_own_environment()
     assert VENV_BIN not in os.get_exec_path()
@@ -63,6 +67,7 @@ def test_mixed_restore():
 
 
 def test_prepend_leak(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIRTUAL_ENV", sys.prefix)
     approvals.leave_own_environment()
     assert VENV_BIN not in os.get_exec_path()
     monkeypatch.setenv("PATH", str(tmp_path), prepend=os.pathsep)
@@ -74,17 +79,59 @@ def test_prepend_restore():
 
 @pytest.fixture(scope="session")
 def fixture_venv():
-    os.environ["PROBE_1543_VENV"] = sys.prefix
+    assert "VIRTUAL_ENV" not in os.environ
+    os.environ["VIRTUAL_ENV"] = sys.prefix
     yield
-    os.environ.pop("PROBE_1543_VENV", None)
+    os.environ.pop("VIRTUAL_ENV", None)
 
 
-def test_session_delete_leak(fixture_venv):
-    del os.environ["PROBE_1543_VENV"]
+def test_session_cli_leak(fixture_venv):
+    approvals.leave_own_environment()
+    assert "VIRTUAL_ENV" not in os.environ
 
 
-def test_session_delete_restore(fixture_venv):
-    assert os.environ.get("PROBE_1543_VENV") == sys.prefix
+def test_session_cli_restore(fixture_venv):
+    assert os.environ.get("VIRTUAL_ENV") == sys.prefix
+    assert VENV_BIN in os.get_exec_path()
+
+
+def test_overlap_leak(monkeypatch):
+    entered, finished, putenv = Event(), Event(), os.putenv
+
+    def pause_first_write(key, value):
+        if key in ("PROBE_1543_FIRST", b"PROBE_1543_FIRST"):
+            entered.set()
+            assert finished.wait(timeout=5)
+        putenv(key, value)
+
+    def second_write():
+        assert entered.wait(timeout=5)
+        try:
+            os.environ["PROBE_1543_SECOND"] = "second"
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(os, "putenv", pause_first_write)
+    with ThreadPoolExecutor(max_workers=2) as threads:
+        first = threads.submit(os.environ.__setitem__, "PROBE_1543_FIRST", "first")
+        threads.submit(second_write).result(timeout=10)
+        first.result(timeout=10)
+    assert os.environ["PROBE_1543_SECOND"] == "second"
+
+
+def test_overlap_restore():
+    assert "PROBE_1543_FIRST" not in os.environ
+    assert "PROBE_1543_SECOND" not in os.environ
+
+
+def test_refused_leak():
+    os.environ["PROBE_1543_BEFORE_REFUSED"] = "changed"
+    with pytest.raises(ValueError):
+        os.environ["REFUSED=NAME"] = "ignored"
+
+
+def test_refused_restore():
+    assert "PROBE_1543_BEFORE_REFUSED" not in os.environ
 
 
 @pytest.fixture(scope="module")
@@ -98,6 +145,7 @@ def test_phase(observe_teardown_phase):
 PY
 
 cd "$root"
-export PYTHONPATH="$root/engineering/tests${PYTHONPATH:+:$PYTHONPATH}"
-PYTEST_ADDOPTS= uv run pytest -q --tb=short -p no:cacheprovider -p no:xdist --rootdir "$probe" "$probe/test_environ_probe.py"
-PYTEST_ADDOPTS= uv run pytest -q --tb=short -p no:cacheprovider --rootdir "$probe" -n 2 --dist loadfile "$probe/test_environ_probe.py"
+export PYTHONPATH="$root/engineering/tests${PYTHONPATH:+:$PYTHONPATH}" PROBE_1543_INHERITED=caller PYTEST_ADDOPTS=
+pytest=(uv run env -u VIRTUAL_ENV python -m pytest -q --tb=short -p no:cacheprovider --rootdir "$probe")
+"${pytest[@]}" -p no:xdist "$probe/test_environ_probe.py"
+"${pytest[@]}" -n 2 --dist loadfile "$probe/test_environ_probe.py"
