@@ -3,8 +3,9 @@ set -euo pipefail
 # A test call's direct edits are undone for the next test, serial and under xdist, in order with the test's own
 # monkeypatch: a PATH patch made after the CLI strips the venv, the CLI's deletion of a VIRTUAL_ENV a session fixture
 # set, an edit from a second thread while another is mid-edit, and the edits before one the OS refuses are all put
-# back. A session fixture keeps its variable, and a module fixture still sees its teardown phase. Each run clears the
-# caller's PYTEST_ADDOPTS, so the serial run stays serial, and starts without VIRTUAL_ENV, so only a fixture sets it.
+# back, and a write an audit hook refuses reaches no child process. A session fixture keeps its variable, and a module
+# fixture still sees its teardown phase. Each run clears the caller's PYTEST_ADDOPTS, so the serial run stays serial,
+# and starts without VIRTUAL_ENV, so only a fixture sets it.
 
 root=$(git rev-parse --show-toplevel)
 probe=$(mktemp -d)
@@ -13,6 +14,7 @@ ln -s "$root/engineering/tests/conftest.py" "$probe/conftest.py"
 
 cat > "$probe/test_environ_probe.py" <<'PY'
 import os
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
@@ -99,7 +101,7 @@ def test_overlap_leak(monkeypatch):
     entered, finished, putenv = Event(), Event(), os.putenv
 
     def pause_first_write(key, value):
-        if key in ("PROBE_1543_FIRST", b"PROBE_1543_FIRST"):
+        if key == b"PROBE_1543_FIRST":  # the assignment's own encoded write, inside monkeypatch's edit
             entered.set()
             assert finished.wait(timeout=5)
         putenv(key, value)
@@ -132,6 +134,33 @@ def test_refused_leak():
 
 def test_refused_restore():
     assert "PROBE_1543_BEFORE_REFUSED" not in os.environ
+
+
+def child_sees(key):
+    code = f"import os; print(os.environ.get({key!r}))"
+    return subprocess.run([sys.executable, "-c", code], check=True, text=True, capture_output=True).stdout.strip()
+
+
+def test_audit_refused_leak():
+    key, writes = "PROBE_1543_AUDITED", []
+
+    def allow_one_write(event, args):
+        if event == "os.putenv" and args[0] == key.encode():
+            writes.append(args)
+            if len(writes) > 1:
+                raise PermissionError("one write to this key is allowed")
+
+    sys.addaudithook(allow_one_write)
+    try:
+        os.environ[key] = "audited"
+    except PermissionError:
+        pass
+    assert str(os.environ.get(key)) == child_sees(key)
+
+
+def test_audit_refused_restore():
+    assert "PROBE_1543_AUDITED" not in os.environ
+    assert child_sees("PROBE_1543_AUDITED") == "None"
 
 
 @pytest.fixture(scope="module")
