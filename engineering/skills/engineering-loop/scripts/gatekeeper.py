@@ -4260,6 +4260,8 @@ PORTS = {
         "github_repo",  # (remote URL) -> the `owner/repo` it names on this forge, lowercased, or None
         "one_repo",  # () -> Refused when the checkout can't tell which repo its calls reach
         "ready",  # (pr, undo=False) -> marks a draft ready, or a ready PR a draft
+        "reply",  # (pr, comment_id, body) -> replies to a review thread's root comment
+        "resolve_thread",  # (pr, comment_id) -> resolves the thread holding the comment; raises CalledProcessError if it can't
         "merge",  # (pr, method, body, head) -> merges pinned to head, `body` None for the forge's default
         "edit_text",  # (method, path, body) -> replaces the body of a PR, comment or review at the forge's route
         "enqueue_pull",  # (pr, node, head, method) -> puts the PR in its base's merge queue pinned to head; its position, or None
@@ -4373,6 +4375,7 @@ open_heads, open_pull_files = through("forge", "open_heads"), through("forge", "
 enqueue_pull, dequeue_pull = through("forge", "enqueue_pull"), through("forge", "dequeue_pull")
 commit_checks, job_log = through("forge", "commit_checks"), through("forge", "job_log")
 commit_tree = through("forge", "commit_tree")
+reply, resolve_thread = through("forge", "reply"), through("forge", "resolve_thread")
 statuses, post_status = through("evidence", "statuses"), through("evidence", "post_status")
 post_review, minimize = through("evidence", "post_review"), through("evidence", "minimize")
 
@@ -10504,6 +10507,10 @@ def main(argv: list[str]) -> int:
     recording.add_argument("--head", metavar="SHA")
     # --base: in narrowed mode, the commit `--record` selects against (land's cloud gate passes its batch's base tip)
     recording.add_argument("--base", metavar="REV")
+    resolving = commands.add_parser("resolve")
+    resolving.add_argument("pr", type=int)
+    resolving.add_argument("comments", type=int, nargs="+", metavar="comment_id")
+    resolving.add_argument("--reply", metavar="TEXT")
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int, nargs="*")
     merging.add_argument("--wait", action="store_true")
@@ -10547,6 +10554,31 @@ def main(argv: list[str]) -> int:
         return 1
     finally:
         running, using = False, None
+
+
+def resolve(pr: int, comments: list[int], text: str | None) -> int:
+    """Reply to the root comment of each thread (with `text`, when given) and resolve it, one line per thread: through
+    the cloud proxy's route in a cloud session, GraphQL on a host. A thread that can't be resolved is named, and the
+    rest still are; exit 1 then."""
+    if text is not None:
+        denied(
+            text
+        )  # before any thread is touched, so a refused reply leaves every thread as it was
+    failed: list[int] = []
+    for comment_id in comments:
+        try:
+            if text is not None:
+                port("forge").reply(pr, comment_id, text)
+            port("forge").resolve_thread(pr, comment_id)
+        except subprocess.CalledProcessError as exc:
+            failed.append(comment_id)
+            print(f"#{pr} comment {comment_id}: not resolved: {(exc.stderr or str(exc)).strip()}")
+        else:
+            print(f"#{pr} comment {comment_id}: resolved")
+    if failed:
+        print(f"could not resolve the thread of comment {', '.join(map(str, failed))}")
+        return 1
+    return 0
 
 
 def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.ArgumentParser) -> int:
@@ -10601,6 +10633,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             if args.point == "merge"
             else approve(args.point, args.number)
         )
+    if args.command == "resolve":
+        return resolve(args.pr, args.comments, args.reply)
     if args.command == "delegate":
         return delegate(args.pr)
     if args.command == "local-ci":

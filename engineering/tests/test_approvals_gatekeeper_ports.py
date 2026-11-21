@@ -85,6 +85,8 @@ class Memory:
             "github_repo": lambda url: None,
             "one_repo": lambda: None,
             "ready": lambda n, undo=False: None,
+            "reply": lambda n, comment_id, body: None,
+            "resolve_thread": lambda n, comment_id: None,
             "merge": lambda n, method, body, head: None,
             "edit_text": lambda method, path, body: None,
             "enqueue_pull": lambda number, node, head, method: None,

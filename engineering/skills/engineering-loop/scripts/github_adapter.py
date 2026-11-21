@@ -1086,18 +1086,65 @@ def default_branch() -> str:
     return found
 
 
+def in_cloud() -> bool:
+    """Whether this runs in a cloud session's VM, as gatekeeper.py's in_cloud() reads it."""
+    return os.environ.get("CLAUDE_CODE_REMOTE") == "true"
+
+
 def ready(number: int, undo: bool = False) -> None:
-    """Mark PR #number ready for review, or with `undo` back to draft: over GraphQL, else the draft routes a cloud
-    session's proxy serves."""
-    fast(
-        lambda: gh("pr", "ready", *(("--undo",) if undo else ()), str(number)),
-        lambda: gh(
+    """Mark PR #number ready for review, or with `undo` back to draft: through the draft routes a cloud session's proxy
+    serves, `gh pr ready` on a host."""
+    if not in_cloud():
+        gh("pr", "ready", *(("--undo",) if undo else ()), str(number))
+        return
+    route = "convert_to_draft" if undo else "ready_for_review"
+    gh("api", "-X", "POST", f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/{route}", "--silent")
+
+
+def reply(number: int, comment_id: int, body: str) -> None:
+    """Reply on PR #number to review comment `comment_id`, a thread's root; the deny list checks `body` in gh()."""
+    gh(
+        "api",
+        f"repos/{{owner}}/{{repo}}/pulls/{number}/comments/{comment_id}/replies",
+        "-F",
+        "body=@-",
+        "--silent",
+        data=public(body),
+    )
+
+
+def resolve_thread(number: int, comment_id: int) -> None:
+    """Resolve the review thread of PR #number that holds comment `comment_id`: through the proxy's route in a cloud
+    session, whose GraphQL is refused, else through GraphQL's resolveReviewThread. A comment in no thread raises."""
+    if in_cloud():
+        gh(
             "api",
             "-X",
             "POST",
-            f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/{'convert_to_draft' if undo else 'ready_for_review'}",
+            f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/comments/{comment_id}/resolve",
             "--silent",
+        )
+        return
+    found = _graphql(
+        _repository(
+            "pullRequest(number: $n) { reviewThreads(first: 100) { nodes { id comments(first: 100) { nodes { databaseId } } } } }"
         ),
+        n=number,
+    )
+    for thread in found["pullRequest"]["reviewThreads"]["nodes"]:
+        if any(each["databaseId"] == comment_id for each in thread["comments"]["nodes"]):
+            gh(
+                "api",
+                "graphql",
+                "-f",
+                "query=mutation($t: ID!) { resolveReviewThread(input: {threadId: $t}) { thread { isResolved } } }",
+                "-f",
+                f"t={thread['id']}",
+                "--silent",
+            )
+            return
+    raise subprocess.CalledProcessError(
+        1, "gh", stderr=f"no review thread holds comment {comment_id}"
     )
 
 
@@ -1325,6 +1372,8 @@ forge = Port(
     "github_repo",
     "one_repo",
     "ready",
+    "reply",
+    "resolve_thread",
     "merge",
     "edit_text",
     "enqueue_pull",
