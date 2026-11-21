@@ -11,8 +11,9 @@ The test map is `.test-map/` (env `TEST_MAP`): `coverage`, the nightly suite's c
 position (the diff runs from that commit), and the tests that executed it run, one node id each (a file when the id
 holds a space, since the gate splits this output on whitespace, or names a test the file no longer has). The name match
 is the fallback for a script the map does not hold or that changed on main since it, a map whose commit is missing or
-data is unreadable, and a changed line that any import or subprocess ran, since no test is named for that run (a
-line beside an insertion only stands for the inserted code, so its import run is no reason). It also
+data is unreadable, and a changed line that any import or subprocess ran, since no test is named for that run. A
+line beside an inserted whole new undecorated function or class is not changed, so its import run is no reason;
+beside any other insertion (a decorator, a constant, an import) it counts as changed, since that code runs at import. It also
 adds, beside the map's tests, every test file that names the script and changed on main since the map, and of those
 files the tests the nightly skipped (a skip leaves no context): by node id from the map's `skipped` list, else, for a
 map without one, every such file that can skip. A line no test ran selects nothing: no test depends on it.
@@ -43,9 +44,28 @@ def changed(base: str) -> list[str] | None:
     return done.stdout.split() if done.returncode == 0 else None
 
 
+HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? [^\n]*\n((?:[-+ \\][^\n]*\n?)*)", re.MULTILINE)
+NEW_BLOCK = re.compile(r"(?:async\s+def|def|class)\s")
+
+
+def new_block(added: list[str]) -> bool:
+    """Whether inserted lines are only whole new undecorated `def`s or `class`es (blank lines between): code no import
+    runs but its definition, so no existing test runs it until a changed caller does."""
+    lines = [line for line in added if line.strip()]
+    if not lines or not NEW_BLOCK.match(lines[0].lstrip()):
+        return False
+    indent = len(lines[0]) - len(lines[0].lstrip())
+    for line in lines:
+        depth = len(line) - len(line.lstrip())
+        if depth < indent or (depth == indent and not NEW_BLOCK.match(line.lstrip())):
+            return False  # a decorator, a constant, a statement at the block's own level
+    return True
+
+
 def old_lines(sha: str, path: str) -> tuple[set[int], set[int]]:
-    """The lines of `path` at `sha` that the diff to HEAD changes, and the lines around each pure insertion, which
-    stand for the inserted code (they are not changed themselves)."""
+    """The lines of `path` at `sha` that the diff to HEAD changes, and the lines around each insertion of whole new
+    undecorated functions or classes (new_block), which stand for that code without being changed themselves. Any
+    other insertion counts the lines around it as changed: a decorator or a module-level line runs at import."""
     diff = subprocess.run(
         ["git", "diff", "-U0", "--no-renames", sha, "HEAD", "--", path],
         capture_output=True,
@@ -54,9 +74,13 @@ def old_lines(sha: str, path: str) -> tuple[set[int], set[int]]:
     ).stdout
     changed: set[int] = set()
     around: set[int] = set()
-    for start, count in re.findall(r"^@@ -(\d+)(?:,(\d+))? ", diff, re.MULTILINE):
+    for start, count, body in HUNK.findall(diff):
         first, n = int(start), int(count or 1)
-        (changed.update(range(first, first + n)) if n else around.update((first, first + 1)))
+        if n:
+            changed.update(range(first, first + n))
+        else:
+            added = [line[1:] for line in body.splitlines() if line.startswith("+")]
+            (around if new_block(added) else changed).update((first, first + 1))
     return changed, around - changed
 
 
@@ -68,9 +92,9 @@ def executed_by(path: str, sha: str, data) -> set[str] | None:
     ids: set[str] = set()
     changed, around = old_lines(sha, path)
     for line in changed | around:
-        # import or a subprocess ran a changed line: no test is named for that run. A line beside an insertion is
-        # not changed, so the import that ran it (a `def` line above a new function, say) says nothing of the
-        # inserted code: only the tests that ran it count.
+        # import or a subprocess ran a changed line: no test is named for that run. A line beside a new function or
+        # class (old_lines) is not changed, so the import that ran it (the `def` line above, say) says nothing of
+        # that code: only the tests that ran it count.
         if line in changed and "" in ran.get(line, ()):
             return None
         ids |= {c.split("|")[0] for c in ran.get(line, ()) if c}
@@ -127,8 +151,8 @@ def node_files(ids: set[str]) -> set[str]:
         file, _, name = node.partition("::")
         if not Path(file).exists():
             continue
-        function = re.split(r"[\[]", name)[0]
-        alive = f"def {function}(" in Path(file).read_text(errors="ignore")
+        function = re.split(r"[\[]", name)[0]  # `test_x`, or `TestK::test_x` in a class
+        alive = f"def {function.rsplit('::', 1)[-1]}(" in Path(file).read_text(errors="ignore")
         if alive and not re.search(r"\s", node):
             out.add(node)
         elif alive and not re.search(r"\s", function):

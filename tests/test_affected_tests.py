@@ -252,3 +252,22 @@ def test_a_map_with_a_skip_list_adds_only_the_skipped_tests(mapped) -> None:
     picked = a.targets(mapped("return 2", "return 22"))
     assert "tests/test_skips.py::test_s" in picked
     assert "tests/test_skips.py" not in picked
+
+
+@pytest.mark.parametrize(
+    "inserted",
+    ["@staticmethod\n", "LIMIT = 0\n\n\n", "import os\n\n\n"],
+    ids=["decorator", "constant", "import"],
+)
+def test_code_that_runs_at_import_beside_a_def_line_falls_back_to_the_name_match(
+    mapped, inserted
+) -> None:
+    """Verifier F2 on #1617: only a whole new undecorated def or class leaves the import run of the line beside it out."""
+    picked = a.targets(mapped("def two()", inserted + "def two()"))
+    assert {"tests/test_one.py", "tests/test_both.py"} <= set(picked)
+
+
+def test_a_class_test_id_with_a_space_runs_as_its_method(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    Path("t.py").write_text("class TestK:\n    def test_m(self): pass\n")
+    assert a.node_files({"t.py::TestK::test_m[a b]"}) == {"t.py::TestK::test_m"}

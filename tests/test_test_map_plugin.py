@@ -81,3 +81,37 @@ def test_a_skipped_test_is_listed_for_the_map(
     plugin.pytest_runtest_logreport(report)
     plugin.pytest_runtest_logreport(type("Report", (), {"skipped": False, "nodeid": "t.py::x"})())
     assert listed.read_text() == "t.py::test_s\n"
+
+
+def test_xdist_workers_keep_the_runs_addopts(tmp_path: Path) -> None:
+    """Workers read PYTEST_ADDOPTS when they start, between tests, so it is only out while a test runs."""
+    (tmp_path / "test_w.py").write_text("def test_alpha(): pass\n\n\ndef test_beta(): pass\n")
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "-c",
+            str(ROOT / "pyproject.toml"),
+        ]
+        + ["-n", "2", str(tmp_path / "test_w.py")],
+        env={**os.environ, "PYTEST_ADDOPTS": "-k alpha"},
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "1 passed" in done.stdout  # test_beta deselected on the worker too
+
+
+def test_addopts_is_back_after_a_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-q")
+    hook = plugin.pytest_runtest_protocol(type("Item", (), {"nodeid": "t.py::test_x"})(), None)
+    next(hook)
+    assert "PYTEST_ADDOPTS" not in os.environ
+    with pytest.raises(StopIteration):
+        hook.send(True)
+    assert os.environ["PYTEST_ADDOPTS"] == "-q"
