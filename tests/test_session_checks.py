@@ -13,8 +13,8 @@ import pytest
 
 pytestmark = pytest.mark.slow  # each test starts a nested pytest run, 4-5 s each (#1610)
 
-HERE = Path(__file__).parent
-REPOSITORY = HERE.parents[1]
+REPOSITORY = Path(__file__).resolve().parents[1]
+HERE = REPOSITORY / "engineering" / "tests"
 
 
 def test_a_script_the_tests_run_writes_no_bytecode_beside_it(tmp_path: Path) -> None:
