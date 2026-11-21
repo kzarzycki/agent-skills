@@ -193,7 +193,7 @@ def test_a_waiting_land_takes_the_next_free_slot_ahead_of_a_waiting_pr_gate(
     of the PR gate, so a plain race would give the PR gate the first."""
     monkeypatch.setenv("GATE_SLOTS", slots)
     for number in range(1, int(slots) + 1):
-        hold(number, 1.52)
+        hold(number, 1.12)  # 1.52 s before, 0.4 s less, so the poll phases (.12, .1) stay the same
     order: list[str] = []
 
     def gate(name: str, land: bool) -> None:
@@ -206,7 +206,7 @@ def test_a_waiting_land_takes_the_next_free_slot_ahead_of_a_waiting_pr_gate(
     pr = threading.Thread(target=gate, args=("pr", False), daemon=True)
     land = threading.Thread(target=gate, args=("land", True), daemon=True)
     pr.start()
-    time.sleep(0.5)
+    time.sleep(0.3)
     land.start()
     for thread in (pr, land):
         thread.join(20)
@@ -262,7 +262,7 @@ def test_a_waiting_land_on_one_slot_beats_a_blocking_flock_that_started_later(
     """A gate wrapper's own flock is woken by the kernel the moment the slot frees, so a polling land would lose every
     race to it; a land on one slot blocks in the kernel too, and the one that waited longer gets the slot."""
     monkeypatch.setenv("GATE_SLOTS", "1")
-    hold(1, 1.5)
+    hold(1, 1.0)
     order: list[str] = []
 
     def land() -> None:
@@ -280,7 +280,7 @@ def test_a_waiting_land_on_one_slot_beats_a_blocking_flock_that_started_later(
 
     threads = [threading.Thread(target=land), threading.Thread(target=wrapper)]
     threads[0].start()
-    time.sleep(0.3)
+    time.sleep(0.2)
     threads[1].start()
     for thread in threads:
         thread.join(20)

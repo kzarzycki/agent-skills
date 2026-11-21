@@ -136,6 +136,9 @@ class FakeOmnigent:
     def harness(self, agent: str) -> str:
         return self.harnesses.get(agent, "")
 
+    def creations(self, sid: str) -> list[str]:
+        return []
+
     def hosts(self) -> dict[str, str]:
         return {self.host_id: "host", **self.host_names}
 
@@ -2144,7 +2147,13 @@ def test_create_sets_a_claude_session_s_permission_mode_from_the_flag_or_the_env
     monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "acceptEdits")
     og.create("claude", "t")
     assert bodies[-1]["terminal_launch_args"] == ["--permission-mode", "acceptEdits"]
-    og.create("codex", "t")  # codex-native would hand it to the codex CLI, which fails to start
+    # codex-native hands launch args to the codex CLI: Claude's word would fail it, so the default is
+    # codex's own no-approvals, full-access flag whatever the variable says
+    og.create("codex", "t")
+    assert bodies[-1]["terminal_launch_args"] == ["--dangerously-bypass-approvals-and-sandbox"]
+    og.create(
+        "codex", "t", permission_mode="default"
+    )  # an explicit stricter ask keeps codex's own stance
     assert "terminal_launch_args" not in bodies[-1]
     with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
         omnigent_agent.start(
@@ -2381,8 +2390,10 @@ def test_create_starts_a_claude_worker_or_verifier_lean_with_what_the_project_na
     for role in ("/x/lead.md", None):  # a lead and a plain child start as before
         og.create("claude", "t", workspace=ws, role=role)
         assert "terminal_launch_args" not in bodies[-1]
-    og.create("codex", "t", workspace=ws, role="/x/worker.md")  # a claude flag, not codex's
-    assert "terminal_launch_args" not in bodies[-1]
+    og.create(
+        "codex", "t", workspace=ws, role="/x/worker.md"
+    )  # codex's own flag, not claude's lean ones
+    assert bodies[-1]["terminal_launch_args"] == ["--dangerously-bypass-approvals-and-sandbox"]
     og.create("claude", "t", workspace=str(tmp_path), role="/x/worker.md")  # outside a checkout
     assert bodies[-1]["terminal_launch_args"] == lean
     (repo / "docs" / "agents").mkdir(parents=True)
@@ -2456,8 +2467,8 @@ def test_create_starts_a_claude_lead_with_the_project_s_autocompact_window(
     ]
     og.create("claude", "t", workspace=ws)  # a child keeps the user's window
     assert "terminal_launch_args" not in bodies[-1]
-    og.create("codex", "t", workspace=ws, top_level=True)  # a claude flag, not codex's
-    assert "terminal_launch_args" not in bodies[-1]
+    og.create("codex", "t", workspace=ws, top_level=True)  # codex's own flag, not claude's
+    assert bodies[-1]["terminal_launch_args"] == ["--dangerously-bypass-approvals-and-sandbox"]
     (tmp_path / "home" / ".claude").mkdir(parents=True)
     (tmp_path / "home" / ".claude" / "settings.json").write_text(
         json.dumps({"env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "330000"}})
@@ -3755,6 +3766,40 @@ def test_pr_is_refused_to_an_agent_that_is_not_a_cloud_agent(
     assert omnigent_agent.main(argv) == 0 and list(og.sessions) == ["s0"]
 
 
+def test_the_pr_refusal_names_the_verifier_route_for_a_codex_harness_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hint follows the agent's resolved harness, never its registered name."""
+    og = FakeOmnigent()
+    og.harnesses = {
+        "claude-cloud": "acp:claude-cloud",
+        "codex": "codex-native-ui",
+        "release-verifier": "codex-native-ui",  # a Codex harness under another name
+        "codex-review-coordinator": "claude-native-ui",  # a Claude harness under a Codex-like name
+        "claude": "claude-native-ui",
+    }
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    base = ["t", "b.md", "r.md", "--pr", "1", "--confirm-seconds", "0"]
+    for cmd in ("start", "run"):
+        for agent in ("codex", "release-verifier"):
+            assert omnigent_agent.main([cmd, agent, *base]) == 1
+            err = capsys.readouterr().err
+            assert f"{agent} is not a cloud agent; start claude-cloud for a cloud worker" in err
+            assert "cloud_verifier.py" in err
+            assert "`verify --pr 1` in the worker's VM" in err  # where verify runs
+            assert "or `thread` from a host" in err  # where thread runs
+            assert "per loop.md's Placement: line" in err
+            assert "SKILL.md, Cloud worker, Starting a PR's cloud worker" in err
+            assert err.count("\n") == 1 and og.sessions == {}  # one line, nothing started
+        for agent in ("claude", "codex-review-coordinator"):  # the message it had
+            assert omnigent_agent.main([cmd, agent, *base]) == 1
+            err = capsys.readouterr().err
+            assert "cloud_verifier.py" not in err and og.sessions == {}
+            assert err.endswith("or drop --pr for one on this host\n")
+
+
 def test_a_cloud_start_from_a_worktree_takes_its_main_checkout_s_environment_pin(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3828,6 +3873,7 @@ def test_a_local_agent_is_refused_in_the_main_checkout_cloud_sessions_launch_fro
         assert omnigent_agent.main(argv) == 1
         err = capsys.readouterr().err
         assert "start claude-cloud" in err and "worktree" in err and og.sessions == {}
+        assert "launch-dir <remote> <branch> <path>" in err and err.count("\n") == 1
     assert start_cloud(og, main, title="c") == 0 and len(og.sessions) == 1
     apart = tmp_path / "apart"  # its git dir lives outside it
     subprocess.run(
@@ -4250,7 +4296,9 @@ def test_a_far_pinned_main_checkout_is_refused_before_any_session_exists(
     files["/there/repo/engineering/x"] = ""
     sub = [*far_start("claude", "oz"), "--workspace", "/there/repo/engineering"]
     assert omnigent_agent.main(sub) == 1 and og.sessions == {}
-    assert "/there/repo is the main checkout" in capsys.readouterr().err  # the root it found
+    err = capsys.readouterr().err
+    assert "/there/repo is the main checkout" in err  # the root it found
+    assert "launch-dir <remote> <branch> <path>" in err and err.count("\n") == 1
     started = 0
     other = "/there/repo/.claude/settings.json"
     for settings_text, git, also in (
@@ -5241,6 +5289,9 @@ class Owing:
     def active(self, sid: str) -> float:
         return self.kids
 
+    def creations(self, sid: str) -> list[str]:
+        return []
+
     def info(self, sid: str) -> dict:
         snap = self.infos.pop(0) if len(self.infos) > 1 else self.infos[0]
         return {"status": "idle", "runner_online": True, "title": "coord", **snap}
@@ -5555,6 +5606,7 @@ class Fleet:
         self.kin_of: dict[
             str, list[str] | Exception
         ] = {}  # each session's live children (or a read error)
+        self.created_of: dict[str, list[str]] = {}  # the top-level sessions each one created
         self.broken: dict[str, Exception] = {}
         self.offline: set[str] = set()
         self.refuse = 0
@@ -5595,6 +5647,9 @@ class Fleet:
 
     def active(self, sid: str) -> float:
         return self.kids.get(sid, 0.0)
+
+    def creations(self, sid: str) -> list[str]:
+        return self.created_of.get(sid, [])
 
     def kin(self, sid: str) -> dict[str, float]:
         found = self.kin_of.get(sid, [])
@@ -9790,21 +9845,24 @@ def test_start_says_when_the_environment_s_permission_mode_is_not_applied_and_cr
     og.harnesses["agy"] = "antigravity-native"
     sid, _ = omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
     assert sid in og.sessions
-    err = capsys.readouterr().err.splitlines()
-    dropped = [line for line in err if "not applied" in line]
-    assert dropped == [
-        (
-            "codex takes no permission mode: bypassPermissions was not applied; its session starts"
-            " in the harness default"
+    monkeypatch.setenv(
+        "OMNIGENT_PERMISSION_MODE", "acceptEdits"
+    )  # a Claude word, which codex never takes
+    omnigent_agent.start(og, "codex", "t2", "do X", tmp_path / "r.md", None, 0)
+    for mode in ("default", "bypassPermissions"):  # the two words codex's start takes
+        omnigent_agent.start(
+            og, "codex", f"t-{mode}", "do X", tmp_path / "r.md", None, 0, permission_mode=mode
         )
-    ]
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")
+    # codex starts in no-approvals whatever it says, so it is never told a mode was dropped
+    assert "not applied" not in capsys.readouterr().err
     for agent in ("claude", "agy"):  # each takes this mode, so nothing is dropped
         omnigent_agent.start(og, agent, f"t-{agent}", "do X", tmp_path / "r.md", None, 0)
         assert "not applied" not in capsys.readouterr().err
     monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "plan")  # agy takes bypass alone
     omnigent_agent.start(og, "agy", "t-plan", "do X", tmp_path / "r.md", None, 0)
     assert "agy takes no permission mode: plan was not applied" in capsys.readouterr().err
-    # The create a codex session gets is the one it got before: no launch args, no mode field.
+    # A codex create gets codex's own no-approvals flag and no mode field.
     calls = _agent_server(
         monkeypatch,
         {
@@ -9816,7 +9874,8 @@ def test_start_says_when_the_environment_s_permission_mode_is_not_applied_and_cr
     )
     omnigent_agent.Omnigent().create("codex", "t")
     body = calls[-1][2]
-    assert "terminal_launch_args" not in body and "permission_mode" not in body
+    assert body["terminal_launch_args"] == ["--dangerously-bypass-approvals-and-sandbox"]
+    assert "permission_mode" not in body
 
 
 def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_warns_of_none(
@@ -9830,9 +9889,12 @@ def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_w
         og, "claude-cloud", "t2", "do X", tmp_path / "r.md", None, 0, permission_mode="auto"
     )
     assert "not applied" not in capsys.readouterr().err
-    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "plan")  # the server takes auto and bypass alone
+    monkeypatch.setenv(
+        "OMNIGENT_PERMISSION_MODE", "plan"
+    )  # the variable alone never sets a cloud mode
     omnigent_agent.start(og, "claude-cloud", "t3", "do X", tmp_path / "r.md", None, 0)
-    assert "claude-cloud takes no permission mode: plan was not applied" in capsys.readouterr().err
+    assert "OMNIGENT_PERMISSION_MODE=plan is not applied" in capsys.readouterr().err
+    assert og.modes["s2"] == "bypassPermissions"
     calls = _agent_server(monkeypatch, {"/v1/projects": {"data": []}, "/v1/sessions": {"id": "s1"}})
     harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS, "custom": "acp:other"}
     monkeypatch.setattr(
@@ -10674,6 +10736,7 @@ def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its
         and "whatever other branch the brief names" in brief
         and "Never ask the owner which branch" in brief
     )
+    assert "claude/ready-demo-<pr>" in brief and "the demo media branch it names" in brief
     assert "never committed.\n" in brief and brief.endswith(omnigent_agent.CLOUD_NO_PUSH + "\ndo X")
     assert (
         "curl -sS -X POST -H 'Content-Type: application/json'" in brief
@@ -13101,7 +13164,8 @@ def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
         n += 1
         Starter.launch = starter
         omnigent_agent.start(og, agent, f"t{n}", "do X", tmp_path / "r.md", None, 0, **kw)
-        return modes[-1], capsys.readouterr().err
+        err = capsys.readouterr().err  # less the mode read back, which every start prints
+        return modes[-1], re.sub(r"session \S+: permission mode .*\n", "", err)
 
     mode, err = child("claude", bypass)
     assert mode == "bypassPermissions" and "bypassPermissions inherited" in err
@@ -14095,3 +14159,55 @@ def test_brief_refuses_an_unreadable_role_and_takes_a_long_brief(
     monkeypatch.setattr(Path, "is_file", raises_on_long)
     assert omnigent_agent.main(["brief", long, "r.md", "--cloud"]) == 0
     assert capsys.readouterr().out.endswith(long)
+
+
+def test_prune_demo_branch_deletes_the_pr_s_media_branch_and_ignores_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_gh(*args: str, **kw: object) -> str:
+        calls.append(args)
+        if len(calls) == 2:
+            raise omnigent_agent.Fail("HTTP 404")
+        return ""
+
+    monkeypatch.setattr(omnigent_agent, "gh", fake_gh)
+    omnigent_agent.prune_demo_branch("o/r", 7)
+    omnigent_agent.prune_demo_branch("o/r", 8)  # already gone: no error
+    assert calls[0] == ("api", "-X", "DELETE", "repos/o/r/git/refs/heads/claude/ready-demo-7")
+
+
+def test_reap_prunes_the_demo_branch_of_a_worker_whose_pr_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude-cloud", "w")
+    og.labels[sid] = {omnigent_agent.PR_LABEL: "o/r#7"}
+    calls: list[tuple[str, ...]] = []
+
+    def fake_gh(*args: str, **kw: object) -> str:
+        calls.append(args)
+        return '{"state": "CLOSED"}'
+
+    monkeypatch.setattr(omnigent_agent, "gh", fake_gh)
+    monkeypatch.setattr(omnigent_agent, "EVENTS", None)
+    omnigent_agent.reap(og, [sid])
+    assert ("api", "-X", "DELETE", "repos/o/r/git/refs/heads/claude/ready-demo-7") in calls
+
+
+@pytest.mark.parametrize(("top_level", "pr"), [(True, None), (False, None), (True, 7), (False, 7)])
+def test_every_cloud_preamble_says_a_helper_is_a_native_subagent(
+    top_level: bool, pr: int | None
+) -> None:
+    """A created child of a cloud session lands on the bridge host, which runs no loop work (#1659)."""
+    rule = (
+        "Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native"
+        " subagent in the VM, never a session made with `sys_session_create`: a created child lands on the"
+        " bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent,"
+        " not a helper, and starts as `brief` describes."
+    )
+    assert rule in omnigent_agent.first_message(True, top_level, pr, "r.md", None, "do X")
+    assert "sys_session_create`: a created child" not in omnigent_agent.first_message(
+        False, top_level, None, "r.md", None, "do X"
+    )

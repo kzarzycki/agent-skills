@@ -9,6 +9,7 @@
     uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run --python '>=3.11' scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
+    uv run scripts/approvals.py check ready <pr>                # the author's step before the verifier: the PR body's `## Evidence` (and demo form) alone, the check merge runs; exit 0 or 1
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
@@ -398,8 +399,10 @@ command is the whole narrowed check: the project's selector plus its cheap whole
 base from the variable `Gate base:` names, else `GATE_BASE`. `affected-tests` runs it against `--base <rev>` (a PR's
 base SHA, a push's previous tip), else the merge base with the branch's base; a `<rev>` git can't resolve (all zeros,
 a new branch) runs `mise run check`, said in one line, as do the opt-out and a loop.md without the line. In narrowed
-mode `land`'s batch gate runs that command with the variable set to the base tip the batch merges onto, so it selects
-over the batch's combined diff, in place of the gate: under the same slot, `machine_exit`, records and cloud gate (whose
+mode under `ci: false`, or where the base requires no check, `land`'s batch gate runs that command with the variable set
+to the base tip the batch merges onto, so it selects over the batch's combined diff, in place of the gate; where the base
+requires a check, which already ran each head's tests on that head, the batch gate is the `gate` line (batch_narrows),
+so it runs what that line runs (whole-tree checks such as a vendor check and lint, say). The narrowed batch gate runs under the same slot, `machine_exit`, records and cloud gate (whose
 `local-ci --record` it passes `--base <tip>`). Under `ci: false`, `local-ci --record` runs it against `--base`, else the
 merge base, as the ready head's gate of record, and `check merge` takes that pass on the head's tree, against the merge
 base of the head and the PR's base, in place of a full one; `local-ci <pr>` posts it. A narrowed pass's command is the
@@ -2370,6 +2373,13 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
     return found
 
 
+def no_evidence(pull: dict[str, Any]) -> list[str]:
+    """A line when the PR's body has no `## Evidence` section with content: `check merge`'s proof and `check ready`'s."""
+    if section(pull["body"] or "", "Evidence").strip():
+        return []
+    return [f"PR #{pull['number']}: its body has no `## Evidence` section with content"]
+
+
 def demo_form(pull: dict[str, Any]) -> list[str]:
     """A line when the PR's newest `## Demo` comment by a trusted author, not minimized as outdated, links a video or
     screenshot (a release asset, any URL but a user-attachments one) instead of embedding it, or embeds none; a PR
@@ -2454,9 +2464,8 @@ def proofs(
     if point != "merge":
         return found
     where = f"PR #{pull['number']}"
-    evidence = section(pull["body"] or "", "Evidence")
-    if "evidence" not in waived and not evidence.strip():
-        found.append(f"{where}: its body has no `## Evidence` section with content")
+    if "evidence" not in waived:
+        found += no_evidence(pull)
     if loop is not None:
         found += linked(pull, issues, loop)
     if revert is None and "verifier" not in waived and not exempt(pull, loop):
@@ -4982,6 +4991,17 @@ def full_check_line() -> None:
 
 def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
     tracker, loop = project()
+    if (
+        point == "ready"
+    ):  # the PR body alone: the author's step before the verifier, when no verdict or gate exists yet
+        waived = incubation(pull, adopted(closing_issues(pull), loop), loop)[0]
+        found = [] if "evidence" in waived else no_evidence(pull) + demo_form(pull)
+        print(
+            "\n".join(found)
+            if found
+            else f"PR #{pull['number']}: its body holds the evidence proof"
+        )
+        return 1 if found else 0
     if point == "queue" and head is not None:
         return queueable(pull, head, tracker, loop)
     if point == "merge" and (why := outside(pull, loop)):
@@ -6253,6 +6273,8 @@ def local_queue(
     failed: set[int] = set()
     # each PR to land, the tree it lands, the tree gated with it, and how that passed
     landed: list[tuple[dict[str, Any], str, str, str]] = []
+    # narrowed mode selects tests only where no required CI check ran them on each head already (batch_narrows)
+    narrows = batch_narrows(loop, required)
     if candidates and policy_ref(toplevel()) is not None:
         # no working tree here: the batch is computed in objects and gated only by a recorded pass, never run here
         if settings(loop).get("pre_land"):
@@ -6262,7 +6284,7 @@ def local_queue(
             )
         tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
         # narrowed mode: the batch gate selects against the tip the batch merges onto (narrowed_gate)
-        with narrowed_to(tip):
+        with narrowed_to(tip if narrows else None):
             landed = merged_trees(candidates, base, tip, failed)
             # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
             if landed and held is not None:
@@ -6272,7 +6294,7 @@ def local_queue(
     elif candidates:
         with batch_tree(base) as work:
             tip = run_in(work, "rev-parse", "HEAD")
-            with narrowed_to(tip):
+            with narrowed_to(tip if narrows else None):
                 candidates = [
                     pull for pull in candidates if pre_landed(pull, base, work, loop, failed)
                 ]
@@ -6285,6 +6307,15 @@ def local_queue(
     # each named PR's exit: its wait's, else 0 when it merged, else 1
     done = {pull["number"] for pull, *_ in landed} - failed
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
+
+
+def batch_narrows(loop: str | None, required: set[str]) -> bool:
+    """Whether `land`'s batch gate runs loop.md's `Affected tests:` command (narrowed mode) in place of the `gate`
+    line: only under `ci: false` or where the base requires no check. A required check already ran each head's tests
+    on that exact head, so selecting them again over the batch only holds the lock; the batch gate is then the `gate`
+    line, the project's whole-tree checks (a vendor check and lint, say), and a combination that breaks an untouched
+    test is the full run's to catch (a nightly, say)."""
+    return no_ci(loop) or not required
 
 
 def check_never_comes(pull: dict[str, Any], required: set[str]) -> bool:
@@ -9196,10 +9227,12 @@ def head_moved(commit: str, tree: str, now: str, now_tree: str) -> str:
 def stored(record: dict[str, Any]) -> None:
     """Write a pass this clone ran to its record file (recorded), whole or not at all: two gates on one tree and command
     run at once on two slots (gate_slots), and a plain write truncates the file first, so a reader between the two
-    would find it empty. The record goes to a file of this process's own, then replaces the shared one in one step."""
+    would find it empty. The record goes to a file of this writer's own, then replaces the shared one in one step: named
+    by process and thread, since two gates in one process (threads) sharing one file would have the second's replace
+    find it gone."""
     where = recorded(record["tree"], record["command"])
     where.parent.mkdir(parents=True, exist_ok=True)
-    partial = where.with_name(f"{where.name}.{os.getpid()}.partial")
+    partial = where.with_name(f"{where.name}.{os.getpid()}.{threading.get_ident()}.partial")
     try:
         partial.write_text(json.dumps(record, indent=2) + "\n")
         os.replace(partial, where)
@@ -10466,7 +10499,7 @@ def main(argv: list[str]) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser("check")
-    checking.add_argument("point", choices=("build", "merge", "queue", "setup"))
+    checking.add_argument("point", choices=("build", "merge", "queue", "ready", "setup"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--head")
     checking.add_argument("--issue", type=int)

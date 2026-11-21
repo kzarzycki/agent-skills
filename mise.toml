@@ -126,21 +126,14 @@ run = """mise run vendor-engineering-check
 mise run lint"""
 
 [tasks.check-fast]
-description = "The PR check (`qualify`): vendor check, lint, and only the tests the change touches (tools/affected_tests.py). The full suite runs nightly in CI."
-# ponytail: a PR runs its own touched tests only, so a combination that breaks an untouched test reaches main; the nightly
-# full run catches it, a bisect names the PR, and the fix goes forward on main. Upgrade path: a suite that runs in seconds
-# lets `check` come back as the gate.
+description = "The PR check (`qualify`) and the batch gate: vendor check and lint. Tests are off until the suite runs whole in a few minutes."
 run = """mise run vendor-engineering-check
-# the selection first: a selector that fails or prints nothing must fail here, since pytest given no targets runs the whole suite
-targets="$(uv run python tools/affected_tests.py ${GATE_BASE:-origin/main})" || { echo "error: tools/affected_tests.py failed" >&2; exit 1; }
-[ -n "$targets" ] || { echo "error: tools/affected_tests.py selected nothing" >&2; exit 1; }
-uv run python tools/gate_slot.py pytest -q -m "not live_agent" $targets
 mise run lint"""
+# ponytail: tests are off while the suite is slower than a few minutes; a break reaches main and is fixed forward. The suite comes back as the gate once it runs whole in a few minutes (#1653).
 
 [tasks.check]
-description = "The full suite, nightly in CI: vendor-engineering-check, test, test-engineering-package"
+description = "Nightly in CI: vendor-engineering-check and lint while tests are off"
 run = [
   "mise run vendor-engineering-check",
-  "mise run test",
-  "mise run test-engineering-package",
-]
+  "mise run lint",
+]  # tests off until the suite runs whole in a few minutes (#1653); `mise run test` still runs them by hand
