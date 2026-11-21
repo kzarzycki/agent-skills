@@ -84,6 +84,7 @@ def test_xdist_auto_takes_gate_jobs_when_it_is_a_positive_count_else_the_free_co
     monkeypatch: pytest.MonkeyPatch, jobs: str, workers: int
 ) -> None:
     monkeypatch.setenv("GATE_JOBS", jobs)
+    monkeypatch.delenv(gate_workers.SLOT_HELD, raising=False)
     monkeypatch.setattr(gate_workers, "free_cores", lambda: 5)
     assert gate_workers.pytest_xdist_auto_num_workers(None) == workers  # type: ignore[arg-type]
 
@@ -104,3 +105,42 @@ def test_the_plugin_sets_the_worker_count_xdist_auto_starts(tmp_path: Path) -> N
     )
     assert said.returncode == 0, said.stdout + said.stderr
     assert f"{jobs} workers [1 item]" in said.stdout
+
+
+@pytest.mark.parametrize("slots, workers", [(1, 8), (2, 4), (3, 2), (16, 1)])
+def test_a_run_under_a_held_slot_takes_at_least_its_share_of_the_cores_whatever_the_load(
+    monkeypatch: pytest.MonkeyPatch, slots: int, workers: int
+) -> None:
+    """The 1-minute load still counts the run that held the slot a moment ago (a gate right after another one got
+    one worker on a 4-core host); the slot is what reserves this run its cores."""
+    monkeypatch.delenv("GATE_JOBS", raising=False)
+    monkeypatch.setenv(gate_workers.SLOT_HELD, "/cache/engineering-loop/gate.1.lock")
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 8)
+    monkeypatch.setattr(os, "getloadavg", lambda: (7.5, 0.0, 0.0))
+    monkeypatch.setattr(gate_workers, "host_slots", lambda: slots)
+    assert gate_workers.pytest_xdist_auto_num_workers(None) == workers  # type: ignore[arg-type]
+
+
+def test_a_run_under_no_slot_takes_the_free_cores_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GATE_JOBS", raising=False)
+    monkeypatch.delenv(gate_workers.SLOT_HELD, raising=False)
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 8)
+    monkeypatch.setattr(os, "getloadavg", lambda: (7.5, 0.0, 0.0))
+    monkeypatch.setattr(gate_workers, "host_slots", lambda: pytest.fail("read the slots"))
+    assert gate_workers.pytest_xdist_auto_num_workers(None) == 1  # type: ignore[arg-type]
+
+
+def test_gate_jobs_wins_over_the_slot_share(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATE_JOBS", "3")
+    monkeypatch.setenv(gate_workers.SLOT_HELD, "/cache/engineering-loop/gate.1.lock")
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 8)
+    monkeypatch.setattr(gate_workers, "host_slots", lambda: 1)
+    assert gate_workers.pytest_xdist_auto_num_workers(None) == 3  # type: ignore[arg-type]
+
+
+def test_the_slot_count_is_the_one_the_gate_takes_its_slot_by() -> None:
+    sys.path.insert(0, str(ROOT / "engineering/skills/engineering-loop/scripts"))
+    import approvals
+
+    assert gate_workers.SLOT_HELD == approvals.SLOT_HELD
+    assert gate_workers.host_slots() == max(1, approvals.gate_slots())
