@@ -380,3 +380,21 @@ def test_launch_dir_clone_flag_reaches_the_command(
     argv = ["launch-dir", f"file://{bare}", "main", "env_B", str(dest), "--clone"]
     assert omnigent_agent.main(argv) == 0
     assert omnigent_agent.main_worktree(dest) is None
+
+
+def test_launch_dir_takes_the_main_checkouts_pin_when_no_environment_is_named(
+    tmp_path: Path, bare: Path, real_trust: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A main checkout with a pin, no `env` on the Cloud worker line and no environment named after
+    the repo: the run worktree takes the checkout's pin, not the account's Default."""
+    monkeypatch.setattr(
+        omnigent_agent,
+        "cloud_environments",
+        lambda: [{"environment_id": "env_default", "name": "Default"}],
+    )
+    main = checkout(bare, tmp_path / "main")
+    pin(main, "env_main")
+    dest = main / ".worktrees" / "claude-cloud-run-main"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", None, dest, here=main)
+    assert omnigent_agent.environment_pin(omnigent_agent.own_settings(dest)) == "env_main"
+    omnigent_agent.pin_environment(dest)  # and start's own check agrees

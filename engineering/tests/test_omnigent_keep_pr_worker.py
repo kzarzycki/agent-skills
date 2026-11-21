@@ -15,7 +15,7 @@ class Hub:
     """gh faked: this checkout is ``o/r``; ``pr view N --repo X`` answers ``states[(X, N)]``."""
 
     def __init__(self, states: dict[tuple[str, int], str]) -> None:
-        self.states, self.asked = states, []
+        self.states, self.asked, self.deleted = states, [], []
         self.comments = {"42": base.on_pr(7, "done")}
 
     def __call__(self, *args: str) -> str:
@@ -27,6 +27,9 @@ class Hub:
             if (repo, number) not in self.states:
                 raise omnigent_agent.Fail(f"gh pr view {number}: not found")
             return json.dumps({"state": self.states[(repo, number)]})
+        if args[:3] == ("api", "-X", "DELETE"):
+            self.deleted.append(args[3])
+            return ""
         return json.dumps(self.comments[args[1].rsplit("/", 1)[1]])
 
 
