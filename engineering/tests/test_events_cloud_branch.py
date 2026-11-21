@@ -168,3 +168,129 @@ def test_wait_sees_a_branch_only_event(clones, cloud) -> None:
     out = io.StringIO()
     assert events.wait("lead", "feat/x", timeout=5, poll=0.1, cwd=b, out=out) == 0
     assert "https://example.test/9" in out.getvalue()
+
+
+def refuse_deletes(bare: Path) -> None:
+    """Make `bare` take a push but refuse a ref delete, as a cloud session's proxy does."""
+    hook = bare / "hooks" / "pre-receive"
+    hook.write_text(
+        '#!/bin/sh\nwhile read old new ref; do [ "$new" = 0000000000000000000000000000000000000000 ] && exit 1; done\n'
+    )
+    hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
+
+
+def test_cloud_clear_names_the_branch_it_leaves(
+    clones, cloud, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bare, a, _ = clones
+    events.emit("lead", "feat/x", "waiting", cwd=a)
+    refuse_deletes(bare)
+    capsys.readouterr()
+    events.clear("feat/x", cwd=a)
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert BRANCH in err and "host" in err
+    assert BRANCH in origin_refs(bare)
+
+
+def test_host_clear_deletes_both_forms_and_the_scratch_mirror(
+    clones, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bare, a, b = clones
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    events.emit("lead", "feat/x", "waiting", cwd=a)
+    events.read(cwd=b)
+    scratch = events.mirror_of(BRANCH)
+    assert git(b, "rev-parse", "--verify", scratch).strip()
+    monkeypatch.delenv("CLAUDE_CODE_REMOTE")
+    events.clear("feat/x", cwd=b)
+    assert origin_refs(bare) == [LOOP] or origin_refs(bare) == []
+    assert BRANCH not in origin_refs(bare)
+    assert git(b, "for-each-ref", "refs/loop-remote-heads", "refs/loop-remote").strip() == ""
+
+
+def test_same_second_higher_seq_wins(clones, monkeypatch: pytest.MonkeyPatch) -> None:
+    bare, a, b = clones
+    monkeypatch.setattr(events, "now", lambda: "2026-01-01T00:00:00Z")
+    monkeypatch.delenv("CLAUDE_CODE_REMOTE", raising=False)
+    events.emit("lead", "feat/x", "waiting", cwd=a)
+    events.emit("lead", "feat/x", "failed", cwd=a)  # seq 2 on the raw ref
+    proxy(bare)
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    events.emit("lead", "feat/x", "ok", cwd=b)  # seq 1 on the branch, same second
+    (got,) = events.read(cwd=b)
+    assert (got["state"], got["seq"]) == ("failed", 2)
+
+
+def test_full_tie_goes_to_the_branch_form(clones, monkeypatch: pytest.MonkeyPatch) -> None:
+    bare, a, b = clones
+    monkeypatch.setattr(events, "now", lambda: "2026-01-01T00:00:00Z")
+    monkeypatch.delenv("CLAUDE_CODE_REMOTE", raising=False)
+    events.emit("lead", "feat/x", "waiting", cwd=a)
+    proxy(bare)
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    events.emit("lead", "feat/x", "ok", cwd=b)
+    for _ in range(2):  # a second read, from the cache, agrees
+        (got,) = events.read(cwd=b)
+        assert got["state"] == "ok"
+
+
+def test_a_beat_between_listing_and_fetch_gives_one_consistent_event(
+    clones, cloud, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bare, a, b = clones
+    proxy(bare)
+    events.emit("lead", "feat/x", "waiting", cwd=a)
+    real = events.fetch_event
+
+    def beat_first(cwd, ref):
+        events.emit("lead", "feat/x", "ok", cwd=a)
+        return real(cwd, ref)
+
+    monkeypatch.setattr(events, "fetch_event", beat_first)
+    (got,) = events.read("lead", cwd=b)
+    tip = git(bare, "rev-parse", BRANCH).strip()
+    assert got["state"] == "ok"
+    assert got["sha"] == tip == git(b, "rev-parse", MIRROR).strip()
+
+
+def test_a_cached_raw_winner_moves_the_mirror_off_a_removed_branch(
+    clones, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bare, a, b = clones
+    stamps = iter(["2026-01-01T00:00:00Z", "2026-01-01T00:00:05Z"])
+    monkeypatch.setattr(events, "now", lambda: next(stamps))
+    monkeypatch.delenv("CLAUDE_CODE_REMOTE", raising=False)
+    old = events.emit("lead", "feat/x", "waiting", cwd=a)
+    proxy(bare)
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    new = events.emit("lead", "feat/x", "ok", cwd=a)
+    assert events.read(cwd=b)[0]["sha"] == new
+    git(bare, "update-ref", "-d", BRANCH)
+    (got,) = events.read(cwd=b)
+    assert got["sha"] == old
+    assert git(b, "rev-parse", MIRROR).strip() == old
+
+
+def test_a_stale_lease_does_not_overwrite_a_newer_branch_event(
+    clones, cloud, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bare, a, b = clones
+    proxy(bare)
+    events.emit("lead", "feat/x", "waiting", cwd=a)
+    real = events.push
+    state = {"done": False}
+
+    def peer_first(cwd, *specs, **kwargs):
+        if specs[0].endswith(":" + BRANCH) and not state["done"]:
+            state["done"] = True
+            monkeypatch.setattr(events, "push", real)
+            events.emit("lead", "feat/x", "ok", cwd=b)
+            monkeypatch.setattr(events, "push", peer_first)
+        return real(cwd, *specs, **kwargs)
+
+    monkeypatch.setattr(events, "push", peer_first)
+    events.emit("lead", "feat/x", "failed", cwd=a)
+    shown = events.event_at(bare, BRANCH)
+    assert shown["state"] == "ok"
+    assert "not pushed" in capsys.readouterr().err

@@ -244,7 +244,7 @@ def emit(
         bref = branch_of(kind, branch)
         try:
             held = remote_refs(cwd, bref).get(bref, "")
-            push(cwd, f"+{commit}:{bref}", lease=f"{bref}:{held}")
+            push(cwd, f"{commit}:{bref}", lease=f"{bref}:{held}")
         except UNREACHABLE as exc:
             warn(f"{bref} not pushed", exc)
     return commit
@@ -278,7 +278,8 @@ def fetch_event(cwd: Path | str | None, ref: str) -> dict[str, Any]:
         )
     except UNREACHABLE:
         return {"state": "unknown"}
-    return event_at(cwd, mirror)
+    # the commit the fetch brought, which may be newer than the one a listing named a moment before
+    return event_at(cwd, local_sha(cwd, mirror) or mirror)
 
 
 def split(ref: str) -> tuple[str, str]:
@@ -289,12 +290,13 @@ def split(ref: str) -> tuple[str, str]:
 def later(events: list[dict[str, Any]]) -> dict[str, Any]:
     """The newest of `events` by `at`, then `seq`; the first when none is readable."""
     known = [e for e in events if e.get("state") != "unknown"]
-    # ponytail: the later `at` wins, so two hosts' clocks decide a tie; a producer has one writer per ref
-    return (
-        max(known, key=lambda e: (str(e.get("at", "")), int(e.get("seq", 0))))
-        if known
-        else events[0]
-    )
+    # ponytail: the later `at` wins, so two hosts' clocks decide a tie; a producer has one writer per ref. A full tie
+    # goes to the later in the list: callers put the branch form last, since a cloud emit pushes it after the ref
+    if not known:
+        return events[0]
+    return max(
+        enumerate(known), key=lambda i: (str(i[1].get("at", "")), int(i[1].get("seq", 0)), i[0])
+    )[1]
 
 
 def read(kind: str | None = None, *, cwd: Path | str | None = None) -> list[dict[str, Any]]:
@@ -326,6 +328,8 @@ def read(kind: str | None = None, *, cwd: Path | str | None = None) -> list[dict
                 moved = note.get("sha") != sha
                 event = fetch_event(cwd, ref) if moved or "event" not in note else note["event"]
                 if event.get("state") != "unknown":
+                    # a beat between the listing and the fetch: the fetched commit is the one this event is
+                    sha = event["sha"] if moved or "event" not in note else sha
                     seen[ref] = {
                         "sha": sha,
                         "changed": time.time() if moved else note.get("changed", time.time()),
@@ -336,9 +340,10 @@ def read(kind: str | None = None, *, cwd: Path | str | None = None) -> list[dict
                 event, changed = event_at(cwd, sha), time.time()
             candidates.append({**event, "sha": sha, "changed": changed, "_ref": ref})
         won = later(candidates)
-        if remote and won["_ref"] != name and won["state"] != "unknown":
-            # the branch form is newer: the one mirror holds the commit the reader sees
-            run(cwd, "update-ref", mirror_of(name), won["sha"])
+        if remote and won["state"] != "unknown" and local_sha(cwd, mirror_of(name)) != won["sha"]:
+            # the one mirror holds the commit the reader sees, whichever form won and whether it came from the cache
+            with contextlib.suppress(subprocess.CalledProcessError):
+                run(cwd, "update-ref", mirror_of(name), won["sha"])
         found.append(
             {
                 **{k: v for k, v in won.items() if k != "_ref"},
@@ -411,7 +416,7 @@ def wait(
 
 
 def clear(branch: str, *, cwd: Path | str | None = None) -> None:
-    """Remove the refs of `branch` (one per kind, and the cloud branch form of each) here and on origin. A delete origin refuses prints one warning."""
+    """Remove the refs of `branch` (one per kind, and the cloud branch form of each) here and on origin. A host's delete origin refuses prints one warning; a cloud session's, one line naming the branches a host must remove."""
     mine = [ref_of(kind, branch) for kind in BEATS]
     theirs = [branch_of(kind, branch) for kind in BEATS]
     for ref in mine:
@@ -425,7 +430,17 @@ def clear(branch: str, *, cwd: Path | str | None = None) -> None:
         listed = remote_refs(cwd, f"{NAMESPACE}/*/{branch}", f"{BRANCHES}/*/{branch}")
         there = [ref for ref in (*mine, *theirs) if ref in listed]
         if there:
-            push(cwd, *(f":{ref}" for ref in there))
+            try:
+                push(cwd, *(f":{ref}" for ref in there))
+            except UNREACHABLE:
+                if not in_cloud():
+                    raise
+                # a cloud proxy refuses every delete: one try, then one line naming what a host must remove
+                left = ", ".join(ref for ref in there if ref.startswith(BRANCHES + "/"))
+                print(
+                    f"events: left on origin for host-side cleanup: {left or ', '.join(there)}",
+                    file=sys.stderr,
+                )
     except UNREACHABLE as exc:
         warn(f"origin's refs of {branch} not removed", exc)
 
