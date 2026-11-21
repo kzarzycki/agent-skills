@@ -9798,9 +9798,17 @@ def test_start_says_when_the_environment_s_permission_mode_is_not_applied_and_cr
     og.harnesses["agy"] = "antigravity-native"
     sid, _ = omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
     assert sid in og.sessions
-    assert (
-        "not applied" not in capsys.readouterr().err
-    )  # codex starts in no-approvals whatever it says
+    monkeypatch.setenv(
+        "OMNIGENT_PERMISSION_MODE", "acceptEdits"
+    )  # a Claude word, which codex never takes
+    omnigent_agent.start(og, "codex", "t2", "do X", tmp_path / "r.md", None, 0)
+    for mode in ("default", "bypassPermissions"):  # the two words codex's start takes
+        omnigent_agent.start(
+            og, "codex", f"t-{mode}", "do X", tmp_path / "r.md", None, 0, permission_mode=mode
+        )
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")
+    # codex starts in no-approvals whatever it says, so it is never told a mode was dropped
+    assert "not applied" not in capsys.readouterr().err
     for agent in ("claude", "agy"):  # each takes this mode, so nothing is dropped
         omnigent_agent.start(og, agent, f"t-{agent}", "do X", tmp_path / "r.md", None, 0)
         assert "not applied" not in capsys.readouterr().err
