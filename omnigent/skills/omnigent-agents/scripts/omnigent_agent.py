@@ -2,7 +2,7 @@
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep|--no-keep] [--notify]
-    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--host NAME|ID (claude-cloud child)] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py claude-cloud-env <checkout>   # alias: cloud-env
     python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>
@@ -219,7 +219,15 @@ since a lead asks the owner in its own session and writes no question for ``run`
 ``--workspace`` gives the child a workspace other than this directory, such as one holding
 several repos' checkouts for a change across them; its report must be inside it. ``--host``
 starts a ``--top-level`` lead on another Omnigent host, by name or id (``GET /v1/hosts``); a
-child always runs on its parent's runner. On a host other than this one ``--workspace`` and the
+child always runs on its parent's runner, except a claude-cloud child (worker or verifier), which
+takes ``--host`` too (#838): the host must configure ``acp:claude-cloud`` and, since the VM lands in
+the account's default environment without it, hold ``remote.defaultEnvironmentId`` in the workspace's
+``.claude/settings.local.json`` and Claude Code must trust the workspace there (found through the host's
+``~/.claude.json`` when its home folder is known, else not checked); all refused before the create, as is what
+can't be read (start any session on the host so a file can be read through it). With no ``--host`` and an absolute
+``--workspace`` it goes to the online host configuring that harness with the most
+``memory_available_mb`` that holds the workspace (printed), else stays here; a lead never moves. A
+create that times out is looked up by title for a while and reused, never repeated. On a host other than this one ``--workspace`` and the
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
 its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report is the file ``wait --pr``
 writes here. A verifier (a ``--role`` whose file is engineering-loop's verifier.md) takes ``--pr`` as the PR it
@@ -3853,6 +3861,155 @@ def cloud_run(
         ) from e
 
 
+def timed_out(e: BaseException) -> bool:
+    """Whether ``e`` is a request that timed out, wherever the cause sits in its chain."""
+    while e:
+        if isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError):
+            return True
+        e = e.__cause__  # type: ignore[assignment]
+    return False
+
+
+def configures_cloud(row: dict) -> bool | None:
+    """Whether a ``GET /v1/hosts`` row configures ``CLOUD_HARNESS`` (its ``configured_harnesses``, a
+    map or a list of names); None when the row names no harnesses, as an older server's."""
+    found = row.get("configured_harnesses")
+    return CLOUD_HARNESS in found if isinstance(found, (dict, list)) else None
+
+
+class Unverified(Fail):
+    """A host's file that a cloud start depends on can't be read, so its content is unknown."""
+
+
+def far_json(og: Omnigent, host_id: str, path: str, what: str, bad: type[Fail] = Fail) -> dict:
+    """The JSON object in ``path`` on host ``host_id``, read through a live session there
+    (``read_on_host``); ``Unverified`` when it can't be read, ``bad`` when it is not JSON."""
+    host = host_name(og, host_id)
+    try:
+        text = read_on_host(og, host_id, path)
+    except (Fail, Gone) as e:
+        raise Unverified(f"{what}: {path} on host {host} can't be read ({e})") from e
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise bad(f"{what}: {path} on host {host} is not JSON ({e})") from e
+    return data if isinstance(data, dict) else {}
+
+
+def far_home(og: Omnigent, host_id: str, row: dict, workspace: Path) -> str:
+    """The user folder on host ``host_id`` holding ``.claude.json``: the host row's ``home`` or
+    ``home_dir``, else the ``/home/<user>`` or ``/Users/<user>`` the workspace sits under when that
+    folder lists the file; ``""`` when neither does."""
+    named = str(row.get("home") or row.get("home_dir") or "")
+    parts = workspace.parts
+    guess = str(Path(*parts[:3])) if len(parts) > 3 and parts[1] in ("home", "Users") else ""
+    for home in (named, guess):
+        try:
+            if home and ".claude.json" in host_listing(og, host_id, home, "folder trust check"):
+                return home
+        except (Gone, Fail):
+            continue
+    return ""
+
+
+def far_trusted(og: Omnigent, host_id: str, row: dict, workspace: Path) -> bool | None:
+    """Whether Claude Code on host ``host_id`` trusts ``workspace``, by ``folder_trusted``'s rule
+    (its own entry in the host's ``~/.claude.json``, or the main worktree's, named by the ``gitdir:``
+    line of a linked worktree's ``.git`` file). None, not checked, when the home folder can't be
+    found through the host row or a listing; ``Unverified`` when the config can't be read."""
+    if not (home := far_home(og, host_id, row, workspace)):
+        return None
+    projects = far_json(og, host_id, f"{home}/.claude.json", "folder trust check", Unverified).get(
+        "projects"
+    )
+    places = {str(workspace)}
+    if (root := far_checkout_root(og, host_id, str(workspace), "folder trust check")) is not None:
+        places.add(str(root))
+        try:
+            link = read_on_host(og, host_id, str(root / ".git")).strip()
+        except (Fail, Gone) as e:
+            raise Unverified(f"folder trust check: {root / '.git'} can't be read ({e})") from e
+        if link.startswith("gitdir:") and "/.git/worktrees/" in link:
+            places.add(link.removeprefix("gitdir:").strip().split("/.git/worktrees/")[0])
+    return isinstance(projects, dict) and any(
+        isinstance(projects.get(p), dict) and projects[p].get("hasTrustDialogAccepted") is True
+        for p in places
+    )
+
+
+def check_far_workspace(og: Omnigent, host_id: str, row: dict, workspace: Path) -> None:
+    """What a cloud session on another host needs of ``workspace`` (#838), read through the host's
+    file API and a live session there: it is on the host, ``SETTINGS`` sets
+    ``remote.defaultEnvironmentId`` (else the session lands in the account's default environment
+    without the repository's tools), and Claude Code trusts it (not checked when the host's home
+    folder isn't found, since neither the host row nor the workspace's path names it). ``Fail``
+    when it is wrong or not JSON, ``Unverified`` when a file can't be read."""
+    host, what = host_name(og, host_id), "cloud workspace check"
+    try:
+        listed = SETTINGS.name in host_listing(og, host_id, str(workspace / SETTINGS.parent), what)
+    except Gone:
+        listed = False
+    if not listed:
+        raise Fail(f"{workspace / SETTINGS} on host {host} is missing: pin an environment there")
+    if not environment_pin(far_json(og, host_id, str(workspace / SETTINGS), what)):
+        raise Fail(
+            f"{workspace / SETTINGS} on host {host} names no remote.defaultEnvironmentId: the"
+            " session would land in the account's default environment without the repository's tools"
+        )
+    if far_trusted(og, host_id, row, workspace) is False:
+        raise Fail(f"{workspace} on host {host} is not trusted by Claude Code: trust it there")
+
+
+def pick_cloud_host(og: Omnigent, workspace: Path) -> str | None:
+    """The host a cloud child started with no ``--host`` goes to (#838): the online one configuring
+    ``CLOUD_HARNESS`` with the most ``memory_available_mb`` whose workspace passes
+    ``check_far_workspace``, since each bridge holds memory on its host. A host that fails or can't
+    be verified is skipped with the reason printed. None, so the start stays here, when none
+    qualifies or the hosts call fails. The choice is printed."""
+    try:
+        rows = og.call("GET", "/v1/hosts")["hosts"]
+    except (Fail, KeyError):
+        return None
+    best: tuple[float, str, str] | None = None
+    for row in rows:
+        host, mb = str(row.get("host_id")), float(row.get("memory_available_mb") or 0)
+        if row.get("status") != "online" or not configures_cloud(row) or (best and mb <= best[0]):
+            continue
+        try:
+            if host != og.host_id:
+                check_far_workspace(og, host, row, workspace)
+        except Fail as e:
+            print(f"host {row.get('name') or host} skipped for a cloud child: {e}", file=sys.stderr)
+            continue
+        best = (mb, host, str(row.get("name") or host))
+    if best:
+        print(f"cloud child placed on host {best[2]} ({best[0]:.0f} MB available)", file=sys.stderr)
+    return best[1] if best else None
+
+
+def refuse_unfit_cloud_host(og: Omnigent, host_id: str, workspace: Path) -> None:
+    """Before a cloud session is created on host ``host_id`` (#838): refuse a host whose configured
+    harnesses lack ``CLOUD_HARNESS``, and on another host than this one a workspace that fails
+    ``check_far_workspace``. What can't be verified is refused too, saying how to go on."""
+    row = next((h for h in og.call("GET", "/v1/hosts")["hosts"] if h["host_id"] == host_id), {})
+    host = str(row.get("name") or host_id)
+    if configures_cloud(row) is False:
+        have = row["configured_harnesses"]
+        raise Fail(
+            f"host {host} configures no {CLOUD_HARNESS} (it has: {', '.join(have) or 'none'}):"
+            " pick another with --host"
+        )
+    if host_id == og.host_id:
+        return
+    try:
+        check_far_workspace(og, host_id, row, workspace)
+    except Unverified as e:
+        raise Fail(
+            f"{e}: start any session on {host} so the file can be read, or omit --host to"
+            " place the child by what can be verified"
+        ) from e
+
+
 def offers_cloud(og: Omnigent, hosts: list[dict]) -> bool | None:
     """Whether this host offers ``acp:claude-cloud``, by its ``configured_harnesses`` (harness to readiness,
     ``True`` when ready): on its row in ``hosts`` (``GET /v1/hosts``), else on the record of the session
@@ -4430,6 +4587,14 @@ def start(
             ) from error
         if error:  # a timed-out create can have made the session: brief that one
             found = og.find(name, began, parentless)
+            # the server can still be making a claude-cloud session on another host after the
+            # timeout, so look again before a rerun creates a second one (#838)
+            for _ in range(
+                int(HTTP_SECONDS / (POLL_SECONDS or 1)) if timed_out(error) and not found else 0
+            ):
+                time.sleep(POLL_SECONDS)
+                if found := og.find(name, began, parentless):
+                    break
             if not found:
                 raise failed(f"start failed: {error}") from error
             print(
@@ -6289,7 +6454,7 @@ def apply_route(args: argparse.Namespace) -> None:
 def reviews(role: str | None) -> bool:
     """Whether ``role`` is the verifier's role file (engineering-loop's verifier.md): only that one reviews a PR,
     so only it takes ``--pr`` as the PR it reviews and may start on a clone other sessions hold."""
-    return bool(role) and Path(str(role)).name == "verifier.md"
+    return bool(role) and (Path(str(role)).stem, Path(str(role)).suffix) == ("verifier", ".md")
 
 
 def report_pr(role: str | None, cloud: bool, pr: int | None) -> int | None:
@@ -10284,6 +10449,19 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 raise Fail(
                     f"--host {args.host} is no verifier host loop.md lists: {', '.join(allowed)}"
                 )
+        if (
+            args.cmd == "start"
+            and not args.host
+            and not args.top_level
+            and args.agent not in AGENTS
+            and og.harness(args.agent) == CLOUD_HARNESS
+            and args.workspace
+            and args.workspace.is_absolute()
+        ):
+            # a cloud child's bridge holds memory on its host, so spread them (#838); a lead stays
+            # where it is until the server can move it (omnigent#539, #489)
+            picked = pick_cloud_host(og, args.workspace)
+            args.host = picked if picked and picked != og.host_id else None
         # a follow-up's paths are its session's host's, wherever that runs
         session = og.info(args.session) if args.cmd == "send" else {}
         host = og.host(args.host) if getattr(args, "host", None) else og.host_id
@@ -10293,7 +10471,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         # a cloud agent's run on another host: no parent, so placed where --host says, and its
         # report comes home, since the caller reads it (claude-cloud-run from any host)
         placed = (
-            args.cmd == "run"
+            args.cmd in ("run", "start")
             and bool(args.host)
             and not args.top_level
             and args.agent not in AGENTS
@@ -10303,7 +10481,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         report = args.report.resolve() if here else args.report
         if args.cmd != "send" and args.host and not args.top_level and not placed:
             raise Fail(
-                "--host needs --top-level, or a run of a cloud agent: Omnigent runs a child on its"
+                "--host needs --top-level, or a cloud agent: Omnigent runs a child on its"
                 " parent's runner"
             )
         if (
@@ -10429,6 +10607,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             unreported = report
         if remote and (args.agent in AGENTS or og.harness(args.agent) != CLOUD_HARNESS):
             refuse_far_pinned_checkout(og, args.agent, workspace, host)
+        elif (
+            args.host
+            and args.cmd in ("run", "start")
+            and args.agent not in AGENTS
+            and og.harness(args.agent) == CLOUD_HARNESS
+        ):
+            refuse_unfit_cloud_host(og, host, workspace)
         # The aliases are native harnesses.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             pin_environment(workspace)

@@ -79,7 +79,9 @@ def test_the_command_adds_the_session_it_runs_in(
 
 
 def test_the_lead_writes_its_estimate_on_the_draft_pr_and_the_actual_at_landing() -> None:
-    lead = (Path(__file__).parents[2] / "loop" / "skills" / "engineering-loop" / "lead.md").read_text()
+    lead = (
+        Path(__file__).parents[2] / "loop" / "skills" / "engineering-loop" / "lead.md"
+    ).read_text()
     lead = " ".join(lead.split())
     build, land = lead.index("3. **Branch and notes.**"), lead.index("8. **Land**")
     assert build < lead.index("`Token estimate: ~<N> (<basis>)`") < lead.index("4. **Build.**")
