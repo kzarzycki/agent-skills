@@ -8123,6 +8123,12 @@ ROUTES = [
         None,
         ("rule", "owner"),
     ),
+    (
+        "user needed, its question card is open",
+        {"kind": "ended", "last": "USER NEEDED: x", "card": True, "decisions": True},
+        None,
+        ("rule", "record"),
+    ),
     ("approval prompt", {"kind": "blocked"}, None, ("rule", "owner")),
     ("question", {"kind": "blocked", "question": True}, None, ("rule", "act")),
     (
