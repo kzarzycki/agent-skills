@@ -3755,27 +3755,38 @@ def test_pr_is_refused_to_an_agent_that_is_not_a_cloud_agent(
     assert omnigent_agent.main(argv) == 0 and list(og.sessions) == ["s0"]
 
 
-def test_the_pr_refusal_names_the_verifier_route_for_codex_only(
+def test_the_pr_refusal_names_the_verifier_route_for_a_codex_harness_only(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The hint follows the agent's resolved harness, never its registered name."""
     og = FakeOmnigent()
-    og.harnesses = {"claude-cloud": "acp:claude-cloud", "codex": "codex-native-ui"}
+    og.harnesses = {
+        "claude-cloud": "acp:claude-cloud",
+        "codex": "codex-native-ui",
+        "release-verifier": "codex-native-ui",  # a Codex harness under another name
+        "codex-review-coordinator": "claude-native-ui",  # a Claude harness under a Codex-like name
+        "claude": "claude-native-ui",
+    }
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
     base = ["t", "b.md", "r.md", "--pr", "1", "--confirm-seconds", "0"]
     for cmd in ("start", "run"):
-        assert omnigent_agent.main([cmd, "codex", *base]) == 1
-        err = capsys.readouterr().err
-        assert "codex is not a cloud agent; start claude-cloud for a cloud worker" in err
-        assert "cloud_verifier.py" in err and "verify --pr 1" in err and "thread" in err
-        assert "Placement:" in err and "Starting a PR's cloud worker" in err
-        assert err.count("\n") == 1 and og.sessions == {}  # one line, nothing started
-    # a non-Codex local agent's message is the one it had
-    og.harnesses["claude"] = "claude-native-ui"
-    assert omnigent_agent.main(["start", "claude", *base]) == 1
-    err = capsys.readouterr().err
-    assert "cloud_verifier.py" not in err and err.endswith("or drop --pr for one on this host\n")
+        for agent in ("codex", "release-verifier"):
+            assert omnigent_agent.main([cmd, agent, *base]) == 1
+            err = capsys.readouterr().err
+            assert f"{agent} is not a cloud agent; start claude-cloud for a cloud worker" in err
+            assert "cloud_verifier.py" in err
+            assert "`verify --pr 1` in the worker's VM" in err  # where verify runs
+            assert "or `thread` from a host" in err  # where thread runs
+            assert "per loop.md's Placement: line" in err
+            assert "SKILL.md, Cloud worker, Starting a PR's cloud worker" in err
+            assert err.count("\n") == 1 and og.sessions == {}  # one line, nothing started
+        for agent in ("claude", "codex-review-coordinator"):  # the message it had
+            assert omnigent_agent.main([cmd, agent, *base]) == 1
+            err = capsys.readouterr().err
+            assert "cloud_verifier.py" not in err and og.sessions == {}
+            assert err.endswith("or drop --pr for one on this host\n")
 
 
 def test_a_cloud_start_from_a_worktree_takes_its_main_checkout_s_environment_pin(
