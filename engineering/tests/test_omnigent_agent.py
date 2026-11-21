@@ -3755,6 +3755,29 @@ def test_pr_is_refused_to_an_agent_that_is_not_a_cloud_agent(
     assert omnigent_agent.main(argv) == 0 and list(og.sessions) == ["s0"]
 
 
+def test_the_pr_refusal_names_the_verifier_route_for_codex_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": "acp:claude-cloud", "codex": "codex-native-ui"}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    base = ["t", "b.md", "r.md", "--pr", "1", "--confirm-seconds", "0"]
+    for cmd in ("start", "run"):
+        assert omnigent_agent.main([cmd, "codex", *base]) == 1
+        err = capsys.readouterr().err
+        assert "codex is not a cloud agent; start claude-cloud for a cloud worker" in err
+        assert "cloud_verifier.py" in err and "verify --pr 1" in err and "thread" in err
+        assert "Placement:" in err and "Starting a PR's cloud worker" in err
+        assert err.count("\n") == 1 and og.sessions == {}  # one line, nothing started
+    # a non-Codex local agent's message is the one it had
+    og.harnesses["claude"] = "claude-native-ui"
+    assert omnigent_agent.main(["start", "claude", *base]) == 1
+    err = capsys.readouterr().err
+    assert "cloud_verifier.py" not in err and err.endswith("or drop --pr for one on this host\n")
+
+
 def test_a_cloud_start_from_a_worktree_takes_its_main_checkout_s_environment_pin(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3828,6 +3851,7 @@ def test_a_local_agent_is_refused_in_the_main_checkout_cloud_sessions_launch_fro
         assert omnigent_agent.main(argv) == 1
         err = capsys.readouterr().err
         assert "start claude-cloud" in err and "worktree" in err and og.sessions == {}
+        assert "launch-dir <remote> <branch> <path>" in err and err.count("\n") == 1
     assert start_cloud(og, main, title="c") == 0 and len(og.sessions) == 1
     apart = tmp_path / "apart"  # its git dir lives outside it
     subprocess.run(
@@ -4250,7 +4274,9 @@ def test_a_far_pinned_main_checkout_is_refused_before_any_session_exists(
     files["/there/repo/engineering/x"] = ""
     sub = [*far_start("claude", "oz"), "--workspace", "/there/repo/engineering"]
     assert omnigent_agent.main(sub) == 1 and og.sessions == {}
-    assert "/there/repo is the main checkout" in capsys.readouterr().err  # the root it found
+    err = capsys.readouterr().err
+    assert "/there/repo is the main checkout" in err  # the root it found
+    assert "launch-dir <remote> <branch> <path>" in err and err.count("\n") == 1
     started = 0
     other = "/there/repo/.claude/settings.json"
     for settings_text, git, also in (

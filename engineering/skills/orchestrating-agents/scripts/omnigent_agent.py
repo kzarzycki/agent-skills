@@ -3044,7 +3044,8 @@ def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
         raise Fail(
             f"{workspace} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
             f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
-            " give the local agent a worktree of it (--workspace)"
+            " give the local agent a worktree of it (--workspace), or make a launch dir for the"
+            " cloud session with `launch-dir <remote> <branch> <path>`"
         )
 
 
@@ -3074,7 +3075,8 @@ def refuse_far_pinned_checkout(og: Omnigent, agent: str, workspace: Path, host_i
         raise Fail(
             f"{root} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
             f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
-            " give the local agent a worktree of it (--workspace)"
+            " give the local agent a worktree of it (--workspace), or make a launch dir for the"
+            " cloud session with `launch-dir <remote> <branch> <path>`"
         )
 
 
@@ -10093,9 +10095,16 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             )
         # --pr is a cloud worker's report channel; a native worker given it runs its build on this host
         if args.pr and og.harness(args.agent) != CLOUD_HARNESS:
+            route = ""
+            if "codex" in f"{args.agent} {og.harness(args.agent)}".lower():
+                route = (
+                    f"; a cloud PR's verifier runs through engineering-loop's cloud_verifier.py"
+                    f" (`verify --pr {args.pr}` in the worker's VM, or `thread` from a host, per"
+                    " loop.md's Placement: line; SKILL.md, Cloud worker, Starting a PR's cloud worker)"
+                )
             raise Fail(
                 f"--pr {args.pr}: {args.agent} is not a cloud agent; start claude-cloud for a cloud"
-                " worker, or drop --pr for one on this host"
+                f" worker, or drop --pr for one on this host{route}"
             )
         brief = text_or_file(args.brief)[0]
         if args.file and not remote:
