@@ -1,0 +1,281 @@
+# Runs a coding agent on one task in a fork of an open-source project, on a free model, and
+# opens a draft PR with its change on that fork.
+#
+# The agent is Claude Code driven through free-claude-code (FCC), a local proxy that serves
+# Claude Code's requests from another provider's model, so no Anthropic login or key is in the
+# job. Two jobs keep the powers apart:
+#   agent   - contents: read and the one model key. Checks out the ref, runs the agent and the
+#             project's tests, and uploads the change as a `git format-patch` artifact. Its token
+#             cannot push, which a step proves on every run.
+#   publish - contents: write and pull-requests: write, and no model key. Applies the patch with
+#             `git am`, pushes a branch and opens a draft PR. It runs nothing from the patch.
+# No job talks to anything but GitHub and the model provider. tests/test_oss_agent_workflow.py
+# holds these rules.
+#
+# A fork calls it from a workflow of its own, started by hand or with `gh workflow run`:
+#
+#   on:
+#     workflow_dispatch:
+#       inputs:
+#         task: {description: What the agent should do, required: true}
+#   jobs:
+#     agent:
+#       permissions: {contents: write, pull-requests: write}
+#       uses: kzarzycki/agent-skills/.github/workflows/oss-agent.yml@<sha>
+#       with:
+#         task: ${{ inputs.task }}
+#         test_command: <the project's test command>
+#       secrets:
+#         NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
+#
+# The fork needs Actions enabled and "Allow GitHub Actions to create and approve pull requests"
+# on (Settings, Actions, General) for the draft PR. A PR opened with the job token starts no
+# workflow on the fork, and a patch that changes .github/workflows cannot be pushed with it.
+name: OSS agent
+
+on:
+  workflow_call:
+    inputs:
+      task:
+        description: The task, given to the agent as its prompt
+        type: string
+        required: true
+      ref:
+        description: Branch to work on and open the PR against; empty means the default branch
+        type: string
+        default: ""
+      model:
+        description: FCC model as provider/model; free lists change, so it is an input
+        type: string
+        default: nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b
+      test_command:
+        description: The project's test command, run after the agent (empty runs none)
+        type: string
+        default: ""
+      timeout_minutes:
+        description: The agent job's time limit; a run past it is cancelled
+        type: number
+        default: 60
+      fcc_tag:
+        description: free-claude-code release tag; it releases daily, so bump it on purpose
+        type: string
+        default: v6.19.44
+      claude_code_version:
+        description: "@anthropic-ai/claude-code version"
+        type: string
+        default: 2.1.330
+      dry_run:
+        description: Skip the agent and the publish job, writing a stub change instead (the self-test)
+        type: boolean
+        default: false
+    secrets:
+      NVIDIA_NIM_API_KEY:
+        description: Free-tier or hard-capped NVIDIA NIM key, used for nothing else
+        required: false
+    outputs:
+      pr_url:
+        description: The draft PR, when one was opened
+        value: ${{ jobs.publish.outputs.pr_url }}
+
+permissions: {}
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+    outputs:
+      has_patch: ${{ steps.patch.outputs.has_patch }}
+      base_sha: ${{ steps.base.outputs.sha }}
+      base_branch: ${{ steps.base.outputs.branch }}
+      tests: ${{ steps.tests.outputs.result }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - id: base
+        env:
+          REF: ${{ inputs.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "branch=${REF:-$DEFAULT_BRANCH}" >> "$GITHUB_OUTPUT"
+
+      - name: The job token cannot push
+        id: push-refused
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          probe="oss-agent-push-probe-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if git -c "http.https://github.com/.extraheader=$auth" push origin "HEAD:refs/heads/$probe" 2> "$RUNNER_TEMP/push.err"; then
+            echo "::error::the agent job's token pushed $probe; it must be read-only"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/push.err"
+          if ! grep -qiE '403|denied' "$RUNNER_TEMP/push.err"; then
+            echo "::error::git push failed, but not with a permission refusal"
+            exit 1
+          fi
+          echo "git push was refused, as it should be"
+
+      - if: ${{ !inputs.dry_run }}
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - if: ${{ !inputs.dry_run }}
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+
+      - name: Install Claude Code and free-claude-code
+        if: ${{ !inputs.dry_run }}
+        env:
+          CLAUDE_CODE_VERSION: ${{ inputs.claude_code_version }}
+          FCC_TAG: ${{ inputs.fcc_tag }}
+        run: |
+          npm install -g "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+          uv tool install --python 3.14.10 "git+https://github.com/Alishahryar1/free-claude-code@$FCC_TAG"
+
+      - name: Start the FCC proxy
+        if: ${{ !inputs.dry_run }}
+        env:
+          NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
+          MODEL: ${{ inputs.model }}
+          HOST: 127.0.0.1
+          FCC_OPEN_BROWSER: "false"
+        run: |
+          if [ -z "$NVIDIA_NIM_API_KEY" ]; then
+            echo "::error::the NVIDIA_NIM_API_KEY secret is not passed to this workflow"
+            exit 1
+          fi
+          nohup fcc-server > "$RUNNER_TEMP/fcc-server.log" 2>&1 &
+          for _ in $(seq 60); do
+            if curl -fsS http://127.0.0.1:8082/health > /dev/null 2>&1; then
+              echo "fcc-server is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::fcc-server did not answer /health within 120 seconds"
+          tail -n 50 "$RUNNER_TEMP/fcc-server.log"
+          exit 1
+
+      - name: Run the agent
+        if: ${{ !inputs.dry_run }}
+        env:
+          TASK: ${{ inputs.task }}
+          MODEL: ${{ inputs.model }}
+          HOST: 127.0.0.1
+        run: |
+          git config user.name "oss-agent"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          fcc-claude -p "$TASK" --dangerously-skip-permissions | tee "$RUNNER_TEMP/agent.out"
+          {
+            echo "## Agent's last message"
+            echo
+            tail -c 20000 "$RUNNER_TEMP/agent.out"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stub change (dry run)
+        if: ${{ inputs.dry_run }}
+        run: echo "oss-agent dry run $GITHUB_RUN_ID" > .oss-agent-dry-run.txt
+
+      - name: Make the patch
+        id: patch
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          TASK: ${{ inputs.task }}
+        run: |
+          git config user.name "oss-agent"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            printf 'agent: %.60s\n\n%s\n' "$TASK" "$TASK" | git commit -q -F -
+          fi
+          if [ "$(git rev-parse HEAD)" = "$BASE_SHA" ]; then
+            echo "The agent changed nothing."
+            echo "has_patch=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/out"
+          git format-patch --stdout "$BASE_SHA..HEAD" > "$RUNNER_TEMP/out/agent.patch"
+          git diff --stat "$BASE_SHA" HEAD
+          echo "has_patch=true" >> "$GITHUB_OUTPUT"
+
+      - name: Run the project's tests
+        id: tests
+        if: ${{ inputs.test_command != '' }}
+        env:
+          TEST_COMMAND: ${{ inputs.test_command }}
+        run: |
+          if bash -c "$TEST_COMMAND"; then
+            echo "result=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=failed" >> "$GITHUB_OUTPUT"
+            echo "::warning::the project's tests failed on the agent's change"
+          fi
+
+      - if: ${{ steps.patch.outputs.has_patch == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-patch
+          path: ${{ runner.temp }}/out/agent.patch
+          if-no-files-found: error
+
+  publish:
+    needs: agent
+    if: ${{ !inputs.dry_run && needs.agent.outputs.has_patch == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      pr_url: ${{ steps.pr.outputs.url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.agent.outputs.base_sha }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: agent-patch
+          path: ${{ runner.temp }}/patch
+
+      - name: Apply and push
+        env:
+          BRANCH: oss-agent/run-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          git config user.name "oss-agent"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git am "$RUNNER_TEMP/patch/agent.patch"
+          git push origin "HEAD:refs/heads/$BRANCH"
+
+      - name: Open the draft PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: oss-agent/run-${{ github.run_id }}-${{ github.run_attempt }}
+          BASE_BRANCH: ${{ needs.agent.outputs.base_branch }}
+          TASK: ${{ inputs.task }}
+          MODEL: ${{ inputs.model }}
+          TESTS: ${{ needs.agent.outputs.tests || 'not run' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "Drafted by an agent on a free model ($MODEL) in [this run]($RUN_URL)."
+            echo
+            echo "Project tests on the change: $TESTS."
+            echo
+            echo "## Task"
+            echo
+            echo "$TASK"
+          } > "$RUNNER_TEMP/body.md"
+          title="$(printf 'agent: %.60s' "$TASK" | head -n 1)"
+          url="$(gh pr create --draft --base "$BASE_BRANCH" --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md")"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Draft PR: $url" >> "$GITHUB_STEP_SUMMARY"
