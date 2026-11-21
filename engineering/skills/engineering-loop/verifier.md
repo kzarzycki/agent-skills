@@ -61,7 +61,7 @@ yourself, keeping standards and spec as separate axes.
   each finding's repro commands, read from the PR (`approvals.py brief`), since no report file is handed between passes:
   the PR is the record, on any host. Review
   the diff since the previous pass's head and the files it touches yourself, both axes in your own session
-  with no axis subagents (code-review, step 4), not the whole change again. Rerun all of their
+  with no axis subagents (code-review, step 4), not the whole change again. Rerun all of its
   repros from one script that prints each one's command, result and exit code, rather than
   one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the lead runs after a
   core finding stayed open reviews only the fix of those items; a pass on a merge of main
