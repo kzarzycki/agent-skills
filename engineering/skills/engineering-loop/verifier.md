@@ -57,9 +57,11 @@ yourself, keeping standards and spec as separate axes.
   trigger, a value orders of magnitude outside what the data source emits. Style, naming,
   formatting and code-review's smell baseline are notes, not findings.
 - **Work the given priorities first.**
-- **Every pass after the first:** the lead gives you the previous report. Review
-  the diff since its head and the files it touches yourself, both axes in your own session
-  with no axis subagents (code-review, step 4), not the whole change again. Rerun all of its
+- **Every pass after the first:** your brief carries the previous pass's findings, the replies on them and
+  each finding's repro commands, read from the PR (`approvals.py brief`), since no report file is handed between passes:
+  the PR is the record, on any host. Review
+  the diff since the previous pass's head and the files it touches yourself, both axes in your own session
+  with no axis subagents (code-review, step 4), not the whole change again. Rerun all of their
   repros from one script that prints each one's command, result and exit code, rather than
   one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the lead runs after a
   core finding stayed open reviews only the fix of those items; a pass on a merge of main
@@ -231,7 +233,13 @@ keep these lines exact:
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR
   review's inline comment, moved to the nearest line of the diff when outside it), then
   the failing input or contradicted requirement and the evidence (the command and its
-  output) up to the next heading outside a code fence. Any other `### ` heading is a
+  output) up to the next heading outside a code fence. End each finding with its repro in a collapsed
+  block, exactly this shape, so the next pass, on any host, reruns it from the PR: a `<details>` line,
+  a `<summary>Repro</summary>` line, a blank line, a fenced block holding the repro script (the commands as
+  they run, nothing else), a blank line, a fenced block holding the log that script printed (its command,
+  output and exit code), a blank line and `</details>`. `approvals.py brief` prints the first fenced block of each
+  previous finding's `<details>` as that finding's repro commands, so the script goes first and the log second, and a
+  finding with no such block reaches the next pass with no repro to rerun. Any other `### ` heading is a
   sub-heading and posts nothing. `verdict` refuses a `### ` heading with a `(<severity>)`
   it can't read, and finding headings that don't add up to the `VERDICT:` counts, rather
   than leave a finding off the review.

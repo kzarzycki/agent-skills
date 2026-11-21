@@ -2404,7 +2404,7 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         "- Spec: #12",
         f"- Acceptance tests: uv run {os.path.relpath(SCRIPTS / 'acceptance.py')} 12",
         "- Report: tmp/loop/pr7-v3.md",
-        f"- Previous report: tmp/loop/pr7-v2.md, on {earlier}: review the diff since that head and rerun its repros",
+        f"- Previous pass: 2, on {earlier}: review the diff since that head and rerun its repros",
         f"- Proof log: {proof} (its first line is the head)",
         "",
         "Priorities:",
@@ -2455,7 +2455,7 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
     assert approvals.main(["brief", "7"]) == 0
     out = capsys.readouterr().out.splitlines()
     assert "- Report: tmp/loop/pr7-v1.md" in out
-    assert not [line for line in out if line.startswith("- Previous report")]
+    assert not [line for line in out if line.startswith("- Previous pass")]
     # a policy in gatekeeper.md leaves the Verifier brief in loop.md, the loop's prose
     agents = tmp_path / "docs" / "agents"
     agents.mkdir(parents=True)
@@ -2498,26 +2498,9 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
             f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}"
         ),
         "- Report: /there/repo/tmp/loop/pr7-v2.md",
-        (
-            f"- Previous report: /there/repo/tmp/loop/pr7-v1.md, on {earlier}: review the diff since that head and"
-            " rerun its repros"
-        ),
+        f"- Previous pass: 1, on {earlier}: review the diff since that head and rerun its repros",
         "- Proof log: /there/repo/tmp/loop/gate.log (its first line is the head)",
     ]
-    # the previous pass saved its repros beside its report in the clone's tmp/loop/: named there by path
-    (tmp_path / "tmp" / "loop").mkdir(parents=True)
-    (tmp_path / "tmp/loop/pr7-v1.md").write_text(
-        "Repro: `uv run pytest tmp/loop/pr7-v1-repro.py`, again tmp/loop/pr7-v1-repro.py,"
-        " tmp/loop/pr7-v1.md and tmp/loop/pr7-v1-tree/x.py\n"
-    )
-    assert approvals.main(["brief", "7", "--far", "/there/repo"]) == 0
-    out = capsys.readouterr().out.splitlines()
-    assert [line for line in out if line.startswith("- Repro")] == [
-        "- Repro: /there/repo/tmp/loop/pr7-v1-repro.py"
-    ]
-    # a verifier here works where the lead copied its repros: the brief lists none
-    assert approvals.main(["brief", "7"]) == 0
-    assert not [line for line in capsys.readouterr().out.splitlines() if line.startswith("- Repro")]
     assert approvals.main(["brief", "7", "--far", "there/repo"]) == 1
     assert capsys.readouterr().out == "--far there/repo: an absolute path on the verifier's host\n"
 

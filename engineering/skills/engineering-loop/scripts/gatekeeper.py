@@ -10310,6 +10310,19 @@ def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
     return found
 
 
+def split_repro(finding: str) -> tuple[str, str | None]:
+    """A finding's text without its collapsed `<details>` block, and the first fenced block in that block, the repro
+    script (verifier.md, Report: a `<summary>` line, the script block, then the log it printed). The log stays on the
+    PR: the next pass reruns the script and compares, so printing it would only grow the brief. None when the finding
+    carries no such block."""
+    block = re.search(r"<details>.*?</details>", finding, re.DOTALL)
+    if not block:
+        return finding, None
+    fenced = re.search(r"^(`{3,})[^\n]*\n(.*?)\n\1[ \t]*$", block[0], re.DOTALL | re.MULTILINE)
+    rest = (finding[: block.start()] + finding[block.end() :]).strip()
+    return rest, (fenced[2] if fenced else None)
+
+
 def brief(
     pr: int,
     priorities: Path | None,
@@ -10319,15 +10332,15 @@ def brief(
 ) -> int:
     """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
     verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
-    newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
+    newest verdict review's) and its report path, from pass 2 the previous pass's head, its findings and each one's repro
+    commands (the first fenced block of its `<details>` block), then the priorities
     file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. For each spec it
     prints `- Acceptance tests: <command> <issue>`, the command loop.md's `Acceptance tests:` line names, else the
     fallback `uv run <this folder>/acceptance.py`, so the verifier runs the one the worker ran. A proof log whose first line isn't the head is refused, since the
     verifier counts a stale proof as missing and spends the pass on it. With `far` (a verifier on another host, `far` an
     absolute path there holding a clone of the repo) its paths are that host's: it fetches the head and makes its own
-    detached worktree under `far`'s `tmp/loop/` first, the role is read there, and the report, the previous report and
-    the proof logs are in `far`'s `tmp/loop/`, where the lead's `start --file` writes the last two, as are the previous
-    pass's repros, each named by its path there from the copy of that report `wait` brought to `tmp/loop/` here."""
+    detached worktree under `far`'s `tmp/loop/` first, the role is read there, and the report and
+    the proof logs are in `far`'s `tmp/loop/`, where the lead's `start --file` writes the logs."""
     pull = pull_request(pr)
     with policy_from(pull["baseRefName"]):
         _, loop = project()
@@ -10390,24 +10403,17 @@ def brief(
     if reviewed:
         newest = next(commit for commit, n, _ in reversed(reviewed) if n == number - 1)
         lines.append(
-            f"- Previous report: {loop_dir / f'pr{pr}-v{number - 1}.md'}, on {newest}: review the diff since that head"
-            " and rerun its repros"
+            f"- Previous pass: {number - 1}, on {newest}: review the diff since that head and rerun its repros"
         )
-        # the findings themselves, since the previous report stays on the lead's host and a cloud verifier can't read it
-        if prior := previous_findings(pull, number - 1):
-            lines += [
-                f"- Previous findings, pass {number - 1}:",
-                *(f"  {n}. " + f.replace("\n", "\n     ") for n, f in enumerate(prior, 1)),
-            ]
-        # a far verifier works in its worktree, but the last one saved its repros beside its report, in the clone's
-        # tmp/loop/: each by its path there, from the copy wait brought home
-        if far and (home := Path("tmp/loop") / f"pr{pr}-v{number - 1}.md").is_file():
-            saved = re.findall(r"tmp/loop/([\w.-]+)(?![\w./-])", home.read_text())
-            lines += [
-                f"- Repro: {loop_dir / name}"
-                for name in dict.fromkeys(saved)
-                if name not in (home.name, f"pr{pr}-v{number}.md")
-            ]
+        # the findings and their repro commands, read from the PR: no report file is handed between passes, so a
+        # verifier on any host, in a session or a fresh one, gets them the same way
+        for n, found in enumerate(previous_findings(pull, number - 1), 1):
+            text, script = split_repro(found)
+            if n == 1:
+                lines.append(f"- Previous findings, pass {number - 1}:")
+            lines.append(f"  {n}. " + text.replace("\n", "\n     "))
+            if script:
+                lines += [f"     Repro {n}:", *(f"       {row}" for row in script.splitlines())]
     lines += [
         f"- Proof log: {loop_dir / log.name if far else log} (its first line is the head)"
         for log in proofs
