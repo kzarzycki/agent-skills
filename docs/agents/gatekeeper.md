@@ -19,6 +19,10 @@ incubating:
   append_paths:
     - docs/layers.md
 
+land:
+  # PRs into main merge through the Mergify merge queue `.mergify.yml` configures: land posts `land` and adds `loop:queued` on each landable PR, and Mergify tests each batch as a draft PR in CI and squash-merges it, so no host runs a landing gate (#1658). GitHub's own queue needs an organisation-owned repo.
+  queue: mergify
+
 risk:
   verifier: true
   paths:

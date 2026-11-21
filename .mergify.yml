@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://docs.mergify.com/mergify-configuration-schema.json
+#
+# The Mergify merge queue `land` hands PRs to when the policy sets `land.queue: mergify` (docs/agents/gatekeeper.md):
+# `land` judges each PR (its proofs, the owner's go where high risk, the base's required checks green on its head),
+# then posts the `land` status on that head and adds `loop:queued`. Mergify takes a PR in only with both, tests each
+# batch as a draft PR on top of main in CI, retries a red batch once and squash-merges each PR on green. A push makes a
+# head with no `land` status, so the PR stops matching and leaves the queue. A PR Mergify drops gets `loop:dequeued`,
+# which the next `land` evicts back to draft.
+#
+# No CI check is named here: Mergify reads the base's required checks from its rules (`branch_protection_injection_mode`,
+# default `queue`) and requires them on the PR to queue it and on the draft PR to merge it, so the file suits any repo
+# whose main requires its CI check and does not require `land` itself, which never reaches the draft PR.
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    batch_size: 3
+    batch_max_wait_time: 5 minutes
+    # one retry of a red batch, so a dequeue is the second red; it also has every batch tested as a draft PR,
+    # never by pushing to a PR's own branch
+    max_checks_retries: 1
+    # a batch whose checks never report leaves the queue instead of holding it
+    checks_timeout: 1 hour
+    queue_conditions:
+      - base = main
+      - -draft
+      - label = loop:queued
+      - check-success = land
+
+pull_request_rules:
+  - name: queue what land handed over
+    conditions:
+      - base = main
+      - -draft
+      - label = loop:queued
+      - check-success = land
+    actions:
+      queue:
+        name: default
+
+merge_queue:
+  dequeued_label: loop:dequeued
