@@ -4989,10 +4989,16 @@ def full_check_line() -> None:
 
 def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
     tracker, loop = project()
-    if point == "ready":  # the PR body alone: the author's step before the verifier, when no verdict or gate exists yet
+    if (
+        point == "ready"
+    ):  # the PR body alone: the author's step before the verifier, when no verdict or gate exists yet
         waived = incubation(pull, adopted(closing_issues(pull), loop), loop)[0]
         found = [] if "evidence" in waived else no_evidence(pull) + demo_form(pull)
-        print("\n".join(found) if found else f"PR #{pull['number']}: its body holds the evidence proof")
+        print(
+            "\n".join(found)
+            if found
+            else f"PR #{pull['number']}: its body holds the evidence proof"
+        )
         return 1 if found else 0
     if point == "queue" and head is not None:
         return queueable(pull, head, tracker, loop)

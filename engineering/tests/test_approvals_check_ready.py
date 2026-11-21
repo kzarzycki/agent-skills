@@ -18,11 +18,15 @@ def test_ready_refuses_a_body_with_no_evidence_and_says_what_merge_says(
 ) -> None:
     pr = pull(body="Closes #1\n")
     assert approvals.checked("ready", pr, None) == 1
-    assert capsys.readouterr().out.strip() in approvals.proofs("merge", pr, [approved(1)], loop_md(""))
+    assert capsys.readouterr().out.strip() in approvals.proofs(
+        "merge", pr, [approved(1)], loop_md("")
+    )
 
 
 def test_ready_takes_a_body_with_evidence_and_checks_nothing_else(
     project: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert approvals.checked("ready", pull(body="## Evidence\n\nran it\n"), None) == 0  # no verdict, no gate owed
+    assert (
+        approvals.checked("ready", pull(body="## Evidence\n\nran it\n"), None) == 0
+    )  # no verdict, no gate owed
     assert "evidence proof" in capsys.readouterr().out
