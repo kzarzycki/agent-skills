@@ -11,7 +11,7 @@ refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is
 `claude-cloud-run` could not make or one that needs this host.
 
 Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
-edits and commits go to a Sonnet worker: your context is re-read on every call (about 150k
+edits and commits of a size M or larger change go to a Sonnet worker (an XS or S change stays with you, step 4): your context is re-read on every call (about 150k
 tokens), a worker's is short. A piece too small to justify a hand-off stays with you, since
 a hand-off costs about $0.30 in wakes: a one-line check, or reading a failing gate to
 decide what to do, which needs your judgement. Starting a worker and then doing its work
@@ -107,10 +107,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    own repo's `docs/agents/` files, and the notes say which repo each PR is in. Read each
    repo's `AGENTS.md` or `CLAUDE.md` and `docs/agents/` yourself, since a harness loads
    only those of the directory it started in.
-4. **Build.** Start every item nothing blocks. Hand an item to a worker when it can run in
-   parallel or would flood your context. Build it yourself only when the cause is read
-   and the fix and its test are a few lines in one area, following `worker.md` and saying
-   so in the PR body. A fix to the process itself goes to a separate worker and PR from
+4. **Build.** Start every item nothing blocks. Build an XS or S change yourself, with no worker, through the
+   PR body and READY, following `worker.md` and saying so in the PR body: a worker hand-off costs more than the
+   change. Workers are for size M and up, or for work that splits: hand such an item to one when it can run in
+   parallel or would flood your context. A fix to the process itself goes to a separate worker and PR from
    main, unless it is a blocker or major that makes this PR wrong: that one goes on this
    PR's branch (SKILL.md, One concern per PR). Cut
    each worker's branch from the PR branch with loop.md § Worktree, run from your own
