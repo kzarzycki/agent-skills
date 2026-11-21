@@ -2426,6 +2426,31 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         assert "stale proof" in capsys.readouterr().out
     assert approvals.main(["brief", "7", "--proof", str(tmp_path / "absent.log")]) == 1
     assert capsys.readouterr().out == f"PR #7: no proof log at {tmp_path / 'absent.log'}\n"
+    # the previous pass's findings travel in the brief: a cloud verifier can't read the host's report file
+    pr["reviewThreads"]["nodes"] = [
+        {
+            "isResolved": False,
+            "comments": {
+                "nodes": [
+                    {"body": "**Verifier (codex), pass 2 · F1** (major): a gap\n\nit fails"},
+                    {"body": "**Verifier (codex), pass 1 · F9** (minor): older"},
+                ]
+            },
+        }
+    ]
+    assert approvals.main(["brief", "7"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "- Previous findings, pass 2:\n  1. **Verifier (codex), pass 2 · F1** (major): a gap" in out
+    )
+    assert "F9" not in out
+    # a finding on a file outside the diff sits in the review's body
+    pr["reviews"]["nodes"][-1]["body"] += (
+        "- **Verifier (codex), pass 2 · F3** (minor): x, at `a.md:1`\n- **Verifier (codex), pass 1 · F8** (minor): y\n"
+    )
+    assert approvals.main(["brief", "7"]) == 0
+    out = capsys.readouterr().out
+    assert "F3** (minor): x" in out and "F8" not in out
     pr["reviews"] = {"nodes": []}
     assert approvals.main(["brief", "7"]) == 0
     out = capsys.readouterr().out.splitlines()
