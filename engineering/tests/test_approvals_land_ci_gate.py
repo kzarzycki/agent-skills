@@ -16,7 +16,8 @@ def test_with_a_required_check_the_batch_gate_runs_the_gate_line_not_the_selecto
 ) -> None:
     repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
     pulls = batch_of(repo, monkeypatch)
-    assert approvals.local_queue(pulls, "main", None, None, {"qualify"}) == (0, False)
+    loop = approvals.project()[1]  # as landing() reads it before the lock
+    assert approvals.local_queue(pulls, "main", None, loop, {"qualify"}) == (0, False)
     ran = repo["ran"]()
     assert not [line for line in ran if line.startswith("selected")]
     assert ran == [
