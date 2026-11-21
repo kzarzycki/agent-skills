@@ -49,6 +49,13 @@ At start every verb warns on stderr, once, when this script's checkout is behind
 fetch) and the script differs there: the count and `git pull`. loop.md's `pack_staleness: refuse` under `loop` makes
 it a refusal (exit 1).
 
+On a host the owner marked orchestration-only (the file `~/.agents/orchestration-only`, read by host_role.py, which
+the engineering pack's heavy-run hook shares), the verbs that run the gate refuse before they wait for a slot or
+detach: `local-ci --run`, `local-ci --record` (with `--head-proof` too), `affected-tests` and `heavy <command>`; and
+every step that would spawn (run_heavy) refuses, so `land`'s batch gate stops only where it would run a step. The
+refusal names the marker and the cloud route. `local-ci <pr>`, `check`, `verdict`, `land` on reused passes and
+`heavy --plan` run nothing heavy and still run there.
+
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The policy is gatekeeper.md's block under
 `## Policy`; without that file, loop.md's block under `## Settings`, with a deprecation line on stderr, and with both a
 policy in each is refused, naming both, since two sources of the bar would drift. "loop.md's" setting below means the
@@ -4293,6 +4300,8 @@ def sibling(name: str) -> ModuleType:
 
 
 github = sibling("github_adapter")
+# the orchestration-only marker, read here and by the engineering pack's heavy_run_guard.py hook (#1651)
+host_role = sibling("host_role")
 # every comment the loop writes: a heading, a short summary and the rest folded (folding.py)
 folding = sibling("folding")
 fold, machine = folding.fold, folding.machine
@@ -8772,7 +8781,9 @@ def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int,
     stdout (None unless piped). It runs in a session of its own, and on any exception or stop while it runs its whole
     process group is killed before the exception goes on, so neither the step nor what it started outlives a stopped
     run: a wrapper (systemd-run --scope) puts the step in a group of its own, which a stop of the caller's group would
-    never reach. A wrapped step's environment carries HEAVY_WRAPPED."""
+    never reach. A wrapped step's environment carries HEAVY_WRAPPED. Refused on a host marked orchestration-only
+    (orchestration_refusal) before anything spawns."""
+    orchestration_refusal(shlex.join(words))
     if rule := host_forbids(words):
         raise Refused(
             f"no gate record for this tree: `{shlex.join(words)}` is on this host's {HOST_COMMANDS} ({rule!r}): "
@@ -8793,6 +8804,15 @@ def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int,
                 step.wait()
             raise
     return step.returncode, output
+
+
+def orchestration_refusal(what: str) -> None:
+    """Refuse `what`, a heavy run (a command, or the verb that would start one), on a host the owner marked
+    orchestration-only (host_role.py: `~/.agents/orchestration-only`), naming the cloud route; nothing else changes
+    on an unmarked host. No prefix or setting lifts it, since the marker is the host's own word that it runs none."""
+    reason = host_role.orchestration_only()
+    if reason is not None:
+        raise Refused(host_role.refusal(what, reason))
 
 
 # how often a run queued on a host gate slot says it still waits: wait-for kills a run whose log is silent for 300 s
@@ -10560,12 +10580,15 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "commit-msg":  # the same: git hands the hook its message file
         return commit_msg(args.message)
     if args.command == "affected-tests":
+        orchestration_refusal(shlex.join(["approvals.py", *argv]))
         return affected_tests(args.base)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
         if args.plan and args.words:
             raise Refused(
                 "heavy --plan takes no command: it prints the host's slot count and runs nothing"
             )
+        if not args.plan:
+            orchestration_refusal(shlex.join(["approvals.py", *argv]))
         return heavy(["--plan"] if args.plan else args.words)
     if (
         args.command == "check" and args.point == "setup"
@@ -10625,6 +10648,10 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused("loop.md sets no `head_proof`: --head-proof has no status to publish")
         if args.head_proof and not args.record:
             raise Refused("--head-proof goes with --record: the head proof is the checkout's")
+        if (
+            args.run or args.record
+        ):  # they run the gate; `local-ci <pr>` only reads and posts a pass
+            orchestration_refusal(shlex.join(["approvals.py", *argv]))
         return (
             local_ci(args.pr, proof, args.run, args.head, args.base)
             if leads_its_session()

@@ -18,6 +18,12 @@ command one of whose segments is heavy (``heavy``), when all of these hold:
 The refusal names the ``claude-cloud-run`` call for that exact command and the fallback. Anything it
 can't read or parse is allowed (exit 0), so a bug here never blocks work. Stdlib only, no
 subprocess: it runs on every Bash call.
+
+On a host the owner marked orchestration-only (``~/.agents/orchestration-only``, read by the
+engineering-loop skill's ``scripts/host_role.py``, which gatekeeper.py shares, so the rule has one
+copy), it refuses every heavy segment in any directory, loop repo or not, with or without
+``LOOP_HOST_RUN`` and ``RUNNER_SERVER_URL``: the marker is the host's word that it runs none. The
+module is imported from this pack's own skill folder; where it can't be, the host reads as unmarked.
 """
 
 from __future__ import annotations
@@ -108,6 +114,26 @@ UV_VALUED = {
     "--from",
 }
 LAUNCHER = Path("skills") / "orchestrating-agents" / "scripts" / "omnigent_agent.py"
+# the orchestration-only check, shared with gatekeeper.py (#1651)
+HOST_ROLE = Path("skills") / "engineering-loop" / "scripts" / "host_role.py"
+
+
+def host_role():
+    """This pack's ``host_role`` module, loaded by path from the skill folder beside ``hooks/``; None when
+    it is missing or fails to load."""
+    import importlib.util
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "heavy_run_guard_host_role", Path(__file__).resolve().parent.parent / HOST_ROLE
+        )
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001  (a missing or broken module reads as an unmarked host)
+        return None
 
 
 def repo_root(cwd: Path) -> Path | None:
@@ -323,22 +349,39 @@ def heavy(words: list[str], here: Path) -> bool:
     return False
 
 
-def find_heavy(command: str, cwd: Path, depth: int = 0) -> Path | None:
+def find_heavy(command: str, cwd: Path, depth: int = 0, anywhere: bool = False) -> Path | None:
     """The directory a heavy segment of ``command`` runs in, inside a loop repo (``loop_repo``),
     following each ``cd`` from ``cwd`` and judging a ``sh -c`` string as a command of its own; None
-    when there is none. A segment after a ``cd`` it can't follow is not judged."""
+    when there is none. A segment after a ``cd`` it can't follow is not judged. With ``anywhere``
+    (an orchestration-only host) a segment counts in any directory and its ``LOOP_HOST_RUN`` prefix
+    is ignored."""
     here: Path | None = cwd
     for words in segments(command):
         rest, host, here = strip_leading(words, here)
-        if host or here is None or not rest:
+        if (host and not anywhere) or here is None or not rest:
             continue
         if (inner := shell_string(rest)) is not None:
-            if depth < SHELL_DEPTH and (found := find_heavy(inner, here, depth + 1)):
+            if depth < SHELL_DEPTH and (found := find_heavy(inner, here, depth + 1, anywhere)):
                 return found
             continue
-        if heavy(rest, here) and loop_repo(here) is not None:
+        if heavy(rest, here) and (anywhere or loop_repo(here) is not None):
             return here
     return None
+
+
+def marked_refusal(command: str, cwd: Path, place: Path, reason: str, role) -> str:
+    """The refusal on an orchestration-only host: ``host_role``'s text, plus the ``claude-cloud-run``
+    call for this command where its checkout's ``cd`` steps can be followed."""
+    text = role.refusal(command.strip(), reason)
+    root = repo_root(place)
+    run = cloud_command(command, cwd, root) if root is not None else None
+    if run is None:
+        return text
+    call = (
+        f"python3 {shlex.quote(launcher(root))} claude-cloud-run --checkout {shlex.quote(str(root))}"
+        f" -- {shlex.quote(run)}"
+    )
+    return f"{text}\n  {call}"
 
 
 def cloud_command(command: str, cwd: Path, root: Path) -> str | None:
@@ -447,7 +490,8 @@ def refusal(command: str, cwd: Path, root: Path) -> str:
 
 def verdict(payload: dict, env: dict[str, str]) -> tuple[int, str]:
     """The hook's exit code and stderr line for this tool call: ``(2, <refusal>)`` for a heavy run
-    the cloud route could make, ``(0, NOTICE)`` for one it can't (no Omnigent server), else ``(0, "")``."""
+    the cloud route could make, or any heavy run on an orchestration-only host, ``(0, NOTICE)`` for
+    one it can't (no Omnigent server), else ``(0, "")``."""
     if env.get("CLAUDE_CODE_REMOTE") == "true":
         return 0, ""
     if payload.get("tool_name", "Bash") != "Bash":
@@ -456,6 +500,11 @@ def verdict(payload: dict, env: dict[str, str]) -> tuple[int, str]:
     if not isinstance(command, str) or not command.strip():
         return 0, ""
     cwd = Path(payload.get("cwd") or os.getcwd())
+    role = host_role()
+    reason = role.orchestration_only(env) if role is not None else None
+    if reason is not None:  # no prefix, setting or loop.md line lifts the host's own word
+        place = find_heavy(command, cwd, anywhere=True)
+        return (2, marked_refusal(command, cwd, place, reason, role)) if place else (0, "")
     parts = segments(command)
     if parts and parts[0][0].startswith(HOST_RUN + "=") and parts[0][0].partition("=")[2].strip():
         return 0, ""  # the whole command starts with the fallback prefix

@@ -431,3 +431,71 @@ def test_a_suggested_call_never_names_a_host_directory(
         return
     checkout, cloud = suggested(reason)
     assert checkout == str(repo) and cloud == run and str(repo) not in cloud
+
+
+@pytest.fixture
+def marked(tmp_path: Path) -> dict[str, str]:
+    """A host the owner marked orchestration-only, as the hook's environment names it (#1651)."""
+    path = tmp_path / "orchestration-only"
+    path.write_text("orchestration host\n")
+    return {"AGENT_ORCHESTRATION_ONLY": str(path)}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "mise run check-fast",
+        "LOOP_HOST_RUN=placed mise run check-fast",
+        "cd sub && LOOP_HOST_RUN=x pytest",
+        "LOOP_HOST_RUN=x uv run engineering/skills/engineering-loop/scripts/approvals.py local-ci --record",
+        "bash -c 'LOOP_HOST_RUN=x make test'",
+    ],
+)
+def test_an_orchestration_only_host_refuses_every_heavy_run(
+    repo: Path, tmp_path: Path, marked: dict[str, str], command: str
+) -> None:
+    """No prefix, no Omnigent server and no loop.md lifts the marker; a light command still runs."""
+    (repo / "sub").mkdir()
+    for env in ({**HOST, **marked}, marked, {**marked, "LOOP_HOST_RUN": "x"}):
+        line = refused(command, repo, env)
+        assert line is not None and "orchestration-only" in line and "orchestration host" in line
+        assert "claude-cloud-run" in line and "Never start a child session" in line
+    plain = tmp_path / "plain"  # no loop.md, no `Cloud worker:` line
+    (plain / ".git").mkdir(parents=True)
+    (plain / "sub").mkdir()
+    assert refused(command, plain, marked) is not None
+    assert refused("git status && pytest tests/test_a.py", repo, marked) is None
+
+
+def test_on_a_marked_host_the_refusal_names_the_cloud_call_for_the_command(
+    repo: Path, marked: dict[str, str]
+) -> None:
+    line = refused("mise run check-fast", repo, marked)
+    assert line is not None
+    assert f"claude-cloud-run --checkout {repo} -- 'mise run check-fast'" in line
+    done = run_hook(json.dumps(call("LOOP_HOST_RUN=x pytest", repo)), repo, marked)
+    assert done.returncode == 2 and "orchestration-only" in done.stderr
+
+
+def test_an_unmarked_host_is_judged_as_before(repo: Path, tmp_path: Path) -> None:
+    env = {**HOST, "AGENT_ORCHESTRATION_ONLY": str(tmp_path / "none")}
+    assert refused("LOOP_HOST_RUN=x pytest", repo, env) is None
+    assert "orchestration-only" not in (refused("pytest", repo, env) or "")
+    assert guard.verdict(
+        call("pytest", repo), {"AGENT_ORCHESTRATION_ONLY": str(tmp_path / "none")}
+    ) == (
+        0,
+        guard.NOTICE,
+    )
+
+
+def test_a_cloud_session_is_never_judged_marked(repo: Path, marked: dict[str, str]) -> None:
+    assert refused("pytest", repo, {**marked, "CLAUDE_CODE_REMOTE": "true"}) is None
+
+
+def test_without_its_shared_module_the_hook_reads_the_host_as_unmarked(
+    repo: Path, marked: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(guard, "HOST_ROLE", Path("no") / "such.py")
+    assert guard.host_role() is None
+    assert refused("LOOP_HOST_RUN=x pytest", repo, {**HOST, **marked}) is None
