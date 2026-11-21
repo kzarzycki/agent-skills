@@ -4,7 +4,10 @@ The changed files come from `git diff` against the base (origin/main, or argv[1]
 script runs the tests that executed the lines it changed, read from the test map the nightly builds (below), else
 every test file that names its stem (any other non-markdown file: its file name). Any other file (a skill's prose,
 docs, config) runs only the cheap repo-wide checks, `tests/test_skill_*.py`. No base to diff, or a change to the test
-setup itself (pyproject.toml, uv.lock, mise.toml, tools/), runs everything, since the map cannot say what that touches.
+setup itself (pyproject.toml, uv.lock, mise.toml, tools/, the root conftest.py), runs everything, since the map cannot
+say what that touches. A changed conftest.py below the root runs its own folder (a target, so `collect_ignore` applies; e2e included, the gate's `-m "not live_agent"` drops
+the live ones): pytest applies it to no others, and a test imports one only from its own folder (`from conftest import`). Its helper modules are scripts
+like any other, so a change to one selects the tests that name it.
 
 The test map is `.test-map/` (env `TEST_MAP`): `coverage`, the nightly suite's coverage data with one context per test
 (`pytest --cov-context=test`), and `sha`, the commit it ran on. A changed line of a script is looked up at its old
@@ -25,7 +28,13 @@ import sys
 from pathlib import Path
 
 ALL = ["tests", "engineering/tests"]
-EVERYTHING = ("pyproject.toml", "uv.lock", "mise.toml", "tools/", "conftest.py")
+EVERYTHING = (
+    "pyproject.toml",
+    "uv.lock",
+    "mise.toml",
+    "tools/",
+    "conftest.py",
+)  # the last: the root conftest only
 MAP = Path(os.environ.get("TEST_MAP", ".test-map"))
 SKIPS = re.compile(r"needs_tool|skipif|pytest\.skip|importorskip")
 CHEAP = sorted(str(p) for p in Path("tests").glob("test_skill_*.py"))
@@ -115,9 +124,7 @@ def node_files(ids: set[str]) -> set[str]:
 
 
 def targets(files: list[str] | None, base: str | None = None) -> list[str]:
-    if files is None or any(
-        f.startswith(EVERYTHING) or Path(f).name == "conftest.py" for f in files
-    ):
+    if files is None or any(f.startswith(EVERYTHING) for f in files):
         return ALL
     tests = [
         p for r in ALL for p in sorted(Path(r).rglob("test_*.py")) if "/e2e/" not in p.as_posix()
@@ -128,7 +135,12 @@ def targets(files: list[str] | None, base: str | None = None) -> list[str]:
     moved = moved_since(mapped[0], base) if mapped else set()
     for f in files:
         path = Path(f)
-        if path.name.startswith("test_") and path.suffix == ".py" and path.exists():
+        if path.name == "conftest.py":
+            # a conftest applies to the tests under its own folder (a test imports it only from there)
+            # the folder, not its files: a file named on the command line ignores collect_ignore
+            if path.parent.is_dir():
+                picked.add(str(path.parent))
+        elif path.name.startswith("test_") and path.suffix == ".py" and path.exists():
             picked.add(f)
         elif path.suffix != ".md":
             by_run = executed_by(f, *mapped) if mapped and path.suffix == ".py" else None
@@ -145,7 +157,13 @@ def targets(files: list[str] | None, base: str | None = None) -> list[str]:
                 continue
             picked.update(str(t) for t in named)
     picked.update(n for n in node_files(ran) if n.split("::")[0] not in picked)
-    return sorted(picked)
+    folders = [Path(p) for p in picked if Path(p).is_dir()]
+    # a target under a picked folder is already collected there: naming it again would collect it twice
+    return sorted(
+        p
+        for p in picked
+        if Path(p).is_dir() or not any(Path(p.split("::")[0]).is_relative_to(d) for d in folders)
+    )
 
 
 if __name__ == "__main__":

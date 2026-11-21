@@ -235,3 +235,11 @@ def test_a_callers_base_never_narrows_a_plain_pass_recorded_under_the_full_gate(
     assert "MY_BASE" not in approvals.gate_env({"sets": {}})
     _, _, with_proof = approvals.gate(["GATE_BASE"])
     assert approvals.gate_env({"sets": with_proof})["GATE_BASE"] == "abc"
+
+
+def test_this_repos_affected_tests_line_runs_check_fast_in_parallel() -> None:
+    """The line is parsed with no shell, so its leading variable is set for the command, which stays intact (#1460)."""
+    line = approvals.narrowing((Path(__file__).parents[2] / "docs/agents/loop.md").read_text())
+    _, words, sets = approvals.command_line(line, "Affected tests")
+    assert words == ["mise", "run", "check-fast"]
+    assert sets == {"GATE_TEST_PARALLEL": "1"}

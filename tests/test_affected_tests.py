@@ -2,6 +2,7 @@
 map cannot judge runs everything."""
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -32,12 +33,53 @@ def test_a_changed_test_file_runs() -> None:
 
 def test_test_setup_or_no_base_runs_everything() -> None:
     assert a.targets(["pyproject.toml"]) == a.ALL
+    assert a.targets(["uv.lock"]) == a.ALL
+    assert a.targets(["mise.toml"]) == a.ALL
     assert a.targets(["tools/gate_workers.py"]) == a.ALL
     assert a.targets(None) == a.ALL
 
 
-def test_a_conftest_anywhere_runs_everything() -> None:
-    assert a.targets(["engineering/tests/conftest.py"]) == a.ALL
+def test_a_conftest_runs_its_own_folder_and_the_cheap_checks() -> None:
+    picked = a.targets(["engineering/tests/conftest.py"])
+    assert "engineering/tests" in picked
+    assert set(a.CHEAP) <= set(picked)
+    assert [p for p in picked if p not in a.CHEAP] == ["engineering/tests"]
+    assert a.targets(["engineering/tests/e2e/conftest.py"]) == sorted(
+        [*a.CHEAP, "engineering/tests/e2e"]
+    )
+    sub = a.targets(["tests/capability_pack/conftest.py"])
+    assert "tests/capability_pack" in sub
+    assert not any(p.startswith("engineering/") for p in sub)
+
+
+def test_a_target_under_a_picked_folder_is_not_named_twice() -> None:
+    picked = a.targets(["engineering/tests/conftest.py", "engineering/tests/test_approvals.py"])
+    assert "engineering/tests/test_approvals.py" not in picked
+    assert picked.count("engineering/tests") == 1
+
+
+@pytest.mark.parametrize(
+    "conftest", ["engineering/tests/conftest.py", "engineering/tests/e2e/conftest.py"]
+)
+def test_the_selection_of_a_conftest_collects_cleanly(conftest: str) -> None:
+    """A folder target keeps collect_ignore (the e2e fixture repository's own tests are not importable here)."""
+    done = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"]
+        + ["-m", "not live_agent", *a.targets([conftest])],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # collection finished; a host lacking a tool some selected test needs stops at conftest's own check right after it
+    # (pytest_collection_finish), which is not a collection error
+    host_lacks_a_tool = "missing tools the tests run" in done.stdout + done.stderr
+    assert done.returncode == 0 or host_lacks_a_tool, done.stdout[-2000:] + done.stderr[-2000:]
+    assert "error" not in done.stdout.splitlines()[-1].lower()
+    assert "engineering/tests/e2e/test_static_discovery.py" in done.stdout
+
+
+def test_the_root_conftest_runs_everything() -> None:
+    assert a.targets(["conftest.py"]) == a.ALL
 
 
 def test_a_non_python_file_runs_the_tests_that_name_its_file_name(tmp_path, monkeypatch) -> None:
@@ -50,6 +92,7 @@ def test_a_non_python_file_runs_the_tests_that_name_its_file_name(tmp_path, monk
 
 def test_a_deleted_test_file_is_not_picked() -> None:
     assert "tests/test_gone_for_good.py" not in a.targets(["tests/test_gone_for_good.py"])
+    assert a.targets(["tests/gone/conftest.py"]) == a.CHEAP
 
 
 def test_e2e_tests_are_never_selected_by_name(tmp_path, monkeypatch) -> None:
