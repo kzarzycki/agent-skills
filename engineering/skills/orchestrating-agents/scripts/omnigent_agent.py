@@ -932,34 +932,36 @@ CLOUD_NUDGE = (
 CLOUD_LEAD_ENDING = re.compile(r"[\s*_#>-]*(DONE|USER NEEDED|STILL WORKING|PARKED):")
 
 
-def repo_path(path: str | Path) -> str | None:
-    """``path`` relative to its git checkout when the file is tracked and unchanged against HEAD
-    (what a child's clone of this HEAD holds), else None: a file outside a repo, untracked, staged
-    or edited is not in that clone, so its text must travel in the message."""
+def repo_path(path: str | Path, checkout: Path | None = None) -> str | None:
+    """``path`` relative to ``checkout`` (default: this directory's repo) when its text equals the
+    file committed at that checkout's HEAD, which is what a child's clone holds; else None. A file in
+    another checkout, untracked, staged or edited has other text there, so it must travel in the
+    message. HEAD is asked by literal path and compared by content, since a pathspec reads
+    ``task[1].md`` as a pattern and the index may be told a file is unchanged."""
     p = Path(path).resolve()
 
-    def git(*args: str) -> subprocess.CompletedProcess[str] | None:
+    def git(*args: str) -> str | None:
         try:
-            return subprocess.run(
-                ["git", "-C", str(p.parent), *args], capture_output=True, text=True, check=False
+            done = subprocess.run(
+                ["git", "-C", str(root), *args], capture_output=True, text=True, check=False
             )
         except OSError:
             return None
+        return None if done.returncode else done.stdout.strip()
 
-    top = git("rev-parse", "--show-toplevel")
-    if not top or top.returncode:
+    root = (checkout or Path.cwd()).resolve()
+    if not root.is_dir() or not (top := git("rev-parse", "--show-toplevel")):
         return None
-    rel = p.relative_to(Path(top.stdout.strip()).resolve()).as_posix()
-    tracked, same = (
-        git("ls-files", "--error-unmatch", p.name),
-        git("diff", "--quiet", "HEAD", "--", p.name),
-    )
-    if not (tracked and same) or tracked.returncode or same.returncode:
+    root = Path(top).resolve()
+    if not p.is_relative_to(root):
         return None
-    return rel
+    rel = p.relative_to(root).as_posix()
+    committed = git("rev-parse", "--verify", "-q", f"HEAD:{rel}")
+    here = git("hash-object", "--", str(p))
+    return rel if committed and committed == here else None
 
 
-def role_line(role: str | None, cloud: bool) -> str:
+def role_line(role: str | None, cloud: bool, checkout: Path | None = None) -> str:
     """The preamble's role sentence. A cloud VM clones this checkout's HEAD, so a role file tracked
     and unchanged there is named by its repo path; any other file's text rides in the brief; a
     non-cloud child reads the file at its path."""
@@ -967,7 +969,7 @@ def role_line(role: str | None, cloud: bool) -> str:
         return ""
     if not cloud:
         return f"Your role file is {role}; read it first.\n"
-    if rel := repo_path(role):
+    if rel := repo_path(role, checkout):
         return f"Your role file is `{rel}` in your checkout: read it first and follow it.\n"
     return (
         "Your role file follows, since this VM may hold no copy of it: the other files it names may"
@@ -984,6 +986,7 @@ def first_message(
     role: str | None,
     brief: str,
     delegation: str = "",
+    checkout: Path | None = None,
 ) -> str:
     """A child's brief as ``start`` sends it: its preamble, then ``brief``. It reads no server, so a
     cloud lead, which reaches Omnigent only through its MCP tools, prints it with ``brief`` and passes
@@ -998,7 +1001,9 @@ def first_message(
     elif not top_level:
         preamble = preamble.removesuffix("\n") + HOST_RUN_NOTE + "\n"
     return (
-        preamble.format(report=report, pr=pr, unposted=UNPOSTED, role=role_line(role, cloud))
+        preamble.format(
+            report=report, pr=pr, unposted=UNPOSTED, role=role_line(role, cloud, checkout)
+        )
         + brief
     )
 
@@ -4152,7 +4157,14 @@ def start(
         else ""
     )
     body = (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "") + first_message(
-        cloud, top_level, pr, report, role, brief, delegation
+        cloud,
+        top_level,
+        pr,
+        report,
+        role,
+        brief,
+        delegation,
+        Path(workspace) if workspace else None,
     )
     brief_file = brief_of(report)
 
@@ -9404,7 +9416,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     )
     p.add_argument("brief", help="the task specifics: a file, or the text itself")
     p.add_argument("report", type=Path)
-    p.add_argument("--role", help="worker/verifier role file, inlined for a cloud child")
+    p.add_argument(
+        "--role",
+        help="worker/verifier role file: named by repo path for a cloud child when tracked and unchanged at HEAD, else inlined",
+    )
     p.add_argument("--cloud", action="store_true", help="the child runs in a Claude cloud VM")
     p.add_argument("--top-level", action="store_true")
     p.add_argument("--pr", type=int)
@@ -9825,23 +9840,19 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             body = first_message(
                 args.cloud, args.top_level, pr, report, args.role, task, delegation
             )
-            print(f"brief: {len(body)} characters", file=sys.stderr)
             if args.cloud and len(body) > SESSION_MESSAGE_CAP:
+                role_part = len(role_line(args.role, True)) if args.role else 0
+                parts = {
+                    "the inlined role file" if role_part > 300 else "the role line": role_part,
+                    "the brief": len(task),
+                    "the preamble": len(body) - role_part - len(task),
+                }
                 raise TooLong(
                     f"brief: {len(body)} characters, over {SESSION_MESSAGE_CAP}, which"
-                    " sys_session_create refuses; the longest part is "
-                    + max(
-                        (
-                            (
-                                "the role file" if args.role else "the preamble",
-                                len(body) - len(task),
-                            ),
-                            ("the brief", len(task)),
-                        ),
-                        key=lambda x: x[1],
-                    )[0]
-                    + ": name a tracked, committed file or shorten it"
+                    f" sys_session_create refuses; the longest part is {max(parts, key=parts.get)}"
+                    " (name a tracked, committed file by path or shorten it)"
                 )
+            print(f"brief: {len(body)} characters", file=sys.stderr)
             sys.stdout.write(body)
             return 0
         og = Omnigent(args.server) if args.server else Omnigent()
