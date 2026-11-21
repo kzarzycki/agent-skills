@@ -10,6 +10,7 @@ session's proxy does. Reads return GitHub's GraphQL node shapes (ISSUE, PULL), w
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import subprocess
@@ -65,7 +66,7 @@ ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENT
 THREADS = f"reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}"
 
 
-PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
+PULL = f"""id number url title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType additions deletions }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
   {THREADS}
@@ -148,6 +149,48 @@ def open_pulls(limit: int) -> list[dict[str, Any]]:
             issue["repository"] = {"nameWithOwner": f"{where['owner']['login']}/{where['name']}"}
         other["closingIssuesReferences"] = {"nodes": nodes}
     return found
+
+
+def open_pull_files(limit: int) -> list[dict[str, Any]]:
+    """Up to `limit` open PRs, each with its number, base, head commit and the paths it changes (`files`), in one call.
+    `gh pr list` names a PR's first 100 files only, so a PR with 100 has all of its files re-read through REST's pages
+    (GitHub's own cap there is 3000), and an overlap past the 100th file is never missed."""
+
+    def every_file(number: int) -> list[str]:
+        # objects, not `.[].filename`: `gh --jq` prints a string raw, which rest_pages can't read as JSON
+        return [file["filename"] for file in rest_pages(f"pulls/{number}/files?per_page=100")]
+
+    return fast(  # type: ignore[no-any-return]
+        lambda: [
+            {
+                **pull,
+                "files": every_file(pull["number"])
+                if len(pull["files"]) >= 100
+                else [file["path"] for file in pull["files"]],
+            }
+            for pull in json.loads(
+                gh(
+                    "pr",
+                    "list",
+                    "--state",
+                    "open",
+                    "--limit",
+                    str(limit),
+                    "--json",
+                    "number,baseRefName,headRefOid,files",
+                )
+            )
+        ],
+        lambda: [
+            {
+                "number": other["number"],
+                "baseRefName": other["base"]["ref"],
+                "headRefOid": other["head"]["sha"],
+                "files": every_file(other["number"]),
+            }
+            for other in rest_pages("pulls?state=open&per_page=100")[:limit]
+        ],
+    )
 
 
 def texts(data: str) -> list[str]:
@@ -265,8 +308,9 @@ def refused(stderr: str | None) -> bool:
     return any(text in (stderr or "") for text in REFUSALS)
 
 
-# set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again
-_rest_only = False
+# set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again; GATEKEEPER_REST_ONLY=1
+# sets it from the start, so a check can force the REST path on a token GraphQL would answer
+_rest_only = os.environ.get("GATEKEEPER_REST_ONLY") == "1"
 
 
 Answer = TypeVar("Answer")
@@ -537,6 +581,7 @@ def rest_pull(pr: int) -> dict[str, Any]:
     return {
         "id": found["node_id"],
         "number": found["number"],
+        "url": found.get("html_url", ""),
         "title": found["title"],
         "isCrossRepository": (head.get("repo") or {}).get("full_name") != base["repo"]["full_name"],
         "author": actor(found.get("user")),
@@ -834,15 +879,17 @@ def close_issue(number: int) -> None:
     )
 
 
-def comment(number: int, body: str) -> None:
-    gh(
+def comment(number: int, body: str) -> str:
+    """Post `body` on PR or issue `number`; the new comment's URL."""
+    return gh(
         "api",
         f"repos/{{owner}}/{{repo}}/issues/{number}/comments",
         "-F",
         "body=@-",
-        "--silent",
+        "--jq",
+        ".html_url",
         data=public(body),
-    )
+    ).strip()
 
 
 def minimize(comment_id: str) -> None:
@@ -1267,6 +1314,7 @@ forge = Port(
     "head_pushed",
     "merged_labelled",
     "open_pulls",
+    "open_pull_files",
     "open_heads",
     "required_checks",
     "default_branch",

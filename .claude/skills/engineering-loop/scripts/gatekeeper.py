@@ -9,6 +9,7 @@
     uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run --python '>=3.11' scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
+    uv run scripts/approvals.py check ready <pr>                # the author's step before the verifier: the PR body's `## Evidence` (and demo form) alone, the check merge runs; exit 0 or 1
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
@@ -18,15 +19,17 @@
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
+    uv run scripts/approvals.py overlap <pr>|--files <path>... [--base <b>]  # other open PRs changing the same files: hunks, and whether the heads merge
     uv run scripts/approvals.py local-ci <pr> [--head <sha>] [--run]  # --head: the commit just pushed, refused if GitHub's head stays another; with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
-    uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
+    uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed under `ci: false` or with --base (Narrowed mode)
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
-    uv run scripts/approvals.py affected-tests   # the worker's gate on a draft head: loop.md's `Affected tests:` command, else `check`
+    uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's gate on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; else `check`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
+    uv run scripts/approvals.py heavy --plan               # the host's gate slot count and the limit that set it
 
 gatekeeper.py is the gatekeeper; approvals.py, its name before #614, runs it for one release line, every verb above
 unchanged. Its own names for three of them, and one verb more:
@@ -104,13 +107,12 @@ delegate's, a head whose level asks a go has. Into the default branch these are 
 label is anyone's with triage rights, the delegated approver's included, so `approved:merge` there is no go, nor is
 an `owner` status an older gate wrote from the label (marked as from it). On a change whose level asks no go the
 label means nothing. Risk is a rating, and the policy's `levels` say what each level asks (rating, levels): `high` is
-`risk:high` on the PR or an issue it names, a risk rule matching (below), or a review at the cap or later not
-satisfied or with a blocker or major open (`cap`, SKILL.md § The cap); `critical` a path `risk.critical_paths` names
+`risk:high` on the PR or an issue it names, or a risk rule matching (below); `critical` a path `risk.critical_paths` names
 (below); `low` anything else. Each level asks `policy` or `owner` of the spec and `gates`, `go` (a person's go on the
 head, as above) or `owner` (the owner's own go on the head, into any branch, no delegate's go nor label counting) of
 the merge; the merge takes the strictest any of its terms asks. The defaults are `low` {policy, gates}, `high`
 {policy, go}, or under `spec.auto: true` {owner, gates}, and `critical` {policy, owner}. A term the spec's hold never
-reads (the label, a revert, the `verifier` term, the cap) rates the change only after its spec was approved, and asks
+reads (the label, a revert, the `verifier` term) rates the change only after its spec was approved, and asks
 `go` where its level asks `owner` of the spec and `gates` of the merge, since the owner never saw that rating.
 `check merge` and `land` print the level and the merge action on stderr (`PR #7: risk: high (<why>); merge: go`). When
 the gate rates a change high or critical, `check merge` and `land` add `risk:high` to the PR, reporting a failure to
@@ -227,6 +229,9 @@ Exit 0 when the named PR merged (on a GitHub-queue base, also once it is enqueue
 eviction, a merge GitHub refused or a red base; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
 `land --wait` runs it again every 30 seconds while it waits on the lock or on CI, printing each new state once, for up
 to 2 hours, then exits 3; a wait for the owner ends it at once, since only the owner clears it.
+Each named PR's branch carries the `land` event (events.md): `waiting` rewritten at each poll of `--wait`, `ok` once it
+merged (its refs cleared EVENT_GRACE seconds later, so a `wait land <branch>` finds the end), `failed` when evicted (its
+`url` the log comment), `needs-owner` at the owner's go or the 2-hour ceiling. A write that fails changes no exit code.
 The GitHub merge queue takes no landing lock (GitHub orders the entries, and two lands enqueueing one PR change
 nothing), builds no local batch, runs no local gate, publishes no pass and deletes no record branch. Once it has fetched
 the base (the base-drift refusal below), each of step 2's candidates, oldest PR first, goes in with GraphQL
@@ -300,7 +305,7 @@ whether classic branch protection requires one, so a PR is a candidate there onl
 section, the project's word that its base requires none (a ruleset that does picks the GitHub merge queue, above);
 a draft is marked ready and an evicted PR turned back to draft through the proxy's draft routes
 (`ccr/ready_for_review`, `ccr/convert_to_draft`). Off a cloud session only `where` is new.
-`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip. `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its 2-hour ceiling; any other checkout keeps the refusal.
+`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip. `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its 2-hour ceiling; any other checkout is left alone and the land runs again from a fresh detached worktree of `origin/<base>`, removed when it ends; the refusal stands only when nothing newer exists to run from (the checkout is the base's tip, or the base lacks the running script).
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
 printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
@@ -333,8 +338,14 @@ counts for nothing. A step without `paths`, with an empty list, or whose paths m
 the tree, as above; a change to `gate_steps` changes every keyed step's key. A cloud session runs no `host` step: `local-ci --record` there runs the rest, says
 which step it left and exits 0, with no head proof and no pass on the whole gate, which `local-ci <pr>` and `land` need
 and refuse there. Each step that runs, or the one gate, holds the host gate slot (an exclusive flock on
-`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, n up to `GATE_SLOTS`, a third of the cores by default) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
-path so a wrapper in it takes no lock of its own, and none when this process already runs under it; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
+`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, n up to the host's slot count) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
+path so a wrapper in it takes no lock of its own, and none when this process already runs under it. The count is `GATE_SLOTS`
+when it is a whole number from 1; else, where loop.md has the line `Gate cost: <cores> cores, <GB> GB` (optional
+`, reserve <GB> GB`, by default a quarter of the host's total memory, at least 4 GB), the smaller of the cores ÷ the
+cost's cores and (total memory − reserve) ÷ the cost's GB, at least 1; without the line, a third of the cores, at least
+1. `GATE_SLOTS=off` takes no slot at all. `heavy --plan` prints the count and the limit that set it, `slots <n>:
+<cores|memory|GATE_SLOTS|off> (<cores> cores, <GB> GB, cost <c> cores <m> GB, reserve <r> GB)`, as the template's
+`gate-slot --plan` does, and a wait for a slot says the same line; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
 nothing and exits with the check's code, so it is the gate while iterating too and its clean green run, the last one,
 records itself.
 Unless it already leads its own session, `local-ci` starts itself again in a new one, stdin from /dev/null, and follows
@@ -347,6 +358,13 @@ follows that run instead of starting another (after it, one with other arguments
 naming the exit), with the log's path. The run's stderr goes to the same log, so a caller prints the check's stderr and
 a refusal (`exited N: nothing recorded`) on its stdout. Stopping the caller, Ctrl-C included, leaves the run going:
 `kill -- -<pid>`, with the pid `<head>.pid` holds, stops its process group.
+A run that gates a branch also writes its `gate` event (events.md, `refs/loop/gate/<branch>`, the checked-out branch): `waiting` while a step waits for a slot or runs, rewritten every SLOT_SAY_SECONDS; `ok` at the end with
+`url` the record (with `gate_steps`, the records' directory); `failed` with `url` the detached run's log when there is one,
+else empty (a failed step records nothing, and a refusal has no log either). The detaching `local-ci` writes `waiting`
+first, before it starts the run, so a wait that follows it never reads the previous head's end, and ends the event itself when the run wrote none (`failed` with the log on a nonzero exit, `ok` with no url on exit 0, as a record on a changed tree); a step left for a host keeps `waiting`. Writing an event never
+changes the exit code. The `gate` commit status stays, on the PR head and on main commits: `land` writes the latter
+(`publish(tip, landed_pass(...))`), `wait-for --until gate` reads the former and the PR page shows both, and no event
+reader replaces them yet.
 Every pass this clone holds, run or reused, is published one way from every session, host or cloud: pushed to origin
 as the branch `loop-gate/<tree>-<command's key>` (a branch, since a cloud session's proxy pushes nothing else), on a
 commit holding the tree, the commit the pass ran on as its parent, and as its message the line `Tree <tree> on
@@ -376,6 +394,23 @@ publishes the pass as the commit status `<context>` instead of `gate`, described
 `land` reads it, the one status a decision reads for a pass: a green status of that context on the head commit itself, naming the head's tree,
 by the account running this or a writer. A status on an older head never counts, since a status belongs to one commit.
 Which tier a change needs is the project's rule; `land` checks only that a head proof exists.
+Narrowed mode: loop.md's line `Affected tests: <command>` without the line `Gate: full`, the opt-out (narrowing). Its
+command is the whole narrowed check: the project's selector plus its cheap whole-repo lint and type checks, reading the
+base from the variable `Gate base:` names, else `GATE_BASE`. `affected-tests` runs it against `--base <rev>` (a PR's
+base SHA, a push's previous tip), else the merge base with the branch's base; a `<rev>` git can't resolve (all zeros,
+a new branch) runs `mise run check`, said in one line, as do the opt-out and a loop.md without the line. In narrowed
+mode under `ci: false`, or where the base requires no check, `land`'s batch gate runs that command with the variable set
+to the base tip the batch merges onto, so it selects over the batch's combined diff, in place of the gate; where the base
+requires a check, which already ran each head's tests on that head, the batch gate is the `gate` line (batch_narrows),
+so it runs what that line runs (whole-tree checks such as a vendor check and lint, say). The narrowed batch gate runs under the same slot, `machine_exit`, records and cloud gate (whose
+`local-ci --record` it passes `--base <tip>`). Under `ci: false`, `local-ci --record` runs it against `--base`, else the
+merge base, as the ready head's gate of record, and `check merge` takes that pass on the head's tree, against the merge
+base of the head and the PR's base, in place of a full one; `local-ci <pr>` posts it. A narrowed pass's command is the
+variable's assignment, the command, then ` (narrowed)`, which no gate command can hold, so its record and key never
+equal a full pass's, and nothing that wants a full pass (`ci: false` without narrowed mode, a batch proof's head pass)
+takes it. Its `gate` status and record branch say `narrowed vs <base>`, and `local-ci --status` says `narrowed against <base>`. A project with
+`gate_steps` keeps its steps everywhere, since each narrows by its `paths`. Without the `Affected tests:` line, `check
+build` says in one line that every gate runs the full check (not with the opt-out, which chose it).
 Deprecated: a project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
 full gate once on the result, push the batch) instead of one `land` per PR, opting in with `batch_queue: true` under
 loop.md's `loop`; without it `check queue` refuses and no batch proof counts, so a project that never set one up gets
@@ -479,8 +514,8 @@ way, epics included, except one opened by an account without write access, or on
 whose `spec` is `owner` (by default `high` there: the risk rule on the labels of the issue and the PR and the PR's
 files, at `check build` the files pushed so far): those need the owner's record and label, and `check` says why. A
 level asking `owner` of the spec holds a spec a `spec.auto` kind covers too. Under `spec.auto: true` the risk rule
-holds the spec instead of the merge by default, since the owner approved the change before it was built; `risk:high`,
-the `verifier` term and the cap still hold the merge. The list may also
+holds the spec instead of the merge by default, since the owner approved the change before it was built; `risk:high`
+and the `verifier` term still hold the merge. The list may also
 hold a `paths` term (`- paths: [mise.toml, docs/agents/**]`), globs as a rule's `paths` are: it approves by policy the
 spec of an issue labelled `spec:paths`, which the lead adds to declare that the change stays inside them, since the
 gate can't tell that from the spec alone and the setting alone would approve every spec until its merge. `check build`
@@ -512,10 +547,10 @@ owner signs off in use after it lands: `check merge` needs the PR to link each i
 line `Sign-off: owner`, with `Implements #<n>`, which leaves it open for the sign-off, and every other issue with a
 closing keyword (`Part of` suits both); without a `signoff` section no keyword is checked and `Implements` is a link like
 `Part of`. `verifier` holds at the merge (under `spec.auto: true` too, since the verdict comes after the build) when the
-verifier judges the change high: the highest pass on the head, by a trusted account (passes), says `Risk: high`, any
-word but `low`, or has no `Risk:` line, and the hold quotes it. A head no review covers waits for its review instead; a
+verifier judges the change high: the highest `Risk:` of the verifier's passes since its last `Scope: full` pass (its first pass counts as one), by
+a trusted account (passes), is `high`, any word but `low`, or missing, and the hold quotes it. A head no review covers waits for its review instead; a
 PR that needs none (exempt, an exact revert) has no judgment. A `risk:high` the gate added for that term comes with a
-comment saying so, and the gate takes the label off once a later pass says `Risk: low`, unless it was added again
+comment saying so, and the gate takes the label off once a later `Scope: full` pass says `Risk: low`, unless it was added again
 after that comment, which is a raise only the owner lowers. Paths in the same rule hold whatever the verifier says.
 The board's `Risk` field follows the label and the verifier's word, and a field at `High` adds the label (flag); the
 label stays the gate's only input, and a board it can't reach is a line, never a failure.
@@ -529,6 +564,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import atexit
 import contextlib
 import contextvars
 import fcntl
@@ -553,6 +589,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 from types import ModuleType
 from typing import Any, NamedTuple, NoReturn
@@ -605,9 +642,16 @@ PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
 # a tier below the default a `Verifier model:` line names, a word of its own after the signature in the review's
 # family (`codex/terra-6.1/med mid`, verifier.md): a model id holding the word (`sol-mid-preview`) names no tier
 LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
-# The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
+# The cap, the last pass the loop runs on its own (a core finding open after it is the lead's call), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
+# the lead's decision at the cap to land with majors open, filed as a follow-up issue, as a PR body line of its own:
+# `Cap: #<follow-up>` (SKILL.md § The cap); a quoted line (`>`, a code span or block) is an example, not the record. ponytail: the gate trusts the number the lead names; fetch the issue and
+# check its `Found while` line if a lead ever names one it never filed.
+# at most 3 spaces before it, since 4 or a tab make the line an indented code block: an example, not the decision
+CAP_DECISION = re.compile(
+    r"^ {0,3}(?:[*-][ \t]+)?\**Cap\**:?\**[ \t]*#\d+\b", re.MULTILINE | re.IGNORECASE
+)
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
@@ -623,8 +667,15 @@ CLOSES, IMPLEMENTS, PART = "closes", "implements", "part of"
 SIGNOFF = re.compile(
     r"^[ \t>*-]*\**Sign-off\**:?\**[ \t]*`?(owner|none)\b", re.MULTILINE | re.IGNORECASE
 )
-# code and comments: an example, not a closing line
-QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE)
+# code (a ``` or ~~~ block, a code span) and comments: an example, not a closing line. A block closes on a line of
+# its fence character at least as long as its opening, CRLF included; an unclosed one quotes nothing, since what
+# Markdown closes it on (the end of a quote or list) is beyond a regex. A ``` opening with a later backtick is a span.
+QUOTED = re.compile(
+    r"^[ \t>]*(`{3,})(?![^\n]*`).*?^[ \t>]*\1`*[ \t]*\r?$"
+    r"|^[ \t>]*(~{3,}).*?^[ \t>]*\2~*[ \t]*\r?$"
+    r"|`[^`\n]*`|<!--.*?-->",
+    re.DOTALL | re.MULTILINE,
+)
 # the first line of the comment flag() leaves when the verifier's `Risk:` line made it add `risk:high`, which says the
 # label is the gate's to take off again when a later pass judges the risk low
 FLAGGED = f"`{RISK_LABEL}` added by the gate"
@@ -674,12 +725,12 @@ POLL, CEILING = 30, 2 * 60 * 60
 # seconds after the last run, unless it holds a lock (RECHECK): a merge queue or a check takes minutes to move, so
 # 30 s polls spend the account's quota, and its per-minute limit, on answers that did not change. POLL is the step
 # the sleep goes in, so the log is never silent and a lock that moved is seen at once
-QUEUE_POLL = 120
+QUEUE_POLL = 300
 # a wait on a held lock whose ref is unchanged runs landing() (the GitHub calls) again only after this many seconds: the
 # lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
 RECHECK = 300
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
-LOW_POLL, LOW_QUOTA = 300, 0.1
+LOW_POLL, LOW_QUOTA = 600, 0.1
 POLL_JITTER = 60  # most seconds of random delay added to a land --wait poll
 # a wait that meets this many network failures in a row (NETWORK) fails with the last one
 MISSES = 3
@@ -1462,10 +1513,9 @@ def terms(
     """The risk terms that hold on the change, in the order the gate quotes them, each as (level, after, why): `high`
     for `risk:high` on the PR or an issue it names (or, for a feature branch's merge to the default branch, on a PR
     merged into it), an exact revert of a high-risk change, a risk rule's `always`, `labels` or `paths` (ruled) on the
-    labels of the PR and its issues and its files, its `verifier` term on the verifier's `Risk:` line (judged), and a
-    review at the cap not satisfied or with a blocker or major open (capped); `critical` for a path
-    `risk.critical_paths` names (critical). `after` marks a term the spec's own hold never reads (spec_owned), the
-    label, the revert, the verifier and the cap, so it rates the change only after its spec was approved. Lazy, so a
+    labels of the PR and its issues and its files, and its `verifier` term on the verifier's `Risk:` line (judged);
+    `critical` for a path `risk.critical_paths` names (critical). `after` marks a term the spec's own hold never reads
+    (spec_owned), the label, the revert and the verifier, so it rates the change only after its spec was approved. Lazy, so a
     caller that needs the first term reads no more. An exact revert's issues (gated's `named`) count as its issues."""
     issues = issues + pull.get("named", [])
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
@@ -1491,16 +1541,6 @@ def terms(
             yield "high", True, f"it matches a risk rule's `verifier` term: {why}"
         else:
             yield "high", True, f"it matches a risk rule (verifier): {why}"
-    limit = cap(loop)
-    if capped(pull, limit):
-        yield (
-            "high",
-            True,
-            (
-                f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open,"
-                " so the owner decides"
-            ),
-        )
 
 
 def merge_for(level: str, after: bool, table: dict[str, dict[str, str]]) -> str:
@@ -1591,22 +1631,31 @@ def head_passes(
 
 
 def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
-    """Why the verifier holds the change high, or None: the highest pass on the head (passes), or on the commit whose
-    proofs the head carries (carried), says `Risk: high`, any other word than `low`, or has no `Risk:` line; a mixed
-    PR's two verifiers both must say `low`. A head no review covers is None, since reviewed() then refuses the merge,
-    or the PR needs no review (exempt, an exact revert)."""
+    """Why the verifier holds the change high, or None. Every pass after the first reviews only the diff since the last
+    reviewed head, so a verifier's risk is the highest `Risk:` of its passes since the last that reviewed the whole
+    change: its first pass (by posting order, so a repeated `pass 1` later is a delta), or a later pass whose closing
+    `Scope:` line is exactly `full`. A pass whose `Risk:` is any other word than `low`,
+    or has no such line, holds; a mixed PR's two verifiers each count. A head no review covers is None, since reviewed()
+    then refuses the merge, or the PR needs no review (exempt, an exact revert)."""
     found = head_passes(pull, loop)
     if isinstance(found, str):
         return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {found}"
-    head, on_head = found
-    if not on_head:
+    if not found[1]:
         return None
-    last = max(number for number, _ in on_head)
-    for number, lines in on_head:
-        said = lines.get("Risk")
-        if number == last and not re.match(r"low\b", said or "", re.IGNORECASE):
-            line = "has no `Risk:` line" if said is None else f"says `Risk: {said}`"
-            return f"the verifier's pass {last} on {head[:7]} {line}"
+    families: dict[str, list[tuple[int, str, dict[str, str]]]] = {}
+    for commit, number, lines in passes(pull):  # type: ignore[union-attr]
+        families.setdefault(kin(lines["Family"]), []).append((number, commit, lines))
+    for family in families.values():
+        whole = [
+            i
+            for i, (number, _, lines) in enumerate(family)
+            if i == 0 or lines.get("Scope", "").lower() == "full"
+        ]
+        for number, commit, lines in family[whole[-1] if whole else 0 :]:
+            said = lines.get("Risk")
+            if not re.match(r"low\b", said or "", re.IGNORECASE):
+                line = "has no `Risk:` line" if said is None else f"says `Risk: {said}`"
+                return f"the verifier's pass {number} on {commit[:7]} {line}"
     return None
 
 
@@ -1750,7 +1799,7 @@ def raise_risk(pull: dict[str, Any], why: str, loop: str | None, mark: bool = Fa
                 f"{where}: could not remove `{other}` beside `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): remove it by hand"
             )
     if (verdict := judged(pull, loop)) and verdict in why:
-        body = f"{FLAGGED}, since {why}. A later pass that says `Risk: low` takes it off.\n"
+        body = f"{FLAGGED}, since {why}. A later pass that says `Scope: full` and `Risk: low` takes it off.\n"
         failed = f"{where}: could not comment why the gate added `{RISK_LABEL}`, so it stays until a person removes it"
     else:
         body = f"`{RISK_LABEL}` added, since {why}.\n"
@@ -1888,7 +1937,9 @@ def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
         number, owners = issue["number"], assignees(issue)
         if not owners and (login := approver(issue)):
             try:
-                comment(number, f"{ASSIGNED}{login}\nBy: loop\nPR: #{pull['number']}\n")
+                comment(
+                    number, fold(f"{ASSIGNED}{login}", details=f"By: loop\nPR: #{pull['number']}")
+                )
             except subprocess.CalledProcessError as exc:
                 found.append(
                     f"#{number}: did not assign @{login}: could not record the claim ({(exc.stderr or '').strip() or exc})"
@@ -2044,7 +2095,7 @@ def spec_holder(issue: dict[str, Any]) -> dict[str, Any]:
 
 def parsed(body: str, point: str) -> dict[str, str] | None:
     """An `Approved: <point>` comment's lower-cased `Key: value` lines; None for any other comment."""
-    lines = body.strip().splitlines()
+    lines = machine(body).strip().splitlines()
     if lines and lines[0].strip() in VOICED.values():  # the plain line atop a merge record
         lines = lines[1:]
     if not lines or lines[0].strip() != f"Approved: {point}":
@@ -2295,9 +2346,7 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
     None, without docs/agents/issue-tracker.md, checks no label's shape); empty when none does. A missing
     `approved:spec` is proofs()'s line."""
     if not issues:
-        return [
-            "the PR names no issue: it needs a `Closes #<spec>` or `Part of #<spec>` line for an approved spec"
-        ]
+        return ["the PR names no issue: it needs a `Closes #<issue>` line for an approved spec"]
     found = []
     for issue in issues:
         labels = names(issue)
@@ -2322,6 +2371,13 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
                 f"#{issue['number']} needs a component label ({', '.join(sorted(kinds['component'])) or f'{TRACKER} lists none'})"
             )
     return found
+
+
+def no_evidence(pull: dict[str, Any]) -> list[str]:
+    """A line when the PR's body has no `## Evidence` section with content: `check merge`'s proof and `check ready`'s."""
+    if section(pull["body"] or "", "Evidence").strip():
+        return []
+    return [f"PR #{pull['number']}: its body has no `## Evidence` section with content"]
 
 
 def demo_form(pull: dict[str, Any]) -> list[str]:
@@ -2408,9 +2464,8 @@ def proofs(
     if point != "merge":
         return found
     where = f"PR #{pull['number']}"
-    evidence = section(pull["body"] or "", "Evidence")
-    if "evidence" not in waived and not evidence.strip():
-        found.append(f"{where}: its body has no `## Evidence` section with content")
+    if "evidence" not in waived:
+        found += no_evidence(pull)
     if loop is not None:
         found += linked(pull, issues, loop)
     if revert is None and "verifier" not in waived and not exempt(pull, loop):
@@ -2444,7 +2499,8 @@ def proofs(
 
 
 def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
-    """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:`/`Risk:`/`Logic change:` lines: a body
+    """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:`/`Risk:`/`Scope:`/`Logic change:` lines (`Scope:` read from the closing block only,
+    since a criteria line may say anything): a body
     starting `Verifier (<family>), pass <n>`, by the PR's author, the account running this or a writer (writer), since
     anyone can review a public repo, and a colleague (or their agent) verifying someone else's PR posts as themself.
     A verifier's newest review on a commit and pass replaces its earlier ones there (kin), since one that parked on a
@@ -2470,6 +2526,16 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
                         line.partition(":") for line in review["body"].splitlines()
                     )
                     if key.strip() in ("VERDICT", "SATISFIED", "Risk", LOGIC)
+                },
+                **{
+                    key.strip(): value.strip()
+                    for key, _, value in (
+                        line.partition(":")
+                        for line in re.split(
+                            r"\r?\n\r?\n", folding.visible(review["body"]).rstrip()
+                        )[-1].splitlines()
+                    )
+                    if key.strip() == "Scope"
                 },
             },
         )
@@ -2785,15 +2851,6 @@ def cap(loop: str | None) -> int:
     return int(found[1])
 
 
-def capped(pull: dict[str, Any], limit: int) -> bool:
-    """Whether a verifier review at the cap (pass `limit`) or later left a blocker or major open, or was not
-    satisfied: the owner then decides between a fix with one scoped pass more and leaving the code untouched."""
-    found = passes(pull)
-    return not isinstance(found, str) and any(
-        number >= limit and not held(lines) for _, number, lines in found
-    )
-
-
 def reviewed(
     where: str,
     pull: dict[str, Any],
@@ -2804,7 +2861,8 @@ def reviewed(
     since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried: on
     the same tree, or where loop.md opts in, which prints a line either way), or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
-    blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
+    blocker or a major open; majors with no blocker at the cap or later pass once the PR body records the lead's
+    decision (CAP_DECISION). A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
     needs none (exempt). `verdicts` is passes()'s, when the caller has read it."""
     verdicts = passes(pull) if verdicts is None else verdicts
     if isinstance(verdicts, str):
@@ -2819,16 +2877,25 @@ def reviewed(
         return [
             f"{where}: a verifier review lacks its commit, or a `VERDICT:` or `SATISFIED:` line (approvals.py verdict)"
         ]
+    pairs = [pair for pair in map(counts, same) if pair is not None]
+    blocker, major = sum(pair[0] for pair in pairs), sum(pair[1] for pair in pairs)
+    # at the cap the lead decides: majors filed as a follow-up (CAP_DECISION) land on this verdict; a blocker never does
+    decided = (
+        not blocker
+        and major
+        and last >= cap(loop)
+        and CAP_DECISION.search(QUOTED.sub("", pull.get("body") or "")) is not None
+    )
     found = []
     if pull["headRefOid"].lower() != head and not carries(where, pull, loop, head):
         found.append(
             f"{where}: the newest verifier review is on {head}, not on the head {pull['headRefOid']}:"
             " every commit after a verdict needs a verdict of its own"
         )
+    if decided:
+        return found
     if any(lines["SATISFIED"].lower().split()[:1] != ["yes"] for lines in same):
         found.append(f"{where}: a verifier review on {head} is not satisfied: fix and verify again")
-    pairs = [pair for pair in map(counts, same) if pair is not None]
-    blocker, major = sum(pair[0] for pair in pairs), sum(pair[1] for pair in pairs)
     if blocker or major:
         found.append(
             f"{where}: the verifier reviews on {head} have {blocker} blocker and {major} major open: fix and verify again"
@@ -3137,16 +3204,17 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
     """One line per check the merge waits for on the head: ci()'s `required` (None: the base branch's required checks but
     `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass on the head's
-    tree under today's gate command (reusable)."""
+    tree under today's gate command (reusable), or in narrowed mode a narrowed pass (narrowed_pass)."""
     where = f"PR #{pull['number']}"
     if batch_queue(loop) and queued(pull, loop) is None:
         return []
     if no_ci(loop):
         # the proof is the pass itself (reusable), never the `Local check passed` comment, which anyone who can
         # comment may write and which says nothing about today's gate command
+        passed = tier(pull, loop)
         found = (
             []
-            if reusable(pull["headRefOid"], tier(pull, loop))
+            if reusable(pull["headRefOid"], passed) or narrowed_pass(pull, passed)
             else [
                 (
                     f"{where}: the project has no CI ({source(loop)} `ci: false`), and no local check passed on the head"
@@ -3162,13 +3230,38 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     return found
 
 
+def merge_base_of(base: str, head: str) -> str | None:
+    """`git merge-base origin/<base> <head>`, origin's `base` fetched first, else None where git can't answer."""
+    with contextlib.suppress(subprocess.CalledProcessError, OSError):
+        git("fetch", "-q", "--no-tags", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+    with contextlib.suppress(subprocess.CalledProcessError, OSError):
+        return git("merge-base", f"origin/{base}", head).strip()
+    return None
+
+
+def narrowed_pass(pull: dict[str, Any], passed: list[str]) -> dict[str, Any] | None:
+    """In narrowed mode (narrowing, narrowed_gate), a narrowed pass on the PR head's tree against the merge base of the
+    head and the PR's base (merge_base_of), as `local-ci --record` makes one under `ci: false`; else None. It stands
+    in for a full pass only where `check merge` reads the `ci: false` gate of record, never for one a decision needs in
+    full."""
+    if (
+        narrowing() is None
+        or (base := merge_base_of(pull["baseRefName"], pull["headRefOid"])) is None
+    ):
+        return None
+    with narrowed_to(base):
+        if narrowed_gate(passed) is None:
+            return None
+        return reusable(pull["headRefOid"], passed)
+
+
 def queued(pull: dict[str, Any], loop: str | None = None) -> list[str] | None:
     """None when a merge queue's batch proof (batch) on the head, by the account running this or a writer, holds
     (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
     ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
     where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
     for note in notes(pull):
-        lines = note["body"].strip().splitlines()
+        lines = machine(note["body"]).strip().splitlines()
         if not lines or lines[0].strip() != BATCHED:
             continue
         header = itertools.takewhile(
@@ -3316,8 +3409,15 @@ def carried(
     if tree := same_tree(pull["headRefOid"], verified):
         return verified, [same_tree_line(verified, tree)]
     guard = settings(loop).get("carry_over_main")
-    if guard is None:
-        return None
+    if (
+        guard is None
+    ):  # a project's own `except` globs (deprecated) keep deciding where it sets them
+        proof = catch_up(pull, verified)
+        return (
+            (verified, [f"verdict on {verified} carried to {pull['headRefOid']}: {proof}"])
+            if proof
+            else None
+        )
     walked = base_merges(pull, verified)
     if isinstance(walked, str):
         return walked
@@ -3342,6 +3442,51 @@ def same_tree(head: str, old: str) -> str | None:
     same, as after a reword of commit messages only. A tree neither the clone nor origin has is None."""
     mine = tree_of(head)
     return mine if mine is not None and mine == tree_of(old) else None
+
+
+def catch_up(pull: dict[str, Any], old: str) -> str | None:
+    """What shows, mechanically, that the PR's head only takes the base in since `old` (an earlier head), with no hand
+    edit, or None: the proof's words, which carried() and whose() print. Either (a rebase) `git range-diff` of
+    `merge-base(old, tip)..old` against `merge-base(head, tip)..head` marks every commit `=` with none added or dropped
+    and neither range holds a merge commit, which range-diff does not show (#1497),
+    or (a merge of the base) every commit since `old` is a merge of the base (base_merges) and `git show --remerge-diff`
+    of each is empty, so no conflict was resolved by hand. A verdict (carried) and a go (carried_go) on `old` carry to
+    the head by this one test, which nobody asserts. Fail-closed: a git error, or a commit origin lacks, is None (#1314)."""
+    head, old, tip = pull["headRefOid"].lower(), old.lower(), pull["baseRefOid"].lower()
+    base = pull["baseRefName"]
+    if head == old or not all(map(fetched, (head, old, tip))):
+        return None
+    try:
+        walked = base_merges(pull, old)
+        if not isinstance(walked, str):
+            if all(
+                not git("show", "--remerge-diff", "--format=", "--no-color", commit).strip()
+                for commit, _, _ in walked
+            ):
+                return f"every commit since is a merge of {base} whose `git show --remerge-diff` is empty: no conflict was resolved by hand"
+            return None
+        first, second = (git("merge-base", commit, tip).strip() for commit in (old, head))
+        # range-diff leaves merge commits out, so a merge whose tree adds an edit would still show every commit `=`
+        if any(
+            git("rev-list", "--merges", span).strip()
+            for span in (f"{first}..{old}", f"{second}..{head}")
+        ):
+            return None
+        shown = git("range-diff", "--no-color", f"{first}..{old}", f"{second}..{head}").splitlines()
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    # one line per commit pair (`1:  abc1234 = 1:  def5678 subject`, padded with a leading space once a side has 10+
+    # commits), a changed one followed by its 4-space-indented diff; any other line is not understood: not clean
+    pair = re.compile(r"^\s*(?:\d+|-):\s+\S+\s+([=!<>])\s+(?:\d+|-):")
+    marks: list[str] = []
+    for line in shown:
+        if found := pair.match(line):
+            marks.append(found[1])
+        elif line.strip() and not line.startswith("    "):
+            return None
+    if marks and set(marks) == {"="}:
+        return f"`git range-diff` against {base} shows every commit unchanged: a rebase with no added or dropped commit"
+    return None
 
 
 def same_tree_line(old: str, tree: str) -> str:
@@ -3497,21 +3642,19 @@ def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
         tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
     except OSError:
         tail = []
-    body = (
-        f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n"
+    body = fold(
+        BATCHED,
+        f"The merge queue's batch {'passed' if code == 0 else 'failed'} the gate with {head[:7]} in it (exit {code}).",
+        f"Head: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n"
         + (
             f"{env_line(record['env'])}Gated: {record['time']}\n"
             if record
             else f"Admitted: {entry}\n"
         )
-        + f"Log: {log}\n"
+        + f"Log: {log}",
     )
     if tail:
-        body += (
-            "\n<details><summary>The gate's last lines</summary>\n\n````\n"
-            + "\n".join(tail)
-            + "\n````\n</details>\n"
-        )
+        body += "\n" + folded("The gate's last lines", tail)
     comment(pr, body)
     return 0
 
@@ -3550,10 +3693,18 @@ def owner_waits(
     # why the go on an earlier head stops short of this one, so the lead knows what a new verdict could fix
     stale = [f"{where}: {carry}"] if isinstance(carry, str) else []
     if default(pull):
+        if delegation(base_policy(pull["baseRefName"], loop)) == "all":
+            ask = f"{command}, or the delegate's: `approve merge {pull['number']} --head {pull['headRefOid']} --by delegate`"
+            more = ""
+        else:
+            ask, more = (
+                command,
+                "; `loop.delegate: all` in the policy file lets a delegate's go count",
+            )
         return [
             (
-                f"{where} waits for the owner's go on its head ({command}; into {pull['baseRefName']} `{MERGE_LABEL}`"
-                f" is no go), since it is {rated.source} risk: {why}"
+                f"{where} waits for the owner's go on its head ({ask}; into {pull['baseRefName']} `{MERGE_LABEL}`"
+                f" is no go{more}), since it is {rated.source} risk: {why}"
             ),
             *stale,
         ]
@@ -3600,6 +3751,8 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     the head decides alone, so a go withdrawn there stays withdrawn. A string names why the older go carries nothing;
     None: no go to carry."""
     head = pull["headRefOid"]
+    # a project with its own rule keeps it for the go too
+    guard = settings(loop).get("carry_over_main")
     by = go_on(pull, head, loop)
     if by is not None:
         return (by, head) if by else None
@@ -3611,7 +3764,7 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     if not earlier or not (by := go_on(pull, earlier[-1], loop)):
         return None
     old = earlier[-1]
-    if same_tree(head, old):
+    if same_tree(head, old) or (guard is None and catch_up(pull, old)):
         return by, old
     why = unchanged(pull, old.lower())
     return f"the go on {old} carries nothing to {head}: {why}" if why else (by, old)
@@ -3684,6 +3837,12 @@ def whose(pull: dict[str, Any], loop: str | None) -> list[str]:
     line = f"{head} is the delegate's{DELEGATED}" if by == DELEGATE else f"{head} is the owner's"
     if old != pull["headRefOid"] and (tree := same_tree(pull["headRefOid"], old)):
         line += f", carried to {pull['headRefOid']}: same tree {tree}"
+    elif (
+        old != pull["headRefOid"]
+        and "carry_over_main" not in settings(loop)
+        and (proof := catch_up(pull, old))
+    ):
+        line += f", carried to {pull['headRefOid']}: {proof}"
     elif old != pull["headRefOid"]:
         line += (
             f", carried to {pull['headRefOid']}: every commit since is a merge of {pull['baseRefName']}, and the"
@@ -3729,14 +3888,28 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
         post_status(
             head, OWNER_GO, f"{who.capitalize()} withdrew their go on {head[:12]}", state="failure"
         )
-        comment(number, f"Withdrawn: merge\nBy: {by}\nHead: {head}\n")
+        comment(
+            number,
+            fold(
+                "Withdrawn: merge",
+                f"{who.capitalize()} withdrew their go on {head[:7]}.",
+                f"By: {by}\nHead: {head}",
+            ),
+        )
         print(f"PR #{number}: {who}'s go on {head} is withdrawn")
         return 0
     if by == DELEGATE:
         post_status(head, OWNER_GO, f"The delegate's go on {head[:12]}{DELEGATED}")
     else:
         post_status(head, OWNER_GO, f"The owner's go on {head[:12]}")
-    comment(number, f"{VOICED[by]}\nApproved: merge\nBy: {by}\nHead: {head}\n")
+    comment(
+        number,
+        fold(
+            VOICED[by],
+            f"Go to merge {head[:7]}.",
+            f"Approved: merge\nBy: {by}\nHead: {head}",
+        ),
+    )
     print(f"PR #{number}: {who}'s go is on {head}{DELEGATED if by == DELEGATE else ''}")
     if by != DELEGATE and NEEDS_OWNER in names(pull):
         # the owner's go names this PR, so the hold it waited on is theirs to lift; the delegate's never is
@@ -4084,6 +4257,7 @@ PORTS = {
         "head_pushed",  # (pull) -> when the head was pushed to the PR's branch, or None
         "merged_labelled",  # (branch, name) -> the merged PRs into branch carrying the label
         "open_pulls",  # (limit) -> up to limit open PRs, each with its number, branches, draft, body and closing issues
+        "open_pull_files",  # (limit) -> up to limit open PRs, each with its number, base, head commit and changed paths
         "open_heads",  # () -> the head commit of every open PR
         "required_checks",  # (base) -> the checks the base requires, `queue` the merge method of a merge queue its
         # rules require (None, or no such attribute, without one)
@@ -4128,6 +4302,9 @@ def sibling(name: str) -> ModuleType:
 
 
 github = sibling("github_adapter")
+# every comment the loop writes: a heading, a short summary and the rest folded (folding.py)
+folding = sibling("folding")
+fold, machine = folding.fold, folding.machine
 # the adapters a policy's `adapters` section may name, by name; another team's adapter is added here
 ADAPTERS: dict[str, Any] = {"github": github}
 # each port's adapter while main() runs, read from the policy at the first call (port); GitHub's outside main()
@@ -4201,7 +4378,7 @@ required_checks, default_branch = (
 squash_message, pull_commits = through("forge", "squash_message"), through("forge", "pull_commits")
 viewer, writer = through("forge", "viewer"), through("forge", "writer")
 github_repo, one_repo = through("forge", "github_repo"), through("forge", "one_repo")
-open_heads = through("forge", "open_heads")
+open_heads, open_pull_files = through("forge", "open_heads"), through("forge", "open_pull_files")
 enqueue_pull, dequeue_pull = through("forge", "enqueue_pull"), through("forge", "dequeue_pull")
 commit_checks, job_log = through("forge", "commit_checks"), through("forge", "job_log")
 commit_tree = through("forge", "commit_tree")
@@ -4583,7 +4760,31 @@ def gated(
         return found + proofs(point, pull, [], loop, revert), []
     issues = adopted(closing_issues(pull), loop)
     found += problems(issues, None if tracker is None else label_names(tracker))
+    found += closes_nothing(pull, issues, loop)
     return found + proofs(point, pull, issues, loop, revert), issues
+
+
+def closes_nothing(
+    pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None
+) -> list[str]:
+    """A line when the PR closes no open issue: GitHub lists a PR in an issue's Development panel (and the issue in
+    the PR's) only for a closing keyword, so a PR that only says `Part of #n` shows on no issue. A slice of an epic closes
+    its own sub-issue, never the epic. A PR naming no issue at all is problems()'s refusal, not repeated here; a revert has its own path (gated) and a verified
+    release pin bump (pin_target) is exempt."""
+    if not issues:
+        return []
+    mine = closed(pull, pull["baseRepository"]["nameWithOwner"], loop)
+    if any(i["number"] in mine and str(i.get("state", "OPEN")).upper() == "OPEN" for i in issues):
+        return []
+    if pin_target(pull) is not None:  # a verified release pin bump has no issue to close
+        return []
+    return [
+        (
+            "the PR closes no open issue: GitHub lists a PR on an issue's Development panel only for a closing keyword, so"
+            " `Part of` alone leaves it on none. Add `Closes #<n>` for the issue it finishes; a slice of an epic gets its own"
+            " sub-issue to close, never the epic"
+        )
+    ]
 
 
 def reverted(number: int) -> str | None:
@@ -4604,10 +4805,11 @@ NO_PULL = ("Could not resolve to a PullRequest", "Not Found")
 
 # the pack's scripts as a repo's mise tasks and workflows name them, and the one way each must not be run: a bare
 # python, which has no PyYAML; `uv run` (or the script's own shebang) installs it
-PACK_SCRIPT = re.compile(r"\b(?:approvals|gatekeeper|labels|board)\.py\b")
-BARE_PYTHON = re.compile(
-    r"\bpython[\d.]*\s+(?:-\S+\s+)*\S*(?:approvals|gatekeeper|labels|board)\.py\b"
-)
+# a pack script's file name, which must start its path component (after the start, whitespace, `/` or a quote,
+# the only real starts), so a consumer's own `pr_board.py`, `my:board.py` or `my+board.py` is not the pack's
+PACK_NAME = r"(?<![^\s/'\"])(?:approvals|gatekeeper|labels|board)\.py\b"
+PACK_SCRIPT = re.compile(PACK_NAME)
+BARE_PYTHON = re.compile(r"\bpython[\d.]*\s+(?:-\S+\s+)*\S*?" + PACK_NAME)
 MISE_CONFIGS = (
     "mise*.toml",
     ".mise*.toml",
@@ -4746,6 +4948,8 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
     """`check <point>`: with a PR, under the policy of the base it merges onto (policy_from), else the default
     branch's."""
     toplevel()  # outside a checkout, refused before GitHub is asked
+    if point == "build":
+        full_check_line()
     if issue is not None:
         return unbuilt(issue, *project())
     if pr is None and (pr := current_pr()) is None:
@@ -4772,8 +4976,32 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
         return checked(point, pull, head)
 
 
+def full_check_line() -> None:
+    """The one line `check build` says, on stderr and never fatal, when loop.md has no `Affected tests:` line, so a
+    project running the full check at every gate sees why; nothing with the opt-out `Gate: full`, which chose it."""
+    with contextlib.suppress(Refused, OSError, subprocess.CalledProcessError):
+        text = loop_md()
+        if not AFFECTED.search(text) and not FULL_GATE.search(text):
+            print(
+                "loop.md has no `Affected tests:` line, so every gate runs the full check: name the project's"
+                " selector there (SKILL.md, Adopting the loop)",
+                file=sys.stderr,
+            )
+
+
 def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
     tracker, loop = project()
+    if (
+        point == "ready"
+    ):  # the PR body alone: the author's step before the verifier, when no verdict or gate exists yet
+        waived = incubation(pull, adopted(closing_issues(pull), loop), loop)[0]
+        found = [] if "evidence" in waived else no_evidence(pull) + demo_form(pull)
+        print(
+            "\n".join(found)
+            if found
+            else f"PR #{pull['number']}: its body holds the evidence proof"
+        )
+        return 1 if found else 0
     if point == "queue" and head is not None:
         return queueable(pull, head, tracker, loop)
     if point == "merge" and (why := outside(pull, loop)):
@@ -4838,6 +5066,108 @@ def branch_issue() -> int | None:
     return int(found[1]) if found else None
 
 
+# seconds a merged PR's `ok` event stays readable before its refs are cleared (land_ended)
+EVENT_GRACE = 120
+# the branches whose `land` event ended (ok, failed, needs-owner) in this round of land, so no beat of the same round
+# rewrites an end as `waiting`; and the branches whose `ok` this process has written, so a wait writes it once
+ended: set[str] = set()
+landed_ok: set[str] = set()
+# the PRs the lock's heartbeat beats `waiting` for while a round holds the lock and runs its gates
+beating_for: list[dict[str, Any]] = []
+# one writer at a time, so a beat in flight cannot land its `waiting` after the `ok` of the same branch
+event_lock = threading.Lock()
+
+
+# events.py beside this script: the loop's event writer, which needs only git
+loop_events = sibling("events")
+
+
+def land_event(
+    pull: dict[str, Any], state: str, url: str = "", question: str | None = None
+) -> None:
+    """Write PR `pull`'s `land` event (events.md) on its branch. An event reports a step and is not part of it, so
+    whatever goes wrong here is one line on stderr and changes no exit code of land."""
+    try:
+        with event_lock:
+            if state == "waiting" and pull["headRefName"] in ended:
+                return  # its end is written: no beat of this round rewrites it
+            if state != "waiting":
+                ended.add(pull["headRefName"])
+            loop_events.emit(
+                "land",
+                pull["headRefName"],
+                state,
+                url=url or pull.get("url") or "",
+                question=question,
+                cwd=toplevel(),
+            )
+    except Exception as exc:  # noqa: BLE001 -- by contract nothing here may end a land
+        print(
+            f"PR #{pull.get('number')}: land event not written: {stderr_of(exc)}", file=sys.stderr
+        )
+
+
+def land_event_of(
+    pr: int | Sequence[int] | None,
+    state: str,
+    question: str | None = None,
+    unless_ended: bool = False,
+) -> None:
+    """land_event for each PR number a land names (the PR is read again, since the wait holds only its numbers);
+    `unless_ended` leaves a PR whose end this process wrote, so a later end keeps the first one's reason."""
+    for number in [] if pr is None else [pr] if isinstance(pr, int) else list(dict.fromkeys(pr)):
+        try:
+            pull = pull_request(number)
+            if (
+                pull["state"]
+                == "OPEN"  # one merged during this wait has its `ok`, which a ceiling must not replace
+                and not (unless_ended and pull["headRefName"] in ended)
+            ):
+                land_event(pull, state, question=question)
+        except Exception as exc:  # noqa: BLE001 -- the same: a failed read of the PR ends nothing
+            print(f"PR #{number}: land event not written: {stderr_of(exc)}", file=sys.stderr)
+
+
+def land_ended(pull: dict[str, Any]) -> None:
+    """A merged PR's `land` event ends `ok`, written once per process, and its refs go (events.py clear). The refs go
+    EVENT_GRACE seconds later, in a process of its own, since a native lead blocked in `wait land <branch>` polls and
+    would otherwise find nothing where the end was. The clear runs in the repository's common git dir, which outlives
+    the checkout this land runs in (caught_up's fresh worktree is removed when the land exits)."""
+    branch = pull["headRefName"]
+    if branch in landed_ok:  # a wait reads the same merged PR again each round
+        return
+    landed_ok.add(branch)
+    land_event(pull, "ok")
+    try:
+        script = Path(loop_events.__file__).resolve()
+        common = git("rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import subprocess, sys, time; time.sleep(float(sys.argv[1])); subprocess.run(sys.argv[2:], check=False)",
+                str(EVENT_GRACE),
+                sys.executable,
+                str(script),
+                "--repo",
+                common,
+                "clear",
+                branch,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        # ponytail: a detached sleep, not a sweep on the next land, so a branch's refs go without another land; a host
+        # that ends within the grace leaves them, and a scheduled `events.py clear` is the upgrade if that happens
+    except Exception as exc:  # noqa: BLE001 -- the PR has landed: the refs stay until a `clear` of the branch is run
+        print(
+            f"PR #{pull.get('number')}: land event refs not cleared: {stderr_of(exc)}",
+            file=sys.stderr,
+        )
+
+
 def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False) -> int:
     """landing() once, or with `wait` again every POLL seconds while it waits on something time clears, printing each
     new state once: until it ends, or exit 3 at CEILING."""
@@ -4869,6 +5199,9 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
     global held_tip
     # a land run again on the base's new code (caught_up) keeps the first run's ceiling; the clock is system-wide
     deadline = float(os.environ.pop(DEADLINE_ENV, "0")) or time.monotonic() + CEILING
+    if earlier := json.loads(os.environ.pop(WORKTREES_ENV, "[]")):
+        made.extend(earlier)  # execv runs no atexit: the next re-exec hands these on (caught_up)
+        atexit.register(reap, earlier)
     said, spoke, heard = "", 0.0, ""
     github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
     missed = 0  # network failures in a row, of landing() and of the lock poll
@@ -4905,10 +5238,18 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
         if drifted:
             caught_up(drifted, deadline)
         if not again:
+            if code:  # a wait that exits with its PR neither merged nor ended (main is red) must not leave `waiting`
+                land_event_of(pr, "failed", unless_ended=True)
             return code
         nap = poll_seconds()
         if time.monotonic() + nap > deadline:
             print(f"land --wait stopped after {CEILING // 3600} hours, still waiting")
+            land_event_of(
+                pr,
+                "needs-owner",
+                f"land --wait stopped after {CEILING // 3600} hours with the PR still waiting: land it again or"
+                " say what holds it.\n",
+            )
             return WAITING
         # a round asks GitHub again after `nap`, or RECHECK on a held lock; the sleep goes in POLL steps, so the log
         # is never silent past wait-for's stall check and a lock that moved is seen at once (ls-remote costs no quota)
@@ -4945,32 +5286,62 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
 
 
 DEADLINE_ENV = "LOOP_LAND_DEADLINE"
+# the worktrees this process's ancestors made (land), handed on by caught_up
+made: list[list[str]] = []
+WORKTREES_ENV = (
+    "LOOP_LAND_WORKTREES"  # JSON [[git dir, path]] of the worktrees caught_up made, removed at exit
+)
 
 
 def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
-    """A waiting land whose base moved its code or policy (another land merged a change to them): fast-forward a clean
-    checkout of the base to the fetched `origin/<base>` and run this land again from that code, in place (#1280), since
-    the wait was the point and nobody reads its log. Any other checkout (another branch, a detached head, an edit of a
-    tracked file, a fast-forward refused or one that moves nothing) keeps the refusal, since a PR's own copy must never judge it."""
+    """A waiting land whose base moved its code or policy (another land merged a change to them) runs again from the
+    base's new code, keeping its ceiling, since the wait was the point and nobody reads its log (#1280, #1314). A clean
+    checkout of the base is fast-forwarded to the fetched `origin/<base>` and the land runs again in it (#1280). Any
+    other checkout (a linked worktree on a PR branch or a detached head, an edited tracked file, a fast-forward
+    refused) is left as it is, and the land runs again from a fresh detached worktree of `origin/<base>`, removed when
+    that run ends (#1314), since moving a checkout the caller is using is not ours to do and a PR's own copy must never
+    judge it. Nothing newer to run from (this checkout already is the base's tip, or the base lacks the running script)
+    keeps the refusal, which would otherwise run again forever."""
     base, root = drifted.base, toplevel()
+    ref = f"refs/remotes/origin/{base}"
 
-    def run(*args: str) -> subprocess.CompletedProcess[str]:
+    def run(where: Path, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["git", "-C", str(root), *args], capture_output=True, text=True, check=False
+            ["git", "-C", str(where), *args], capture_output=True, text=True, check=False
         )
 
-    before = run("rev-parse", "HEAD").stdout.strip()
-    if (
-        run("symbolic-ref", "-q", "HEAD").stdout.strip() != f"refs/heads/{base}"
-        or run("status", "--porcelain", "--untracked-files=no").stdout.strip()
-        or run("merge", "-q", "--ff-only", f"refs/remotes/origin/{base}").returncode
-        # a drift the fast-forward left in place (a running script the base doesn't track) would re-run land forever
-        or run("rev-parse", "HEAD").stdout.strip() == before
-    ):
+    def out(where: Path, *args: str) -> str:
+        return run(where, *args).stdout.strip()
+
+    before, tip = out(root, "rev-parse", "HEAD"), out(root, "rev-parse", ref)
+    if before == tip and not out(root, "status", "--porcelain", "--untracked-files=no"):
         raise drifted
-    tip = run("rev-parse", "--short=12", "HEAD").stdout.strip()
+    script = Path(sys.argv[0]).resolve()
+    argv, cwd = [sys.executable, *sys.argv], None
+    if (
+        out(root, "symbolic-ref", "-q", "HEAD") == f"refs/heads/{base}"
+        and not out(root, "status", "--porcelain", "--untracked-files=no")
+        and not run(root, "merge", "-q", "--ff-only", ref).returncode
+        and out(root, "rev-parse", "HEAD") != before
+    ):
+        where = f"this checkout fast-forwarded to origin/{base}"
+    else:
+        fresh = Path(tempfile.mkdtemp(prefix=f"land-{base.replace('/', '-')}-")).resolve()
+        added = run(root, "worktree", "add", "-q", "--detach", str(fresh), tip)
+        if added.returncode:
+            fresh.rmdir()
+            raise drifted
+        gitdir = Path(out(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        os.environ[WORKTREES_ENV] = json.dumps([*made, [str(gitdir), str(fresh)]])
+        # the running script as the base has it; one outside the checkout is not drift, so it stays as it is
+        if script.is_relative_to(root.resolve()):
+            argv[1] = str(fresh / script.relative_to(root.resolve()))
+            if not Path(argv[1]).exists():  # the base lacks it: nothing to run again from
+                reap([[str(gitdir), str(fresh)]])
+                raise drifted
+        cwd, where = fresh, f"a fresh worktree of origin/{base} ({fresh})"
     print(
-        f"{drifted} -- this checkout fast-forwarded to origin/{base} ({tip}): land runs again from its code",
+        f"{drifted} -- {where} ({tip[:12]}): land runs again from its code",
         flush=True,
     )
     os.environ[DEADLINE_ENV] = repr(deadline)
@@ -4978,7 +5349,20 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
         os.environ[WAIT_ENV] = ":".join(
             [repr(waited["since"]), waited["id"], waited["base"], waited["tip"]]
         )
-    os.execv(sys.executable, [sys.executable, *sys.argv])
+    if cwd:
+        os.chdir(cwd)
+    os.execv(sys.executable, argv)
+
+
+def reap(worktrees: Sequence[Sequence[str]]) -> None:
+    """Remove the fresh worktrees that caught_up made for a land run again, now that none of them is this process's cwd."""
+    os.chdir(tempfile.gettempdir())
+    for gitdir, path in worktrees:
+        subprocess.run(
+            ["git", f"--git-dir={gitdir}", "worktree", "remove", "--force", path],
+            capture_output=True,
+            check=False,
+        )
 
 
 def poll_seconds() -> float:
@@ -5006,6 +5390,7 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     `Landed` comment: queue_landed), the base fetched,
     and its policy read to place the land (placed: where it may run and the key it signs with) and to ready drafts,
     then read again after the fetch under the lock for the batch (landing_here)."""
+    ended.clear()
     named, base, worst = land_base(pr)
     if named is None:
         return worst, False
@@ -5026,9 +5411,16 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
         with placed(loop, bool(getattr(rules, "queue", None))):
-            return landing_here(
+            code, again = landing_here(
                 named, base, worst, tracker, loop, only, not fetch.returncode, rules
             )
+        if (
+            waiting and again
+        ):  # the beat of a wait that goes on: each poll rewrites it, but never an end of this round
+            for pull in named:
+                if pull["headRefName"] not in ended:
+                    land_event(pull, "waiting")
+        return code, again
 
 
 def land_base(
@@ -5102,6 +5494,7 @@ def landing_here(
         if not taken:
             # a named PR left out already is a refusal, which the wait for the lock doesn't clear: 1 over 3
             return (1 if worst else WAITING), True
+        beating_for[:] = named
         threading.Thread(target=heartbeat, args=(base, held, stop), daemon=True).start()
         # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
@@ -5120,6 +5513,7 @@ def landing_here(
         # children (ssh, gh as the credential helper) unblock the signals, and a stop of the land's group would end them
         mask = signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
         stop.set()
+        beating_for.clear()
         with (
             beating
         ):  # the beat in flight finishes, so `held` ends on the commit that reached origin
@@ -5416,7 +5810,19 @@ def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
     that fails for another reason (the network) is tried again at the next beat. A stop signal is left to the main
     thread, which releases the lock."""
     signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
+
+    # Only a `land --wait` beats `waiting` (events.md): a land that is not waiting ends with no event of its own, and a
+    # stale `waiting` would read as a live wait until it went silent. The first beat comes when the lock is taken, since
+    # a gate under the lock can outlast a native wait's two beats of silence; the lock's own stamp is fresh from the
+    # take, so its first push waits a BEAT.
+    def beat() -> None:
+        for pull in beating_for if waiting else []:
+            if not stop.is_set():
+                land_event(pull, "waiting")
+
+    beat()
     while not stop.wait(BEAT):
+        beat()
         with beating:
             if stop.is_set() or not held:
                 return
@@ -5714,6 +6120,12 @@ def unreadied(
     return found
 
 
+def asks_owner(pull: dict[str, Any], lines: list[str], named: bool) -> None:
+    """A named PR a land waits on the owner's go for: its `land` event is `needs-owner`, the lines said as the question."""
+    if named:
+        land_event(pull, "needs-owner", question="\n".join(lines) + "\n")
+
+
 def landable(
     pull: dict[str, Any],
     tracker: str | None,
@@ -5756,6 +6168,7 @@ def landable(
         if owner := owner_waits(pull, issues, loop):  # ready starts CI, so never before the go
             for line in owner:
                 print(line)
+            asks_owner(pull, owner, named)
             return Verdict((WAITING, False), issues=issues)
         return Verdict(None, draft=True, issues=issues)
     if pull.get("waiting"):  # readied by this land: its CI has only just started
@@ -5772,6 +6185,7 @@ def landable(
     if owner := owner_waits(pull, issues, loop):
         for line in owner:
             print(line)
+        asks_owner(pull, owner, named)
         return Verdict((WAITING, False), issues=issues)  # the owner is asked, not polled
     if rated.merge != "gates":
         for line in whose(pull, loop):
@@ -5859,6 +6273,8 @@ def local_queue(
     failed: set[int] = set()
     # each PR to land, the tree it lands, the tree gated with it, and how that passed
     landed: list[tuple[dict[str, Any], str, str, str]] = []
+    # narrowed mode selects tests only where no required CI check ran them on each head already (batch_narrows)
+    narrows = batch_narrows(loop, required)
     if candidates and policy_ref(toplevel()) is not None:
         # no working tree here: the batch is computed in objects and gated only by a recorded pass, never run here
         if settings(loop).get("pre_land"):
@@ -5867,23 +6283,39 @@ def local_queue(
                 " land where the files are checked out"
             )
         tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
-        landed = merged_trees(candidates, base, tip, failed)
-        if landed and held:
-            repointed(base, held, landed[-1][0]["number"])
-        if landed:
-            merges(landed, base, tip, None, loop, failed, waited, held)
+        # narrowed mode: the batch gate selects against the tip the batch merges onto (narrowed_gate)
+        with narrowed_to(tip if narrows else None):
+            landed = merged_trees(candidates, base, tip, failed)
+            # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
+            if landed and held is not None:
+                repointed(base, held, landed[-1][0]["number"])
+            if landed:
+                merges(landed, base, tip, None, loop, failed, waited, held)
     elif candidates:
         with batch_tree(base) as work:
             tip = run_in(work, "rev-parse", "HEAD")
-            candidates = [pull for pull in candidates if pre_landed(pull, base, work, loop, failed)]
-            landed = merge_batch(candidates, base, work, failed)
-            if landed and held:
-                repointed(base, held, landed[-1][0]["number"])
-            if landed:
-                merges(landed, base, tip, work, loop, failed, waited, held)
+            with narrowed_to(tip if narrows else None):
+                candidates = [
+                    pull for pull in candidates if pre_landed(pull, base, work, loop, failed)
+                ]
+                landed = merge_batch(candidates, base, work, failed)
+                # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
+                if landed and held is not None:
+                    repointed(base, held, landed[-1][0]["number"])
+                if landed:
+                    merges(landed, base, tip, work, loop, failed, waited, held)
     # each named PR's exit: its wait's, else 0 when it merged, else 1
     done = {pull["number"] for pull, *_ in landed} - failed
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
+
+
+def batch_narrows(loop: str | None, required: set[str]) -> bool:
+    """Whether `land`'s batch gate runs loop.md's `Affected tests:` command (narrowed mode) in place of the `gate`
+    line: only under `ci: false` or where the base requires no check. A required check already ran each head's tests
+    on that exact head, so selecting them again over the batch only holds the lock; the batch gate is then the `gate`
+    line, the project's whole-tree checks (a vendor check and lint, say), and a combination that breaks an untouched
+    test is the full run's to catch (a nightly, say)."""
+    return no_ci(loop) or not required
 
 
 def check_never_comes(pull: dict[str, Any], required: set[str]) -> bool:
@@ -6020,7 +6452,10 @@ def merge_batch(
             continue
         if green == tip and not base_green:
             reset(work, tip)
-            if not gate_batch(work, [])[1]:
+            # the full gate: at the tip itself the narrowed one selects nothing, so it reads a red base green
+            with narrowed_to(None):
+                base_ok = gate_batch(work, [])[1]
+            if not base_ok:
                 print(
                     f"{base} itself is red at {tip}: nothing lands and nobody is evicted until it is fixed"
                 )
@@ -6088,9 +6523,19 @@ def conflict_note(pull: dict[str, Any], base: str, ahead: str = "") -> None:
     ):
         comment(
             pull["number"],
-            f"{CONFLICTS}\nHead: {head}\n\nIt conflicts with {base}{ahead}: merge origin/{base} in, rerun the gates,"
-            " get a verdict on the merge (lead.md step 8), then land again.\n",
+            fold(
+                CONFLICTS,
+                f"It conflicts with {base}{ahead}: merge origin/{base} in, rerun the gates, get a verdict on the"
+                " merge (lead.md step 8), then land again.",
+                f"Head: {head}",
+            ),
         )
+
+
+def recording_base() -> str:
+    """` --base <tip>` in narrowed mode (narrowed_gate), the base the batch gate selects against, so the `local-ci
+    --record` a message names records the pass the lookup then finds; empty for the full gate."""
+    return f" --base {NARROW_BASE.get()}" if narrowed_gate() is not None else ""
 
 
 def merged_trees(
@@ -6145,7 +6590,7 @@ def merged_trees(
         raise Refused(
             f"Tree {tree} (the batch of {numbers} on {base} at {tip}): {', '.join(f'`{m}`' for m in missing)} has no"
             " recorded pass on it, and land runs no gate in a clone with no working tree: pass it where the files are"
-            " checked out (`approvals.py local-ci --record` on a head with this tree), then land again"
+            f" checked out (`approvals.py local-ci --record{recording_base()}` on a head with this tree), then land again"
         )
     print(f"Tree {tree}: `{gate()[0]}` passed on it before, reused")
     return [(pull, own, tree, "reused") for pull, own in zip(merged, trees, strict=True)]
@@ -6200,11 +6645,15 @@ def pre_landed(
     ):
         comment(
             pull["number"],
-            f"{PRE_LAND}\nHead: {head}\n\n`{command}` refused it against {base} at {tip}, exiting {ran.returncode}: fix"
-            " what it says, then land again.\n\n````\n"
-            # its end, where a check says why, within GitHub's 65536 characters a comment holds
-            + ran.stdout.rstrip("\n")[-60000:]
-            + "\n````\n",
+            fold(
+                PRE_LAND,
+                f"`{command}` refused it against {base} at {tip}, exiting {ran.returncode}: fix what it says, then"
+                " land again.",
+                f"Head: {head}\n\n````\n"
+                # its end, where a check says why, within GitHub's 65536 characters a comment holds
+                + ran.stdout.rstrip("\n")[-60000:]
+                + "\n````",
+            ),
         )
     return False
 
@@ -6423,12 +6872,14 @@ def ask_cloud_gate(tree: str) -> str:
     is mid-turn takes the message queued. One that is gone, or a start that fails, is closed and its launch dir
     removed. The reason it could not be asked, else empty."""
     script, branch = agent_script(), LAND_BRANCH.format(tree).removeprefix("refs/heads/")
+    # a narrowed batch gate (narrowed_gate) selects against the base tip the batch merges onto
+    narrowed = recording_base()
     if not script.is_file():
         return f"{script.name} is not installed"
     # the command as worker.md names it: the cloud VM has its own skill install, never this host's paths
     task = (
         f"Gate the branch {branch}: fetch it from origin, check it out, run `uv run"
-        " <engineering-loop skill>/scripts/approvals.py local-ci --record` on it (the gate and its environment as the"
+        f" <engineering-loop skill>/scripts/approvals.py local-ci --record{narrowed}` on it (the gate and its environment as the"
         " project's loop.md names them) and let the record branch be pushed. Touch no other branch. Then end the"
         f" turn with `DONE: recorded {tree}`, or `DONE: red {tree}` when the gate ran and failed (an exit that"
         " loop.md's `machine_exit` names is a machine fault, not red: end with `DONE: no record` then). More branches arrive as messages, each the same task."
@@ -6521,11 +6972,13 @@ def evicted(
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
     print(f"{where} {said}: evicted")
     port("forge").ready(number, undo=True)
-    comment(
+    posted = comment(
         number,
-        f"{title}\nHead: {head}\n\n{why}: fix it, then `land {number}` marks it ready again.\n\n"
+        fold(title, f"{why}: fix it, then `land {number}` marks it ready again.", f"Head: {head}")
+        + "\n"
         + folded(what, tail),
     )
+    land_event(pull, "failed", url=posted if isinstance(posted, str) else "")
 
 
 def folded(what: str, lines: list[str]) -> str:
@@ -6681,8 +7134,13 @@ def queue_step(
         ):
             comment(
                 pull["number"],
-                f"{QUEUE_RED}\nHead: {head}\nGroup: {group}\n\n{why}: enqueued once more, in case it was a flake."
-                " A second red on this head turns it back to draft.\n\n"
+                fold(
+                    QUEUE_RED,
+                    f"{why}: enqueued once more, in case it was a flake. A second red on this head turns it back"
+                    " to draft.",
+                    f"Head: {head}\nGroup: {group}",
+                )
+                + "\n"
                 + folded("The failed job's last lines", tail),
             )
     return enqueue(pull, method)
@@ -6836,6 +7294,7 @@ def queue_landed(pull: dict[str, Any]) -> None:
     # off once the trail is written, or where there is none to write (merged outside the queue)
     if QUEUED in {each["name"] for each in pull["labels"]["nodes"]}:
         label(pull["number"], QUEUED, add=False)
+    land_ended(pull)
 
 
 def landed_comment(pull: dict[str, Any], merged: dict[str, Any]) -> None:
@@ -6851,7 +7310,11 @@ def landed_comment(pull: dict[str, Any], merged: dict[str, Any]) -> None:
     )
     comment(
         pull["number"],
-        f"{LANDED}\nBase: {commit}\nTree: {tree}\nGate: merge queue, {', '.join(runs) or 'no run on the commit'}\n",
+        fold(
+            LANDED,
+            f"Merged by the merge queue as {commit[:7]}.",
+            f"Base: {commit}\nTree: {tree}\nGate: merge queue, {', '.join(runs) or 'no run on the commit'}",
+        ),
     )
     archive_workers(pull["number"])
 
@@ -7046,26 +7509,40 @@ def merges(
     loop: str | None,
     failed: set[int],
     waited: str = "",
-    held: Sequence[str] = (),
+    held: Sequence[str] | None = None,
 ) -> None:
     """Merge each PR through GitHub in the batch's order, pinned to its head (or, with loop.md's `land` section, as a
     signed squash of the tree it lands on the commit before it), stopping at the first one GitHub refuses or leaves
-    open, then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
+    open, or before the next once the heartbeat lost the lock (`held` emptied; None: no lock), then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
     the batch partial, or someone merged meanwhile) the tip is gated here, or with no worktree (`work` None) its pass
     reused where one is recorded and the tree named where none is. Each landed PR gets a `Landed` comment. Right before
     its merge call a PR's head gets the `land` status naming the nonce of the lock commit `held` ends with, which the
     base's ruleset can require, so only a land merges (#1289); a merge GitHub then refuses, or leaves open, turns it to
     an error."""
     local, command, done = signed(loop), gate()[0], []
-    nonce = (
-        git("log", "-1", "--format=%b", held[-1]).rsplit("nonce ", 1)[-1].strip() if held else ""
-    )
+
+    def owned() -> str | None:
+        """The lock commit `held` ends with (None: no lock), read under `beating` so the heartbeat can't empty it
+        between the check and the read; [] is a lock the heartbeat lost, which stops the batch. Checked again right
+        before each merge call, since the steps before it reach GitHub too; a call already made can't be taken back."""
+        with beating:
+            if held is not None and not held:
+                raise Refused(f"another land took the landing lock {lock_name(base)}")
+            return held[-1] if held else None
+
     for pull, tree, gated, how in landed:
         where, head, posted = f"PR #{pull['number']}", pull["headRefOid"], False
         try:
+            ours = owned()
+            nonce = (
+                git("log", "-1", "--format=%b", ours).rsplit("nonce ", 1)[-1].strip()
+                if ours
+                else ""
+            )
             unlink_pull(pull)
             method = merge_method(pull, loop)
             if local:
+                owned()
                 tip = signed_squash(pull, local[1], (tip, tree))
                 print(f"{where} lands as a {method}")
                 print(f"{where} landed in {base} as {tip}, signed by a key in {local[1]}")
@@ -7077,6 +7554,7 @@ def merges(
                 post_status(head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}")
                 posted = True
                 try:
+                    owned()
                     port("forge").merge(pull["number"], method, body, head)
                 except subprocess.CalledProcessError as exc:
                     merge = merged_anyway(pull["number"], head, exc)
@@ -7128,7 +7606,7 @@ def merges(
             else:
                 print(
                     f"Tree {actual}: no recorded pass, and land runs no gate in a clone with no working tree: pass {tip}"
-                    " where the files are checked out (`approvals.py local-ci --record`)"
+                    f" where the files are checked out (`approvals.py local-ci --record{recording_base()}`)"
                 )
         else:
             reset(work, tip)
@@ -7143,9 +7621,14 @@ def merges(
     for pull, tree, gated, how in done:
         comment(
             pull["number"],
-            f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}{waited}\n",
+            fold(
+                LANDED,
+                f"Merged as {tip[:7]}.",
+                f"Base: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}{waited}",
+            ),
         )
         archive_workers(pull["number"])
+        land_ended(pull)
 
 
 def agent_script() -> Path:
@@ -7203,7 +7686,10 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
         for _, found in earlier
     ):
         record += CHANGED[point]
-    comment(number, f"Approved: {point}\nBy: owner\n{record}")
+    comment(
+        number,
+        fold(f"Approved: {point}", f"The owner approved the {point}.", f"By: owner\n{record}"),
+    )
     for note, _ in earlier:
         if not note.get("isMinimized") and note.get("viewerCanMinimize"):
             minimize(note["id"])
@@ -7233,7 +7719,10 @@ def delegate(number: int) -> int:
     # the label first, so the record is never older than the label it names
     label(number, MERGE_LABEL, add=True)
     try:
-        comment(number, f"Approved: merge\nBy: {DELEGATE}\n")
+        comment(
+            number,
+            fold("Approved: merge", "The delegate approved the merge.", f"By: {DELEGATE}"),
+        )
     except subprocess.CalledProcessError:
         # a label with no record names no one: take it off again
         label(number, MERGE_LABEL, add=False)
@@ -7328,7 +7817,7 @@ def parse_report(
     report: Path,
 ) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str], str]:
     """A verifier report as `verdict` posts it: its review heading, the head it reviewed, its findings, its closing
-    `VERDICT:`, `SATISFIED:`, `Risk:` and any `Logic change:` lines, and the qualifier its `Verifier:` line has after the pass number ('' for
+    `VERDICT:`, `SATISFIED:`, `Risk:` and any `Logic change:` and `Scope:` lines, and the qualifier its `Verifier:` line has after the pass number ('' for
     none). Refused, naming the fix, when `verdict` couldn't post it whole."""
     text = read(report)
     lines = [line.strip() for line in text.splitlines()]
@@ -7408,7 +7897,12 @@ def parse_report(
         )
     family, number, qualifier = passes[-1].groups()
     logic = [line for line in lines if line.startswith(f"{LOGIC}:")]
-    closing = [verdicts[-1], satisfied[-1], judgments[-1], *logic[-1:]]
+    # only after the `Head:` line, with the other closing lines: a criteria line saying `Scope: full` is no scope
+    last_head = max(
+        i for i, line in enumerate(lines) if re.fullmatch(r"Head:[ \t]*[0-9a-fA-F]{40}", line)
+    )
+    scope = [line for line in lines[last_head:] if re.match(r"Scope:[ \t]*\S", line)]
+    closing = [verdicts[-1], satisfied[-1], judgments[-1], *logic[-1:], *scope[-1:]]
     heading = f"Verifier ({family}), pass {number}"
     return heading, heads[-1].lower(), found, closing, qualifier
 
@@ -7423,7 +7917,7 @@ def report_check(report: Path) -> int:
 def report_facts(report: Path) -> dict[str, Any]:
     """A verifier report's facts, as `verdict` reads them (parse_report, which refuses an unfinished one): the
     verifier's family, pass and qualifier, the head it reviewed, the tally, whether it is satisfied, the risk and its
-    reason, the `Logic change:` line, each finding, the `## Criteria` section and each `Accepted on evidence:` line, so
+    reason, the `Logic change:` and `Scope:` lines, each finding, the `## Criteria` section and each `Accepted on evidence:` line, so
     a flow engine never parses the prose."""
     heading, head, found, closing, qualifier = parse_report(report)
     family, number = PASS.fullmatch(heading).groups()  # type: ignore[union-attr]
@@ -7431,7 +7925,8 @@ def report_facts(report: Path) -> dict[str, Any]:
     assert counted  # parse_report refused a report without one
     risk = re.match(r"Risk:[ \t]*(\S+)[ \t]*[—–-]*[ \t]*(.*)", closing[2])
     assert risk  # the same
-    logic = [line.partition(":")[2].strip() for line in closing[3:]]
+    logic = [line.partition(":")[2].strip() for line in closing[3:] if line.startswith(f"{LOGIC}:")]
+    scope = [line.partition(":")[2].strip() for line in closing[3:] if line.startswith("Scope:")]
     text = read(report)
     return {
         "criteria": criteria(text),
@@ -7447,6 +7942,7 @@ def report_facts(report: Path) -> dict[str, Any]:
         "satisfied": closing[1].lower().split()[1:2] == ["yes"],
         "risk": {"level": risk[1].lower(), "reason": risk[2].strip()},
         "logic_change": logic[0] if logic else None,
+        "scope": scope[0] if scope else None,
         "findings": [
             dict(zip(("id", "severity", "path", "line", "title", "body"), finding, strict=True))
             for finding in found
@@ -7487,18 +7983,15 @@ def verdict(pr: int, report: Path) -> int:
     text = read(report)
     # the criteria first, as the verifier wrote them before the worker's evidence, and each line taken on that evidence
     taken = [line.strip() for line in text.splitlines() if line.strip().startswith(ACCEPTED)]
-    summary = "\n\n".join(
-        [
-            first,
-            f"## Criteria\n\n{criteria(text)}",
-            *outside,
-            *(["\n".join(taken)] if taken else []),
-            "\n".join(closing),
-        ]
+    # the verdict lines stay in view, as the gate reads them (passes); the criteria and the rest fold
+    summary = fold(
+        first,
+        "\n".join(closing),
+        "\n\n".join(
+            [f"## Criteria\n\n{criteria(text)}", *outside, *(["\n".join(taken)] if taken else [])]
+        ),
     )
-    post_review(
-        pr, {"commit_id": head, "event": "COMMENT", "body": summary + "\n", "comments": comments}
-    )
+    post_review(pr, {"commit_id": head, "event": "COMMENT", "body": summary, "comments": comments})
     return 0
 
 
@@ -7520,7 +8013,10 @@ def gate(passed: list[str] | tuple[str, ...] = ()) -> tuple[str, list[str], dict
     head proof's names (head_proof), each one this process's environment sets is set to that value, over the
     command's own assignment of it, and the command returned names it, so its record and status say so. With
     `gate_steps` (gate_plan), the gate as people read it: `<name>: <command>` for each step, joined by `; `, no words
-    (each step runs its own), and the variables every step sets."""
+    (each step runs its own), and the variables every step sets. Under narrowed_to a base in narrowed mode, the
+    narrowed gate (narrowed_gate) instead."""
+    if (narrow := narrowed_gate(passed)) is not None:
+        return narrow
     loop = settings(project()[1])
     if not loop.get("gate_steps"):
         return command_line(loop.get("gate") or shlex.join(LOCAL_CI), "gate", passed)
@@ -7679,7 +8175,11 @@ def ran_gate(
 
 def heavy(words: list[str]) -> int:
     """`heavy <command> [args...]`: run one command as a heavy step (run_heavy), for the role files' shell recipes, and
-    exit with its exit code (128 plus the signal that ended it); 127 for a command that can't start, as a shell says."""
+    exit with its exit code (128 plus the signal that ended it); 127 for a command that can't start, as a shell says.
+    `heavy --plan` prints the host's slot count and the limit that set it (slot_plan's line) and exits 0."""
+    if words == ["--plan"]:
+        print(slot_plan()[1])
+        return 0
     if words[:1] == ["--"]:
         words = words[1:]
     if not words:
@@ -7713,35 +8213,119 @@ def gate_base_variable() -> str:
     return variable
 
 
-def affected_tests() -> int:
-    """`affected-tests`: the worker's test run on a head, from loop.md's line `Affected tests: <command>` (the command
-    selects and runs the tests a change affects against the base it reads from the variable the line `Gate base:`
-    names, else `GATE_BASE`). The base is `git merge-base origin/<base> HEAD`, `<base>` being the base of the open PR
-    for the checked-out branch, else the default branch; a shallow clone is deepened first (deepened), as `local-ci`
-    does. Without the line it runs `mise run check`, with the variable unset, so a project that names no selector runs
-    its whole suite. Either runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its
-    exit passes through: a selector that selects nothing exits 0 itself. Only this verb sets the variable: `land` and
-    `local-ci` never do, and gate_env clears it from their environment, apart from a head proof's own `env` names."""
+# loop.md's narrowed mode (SKILL.md, Adopting the loop): its `Affected tests:` command is the whole narrowed check, and
+# the line `Gate: full` opts the project out, so every gate runs the full check as it does without the selector
+AFFECTED = re.compile(r"^Affected tests:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+FULL_GATE = re.compile(r"^Gate:[ \t]*`?full`?[ \t]*$", re.MULTILINE)
+# the end of a narrowed gate's command (narrowed_gate): `(` is a shell operator command_line refuses, and the command it
+# returns is shlex-quoted, so no full gate's command, record or key can ever equal a narrowed one
+NARROWED = " (narrowed)"
+# the base a narrowed gate selects against, set by narrowed_to; None runs the full gate
+NARROW_BASE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "NARROW_BASE", default=None
+)
+
+
+def loop_md() -> str:
+    """loop.md's text as project() reads it: its policy when that is loop.md's (no gatekeeper.md), else the file
+    (policy_file); empty without one. A policy project() refuses is no reason to refuse a line outside it."""
+    with contextlib.suppress(Refused):
+        loop = project()[1]
+        if loop is not None and not isinstance(loop, Policy):
+            return loop
+    return policy_file(toplevel(), LOOP, POLICY_BASE.get()) or ""
+
+
+def narrowing(text: str | None = None) -> str | None:
+    """loop.md's `Affected tests:` command (of `text`, else loop_md), or None: no line, or the opt-out `Gate: full`."""
+    text = loop_md() if text is None else text
+    found = AFFECTED.search(text)
+    if found is None or FULL_GATE.search(text):
+        return None
+    return found.group(1).strip().strip("`")
+
+
+@contextlib.contextmanager
+def narrowed_to(base: str | None) -> Any:
+    """Within the block, gate() and gate_plan() are the narrowed gate against `base` (narrowed_gate); None: full."""
+    token = NARROW_BASE.set(base)
+    try:
+        yield
+    finally:
+        NARROW_BASE.reset(token)
+
+
+def narrowed_gate(
+    passed: list[str] | tuple[str, ...] = (),
+) -> tuple[str, list[str], dict[str, str]] | None:
+    """Under narrowed_to a base, in narrowed mode (narrowing) and with no `gate_steps` (whose steps narrow by their
+    `paths`): the `Affected tests:` command (with `passed`, as gate() reads them), with the `Gate base:` variable
+    (gate_base_variable) set to the base, as gate() returns a gate; else None. Its command is that variable's
+    assignment first, then the rest, then NARROWED, so a record of it is keyed by the command and the base and never
+    stands for a full pass."""
+    base = NARROW_BASE.get()
+    if base is None or settings(project()[1]).get("gate_steps"):
+        return None
+    if (written := narrowing()) is None:
+        return None
+    _, words, sets = command_line(written, "Affected tests", passed)
+    variable = gate_base_variable()
+    sets = {variable: base, **{name: value for name, value in sets.items() if name != variable}}
+    command = shlex.join([*(f"{name}={value}" for name, value in sets.items()), *words])
+    return command + NARROWED, words, sets
+
+
+def narrowed_base(command: str) -> str | None:
+    """The base a narrowed gate's command (narrowed_gate) selected against, None for a full gate's command."""
+    if not command.endswith(NARROWED):
+        return None
+    return shlex.split(command[: -len(NARROWED)])[0].split("=", 1)[1]
+
+
+def selection_base(given: str | None) -> str | None:
+    """The commit a narrowed run selects against: `given` (`--base`) resolved, else `git merge-base origin/<base>
+    HEAD`, `<base>` being the base of the open PR for the checked-out branch, else the default branch, a shallow clone
+    deepened first (deepened). None, with one line saying the full check runs, for a `given` git can't resolve (all
+    zeros, the push of a new branch)."""
+    if given is not None:
+        try:
+            return git("rev-parse", "--verify", "--quiet", f"{given}^{{commit}}").strip()
+        except subprocess.CalledProcessError:
+            print(f"the base {given} is no commit here: running the full check", file=sys.stderr)
+            return None
+    base = pr_base_of_head() or base_branch(None)
+    if base is None:
+        raise Refused("no default branch to select the affected tests against: fetch origin")
+    with policy_from(base):
+        deepened(None)
+    try:
+        return git("merge-base", f"origin/{base}", "HEAD").strip()
+    except subprocess.CalledProcessError as exc:
+        raise Refused(
+            f"no merge base of origin/{base} and HEAD: fetch origin/{base} deeper"
+        ) from exc
+
+
+def affected_tests(given: str | None = None) -> int:
+    """`affected-tests [--base <rev>]`: the worker's test run on a head, from loop.md's line `Affected tests:
+    <command>` (the command selects and runs the tests a change affects against the base it reads from the variable
+    the line `Gate base:` names, else `GATE_BASE`). The base is `<rev>`, else the merge base (selection_base). Without
+    the line, with the opt-out `Gate: full` (narrowing), or with a `<rev>` git can't resolve, it runs `mise run check`,
+    with the variable unset, so a project that names no selector runs its whole suite. Either runs under the host gate
+    slot (heavy_slot, run_heavy), as a `local-ci` step does. Its exit passes through: a selector that selects nothing
+    exits 0 itself. gate_env clears the variable from `land`'s and `local-ci`'s environment, apart from a head proof's
+    own `env` names: they set it themselves in narrowed mode (narrowed_gate)."""
     root = toplevel()
-    text = policy_file(root, LOOP, POLICY_BASE.get()) or ""
-    found = re.search(r"^Affected tests:[ \t]*(.+?)[ \t]*$", text, re.MULTILINE)
+    written = narrowing()
     variable = gate_base_variable()
     env = {name: value for name, value in os.environ.items() if name != variable}
-    if found is None:
-        words, sets = [*LOCAL_CI[:-1], "check"], {}
-    else:
-        _, words, sets = command_line(found.group(1).strip().strip("`"), "Affected tests")
-        base = pr_base_of_head() or base_branch(None)
-        if base is None:
-            raise Refused("no default branch to select the affected tests against: fetch origin")
-        with policy_from(base):
-            deepened(None)
-        try:
-            env[variable] = git("merge-base", f"origin/{base}", "HEAD").strip()
-        except subprocess.CalledProcessError as exc:
-            raise Refused(
-                f"no merge base of origin/{base} and HEAD: fetch origin/{base} deeper"
-            ) from exc
+    words, sets = [*LOCAL_CI[:-1], "check"], {}
+    if written is not None and (base := selection_base(given)) is not None:
+        _, words, sets = command_line(written, "Affected tests")
+        sets = {
+            name: value for name, value in sets.items() if name != variable
+        }  # the base is the run's, not the line's
+        env[variable] = base
     print(f"affected-tests: {shlex.join(words)}", file=sys.stderr, flush=True)
     try:
         with heavy_slot("affected-tests") as (slot, _):
@@ -7756,18 +8340,23 @@ def ran_step(
     out: Any = None,
     load: dict[str, Any] | None = None,
     land: bool = False,
+    beat: Callable[[], None] | None = None,
 ) -> tuple[int, int, int]:
     """Run one gate step (gate_plan) in its environment (gate_env) under the host gate slot (heavy_slot), in `cwd`
     with its output to `out` when given: its exit, the seconds it ran and the seconds it waited for the slot; `load`,
     when given, gets the host's load at the step's start, once it holds the slot (host_load). A command that isn't
-    there is refused, naming the gate, since loop.md is hand-written."""
+    there is refused, naming the gate, since loop.md is hand-written. `beat`, when given, is called while the step waits
+    for the slot (heavy_slot) and while it runs, every SLOT_SAY_SECONDS (the gate event, gate_beat)."""
     where = {"cwd": cwd, "stdout": out, "stderr": subprocess.STDOUT} if cwd else {}
-    with heavy_slot(step["name"], out, land) as (slot, waited):
+    with heavy_slot(step["name"], out, land, **({"beat": beat} if beat else {})) as (slot, waited):
         if load is not None:
             load.update(host_load())
         began = time.monotonic()
         try:
-            code = run_heavy(step["words"], env=gate_env(step) | {SLOT_HELD: slot}, **where)[0]
+            with repeating(beat) if beat else contextlib.nullcontext():
+                if beat:
+                    beat()
+                code = run_heavy(step["words"], env=gate_env(step) | {SLOT_HELD: slot}, **where)[0]
         except OSError as exc:
             what = "gate" if step["legacy"] else f"gate step `{step['name']}`"
             raise Refused(f"loop.md's {what} {step['command']!r} can't run: {exc}") from None
@@ -7834,15 +8423,115 @@ def slot_file(name: str) -> str:
     return os.path.join(cache, "engineering-loop", name)
 
 
-def gate_slots() -> int:
-    """How many heavy gates the host runs at once: `GATE_SLOTS` when it is a whole number from 1, else a third of the
-    host's cores, at least 1 (the template's `scripts/gate-slot` reads the same variable). `GATE_SLOTS=1` keeps one
-    gate at a time. A runner under a slot takes at most the host's cores divided by this number as its `GATE_JOBS`,
-    since this many gates load the host at once and a larger share would oversubscribe it."""
-    said = os.environ.get("GATE_SLOTS", "")
+# loop.md's line stating what one heavy gate run costs, measured on the project's heaviest gate (SKILL.md, One heavy
+# gate per host slot): `Gate cost: <cores> cores, <GB> GB`, optionally `, reserve <GB> GB`
+GATE_COST = re.compile(
+    r"^Gate cost:[ \t]*`?(?P<cores>\d+(?:\.\d+)?) cores?,[ \t]*(?P<gb>\d+(?:\.\d+)?) GB"
+    r"(?:,[ \t]*reserve (?P<reserve>\d+(?:\.\d+)?) GB)?`?[ \t]*$"
+)
+GIB = 1 << 30
+
+
+def slot_rule(
+    cores: int,
+    memory: Fraction | None,
+    cost: tuple[Fraction, Fraction] | None,
+    reserve: Fraction | None,
+    said: str,
+) -> tuple[int, str, Fraction | None]:
+    """The host's heavy slot count, the limit that set it (`off`, `GATE_SLOTS`, `cores` or `memory`) and the reserve
+    it used, from the host's cores and total memory in GB (None when unread), the gate's cost per run (cores, GB; None
+    when loop.md states none), loop.md's reserve (None for the default) and `GATE_SLOTS`. `off` is 0 slots: every run
+    goes with no lock. A whole number from 1 is the count. Otherwise the smaller of cores ÷ cost cores and (memory −
+    reserve) ÷ cost GB, at least 1, a tie being the cores'; with no cost, a third of the cores, at least 1. The reserve
+    defaults to a quarter of the memory, at least 4 GB. The template's `gate-slot` follows the same rule, and the
+    table in tests/fixtures/gate-slots.tsv holds both to it."""
+    if reserve is None and memory is not None:
+        reserve = max(Fraction(4), memory / 4)
+    if said == "off":
+        return 0, "off", reserve
     if said.isdigit() and int(said) >= 1:
-        return int(said)
-    return max(1, (os.cpu_count() or 1) // 3)
+        return int(said), "GATE_SLOTS", reserve
+    if cost is None:
+        return max(1, cores // 3), "cores", reserve
+    by_cores = int(cores // cost[0])
+    if memory is None or reserve is None:
+        return max(1, by_cores), "cores", reserve
+    by_memory = int((memory - reserve) // cost[1])
+    if by_memory < by_cores:
+        return max(1, by_memory), "memory", reserve
+    return max(1, by_cores), "cores", reserve
+
+
+def total_memory() -> Fraction | None:
+    """The host's total memory in whole GB (GiB, rounded), never its available memory, so the count stays put between
+    runs and a waiter never waits on a slot that no longer exists: page size × physical pages from `os.sysconf`, which
+    macOS and Linux both answer and which runs no command, so a test's stand-in for `subprocess.run` is never asked;
+    None where it is not known."""
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        found = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return Fraction((found + GIB // 2) // GIB) if found > 0 else None
+    return None
+
+
+def gate_cost() -> tuple[tuple[Fraction, Fraction] | None, Fraction | None]:
+    """loop.md's `Gate cost:` line (GATE_COST) in the checkout this runs in, as read from its root as the template's
+    `gate-slot` greps it: ((cores, GB), reserve or None), or (None, None) outside a repo or without the line. The root
+    is the nearest directory up from here holding `.git`, found without running git, since a heavy step's caller may
+    run anywhere and this is read on every slot it takes. A line off its form, or a cost of 0, is refused, naming the
+    line, since a stated cost ignored would oversubscribe the host."""
+    here = Path.cwd()
+    top = next((d for d in (here, *here.parents) if (d / ".git").exists()), None)
+    with contextlib.suppress(OSError):
+        text = "" if top is None else (top / LOOP).read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            if not line.startswith("Gate cost:"):
+                continue
+            found = GATE_COST.match(line.rstrip())
+            if found is None or not Fraction(found["cores"]) or not Fraction(found["gb"]):
+                raise Refused(
+                    f"loop.md's {line.strip()!r} is not `Gate cost: <cores> cores, <GB> GB`"
+                    " (optional `, reserve <GB> GB`), each cost above 0"
+                )
+            reserve = found["reserve"]
+            return (Fraction(found["cores"]), Fraction(found["gb"])), (
+                None if reserve is None else Fraction(reserve)
+            )
+    return None, None
+
+
+def plan_number(value: Fraction | None) -> str:
+    """A count of cores or GB as the plan line prints it: `4`, `1.5`, `?` when unread."""
+    return "?" if value is None else f"{float(value):g}"
+
+
+def slot_plan() -> tuple[int, str]:
+    """The host's heavy slot count (slot_rule on this host) and the line saying it, the same as the template's
+    `gate-slot --plan`: `slots <n>: <limit> (<cores> cores, <GB> GB, cost <c> cores <m> GB, reserve <r> GB)`, with
+    `cost none` where loop.md states no cost."""
+    cores = os.cpu_count() or 1
+    memory = total_memory()
+    cost, reserve = gate_cost()
+    count, limit, reserve = slot_rule(
+        cores, memory, cost, reserve, os.environ.get("GATE_SLOTS", "")
+    )
+    stated = "none" if cost is None else f"{plan_number(cost[0])} cores {plan_number(cost[1])} GB"
+    return count, (
+        f"slots {count}: {limit} ({cores} cores, {plan_number(memory)} GB, cost {stated},"
+        f" reserve {plan_number(reserve)} GB)"
+    )
+
+
+def gate_slots() -> int:
+    """How many heavy gates the host runs at once (slot_plan), 0 under `GATE_SLOTS=off`, when every run goes with no
+    lock. A runner under a slot takes at most the host's cores divided by this number as its `GATE_JOBS`, since this
+    many gates load the host at once and a larger share would oversubscribe it."""
+    return slot_plan()[0]
+
+
+def slots_off() -> bool:
+    """Whether `GATE_SLOTS=off` turns the host gate off: every heavy run, the short lane's too, goes with no lock."""
+    return os.environ.get("GATE_SLOTS") == "off"
 
 
 def slot_path(number: int = 1) -> str:
@@ -7878,20 +8567,23 @@ def take_slot(
 ) -> tuple[int | None, str]:
     """Hold the first free heavy slot's exclusive flock and return (its fd, its path); closing the fd frees the lock,
     as does the process dying. A run already under a holder of a slot (held_slot) takes none: (None, that path), since
-    it would wait on its own parent. With every slot held, `waiting` is called, again every SLOT_SAY_SECONDS, and the slots
+    it would wait on its own parent. Under `GATE_SLOTS=off` it takes none either: (None, ""). With every slot held, `waiting` is called, again every SLOT_SAY_SECONDS, and the slots
     are tried again until one frees. A land's gate step (`land`) holds the landing lock of its base while it waits, which blocks every other
     land, so it takes a freed slot ahead of any PR gate: flock has no priority, so a waiting land marks itself (a shared
     flock on `gate.land.lock`, held only while it waits) and a PR gate that finds the mark takes no slot, trying again
     until no land waits."""
     if (held := held_slot()) is not None:
         return None, held
+    count = gate_slots()
+    if not count:  # GATE_SLOTS=off: no lock, and no slot named to the run
+        return None, ""
     os.makedirs(os.path.dirname(slot_path()), exist_ok=True)
     mark = os.open(slot_file("gate.land.lock"), os.O_WRONLY | os.O_CREAT, 0o644) if land else None
     if mark is not None:
         fcntl.flock(mark, fcntl.LOCK_SH)
     said = None  # when the wait is next said
     try:
-        if land and gate_slots() == 1:
+        if land and count == 1:
             # one slot: block in the kernel, as a gate wrapper's own flock does, so a land competes evenly with a
             # wrapper waiter instead of losing every race to it by polling; PR gates poll and yield to the mark
             fd = os.open(slot_path(), os.O_WRONLY | os.O_CREAT, 0o644)
@@ -7903,8 +8595,8 @@ def take_slot(
             return fd, slot_path()
         while True:
             if land or not land_waiting():
-                for number in range(1, gate_slots() + 1):
-                    path = slot_path(number)
+                for slot in range(1, count + 1):
+                    path = slot_path(slot)
                     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
                     try:
                         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -8176,16 +8868,25 @@ def saying(text: str) -> Any:
 
 
 @contextlib.contextmanager
-def heavy_slot(name: str, out: Any = None, land: bool = False) -> Any:
+def heavy_slot(
+    name: str, out: Any = None, land: bool = False, beat: Callable[[], None] | None = None
+) -> Any:
     """Hold a host gate slot (take_slot, `land` as it takes it) for one gate step: (its path, the whole seconds
-    waited for it). A wait is said as `local-ci: <step>: waiting for the host gate slot`, again every SLOT_SAY_SECONDS."""
+    waited for it). A wait is said as `local-ci: <step>: waiting for the host gate slot: <slot_plan's line>`, again
+    every SLOT_SAY_SECONDS, so the log shows how many slots the host has and which limit set that. `beat`, when given,
+    is called at each of those, so the gate event is rewritten while the step waits."""
     began = time.monotonic()
-    fd, path = take_slot(
-        lambda: print(
-            f"local-ci: {name}: waiting for the host gate slot", file=out or sys.stderr, flush=True
-        ),
-        land,
-    )
+
+    def say() -> None:
+        print(
+            f"local-ci: {name}: waiting for the host gate slot: {slot_plan()[1]}",
+            file=out or sys.stderr,
+            flush=True,
+        )
+        if beat:
+            beat()
+
+    fd, path = take_slot(say, land)
     try:
         yield path, 0 if fd is None else round(time.monotonic() - began)
     finally:
@@ -8212,13 +8913,17 @@ def gate_key(command: str) -> str:
 
 def described(tree: str, commit: str, command: str) -> str:
     """A published pass's status description: the tree, the commit it ran on, and the command, or its digest when the
-    command doesn't fit, so another host reads what ran and a refusal can name it."""
-    line = f"Tree {tree} on {commit[:12]}: {command}"
-    return (
-        line
-        if len(line) <= DESCRIBED
-        else f"Tree {tree} on {commit[:12]}: sha256 {gate_key(command)}"
-    )
+    command doesn't fit, so another host reads what ran and a refusal can name it; a narrowed pass's (narrowed_gate)
+    says `narrowed vs <base's first 12>` first."""
+    said = command
+    if (base := narrowed_base(command)) is not None:
+        # the base is said once, by its first 12, so the command after it fits more often
+        said = f"narrowed vs {base[:12]}: {shlex.join(shlex.split(command[: -len(NARROWED)])[1:])}"
+    line = f"Tree {tree} on {commit[:12]}: {said}"
+    if len(line) <= DESCRIBED:
+        return line
+    narrowed = f"narrowed vs {base[:12]}, " if base is not None else ""
+    return f"Tree {tree} on {commit[:12]}: {narrowed}sha256 {gate_key(command)}"
 
 
 # how long tree_of waits for one commit's fetch, so a check never hangs on the network
@@ -8344,6 +9049,37 @@ def deepened(pr: int | None) -> None:
     print(f"local-ci: no merge base of {ref} and HEAD after deepening", file=sys.stderr)
 
 
+loop_events = sibling("events")
+
+
+def gate_branch() -> str | None:
+    """The branch the gate gates, which names its `gate` event (events.md): the checked-out one, since a run is on the
+    head it gates; none for a detached head, which has no event."""
+    # ponytail: not the PR's head branch (a REST read `local-ci <pr>` does not make otherwise), so a checkout on another
+    # local name than the PR's branch writes the event under its own
+    with contextlib.suppress(Exception):
+        return git("symbolic-ref", "-q", "--short", "HEAD").strip() or None
+    return None
+
+
+def gate_url(record: dict[str, Any]) -> str:
+    """Where a pass is recorded, as a gate event's `url`: the record file, or with `gate_steps` the records' directory."""
+    return str(local_ci_dir() if "steps" in record else recorded(record["tree"], record["command"]))
+
+
+def gate_event(branch: str | None, state: str, url: str | Callable[[], str] = "") -> None:
+    """Write the `gate` event of `branch` (events.emit). It reports the gate and is no part of it, so whatever goes wrong
+    in writing it is dropped and the gate's exit stays its own. `url` may be a function, called inside that guard, so a
+    record that lacks a field costs the event and nothing else."""
+    if branch is None:
+        return
+    if state != "waiting":
+        ENDED["state"] = state
+    # ponytail: emit's one "not pushed" warning is dropped here, since publish() already says when origin is unreachable
+    with contextlib.suppress(Exception), contextlib.redirect_stderr(io.StringIO()):
+        loop_events.emit("gate", branch, state, url=url() if callable(url) else url)
+
+
 def run_local_ci(
     pr: int | None, head: str | None, passed: list[str] | tuple[str, ...] = ()
 ) -> dict[str, Any]:
@@ -8367,10 +9103,21 @@ def run_local_ci(
             "" if now == before else now[1]
         )
 
-    done = run_steps(before[0], tree, changes, passed=passed)
+    branch = gate_branch()
+    try:
+        done = run_steps(
+            before[0], tree, changes, passed=passed, beat=lambda: gate_event(branch, "waiting")
+        )
+    except BaseException:
+        # a refusal or an interrupt ends the run too: a reader must not find `waiting` left to go silent
+        gate_event(branch, "failed")
+        raise
     code, step = done["code"], done["step"]
     if step is not None:
         command = step["command"]
+        # a failed step records nothing, so its url is the detached run's log when there is one, else empty
+        log = run_files(before[0])[0]
+        gate_event(branch, "failed", str(log) if log.exists() else "")
         nothing = "nothing recorded" if step["legacy"] else f"nothing recorded for `{step['name']}`"
         machine = code == settings(project()[1]).get("machine_exit")
         # the lead's `wait-for --until gate` reads the run's end off the head (failed), said after the refusal
@@ -8385,7 +9132,14 @@ def run_local_ci(
         raise Refused(
             f"{command} changed the checkout, so it did not run on the head as pushed:\n{done['changed']}"
         )
-    return whole(done["records"], passed, tree) | ({"left": done["left"]} if done["left"] else {})
+    result = whole(done["records"], passed, tree)
+    # ponytail: with a step left for a host the gate has no result here, so it ends no event: the `waiting` one goes
+    # silent (wait exit 4) rather than saying `ok` for a gate that passed in part
+    if done["left"]:
+        ENDED["state"] = "left"  # told apart by detach() from a run that ended without writing one
+    else:
+        gate_event(branch, "ok", lambda: gate_url(result))
+    return result | ({"left": done["left"]} if done["left"] else {})
 
 
 def run_steps(
@@ -8396,6 +9150,7 @@ def run_steps(
     out: Any = None,
     passed: list[str] | tuple[str, ...] = (),
     land: bool = False,
+    beat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Run each gate step (gate_plan, with `passed`) that has no pass on `tree` (step_pass) and may run here (here),
     in order, each under the host gate slot (ran_step), and record each that passes as run on `commit`, with the
@@ -8431,7 +9186,9 @@ def run_steps(
             done["left"].append(step["name"])
             continue
         load: dict[str, Any] = {}
-        code, seconds, waited = ran_step(step, cwd, out, load, land)
+        code, seconds, waited = ran_step(
+            step, cwd, out, load, land, **({"beat": beat} if beat else {})
+        )
         done["ran"].append(step["name"])
         if code or (changed := changes()):
             return done | {"code": code, "step": step, "changed": "" if code else changed}
@@ -8470,10 +9227,12 @@ def head_moved(commit: str, tree: str, now: str, now_tree: str) -> str:
 def stored(record: dict[str, Any]) -> None:
     """Write a pass this clone ran to its record file (recorded), whole or not at all: two gates on one tree and command
     run at once on two slots (gate_slots), and a plain write truncates the file first, so a reader between the two
-    would find it empty. The record goes to a file of this process's own, then replaces the shared one in one step."""
+    would find it empty. The record goes to a file of this writer's own, then replaces the shared one in one step: named
+    by process and thread, since two gates in one process (threads) sharing one file would have the second's replace
+    find it gone."""
     where = recorded(record["tree"], record["command"])
     where.parent.mkdir(parents=True, exist_ok=True)
-    partial = where.with_name(f"{where.name}.{os.getpid()}.partial")
+    partial = where.with_name(f"{where.name}.{os.getpid()}.{threading.get_ident()}.partial")
     try:
         partial.write_text(json.dumps(record, indent=2) + "\n")
         os.replace(partial, where)
@@ -8519,6 +9278,9 @@ DETACHED = "APPROVALS_LOCAL_CI_HEAD"
 RAN: dict[
     str, str
 ] = {}  # the gate command this process's local-ci ran, for the detached run to record (finished)
+ENDED: dict[
+    str, str
+] = {}  # `state`: the end event this process wrote (`ok`, `failed`), or `left` for a host step's
 
 
 def leads_its_session() -> bool:
@@ -8570,6 +9332,9 @@ def detach(argv: list[str]) -> int:
     head = git("rev-parse", "HEAD").strip()
     log, pid, exit_file = run_files(head)
     log.parent.mkdir(parents=True, exist_ok=True)
+    # `waiting` before the run starts or any slow step, so a reader that waits once this returns never takes the previous
+    # head's end for this one's; a pass reused on this head writes `ok` over it at once
+    gate_event(gate_branch(), "waiting")
     while True:
         with open(pid, "a+") as claim:
             fcntl.flock(claim, fcntl.LOCK_EX)  # two callers at once start one run
@@ -8577,6 +9342,7 @@ def detach(argv: list[str]) -> int:
             run, started = None, going(claim.read(), exit_file)
             if started is None:
                 exit_file.unlink(missing_ok=True)
+                ended_file(head).unlink(missing_ok=True)
                 with open(log, "wb") as out, open(os.devnull) as nothing:
                     run = subprocess.Popen(
                         [sys.executable, os.path.abspath(__file__), *argv],
@@ -8590,6 +9356,11 @@ def detach(argv: list[str]) -> int:
                 claim.truncate(0)
                 claim.write(json.dumps(started))
         code = follow(log, exit_file, started, run)
+        if not ended_file(head).exists():
+            # the run wrote no end event (a refusal before the gate, `--record` on a changed tree, a child killed or
+            # crashed): end it here, so a `wait` reports the end and `waiting` does not go silent. A step left for a
+            # host writes `left` and keeps its `waiting` on purpose (run_local_ci).
+            gate_event(gate_branch(), "failed" if code else "ok", str(log) if code else "")
         if started["argv"] == argv:
             return code
 
@@ -8616,6 +9387,11 @@ def follow(
         return 1
 
 
+def ended_file(head: str) -> Path:
+    """Where the detached run on `head` records the end event it wrote (ENDED), beside its exit code."""
+    return run_files(head)[2].with_suffix(".event")
+
+
 def ran_command_file(head: str) -> Path:
     """Where the detached run on `head` records the gate command it ran, beside its exit code."""
     return run_files(head)[2].with_suffix(".command")
@@ -8629,6 +9405,8 @@ def finished(head: str, code: int, command: str | None = None) -> None:
     _, _, exit_file = run_files(head)
     if command:
         ran_command_file(head).write_text(command + "\n")
+    if ENDED.get("state"):
+        ended_file(head).write_text(ENDED["state"] + "\n")
     partial = exit_file.with_suffix(".exit-partial")
     partial.write_text(f"{code}\n")
     os.replace(partial, exit_file)
@@ -8667,6 +9445,8 @@ def local_ci_status(head: str) -> int:
         return 1
     if code is not None:
         under = f" under `{command}`" if commands != plain else ""
+        if bases := sorted({base for one in commands if (base := narrowed_base(one))}):
+            under += f", narrowed against {', '.join(bases)}"
         print(f"{'passed' if code == 0 else f'failed (exit {code})'} on {head}{under}: log {log}")
         return 0 if code == 0 else 1
     started = going(pid.read_text() if pid.exists() else "", exit_file)
@@ -9301,7 +10081,11 @@ def settled_head(pr: int, want: str | None) -> str:
 
 
 def local_ci(
-    pr: int | None, proof: dict[str, Any] | None = None, run: bool = False, want: str | None = None
+    pr: int | None,
+    proof: dict[str, Any] | None = None,
+    run: bool = False,
+    want: str | None = None,
+    given: str | None = None,
 ) -> int:
     """With a PR: post a pass on its head, from a recorded pass on its tree; with `run`, from a run now when there is
     none, and without it refuse then (no_pass). Without a PR: on a
@@ -9312,7 +10096,19 @@ def local_ci(
     others run; in a cloud session a `host` step is left for a host, said, and the steps that passed are published,
     but no head proof, nor a pass for a PR, since the gate as a whole has none. With a PR the gate is the policy of the
     base it merges onto (policy_from); without one, the default branch's. With a PR it prints one line naming the
-    head it posted on; `want` (`--head <sha>`) is the head the caller just pushed (settled_head)."""
+    head it posted on; `want` (`--head <sha>`) is the head the caller just pushed (settled_head). Without a PR or
+    `proof`, in narrowed mode (narrowing) under `ci: false` or with `given` (`--base <rev>`), the gate is the narrowed
+    one against `given`, else the merge base (selection_base, narrowed_gate)."""
+    if (
+        pr is None
+        and proof is None
+        and NARROW_BASE.get() is None
+        and narrowing() is not None
+        and (given is not None or no_ci(project()[1]))
+        and (base := selection_base(given))
+    ):
+        with narrowed_to(base):
+            return local_ci(None, None, run, want)
     if pr is None:
         passed = proof["env"] if proof else ()
         # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
@@ -9327,6 +10123,7 @@ def local_ci(
             return code
         if record := reusable(head, passed):
             print(f"{CHECKED} on {head}: {reused(record)}")
+            gate_event(gate_branch(), "ok", lambda: gate_url(record))
         else:
             record = run_local_ci(None, None, passed)
             where = (
@@ -9358,8 +10155,19 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
     loop = project()[1]
     # the PR is read only for a policy with an `incubating` section: no other project pays the read
     passed = tier(pull_request(pr), loop) if INCUBATING in settings(loop) else []
+    # narrowed mode's gate of record on a `ci: false` head (narrowed_pass); a full pass on it is taken first
+    if (
+        NARROW_BASE.get() is None
+        and no_ci(loop)
+        and not reusable(head, passed)
+        and (base := merge_base_of(pull_status(pr)["baseRefName"], head)) is not None
+    ):
+        with narrowed_to(base):
+            if narrowed_gate(passed) is not None:
+                return pr_local_ci(pr, run, want)
     if record := reusable(head, passed, why=why):
         source = f"{reused(record)}\n"
+        gate_event(gate_branch(), "ok", lambda: gate_url(record))
     elif run:
         record = run_local_ci(pr, head, passed)
         source = ""
@@ -9373,34 +10181,35 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
         publish(head, record)
     comment(
         pr,
-        f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
+        fold(
+            CHECKED,
+            f"The gate passed on {head[:7]}.",
+            f"Head: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
+        ),
     )
     print(f"{CHECKED} on {head}: posted on PR #{pr}")
     return 0
 
 
-def conflicted(pr: int, base: str, head: str) -> list[str]:
-    """The files a PR's head conflicts with its own base in, from `git merge-tree --write-tree origin/<base> <head>`
-    (empty when it merges cleanly), after fetching both, so a stale or missing origin/<base> is never read as clean.
-    A conflict whose files git doesn't name still returns one entry, and a fetch or git failure is a Refused: never
-    a clean."""
+def fetch_for_merge(base: str, prs: Sequence[int]) -> None:
+    """Fetches origin/<base> and each PR's head, so a stale or missing ref is never read as a clean merge; a failure is
+    a Refused."""
     try:
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
-        git("fetch", "-q", "origin", f"refs/pull/{pr}/head")
+        for pr in prs:
+            git("fetch", "-q", "origin", f"refs/pull/{pr}/head")
     except subprocess.CalledProcessError as exc:
         raise Refused(
-            f"PR #{pr}: cannot fetch origin/{base} and the head to check the merge: {exc.stderr.strip() or exc}"
+            f"{' and '.join(f'PR #{pr}' for pr in prs)}: cannot fetch origin/{base} and the head to check the merge: "
+            f"{exc.stderr.strip() or exc}"
         ) from exc
+
+
+def merge_conflicts(first: str, second: str, what: str) -> list[str]:
+    """The files `git merge-tree --write-tree first second` conflicts in (empty when it merges cleanly). A conflict whose
+    files git doesn't name still returns one entry, and a git failure is a Refused naming `what`: never a clean."""
     merge = subprocess.run(
-        [
-            "git",
-            "merge-tree",
-            "--write-tree",
-            "--name-only",
-            "--no-messages",
-            f"origin/{base}",
-            head,
-        ],
+        ["git", "merge-tree", "--write-tree", "--name-only", "--no-messages", first, second],
         capture_output=True,
         text=True,
         check=False,
@@ -9411,10 +10220,92 @@ def conflicted(pr: int, base: str, head: str) -> list[str]:
     if merge.returncode != 1 or not re.fullmatch(
         r"[0-9a-f]{40,64}", merge.stdout.split("\n", 1)[0]
     ):
-        raise Refused(
-            f"PR #{pr}: git merge-tree failed: {merge.stderr.strip() or merge.returncode}"
-        )
+        raise Refused(f"{what}: git merge-tree failed: {merge.stderr.strip() or merge.returncode}")
     return list(dict.fromkeys(merge.stdout.splitlines()[1:])) or ["(files not named by git)"]
+
+
+def conflicted(pr: int, base: str, head: str) -> list[str]:
+    """The files a PR's head conflicts with its own base in, from `git merge-tree --write-tree origin/<base> <head>`
+    (empty when it merges cleanly), after fetching both (fetch_for_merge), so a stale or missing origin/<base> is never
+    read as clean. A conflict whose files git doesn't name still returns one entry, and a fetch or git failure is a
+    Refused: never a clean."""
+    fetch_for_merge(base, [pr])
+    return merge_conflicts(f"origin/{base}", head, f"PR #{pr}")
+
+
+def hunks(base: str, head: str, path: str) -> str:
+    """The lines `head` changes in `path` since `base` (a merge-base), numbered on `base`, as `3-5, 9` from
+    `git diff -U0`; a pure insertion is the one line it follows."""
+    out = git("diff", "-U0", "--no-color", base, head, "--", path)
+    spans = []
+    for old, count in re.findall(r"^@@ -(\d+)(?:,(\d+))? \+", out, re.MULTILINE):
+        start, length = int(old), int(count) if count else 1
+        spans.append(f"{start}-{start + length - 1}" if length > 1 else str(start))
+    return ", ".join(spans) or "(no lines)"
+
+
+def overlaps(pr: int | None, files: Sequence[str] = (), base: str | None = None) -> list[str]:
+    """What `overlap` prints: for each other open PR into the same base that changes a file of PR `pr` (or one of
+    `files`, for a story with no PR yet, into `base`, default the default branch), its files with both sides' hunks and,
+    with a PR, whether the two heads merge cleanly. The PRs and their files come from one call; only a PR that shares a
+    file is fetched. Empty with no overlap; a fetch or git failure is a Refused, never a clean."""
+    found = open_pull_files(OPEN_LIMIT)
+    if pr is not None:
+        mine = next((p for p in found if p["number"] == pr), None)
+        if mine is None:
+            raise Refused(f"PR #{pr} is not open")
+        base, files = mine["baseRefName"], mine["files"]
+    base = base or default_branch()
+    sharing = [
+        (p, [f for f in p["files"] if f in files])
+        for p in found
+        if p["number"] != pr and p["baseRefName"] == base
+    ]
+    sharing = [(p, shared) for p, shared in sharing if shared]
+    if not sharing:
+        return []
+    fetch_for_merge(base, [*([pr] if pr is not None else []), *(p["number"] for p, _ in sharing)])
+
+    def span(head: str, path: str) -> str:
+        return hunks(git("merge-base", f"origin/{base}", head).strip(), head, path)
+
+    def behind(number: int, head: str) -> str:
+        # merge-tree of two heads replays the base's commits one of them lacks, so a head that conflicts with the base
+        # alone shows that as a clash with the other PR too; say so, or the lead reorders PRs when the base is the cause
+        clash = merge_conflicts(f"origin/{base}", head, f"PR #{number}")
+        return (
+            f"; PR #{number} conflicts with {base} itself in {', '.join(clash)}: merge {base} into it and rerun"
+            if clash
+            else ""
+        )
+
+    lines = []
+    own = None  # this PR's base note, read on its first clash only, so a clean list runs no base check
+    for other, shared in sharing:
+        number = other["number"]
+        verdict = ""
+        if pr is not None:
+            clash = merge_conflicts(
+                mine["headRefOid"], other["headRefOid"], f"PRs #{pr} and #{number}"
+            )
+            if clash and own is None:
+                own = behind(pr, mine["headRefOid"])
+            verdict = (
+                f": conflicts in {', '.join(clash)}{own}{behind(number, other['headRefOid'])}"
+                if clash
+                else ": merges cleanly"
+            )
+        lines.append(f"PR #{number} also changes {len(shared)} file(s) here{verdict}")
+        for path in shared:
+            ours = f"PR #{pr} {span(mine['headRefOid'], path)}; " if pr is not None else ""
+            lines.append(f"  {path}: {ours}PR #{number} {span(other['headRefOid'], path)}")
+    return lines
+
+
+def overlap(pr: int | None, files: Sequence[str], base: str | None) -> int:
+    if lines := overlaps(pr, files, base):
+        print("\n".join(lines))
+    return 0
 
 
 def brief(
@@ -9520,6 +10411,13 @@ def brief(
     # as written, but for the blank lines around it: indentation may be a snippet's
     if (own := section(loop or "", "Verifier brief").strip("\n")).strip():
         lines += ["", own]
+    # a warning for the lead, on stderr: the brief on stdout is the verifier's and stays as it is
+    try:
+        if shared := overlaps(pr):
+            print(f"warning: PR #{pr} overlaps other open PRs:", *shared, sep="\n", file=sys.stderr)
+    except (Refused, subprocess.CalledProcessError, OSError, ValueError) as exc:
+        why = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()
+        print(f"warning: overlap lookup failed: {why[0] if why else exc!r}", file=sys.stderr)
     print("\n".join(lines))
     return 0
 
@@ -9601,7 +10499,7 @@ def main(argv: list[str]) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser("check")
-    checking.add_argument("point", choices=("build", "merge", "queue", "setup"))
+    checking.add_argument("point", choices=("build", "merge", "queue", "ready", "setup"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--head")
     checking.add_argument("--issue", type=int)
@@ -9637,6 +10535,8 @@ def main(argv: list[str]) -> int:
     recording.add_argument("--status", metavar="HEAD")
     recording.add_argument("--head-proof", action="store_true")
     recording.add_argument("--head", metavar="SHA")
+    # --base: in narrowed mode, the commit `--record` selects against (land's cloud gate passes its batch's base tip)
+    recording.add_argument("--base", metavar="REV")
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int, nargs="*")
     merging.add_argument("--wait", action="store_true")
@@ -9648,6 +10548,10 @@ def main(argv: list[str]) -> int:
     briefing.add_argument("--priorities", type=Path)
     briefing.add_argument("--allow-conflict", action="store_true")
     briefing.add_argument("--proof", type=Path, action="append", default=[])
+    overlapping = commands.add_parser("overlap")
+    overlapping.add_argument("pr", type=int, nargs="?")
+    overlapping.add_argument("--files", nargs="+", metavar="path")
+    overlapping.add_argument("--base")
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
     graduating = commands.add_parser("graduate")
@@ -9655,8 +10559,10 @@ def main(argv: list[str]) -> int:
     graduating.add_argument("--pr", type=int, required=True)
     hooking = commands.add_parser("commit-msg")
     hooking.add_argument("message", type=Path)
-    commands.add_parser("affected-tests")
+    # --base: the commit to select against (a PR's base SHA, a push's previous tip), over the merge base
+    commands.add_parser("affected-tests").add_argument("--base", metavar="REV")
     wrapping = commands.add_parser("heavy")
+    wrapping.add_argument("--plan", action="store_true")
     wrapping.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
     args = parser.parse_args(aliased(argv))
     if args.command == "record":  # each kind runs as the verb it was before #614
@@ -9687,9 +10593,13 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "commit-msg":  # the same: git hands the hook its message file
         return commit_msg(args.message)
     if args.command == "affected-tests":
-        return affected_tests()
+        return affected_tests(args.base)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
-        return heavy(args.words)
+        if args.plan and args.words:
+            raise Refused(
+                "heavy --plan takes no command: it prints the host's slot count and runs nothing"
+            )
+        return heavy(["--plan"] if args.plan else args.words)
     if (
         args.command == "check" and args.point == "setup"
     ):  # reads the policy itself, to list it beside the rest
@@ -9739,13 +10649,19 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             )
         if args.head and args.pr is None:
             raise Refused("local-ci --head goes with a PR: --record gates HEAD itself")
+        if args.base and not args.record:
+            raise Refused(
+                "local-ci --base goes with --record: the base a narrowed run on HEAD selects against"
+            )
         proof = None
         if args.head_proof and (proof := head_proof(project()[1])) is None:
             raise Refused("loop.md sets no `head_proof`: --head-proof has no status to publish")
         if args.head_proof and not args.record:
             raise Refused("--head-proof goes with --record: the head proof is the checkout's")
         return (
-            local_ci(args.pr, proof, args.run, args.head) if leads_its_session() else detach(argv)
+            local_ci(args.pr, proof, args.run, args.head, args.base)
+            if leads_its_session()
+            else detach(argv)
         )
     if args.command == "land":
         if args.only and not args.pr:
@@ -9753,6 +10669,12 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return land(args.pr or None, args.wait, args.only)
     if args.command == "brief":
         return brief(args.pr, args.priorities, args.proof, args.far, args.allow_conflict)
+    if args.command == "overlap":
+        if (args.pr is None) == (args.files is None):
+            raise Refused("overlap takes a PR number, or --files <path>... for a story with no PR")
+        if args.base and args.pr is not None:
+            raise Refused("--base goes with --files: a PR's own base is the one compared")
+        return overlap(args.pr, args.files or [], args.base)
     if args.command == "release":
         return release(args.issue)
     if args.command == "graduate":
