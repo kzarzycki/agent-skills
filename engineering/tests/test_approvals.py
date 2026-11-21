@@ -7457,7 +7457,8 @@ def test_one_repo_refuses_several_github_remotes_without_a_default(
     shim = tmp_path / "bin"
     shim.mkdir()
     (shim / "gh").write_text(
-        '#!/bin/sh\n[ "$1" = --version ] && echo "gh version 2.103.3" && exit 0\n'
+        f'#!/bin/sh\necho "$*" >> {tmp_path}/gh.log\n'
+        '[ "$1" = --version ] && echo "gh version 2.103.3" && exit 0\n'
         '[ "$1 $2" = "api graphql" ] && exit 0\nexit 77\n'
     )
     (shim / "gh").chmod(0o755)
@@ -7472,6 +7473,9 @@ def test_one_repo_refuses_several_github_remotes_without_a_default(
     assert (shell.returncode, "me/fork them/fork" in shell.stderr) == (
         (1, True) if refused else (77, False)
     )
+    if refused:  # the refusal comes before the route probe, so the probe never reaches gh
+        log = tmp_path / "gh.log"
+        assert "api graphql" not in (log.read_text() if log.exists() else "")
 
 
 # --- the verifier judges risk (`verifier: true`) ---
