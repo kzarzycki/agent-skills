@@ -150,16 +150,11 @@ def test_an_inline_accepted_phrase_is_refused_and_an_out_of_scope_line_blocks_no
     )
     assert approvals.main(["verdict", "7", str(report)]) == 1
     assert "write it as a line of its own" in capsys.readouterr().out
-    # a mention in prose or a fenced block takes nothing on evidence
-    report.write_text(
-        report_text(
-            extra="C2: an inline `Accepted on evidence:` is refused.\n```\nAccepted on evidence: x\n```\n"
-        )
-    )
-    assert (
-        approvals.main(["report", str(report)]) != 1
-        or "line of its own" not in capsys.readouterr().out
-    )
+    # a quote in prose, inline code or a fence takes nothing on evidence
+    quote = "C2: a line written `7. Manual: x **Accepted on evidence:** y` is refused.\n"
+    fence = "```\n7. Manual: x **Accepted on evidence:** y\nAccepted on evidence: z\n```\n"
+    report.write_text(report_text(extra=quote + fence))
+    assert approvals.main(["report", str(report)]) == 0
     report.write_text(report_text(extra="Out of scope: the full gate, left to the lead\n"))
     assert approvals.main(["verdict", "7", str(report)]) == 0
     assert len(posting) == 1
