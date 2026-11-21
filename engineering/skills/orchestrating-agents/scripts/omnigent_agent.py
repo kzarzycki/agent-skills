@@ -515,6 +515,8 @@ def chip(label: str, text: str) -> str:
     label = re.sub(r"[\]\r\n]+", " ", label).strip()[:64].strip()
     label = re.sub(r"^session\s+", "", label, flags=re.IGNORECASE) or "agent"
     return CHIP.format(label=label) + text
+
+
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
 # What ``run`` writes to its report path when it ends without a report (a failed wait, a kill), so
 # a lead waiting on that file sees the failure. Never a delivered report: whatever replaces it is new.
@@ -2129,12 +2131,18 @@ def runner_log(info: dict) -> str:
 
 def unchip(text: str) -> str:
     """``text`` without a leading chip line, as a reader sees it (``chip``)."""
-    return CHIP_LINE.sub("", text.lstrip(), count=1) if text.lstrip().startswith("[Message from ") else text
+    return (
+        CHIP_LINE.sub("", text.lstrip(), count=1)
+        if text.lstrip().startswith("[Message from ")
+        else text
+    )
 
 
 def text_of(item: dict) -> str:
     """An item's text, without a leading chip line."""
-    return unchip("".join(c.get("text", "") for c in item.get("content") or [] if isinstance(c, dict)))
+    return unchip(
+        "".join(c.get("text", "") for c in item.get("content") or [] if isinstance(c, dict))
+    )
 
 
 def ended_on_monitor(info: dict, items: list[dict]) -> bool:
@@ -2397,7 +2405,9 @@ def send(
         return [
             i
             for i in items
-            if i.get("type") == "message" and i.get("role") == "user" and text_of(i).strip() == unchip(text)
+            if i.get("type") == "message"
+            and i.get("role") == "user"
+            and text_of(i).strip() == unchip(text)
         ]
 
     def pending(info: dict) -> bool:
@@ -9969,7 +9979,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             baseline = tracked_changes(workspace) if not args.pr else None  # as run's
             undeleted = None
             try:
-                send(og, args.session, chip(own_id() or "an agent", f"{mark}\n{text}"), report, args.confirm_seconds, far=far)
+                send(
+                    og,
+                    args.session,
+                    chip(own_id() or "an agent", f"{mark}\n{text}"),
+                    report,
+                    args.confirm_seconds,
+                    far=far,
+                )
             except Undeleted as e:  # the answer landed: supervise it, then fail on the question
                 undeleted = e
             # armed once the message is in the history, as start arms: before it, the report or
