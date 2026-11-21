@@ -307,7 +307,15 @@ def stop_run(argv: list[str], pids: Path, sig: signal.Signals) -> tuple[int, int
     """Start `argv` in a session of its own, wait for its step to write its pid file, send `sig` to the runner alone
     (never its group, which the step is no longer in), and return the runner's exit and the step's group. A runner
     still going after 15 s is killed with its step's group, and the test fails."""
-    runner = subprocess.Popen(argv, start_new_session=True, stdout=subprocess.PIPE, text=True)
+    # a gate run detached under nohup hands its children SIGHUP ignored, and stops_raise leaves an ignored stop alone
+    # (as nohup means it), so the runner starts with both stops on their defaults whatever this process inherited
+    runner = subprocess.Popen(
+        argv,
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        text=True,
+        preexec_fn=lambda: [signal.signal(s, signal.SIG_DFL) for s in approvals.STOPS],  # noqa: PLW1509
+    )
     deadline = time.monotonic() + 15
     while not pids.exists() or not pids.read_text().strip():
         assert time.monotonic() < deadline and runner.poll() is None, "the step never started"
