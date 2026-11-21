@@ -800,9 +800,8 @@ login to that environment's id and pin it, so loop.md holds no id of one account
 the environment named after the repository is used, else the account's `Default`. orchestrating-agents'
 `omnigent_agent.py cloud-env <checkout>` (also `claude-cloud-env`) creates the environment, or updates it,
 from the checkout's committed `.claude/claude-cloud-setup.sh` (the older `.claude/cloud-setup.sh` is still read) and `.claude/claude-cloud-environment.json`, with no secrets; a colleague without Omnigent runs `claude_cloud.py setup` (a project's `mise run claude-cloud:setup`), which adds the private registries' network secrets and a proof run. The split takes coding,
-compiling and unit tests off the host. What stays there is what the VM can't do: every
-thread resolution, since GitHub's GraphQL API answers 403 in the VM (`approvals.py` reads REST
-there, so its `check`, `local-ci`, `verdict` and `land` also run in the VM, `land` on a base that requires GitHub's merge queue with no key, and on a signed-squash repo only with its `signing_key_env`); the signed land without that key, since the VM holds none; a verifier of the other family, since Codex
+compiling and unit tests off the host. `approvals.py` reads REST, resolves threads (`resolve`) and marks a PR ready through the proxy's routes
+there, so its `check`, `local-ci`, `verdict`, `resolve` and `land` also run in the VM, `land` on a base that requires GitHub's merge queue with no key, and on a signed-squash repo only with its `signing_key_env`. What stays on the host is what the VM can't do: the signed land without that key, since the VM holds none; a verifier of the other family, since Codex
 has no cloud bridge, unless it runs in the worker's VM, the default (Verifier in the worker's VM, below); anything that needs a device, a simulator, an emulator, a browser login
 or the owner's private network.
 

@@ -110,6 +110,7 @@ from the remote.
   puts a finding whose file is outside the diff in the body.
 - List the threads, each with the id to resolve it and its first comment's id to reply:
   `gh api graphql -F o='{owner}' -F r='{repo}' -F n=<pr> -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved path line comments(first:1){nodes{databaseId body}}}}}}}'`.
+- Reply and resolve in one step, on a host or in a cloud session (where GraphQL answers 403, so it uses the proxy's REST route): `uv run <this skill's folder>/scripts/approvals.py resolve <pr> <first comment databaseId>… --reply "Fixed in <sha>."`; without `--reply` it only resolves, and it exits 1 naming any thread it couldn't resolve. By hand:
 - Reply on a thread: `gh api 'repos/{owner}/{repo}/pulls/<pr>/comments/<first comment databaseId>/replies' -f body="Fixed in <sha>."`
 - Resolve it with the triage's reason, `ADDRESSED`, `WONT_FIX` or `INVALID` (SKILL.md,
   Review trail on the PR): `gh api graphql -f t=<thread id> -f r=ADDRESSED -f query='mutation($t:ID!,$r:PullRequestReviewThreadResolutionReason){resolveReviewThread(input:{threadId:$t,resolutionReason:$r}){thread{isResolved}}}'`.
