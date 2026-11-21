@@ -10042,7 +10042,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 f"--host {args.host} is another host: --workspace and the report are absolute paths there"
             )
         if args.cmd == "send":  # a live session keeps its own workspace, wherever this runs
-            workspace = Path(session.get("workspace") or Path.cwd()).resolve()
+            workspace = Path(session.get("workspace") or Path.cwd())
+            workspace = workspace if remote else workspace.resolve()  # a remote path is not here's
         else:
             workspace = getattr(args, "workspace", None) or Path.cwd()
             if not remote:
@@ -10054,8 +10055,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         # which nobody answers. The child also saves its repro files beside the report. A follow-up
         # with --pr goes inline and is answered on the PR: the child never touches the report, and
         # its workspace can be on another host.
+        # On another host a relative report is the session's own, and an absolute one is checked
+        # against its workspace the same way: else the follow-up file is written to a path the
+        # session cannot see, and the only symptom is "<report>.followup: not found" (#1586).
         if (
-            not remote
+            (not remote or (args.cmd == "send" and report.is_absolute()))
             and not (args.cmd == "send" and args.pr)
             and not report.is_relative_to(workspace)
         ):
