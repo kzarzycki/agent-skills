@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -199,9 +200,11 @@ def fake_vendir(tmp_path: Path, upstream: Path, monkeypatch: pytest.MonkeyPatch)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     vendir = bin_dir / "vendir"
+    # The test's own interpreter, which has PyYAML: `env python3` finds whichever python3
+    # comes first on PATH, and on a CI runner that is mise's, without it.
     vendir.write_text(
-        """#!/usr/bin/env python3
-import os
+        f"#!{sys.executable}\n"
+        """import os
 import re
 import shutil
 import sys
