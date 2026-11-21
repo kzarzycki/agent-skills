@@ -36,8 +36,8 @@ check() { # <point number> <term>...
 check 1 'claude-cloud' '/root/.ccr/README.md'
 check 2 'placement: same_host' 'permission_mode: auto' 'sys_session_update(archived: true)' '8,000'
 check 3 'sys_session_message' 'cloud_verifier.py verify' '--harness claude'
-check 4 'Waits:' 'wait-for --pr'
-check 5 '## Lead state' 'created_by_session_id' 'Never write a session id'
+check 4 'Waits:' 'wait-for --pr' 'supervisor' 'finished' 'sub-agent'
+check 5 '## Lead state' 'created_by_session_id' 'Never write a session id' 'git fetch' "turn's start"
 check 6 '#1597' 'USER NEEDED'
 check 7 'sys_session_message' 'sys_session_send' 'parent'
 
