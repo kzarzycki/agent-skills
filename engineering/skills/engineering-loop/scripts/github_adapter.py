@@ -63,7 +63,7 @@ ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENT
 
 
 # a PR's review threads, which PULL reads and rest_threads() asks for alone where GitHub's REST has none
-THREADS = f"reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body createdAt {EDITABLE} }} }} }} }}"
+THREADS = f"reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body createdAt author {{ login }} {EDITABLE} }} }} }} }}"
 
 
 PULL = f"""id number url title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
@@ -537,6 +537,7 @@ def rest_threads(number: int) -> dict[str, Any]:
                     {
                         "body": found.get("body") or "",
                         "createdAt": found.get("created_at"),
+                        "author": actor(found.get("user")),
                         "databaseId": found["id"],
                         "url": found.get("html_url"),
                     }

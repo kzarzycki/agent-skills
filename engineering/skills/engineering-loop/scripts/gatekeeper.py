@@ -9818,21 +9818,19 @@ def finding_title(finding: str) -> str:
     return head.split("): ", 1)[1] if "): " in head else head
 
 
-def evidence_files(pr: int) -> dict[Any, str]:
-    """What origin's evidence branch of PR `pr` holds: `{(pass, slug): "pass-K/<slug>/repro.sh"}` and, under the key
-    None, the branch's tip commit. Empty when origin has no such branch (or can't be read)."""
-    ref = f"refs/loop/evidence/pr-{pr}"
-    try:
-        git("fetch", "-q", "--no-tags", "origin", f"+refs/heads/{EVIDENCE_BRANCH.format(pr)}:{ref}")
-        tip = git("rev-parse", ref).strip()
-        names = git("ls-tree", "-r", "--name-only", ref).splitlines()
-    except (subprocess.CalledProcessError, OSError):
-        return {}
-    found: dict[Any, str] = {}
-    for name in names:
-        if m := re.fullmatch(r"pass-(\d+)/([^/]+)/repro\.sh", name):
-            found[(int(m[1]), m[2])] = name
-    return ({**found, None: tip}) if found else {}
+EVIDENCE_LINK = re.compile(r"blob/([0-9a-f]{7,40})/(pass-\d+/[\w.-]+/repro\.sh)")
+
+
+def rerun_command(pr: int, finding: str) -> str | None:
+    """The command that reruns a finding's repro: the script its text links at the evidence commit (`approvals.py
+    evidence` prints the link: path at SHA, which never moves), fetched from the evidence branch and run from the
+    current directory, which is the reviewed source checkout, since a repro needs the source and tests the orphan branch
+    lacks. None when the finding links no evidence. Never a path looked up by the finding's title, since two findings
+    with one title have different scripts (the writer suffixes the second's slug)."""
+    if not (link := EVIDENCE_LINK.search(finding)):
+        return None
+    sha, path = link.groups()
+    return f"git fetch -q origin refs/heads/{EVIDENCE_BRANCH.format(pr)} && git show {sha}:{path} | bash"
 
 
 def stage_evidence(log: Path, work: Path) -> tuple[Path | None, bool, int]:
@@ -9981,7 +9979,12 @@ def write_evidence(
             raise Refused(
                 f"{refused}; {written[0]} is stored, so the next pass can regenerate the log"
             )
-        url = evidence_asset(pr, kept) if asset and kept else None
+        url = None
+        if asset and kept:
+            # named by pass and finding: the PR's one draft release holds every pass's logs, and a repeated asset name is refused
+            named = kept.with_name(f"pass-{number}-{name}.log.gz")
+            kept.rename(named)
+            url = evidence_asset(pr, named)
     return sha, written, url
 
 
@@ -9998,17 +10001,30 @@ def evidence(pr: int, number: int, finding: str, repro: Path, log: Path) -> int:
 
 
 def prune_evidence() -> None:
-    """Delete, from origin, the evidence branch of each PR that merged or closed more than EVIDENCE_AGE ago,
-    and its evidence release and tag. A host only, since a cloud session can't delete a ref; a refusal is said and the
-    files stay for the next land. A PR whose state can't be read keeps its evidence."""
+    """Delete, from origin, the evidence release, its tag and the evidence branch of each PR that merged or closed more
+    than EVIDENCE_AGE ago, in that order: the branch is what names the PR to the next land, so a release or tag whose
+    deletion failed is retried then, not forgotten. PRs are found from the `verify/pr-*` branches and from the
+    `verify/pr-*-evidence` releases. A host only, since a cloud session can't delete a ref; a refusal is said. A PR whose
+    state can't be read keeps its evidence."""
+    named: set[int] = set()
     try:
         listed = git("ls-remote", "--heads", "origin", "refs/heads/verify/pr-*")
+        named |= {
+            int(m[1]) for m in re.finditer(r"refs/heads/verify/pr-(\d+)$", listed, re.MULTILINE)
+        }
     except (subprocess.CalledProcessError, OSError):
-        return
-    for pr in sorted(
-        {int(m[1]) for m in re.finditer(r"refs/heads/verify/pr-(\d+)$", listed, re.MULTILINE)}
-    ):
-        branch = EVIDENCE_BRANCH.format(pr)
+        pass
+    try:
+        tags = github.gh(
+            "api", "repos/{owner}/{repo}/releases?per_page=100", "--jq", ".[].tag_name"
+        ).split()
+        named |= {
+            int(m[1]) for tag in tags if (m := re.fullmatch(r"verify/pr-(\d+)-evidence", tag))
+        }
+    except (subprocess.CalledProcessError, OSError):
+        pass
+    for pr in sorted(named):
+        branch, tag = EVIDENCE_BRANCH.format(pr), EVIDENCE_TAG.format(pr)
         try:
             ended = github.gh(
                 "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}", "--jq", '.closed_at // ""'
@@ -10022,30 +10038,33 @@ def prune_evidence() -> None:
         except (subprocess.CalledProcessError, OSError, ValueError):
             continue
         try:
+            for found in github.gh(
+                "api",
+                "repos/{owner}/{repo}/releases?per_page=100",
+                "--jq",
+                f'.[] | select(.tag_name == "{tag}") | .id',
+            ).split():
+                github.gh("api", "--method", "DELETE", f"repos/{{owner}}/{{repo}}/releases/{found}")
+            try:
+                github.gh(
+                    "api", "--method", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"
+                )
+            except subprocess.CalledProcessError as exc:
+                if not re.search(r"Not Found|does not exist|HTTP 404|HTTP 422", exc.stderr or ""):
+                    raise
+        except (subprocess.CalledProcessError, OSError) as exc:
+            why = " ".join((getattr(exc, "stderr", None) or str(exc)).split())
+            print(
+                f"the evidence release {tag} was not deleted, so its branch stays for the next land: {why}"
+            )
+            continue
+        try:
             git("push", "-q", "--no-verify", "origin", f":refs/heads/{branch}")
         except subprocess.CalledProcessError as exc:
             if "remote ref does not exist" not in (exc.stderr or ""):
                 print(
                     f"the evidence branch {branch} was not deleted: {' '.join((exc.stderr or '').split())}"
                 )
-        tag = EVIDENCE_TAG.format(pr)
-        try:
-            ids = github.gh(
-                "api",
-                "repos/{owner}/{repo}/releases?per_page=100",
-                "--jq",
-                f'.[] | select(.tag_name == "{tag}") | .id',
-            ).split()
-            for found in ids:
-                github.gh("api", "--method", "DELETE", f"repos/{{owner}}/{{repo}}/releases/{found}")
-            if ids:
-                github.gh(
-                    "api", "--method", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"
-                )
-        except (subprocess.CalledProcessError, OSError) as exc:
-            print(
-                f"the evidence release {tag} was not deleted: {' '.join((getattr(exc, 'stderr', None) or str(exc)).split())}"
-            )
 
 
 def stated(
@@ -10547,6 +10566,9 @@ def overlap(pr: int | None, files: Sequence[str], base: str | None) -> int:
     return 0
 
 
+PASS_FINDING = re.compile(r"\**Verifier \([^)]*\), pass \d+ · ")
+
+
 def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
     """The findings pass `number` posted on the PR, each as its comment's text (`verdict` heads it `**Verifier (<family>),
     pass <n> · <id>** (<severity>): <title>`), the ones on a file outside the diff from the review's body, as their
@@ -10555,6 +10577,7 @@ def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
     found = [
         note["body"].strip()
         for thread in (pull.get("reviewThreads") or {}).get("nodes") or []
+        if not thread.get("isResolved")  # a finding the lead resolved is no longer open
         for note in (thread.get("comments") or {}).get("nodes") or []
         if mine.match(note.get("body") or "")
     ]
@@ -10653,17 +10676,10 @@ def brief(
         prior = previous_findings(pull, number - 1)
         if prior:
             lines.append(f"- Previous findings, pass {number - 1}:")
-        kept = evidence_files(pr)
         for n, found in enumerate(prior, 1):
             lines.append(f"  {n}. " + found.replace("\n", "\n     "))
-            if script := kept.get((number - 1, evidence_slug(finding_title(found)))):
-                lines.append(f"     Rerun: bash {script}")
-        if kept:
-            lines.append(
-                f"- Evidence: branch {EVIDENCE_BRANCH.format(pr)} at {kept[None]}: check that commit out"
-                f" (`git fetch origin {EVIDENCE_BRANCH.format(pr)}`, then a detached worktree of FETCH_HEAD) and run each"
-                " Rerun path from its root"
-            )
+            if script := rerun_command(pr, found):
+                lines.append(f"     Rerun: {script}")
     lines += [
         f"- Proof log: {loop_dir / log.name if far else log} (its first line is the head)"
         for log in proofs
@@ -10686,19 +10702,35 @@ def brief(
     return 0
 
 
+# a top-level PR comment of the lead's that is triage, not another note: it opens with the word
+TRIAGE = re.compile(r"\W*triage\b", re.IGNORECASE)
+
+
 def triage_replies(pull: dict[str, Any], after: str | None) -> list[str]:
-    """The lead's replies on the PR posted after `after` (the time of the verifier's last review; None: every one): the
-    later comments of each review thread, and the PR's own comments that are no verifier's review text."""
+    """The lead's triage replies posted after `after`, the time of the verifier's last review: the lead's later comments
+    on a verifier finding's thread, and the lead's top-level PR comments that open with `Triage`. The lead is the account
+    running this, the one that posts the verdicts, since anyone can comment on a public PR and a stranger's comment is no
+    triage. A comment with no time, or no author, is left out, and with no `after` there is none to show, since an
+    unknown time can't be told from a reply the verifier already saw."""
+    if not after:
+        return []
+    lead = viewer()
+
+    def mine(note: dict[str, Any]) -> bool:
+        return (note.get("author") or {}).get("login") == lead and (
+            note.get("createdAt") or ""
+        ) > after
+
     found = []
     for thread in (pull.get("reviewThreads") or {}).get("nodes") or []:
-        for note in ((thread.get("comments") or {}).get("nodes") or [])[1:]:
-            if not after or (note.get("createdAt") or "") > after:
-                found.append(note.get("body", "").strip())
-    for note in (pull.get("comments") or {}).get("nodes") or []:
-        if not PASS.match(note.get("body") or "") and (
-            not after or (note.get("createdAt") or "") > after
-        ):
-            found.append((note.get("body") or "").strip())
+        notes = (thread.get("comments") or {}).get("nodes") or []
+        if notes and PASS_FINDING.match(notes[0].get("body") or ""):
+            found += [note["body"].strip() for note in notes[1:] if mine(note)]
+    found += [
+        (note.get("body") or "").strip()
+        for note in (pull.get("comments") or {}).get("nodes") or []
+        if mine(note) and TRIAGE.match(note.get("body") or "")
+    ]
     return [text for text in found if text]
 
 

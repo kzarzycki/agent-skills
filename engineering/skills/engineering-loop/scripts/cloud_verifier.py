@@ -862,6 +862,12 @@ def review(
             text = f"AGENT_SIGNATURE={signature(model, effort, harness)}\n{text}"
         return text
 
+    if resuming and full_brief is None:
+        # a resume that fails, or an id that is gone, starts fresh, and the delta alone would leave that verifier with nothing to review
+        raise Refused(
+            f"PR #{pr} has a kept Codex conversation, so a resume can fail and run fresh: pass `--full-brief <file>` "
+            "with the full brief for that run (or `--fresh`, which starts a new conversation with `--brief`)"
+        )
     brief = brief_for(bool(resuming))
     if harness == "codex":
         ensure_codex()

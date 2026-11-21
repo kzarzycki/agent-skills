@@ -227,6 +227,9 @@ def test_with_pr_one_session_is_kept_and_later_runs_are_sent_to_it(
     )
     monkeypatch.setattr(omnigent_agent, "pr_workers", lambda og, pr=None: list(live))
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: object())
+    monkeypatch.setattr(
+        omnigent_agent, "pr_repo", lambda pr, workspace, local=True: "example/project"
+    )
     argv = [
         "claude-cloud-run",
         "--checkout",
@@ -240,9 +243,82 @@ def test_with_pr_one_session_is_kept_and_later_runs_are_sent_to_it(
     ]
     assert omnigent_agent.main(argv) == 0
     first = launched[-1]
-    assert first[0] == "run" and first[first.index("--pr") + 1] == "5" and "--no-keep" not in first
+    assert (
+        first[0] == "run"
+        and first[first.index("--pr") + 1] == "example/project#5"
+        and "--no-keep" not in first
+    )
     live.append("s9")
     assert omnigent_agent.main(argv) == 0
     second = launched[-1]
-    assert second[:2] == ["send", "s9"] and second[second.index("--pr") + 1] == "5"
+    assert second[:2] == ["send", "s9"] and second[second.index("--pr") + 1] == "example/project#5"
     assert "--workspace" not in second
+
+
+class Workers:
+    """An Omnigent that lists the given `omni.pr` labelled workers."""
+
+    def __init__(self, labels: list[str]) -> None:
+        self.labels = labels
+
+    def call(self, *_args: object) -> dict[str, list[dict[str, object]]]:
+        return {
+            "data": [
+                {"id": f"w{i}", "labels": {"omni.pr": label}} for i, label in enumerate(self.labels)
+            ]
+        }
+
+
+def run_for_pr(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch, labels: list[str]
+) -> tuple[int, list[list[str]]]:
+    launched: list[list[str]] = []
+
+    def fake(argv: list[str], ended: dict[str, str]) -> int:
+        launched.append(argv)
+        report = next(a for a in argv if a.endswith(".md") and not a.endswith(".brief.md"))
+        Path(report).write_text("EXIT: 0\n")
+        return 0
+
+    real = omnigent_agent.command
+    monkeypatch.setattr(
+        omnigent_agent,
+        "command",
+        lambda argv, e: real(argv, e) if argv[0] == "claude-cloud-run" else fake(argv, e),
+    )
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: Workers(labels))
+    monkeypatch.setattr(
+        omnigent_agent, "pr_repo", lambda pr, workspace, local=True: "example/project"
+    )
+    argv = [
+        "claude-cloud-run",
+        "--checkout",
+        str(checkout),
+        "--timeout",
+        "30",
+        "--pr",
+        "7",
+        "--",
+        "pytest",
+    ]
+    return omnigent_agent.main(argv), launched
+
+
+def test_a_bare_pr_number_finds_the_worker_of_the_checkouts_repository_only(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two workers share PR number 7 in different repositories: the run goes to the checkout's repository's (#1595)."""
+    code, launched = run_for_pr(checkout, monkeypatch, ["example/other#7", "example/project#7"])
+    assert code == 0 and launched[-1][:2] == ["send", "w1"]
+    assert launched[-1][launched[-1].index("--pr") + 1] == "example/project#7"
+    # only the other repository's worker: a new one starts, as a PR with none does
+    code, launched = run_for_pr(checkout, monkeypatch, ["example/other#7"])
+    assert code == 0 and launched[-1][0] == "run"
+
+
+def test_two_live_workers_of_one_pr_are_refused_not_guessed(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, launched = run_for_pr(checkout, monkeypatch, ["example/project#7", "example/project#7"])
+    assert code == FAILED and launched == []
+    assert "2 live workers carry example/project#7" in capsys.readouterr().err

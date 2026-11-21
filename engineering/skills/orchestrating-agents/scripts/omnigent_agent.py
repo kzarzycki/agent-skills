@@ -3784,8 +3784,12 @@ def cloud_run_route(
     brief.write_text(cloud_run_brief(command, merge, head))
     model = os.environ.get("OMNIGENT_MODEL_CLAUDE_CLOUD_RUN") or CLOUD_RUN_MODEL
     named = f"{pr.repo}#{int(pr)}" if pr is not None and getattr(pr, "repo", "") else str(pr)
-    try:  # a lookup that fails starts a session, as a PR with none does
+    try:  # a lookup that fails starts a session, as a PR with none does; an ambiguous one is refused
         session = kept(pr) if pr is not None else None
+    except Fail as e:
+        if e.code == CLOUD_RUN_FAILED:
+            raise
+        session = None
     except Exception:  # noqa: BLE001
         session = None
     if session:
@@ -9685,17 +9689,30 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 raise usage
             # one word is a shell command as written; several are joined as argv
             line = words[0] if len(words) == 1 else shlex.join(words)
+            ref = args.pr
+            if ref is not None and not getattr(ref, "repo", ""):
+                # a bare number names the checkout's repository, never another's worker of the same number
+                named = PrRef(int(ref))
+                named.repo = pr_repo(int(ref), args.checkout)
+                ref = named
+
+            def kept_worker(found: PrRef) -> str | None:
+                workers = pr_workers(Omnigent(args.server) if args.server else Omnigent(), found)
+                if len(workers) > 1:
+                    raise cloud_run_failed(
+                        f"claude-cloud-run: {len(workers)} live workers carry {found.repo}#{int(found)}"
+                        f" ({', '.join(workers)}): end the extras with `reap`, then run it again"
+                    )
+                return workers[0] if workers else None
+
             return cloud_run(
                 args.checkout,
                 line,
                 args.timeout,
                 lambda argv: command(argv, {}),
                 args.server,
-                args.pr,
-                lambda ref: next(
-                    iter(pr_workers(Omnigent(args.server) if args.server else Omnigent(), ref)),
-                    None,
-                ),
+                ref,
+                kept_worker,
             )
         if args.cmd == "launch-dir":
             launch_dir(args.remote, args.branch, args.env, args.path, args.trust, clone=args.clone)

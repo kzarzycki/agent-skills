@@ -892,11 +892,11 @@ or the owner's private network.
   and names `codex login`. `--env` repeats, to seed every environment in one run. To keep them fresh without the
   owner, run `seed` every 2 days as an Omnigent scheduled task on the host that holds the login, on a small model,
   keeping the run (`sys_session_keep`) when it exits non-zero. The script never prints a secret's value, in its own output, a
-  traceback or the verifier's, and a refused seed is described by its length, hash and days left, which is how to check one. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
+  traceback or the verifier's, and a refused seed is described by its length, hash and days left, which is how to check one. In the VM, `verify --pr <n> --brief <file> [--full-brief <file>] [--fresh]` refuses a tree with uncommitted changes outside the report's folder, checks out the
   PR's head, runs Codex on the brief and posts the report as a PR comment. The worker's session only carries
   the pass: the lead sends it the brief `approvals.py brief` prints, with `send --pr`, asking it to save the
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
-  reviewing nothing itself. `wait --pr` writes the comment to the report path, and the lead posts the verdict
+  reviewing nothing itself. On a reused verifier the lead sends both briefs, the delta (`brief --since`) as `--brief` and the full one as `--full-brief`, since a resume that fails or an id that is gone starts fresh, and a fresh verifier handed only the delta has nothing to review; `verify` refuses a run with a kept conversation and no `--full-brief`. Pass `--fresh` on a redesign (a fix that changes files or behaviour the open findings didn't name) and under loop.md's `Verifier session: fresh`, with the full brief as `--brief`; pass 1 needs neither flag, since no conversation is kept yet. `wait --pr` writes the comment to the report path, and the lead posts the verdict
   from it as for a host verifier. The VM has no Codex configuration, so the lead passes the model and effort
   the host's Codex is configured with as `--model` and `--effort` (or the `Verifier model:` tier's model);
   without them the CLI's own default runs. It also passes `--requested <unix seconds>`, the time the lead asked for
