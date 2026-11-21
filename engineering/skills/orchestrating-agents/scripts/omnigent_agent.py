@@ -2106,11 +2106,11 @@ def starter_mode(og: Omnigent) -> tuple[str, str]:
         info = og.info(sid)
     except Fail:
         return "", ""
-    args = info.get("terminal_launch_args") or []
-    if "claude" not in str(info.get("harness") or "") or "--permission-mode" not in args:
+    args = [str(a) for a in info.get("terminal_launch_args") or []]
+    if "claude" not in str(info.get("harness") or ""):
         return "", ""
-    at = args.index("--permission-mode") + 1
-    return (str(args[at]), sid) if at < len(args) else ("", "")
+    named = flag_value(args, "--permission-mode")
+    return (named, sid) if named else ("", "")
 
 
 def runner_log(info: dict) -> str:
@@ -2979,6 +2979,14 @@ def host_capacity(
 
 def unchecked(name: str, why: str) -> str:
     return f"{name}: load and memory not readable ({why}); starting unchecked"
+
+
+def mode_refused(e: Fail) -> bool:
+    """Whether a create failed with 400 over the permission mode it asked for: Omnigent refuses a
+    mode the creating session may not hand on (kzarzycki/omnigent#526)."""
+    return (
+        isinstance(e.__cause__, HTTPError) and e.__cause__.code == 400 and "mode" in str(e).lower()
+    )
 
 
 def taken(e: Fail) -> bool:
@@ -3938,9 +3946,17 @@ def granted_mode(info: dict) -> str:
                 if where.get(key):
                     return str(where[key])
     args = [str(a) for a in info.get("terminal_launch_args") or []]
-    if "--permission-mode" in args and (at := args.index("--permission-mode") + 1) < len(args):
-        return args[at]
+    if named := flag_value(args, "--permission-mode"):
+        return named
+    if CODEX_BYPASS in args or AGY_BYPASS in args:  # codex's and antigravity's own bypass flags
+        return BYPASS
     return "not named in the session record (the harness default)"
+
+
+def flag_value(args: list[str], flag: str) -> str:
+    """The value after ``flag`` in launch ``args``, else empty."""
+    at = args.index(flag) + 1 if flag in args else len(args)
+    return str(args[at]) if at < len(args) else ""
 
 
 def model_for(agent: str, model: str | None = None) -> tuple[str | None, str]:
@@ -4010,9 +4026,14 @@ def start(
         # command line asks otherwise. The variable is often set for a host's native children, so a
         # mode from it alone is not applied here: the start goes on in the safe mode, and says so.
         if (named := os.environ.get("OMNIGENT_PERMISSION_MODE")) and named != BYPASS:
+            how = (
+                f"pass --permission-mode {named} to start it in {named}"
+                if named in CLOUD_MODES
+                else f"a cloud start takes --permission-mode {' or '.join(CLOUD_MODES)} alone"
+            )
             print(
                 f"OMNIGENT_PERMISSION_MODE={named} is not applied to a {CLOUD_HARNESS} start: it"
-                f" starts in {BYPASS}; pass --permission-mode {named} to start it in {named}",
+                f" starts in {BYPASS}; {how}",
                 file=sys.stderr,
             )
         permission_mode = BYPASS
@@ -4254,6 +4275,16 @@ def start(
                 else:
                     raise failed(f"start failed: titles {title} to {name} are taken") from e
             break
+        if error and harness == CLOUD_HARNESS and permission_mode == BYPASS and mode_refused(error):
+            # Omnigent lets a session hand bypass only to a session it starts while in bypass itself
+            # (kzarzycki/omnigent#526): kept, never answered with a worker in auto, which would
+            # block on prompts nobody sees
+            raise failed(
+                f"start refused: {error}. Omnigent starts a {CLOUD_HARNESS} worker in {BYPASS}"
+                f" only for a session that runs in {BYPASS} itself, and this one does not. Start it"
+                f" from a session or a host shell in {BYPASS}, or pass --permission-mode auto to"
+                " accept a worker that waits on approval prompts"
+            ) from error
         if error:  # a timed-out create can have made the session: brief that one
             found = og.find(name, began, top_level)
             if not found:
@@ -4270,7 +4301,8 @@ def start(
             took = {}
             print(f"no session record read back for {sid} ({e}): it signs ?", file=sys.stderr)
         # what the session got, never what was asked: the server's default can differ from both
-        print(f"session {sid}: permission mode {granted_mode(took)}", file=sys.stderr)
+        got = granted_mode(took) if took else "unknown (its record could not be read)"
+        print(f"session {sid}: permission mode {got}", file=sys.stderr)
         if pr and not reviews(role):
             # the PR `reap` reads to hold this worker until it closes: an unlabelled one can be
             # neither held nor found by `reap --merged`, so a failed label fails the start
