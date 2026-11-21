@@ -890,6 +890,14 @@ CLOUD_NO_PUSH = (
     " your report names that branch and its head SHA. The lead opens the PR from it or retargets it. Never ask"
     " the owner which branch to push to.\n"
 )
+# Every acp:claude-cloud session's preamble (#1659): a cloud lead started a "host helper" with
+# sys_session_create, which landed on the bridge host and ran a suite there.
+CLOUD_HELPER = (
+    "Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native"
+    " subagent in the VM, never a session made with `sys_session_create`: a created child lands on the"
+    " bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent,"
+    " not a helper, and starts as `brief` describes.\n"
+)
 # A child placed on a host (any harness but the cloud one, never a top-level lead, whose own heavy
 # runs go to the cloud): its placement already chose the host, so it prefixes heavy runs past the
 # engineering pack's hook, which refuses one on a host without the prefix (#1233).
@@ -981,12 +989,19 @@ def first_message(
 
 def cloud_preamble(preamble: str, pr: int | None) -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
-    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_BRANCHES`` and ``CLOUD_NO_PUSH`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_HELPER``, ``CLOUD_BRANCHES`` and ``CLOUD_NO_PUSH`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
     preamble = preamble.replace(DETACH_LINE, CLOUD_RUN_LINE)
-    return preamble.removesuffix("\n") + CLOUD_NOTE + CLOUD_BRANCHES + CLOUD_NO_PUSH + "\n"
+    return (
+        preamble.removesuffix("\n")
+        + CLOUD_NOTE
+        + CLOUD_HELPER
+        + CLOUD_BRANCHES
+        + CLOUD_NO_PUSH
+        + "\n"
+    )
 
 
 def cloud_reply(items: list[dict], verdict: bool = False) -> tuple[str, str] | None:

@@ -14194,3 +14194,20 @@ def test_reap_prunes_the_demo_branch_of_a_worker_whose_pr_is_closed(
     monkeypatch.setattr(omnigent_agent, "EVENTS", None)
     omnigent_agent.reap(og, [sid])
     assert ("api", "-X", "DELETE", "repos/o/r/git/refs/heads/claude/ready-demo-7") in calls
+
+
+@pytest.mark.parametrize(("top_level", "pr"), [(True, None), (False, None), (True, 7), (False, 7)])
+def test_every_cloud_preamble_says_a_helper_is_a_native_subagent(
+    top_level: bool, pr: int | None
+) -> None:
+    """A created child of a cloud session lands on the bridge host, which runs no loop work (#1659)."""
+    rule = (
+        "Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native"
+        " subagent in the VM, never a session made with `sys_session_create`: a created child lands on the"
+        " bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent,"
+        " not a helper, and starts as `brief` describes."
+    )
+    assert rule in omnigent_agent.first_message(True, top_level, pr, "r.md", None, "do X")
+    assert "sys_session_create`: a created child" not in omnigent_agent.first_message(
+        False, top_level, None, "r.md", None, "do X"
+    )
