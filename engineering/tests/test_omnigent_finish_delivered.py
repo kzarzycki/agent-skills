@@ -253,3 +253,42 @@ def test_a_lead_the_owner_drives_is_never_archived_by_the_supervisor(
 
     base.supervised(og, registry, monkeypatch, 3, done, notify="cos", console=True)
     assert [s for s, _ in og.inbox if s == "b"] and og.archived == []  # told b, kept a
+
+
+def test_a_stale_owner_round_label_holds_nothing_but_an_open_card_does(
+    og: base.FakeOmnigent, tmp_path: Path
+) -> None:
+    sid = child(og, tmp_path)
+    og.labels[sid] = {"omnigent.keep": "1"}  # set when a round needed the owner; never cleared
+    og.prompts = [CARD]
+    assert "kept (card open" in omnigent_agent.finish_delivered(og, sid)[0]
+    og.prompts = []  # answered or withdrawn
+    assert omnigent_agent.finish_delivered(og, sid)[0].endswith("archived (idle)")
+    assert og.archived == [sid]
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled", "errored"])
+def test_a_run_that_ended_without_a_result_is_finished_too(
+    og: base.FakeOmnigent, tmp_path: Path, status: str
+) -> None:
+    sid = child(og, tmp_path)
+    og.final = status
+    og.items = lambda s: [{"type": "message", "role": "user", "content": []}]  # type: ignore[method-assign]
+    (tmp_path / "r.md").unlink()
+    omnigent_agent.main(["wait", sid, "r.md", "--timeout", "1"])
+    assert og.archived == [sid]
+
+
+def test_archiving_a_parent_finishes_its_idle_children_and_spares_the_busy_ones(
+    og: base.FakeOmnigent, tmp_path: Path
+) -> None:
+    parent = child(og, tmp_path, "p")
+    idle, carded = child(og, tmp_path, "i"), child(og, tmp_path, "c")
+    og.kids = [idle, carded]
+    real = og.info
+    og.info = lambda s: (  # type: ignore[method-assign]
+        {**real(s), "pending_elicitations": [CARD]} if s == carded else real(s)
+    )
+    line, failed = omnigent_agent.finish_delivered(og, parent)
+    assert not failed and og.archived == [parent, idle]
+    assert "kept (card open" in line

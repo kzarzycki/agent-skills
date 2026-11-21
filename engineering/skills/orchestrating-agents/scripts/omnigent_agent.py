@@ -5521,6 +5521,10 @@ def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
 
 # A relayed ``check`` line that ends a child owing a report: its report written, or its failure.
 RELAYED_END = re.compile(r": (report written: |failed: )")
+# A session's final states that end its run without a result: each counts as finished, as ``DONE`` does.
+FAILED_STATUSES = {"failed", "cancelled", "canceled", "errored", "error"}
+# ``omnigent.keep`` is set when a round needs the owner and nothing clears it: it is no hold here, since
+# the open card it stood for is what keeps a session (``cards_of``), and a stale label must not outlast it.
 KEEP_LABEL = "omni.keep"  # set by ``start --keep``: the session stays open once its result is taken
 
 
@@ -5535,6 +5539,7 @@ def finish_delivered(
     hold_pr: bool = True,
     held: dict[tuple[str, int], str | None] | None = None,
     cleared: set[tuple[str, int]] | None = None,
+    seen: set[str] | None = None,
 ) -> tuple[str, bool]:
     """The one place a taken result finishes its session (``Omnigent.archive``, which frees its agent
     process and runner file descriptors; the transcript stays and an unarchive covers follow-ups).
@@ -5551,8 +5556,13 @@ def finish_delivered(
     for a moment after it is no hold; ``reap``, which reads sessions it knows nothing of, passes
     False and keeps any running one or one with input pending. ``force`` stops a stuck running
     session first. The session leaves ``registry`` (the caller the supervisor would tell) before it
-    is archived. ``held`` and ``cleared`` carry the PR lookups across a ``reap``'s sessions."""
+    is archived. ``held`` and ``cleared`` carry the PR lookups across a ``reap``'s sessions.
+
+    Once a session is archived its children are finished the same way (``settled`` False: one still
+    running, with an open card, held or kept stays), since a parent that ended has nobody to take
+    their results; ``seen`` stops a loop in the children listing. Their lines follow the parent's."""
     held = {} if held is None else held
+    seen = {sid} if seen is None else seen | {sid}
     cleared = set() if cleared is None else cleared
     info = og.info(sid)
     status, name = str(info.get("status")), f"{sid} {info.get('title') or ''}"
@@ -5608,7 +5618,19 @@ def finish_delivered(
     except Fail as e:  # one refused finish leaves the rest to reap
         print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
         return f"{name}: finish failed: {e}", True
-    return f"{name}: archived ({status})", False
+    lines, bad = [f"{name}: archived ({status})"], False
+    try:
+        kids = [k for k in og.children(sid) if k not in seen]
+    except Fail:  # the children stay for a reap
+        kids = []
+    for kid in kids:
+        seen.add(kid)
+        kid_line, kid_bad = finish_delivered(
+            og, kid, registry=registry, settled=False, held=held, cleared=cleared, seen=seen
+        )
+        lines.append(f"  {kid_line}")
+        bad |= kid_bad
+    return "\n".join(lines), bad
 
 
 def reap(
@@ -6140,7 +6162,7 @@ def check(
         return f"{head}: asked: {question_of(report)}", since
     if prompts := prompts_of(info):
         return f"{head}: blocked on a prompt: {'; '.join(prompts)}", since
-    if info.get("status") == "failed":
+    if info.get("status") in FAILED_STATUSES:
         e = info.get("last_task_error") or {}
         return (
             f"{head}: failed: {e.get('message') or e.get('title') or '(no error recorded)'}",
@@ -10184,6 +10206,15 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             arm_quietly(registry, sid)
         elif unreported:
             write_failed(og, sid, unreported, e)
+        elif sid and args.cmd in (
+            "run",
+            "wait",
+        ):  # a run that ended failed, cancelled or errored is finished too
+            try:
+                if str(og.info(sid).get("status")) in FAILED_STATUSES:
+                    finish_delivered(og, sid, keep=bool(getattr(args, "keep", False)))
+            except Fail:
+                pass  # the failure is what the caller reads
         print(e, file=sys.stderr)
         ended["failure"] = (str(e).splitlines() or [""])[0]
         return e.code

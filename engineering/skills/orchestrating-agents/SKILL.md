@@ -50,3 +50,6 @@ service that restarts it and survives a reboot (`supervise --registry <file> --i
   open when it is kept (`--keep`, a `--pr` worker whose PR is open, an open question card, a pending prompt, background work);
   a lead started `--top-level` that no one waits on is archived by `reap <session>` from whoever started
   it, once it has its result. An unarchive covers a follow-up.
+  A run that ended failed, cancelled or errored counts as finished too; an `omnigent.keep` label holds
+  nothing, since only an open card keeps a session; and archiving a parent finishes its children, bar one
+  that is running, holds a card or is kept.
