@@ -2148,7 +2148,9 @@ def test_create_sets_a_claude_session_s_permission_mode_from_the_flag_or_the_env
     # codex's own no-approvals, full-access flag whatever the variable says
     og.create("codex", "t")
     assert bodies[-1]["terminal_launch_args"] == ["--dangerously-bypass-approvals-and-sandbox"]
-    og.create("codex", "t", permission_mode="default")  # an explicit stricter ask keeps codex's own stance
+    og.create(
+        "codex", "t", permission_mode="default"
+    )  # an explicit stricter ask keeps codex's own stance
     assert "terminal_launch_args" not in bodies[-1]
     with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
         omnigent_agent.start(
@@ -2385,7 +2387,9 @@ def test_create_starts_a_claude_worker_or_verifier_lean_with_what_the_project_na
     for role in ("/x/lead.md", None):  # a lead and a plain child start as before
         og.create("claude", "t", workspace=ws, role=role)
         assert "terminal_launch_args" not in bodies[-1]
-    og.create("codex", "t", workspace=ws, role="/x/worker.md")  # codex's own flag, not claude's lean ones
+    og.create(
+        "codex", "t", workspace=ws, role="/x/worker.md"
+    )  # codex's own flag, not claude's lean ones
     assert bodies[-1]["terminal_launch_args"] == ["--dangerously-bypass-approvals-and-sandbox"]
     og.create("claude", "t", workspace=str(tmp_path), role="/x/worker.md")  # outside a checkout
     assert bodies[-1]["terminal_launch_args"] == lean
@@ -9794,7 +9798,9 @@ def test_start_says_when_the_environment_s_permission_mode_is_not_applied_and_cr
     og.harnesses["agy"] = "antigravity-native"
     sid, _ = omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
     assert sid in og.sessions
-    assert "not applied" not in capsys.readouterr().err  # codex starts in no-approvals whatever it says
+    assert (
+        "not applied" not in capsys.readouterr().err
+    )  # codex starts in no-approvals whatever it says
     for agent in ("claude", "agy"):  # each takes this mode, so nothing is dropped
         omnigent_agent.start(og, agent, f"t-{agent}", "do X", tmp_path / "r.md", None, 0)
         assert "not applied" not in capsys.readouterr().err
