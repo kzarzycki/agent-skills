@@ -932,13 +932,43 @@ CLOUD_NUDGE = (
 CLOUD_LEAD_ENDING = re.compile(r"[\s*_#>-]*(DONE|USER NEEDED|STILL WORKING|PARKED):")
 
 
+def repo_path(path: str | Path) -> str | None:
+    """``path`` relative to its git checkout when the file is tracked and unchanged against HEAD
+    (what a child's clone of this HEAD holds), else None: a file outside a repo, untracked, staged
+    or edited is not in that clone, so its text must travel in the message."""
+    p = Path(path).resolve()
+
+    def git(*args: str) -> subprocess.CompletedProcess[str] | None:
+        try:
+            return subprocess.run(
+                ["git", "-C", str(p.parent), *args], capture_output=True, text=True, check=False
+            )
+        except OSError:
+            return None
+
+    top = git("rev-parse", "--show-toplevel")
+    if not top or top.returncode:
+        return None
+    rel = p.relative_to(Path(top.stdout.strip()).resolve()).as_posix()
+    tracked, same = (
+        git("ls-files", "--error-unmatch", p.name),
+        git("diff", "--quiet", "HEAD", "--", p.name),
+    )
+    if not (tracked and same) or tracked.returncode or same.returncode:
+        return None
+    return rel
+
+
 def role_line(role: str | None, cloud: bool) -> str:
-    """The preamble's role sentence. A cloud VM has none of this host's files, so its brief carries
-    the role file's text; any other child reads the file at its path."""
+    """The preamble's role sentence. A cloud VM clones this checkout's HEAD, so a role file tracked
+    and unchanged there is named by its repo path; any other file's text rides in the brief; a
+    non-cloud child reads the file at its path."""
     if not role:
         return ""
     if not cloud:
         return f"Your role file is {role}; read it first.\n"
+    if rel := repo_path(role):
+        return f"Your role file is `{rel}` in your checkout: read it first and follow it.\n"
     return (
         "Your role file follows, since this VM may hold no copy of it: the other files it names may"
         " not be in this checkout; where they are not, work from what it and this brief state.\n"
@@ -1081,6 +1111,16 @@ class Fail(Exception):
     """A reason to exit nonzero."""
 
     code = 1
+
+
+class TooLong(Fail):
+    """A first message over what an independent session accepts."""
+
+    code = 2
+
+
+# sys_session_create refuses an independent session's first message longer than this
+SESSION_MESSAGE_CAP = 8000
 
 
 class Asked(Fail):
@@ -9779,15 +9819,29 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # ponytail: a lead's delegation line is read from this checkout, never another host's (start reads that
             # through the server, which brief does not reach)
             delegation = lead_delegation(None, None) if args.top_level and not pr else ""
+            task, task_file = text_or_file(args.brief)
+            if args.cloud and task_file and (rel := repo_path(task_file)):
+                task = f"Your brief is `{rel}` in your checkout: read it first and follow it."
             body = first_message(
-                args.cloud,
-                args.top_level,
-                pr,
-                report,
-                args.role,
-                text_or_file(args.brief)[0],
-                delegation,
+                args.cloud, args.top_level, pr, report, args.role, task, delegation
             )
+            print(f"brief: {len(body)} characters", file=sys.stderr)
+            if args.cloud and len(body) > SESSION_MESSAGE_CAP:
+                raise TooLong(
+                    f"brief: {len(body)} characters, over {SESSION_MESSAGE_CAP}, which"
+                    " sys_session_create refuses; the longest part is "
+                    + max(
+                        (
+                            (
+                                "the role file" if args.role else "the preamble",
+                                len(body) - len(task),
+                            ),
+                            ("the brief", len(task)),
+                        ),
+                        key=lambda x: x[1],
+                    )[0]
+                    + ": name a tracked, committed file or shorten it"
+                )
             sys.stdout.write(body)
             return 0
         og = Omnigent(args.server) if args.server else Omnigent()

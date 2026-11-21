@@ -206,7 +206,7 @@ and ends each commit message with the co-author line and no session link, since 
 reaches a public repository. A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
-A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, not its path: the VM has none of this host's paths, and a target repo without the pack installed holds no copy, so a path would read nothing. The skill's other files that the role names may not be in the checkout either; the brief says so.
+A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, unless the file is tracked and unchanged at this checkout's HEAD, which the child's clone holds: then the brief names its repo path in one line, and a brief argument that is such a file is named the same way (#1604). Any other file (outside the repo, untracked, edited) is inlined, since the clone lacks it. The skill's other files that the role names may not be in the checkout either; the brief says so.
 Every `acp:claude-cloud` session's preamble, lead or worker, with or without `--pr`, says how to open a
 PR when its brief or role asks for one: `curl` to `https://api.github.com/repos/<owner>/<repo>/pulls` with a
 `Content-Type: application/json` header. The VM's HTTPS proxy authenticates that host as the GitHub App, so no
@@ -434,7 +434,7 @@ and `send` armed (Supervising sessions, below); for one that owes none, keep
 **A child's message without a server.** `python3 scripts/omnigent_agent.py brief <brief> <report> [--cloud]
 [--role FILE] [--top-level] [--pr N]` prints, reading no server, the body of the first message `start` would
 send that child: its preamble (with the role line or, with `--cloud`, the role file's text), then the brief, with
-no trailing newline. It leaves out the lines `start` adds once the session exists: the `AGENT_SIGNATURE` line,
+no trailing newline. With `--cloud` it prints the message's length on stderr and exits 2, with no stdout, when it is over 8,000 characters (what `sys_session_create` refuses for an independent session), naming the part that made it long. It leaves out the lines `start` adds once the session exists: the `AGENT_SIGNATURE` line,
 the `LOOP_HEAVY_LOCK` line and the `Work on <title>` wrapper, or the pointer to a brief file. A `claude-cloud`
 session reaches Omnigent only through its `omnigent` MCP tools, which the cloud bridge serves over the
 claude.ai events API (the VM has no route to the server), so a cloud lead passes this text as
