@@ -9,6 +9,7 @@ steps run says, which also gives your own run's recipe.
 Your own test or check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
 refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
 `claude-cloud-run` could not make or one that needs this host.
+Inside a claude-cloud session, a helper is a native subagent in the VM, never a session made with `sys_session_create`: a created child lands on the bridge host, which runs no loop work.
 
 Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
 edits and commits of a size M or larger change go to a Sonnet worker (an XS or S change stays with you, step 4): your context is re-read on every call (about 150k
