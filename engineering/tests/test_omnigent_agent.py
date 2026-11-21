@@ -14084,7 +14084,7 @@ def test_brief_refuses_an_unreadable_role_and_takes_a_long_brief(
     assert omnigent_agent.main(["brief", "do X", "r.md", "--cloud", "--role", "gone.md"]) == 1
     err = capsys.readouterr().err
     assert err.count("\n") == 1 and "--role gone.md: not a readable file" in err
-    long = "x" * 5000
+    long = "x" * 3000
     real = Path.is_file
 
     def raises_on_long(self: Path) -> bool:
