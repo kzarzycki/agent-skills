@@ -16,6 +16,8 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests", "engineering/tests"]
 pythonpath = ["."]
+# tools/outer_options.py: a pytest a test starts never inherits this run's PYTEST_ADDOPTS (the nightly's coverage flags)
+addopts = "-p tools.outer_options"
 # A test that outlives 60 s fails with every thread's traceback instead of holding the landing lock for the queue;
 # a test that needs longer carries @pytest.mark.timeout(N). QUALIFY_TIMEOUT does not cover pytest.
 timeout = 60

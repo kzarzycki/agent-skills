@@ -114,28 +114,42 @@ def node_files(ids: set[str]) -> set[str]:
     return out
 
 
+def say(line: str) -> None:
+    """One line on stderr naming the rule that picked a target, so a slow run's log shows why it ran what it did."""
+    print(f"affected-tests: {line}", file=sys.stderr)
+
+
 def targets(files: list[str] | None, base: str | None = None) -> list[str]:
-    if files is None or any(
-        f.startswith(EVERYTHING) or Path(f).name == "conftest.py" for f in files
-    ):
+    if files is None:
+        say(f"everything: no diff against {base}")
+        return ALL
+    if setup := [f for f in files if f.startswith(EVERYTHING) or Path(f).name == "conftest.py"]:
+        say(f"everything: {setup[0]} is test setup")
         return ALL
     tests = [
         p for r in ALL for p in sorted(Path(r).rglob("test_*.py")) if "/e2e/" not in p.as_posix()
     ]
     picked = set(CHEAP)
     mapped = load_map()
+    say(
+        f"map of {mapped[0][:12]}"
+        if mapped
+        else f"no map at {MAP}: a script runs every test that names it"
+    )
     ran: set[str] = set()
     moved = moved_since(mapped[0], base) if mapped else set()
     for f in files:
         path = Path(f)
         if path.name.startswith("test_") and path.suffix == ".py" and path.exists():
             picked.add(f)
+            say(f"{f}: a changed test")
         elif path.suffix != ".md":
             by_run = executed_by(f, *mapped) if mapped and path.suffix == ".py" else None
             needle = path.stem if path.suffix == ".py" else path.name
             named = {t: t.read_text(errors="ignore") for t in tests}
             named = {t: text for t, text in named.items() if needle in text}
             if by_run is not None and f not in moved:
+                say(f"{f}: {len(by_run)} tests from the map")
                 ran |= by_run
                 # the name match stays the floor where the map is blind: a test the map has not seen (new or
                 # changed on main since it) and a test the nightly may skip (it has no context)
@@ -143,6 +157,15 @@ def targets(files: list[str] | None, base: str | None = None) -> list[str]:
                     str(t) for t, text in named.items() if str(t) in moved or SKIPS.search(text)
                 )
                 continue
+            if mapped and path.suffix == ".py":
+                why = (
+                    "changed on main since the map"
+                    if f in moved
+                    else "not in the map, or an import ran its change"
+                )
+                say(f"{f}: {len(named)} test files name it ({why})")
+            else:
+                say(f"{f}: {len(named)} test files name it")
             picked.update(str(t) for t in named)
     picked.update(n for n in node_files(ran) if n.split("::")[0] not in picked)
     return sorted(picked)

@@ -216,3 +216,16 @@ def test_a_test_that_can_skip_runs_by_name_beside_the_map(mapped) -> None:
 
 def test_a_changed_line_no_test_ran_selects_only_the_cheap_checks(mapped) -> None:
     assert a.targets(mapped("\n\n\ndef two", "\n# c\n\ndef two")) == a.CHEAP
+
+
+def test_stderr_names_the_rule_behind_each_target(mapped, capsys) -> None:
+    """#1609: a slow run's log says why: the map, a test, a name match and why, or everything and which file."""
+    a.targets(mapped("return 1", "return 11") + ["tests/test_one.py", "notes.md"])
+    said = capsys.readouterr().err
+    assert "affected-tests: map of " in said
+    assert "affected-tests: pkg/mod.py: 2 tests from the map" in said
+    assert "affected-tests: tests/test_one.py: a changed test" in said
+    a.targets(["pyproject.toml"])
+    assert "affected-tests: everything: pyproject.toml is test setup" in capsys.readouterr().err
+    a.targets(None, "origin/main")
+    assert "affected-tests: everything: no diff against origin/main" in capsys.readouterr().err
