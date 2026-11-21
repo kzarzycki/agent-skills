@@ -1071,3 +1071,54 @@ def test_a_marker_line_with_no_text_after_it_is_refused(checkout, marker) -> Non
     seen.update(question=f"{marker}Run X.\n")
     assert cv.verify(7, brief, None, None) == 1
     assert posted == []
+
+
+def test_a_later_codex_pass_resumes_the_kept_conversation_with_the_delta_brief(
+    checkout, tmp_path
+) -> None:
+    """Pass 1 keeps the conversation id beside the checkout; pass 2 runs `codex exec resume <id>` with the delta brief,
+    and `--fresh` (a redesign), a missing id or a failed resume run fresh with the full brief (#1595)."""
+    _, _, _, _, seen = checkout
+    uuid = "0198aaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    full = tmp_path / "full.md"
+    full.write_text("FULL brief\n- Report: tmp/loop/pr7-v1.md\n")
+    delta = tmp_path / "delta.md"
+    delta.write_text("DELTA brief\n")
+    seen["do"] = lambda: cv.CODEX_SESSION.__setitem__(0, uuid)
+    assert cv.verify(7, full, None, None) == 0  # pass 1: no id kept, so fresh
+    assert "resume" not in seen["cmd"] and "FULL brief" in seen["brief"]
+    assert cv.kept_session(7) == uuid
+    assert cv.verify(7, delta, None, None, full_brief=full) == 0  # pass 2
+    assert seen["cmd"][:3] == ["codex", "exec", "resume"] and uuid in seen["cmd"]
+    assert "DELTA brief" in seen["brief"] and "FULL brief" not in seen["brief"]
+    assert cv.verify(7, delta, None, None, fresh=True, full_brief=full) == 0
+    assert "resume" not in seen["cmd"] and "FULL brief" in seen["brief"]
+
+
+def test_a_kept_conversation_without_a_full_brief_is_refused_and_a_failed_resume_runs_the_full_brief(
+    checkout, tmp_path, monkeypatch
+) -> None:
+    """A resume that fails starts fresh, so a pass with a kept conversation needs the full brief too: with only the delta
+    the fresh verifier would review nothing (#1595)."""
+    _, _, _, _, seen = checkout
+    uuid = "0198aaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    full, delta = tmp_path / "full.md", tmp_path / "delta.md"
+    full.write_text("FULL brief\n")
+    delta.write_text("DELTA brief\n")
+    seen["do"] = lambda: cv.CODEX_SESSION.__setitem__(0, uuid)
+    assert cv.verify(7, full, None, None) == 0
+    with pytest.raises(cv.Refused, match="--full-brief"):
+        cv.review(7, delta, None, None, "codex", None, cv.PassEvent())
+    runs: list[tuple[list[str], str]] = []
+
+    def codex(cmd: list[str], brief: str) -> int:
+        runs.append((cmd, brief))
+        if "resume" in cmd:
+            return 1  # Codex could not resume: it wrote no final message
+        Path(cmd[cmd.index("-o") + 1]).write_text("final\nSATISFIED: yes\n")
+        return 0
+
+    monkeypatch.setattr(cv, "codex_exec", codex)
+    assert cv.verify(7, delta, None, None, full_brief=full) == 0
+    assert "resume" in runs[0][0] and "DELTA" in runs[0][1]
+    assert "resume" not in runs[1][0] and "FULL" in runs[1][1]

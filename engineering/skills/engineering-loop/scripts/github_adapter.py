@@ -63,12 +63,12 @@ ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENT
 
 
 # a PR's review threads, which PULL reads and rest_threads() asks for alone where GitHub's REST has none
-THREADS = f"reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}"
+THREADS = f"reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body createdAt author {{ login }} {EDITABLE} }} }} }} }}"
 
 
 PULL = f"""id number url title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType additions deletions }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
-  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
+  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body submittedAt commit {{ oid }} {EDITABLE} }} }}
   {THREADS}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
@@ -536,6 +536,8 @@ def rest_threads(number: int) -> dict[str, Any]:
                 "nodes": [
                     {
                         "body": found.get("body") or "",
+                        "createdAt": found.get("created_at"),
+                        "author": actor(found.get("user")),
                         "databaseId": found["id"],
                         "url": found.get("html_url"),
                     }
@@ -563,6 +565,7 @@ def rest_pull(pr: int) -> dict[str, Any]:
             "state": review["state"],
             "body": review.get("body") or "",
             "commit": {"oid": review.get("commit_id") or ""},
+            "submittedAt": review.get("submitted_at"),
             "databaseId": review.get("id"),
             "url": review.get("html_url"),
         }

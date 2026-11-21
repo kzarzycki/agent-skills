@@ -2404,7 +2404,7 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         "- Spec: #12",
         f"- Acceptance tests: uv run {os.path.relpath(SCRIPTS / 'acceptance.py')} 12",
         "- Report: tmp/loop/pr7-v3.md",
-        f"- Previous report: tmp/loop/pr7-v2.md, on {earlier}: review the diff since that head and rerun its repros",
+        f"- Previous pass: 2, on {earlier}: review the diff since that head and rerun its repros",
         f"- Proof log: {proof} (its first line is the head)",
         "",
         "Priorities:",
@@ -2426,11 +2426,36 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         assert "stale proof" in capsys.readouterr().out
     assert approvals.main(["brief", "7", "--proof", str(tmp_path / "absent.log")]) == 1
     assert capsys.readouterr().out == f"PR #7: no proof log at {tmp_path / 'absent.log'}\n"
+    # the previous pass's findings travel in the brief: a cloud verifier can't read the host's report file
+    pr["reviewThreads"]["nodes"] = [
+        {
+            "isResolved": False,
+            "comments": {
+                "nodes": [
+                    {"body": "**Verifier (codex), pass 2 · F1** (major): a gap\n\nit fails"},
+                    {"body": "**Verifier (codex), pass 1 · F9** (minor): older"},
+                ]
+            },
+        }
+    ]
+    assert approvals.main(["brief", "7"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "- Previous findings, pass 2:\n  1. **Verifier (codex), pass 2 · F1** (major): a gap" in out
+    )
+    assert "F9" not in out
+    # a finding on a file outside the diff sits in the review's body
+    pr["reviews"]["nodes"][-1]["body"] += (
+        "- **Verifier (codex), pass 2 · F3** (minor): x, at `a.md:1`\n- **Verifier (codex), pass 1 · F8** (minor): y\n"
+    )
+    assert approvals.main(["brief", "7"]) == 0
+    out = capsys.readouterr().out
+    assert "F3** (minor): x" in out and "F8" not in out
     pr["reviews"] = {"nodes": []}
     assert approvals.main(["brief", "7"]) == 0
     out = capsys.readouterr().out.splitlines()
     assert "- Report: tmp/loop/pr7-v1.md" in out
-    assert not [line for line in out if line.startswith("- Previous report")]
+    assert not [line for line in out if line.startswith("- Previous pass")]
     # a policy in gatekeeper.md leaves the Verifier brief in loop.md, the loop's prose
     agents = tmp_path / "docs" / "agents"
     agents.mkdir(parents=True)
@@ -2473,26 +2498,9 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
             f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}"
         ),
         "- Report: /there/repo/tmp/loop/pr7-v2.md",
-        (
-            f"- Previous report: /there/repo/tmp/loop/pr7-v1.md, on {earlier}: review the diff since that head and"
-            " rerun its repros"
-        ),
+        f"- Previous pass: 1, on {earlier}: review the diff since that head and rerun its repros",
         "- Proof log: /there/repo/tmp/loop/gate.log (its first line is the head)",
     ]
-    # the previous pass saved its repros beside its report in the clone's tmp/loop/: named there by path
-    (tmp_path / "tmp" / "loop").mkdir(parents=True)
-    (tmp_path / "tmp/loop/pr7-v1.md").write_text(
-        "Repro: `uv run pytest tmp/loop/pr7-v1-repro.py`, again tmp/loop/pr7-v1-repro.py,"
-        " tmp/loop/pr7-v1.md and tmp/loop/pr7-v1-tree/x.py\n"
-    )
-    assert approvals.main(["brief", "7", "--far", "/there/repo"]) == 0
-    out = capsys.readouterr().out.splitlines()
-    assert [line for line in out if line.startswith("- Repro")] == [
-        "- Repro: /there/repo/tmp/loop/pr7-v1-repro.py"
-    ]
-    # a verifier here works where the lead copied its repros: the brief lists none
-    assert approvals.main(["brief", "7"]) == 0
-    assert not [line for line in capsys.readouterr().out.splitlines() if line.startswith("- Repro")]
     assert approvals.main(["brief", "7", "--far", "there/repo"]) == 1
     assert capsys.readouterr().out == "--far there/repo: an absolute path on the verifier's host\n"
 
@@ -2516,8 +2524,9 @@ def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
             f"{heading} on {HEAD[:7]}.",
             "VERDICT: 1 blocker, 0 major, 2 minor\nSATISFIED: no\nRisk: low — a test fixture",
             "## Criteria\n\n- A draft never merges on its skipped checks: Before merge line 1, its check.\n\n"
+            "<!-- finding: S1 -->\n"
             f"- **{heading} · S1** (minor): a file outside the diff, at `docs/old.md:3`, a file outside the diff\n\n"
-            "The doc.",
+            "The doc.\n<!-- /finding -->",
         ),
         "comments": [
             {

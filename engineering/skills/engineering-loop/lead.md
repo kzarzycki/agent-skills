@@ -171,15 +171,14 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    Gates and push), since the verifier's mutation patches edit that tree; `land` and CI gate
    the head. Copy into its
    `tmp/loop/` the priorities file from step 4 (it exists only in your checkout, and `brief
-   --priorities` runs there), the proof logs and, on a later pass, the previous report (as the
-   `tmp/loop/pr<pr>-v<n>.md` the brief names) and its repros, since a read outside its
-   workspace is prompted. Give it the path of `verifier.md`, the base, the reviewed head, the
+   --priorities` runs there) and the proof logs, since a read outside its
+   workspace is prompted; a later pass's previous findings, replies and repros come from the PR through the brief, so no report is copied. Give it the path of `verifier.md`, the base, the reviewed head, the
    spec number, the priorities (that copy, extended with any a later finding adds), and a report path under `tmp/loop/` in that
    worktree, which the project gitignores. `uv run <this skill's folder>/scripts/approvals.py brief
    <pr> --priorities <file> --proof <log>…`, run from that worktree through that worktree's
    own copy of the skill, since the role path it prints follows the script's copy and only
    that one stays inside the verifier's workspace, prints that brief with every fact but the
-   priorities read from the PR, the previous report and its head from pass 2,
+   priorities read from the PR, from pass 2 the previous pass's head, its findings with their replies and a rerun command for each, derived from the PR's evidence branch (verifier.md, Report),
    and loop.md's `## Verifier brief` (the project's own lines, such as host load rules)
    appended; it refuses a proof log whose first line isn't the head. It first checks that the head merges cleanly into the PR's own base (`git merge-tree --write-tree origin/<base> <head>`, after fetching both): a head that conflicts exits 1 naming the conflicted files and writes no brief, since CI doesn't run and `land` skips it, so merge the base in first, and one pass covers the fix and the merge; `--allow-conflict` writes the brief anyway, for a pass meant to review the conflicting head. The report path matters:
    outside its workspace a Codex child's sandbox refuses the write and a Claude Code child is
@@ -207,7 +206,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    mutation runs load that host: a top-level session there (orchestrating-agents' Omnigent
    backend, Verifiers on another host) whose `--workspace` holds a clone of the repo, briefed by
    `approvals.py brief <pr> --far <that clone>`, which tells it to fetch the head and make its own
-   worktree; the proof logs and the previous report go there with `start --file`, you make no
+   worktree; the proof logs go there with `start --file`, you make no
    worktree for it, `wait --verdict` copies its report to your `tmp/loop/`, and a check that
    host can't run comes back as a proof-run question as above.
    **Verifier route.** Codex is the default verifier whenever it has quota. When it refuses (the quota error
@@ -230,11 +229,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    a fix reaching further grows the PR past its spec. The fixer replies on each fixed thread with
    the SHA and resolves it `ADDRESSED`. Resolve each deferred finding's thread yourself,
    `WONT_FIX`, replying with its triage and the issue it waits in, and each rejected one
-   `INVALID`, with the one-line why; then push. Each later pass gets a fresh verifier, started the same way in a
-   worktree at the new head, plus the previous report's copy and head; reviving the old one re-reads its whole earlier
-   review every turn. With loop.md's `Verifier session: reuse` (SKILL.md, What the project states), keep the
-   verifier's session across passes instead: `send` it the next pass's brief (`approvals.py brief`, as above)
-   rather than starting one, and close it once the PR lands. Start it as soon as the fixer reports the pushed head, with the fix's gate
+   `INVALID`, with the one-line why; then push. Pass 1 starts a fresh verifier with the full brief (`approvals.py brief`, as above). Each later pass reuses it, for every risk (loop.md's `Verifier session: reuse`, the default, which holds with no line), and sends the delta brief, `approvals.py brief <pr> --since <the head it last verified>`: the new head, the diff since that head and the triage replies you posted since its last pass (only your replies on a verifier finding's thread and top-level comments of yours that open with `Triage`, so post them that way, since another comment is not read as one), with no findings list and no rerun list, since its conversation holds them, so a fix round's brief stays small. The three routes (SKILL.md, Independent verification): a worker's-VM verifier is `cloud_verifier.py verify`, which resumes the PR's Codex conversation on its own, a Codex Cloud verifier gets the next pass as a new turn on the same `--thread`, and a host verifier is the kept session you `send` the brief. A fresh verifier with the full brief starts again only for a redesign, a fix that changes files or behaviour the open findings didn't name, since the old conversation has not looked there (`verify --fresh`, `--full-brief`), and when the kept one is gone (its VM replaced, its thread or session ended), said in one line in your report; the risk level and a merge of main are no reason for one, since neither moves the review past what the conversation knows. The full brief carries the previous findings from the PR and a rerun command for each from the PR's evidence branch `verify/pr-<n>`, so it needs no report file. The reused conversation's three costs are each answered: it anchors on its own findings, so a redesign gets fresh eyes and each fix is judged by rerunning its repro, never by memory; your triage replies can persuade it, so the delta brief shows them as your claims and the fix still has to pass its repro; its context grows, which the small delta brief, the cap of 3 passes and a redesign's fresh start keep short. loop.md's `Verifier session: fresh` opts a project out: a fresh verifier every pass, with the full brief. Close the kept verifier once the PR lands. Start it as soon as the fixer reports the pushed head, with the fix's gate
    still running, and wait on that gate yourself (`wait-for --log <log> --pid <pid>`): `land`
    needs a satisfied verdict and a green gate on the same head, so neither check weakens, and a
    red gate's failure joins that verdict's findings in the next fix round. A finding that doesn't make the PR wrong or unmergeable, a note on a
@@ -335,7 +330,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      alone holds nothing, since `land` batches every PR that is ready.
    - A check red after ready: `gh pr ready --undo`, then start a worker in the same worktree
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
-     runs the gate of worker.md step 2 and pushes; a fresh verifier (step 7) reviews only the change
+     runs the gate of worker.md step 2 and pushes; the verifier (step 7) reviews only the change
      since its last verdict's head; then `land` runs again on the new head.
    - Where a high-risk change waits for the owner's go, `land` exits 3 with only that left
      once the base's required checks have passed the head, so the owner never approves a head
@@ -393,7 +388,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    merge list of `none`, or none at all, means no acceptance runs here, and your report says
    `After merge: none`. A failure is reverted the same way, and the fix
    forward is a new change through this loop, never a patch on main.
-   With loop.md's `Verifier session: reuse`, send the spec's After merge list to the kept
+   With the kept verifier session (the default; not with loop.md's `Verifier session: fresh`), send the spec's After merge list to the kept
    verifier right after the merge, before you finish its session, since that session already
    knows the change and a new agent would learn it again: it runs each line on the merged
    default branch and reports each result, and you read that report as a worker's.
@@ -403,7 +398,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    acceptance checks (the acceptance command with its issue, SKILL.md, Acceptance checks), the
    After merge results, and what the next nightly must confirm (SKILL.md, Nightly), so the owner
    reads one note on what landed and what is still to be confirmed. The epic closes as step 8 says.
-10. **Clean up** once acceptance has run, pass or fail. Close the agents, and stop only the
+10. **Clean up** once acceptance has run, pass or fail. Close the agents, except that a PR's worker is kept until its PR lands or closes (`reap --merged` ends it), since it carries the PR's verifier and the runs CI can't make, and stop only the
    processes you started, as worker.md, Report says, since a shared pattern kills other
    agents' runs too. For every
    worktree your notes list, children's before yours (each verifier's detached one

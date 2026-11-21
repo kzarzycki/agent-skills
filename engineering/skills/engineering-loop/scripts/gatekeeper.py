@@ -7586,6 +7586,7 @@ def merges(
                 print(exc)
     # after every publication above, which pushes the landed tree's record again when it is the heads' tree
     drop_records([pull["headRefOid"] for pull, *_ in done])
+    prune_evidence()
     numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
     for pull, tree, gated, how in done:
         comment(
@@ -7769,7 +7770,22 @@ def accepted(lines: list[str], report: Path) -> list[tuple[str, str]]:
     """Each `Accepted on evidence: <line> — <proof log>` line of a report as (line, proof log), refused when one
     names no proof log, since an acceptance taken on evidence nobody can find is no acceptance."""
     found = []
+    fenced = False
     for line in lines:
+        if line.startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:  # a quoted report line is no acceptance
+            continue
+        # a `Manual:` line that takes itself on evidence inline: the high-risk refusal and the posted review would
+        # never see it; prose, a quote or a fenced block that only mentions the phrase is no acceptance
+        if not line.startswith(ACCEPTED) and re.search(
+            rf"Manual:.*{re.escape(ACCEPTED)}", re.sub(r"`[^`]*`|\*", "", line)
+        ):
+            raise Refused(
+                f"{report}: `{ACCEPTED}` inside `{line[:60]}`: write it as a line of its own, "
+                f"`{ACCEPTED} <line> — <proof log>`"
+            )
         if not line.startswith(ACCEPTED):
             continue
         said = re.fullmatch(r"(\S.*)[ \t]+[—–][ \t]+(\S.*)", line[len(ACCEPTED) :].strip())
@@ -7936,7 +7952,10 @@ def verdict(pr: int, report: Path) -> int:
     for name, severity, path, line, title, body in found:
         said = f"**{heading} · {name}** ({severity}): {title}"
         if not diff.get(path):
-            outside.append(f"- {said}, at `{path}:{line}`, a file outside the diff\n\n{body}")
+            # between markers, so a reader takes the whole finding, bullets and links in its body included
+            outside.append(
+                f"{FINDING_OPEN.format(name)}\n- {said}, at `{path}:{line}`, a file outside the diff\n\n{body}\n{FINDING_CLOSE}"
+            )
             continue
         last = int(line.rpartition("-")[2])  # a range anchors at its last line
         at = min(diff[path], key=lambda candidate: abs(candidate - last))
@@ -9776,6 +9795,269 @@ def drop_records(heads: list[str]) -> None:
             )
 
 
+# A PR's verifier evidence: each finding's repro script and log, on an orphan branch of origin, one per PR (verifier.md,
+# Report). A cloud session's proxy pushes branches, as record branches show, so every verifier route can write it.
+EVIDENCE_BRANCH = "verify/pr-{}"
+EVIDENCE_TAG = "verify/pr-{}-evidence"
+# GitHub warns over 50 MB a file on a branch and refuses over 100 MB; a release asset holds 2 GB
+BRANCH_LIMIT = 50 * 1024 * 1024
+ASSET_LIMIT = 2 * 1024**3
+# how long the evidence of a merged or closed PR is kept: long enough for a follow-up issue to reopen its finding
+EVIDENCE_AGE = 90 * 24 * 60 * 60
+EVIDENCE_TRIES = 5
+EVIDENCE_PUSH = re.compile(
+    r"non-fast-forward|fetch first|\(.*(?:stale info|already exists).*\)|rejected"
+)
+
+
+def evidence_slug(title: str) -> str:
+    """A finding's short slug: its title's first words, lowercase, `a-z0-9` and dashes."""
+    return "-".join(re.findall(r"[a-z0-9]+", title.lower()))[:40].strip("-") or "finding"
+
+
+EVIDENCE_LINK = re.compile(r"blob/([0-9a-f]{7,40})/(pass-\d+/[\w.-]+/repro\.sh)")
+
+
+def rerun_command(pr: int, finding: str) -> str | None:
+    """The command that reruns a finding's repro: the script its text links at the evidence commit (`approvals.py
+    evidence` prints the link: path at SHA, which never moves), fetched from the evidence branch and run from the
+    current directory, which is the reviewed source checkout, since a repro needs the source and tests the orphan branch
+    lacks. None when the finding links no evidence. Never a path looked up by the finding's title, since two findings
+    with one title have different scripts (the writer suffixes the second's slug)."""
+    if not (link := EVIDENCE_LINK.search(finding)):
+        return None
+    sha, path = link.groups()
+    # through a file, not a pipe: a blob that is missing makes `git show` fail, and bash on its empty input would exit 0
+    return (
+        f"f=$(mktemp) && trap 'rm -f \"$f\"' EXIT && git fetch -q origin refs/heads/{EVIDENCE_BRANCH.format(pr)}"
+        f' && git show {sha}:{path} > "$f" && bash "$f"'
+    )
+
+
+def stage_evidence(log: Path, work: Path) -> tuple[Path | None, bool, int]:
+    """The log as it will be stored, under `work`: as it is up to BRANCH_LIMIT, else gzipped (`log.txt.gz`), else
+    None with True (it goes up as a release asset, gzipped) and its stored size. A file over ASSET_LIMIT is refused."""
+    size = log.stat().st_size
+    if size <= BRANCH_LIMIT:
+        return log, False, size
+    import gzip
+
+    packed = work / "log.txt.gz"
+    with log.open("rb") as src, gzip.open(packed, "wb") as out:
+        shutil.copyfileobj(src, out)
+    after = packed.stat().st_size
+    if after <= BRANCH_LIMIT:
+        return packed, False, after
+    if after > ASSET_LIMIT:
+        raise Refused(
+            f"{log} is {size} bytes ({after} gzipped), over the {ASSET_LIMIT}-byte limit of a release asset"
+        )
+    return packed, True, after
+
+
+def evidence_asset(pr: int, file: Path) -> str:
+    """Upload `file` as an asset of the PR's draft release, tag EVIDENCE_TAG, making the release when there is none;
+    its download URL. Any refusal is a Refused with GitHub's reason: a session may not be allowed to make releases."""
+    tag = EVIDENCE_TAG.format(pr)
+    try:
+        found = github.gh(
+            "api",
+            "repos/{owner}/{repo}/releases?per_page=100",
+            "--jq",
+            f'[.[] | select(.tag_name == "{tag}")][0].upload_url // ""',
+        ).strip()
+        if not found:
+            found = github.gh(
+                "api",
+                "repos/{owner}/{repo}/releases",
+                "-f",
+                f"tag_name={tag}",
+                "-F",
+                "draft=true",
+                "-f",
+                f"name=Evidence of PR #{pr}",
+                "-f",
+                "body=Verifier logs too large for the evidence branch.",
+                "--jq",
+                ".upload_url",
+            ).strip()
+        url = found.split("{", 1)[0]
+        return github.gh(
+            "api",
+            "--method",
+            "POST",
+            f"{url}?name={file.name}",
+            "-H",
+            "Content-Type: application/gzip",
+            "--input",
+            str(file),
+            "--jq",
+            ".browser_download_url",
+        ).strip()
+    except (subprocess.CalledProcessError, OSError) as exc:
+        why = " ".join((getattr(exc, "stderr", None) or str(exc)).split())
+        raise Refused(f"the evidence release {tag} was not written: {why}") from exc
+
+
+def write_evidence(
+    pr: int, number: int, finding: str, repro: Path, log: Path
+) -> tuple[str, list[str], str | None]:
+    """Commit one finding's `pass-<number>/<slug>/repro.sh` and its log to origin's orphan branch `verify/pr-<pr>`
+    (a file over BRANCH_LIMIT gzipped, one still over it as an asset of the PR's draft release, one over ASSET_LIMIT
+    refused after the repro is stored, so the next pass can regenerate the log): the commit's SHA, the paths written
+    and the asset's URL. The slug is unique in the pass (`-2`, `-3`). A push the remote refuses as non-fast-forward is
+    fetched and applied again (two verifiers of one PR write other paths, so nothing conflicts), up to EVIDENCE_TRIES."""
+    branch = EVIDENCE_BRANCH.format(pr)
+    remote = git("remote", "get-url", "origin").strip()
+    env = {**os.environ, **RECORDER}
+    with tempfile.TemporaryDirectory(prefix="evidence-") as tmp:
+        work = Path(tmp)
+        staged = work / "staged"
+        staged.mkdir()
+        refused: Refused | None = None
+        kept, asset, _ = None, False, 0
+        try:
+            kept, asset, _ = stage_evidence(log, staged)
+        except Refused as exc:
+            refused = exc
+
+        def sh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", "-C", str(work / "repo"), *SIGNING, *args],
+                check=check,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        subprocess.run(["git", "init", "-q", str(work / "repo")], check=True, capture_output=True)
+        sh("remote", "add", "origin", remote)
+        for _ in range(EVIDENCE_TRIES):
+            fetched = sh(
+                "fetch",
+                "-q",
+                "--no-tags",
+                "origin",
+                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+                check=False,
+            )
+            if fetched.returncode == 0:
+                sh("checkout", "-q", "-B", "evidence", f"origin/{branch}")
+            else:
+                sh("symbolic-ref", "HEAD", "refs/heads/evidence")
+            slug, taken = evidence_slug(finding), set()
+            base = work / "repo" / f"pass-{number}"
+            taken = {d.name for d in base.iterdir()} if base.is_dir() else set()
+            name, n = slug, 1
+            while name in taken:
+                n += 1
+                name = f"{slug}-{n}"
+            folder = base / name
+            folder.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(repro, folder / "repro.sh")
+            written = [f"pass-{number}/{name}/repro.sh"]
+            if kept is not None and not asset:
+                target = "log.txt.gz" if kept.suffix == ".gz" else "log.txt"
+                shutil.copyfile(kept, folder / target)
+                written.append(f"pass-{number}/{name}/{target}")
+            sh("add", "-A")
+            sh("commit", "-q", "-m", f"Evidence of PR #{pr}, pass {number}: {name}")
+            pushed = sh(
+                "push", "-q", "--no-verify", "origin", f"HEAD:refs/heads/{branch}", check=False
+            )
+            if pushed.returncode == 0:
+                sha = sh("rev-parse", "HEAD").stdout.strip()
+                break
+            if not EVIDENCE_PUSH.search(pushed.stderr):
+                raise Refused(
+                    f"the evidence branch {branch} was not pushed: {' '.join(pushed.stderr.split())}"
+                )
+        else:
+            raise Refused(
+                f"the evidence branch {branch} was refused {EVIDENCE_TRIES} times as not fast-forward"
+            )
+        if refused:
+            raise Refused(
+                f"{refused}; {written[0]} is stored, so the next pass can regenerate the log"
+            )
+        url = None
+        if asset and kept:
+            # named by pass and finding: the PR's one draft release holds every pass's logs, and a repeated asset name is refused
+            named = kept.with_name(f"pass-{number}-{name}.log.gz")
+            kept.rename(named)
+            url = evidence_asset(pr, named)
+    return sha, written, url
+
+
+def evidence(pr: int, number: int, finding: str, repro: Path, log: Path) -> int:
+    """`approvals.py evidence`: write one finding's evidence (write_evidence) and print one link line per file, each at
+    the evidence commit's SHA, which never moves, for the finding's thread (verifier.md, Report)."""
+    sha, written, asset = write_evidence(pr, number, finding, repro, log)
+    site = github.gh("api", "repos/{owner}/{repo}", "--jq", ".html_url").strip()
+    for path in written:
+        print(f"{path}: {site}/blob/{sha}/{path}")
+    if asset:
+        print(f"log (release asset): {asset}")
+    return 0
+
+
+def prune_evidence() -> None:
+    """Delete, from origin, the evidence release, its tag and the evidence branch of each PR that merged or closed more
+    than EVIDENCE_AGE ago, in that order: the branch is what names the PR to the next land, so a release or tag whose
+    deletion failed is retried then, not forgotten. PRs are found from the `verify/pr-*` branches. A host only, since a cloud session can't delete a ref; a refusal is said. A PR whose
+    state can't be read keeps its evidence."""
+    named: set[int] = set()
+    try:
+        listed = git("ls-remote", "--heads", "origin", "refs/heads/verify/pr-*")
+        named |= {
+            int(m[1]) for m in re.finditer(r"refs/heads/verify/pr-(\d+)$", listed, re.MULTILINE)
+        }
+    except (subprocess.CalledProcessError, OSError):
+        pass
+    for pr in sorted(named):
+        branch, tag = EVIDENCE_BRANCH.format(pr), EVIDENCE_TAG.format(pr)
+        try:
+            ended = github.gh(
+                "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}", "--jq", '.closed_at // ""'
+            ).strip()
+            if (
+                not ended
+                or time.time() - datetime.fromisoformat(ended.replace("Z", "+00:00")).timestamp()
+                < EVIDENCE_AGE
+            ):
+                continue
+        except (subprocess.CalledProcessError, OSError, ValueError):
+            continue
+        try:
+            for found in github.gh(
+                "api",
+                "repos/{owner}/{repo}/releases?per_page=100",
+                "--jq",
+                f'.[] | select(.tag_name == "{tag}") | .id',
+            ).split():
+                github.gh("api", "--method", "DELETE", f"repos/{{owner}}/{{repo}}/releases/{found}")
+            try:
+                github.gh(
+                    "api", "--method", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"
+                )
+            except subprocess.CalledProcessError as exc:
+                if not re.search(r"Not Found|does not exist|HTTP 404|HTTP 422", exc.stderr or ""):
+                    raise
+        except (subprocess.CalledProcessError, OSError) as exc:
+            why = " ".join((getattr(exc, "stderr", None) or str(exc)).split())
+            print(
+                f"the evidence release {tag} was not deleted, so its branch stays for the next land: {why}"
+            )
+            continue
+        try:
+            git("push", "-q", "--no-verify", "origin", f":refs/heads/{branch}")
+        except subprocess.CalledProcessError as exc:
+            if "remote ref does not exist" not in (exc.stderr or ""):
+                print(
+                    f"the evidence branch {branch} was not deleted: {' '.join((exc.stderr or '').split())}"
+                )
+
+
 def stated(
     head: str, context: str, wanted: Callable[[dict[str, Any], re.Match[str]], bool]
 ) -> tuple[dict[str, Any], re.Match[str]] | None:
@@ -10275,6 +10557,52 @@ def overlap(pr: int | None, files: Sequence[str], base: str | None) -> int:
     return 0
 
 
+# the boundary `verdict` writes around each finding in a review's body, which previous_findings splits on
+FINDING_OPEN = "<!-- finding: {} -->"
+FINDING_CLOSE = "<!-- /finding -->"
+FINDING_BLOCK = re.compile(r"<!-- finding: [^>]*-->\n(.*?)\n<!-- /finding -->", re.DOTALL)
+# the closing lines of a verifier's review body, which end the last finding in it
+VERDICT_END = re.compile(r"(?:Head|VERDICT|SATISFIED|Risk|Logic change|Scope):")
+PASS_FINDING = re.compile(r"\**Verifier \([^)]*\), pass \d+ · ")
+
+
+def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
+    """The findings pass `number` posted on the PR, each as its comment's text (`verdict` heads it `**Verifier (<family>),
+    pass <n> · <id>** (<severity>): <title>`), the ones on a file outside the diff from the review's body, as their
+    heading and the lines under it. Read from GitHub, so a verifier on any host gets them the way a host one does."""
+    mine = re.compile(rf"\**Verifier \([^)]*\), pass {number} · ")
+    found = [
+        note["body"].strip()
+        for thread in (pull.get("reviewThreads") or {}).get("nodes") or []
+        if not thread.get("isResolved")  # a finding the lead resolved is no longer open
+        for note in (thread.get("comments") or {}).get("nodes") or []
+        if mine.match(note.get("body") or "")
+    ]
+    for review in (pull.get("reviews") or {}).get("nodes") or []:
+        # a finding on a file outside the diff is a bullet in the review's body: its heading and the lines under it
+        # (its evidence link among them) up to the next bullet or closing line
+        current: list[str] | None = None
+        text = review.get("body") or ""
+        if "<!-- finding: " in text:
+            for block in FINDING_BLOCK.findall(text):
+                head = block.strip()[2:] if block.startswith("- ") else block.strip()
+                if mine.match(head):
+                    found.append(head)
+            continue
+        # a body from before the markers: a bullet's lines up to the next bullet
+        for line in text.splitlines():
+            if line.startswith("- ") and mine.match(line[2:].strip()):
+                current = [line.strip()[2:]]
+                found.append("")
+            elif current is not None and (line.startswith("- ") or VERDICT_END.match(line)):
+                current = None
+            elif current is not None:
+                current.append(line)
+            if current is not None:
+                found[-1] = "\n".join(current).strip()
+    return found
+
+
 def brief(
     pr: int,
     priorities: Path | None,
@@ -10284,15 +10612,14 @@ def brief(
 ) -> int:
     """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
     verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
-    newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
+    newest verdict review's) and its report path, from pass 2 the previous pass's head, its findings and each one's rerun command (evidence_files), then the priorities
     file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. For each spec it
     prints `- Acceptance tests: <command> <issue>`, the command loop.md's `Acceptance tests:` line names, else the
     fallback `uv run <this folder>/acceptance.py`, so the verifier runs the one the worker ran. A proof log whose first line isn't the head is refused, since the
     verifier counts a stale proof as missing and spends the pass on it. With `far` (a verifier on another host, `far` an
     absolute path there holding a clone of the repo) its paths are that host's: it fetches the head and makes its own
-    detached worktree under `far`'s `tmp/loop/` first, the role is read there, and the report, the previous report and
-    the proof logs are in `far`'s `tmp/loop/`, where the lead's `start --file` writes the last two, as are the previous
-    pass's repros, each named by its path there from the copy of that report `wait` brought to `tmp/loop/` here."""
+    detached worktree under `far`'s `tmp/loop/` first, the role is read there, and the report and
+    the proof logs are in `far`'s `tmp/loop/`, where the lead's `start --file` writes the logs."""
     pull = pull_request(pr)
     with policy_from(pull["baseRefName"]):
         _, loop = project()
@@ -10355,18 +10682,17 @@ def brief(
     if reviewed:
         newest = next(commit for commit, n, _ in reversed(reviewed) if n == number - 1)
         lines.append(
-            f"- Previous report: {loop_dir / f'pr{pr}-v{number - 1}.md'}, on {newest}: review the diff since that head"
-            " and rerun its repros"
+            f"- Previous pass: {number - 1}, on {newest}: review the diff since that head and rerun its repros"
         )
-        # a far verifier works in its worktree, but the last one saved its repros beside its report, in the clone's
-        # tmp/loop/: each by its path there, from the copy wait brought home
-        if far and (home := Path("tmp/loop") / f"pr{pr}-v{number - 1}.md").is_file():
-            saved = re.findall(r"tmp/loop/([\w.-]+)(?![\w./-])", home.read_text())
-            lines += [
-                f"- Repro: {loop_dir / name}"
-                for name in dict.fromkeys(saved)
-                if name not in (home.name, f"pr{pr}-v{number}.md")
-            ]
+        # the findings and their repro commands, read from the PR: no report file is handed between passes, so a
+        # verifier on any host, in a session or a fresh one, gets them the same way
+        prior = previous_findings(pull, number - 1)
+        if prior:
+            lines.append(f"- Previous findings, pass {number - 1}:")
+        for n, found in enumerate(prior, 1):
+            lines.append(f"  {n}. " + found.replace("\n", "\n     "))
+            if script := rerun_command(pr, found):
+                lines.append(f"     Rerun: {script}")
     lines += [
         f"- Proof log: {loop_dir / log.name if far else log} (its first line is the head)"
         for log in proofs
@@ -10385,6 +10711,85 @@ def brief(
     except (Refused, subprocess.CalledProcessError, OSError, ValueError) as exc:
         why = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()
         print(f"warning: overlap lookup failed: {why[0] if why else exc!r}", file=sys.stderr)
+    print("\n".join(lines))
+    return 0
+
+
+# a top-level PR comment of the lead's that is triage, not another note: it opens with the word
+TRIAGE = re.compile(r"\W*triage\b", re.IGNORECASE)
+
+
+def triage_replies(pull: dict[str, Any], after: str | None) -> list[str]:
+    """The lead's triage replies posted after `after`, the time of the verifier's last review: the lead's later comments
+    on a verifier finding's thread, and the lead's top-level PR comments that open with `Triage`. The lead is the account
+    running this, the one that posts the verdicts, since anyone can comment on a public PR and a stranger's comment is no
+    triage. A comment with no time, or no author, is left out, and with no `after` there is none to show, since an
+    unknown time can't be told from a reply the verifier already saw."""
+    if not after:
+        return []
+    lead = viewer()
+
+    def mine(note: dict[str, Any]) -> bool:
+        return (note.get("author") or {}).get("login") == lead and (
+            note.get("createdAt") or ""
+        ) > after
+
+    found = []
+    for thread in (pull.get("reviewThreads") or {}).get("nodes") or []:
+        notes = (thread.get("comments") or {}).get("nodes") or []
+        if notes and PASS_FINDING.match(notes[0].get("body") or ""):
+            found += [note["body"].strip() for note in notes[1:] if mine(note)]
+    found += [
+        (note.get("body") or "").strip()
+        for note in (pull.get("comments") or {}).get("nodes") or []
+        if mine(note) and TRIAGE.match(note.get("body") or "")
+    ]
+    return [text for text in found if text]
+
+
+def brief_since(pr: int, since: str, priorities: Path | None = None) -> int:
+    """Print a reused verifier's brief: only the new head, the pass and its report path, `git diff <since>..<head>`, and
+    the lead's triage replies since its last pass (triage_replies), shown as the lead's claims. No findings list and no
+    rerun list: the conversation already holds them, and each fix is judged by rerunning its repro, not by a reply."""
+    pull = pull_request(pr)
+    head = pull["headRefOid"]
+    reviewed = passes(pull)
+    if isinstance(reviewed, str):
+        raise Refused(f"PR #{pr} {reviewed}")
+    number = max((n for _, n, _ in reviewed), default=0) + 1
+    try:
+        diff = git("diff", f"{since}..{head}")
+    except subprocess.CalledProcessError:
+        git("fetch", "-q", "origin", f"pull/{pr}/head")
+        try:
+            diff = git("diff", f"{since}..{head}")
+        except subprocess.CalledProcessError as exc:
+            raise Refused(
+                f"PR #{pr}: no diff {since}..{head}: {' '.join((exc.stderr or '').split())}"
+            ) from exc
+    last = [
+        review.get("submittedAt") or ""
+        for review in (pull.get("reviews") or {}).get("nodes") or []
+        if (m := PASS.match(review.get("body") or "")) and int(m[2]) == number - 1
+    ]
+    replies = triage_replies(pull, max(last) if last and max(last) else None)
+    lines = [
+        f"Review PR #{pr} as the verifier, pass {number}: this is your conversation's next pass, so review only what changed.",
+        f"- Reviewed head: {head}",
+        f"- Last verified head: {since}",
+        f"- Report: tmp/loop/pr{pr}-v{number}.md",
+        "",
+        f"Diff since your last pass (`git diff {since}..{head}`):",
+        diff.rstrip() or "(empty)",
+    ]
+    if replies:
+        lines += [
+            "",
+            "The lead's triage replies since your last pass, which are the lead's claims, not facts: judge each fix by rerunning its repro.",
+        ]
+        lines += [f"- {text}".replace("\n", "\n  ") for text in replies]
+    if priorities is not None:
+        lines += ["", "Priorities:", priorities.read_text().rstrip()]
     print("\n".join(lines))
     return 0
 
@@ -10514,6 +10919,14 @@ def main(argv: list[str]) -> int:
     briefing.add_argument("--far", type=Path)
     briefing.add_argument("--priorities", type=Path)
     briefing.add_argument("--allow-conflict", action="store_true")
+    # a reused verifier's brief: only what changed since the head it last verified
+    briefing.add_argument("--since", metavar="SHA")
+    evidencing = commands.add_parser("evidence")
+    evidencing.add_argument("pr", type=int)
+    evidencing.add_argument("--pass", dest="number", type=int, required=True)
+    evidencing.add_argument("--finding", required=True, help="the finding's title")
+    evidencing.add_argument("--repro", type=Path, required=True)
+    evidencing.add_argument("--log", type=Path, required=True)
     briefing.add_argument("--proof", type=Path, action="append", default=[])
     overlapping = commands.add_parser("overlap")
     overlapping.add_argument("pr", type=int, nargs="?")
@@ -10635,7 +11048,11 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             parser.error("land --only needs a PR: there is nothing to restrict to")
         return land(args.pr or None, args.wait, args.only)
     if args.command == "brief":
+        if args.since:
+            return brief_since(args.pr, args.since, args.priorities)
         return brief(args.pr, args.priorities, args.proof, args.far, args.allow_conflict)
+    if args.command == "evidence":
+        return evidence(args.pr, args.number, args.finding, args.repro, args.log)
     if args.command == "overlap":
         if (args.pr is None) == (args.files is None):
             raise Refused("overlap takes a PR number, or --files <path>... for a story with no PR")
