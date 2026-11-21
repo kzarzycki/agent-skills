@@ -159,10 +159,14 @@ def test_a_test_the_file_no_longer_has_runs_as_its_file(mapped) -> None:
     assert "tests/test_both.py" in a.targets(mapped("return 2", "return 22"))
 
 
-def test_a_node_id_with_a_space_runs_as_its_file(tmp_path, monkeypatch) -> None:
+def test_a_parametrized_id_with_a_space_runs_as_its_function(tmp_path, monkeypatch) -> None:
+    """#1609: the gate splits targets on whitespace, so `test_p[a b]` runs as `test_p`, every parameter, not its file."""
     monkeypatch.chdir(tmp_path)
     Path("t.py").write_text("def test_p(): pass\n")
-    assert a.node_files({"t.py::test_p[a b]", "t.py::test_p[a]"}) == {"t.py", "t.py::test_p[a]"}
+    assert a.node_files({"t.py::test_p[a b]", "t.py::test_p[a]"}) == {
+        "t.py::test_p",
+        "t.py::test_p[a]",
+    }
 
 
 def land_on_main(name: str, text: str) -> str:
@@ -236,3 +240,15 @@ def test_a_new_function_beside_a_def_line_selects_only_the_tests_around_it(mappe
     changed, so it doesn't send the whole file to the name match."""
     picked = a.targets(mapped("\n\ndef two()", "\n\ndef new():\n    return 0\n\n\ndef two()"))
     assert "tests/test_one.py" not in picked and "tests/test_both.py" not in picked
+
+
+def test_a_map_with_a_skip_list_adds_only_the_skipped_tests(mapped) -> None:
+    """#1609: a test file that can skip no longer runs whole beside the map: only the tests the map's run skipped do."""
+    Path("tests/test_skips.py").write_text(
+        "import pytest\nfrom pkg import mod\n\n\n@pytest.mark.skipif(True, reason='x')\ndef test_s(): mod.two()\n\n\n"
+        "def test_kept(): pass\n"
+    )
+    (a.MAP / "skipped").write_text("tests/test_skips.py::test_s\n")
+    picked = a.targets(mapped("return 2", "return 22"))
+    assert "tests/test_skips.py::test_s" in picked
+    assert "tests/test_skips.py" not in picked

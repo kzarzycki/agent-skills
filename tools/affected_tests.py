@@ -13,8 +13,9 @@ holds a space, since the gate splits this output on whitespace, or names a test 
 is the fallback for a script the map does not hold or that changed on main since it, a map whose commit is missing or
 data is unreadable, and a changed line that any import or subprocess ran, since no test is named for that run (a
 line beside an insertion only stands for the inserted code, so its import run is no reason). It also
-adds, beside the map's tests, every test file that names the script and changed on main since the map, or can skip
-(the nightly's skips leave no context). A line no test ran selects nothing: no test depends on it.
+adds, beside the map's tests, every test file that names the script and changed on main since the map, and of those
+files the tests the nightly skipped (a skip leaves no context): by node id from the map's `skipped` list, else, for a
+map without one, every such file that can skip. A line no test ran selects nothing: no test depends on it.
 """
 
 from __future__ import annotations
@@ -96,6 +97,15 @@ def load_map():
         return None
 
 
+def skipped() -> set[str] | None:
+    """The node ids the map's run skipped (`skipped` beside it, from tools/test_map_plugin.py), or None for a map with no
+    such list, whose skips are then guessed from the test files' text (SKIPS)."""
+    try:
+        return set((MAP / "skipped").read_text().split())
+    except OSError:
+        return None
+
+
 def moved_since(sha: str, base: str | None) -> set[str]:
     """The files that changed between the map's commit and the PR's base: the map has not seen them."""
     if base is None:
@@ -110,14 +120,21 @@ def moved_since(sha: str, base: str | None) -> set[str]:
 
 
 def node_files(ids: set[str]) -> set[str]:
-    """Node ids as pytest targets: the id itself when it has no whitespace and its test still exists, else its file."""
+    """Node ids as pytest targets: the id itself when it has no whitespace and its test still exists; a parametrized id
+    with whitespace (the gate splits on it) as its test function, every parameter of it; else its file."""
     out = set()
     for node in ids:
         file, _, name = node.partition("::")
         if not Path(file).exists():
             continue
-        alive = f"def {re.split(r'[\[]', name)[0]}(" in Path(file).read_text(errors="ignore")
-        out.add(node if alive and not re.search(r"\s", node) else file)
+        function = re.split(r"[\[]", name)[0]
+        alive = f"def {function}(" in Path(file).read_text(errors="ignore")
+        if alive and not re.search(r"\s", node):
+            out.add(node)
+        elif alive and not re.search(r"\s", function):
+            out.add(f"{file}::{function}")
+        else:
+            out.add(file)
     return out
 
 
@@ -145,6 +162,7 @@ def targets(files: list[str] | None, base: str | None = None) -> list[str]:
     )
     ran: set[str] = set()
     moved = moved_since(mapped[0], base) if mapped else set()
+    skips = skipped() if mapped else None
     for f in files:
         path = Path(f)
         if path.name.startswith("test_") and path.suffix == ".py" and path.exists():
@@ -161,8 +179,12 @@ def targets(files: list[str] | None, base: str | None = None) -> list[str]:
                 # the name match stays the floor where the map is blind: a test the map has not seen (new or
                 # changed on main since it) and a test the nightly may skip (it has no context)
                 picked.update(
-                    str(t) for t, text in named.items() if str(t) in moved or SKIPS.search(text)
+                    str(t)
+                    for t, text in named.items()
+                    if str(t) in moved or (skips is None and SKIPS.search(text))
                 )
+                if skips is not None:  # the tests of these files the map's run skipped, by node id
+                    ran |= {n for n in skips if n.split("::")[0] in {str(t) for t in named}}
                 continue
             if mapped and path.suffix == ".py":
                 why = (
