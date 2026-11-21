@@ -9812,12 +9812,6 @@ def evidence_slug(title: str) -> str:
     return "-".join(re.findall(r"[a-z0-9]+", title.lower()))[:40].strip("-") or "finding"
 
 
-def finding_title(finding: str) -> str:
-    """The title of a posted finding (`**Verifier (<family>), pass <n> · <id>** (<severity>): <title>`)."""
-    head = finding.splitlines()[0] if finding else ""
-    return head.split("): ", 1)[1] if "): " in head else head
-
-
 EVIDENCE_LINK = re.compile(r"blob/([0-9a-f]{7,40})/(pass-\d+/[\w.-]+/repro\.sh)")
 
 
@@ -9830,7 +9824,11 @@ def rerun_command(pr: int, finding: str) -> str | None:
     if not (link := EVIDENCE_LINK.search(finding)):
         return None
     sha, path = link.groups()
-    return f"git fetch -q origin refs/heads/{EVIDENCE_BRANCH.format(pr)} && git show {sha}:{path} | bash"
+    # through a file, not a pipe: a blob that is missing makes `git show` fail, and bash on its empty input would exit 0
+    return (
+        f"f=$(mktemp) && trap 'rm -f \"$f\"' EXIT && git fetch -q origin refs/heads/{EVIDENCE_BRANCH.format(pr)}"
+        f' && git show {sha}:{path} > "$f" && bash "$f"'
+    )
 
 
 def stage_evidence(log: Path, work: Path) -> tuple[Path | None, bool, int]:
@@ -10556,13 +10554,15 @@ def overlap(pr: int | None, files: Sequence[str], base: str | None) -> int:
     return 0
 
 
+# the closing lines of a verifier's review body, which end the last finding in it
+VERDICT_END = re.compile(r"(?:Head|VERDICT|SATISFIED|Risk|Logic change|Scope):")
 PASS_FINDING = re.compile(r"\**Verifier \([^)]*\), pass \d+ · ")
 
 
 def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
     """The findings pass `number` posted on the PR, each as its comment's text (`verdict` heads it `**Verifier (<family>),
     pass <n> · <id>** (<severity>): <title>`), the ones on a file outside the diff from the review's body, as their
-    first line. Read from GitHub, so a verifier on any host gets them the way a host one does."""
+    heading and the lines under it. Read from GitHub, so a verifier on any host gets them the way a host one does."""
     mine = re.compile(rf"\**Verifier \([^)]*\), pass {number} · ")
     found = [
         note["body"].strip()
@@ -10572,11 +10572,19 @@ def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
         if mine.match(note.get("body") or "")
     ]
     for review in (pull.get("reviews") or {}).get("nodes") or []:
-        found += [
-            line.strip()[2:]
-            for line in (review.get("body") or "").splitlines()
-            if line.startswith("- ") and mine.match(line[2:].strip())
-        ]
+        # a finding on a file outside the diff is a bullet in the review's body: its heading and the lines under it
+        # (its evidence link among them) up to the next bullet or closing line
+        current: list[str] | None = None
+        for line in (review.get("body") or "").splitlines():
+            if line.startswith("- ") and mine.match(line[2:].strip()):
+                current = [line.strip()[2:]]
+                found.append("")
+            elif current is not None and (line.startswith("- ") or VERDICT_END.match(line)):
+                current = None
+            elif current is not None:
+                current.append(line)
+            if current is not None:
+                found[-1] = "\n".join(current).strip()
     return found
 
 

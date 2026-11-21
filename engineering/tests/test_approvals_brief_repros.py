@@ -64,3 +64,38 @@ def test_a_fresh_brief_gives_a_rerun_command_that_runs_the_linked_script_in_the_
             command, shell=True, cwd=clone, capture_output=True, text=True, check=False
         )
         assert (ran.returncode, ran.stdout.strip()) == (0, word), ran.stderr
+
+
+def test_a_review_body_finding_keeps_its_link_and_a_missing_blob_fails_the_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A finding outside the diff sits in the review's body with its link under the heading, and a rerun of a blob
+    that is not there must fail, not run bash on empty input (#1595)."""
+    origin, clone = tmp_path / "origin.git", tmp_path / "clone"
+    git(tmp_path, "init", "-q", "--bare", str(origin))
+    git(tmp_path, "clone", "-q", str(origin), str(clone))
+    monkeypatch.chdir(clone)
+    repro, log = tmp_path / "r.sh", tmp_path / "l.txt"
+    repro.write_text("echo actually ran\n")
+    log.write_text("ok\n")
+    sha, [path, _], _ = approvals.write_evidence(7, 1, "one", repro, log)
+    body = (
+        "- **Verifier (codex), pass 1 · F1** (major): gap, a file outside the diff\n\n"
+        f"  See https://example.test/blob/{sha}/{path}\n"
+        "- **Verifier (codex), pass 1 · F2** (minor): other\n"
+        "VERDICT: 0 blocker, 1 major, 1 minor\n"
+    )
+    first, second = approvals.previous_findings({"reviews": {"nodes": [{"body": body}]}}, 1)
+    assert "F1" in first and path in first and "F2" not in first and "VERDICT" not in second
+    command = approvals.rerun_command(7, first)
+    assert command is not None
+    ran = subprocess.run(
+        command, shell=True, cwd=clone, capture_output=True, text=True, check=False
+    )
+    assert (ran.returncode, ran.stdout.strip()) == (0, "actually ran"), ran.stderr
+    missing = approvals.rerun_command(7, f"https://example.test/blob/{sha}/pass-1/missing/repro.sh")
+    assert missing is not None
+    gone = subprocess.run(
+        missing, shell=True, cwd=clone, capture_output=True, text=True, check=False
+    )
+    assert gone.returncode != 0
