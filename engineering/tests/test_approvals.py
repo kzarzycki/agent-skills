@@ -9197,12 +9197,22 @@ def test_delegate_is_a_choice_of_all_or_feature() -> None:
         approvals.settings(add(BARE, "loop", "delegate: everything\n"))
 
 
-def test_a_spec_or_plan_is_never_the_delegates_to_approve(
+def test_a_spec_is_the_delegates_to_approve_only_with_delegate_all(
     github: list[tuple[Any, ...]], capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert approvals.main(["approve", "spec", "1", "--by", "delegate"]) == 1
-    assert "approve spec is the owner's" in capsys.readouterr().out
+    assert "needs `loop.delegate: all`" in capsys.readouterr().out
     assert github == []
+
+
+def test_the_delegates_spec_record_counts_only_with_delegate_all() -> None:
+    delegated = issue(
+        1, "size:S", "approved:spec", comments=(record("spec", "delegate", spec=AS_WRITTEN),)
+    )
+    assert approvals.proofs("build", pull(), [delegated], add(BARE, "loop", "delegate: all\n")) == []
+    assert approvals.proofs("build", pull(), [delegated], BARE) == [
+        "#1 has no `Approved: spec` record by the owner"
+    ]
 
 
 # --- one route for a gate pass: the record branch in origin (#798, #807) ---
