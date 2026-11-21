@@ -62,6 +62,19 @@ def test_land_queues_for_mergify(
     untouched(mergify)
 
 
+def test_a_pr_body_loses_its_session_link_before_it_is_handed_to_mergify(
+    mergify: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """Mergify squashes from the PR's title and body, so land drops a cloud session's link line from it first."""
+    body = "## Summary\n\nFix it.\n\n## Evidence\n\nlog line"
+    head = mergify["opened"](7, body=f"{body}\n\nhttps://claude.ai/code/session_01AbCdEf\n")
+    mergify["pulls"][7]["viewerCanUpdate"] = True
+    code, lines = mergify["land"]("7")
+    assert code == 0, lines
+    assert mergify["edits"] == {"repos/{owner}/{repo}/pulls/7": body}
+    assert land_statuses(hub, head) == [("success", f"Queued for Mergify at {head}")]
+
+
 def test_land_queues_only_candidates(
     mergify: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
 ) -> None:
