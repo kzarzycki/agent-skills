@@ -127,7 +127,7 @@ def test_a_head_with_one_changed_file_keeps_todays_rules(
         (
             {},
             (False,),
-            "PR #7: 1 review thread(s) unresolved: fix and reply, or triage, then resolve (github.md, Review trail)",
+            "PR #7: 1 review thread(s) unresolved: fix and reply, or triage, then resolve (github-tracker's github.md, Review trail)",
         ),
     ],
     ids=["an unsatisfied pass", "a major open", "an unresolved thread"],

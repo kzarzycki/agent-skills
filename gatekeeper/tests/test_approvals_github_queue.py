@@ -831,7 +831,13 @@ def test_the_label_sync_keeps_loop_queued_and_gives_one_land_created_its_colour(
 ) -> None:
     """`loop:queued` is one of the loop's labels: a repo where an enqueue's REST call created it bare gets it updated,
     never listed as foreign and deleted once nothing carries it."""
-    import labels  # beside approvals.py, which the harness puts on the path
+    from approvals_harness import SCRIPTS
+
+    # the github-tracker skill's labels.py, which reads the gatekeeper's names beside it as installed
+    monkeypatch.syspath_prepend(
+        str(SCRIPTS.parents[3] / "github" / "skills" / "github-tracker" / "scripts")
+    )
+    import labels
 
     monkeypatch.setattr(
         labels, "tracker_settings", lambda _tracker: {}

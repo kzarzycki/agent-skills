@@ -79,6 +79,13 @@ TRACKER = (PROJECT / "docs" / "agents" / "issue-tracker.md").read_text()
 LOOP = (PROJECT / "docs" / "agents" / "loop.md").read_text()
 
 
+def in_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run in the fixture project, whose policy files are its own: the checkout's `origin/<base>` holds the fixture
+    only where this PR is merged, so the policy is read from the working tree, as WORKING_TREE_POLICY says."""
+    monkeypatch.chdir(PROJECT)
+    monkeypatch.setenv("GATEKEEPER_POLICY_FROM_WORKING_TREE", "1")
+
+
 def loop_md(settings: str = "") -> str:
     """A loop.md whose settings block holds `settings`, YAML."""
     return f"# Loop facts\n\n## Settings\n\n```yaml\n{settings}```\n\nThe prose for people.\n"
@@ -1011,7 +1018,7 @@ def test_a_merge_waits_for_check_and_the_owners_go_and_fails_a_missing_proof(
 
     comments: list[tuple[int, str]] = []
     monkeypatch.setattr(approvals, "comment", lambda number, body: comments.append((number, body)))
-    monkeypatch.chdir(PROJECT)
+    in_project(monkeypatch)
     running = pull(reviews=(VERDICT,), checks=(("check", "IN_PROGRESS"),), files=("billing/a.py",))
     assert gated(running) == (
         approvals.WAITING,
@@ -1492,7 +1499,7 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         return found.read_text()
 
     monkeypatch.setattr(approvals.github, "gh", gh)
-    monkeypatch.chdir(PROJECT)
+    in_project(monkeypatch)
     return asked
 
 
@@ -1834,7 +1841,7 @@ def github(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     monkeypatch.setattr(
         approvals, "minimize", lambda comment_id: calls.append(("minimize", comment_id))
     )
-    monkeypatch.chdir(PROJECT)
+    in_project(monkeypatch)
     return calls
 
 
@@ -2489,11 +2496,11 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
     assert approvals.main(["brief", "7", "--far", "/there/repo", "--proof", str(proof)]) == 0
     tree = "/there/repo/tmp/loop/pr7-v2-tree"
     assert capsys.readouterr().out.splitlines() == [
-        f"Review PR #7 as the verifier, pass 2, following {tree}/engineering/skills/engineering-loop/verifier.md.",
+        f"Review PR #7 as the verifier, pass 2, following {tree}/loop/skills/engineering-loop/verifier.md.",
         f"- Base: {BASE}",
         f"- Reviewed head: {HEAD}",
         "- Spec: #12",
-        f"- Acceptance tests: uv run {tree}/engineering/skills/engineering-loop/scripts/acceptance.py 12",
+        f"- Acceptance tests: uv run {tree}/gatekeeper/skills/gatekeeper/scripts/acceptance.py 12",
         (
             f"- Worktree: first, in /there/repo, run `git fetch origin pull/7/head` and"
             f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}"
@@ -5489,7 +5496,7 @@ def test_check_without_a_pr_or_an_issue_has_nothing_to_gate(
     approved spec."""
     monkeypatch.setattr(approvals, "current_pr", lambda: None)
     monkeypatch.setattr(approvals, "git", lambda *_args: "spike\n")
-    monkeypatch.chdir(PROJECT)
+    in_project(monkeypatch)
     assert (approvals.main(["check", "merge"]), capsys.readouterr().out) == (
         0,
         "no PR for this branch yet: nothing to gate\n",
@@ -5514,7 +5521,7 @@ def test_a_closing_line_with_no_such_issue_fails_with_the_reason(
         )
 
     monkeypatch.setattr(approvals, "pull_request", refused)
-    monkeypatch.chdir(PROJECT)
+    in_project(monkeypatch)
     assert (approvals.main(["check", "build", "1"]), capsys.readouterr().out) == (
         1,
         "gh: Could not resolve to an issue or pull request with the number of 9.\n",
@@ -7403,7 +7410,7 @@ def test_check_build_claims_only_once_every_proof_holds(
     assigned: list[tuple[Any, ...]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.chdir(PROJECT)
+    in_project(monkeypatch)
     pr = pull()
     pr["closingIssuesReferences"]["nodes"] = [
         held(issue(1, "kind:enhancement", "area:web", "size:S"))
@@ -9343,7 +9350,7 @@ def test_check_merge_and_land_reuse_a_record_branch_with_no_status_at_every_risk
 ) -> None:
     """Acceptance 3: a PR whose only pass is the record branch, with no `gate` status on its head (GitHub refuses
     every status write), has no gate line in check merge, and land's batch gate on that tree is reused, naming it."""
-    monkeypatch.chdir(PROJECT)
+    in_project(monkeypatch)
     head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
     monkeypatch.chdir(tmp_path / "b")
     monkeypatch.setattr(approvals, "post_status", no_status)
@@ -10444,7 +10451,7 @@ def cloud(monkeypatch: pytest.MonkeyPatch) -> Cloud:
     monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
     monkeypatch.setattr(approvals, "comment", COMMENT)
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
-    monkeypatch.chdir(PROJECT)
+    in_project(monkeypatch)
     return found
 
 
@@ -10502,7 +10509,7 @@ def test_without_graphql_check_merge_still_fails_a_missing_proof(
     assert approvals.main(["check", "merge", "7"]) == 1
     out = capsys.readouterr().out.splitlines()
     assert (
-        "PR #7: 1 review thread(s) unresolved: fix and reply, or triage, then resolve (github.md, Review trail)"
+        "PR #7: 1 review thread(s) unresolved: fix and reply, or triage, then resolve (github-tracker's github.md, Review trail)"
         in out
     )
     assert "PR #7: `check` is FAILURE on the head commit" in out
