@@ -2108,26 +2108,41 @@ def records(node: dict[str, Any], point: str) -> list[dict[str, str]]:
     return [found for body in bodies(node) if (found := parsed(body, point)) is not None]
 
 
-def current(node: dict[str, Any], point: str, key: str, value: str | set[str], by: str) -> bool:
-    """Whether `by` approved `point` for this spec or plan: a record whose `key` is `value`, or one of them."""
+def current(
+    node: dict[str, Any], point: str, key: str, value: str | set[str], by: str | set[str]
+) -> bool:
+    """Whether `by` (or one of them) approved `point` for this spec or plan: a record whose `key` is `value`, or one
+    of them."""
     values = {value} if isinstance(value, str) else value
+    bys = {by} if isinstance(by, str) else by
     return any(
-        record.get("by") == by and record.get(key) in values for record in records(node, point)
+        record.get("by") in bys and record.get(key) in values for record in records(node, point)
     )
 
 
-def approvals(where: str, node: dict[str, Any], point: str, holder: dict[str, Any]) -> list[str]:
+def approvers(loop: str | None) -> set[str]:
+    """Whose record approves a spec or plan the owner holds: the owner's, and with loop.md's `delegate: all` the
+    delegated approver's too (`approve spec N --by delegate`), since the owner delegated those approvals as well.
+    A merge on `risk.critical_paths` stays the owner's go (go_owner), whatever this says."""
+    return {"owner", DELEGATE} if delegation(loop) == "all" else {"owner"}
+
+
+def approvals(
+    where: str, node: dict[str, Any], point: str, holder: dict[str, Any], loop: str | None
+) -> list[str]:
     """One line per approval `point` lacks on `node`: the owner's record of this spec or plan (versions), and the
     label. A record of its last edit where the edit time can't be read (REST) says how to renew it."""
     found = []
-    if not current(node, point, point, versions(holder), "owner"):
-        owners = [record for record in records(node, point) if record.get("by") == "owner"]
+    whose = approvers(loop)
+    if not current(node, point, point, versions(holder), whose):
+        owners = [record for record in records(node, point) if record.get("by") in whose]
         edited = "lastEditedAt" not in holder and any(
             str(record.get(point, "")).startswith(("as edited ", "as written "))
             for record in owners
         )
         found.append(
             f"{where} has no `Approved: {point}` record by the owner"
+            + (" or the delegate" if DELEGATE in whose else "")
             + (
                 f" for its current text: its record names the {point}'s last edit, which GitHub's REST API can't"
                 f" date, so the owner approves it again (`approve {point} {node['number']} --by owner`) or the"
@@ -2143,7 +2158,7 @@ def approvals(where: str, node: dict[str, Any], point: str, holder: dict[str, An
     return found
 
 
-def spec_policy(issue: dict[str, Any], kinds: set[str]) -> bool:
+def spec_policy(issue: dict[str, Any], kinds: set[str], loop: str | None = None) -> bool:
     """Whether a kind `spec.auto` names (`kinds`) approves the issue's spec: `bug`, an issue labelled a bug;
     `follow-up`, one an agent raised (a `Found while #n` line in its body); `sub-issue`, a native sub-issue of an epic
     with the owner's current spec record and `approved:spec`, opened by someone with write access. An epic is never
@@ -2159,7 +2174,7 @@ def spec_policy(issue: dict[str, Any], kinds: set[str]) -> bool:
         return False
     if not parent or READY not in names(parent):
         return False
-    if not current(parent, "spec", "spec", versions(spec_holder(parent)), "owner"):
+    if not current(parent, "spec", "spec", versions(spec_holder(parent)), approvers(loop)):
         return False
     login = (issue.get("author") or {}).get("login")
     return bool(login) and writer(login)
@@ -2239,7 +2254,7 @@ def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) 
             if kinds
             and not any(label.startswith("wayfinder:") for label in names(issue))
             and (why := spec_owned(pull, issue, loop))
-            and spec_policy(issue, kinds)
+            and spec_policy(issue, kinds, loop)
         ]
     return [
         f"#{issue['number']}: its spec is the owner's to approve under `spec.auto: true`, since {why}"
@@ -2420,7 +2435,7 @@ def proofs(
         covered = (
             every
             and spec_hold(pull, issue, loop) is None
-            or spec_policy(issue, kinds)
+            or spec_policy(issue, kinds, loop)
             and spec_owned(pull, issue, loop) is None
         )
         if not covered and SCOPED in labels:
@@ -2431,11 +2446,11 @@ def proofs(
                     f"{where}: its spec is the owner's to approve, though it carries `{SCOPED}`, since {why}"
                 )
         if not covered:
-            found += approvals(where, issue, "spec", spec_holder(issue))
+            found += approvals(where, issue, "spec", spec_holder(issue), loop)
         plan = headed(issue, "## Plan")
         if plan is not None:
             if matches(rule.get("plan", {}), labels, None):
-                found += approvals(where, issue, "plan", plan)
+                found += approvals(where, issue, "plan", plan, loop)
         elif "plan" in rule.get("practice", {}):
             found.append(f"{where} has no `## Plan` comment, and one is due")
     if (
@@ -4701,7 +4716,7 @@ def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, An
             if holder is None or name not in names(issue):
                 continue
             value = texted(holder)
-            if current(issue, point, point, versions(holder), "owner"):
+            if current(issue, point, point, versions(holder), approvers(loop)):
                 continue
             added = [
                 event
@@ -7633,10 +7648,16 @@ def archive_workers(number: int) -> None:
     print(f"PR #{number}: finishing its worker sessions in the background, log {log.name}")
 
 
-def approve(point: str, number: int, seen: str | None = None) -> int:
-    """Record the owner's approval of the issue's current spec or plan, on their word: the record, the label, and
+def approve(point: str, number: int, seen: str | None = None, by: str = "owner") -> int:
+    """Record the owner's approval of the issue's current spec or plan, on their word, or with `by` the delegate's
+    under the owner's delegation (only with loop.md's `delegate: all`, approvers): the record, the label, and
     `needs-owner` removed. Every earlier record of the point is superseded and minimized. With `seen`, the version
     the owner's label was checked against (adopted), an edit since is refused: the label never covered it."""
+    if by == DELEGATE and delegation(project()[1]) != "all":
+        raise Refused(
+            f"approve {point} --by delegate needs `loop.delegate: all` in the policy file: without it the {point}"
+            " is the owner's"
+        )
     issue = issue_node(number)
     holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
     if holder is None:
@@ -7651,13 +7672,19 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
         (note, found) for note in notes(issue) if (found := parsed(note["body"], point)) is not None
     ]
     if any(
-        found.get("by") == "owner" and found.get(point) not in versions(holder)
+        found.get("by") in {"owner", DELEGATE} and found.get(point) not in versions(holder)
         for _, found in earlier
     ):
         record += CHANGED[point]
     comment(
         number,
-        fold(f"Approved: {point}", f"The owner approved the {point}.", f"By: owner\n{record}"),
+        fold(
+            f"Approved: {point}",
+            f"The owner approved the {point}."
+            if by == "owner"
+            else f"The {point} is approved under the owner's delegation.",
+            f"By: {by}\n{record}",
+        ),
     )
     for note, _ in earlier:
         if not note.get("isMinimized") and note.get("viewerCanMinimize"):
@@ -10592,14 +10619,10 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused("--head and --withdraw belong to `approve merge`")
         if args.point == "merge" and not args.head:
             raise Refused("approve merge needs --head <sha>: the head the approver was shown")
-        if args.point != "merge" and args.by != "owner":
-            raise Refused(
-                f"approve {args.point} is the owner's: only a merge's go may be the delegate's"
-            )
         return (
             go(args.number, args.head, args.by, args.withdraw)
             if args.point == "merge"
-            else approve(args.point, args.number)
+            else approve(args.point, args.number, by=args.by)
         )
     if args.command == "delegate":
         return delegate(args.pr)
