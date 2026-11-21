@@ -292,3 +292,24 @@ def test_archiving_a_parent_finishes_its_idle_children_and_spares_the_busy_ones(
     line, failed = omnigent_agent.finish_delivered(og, parent)
     assert not failed and og.archived == [parent, idle]
     assert "kept (card open" in line
+
+
+def test_archiving_a_parent_spares_a_running_child(og: base.FakeOmnigent, tmp_path: Path) -> None:
+    parent, busy = child(og, tmp_path, "p"), child(og, tmp_path, "b")
+    og.kids = [busy]
+    real = og.info
+    og.info = lambda s: {**real(s), "status": "running"} if s == busy else real(s)  # type: ignore[method-assign]
+    assert "kept (running)" in omnigent_agent.finish_delivered(og, parent)[0]
+    assert og.archived == [parent]
+
+
+@pytest.mark.parametrize("status", ["cancelled", "errored"])
+def test_the_supervisor_archives_a_cancelled_or_errored_child_after_relaying_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    og = Archiving(b=[base.told("brief", 60)])
+    og.snaps["b"] = {"status": status}
+    registry = tmp_path / "registry"
+    registry.write_text(f"b={tmp_path / 'b.md'}\n")
+    base.supervised(og, registry, monkeypatch, 2)
+    assert og.archived == ["b"]
