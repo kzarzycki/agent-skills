@@ -470,6 +470,37 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    REST, on a base that requires the merge queue or has no `land` section (`where: both`, the
    default). A project with `land.where: host`, or a signed squash without `signing_key_env`,
    can't land from a cloud lead: report the head SHA and the reason, ending `USER NEEDED`.
+7. **The record, and telling the parent.** Your report never reaches a host disk, so a
+   supervisor that follows a report path misses it. Whenever a turn ends with a question for
+   the parent, a head SHA for the go, `USER NEEDED` or `DONE`, also send that same text to the
+   parent session. Its id is in your brief, else the `created_by_session_id` in your own
+   `sys_session_get_info`. Use `sys_session_send` for a parent you are a sub-agent of, else
+   `sys_session_message`, since `sys_session_send` reaches only your own children. The parent
+   learns of the result from that message. The PR's comments (worker report, verdict,
+   `## Lead state`, `Landed`) stay the durable copy.
+
+**Waiting.** After you start or send to a child, end the turn with `STILL WORKING` and a
+   `Waits: session <id>` or `Waits: #<pr>` line. Resume on the runtime's `finished` wake
+   notice or the supervisor's news of the PR. Don't poll, since each check re-reads your whole
+   context. A wait that has to block inside a turn uses `omnigent_agent.py wait-for --pr <n>
+   --until gate|verdict`, which reads only REST, so it runs in the VM. This replaces
+   *Waiting* below for you.
+5. **State lives on GitHub, not in the VM.** A later turn may get a fresh VM with a fresh
+   clone. Approvals (statuses, reviews, labels) and `local-ci` record branches are already on
+   GitHub. Your own notes go in one PR comment headed `## Lead state`, which you edit in
+   place: each child by its session title (such as `<issue> worker`), with what the host
+   registry line would hold (its role, report and briefs), the pass count, and the head of the
+   last verdict. Never write a session id there: nothing on GitHub names a session, and a
+   public repo publishes it. Find a child's id again with `sys_session_list` by its title and
+   `created_by_session_id`. At every turn's start, read the comment and `git fetch` before you
+   act. `.git/approvals` (the land lock's local copy, `cloud-gate.json`, caches) is rebuilt by
+   the scripts and is never a record.
+6. **Gate and landing.** Where the project's CI has a required check, that check green on the
+   head is the per-head gate (#1597), so you start no `local-ci --record` session for it.
+   `approvals.py approve merge … --by delegate` and `land` run in the VM, since both read
+   REST, on a base that requires the merge queue or has no `land` section (`where: both`, the
+   default). A project with `land.where: host`, or a signed squash without `signing_key_env`,
+   can't land from a cloud lead: report the head SHA and the reason, ending `USER NEEDED`.
 7. **The record.** Your report never reaches a host disk. Your last message is the report,
    and the PR's comments (worker report, verdict, `## Lead state`, `Landed`) are its durable
    copy, so the supervisor reads those.
