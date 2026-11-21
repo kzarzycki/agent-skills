@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # #1601 Acceptance line 1: lead.md has one Cloud lead section of seven points, each holding its own load-bearing terms, and its opening paragraph points to it.
 # Scope: this checks that each point's key terms are present. A reworded instruction that keeps its terms
-# (a semantic regression in prose) passes here; catching it is the verifier's job, not this check's (#1614).
+# (a semantic regression in prose) can pass here; catching it is the verifier's job, not this check's (#1614).
 # Usage: 01-cloud-lead-section.sh [lead.md]   (default: the real file)
 set -euo pipefail
 f=${1:-engineering/skills/engineering-loop/lead.md}
