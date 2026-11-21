@@ -10,6 +10,10 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = (
+    pytest.mark.slow
+)  # runs the packaged gate over a mutated marketplace, 15-20 s each (#1610)
+
 REPOSITORY = Path(__file__).resolve().parents[1]
 
 
