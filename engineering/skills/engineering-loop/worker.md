@@ -83,8 +83,9 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    turn goes on once it holds, and past the limit you state it ends with a report naming the
    condition, since a background command's exit does not wake an idle session.
 3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the
-   push, reply on each finding's thread with its commit SHA and resolve it, reason
-   `ADDRESSED` (github.md, Review trail). Resolve only a thread you fixed: deferring or
+   push, reply on each finding's thread with its commit SHA and resolve it in one call,
+   `uv run <this skill's folder>/scripts/approvals.py resolve <pr> <comment id> --reply "Fixed in <sha>."`,
+   the ids from `approvals.py threads <pr>` (github.md, Review trail). Resolve only a thread you fixed: deferring or
    rejecting a finding is triage, the lead's.
 4. **Report.** Every log or capture you hand over as proof (a gate run, a repro, a drive
    of the instance) starts with the output of `git rev-parse HEAD` and the command that

@@ -153,8 +153,9 @@ session, so the launcher passes none. On another host agy takes the brief as a f
 
 **Cloud workers.** A worker whose tools run in a cloud VM can't write a file on this host,
 so `run` and `start` take `--pr <n>` (or `--pr owner/repo#<n>` from a directory that isn't a checkout; a bare `<n>` reads a checkout `--workspace`, else the current directory, and an unresolvable repository is refused before any session exists; `wait`, `send` and `reap --pr` take the same form): the preamble then has it post its report as one comment
-on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since GitHub's
-GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
+on PR n with engineering-loop's `approvals.py comment <n> <file>`, and make every other GitHub call
+through that script's verbs (`show`, `threads`, `resolve`, `edit`), since GitHub's GraphQL API, and so
+`gh pr` and `gh issue`, answers 403 in the VM, naming no host, path or session in the comment,
 and end its turn with only the comment's URL. A cloud session can't create a release or upload any binary through GitHub (creating a release answers HTTP 403, and its GitHub proxy answers HTTP 415 to any body that isn't `application/json`), but it can push branches, so a build output it must hand over goes on a branch or is built where it's used. `run` and `start` refuse `--pr` to an agent whose harness isn't
 `acp:claude-cloud`, naming `claude-cloud`, before any session exists: a native worker given it
 would run its build on this host, where a heavy one starves every other session. A cloud session (harness `acp:claude-cloud`)

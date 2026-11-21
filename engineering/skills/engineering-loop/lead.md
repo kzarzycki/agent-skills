@@ -9,6 +9,10 @@ steps run says, which also gives your own run's recipe.
 Your own test or check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
 refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
 `claude-cloud-run` could not make or one that needs this host.
+Every GitHub call you make goes through `uv run <this skill's folder>/scripts/approvals.py` (`approvals.py` below):
+`show`, `comment`, `threads`, `resolve` and `edit` beside the gate's verbs, each the same command on a host and in a
+cloud VM, where GraphQL, and so `gh pr` and `gh issue`, answers 403; a step it can't take there (a commit status)
+says in one line that the host takes it.
 
 Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
 edits and commits go to a Sonnet worker: your context is re-read on every call (about 150k
@@ -319,10 +323,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      checks on the commit a red group was built on, ends the run: run `land` again later. With gatekeeper.md's `land` section it squashes, signs and pushes
      each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
-     mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what
+     mark a PR ready or merge it by hand, on GitHub or through `gh`, because `land` is what
      refuses a PR whose proof is missing: `land` itself marks each draft it names ready, before it
      waits for the lock, so the batch ahead of you takes it, and several PRs named in one `land`
-     land in one batch. A push after it needs `gh pr ready --undo` first; the
+     land in one batch. A push after it needs `approvals.py edit <pr> --draft` first; the
      owner's go carries over only merges of the base whose verdict says `Logic change: none`
      (SKILL.md, Approvals and proof), and after the verdict on the new head `land` runs again.
    - Land every approved PR at once: start `land --wait` on each as soon as its proofs hold,
@@ -333,23 +337,23 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge
      go on a head), which the owner's `approve merge --by owner` removes: a question card
      alone holds nothing, since `land` batches every PR that is ready.
-   - A check red after ready: `gh pr ready --undo`, then start a worker in the same worktree
+   - A check red after ready: `approvals.py edit <pr> --draft`, then start a worker in the same worktree
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
      runs the gate of worker.md step 2 and pushes; a fresh verifier (step 7) reviews only the change
      since its last verdict's head; then `land` runs again on the new head.
    - Where a high-risk change waits for the owner's go, `land` exits 3 with only that left
      once the base's required checks have passed the head, so the owner never approves a head
      CI could still reject: give them the PR link and the head, ask for their go, and run `land` again once it is on.
-     The PR has landed only once `land` exits 0, or `gh pr view <pr> --json state,mergeCommit`
-     shows `MERGED`. Then use the merge commit in the steps below.
+     The PR has landed only once `land` exits 0, or `approvals.py show <pr>`
+     shows `pull.merged` true, its `pull.merge_commit_sha` the merge commit. Then use the merge commit in the steps below.
    - When GitHub refuses `land`'s merge for a missing review or check (`land` prints why), request the reviewers
-     (`gh pr edit <pr> --add-reviewer <login>`), add `needs-owner` to the issue, and
+     (`approvals.py edit <pr> --reviewer <login>`), add `needs-owner` to the issue, and
      stop. Never use `--admin`, which overrides the project's protection, and never push
      to main.
    - Human review findings: triage each review comment with One concern per PR (SKILL.md).
      A blocker, a major or a bug the PR introduced is fixed on the PR's own branch; anything
      else gets a reply on its thread linking the issue it waits in, and starts from main once
-     the PR lands. The fixes follow the review trail (SKILL.md): `gh pr ready --undo` first,
+     the PR lands. The fixes follow the review trail (SKILL.md): `approvals.py edit <pr> --draft` first,
      so CI skips the half-done fix, then each fix its own pushed commit, replied on its
      thread with the SHA and resolved (`worker.md`, Trail), and a verifier pass (step 7)
      before `land` runs again. Never cascade a fix down a stack or re-prove a merge
@@ -362,7 +366,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      the base actually contains the stacked work (the stack was merged into it), since
      otherwise the base's merge closes issues whose work isn't on main. Once the work is on the default branch, close each issue a PR on the
      way names with `Closes` (never `Part of` or `Implements`) that is still open
-     (`gh issue close <n> --comment "Landed in #<pr> (<merge sha>)."`) and move it to `Done`.
+     (`echo "Landed in #<pr> (<merge sha>)." | approvals.py comment <n> -`, then `approvals.py edit <n> --close`) and move it to `Done`.
    Every status comment you post follows github.md, Comment shape: a short result in view, the rest under `<details>`.
      When that was an epic's last open sub-issue, close and move the epic the same way. Where
      gatekeeper.md has a `signoff` section, each issue it names with `Implements` stays open for the
@@ -375,9 +379,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    - Fast-forward the main checkout (`git -C <main checkout> pull --ff-only`), and tell
      the live peers that main moved: the merge SHA, plus any setup step they must run.
    - A PR stacked on this one moves onto main now. When you own it,
-     `gh pr edit <stacked> --base main`; merge `origin/main` into its branch only when `land` reports a conflict.
+     `approvals.py edit <stacked> --base main`; merge `origin/main` into its branch only when `land` reports a conflict.
      Otherwise comment on it, naming the merge SHA, so its owner moves it
-     (`gh pr comment <stacked> --body "Base #<pr> landed in <merge sha>: retarget onto main."`):
+     (`echo "Base #<pr> landed in <merge sha>: retarget onto main." | approvals.py comment <stacked> -`):
      never push to another owner's PR (SKILL.md, One concern per PR).
 9. **Accept.** First read main's push run on the merge SHA
    (`gh run list --branch main --event push --commit <merge sha> --json conclusion,status`;
@@ -385,7 +389,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    (SKILL.md, Revert first): `git revert --no-edit <merge sha>` on a new branch off a
    freshly fetched `origin/main`, then a PR whose body says `Reverts #<pr>` and
    `Part of #<spec>`, so `approvals.py` finds the spec, through this loop; reopen every issue
-   the PR closed with `gh issue reopen <n> --comment "Reverted in #<revert pr>: <why>."`. Then run only
+   the PR closed with `echo "Reverted in #<revert pr>: <why>." | approvals.py comment <n> -`, then `approvals.py edit <n> --reopen`. Then run only
    the spec's After merge list, since the proof and the verifier already ran the Before merge
    list on the head the merge carries: each line against the reference it names, in the order of loop.md §
    Acceptance references, through a worker whose report you read when a line needs an

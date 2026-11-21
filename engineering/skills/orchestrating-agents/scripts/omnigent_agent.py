@@ -699,9 +699,9 @@ PR_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This is your brief.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
 Your checkout is a clone of the branch checked out in the workspace this session started from, which need not be PR #{pr}'s branch; `git fetch origin pull/{pr}/head` gets the PR's.
-Read issues and PRs through REST too, since GraphQL answers 403 here: `gh api repos/{{owner}}/{{repo}}/issues/<n>` and `.../pulls/<n>`, never `gh issue view` or `gh pr view`.
+Every GitHub call you make is one of engineering-loop's `scripts/approvals.py` verbs, the same here as on a host, since GraphQL answers 403 here: `show <n>` reads an issue or PR, `threads <pr>` lists review threads, `resolve <pr> <id>… --reply <text>` answers and resolves them, `comment <n> <file>` posts, `edit <n>` changes base, reviewers, draft or state.
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
-Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (`gh pr comment` goes through GraphQL too). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
+Your final report is one comment on PR #{pr}, posted once, when done: write it to a file, then run `approvals.py comment {pr} <file>`, which prints its URL. Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 A file under `tmp/loop/` that your report names (a repro, a log) goes in that comment too, since your files never reach the lead's host: a line `<!-- file: tmp/loop/<name> -->`, then the file in a fenced block (a fence longer than any it holds). A comment holds at most 65,536 characters: a file that would pass that goes as its last lines that fit, marked `<!-- file: tmp/loop/<name> (last lines) -->`.
 Demo: for a user-visible change, state in the report the command you ran and its output (or the demo skill's recording); otherwise say `Demo: none`, since a reviewer judges a visible change without checking out the branch.
@@ -856,8 +856,9 @@ CLOUD_NOTE = (
     " for this repo, so no token is needed. To open a PR when your brief or role asks for one, use"
     " `curl -sS -X POST -H 'Content-Type: application/json'"
     " https://api.github.com/repos/<owner>/<repo>/pulls -d '<json>'` (the GitHub connector's host is"
-    " not allowed here, and the proxy answers 415 to a body without that header); where your rules"
-    " refuse `gh` beyond search, call any other REST endpoint the same way; never write under `.git/` (not even `.git/info/exclude`),"
+    " not allowed here, and the proxy answers 415 to a body without that header); every other GitHub"
+    " call is one of engineering-loop's `scripts/approvals.py` verbs (`show`, `comment`, `threads`, `resolve`,"
+    " `edit`), the same here as on a host, and a commit status is the host's to write; never write under `.git/` (not even `.git/info/exclude`),"
     " since a write there waits on a permission prompt nobody in the cloud answers; `tmp/loop/` is"
     " scratch, ignored by the repo's `.gitignore`, and never committed.\n"
 )
