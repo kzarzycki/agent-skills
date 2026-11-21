@@ -5,6 +5,18 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.33.6 - 2026-11-21
+
+- `omnigent_agent.py brief` prints the body of the first message `start` would send a child, reading no server, so a cloud lead can start one through Omnigent's MCP tools (#1509)
+- Supervisor traffic: no alert for an archived or replaced worker, for a turn end the lead already read, or for a turn end waiting on an open owner card; `relay` refuses a message carrying an owner question; `withdraw` cancels a settled question's card; `reap --force` finishes a replaced worker while its PR is open (#1529).
+- The engineering tests restore `os.environ` after each test, so a script's `cli()` run in the test process no longer drops the venv from `PATH` for the tests after it, which failed the capability-pack drift tests in `qualify` with `No module named 'yaml'` (#1543)
+- `check merge` and `land` name `--by delegate` beside `--by owner` in a risk:high wait where the base's policy sets `loop.delegate: all`, and name that setting where it does not (#1546).
+- A top-level lead started on a checkout whose base policy sets `loop.delegate: all` is told the owner delegated specs and merges to it: it gives the merge go with `approve merge <pr> --head <sha> --by delegate` after a green gate and a satisfied verifier, and asks the owner by question card only for a change on `risk.critical_paths` (#1551). A `supervise` turn end of `USER NEEDED` with no open question card is now its own `unasked` event, which tells its waiter to post a card or act under the delegation.
+- A top-level lead on another host whose workspace is a git worktree or submodule now gets the delegation text when its origin's default branch sets `loop.delegate: all`: its policy read finds the origin through the `.git` file's `gitdir` and `commondir` (#1557).
+- orchestrating-agents: `claude-cloud-run` and every claude-cloud `start`/`run` with no mode set start the session in `bypassPermissions` instead of `auto` or the server default, so an unattended cloud run never stops on a permission prompt; an explicit `--permission-mode` or `$OMNIGENT_PERMISSION_MODE` still wins (#1565).
+- orchestrating-agents, engineering-loop: a claude-cloud session's preamble says code goes to the `claude/…` branch the session started on, whatever branch the brief names, and is reported with its head SHA; worker.md and lead.md say a cloud worker's brief names no branch (#1566).
+- engineering-loop: lead.md says a lead lands its own PRs and never merges main into one, stacked or not, unless `land` reports a conflict, since a merge of main voids the verifier's verdict (#1570).
+
 ## 0.33.5 - 2026-11-20
 
 - A supervise poll reads each session's record without its items and spawn-tree usage (about 3.5 KB instead of about 88 KB), which spares the Omnigent server a usage read per lead every 5 s; `usage` still reads the full record (#1533).
