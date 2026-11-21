@@ -115,7 +115,7 @@ if [ "$rest" = 1 ]; then
   work="$staging/media"
   git worktree add --detach "$work" >/dev/null
   trap 'git worktree remove --force "$work" 2>/dev/null; rm -rf "$staging"' EXIT
-  if git fetch -q origin "$branch" 2>/dev/null; then
+  if git -C "$work" fetch -q origin "$branch" 2>/dev/null; then
     git -C "$work" checkout -q --detach FETCH_HEAD
   else
     git -C "$work" checkout -q --orphan "$branch"
@@ -123,7 +123,7 @@ if [ "$rest" = 1 ]; then
   fi
   cp "${files[@]}" "$work/"
   git -C "$work" add -A
-  git -C "$work" commit -q -m "demo for PR #$pr at ${head:0:7}"
+  git -C "$work" commit -q --allow-empty -m "demo for PR #$pr at ${head:0:7}"
   git -C "$work" push -q origin "HEAD:refs/heads/$branch"
   sha="$(git -C "$work" rev-parse HEAD)"
   slug="$(gh api "repos/{owner}/{repo}" --jq .full_name)"

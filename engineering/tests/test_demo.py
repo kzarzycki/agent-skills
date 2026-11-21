@@ -30,10 +30,12 @@ esac
 """
 FAKE_GIT = f"""#!/usr/bin/env bash
 echo "git $*" >> "$LOG"
-[ "$1" != -C ] || {{ mkdir -p "$2"; shift 2; }}
+dir=.
+[ "$1" != -C ] || {{ dir="$2"; mkdir -p "$2"; shift 2; }}
 case "$1" in
   worktree) for last; do :; done; mkdir -p "$last" ;;
-  fetch) exit 1 ;;
+  fetch) [ -n "$BRANCH_ON_ORIGIN" ] || exit 1; : > "$dir/FETCH_HEAD" ;;
+  checkout) case "$*" in *FETCH_HEAD*) [ -e "$dir/FETCH_HEAD" ] || {{ echo "fatal: no FETCH_HEAD" >&2; exit 128; }} ;; esac ;;
   rev-parse) echo {HEAD} ;;
   status) printf '%s' "$STATUS" ;;
   config) exit 1 ;;
@@ -55,6 +57,7 @@ def run(
     gh_version: str = "2.103.3",
     graphql_refused: bool = False,
     ttyd: bool = True,
+    branch_on_origin: bool = False,
     command: tuple[str, ...] | None = None,
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
     bin_dir = tmp_path / "bin"
@@ -75,6 +78,7 @@ def run(
         "STATUS": status,
         "GH_VERSION": gh_version,
         "GRAPHQL_REFUSED": "1" if graphql_refused else "",
+        "BRANCH_ON_ORIGIN": "1" if branch_on_origin else "",
     }
     if command:
         env["PATH"] += f":{Path(shutil.which('mise') or 'mise').parent}"
@@ -239,3 +243,30 @@ def test_a_cloud_session_without_pr_is_told_to_pass_it(tmp_path: Path) -> None:
     rec.write_text("x")
     result, _ = run(tmp_path, str(rec), graphql_refused=True)
     assert result.returncode == 2 and "pass --pr" in result.stderr
+
+
+def test_a_second_cloud_demo_builds_on_the_media_branch_already_on_origin(tmp_path: Path) -> None:
+    """A cloud session can't delete the branch, so a re-demo fetches it into the scratch worktree
+    (FETCH_HEAD is per worktree) and commits even when the media is unchanged."""
+    rec = tmp_path / "a.png"
+    rec.write_text("x")
+    result, calls = run(
+        tmp_path, "--pr", "7", str(rec), graphql_refused=True, branch_on_origin=True
+    )
+    assert result.returncode == 0, result.stderr
+    log = "\n".join(calls)
+    assert "fetch -q origin claude/ready-demo-7" in log and "--orphan" not in log
+    assert "commit -q --allow-empty" in log
+
+
+def test_the_rest_route_skips_the_gh_version_gate_it_does_not_need(tmp_path: Path) -> None:
+    rec = tmp_path / "a.png"
+    rec.write_text("x")
+    result, _ = run(tmp_path, "--pr", "7", str(rec), graphql_refused=True, gh_version="2.50.0")
+    assert result.returncode == 0, result.stderr
+
+
+def test_an_mp4_is_attached_as_it_is_on_the_graphql_route(tmp_path: Path) -> None:
+    result, calls = run(tmp_path, recording(tmp_path, "a.mp4"))
+    assert result.returncode == 0, result.stderr
+    assert not any(c.startswith("ffmpeg") for c in calls)
