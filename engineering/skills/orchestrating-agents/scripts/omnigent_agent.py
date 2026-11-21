@@ -7013,7 +7013,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if ending == "DONE":
             return "rule", "done", "done, driven by the owner: told only to the leads waiting on it"
         return "rule", "record", "the owner drives it directly: they read its turn there"
-    if ending == "USER NEEDED" and event.get("card"):  # its question is open as a card: the owner answers it there
+    # its question is open as a card: the owner answers it there
+    if ending == "USER NEEDED" and event.get("card"):
         return "rule", "record", "waits on the owner, who has its question card open"
     if event.get("nudged") and not ending and wait == "unknown":  # its last words, unchanged
         return "rule", "act", "quiet again after its nudge"
