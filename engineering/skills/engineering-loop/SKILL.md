@@ -808,6 +808,8 @@ A write the VM's proxy is known to refuse (a commit status, a ref outside `refs/
 `scripts/cloud_limits.py` holds the list, one entry each, and the script skips the write, prints one `cloud VM:` line naming
 what stands in for it (the pushed `loop-gate/` record for the `gate` status, which the host's `local-ci <pr>` posts), and
 keeps the step's exit code. Read it when a new refusal turns up: it is one entry there and one `skip()` at the write.
+Every `approvals.py` verb runs in the VM itself, `local-ci --record` included, reading over REST where GraphQL is refused, so a cloud lead never
+hands one to a host or a bridge session: a GitHub call that fails there prints GitHub's answer, then a `cloud VM:` line saying so.
 
 - **Who does what.** The lead runs intent, spec, the branch and draft PR, `check build`,
   triage, the fetch and merge (or fast-forward) of each worker's reported branch into the

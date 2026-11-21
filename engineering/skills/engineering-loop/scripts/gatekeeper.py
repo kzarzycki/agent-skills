@@ -10613,6 +10613,10 @@ def main(argv: list[str]) -> int:
     except subprocess.CalledProcessError as exc:
         # gh's reason, e.g. a closing line that names a number with no issue
         print(exc.stderr.strip() or exc)
+        if said := github.limits.failed_call(
+            exc
+        ):  # in a cloud VM: the call already went its REST way
+            print(said)
         return 1
     finally:
         running, using = False, None

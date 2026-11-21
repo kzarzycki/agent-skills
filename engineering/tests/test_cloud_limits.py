@@ -96,3 +96,17 @@ def test_a_cloud_clear_leaves_origin_to_the_host(
     events.clear("loop/7-x", cwd=mine)
     assert git(bare, "for-each-ref", "refs/loop/").strip()
     assert "origin's refs of loop/7-x are the host's to remove" in capsys.readouterr().err
+
+
+def test_a_failed_github_call_in_the_vm_says_it_ran_over_rest_here(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(limits.CLOUD, "true")
+    failed = subprocess.CalledProcessError(1, ["gh", "api", "repos/o/r/pulls/7"], stderr="HTTP 404")
+    said = limits.failed_call(failed)
+    assert said is not None and "REST" in said and "runs in this cloud session" in said
+    assert "no host helper" in said
+    assert limits.failed_call(limits.Skipped("cloud VM: skipped")) is None
+    assert limits.failed_call(subprocess.CalledProcessError(1, ["git", "push"])) is None
+    monkeypatch.delenv(limits.CLOUD)
+    assert limits.failed_call(failed) is None
