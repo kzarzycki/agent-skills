@@ -1139,12 +1139,19 @@ def test_a_thread_pass_reads_a_bold_verdict_in_the_file_the_final_message_links(
 
 @pytest.mark.parametrize(
     "said",
-    ["SATISFIED: yes/no", "SATISFIED: yes\n\nSATISFIED: pending", "**SATISFIED:** pending"],
-    ids=["choice", "revised", "pending"],
+    [
+        "SATISFIED: yes/no",
+        "SATISFIED: yes or no",
+        "SATISFIED: Yes.",
+        "SATISFIED: yes\n\nSATISFIED: pending",
+        "SATISFIED: yes\n\n**SATISFIED** for PR #7",
+        "**SATISFIED:** pending",
+    ],
+    ids=["choice", "spelled-choice", "prose", "revised", "colon-less-after", "pending"],
 )
 def test_only_a_last_satisfied_line_of_exactly_yes_or_no_is_a_verdict(said: str) -> None:
     assert cv.verdict(cv.plain(said)) is None
-    assert cv.verdict("SATISFIED: no\n") == "no" and cv.verdict("SATISFIED: Yes.\n") == "yes"
+    assert cv.verdict("SATISFIED: no\n") == "no" and cv.verdict("SATISFIED: YES \r\n") == "yes"
 
 
 def test_a_malformed_report_fails_the_pass_even_when_the_final_message_has_a_verdict(
@@ -1155,3 +1162,43 @@ def test_a_malformed_report_fails_the_pass_even_when_the_final_message_has_a_ver
     seen["final"] = "SATISFIED: yes\n"
     assert cv.verify(7, brief, None, None) == 1
     assert posted == [] and "run the pass again" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "final", ["**SATISFIED:** yes\n", "**SATISFIED: yes**\n"], ids=["key", "line"]
+)
+def test_a_bold_verdict_in_the_final_message_is_posted_plain(checkout, final: str) -> None:
+    _, _, brief, posted, seen = checkout
+    brief.write_text("Review PR #7.\n")
+    seen["final"] = "# Report\n\n" + final
+    assert cv.verify(7, brief, None, None) == 0
+    [comment] = posted
+    assert "SATISFIED: yes" in comment.split("<details>")[0] and "**" not in comment
+
+
+@pytest.mark.parametrize("final", ["**SATISFIED:** yes", "**SATISFIED: yes**"], ids=["key", "line"])
+def test_a_thread_pass_posts_a_bold_verdict_of_its_final_message_plain(
+    route_1b, monkeypatch, final: str
+) -> None:
+    _, brief, out = route_1b
+    monkeypatch.setattr(cv, "WS_URL", FakeCloud("", final=f"# Report\n\n{final}").url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 0
+    assert "\nSATISFIED: yes" in out.read_text() and "**" not in out.read_text()
+
+
+@pytest.mark.parametrize(
+    "final",
+    ["SATISFIED: yes", "Report: [pr12-v2.md](tmp/loop/pr12-v2.md)"],
+    ids=["a verdict of its own", "a link to another report"],
+)
+def test_a_thread_pass_whose_report_is_malformed_fails_whatever_its_final_message_says(
+    route_1b, monkeypatch, tmp_path, final: str
+) -> None:
+    _, brief, out = route_1b
+    root = tmp_path / "pr1"
+    (root / "tmp/loop").mkdir(parents=True)
+    (root / "tmp/loop/pr12-v2.md").write_text("Head: abc123\nSATISFIED: yes\n")
+    fake = FakeCloud("Head: abc123\nSATISFIED: pending\n", final=final, root=str(root))
+    monkeypatch.setattr(cv, "WS_URL", fake.url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 1
+    assert not out.exists()

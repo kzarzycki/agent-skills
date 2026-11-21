@@ -953,18 +953,19 @@ NO_VERDICT = (
 
 
 def verdict(body: str) -> str | None:
-    """The report's last `SATISFIED:` line's answer when it is exactly `yes` or `no`; None without one or when that
-    line's first word is anything else (`pending`, `yes/no`), since an earlier line a verifier revised is no verdict."""
-    said = re.findall(r"^SATISFIED:(.*)$", body, re.MULTILINE)
-    # its first word, a comma or full stop after it allowed (`yes, from the final message`), as the gate reads it
-    answer = (said[-1].split() or [""])[0].lower().rstrip(".,;") if said else ""
-    return answer if answer in ("yes", "no") else None
+    """The answer of the report's last status line when that line is exactly `SATISFIED: yes` or `SATISFIED: no`
+    (case and surrounding spaces aside); None without one, or when the last line naming SATISFIED says anything else
+    (`pending`, `yes/no`, `yes or no`, `Yes.`, a colon-less `SATISFIED for PR #N`), since a verifier's revised or
+    malformed last word is no verdict, whatever an earlier line said."""
+    said = re.findall(r"^[ \t*_#]*SATISFIED\b(.*)$", body, re.MULTILINE)
+    exact = re.fullmatch(r":[ \t]*(yes|no)[ \t\r]*", said[-1], re.IGNORECASE) if said else None
+    return exact[1].lower() if exact else None
 
 
 def malformed(body: str) -> bool:
     """Whether `body` has a `SATISFIED:` line but no verdict(): a report that tried and failed, which no other source
     of the same pass stands in for."""
-    return bool(re.search(r"^SATISFIED:", body, re.MULTILINE)) and verdict(body) is None
+    return bool(re.search(r"^[ \t*_#]*SATISFIED\b", body, re.MULTILINE)) and verdict(body) is None
 
 
 def plain(body: str) -> str:

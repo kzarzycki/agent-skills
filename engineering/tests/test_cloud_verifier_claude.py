@@ -29,7 +29,7 @@ elif do == "fail":
     print("SATISFIED: yes")
     sys.exit(1)
 else:
-    print("# Report\\nSATISFIED: yes, from the final message")
+    print("# Report, from the final message\\nSATISFIED: yes")
 """
 
 
@@ -91,7 +91,7 @@ def test_a_claude_pass_without_a_report_file_posts_its_final_message_and_no_mode
     _, _, brief, posted, _, _, call = claude
     assert cv.verify(7, brief, None, None, "claude") == 0
     # stdout only: the stderr warning never joins the report
-    assert posted == [cv.folded_report("# Report\nSATISFIED: yes, from the final message\n")]
+    assert posted == [cv.folded_report("# Report, from the final message\nSATISFIED: yes\n")]
     assert "--model" not in call()["argv"]
 
 
