@@ -3970,13 +3970,17 @@ def start(
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
 
-    if (
-        harness == CLOUD_HARNESS
-        and not permission_mode
-        and not os.environ.get("OMNIGENT_PERMISSION_MODE")
-    ):
+    if harness == CLOUD_HARNESS and not permission_mode:
         # A cloud session runs unattended in its own disposable VM: in `auto` a command the classifier
-        # doubts waits on a prompt that reaches the owner's inbox, so it starts in bypass unless told otherwise.
+        # doubts waits on a prompt that reaches the owner's inbox, so it starts in bypass unless the
+        # command line asks otherwise. The variable is often set for a host's native children, so a
+        # mode from it alone is not applied here: the start goes on in the safe mode, and says so.
+        if (named := os.environ.get("OMNIGENT_PERMISSION_MODE")) and named != BYPASS:
+            print(
+                f"OMNIGENT_PERMISSION_MODE={named} is not applied to a {CLOUD_HARNESS} start: it"
+                f" starts in {BYPASS}; pass --permission-mode {named} to start it in {named}",
+                file=sys.stderr,
+            )
         permission_mode = BYPASS
     if agent == "claude" and not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
         # Neither flag nor variable: a Claude child takes its Claude starter's own mode, and only
@@ -9182,7 +9186,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--permission-mode",
             help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
-            " else the harness default); claude-cloud takes auto or bypassPermissions (default bypassPermissions), codex none",
+            " else the harness default); claude-cloud takes auto or bypassPermissions from this flag only (default"
+            " bypassPermissions, whatever the variable says), codex none",
         )
         p.add_argument(
             "--author",

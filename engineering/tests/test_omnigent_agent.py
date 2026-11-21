@@ -9830,9 +9830,12 @@ def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_w
         og, "claude-cloud", "t2", "do X", tmp_path / "r.md", None, 0, permission_mode="auto"
     )
     assert "not applied" not in capsys.readouterr().err
-    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "plan")  # the server takes auto and bypass alone
+    monkeypatch.setenv(
+        "OMNIGENT_PERMISSION_MODE", "plan"
+    )  # the variable alone never sets a cloud mode
     omnigent_agent.start(og, "claude-cloud", "t3", "do X", tmp_path / "r.md", None, 0)
-    assert "claude-cloud takes no permission mode: plan was not applied" in capsys.readouterr().err
+    assert "OMNIGENT_PERMISSION_MODE=plan is not applied" in capsys.readouterr().err
+    assert og.modes["s2"] == "bypassPermissions"
     calls = _agent_server(monkeypatch, {"/v1/projects": {"data": []}, "/v1/sessions": {"id": "s1"}})
     harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS, "custom": "acp:other"}
     monkeypatch.setattr(
