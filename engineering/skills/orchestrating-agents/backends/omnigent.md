@@ -80,9 +80,11 @@ chose.
 `OMNIGENT_PERMISSION_MODE`, else the `--permission-mode` its Claude starter was launched with
 (named on stderr; none there, none here), else the harness default; the mode is the project's or owner's
 choice, set in the environment once. Omnigent applies it as the session's
-`terminal_launch_args` when it launches the terminal, so `info` shows it. A Codex child takes
-none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
-`start` refuses the flag for Codex and says on stderr that the variable's mode was not applied.
+`terminal_launch_args` when it launches the terminal, so `info` shows it. A Codex child never
+takes a Claude mode (codex-native hands launch args to the `codex` CLI, whose terminal then never starts), so
+`start` refuses `--permission-mode` words for it other than `bypassPermissions` and `default`. It starts with
+`--dangerously-bypass-approvals-and-sandbox` (approval policy `never`, full-access sandbox), since a prompt
+nobody answers blocks an unattended session; `--permission-mode default` keeps Codex's own stance.
 A claude-cloud child takes `auto` or `bypassPermissions`, sent as the session create's
 `permission_mode` (the server answers the VM's tool requests itself under bypass), starts in
 `bypassPermissions` when neither the flag nor the variable names a mode (it runs unattended in a disposable VM), and

@@ -1518,10 +1518,15 @@ class Omnigent:
         # Omnigent's list, and nothing more: a harness drops a level it lacks, so ``start`` checks it.
         if effort:
             body["reasoning_effort"] = effort
-        # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
-        # starts its terminal (the session fails "Codex native bridge state is missing").
+        # claude-native takes Claude's own words; codex-native passes launch args to the codex CLI, which
+        # takes only its own flags (a Claude word makes it fail "Codex native bridge state is missing").
         mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
-        if agent == "claude":
+        if agent == "codex":
+            # No approvals, full access: an unattended session must never stop on a prompt nobody answers.
+            # `--permission-mode default` keeps codex's own stance (on-request, its own sandbox).
+            if permission_mode != CODEX_DEFAULT:
+                body["terminal_launch_args"] = [CODEX_BYPASS]
+        elif agent == "claude":
             args = ["--permission-mode", mode] if mode else []
             if role and (stem := Path(role).stem) in LEAN_ROLES:
                 args += lean_args(str(body["workspace"]), stem, self, host_id)
@@ -2998,6 +3003,9 @@ AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
 VERIFIER_ROUTES = ("codex", "gemini", "claude")
 GEMINI_AGENT = "antigravity-native-ui"
 BYPASS = "bypassPermissions"
+# codex's own flag for approval_policy "never" with the danger-full-access sandbox; CODEX_DEFAULT is the
+# `--permission-mode` word that opts a codex session back into codex's default stance
+CODEX_BYPASS, CODEX_DEFAULT = "--dangerously-bypass-approvals-and-sandbox", "default"
 # the stances Omnigent's session create takes as ``permission_mode`` for a claude-cloud session; it
 # refuses any other word with a 400 (#987)
 CLOUD_MODES = ("auto", BYPASS)
@@ -3966,6 +3974,7 @@ def start(
         """Whether ``agent``'s session can start in ``mode``: ``create`` sends it only then."""
         return (
             agent == "claude"
+            or (agent == "codex" and mode in (BYPASS, CODEX_DEFAULT))
             or (agy and mode == BYPASS)
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
@@ -3990,7 +3999,7 @@ def start(
             permission_mode = inherited
     if permission_mode and not applied(permission_mode):
         raise Fail(
-            f"--permission-mode is for claude sessions ({BYPASS} for antigravity, and"
+            f"--permission-mode is for claude sessions ({BYPASS} or {CODEX_DEFAULT} for codex, {BYPASS} for antigravity, and"
             f" {' or '.join(CLOUD_MODES)} for {CLOUD_HARNESS}); a {agent} session fails to"
             " launch with it"
         )
@@ -4003,7 +4012,7 @@ def start(
     # one is a Claude child's, always applied): the session starts in its harness's default stance,
     # which a run counting on the mode is told (#987).
     mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
-    if mode and not applied(mode):
+    if mode and agent != "codex" and not applied(mode):
         print(
             f"{agent} takes no permission mode: {mode} was not applied; its session starts in"
             " the harness default",
