@@ -57,11 +57,9 @@ yourself, keeping standards and spec as separate axes.
   trigger, a value orders of magnitude outside what the data source emits. Style, naming,
   formatting and code-review's smell baseline are notes, not findings.
 - **Work the given priorities first.**
-- **Every pass after the first:** your brief carries the previous pass's findings, the replies on them and
-  each finding's repro commands, read from the PR (`approvals.py brief`), since no report file is handed between passes:
-  the PR is the record, on any host. Review
-  the diff since its head and the files it touches yourself (the brief names the head), both axes in your own session
-  with no axis subagents (code-review, step 4), not the whole change again. Rerun all of its
+- **Every pass after the first:** you are either the conversation that reviewed the earlier passes (loop.md's `Verifier session: reuse`, the default), which gets a delta brief (the new head, the diff since the head you last verified and the lead's triage replies, shown as the lead's claims), or a fresh verifier, which gets the previous findings with a rerun command each from the PR's evidence branch, since no report file is handed between passes. Review
+  the diff since its head and the files it touches yourself (the brief names the head),
+  both axes in your own session with no axis subagents (code-review, step 4), not the whole change again. Rerun all of its
   repros from one script that prints each one's command, result and exit code, rather than
   one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the lead runs after a
   core finding stayed open reviews only the fix of those items; a pass on a merge of main
@@ -233,13 +231,7 @@ keep these lines exact:
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR
   review's inline comment, moved to the nearest line of the diff when outside it), then
   the failing input or contradicted requirement and the evidence (the command and its
-  output) up to the next heading outside a code fence. End each finding with its repro in a collapsed
-  block, exactly this shape, so the next pass, on any host, reruns it from the PR: a `<details>` line,
-  a `<summary>Repro</summary>` line, a blank line, a fenced block holding the repro script (the commands as
-  they run, nothing else), a blank line, a fenced block holding the log that script printed (its command,
-  output and exit code), a blank line and `</details>`. `approvals.py brief` prints the first fenced block of each
-  previous finding's `<details>` as that finding's repro commands, so the script goes first and the log second, and a
-  finding with no such block reaches the next pass with no repro to rerun. Any other `### ` heading is a
+  output) up to the next heading outside a code fence. Leave each finding's repro script and the log it printed on the PR's evidence branch with `uv run <this skill's folder>/scripts/approvals.py evidence <pr> --pass <n> --finding "<title>" --repro <script> --log <log>`, which commits them to `verify/pr-<pr>` (a file over 50 MB gzipped, one still over it as an asset of the PR's draft release, one over 2 GB refused with its size, the script still stored) and prints each file's link at the evidence commit's SHA; put those links in the finding's text, so a link never moves and a pass on any host reruns it. The `<title>` is the finding heading's title, since the next brief finds its script by it. No `<details>` block goes in a comment. Any other `### ` heading is a
   sub-heading and posts nothing. `verdict` refuses a `### ` heading with a `(<severity>)`
   it can't read, and finding headings that don't add up to the `VERDICT:` counts, rather
   than leave a finding off the review.

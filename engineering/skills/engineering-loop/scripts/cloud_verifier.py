@@ -8,7 +8,7 @@ On the host that starts cloud sessions:
 
 In the VM, from the checkout:
 
-    python3 <skill>/scripts/cloud_verifier.py verify --pr N --brief FILE [--harness codex|claude] [--model M] [--effort E] [--requested UNIX_SECONDS]
+    python3 <skill>/scripts/cloud_verifier.py verify --pr N --brief FILE [--full-brief FILE] [--fresh] [--harness codex|claude] [--model M] [--effort E] [--requested UNIX_SECONDS]
 
 On a host with no worker VM (route 1b), a Codex Cloud thread driven with the host's own login:
 
@@ -593,11 +593,14 @@ def linked_report(final: str, root: Path) -> tuple[str, str] | None:
     return None
 
 
-def relay_exec(cmd: list[str], brief: str, keep: Path | None = None) -> int:
+def relay_exec(
+    cmd: list[str], brief: str, keep: Path | None = None, tee: list[str] | None = None
+) -> int:
     """Run a verifier CLI on the brief (stdin) without the seeded variable (Codex reads the auth.json `verify` wrote,
     Claude its own login), its output relayed line by line through this process's redacted stdout and stderr, so a
     verifier can neither read the variable nor print a token. With `keep`, what it prints on stdout (`claude -p`'s
-    final message) is also written there, and its stderr is relayed apart, so a warning never joins the report."""
+    final message) is also written there, and its stderr is relayed apart, so a warning never joins the report. With
+    `tee`, every line relayed from either stream is also appended to it, for a caller that reads a line the CLI prints."""
     env = {k: v for k, v in os.environ.items() if k != VAR}
     child = subprocess.Popen(
         cmd,
@@ -626,6 +629,8 @@ def relay_exec(cmd: list[str], brief: str, keep: Path | None = None) -> int:
             to.flush()
             if into is not None:
                 into.append(line)
+            if tee is not None:
+                tee.append(line)
 
     # The streams are bound now, while `main` has the redactor in place: a line that arrives after
     # `main` has put the real streams back must still go through it.
@@ -650,9 +655,34 @@ def relay_exec(cmd: list[str], brief: str, keep: Path | None = None) -> int:
     return code
 
 
+# the conversation id of the Codex run in progress, read from the `session id:` line Codex prints; empty when it printed none
+CODEX_SESSION = [""]
+SESSION_LINE = re.compile(r"^session id:\s*([0-9a-fA-F-]{36})\s*$", re.MULTILINE)
+
+
 def codex_exec(cmd: list[str], brief: str) -> int:
-    """Run Codex on the brief; it writes its final message to the file its `-o` names."""
-    return relay_exec(cmd, brief)
+    """Run Codex on the brief; it writes its final message to the file its `-o` names. The conversation's id, read
+    from the line Codex prints, is left in `CODEX_SESSION` for `review` to keep, so a later pass can resume it."""
+    seen: list[str] = []
+    CODEX_SESSION[0] = ""
+    code = relay_exec(cmd, brief, tee=seen)
+    if found := SESSION_LINE.search("".join(seen)):
+        CODEX_SESSION[0] = found[1]
+    return code
+
+
+def session_file(pr: int) -> Path:
+    """Where the PR's Codex conversation id is kept: inside the checkout's git directory, so it sits beside the
+    checkout in this VM, is never tracked and never makes the tree look changed."""
+    return Path(run("git", "rev-parse", "--git-path", f"verify-codex/pr-{pr}").stdout.strip())
+
+
+def kept_session(pr: int) -> str:
+    """The PR's kept Codex conversation id, or an empty string when none is kept."""
+    try:
+        return session_file(pr).read_text().strip()
+    except OSError:
+        return ""
 
 
 def needs_a_look(why: str, what: str) -> None:
@@ -794,11 +824,13 @@ def verify(
     effort: str | None,
     harness: str = "codex",
     requested: float | None = None,
+    fresh: bool = False,
+    full_brief: Path | None = None,
 ) -> int:
     """One pass (`review`) that writes its `verifier` event: an exception leaves the event `failed`, the default."""
     event = PassEvent()
     try:
-        return review(pr, brief_file, model, effort, harness, requested, event)
+        return review(pr, brief_file, model, effort, harness, requested, event, fresh, full_brief)
     finally:
         event.finish()
 
@@ -811,14 +843,26 @@ def review(
     harness: str,
     requested: float | None,
     event: PassEvent,
+    fresh: bool = False,
+    full_brief: Path | None = None,
 ) -> int:
+    """One pass. A Codex pass after the first resumes the PR's kept conversation (`codex exec resume <id>`) with
+    `brief_file`, the delta brief, since the conversation already holds the earlier passes; it runs fresh with
+    `full_brief` (else `brief_file`) on pass 1, with `fresh` (a redesign, or loop.md's `Verifier session: fresh`),
+    with no kept id, and when Codex cannot resume it, saying so in one line."""
     began = time.time()
     if harness == "claude" and effort:
         raise Refused("`--effort` is Codex's only: the Claude CLI has no effort flag, so pass none")
-    brief = brief_file.read_text()
-    if not brief.startswith("AGENT_SIGNATURE="):
-        brief = f"AGENT_SIGNATURE={signature(model, effort, harness)}\n{brief}"
     os.chdir(run("git", "rev-parse", "--show-toplevel").stdout.strip())
+    resuming = kept_session(pr) if harness == "codex" and not fresh else ""
+
+    def brief_for(resume: bool) -> str:
+        text = (brief_file if resume or full_brief is None else full_brief).read_text()
+        if not text.startswith("AGENT_SIGNATURE="):
+            text = f"AGENT_SIGNATURE={signature(model, effort, harness)}\n{text}"
+        return text
+
+    brief = brief_for(bool(resuming))
     if harness == "codex":
         ensure_codex()
     report = report_path(brief)
@@ -863,9 +907,11 @@ def review(
         cmd = ["claude", "-p", "--permission-mode", "bypassPermissions", "--output-format", "text"]
         cmd += ["--model", model] if model else []
     else:
-        cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-o", str(final)]
-        cmd += ["-m", model] if model else []
-        cmd += ["-c", f"model_reasoning_effort={effort}"] if effort else []
+        cmd = ["codex", "exec"]
+        flags = ["--dangerously-bypass-approvals-and-sandbox", "-o", str(final)]
+        flags += ["-m", model] if model else []
+        flags += ["-c", f"model_reasoning_effort={effort}"] if effort else []
+        cmd += [*(["resume"] if resuming else []), *flags, *([resuming] if resuming else [])]
     # an earlier pass's file is not this pass's answer: one counts only when this pass wrote it
     before = {p: written(p) for p in (report, question) if p}
     code, wrote, stuck, started, ended = 1, {}, "", None, None
@@ -874,7 +920,22 @@ def review(
         code = (
             relay_exec(cmd, brief, final) if harness == "claude" else codex_exec([*cmd, "-"], brief)
         )
+        if resuming and code and not text(final).strip():
+            # the kept conversation can't be resumed (gone, or this CLI can't): run fresh with the full brief
+            print(
+                f"cloud_verifier: Codex could not resume conversation {resuming} (exit {code}); running fresh",
+                flush=True,
+            )
+            session_file(pr).unlink(missing_ok=True)
+            resuming = ""
+            brief = brief_for(False)
+            cmd = ["codex", "exec", *flags]
+            code = codex_exec([*cmd, "-"], brief)
         ended = time.time()
+        if harness == "codex" and not code and (kept := resuming or CODEX_SESSION[0]):
+            path = session_file(pr)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(kept + "\n")
         print(f"{harness} exited {code} after {ended - started:.0f} s", flush=True)
         # read before the checkout back, which rewrites a report path that both commits track
         wrote = {
@@ -1372,7 +1433,22 @@ def command(argv: list[str] | None) -> int:
         "verify", help="run a Codex or Claude verifier pass on the PR and post its report (VM)"
     )
     v.add_argument("--pr", type=int, required=True)
-    v.add_argument("--brief", type=Path, required=True)
+    v.add_argument(
+        "--brief",
+        type=Path,
+        required=True,
+        help="the brief; the delta brief when the PR's kept Codex conversation is resumed",
+    )
+    v.add_argument(
+        "--full-brief",
+        type=Path,
+        help="the full brief a fresh conversation gets (default: --brief), for pass 1, a redesign or a conversation that can't be resumed",
+    )
+    v.add_argument(
+        "--fresh",
+        action="store_true",
+        help="start a new Codex conversation (a redesign, or loop.md's `Verifier session: fresh`), not resume the PR's",
+    )
     v.add_argument(
         "--harness",
         choices=["codex", "claude"],
@@ -1428,7 +1504,16 @@ def command(argv: list[str] | None) -> int:
             return thread_verify(
                 args.pr, args.brief, args.model, args.effort, args.thread, args.env, args.head
             )
-        return verify(args.pr, args.brief, args.model, args.effort, args.harness, args.requested)
+        return verify(
+            args.pr,
+            args.brief,
+            args.model,
+            args.effort,
+            args.harness,
+            args.requested,
+            args.fresh,
+            args.full_brief,
+        )
     except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         if not args.command.startswith("thread") and not isinstance(e, Refused):
             raise
