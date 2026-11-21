@@ -129,7 +129,7 @@ def waited(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Server:
     (tmp_path / "r.md").write_text("done")
     monkeypatch.setattr(omnigent_agent, "wait", lambda *_, **__: tmp_path / "r.md")
     monkeypatch.setattr(omnigent_agent, "told_at", lambda *_: None)
-    monkeypatch.setattr(omnigent_agent, "archive_delivered", lambda *_: None)
+    monkeypatch.setattr(omnigent_agent, "finish_delivered", lambda *_, **__: ("", False))
     return og
 
 
