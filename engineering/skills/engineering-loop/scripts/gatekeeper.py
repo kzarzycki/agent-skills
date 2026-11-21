@@ -135,8 +135,9 @@ workflow posts success and its author merges it their usual way; `land` never ta
 prints the same line and exits 1, so the loop never merges it. Risk rules and `risk:high` hold no such PR. `check build` is
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land [<pr>... [--only]]` is the one way an agent merges. It lands every landable PR into one base, the first named PR's or else the
-repository's default branch, through one of two merge queues, picked by the base's rules (`required_checks`): the GitHub
-merge queue where they carry a `merge_queue` rule, else the local merge queue. Both take the same candidates (step 2) and
+repository's default branch, through one of three merge queues, picked by the base's rules (`required_checks`) and the
+policy: the GitHub merge queue where the rules carry a `merge_queue` rule, else the Mergify queue where the policy's
+`land.queue` is `mergify` (below), else the local merge queue, the path for a project without a queue. Both take the same candidates (step 2) and
 differ in where the gate runs (GitHub's `merge_group` CI, or this host), when they run (continuously on GitHub, or within
 one `land` call) and how a red group is isolated (GitHub's per-entry groups, or the local one-at-a-time fallback, step
 6). One `land` runs one of them, never a mix, since one `land` gates its candidates in one place, so a PR never merges
@@ -276,6 +277,23 @@ is its timeline's queue events, GitHub's `gh-readonly-queue/<base>/pr-<n>-<sha>`
 runs), and since REST names no removal's reason, each is read from its group's commit: `merged` when GitHub reports
 the PR merged or that commit is in the base, `failed_checks` when a check the base requires failed on it,
 `merge_conflict` when GitHub reports the PR conflicting or is still working that out, else none, which counts for nothing.
+With `land.queue: mergify` in the policy (gatekeeper.md's `land:` section), on a base whose rules require no GitHub merge
+queue (they win), a Mergify queue that `.mergify.yml` configures merges instead, which needs a repo no organisation owns
+no GitHub queue for: `land` takes no lock, runs no gate and merges nothing. It judges the same candidates (step 2) with
+the base's code, and hands each to Mergify by posting the `land` status (success, `Queued for Mergify at <sha>`) on its
+head and adding `loop:queued`, its session link lines dropped first as in step 5; `.mergify.yml`'s queue conditions
+read both, and the status binds the hand-over to that head, so a push leaves them unmet. A PR already carrying the label
+with `land` green on its head is reported queued and left alone. Mergify tests each batch as a draft PR on top of the
+base in CI, retries a red one once itself and squash-merges on green; a PR it dequeues (red again, or conflicting) gets
+its `dequeued_label`, `loop:dequeued`, and the next land that reads it with `land` green on the head evicts it: `land`
+`error` on the head, both labels off, back to draft and an `Evicted from the merge queue` comment naming Mergify's
+reason where its queue check run on the head gives one (a label left from an older head just comes off). A bare land, or
+`land <pr>` naming a merged one, comments `Landed` on each merged PR still carrying `loop:queued` (`Base:` its merge
+commit, `Tree:` that commit's tree, `Gate: Mergify merge queue` with the Actions runs on that commit), finishes its
+worker sessions and takes the label off. Exits as the GitHub merge queue path: 0 once queued, 1 for a refusal or an
+eviction, 3 while a required check on the head runs (`--wait` waits for that, never for the queue). Every call is REST,
+so a cloud session lands this way with no signing key; with `land.signed_squash_to` it is refused, since GitHub signs
+Mergify's merges.
 With loop.md's `land` section (`signed_squash_to: <branch>`, `allowed_signers: <path>`), for a repo that trusts only
 commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the batch is the same, but each
 PR lands as a squash made in this checkout instead: one commit holding the tree it lands, on the base's tip the
@@ -921,6 +939,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         batch_wait_seconds=int,
         gate_on=Choice(("host", "cloud")),
         cloud_gate_timeout_seconds=int,
+        queue=Choice(("mergify",)),
         together=("signed_squash_to", "allowed_signers"),
         optional=(
             "signed_squash_to",
@@ -932,6 +951,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "batch_wait_seconds",
             "gate_on",
             "cloud_gate_timeout_seconds",
+            "queue",
         ),
     ),
     "carry_over_main": Table({"except": list}),
@@ -4273,7 +4293,7 @@ PORTS = {
         "edit_text",  # (method, path, body) -> replaces the body of a PR, comment or review at the forge's route
         "enqueue_pull",  # (pr, node, head, method) -> puts the PR in its base's merge queue pinned to head; its position, or None
         "dequeue_pull",  # (pr, node) -> takes the PR out of the merge queue
-        "commit_checks",  # (ref) -> {name: {conclusion, url, id}} of the newest run of each check on the commit
+        "commit_checks",  # (ref) -> {name: {conclusion, url, id, title}} of the newest run of each check on the commit
         "job_log",  # (job) -> a check run's job log
         "commit_tree",  # (sha) -> the commit's tree SHA
         "repo_tags",  # (repo) -> {name: commit} of every tag of `repo`
@@ -5410,7 +5430,8 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         tracker, loop = project()
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
-        with placed(loop, bool(getattr(rules, "queue", None))):
+        # Mergify, like GitHub's queue, merges and signs each PR itself, so a cloud land needs no key for it
+        with placed(loop, bool(getattr(rules, "queue", None)) or mergify(loop)):
             code, again = landing_here(
                 named, base, worst, tracker, loop, only, not fetch.returncode, rules
             )
@@ -5481,6 +5502,8 @@ def landing_here(
         named = readied(named, required, tracker, loop)
     if method := getattr(rules, "queue", None):
         return github_queue(named, base, tracker, loop, required, method, only, worst)
+    if mergify(loop):
+        return mergify_queue(named, base, tracker, loop, required, only, worst)
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
     stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
     # every lock commit pushed, each before its push; taken stays None while the last one's push may have reached origin
@@ -7054,6 +7077,128 @@ def queue_trail(base: str) -> None:
             print(f"PR #{number}: land could not write its `{LANDED}` comment: {stderr_of(exc)}")
 
 
+# `land.queue: mergify`: the label Mergify's `dequeued_label` puts on a PR it took out of its queue, and what the
+# `Landed` comment's `Gate:` line names for a PR it merged
+MERGIFY, DEQUEUED, MERGIFY_GATE = "mergify", "loop:dequeued", "Mergify merge queue"
+MERGIFY_QUEUED = "Queued for Mergify at {}"
+
+
+def mergify(loop: str | None) -> bool:
+    """Whether the policy names Mergify as the base's merge queue (`land.queue: mergify`); refused with
+    `land.signed_squash_to`, since Mergify merges through GitHub, which signs with its own key."""
+    land = settings(loop).get("land") or {}
+    if land.get("queue") != MERGIFY:
+        return False
+    if "signed_squash_to" in land:
+        raise Refused(
+            f"{source(loop)}'s `land.queue: mergify` has Mergify merge each PR through GitHub, which signs with its"
+            " own key, but `land.signed_squash_to` asks for this checkout's: set one of them"
+        )
+    return True
+
+
+def mergify_queue(
+    named: list[dict[str, Any]],
+    base: str,
+    tracker: str | None,
+    loop: str | None,
+    required: set[str],
+    only: bool = False,
+    worst: int = 0,
+) -> tuple[int, bool]:
+    """The Mergify merge queue the policy names (`land.queue: mergify`), on a base whose rules require no GitHub merge
+    queue: as github_queue, no landing lock, local batch or local gate, since Mergify batches the queued PRs, tests
+    each batch as a draft PR on top of `base` in CI and squash-merges on green. Every candidate (candidates_of), oldest
+    PR first, is handed over with the `land` status on its head and QUEUED (mergify_step), which `.mergify.yml`'s
+    queue conditions read, and land exits: it never polls the queue, so `--wait` waits only for a PR's own checks or an
+    owner's go. A bare land writes the `Landed` trail of the PRs Mergify merged (queue_trail). Every call is REST."""
+    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+    judge_with_base(base)
+    candidates, exits, _ = candidates_of(named, base, tracker, loop, required, only)
+    failed = set()
+    for pull in candidates:
+        code = mergify_step(pull)
+        if code:
+            failed.add(pull["number"])
+        exits[pull["number"]] = (code, False)
+    if not named:
+        queue_trail(base)
+    return outcome(named, exits, worst, failed)
+
+
+def queued_here(head: str) -> bool:
+    """Whether the newest `land` status on `head` is a success: land handed this head to Mergify (mergify_step)."""
+    found = next((each for each in statuses(head) if each.get("context") == LAND), None)
+    return bool(found) and found.get("state") == "success"
+
+
+def mergify_step(pull: dict[str, Any]) -> int:
+    """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
+    `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
+    (QUEUED and a `land` success there), left alone (exit 0); else queued, its session link lines dropped first
+    (unlink_pull): the `land` success on its head, which binds the hand-over to that one head, so a push leaves
+    `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). A DEQUEUED label on a head land never queued (a push since)
+    is stale, and comes off."""
+    where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
+    labels = {each["name"] for each in pull["labels"]["nodes"]}
+    try:
+        ours = queued_here(head)
+        if DEQUEUED in labels:
+            if ours:
+                mergify_evict(pull, labels)
+                return 1
+            label(number, DEQUEUED, add=False)
+        if QUEUED in labels and ours:
+            print(f"{where} is queued for Mergify at {head}")
+            return 0
+        unlink_pull(pull)
+        post_status(head, LAND, MERGIFY_QUEUED.format(head))
+        if QUEUED not in labels:
+            label(number, QUEUED, add=True)
+    except subprocess.CalledProcessError as exc:
+        print(f"{where}: GitHub refused its hand-over to Mergify at {head}: {stderr_of(exc)}")
+        return 1
+    print(f"{where} queued for Mergify at {head}")
+    return 0
+
+
+def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
+    """A PR Mergify dequeued at the head land queued: `land` `error` on that head first, so Mergify can't take it in
+    again, both labels off, then back to draft with an `Evicted from the merge queue` comment (evicted) naming Mergify's
+    reason where its check run on the head gives one (mergify_reason). Mergify already retried a red batch once
+    (`max_checks_retries: 1`), so its dequeue is the second red and land keeps no count."""
+    head, number = pull["headRefOid"], pull["number"]
+    post_status(head, LAND, "Evicted from the Mergify merge queue", "error")
+    for name in (QUEUED, DEQUEUED):
+        if name in labels:
+            label(number, name, add=False)
+    why, tail = mergify_reason(head)
+    evicted(
+        pull, QUEUE_EVICTED, f"was dequeued by Mergify at {head}", why, tail, "Mergify's check run"
+    )
+
+
+def mergify_reason(head: str) -> tuple[str, list[str]]:
+    """Why Mergify dequeued `head`, from its queue check run there (`Mergify Merge Queue`, older configurations a
+    `Queue:` or `Rule: ... (queue)` one) when it isn't green: its name, title and link; else that Mergify gave none."""
+    try:
+        checks = commit_checks(head)
+    except subprocess.CalledProcessError:
+        checks = {}
+    for name, run in checks.items():
+        if re.search(r"mergify|queue", name, re.IGNORECASE) and run["conclusion"] not in (
+            "SUCCESS",
+            "NEUTRAL",
+            "",
+        ):
+            title = run.get("title") or run["conclusion"].lower()
+            return (
+                f"Mergify took it out of its merge queue at {head} (`{name}`: {title}, {run['url']})",
+                [f"{name}: {title}", run["url"]],
+            )
+    return f"Mergify took it out of its merge queue at {head}, naming no reason on the head", []
+
+
 def stderr_of(exc: Exception) -> str:
     """A failed call's error on one line: a gh call's stderr, else the exception's text."""
     return " ".join((getattr(exc, "stderr", None) or str(exc)).split())
@@ -7289,10 +7434,15 @@ def queue_landed(pull: dict[str, Any]) -> None:
     its merge commit, `Tree:` that commit's tree, `Gate: merge queue` with the links of the runs on it, the queue's
     `merge_group` CI; and its worker sessions finished. Nothing for a PR it did not merge, or one already commented."""
     merged = [removal for removal in queue_events(pull) if removal.get("reason") == QUEUE_MERGED]
-    if merged and not any(note["body"].startswith(f"{LANDED}\n") for note in notes(pull)):
-        landed_comment(pull, merged[-1])
+    queued = QUEUED in {each["name"] for each in pull["labels"]["nodes"]}
+    if not any(note["body"].startswith(f"{LANDED}\n") for note in notes(pull)):
+        if merged:
+            landed_comment(pull, merged[-1])
+        # Mergify's merges leave no removal: a merged PR land queued for it (QUEUED) was merged by its queue
+        elif queued and pull["state"] == "MERGED" and mergify(project()[1]):
+            mergify_landed(pull)
     # off once the trail is written, or where there is none to write (merged outside the queue)
-    if QUEUED in {each["name"] for each in pull["labels"]["nodes"]}:
+    if queued:
         label(pull["number"], QUEUED, add=False)
     land_ended(pull)
 
@@ -7314,6 +7464,32 @@ def landed_comment(pull: dict[str, Any], merged: dict[str, Any]) -> None:
             LANDED,
             f"Merged by the merge queue as {commit[:7]}.",
             f"Base: {commit}\nTree: {tree}\nGate: merge queue, {', '.join(runs) or 'no run on the commit'}",
+        ),
+    )
+    archive_workers(pull["number"])
+
+
+def mergify_landed(pull: dict[str, Any]) -> None:
+    """queue_landed's `Landed` comment on a PR the Mergify queue merged: `Base:` its merge commit, `Tree:` that
+    commit's tree and `Gate: Mergify merge queue` with the links of the Actions runs on that commit; and the worker
+    sessions. ponytail: the merge commit's runs, not those on Mergify's draft PR, which no REST read of the PR names."""
+    found = merged_pull(pull["number"]) or {}
+    commit = found.get("merge_commit_sha")
+    if not commit:
+        raise Refused(f"GitHub names no merge commit of PR #{pull['number']}")
+    runs = sorted(
+        {
+            run_link(run["url"])
+            for run in commit_checks(commit).values()
+            if "/actions/runs/" in run["url"]
+        }
+    )
+    comment(
+        pull["number"],
+        fold(
+            LANDED,
+            f"Merged by the Mergify merge queue as {commit[:7]}.",
+            f"Base: {commit}\nTree: {commit_tree(commit)}\nGate: {MERGIFY_GATE}, {', '.join(runs) or 'no run on the commit'}",
         ),
     )
     archive_workers(pull["number"])
