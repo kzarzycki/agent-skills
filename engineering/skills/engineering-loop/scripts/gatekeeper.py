@@ -9196,10 +9196,12 @@ def head_moved(commit: str, tree: str, now: str, now_tree: str) -> str:
 def stored(record: dict[str, Any]) -> None:
     """Write a pass this clone ran to its record file (recorded), whole or not at all: two gates on one tree and command
     run at once on two slots (gate_slots), and a plain write truncates the file first, so a reader between the two
-    would find it empty. The record goes to a file of this process's own, then replaces the shared one in one step."""
+    would find it empty. The record goes to a file of this writer's own, then replaces the shared one in one step: named
+    by process and thread, since two gates in one process (threads) sharing one file would have the second's replace
+    find it gone."""
     where = recorded(record["tree"], record["command"])
     where.parent.mkdir(parents=True, exist_ok=True)
-    partial = where.with_name(f"{where.name}.{os.getpid()}.partial")
+    partial = where.with_name(f"{where.name}.{os.getpid()}.{threading.get_ident()}.partial")
     try:
         partial.write_text(json.dumps(record, indent=2) + "\n")
         os.replace(partial, where)
