@@ -11,6 +11,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+pytestmark = (
+    pytest.mark.slow
+)  # real pack and install; `mise run test-engineering-package` runs it too (#1610)
+
 REPOSITORY = Path(__file__).resolve().parents[2]
 PACKAGE = REPOSITORY / "engineering"
 

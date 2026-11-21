@@ -294,6 +294,9 @@ CONFIG = Path.home() / ".omnigent" / "config.yaml"
 AUTH_TOKENS = Path.home() / ".omnigent" / "auth_tokens.json"
 # the label start puts on a --pr worker: the PR whose closing or merge ends it
 PR_LABEL = "omni.pr"
+# who started a session: the pack's own label on a top-level one it creates, and Omnigent's on one
+# its session tool creates (read too, as is a top-level field, should the server add one)
+CREATOR_LABEL, OMNIGENT_CREATOR_LABEL = "omni.created_by", "omnigent.created_by_session_id"
 RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
@@ -318,6 +321,8 @@ TURN_END_SECONDS = 30.0
 # so a lead in bypassPermissions shows its child's prompt, which the lead's own supervisor
 # reports and the lead answers within a minute; one that clears sooner was never the owner's.
 PROMPT_CONFIRM_SECONDS = 120.0
+# how long one listing of every session serves ``Omnigent.creations``: well inside the prompt's hold
+CREATED_SECONDS = 30.0
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
 # A loaded server times out reads the child never noticed; a GET is retried after each of these.
 RETRY_SECONDS = (2.0, 5.0, 15.0, 30.0, 60.0)  # a GET outlasts a server restart
@@ -885,6 +890,14 @@ CLOUD_NO_PUSH = (
     " your report names that branch and its head SHA. The lead opens the PR from it or retargets it. Never ask"
     " the owner which branch to push to.\n"
 )
+# Every acp:claude-cloud session's preamble (#1659): a cloud lead started a "host helper" with
+# sys_session_create, which landed on the bridge host and ran a suite there.
+CLOUD_HELPER = (
+    "Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native"
+    " subagent in the VM, never a session made with `sys_session_create`: a created child lands on the"
+    " bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent,"
+    " not a helper, and starts as `brief` describes.\n"
+)
 # A child placed on a host (any harness but the cloud one, never a top-level lead, whose own heavy
 # runs go to the cloud): its placement already chose the host, so it prefixes heavy runs past the
 # engineering pack's hook, which refuses one on a host without the prefix (#1233).
@@ -976,12 +989,19 @@ def first_message(
 
 def cloud_preamble(preamble: str, pr: int | None) -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
-    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_BRANCHES`` and ``CLOUD_NO_PUSH`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_HELPER``, ``CLOUD_BRANCHES`` and ``CLOUD_NO_PUSH`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
     preamble = preamble.replace(DETACH_LINE, CLOUD_RUN_LINE)
-    return preamble.removesuffix("\n") + CLOUD_NOTE + CLOUD_BRANCHES + CLOUD_NO_PUSH + "\n"
+    return (
+        preamble.removesuffix("\n")
+        + CLOUD_NOTE
+        + CLOUD_HELPER
+        + CLOUD_BRANCHES
+        + CLOUD_NO_PUSH
+        + "\n"
+    )
 
 
 def cloud_reply(items: list[dict], verdict: bool = False) -> tuple[str, str] | None:
@@ -1547,6 +1567,10 @@ class Omnigent:
         labels = {"omni.role": name} if role and (name := Path(role).stem) in ROLES else {}
         if pr:
             labels[PR_LABEL] = pr
+        if top_level and (me := own_id()):
+            # a REST create records no creator (Omnigent stamps one on its own tool's sessions
+            # alone), so a top-level session names the session that started it for ``creations``
+            labels[CREATOR_LABEL] = me
         if labels:
             body["labels"] = labels
         return str(self.call("POST", "/v1/sessions", body)["id"])
@@ -1810,6 +1834,30 @@ class Omnigent:
         """When any of ``sid``'s ``kin`` was last updated, else 0. Not ``busy``: a child whose
         turn end was lost stays busy for good."""
         return max(self.kin(sid).values(), default=0.0)
+
+    def creations(self, sid: str) -> list[str]:
+        """The live sessions ``sid`` created (``created_by_session_id``) that are not its children:
+        its ``--top-level`` ones, whose prompts Omnigent mirrors onto no session, since it mirrors
+        a child's onto its parent alone. One listing of every session serves every caller for
+        ``CREATED_SECONDS``: a supervisor asks it of each lead at every poll."""
+        cache = self.__dict__.setdefault("_created", [float("-inf"), []])
+        if time.monotonic() - cache[0] >= CREATED_SECONDS:
+            path, rows, after = "/v1/sessions?kind=any&limit=1000", [], ""
+            while True:
+                page = self.call("GET", path + (f"&after={after}" if after else ""))
+                rows += page.get("data", [])
+                if not (page.get("has_more") and page.get("last_id")):
+                    break
+                after = str(page["last_id"])
+            cache[:] = [time.monotonic(), rows]
+        return [
+            str(s["id"])
+            for s in cache[1]
+            if sid in creators(s)
+            and str(s.get("parent_session_id") or "") != sid
+            and str(s.get("id")) != sid
+            and not s.get("archived")
+        ]
 
 
 def checkout_root(workspace: str) -> str:
@@ -2106,11 +2154,11 @@ def starter_mode(og: Omnigent) -> tuple[str, str]:
         info = og.info(sid)
     except Fail:
         return "", ""
-    args = info.get("terminal_launch_args") or []
-    if "claude" not in str(info.get("harness") or "") or "--permission-mode" not in args:
+    args = [str(a) for a in info.get("terminal_launch_args") or []]
+    if "claude" not in str(info.get("harness") or ""):
         return "", ""
-    at = args.index("--permission-mode") + 1
-    return (str(args[at]), sid) if at < len(args) else ("", "")
+    named = flag_value(args, "--permission-mode")
+    return (named, sid) if named else ("", "")
 
 
 def runner_log(info: dict) -> str:
@@ -2981,6 +3029,14 @@ def unchecked(name: str, why: str) -> str:
     return f"{name}: load and memory not readable ({why}); starting unchecked"
 
 
+def mode_refused(e: Fail) -> bool:
+    """Whether a create failed with 400 over the permission mode it asked for: Omnigent refuses a
+    mode the creating session may not hand on (kzarzycki/omnigent#526)."""
+    return (
+        isinstance(e.__cause__, HTTPError) and e.__cause__.code == 400 and "mode" in str(e).lower()
+    )
+
+
 def taken(e: Fail) -> bool:
     """Whether a create failed with 409: Omnigent refuses a title a sibling already holds."""
     return isinstance(e.__cause__, HTTPError) and e.__cause__.code == 409
@@ -3042,6 +3098,16 @@ def git_dirs(workspace: Path) -> list[str]:
     ).stdout.splitlines()
 
 
+def main_checkout_refusal(checkout: Path, agent: str) -> str:
+    """The one line both pinned-checkout refusals print: what is wrong, and the two ways out."""
+    return (
+        f"{checkout} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
+        f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
+        " give the local agent a worktree of it (--workspace), or make a launch dir for the"
+        " cloud session with `launch-dir <remote> <branch> <path>`"
+    )
+
+
 def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
     """A main checkout pinned for cloud sessions is where they are launched from: a local agent
     working there switched its branch under every later start, and carried another worker's
@@ -3050,11 +3116,7 @@ def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
     even when its git dir lives elsewhere (``--separate-git-dir``)."""
     dirs = git_dirs(workspace)
     if len(dirs) == 3 and dirs[0] == dirs[1] and environment_pin(own_settings(Path(dirs[2]))):
-        raise Fail(
-            f"{workspace} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
-            f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
-            " give the local agent a worktree of it (--workspace)"
-        )
+        raise Fail(main_checkout_refusal(workspace, agent))
 
 
 def refuse_far_pinned_checkout(og: Omnigent, agent: str, workspace: Path, host_id: str) -> None:
@@ -3080,11 +3142,7 @@ def refuse_far_pinned_checkout(og: Omnigent, agent: str, workspace: Path, host_i
         print(f"{workspace}: pinned-checkout check skipped on {host}: {e}", file=sys.stderr)
         return
     if main:
-        raise Fail(
-            f"{root} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
-            f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
-            " give the local agent a worktree of it (--workspace)"
-        )
+        raise Fail(main_checkout_refusal(root, agent))
 
 
 def _load_environments() -> Any:
@@ -3927,6 +3985,30 @@ def newer_generation(model: str, listed: list[str]) -> list[str]:
     return [i for g, i in newer if g == newer[0][0]]
 
 
+def granted_mode(info: dict) -> str:
+    """The permission mode session record ``info`` says the session got: the server's own
+    ``permission_mode`` field (a cloud session's), else its ``omnigent.acp.permission_mode`` label
+    or metadata, else the ``--permission-mode`` in its launch args (a Claude terminal's); else says
+    the record names none, as one never read back does."""
+    for where in (info, info.get("labels") or {}, info.get("metadata") or {}):
+        if isinstance(where, dict):
+            for key in ("permission_mode", "omnigent.acp.permission_mode"):
+                if where.get(key):
+                    return str(where[key])
+    args = [str(a) for a in info.get("terminal_launch_args") or []]
+    if named := flag_value(args, "--permission-mode"):
+        return named
+    if CODEX_BYPASS in args or AGY_BYPASS in args:  # codex's and antigravity's own bypass flags
+        return BYPASS
+    return "not named in the session record (the harness default)"
+
+
+def flag_value(args: list[str], flag: str) -> str:
+    """The value after ``flag`` in launch ``args``, else empty."""
+    at = args.index(flag) + 1 if flag in args else len(args)
+    return str(args[at]) if at < len(args) else ""
+
+
 def model_for(agent: str, model: str | None = None) -> tuple[str | None, str]:
     """The model ``agent`` runs on and where it came from: ``model`` (``--model``), else
     ``$OMNIGENT_MODEL_<AGENT>`` (``-`` as ``_``), else ``DEFAULT_MODELS``; None for an agent with
@@ -3985,13 +4067,25 @@ def start(
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
 
-    if (
-        harness == CLOUD_HARNESS
-        and not permission_mode
-        and not os.environ.get("OMNIGENT_PERMISSION_MODE")
-    ):
+    if harness == CLOUD_HARNESS and not permission_mode:
+        # ponytail: the pack's own default until kzarzycki/omnigent#529 ships, which gives each agent
+        # definition a default mode the server applies on every start path; then drop this branch and
+        # pass no mode unless the caller asks for one.
         # A cloud session runs unattended in its own disposable VM: in `auto` a command the classifier
-        # doubts waits on a prompt that reaches the owner's inbox, so it starts in bypass unless told otherwise.
+        # doubts waits on a prompt that reaches the owner's inbox, so it starts in bypass unless the
+        # command line asks otherwise. The variable is often set for a host's native children, so a
+        # mode from it alone is not applied here: the start goes on in the safe mode, and says so.
+        if (named := os.environ.get("OMNIGENT_PERMISSION_MODE")) and named != BYPASS:
+            how = (
+                f"pass --permission-mode {named} to start it in {named}"
+                if named in CLOUD_MODES
+                else f"a cloud start takes --permission-mode {' or '.join(CLOUD_MODES)} alone"
+            )
+            print(
+                f"OMNIGENT_PERMISSION_MODE={named} is not applied to a {CLOUD_HARNESS} start: it"
+                f" starts in {BYPASS}; {how}",
+                file=sys.stderr,
+            )
         permission_mode = BYPASS
     if agent == "claude" and not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
         # Neither flag nor variable: a Claude child takes its Claude starter's own mode, and only
@@ -4231,6 +4325,16 @@ def start(
                 else:
                     raise failed(f"start failed: titles {title} to {name} are taken") from e
             break
+        if error and harness == CLOUD_HARNESS and permission_mode == BYPASS and mode_refused(error):
+            # Omnigent lets a session hand bypass only to a session it starts while in bypass itself
+            # (kzarzycki/omnigent#526): kept, never answered with a worker in auto, which would
+            # block on prompts nobody sees
+            raise failed(
+                f"start refused: {error}. Omnigent starts a {CLOUD_HARNESS} worker in {BYPASS}"
+                f" only for a session that runs in {BYPASS} itself, and this one does not. Start it"
+                f" from a session or a host shell in {BYPASS}, or pass --permission-mode auto to"
+                " accept a worker that waits on approval prompts"
+            ) from error
         if error:  # a timed-out create can have made the session: brief that one
             found = og.find(name, began, top_level)
             if not found:
@@ -4246,6 +4350,9 @@ def start(
         except Fail as e:  # the session is there, so a brief signed "?" beats none
             took = {}
             print(f"no session record read back for {sid} ({e}): it signs ?", file=sys.stderr)
+        # what the session got, never what was asked: the server's default can differ from both
+        got = granted_mode(took) if took else "unknown (its record could not be read)"
+        print(f"session {sid}: permission mode {got}", file=sys.stderr)
         if pr and not reviews(role):
             # the PR `reap` reads to hold this worker until it closes: an unlabelled one can be
             # neither held nor found by `reap --merged`, so a failed label fails the start
@@ -6257,6 +6364,44 @@ def supervise(
         time.sleep(POLL_SECONDS)
 
 
+def creators(row: dict) -> set[str]:
+    """The sessions a session record or listing row names as its creator, wherever it names one."""
+    labels = row.get("labels") or {}
+    named = (
+        row.get("created_by_session_id"),
+        labels.get(OMNIGENT_CREATOR_LABEL),
+        labels.get(CREATOR_LABEL),
+    )
+    return {str(n) for n in named if n}
+
+
+def created_prompt(og: Omnigent, sid: str) -> tuple[tuple, str] | None:
+    """The ``blocked`` key and line ``observe`` gives a prompt, for every session ``sid`` created
+    (``Omnigent.creations``) that waits on one, each prompt naming its session; else None. The
+    line keeps ``observe``'s ``: blocked on a prompt: <id>: <text>`` shape, which ``owner_item``
+    reads."""
+    try:
+        made = og.creations(sid)
+    except Fail:  # unreadable this poll: the lead's own state stands
+        return None
+    ids, asks = [], []
+    for child in made:
+        try:
+            info = og.info(child)
+        except Fail:
+            continue
+        held = [e for e in info.get("pending_elicitations") or [] if holds_input(e)]
+        title = f"{child} {info.get('title') or ''}".rstrip()
+        ids += [f"{child}:{e.get('elicitation_id') or e}" for e in held]
+        asks += [f"{_asks(e)} (in {title})" for e in held]
+    if not ids:
+        return None
+    return ("blocked", ",".join(ids)), (
+        f"{sid} (in {len({i.split(':')[0] for i in ids})} session(s) it created):"
+        f" blocked on a prompt: {'; '.join(asks)}"
+    )
+
+
 def follow(
     og: Omnigent,
     sid: str,
@@ -6276,6 +6421,11 @@ def follow(
     key, line = observe(og, sid, idle_since)
     if key[0] == "stuck":  # a followed lead has its progress deadline, which says this already
         key = ("running",)
+    if key[0] in ("running", "ended") and (held_by := created_prompt(og, sid)):
+        # a prompt on a session it created that Omnigent mirrors nowhere (a --top-level one) is
+        # its lead's blocked prompt, held and told as a mirrored one is; before a turn end, since a
+        # lead whose turn ended waiting on its workers is the one nobody else would see it for
+        key, line = held_by
     if key[0] == "archived":
         return line, key
     if key[0] != "ended":
@@ -9209,7 +9359,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--permission-mode",
             help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
-            " else the harness default); claude-cloud takes auto or bypassPermissions (default bypassPermissions), codex takes bypassPermissions (its default) or default (codex's own stance)",
+            " else the harness default); claude-cloud takes auto or bypassPermissions from this flag only (default"
+            " bypassPermissions, whatever the variable says), codex takes bypassPermissions (its default) or"
+            " default (codex's own stance)",
         )
         p.add_argument(
             "--author",
@@ -10124,9 +10276,16 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             )
         # --pr is a cloud worker's report channel; a native worker given it runs its build on this host
         if args.pr and og.harness(args.agent) != CLOUD_HARNESS:
+            route = ""
+            if "codex" in og.harness(args.agent).lower():  # the harness, never the agent's name
+                route = (
+                    f"; a cloud PR's verifier runs through engineering-loop's cloud_verifier.py"
+                    f" (`verify --pr {args.pr}` in the worker's VM, or `thread` from a host, per"
+                    " loop.md's Placement: line; SKILL.md, Cloud worker, Starting a PR's cloud worker)"
+                )
             raise Fail(
                 f"--pr {args.pr}: {args.agent} is not a cloud agent; start claude-cloud for a cloud"
-                " worker, or drop --pr for one on this host"
+                f" worker, or drop --pr for one on this host{route}"
             )
         brief = text_or_file(args.brief)[0]
         if args.file and not remote:

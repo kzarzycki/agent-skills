@@ -57,6 +57,9 @@ def test_tag_workflow_is_package_scoped() -> None:
     assert "--skip-smoke" in commands  # CI cannot reach the private smoke repository
     assert "mise run vendor-engineering-check" in commands
     assert "mise run test-engineering-package" in commands
+    assert (
+        "mise run test-slow" in commands
+    )  # a release tag runs the tests `mise run test` leaves out (#1610)
     sync = workflow["jobs"]["consumer-sync"]
     assert sync["needs"] == "qualify"
     assert sync["uses"] == "./.github/workflows/engineering-consumer-sync.yml"

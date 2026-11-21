@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.slow  # each test starts a nested pytest run, 4-5 s each (#1610)
+
 HERE = Path(__file__).parent
 REPOSITORY = HERE.parents[1]
 
@@ -81,6 +83,24 @@ def stops(run: subprocess.CompletedProcess[str], tools: str) -> bool:
 def test_a_run_without_apm_stops_before_its_first_test_naming_apm(tmp_path: Path) -> None:
     run = run_tests(str(tmp_path), "engineering/tests/test_consumer_e2e.py")
     assert stops(run, "apm"), run.stdout + run.stderr
+    assert "passed" not in run.stdout and "failed" not in run.stdout
+
+
+def test_a_run_on_xdist_without_apm_stops_the_same_way_and_no_worker_crashes(
+    tmp_path: Path,
+) -> None:
+    """Each xdist worker collects for itself; one that exited held assigned tests, an INTERNALERROR."""
+    run = run_tests(
+        str(tmp_path),
+        "-n",
+        "2",
+        "--dist",
+        "loadfile",
+        "engineering/tests/test_consumer_e2e.py",
+        "engineering/tests/test_heavy_run_guard.py",
+    )
+    assert stops(run, "apm"), run.stdout + run.stderr
+    assert "INTERNALERROR" not in run.stdout + run.stderr
     assert "passed" not in run.stdout and "failed" not in run.stdout
 
 

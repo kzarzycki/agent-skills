@@ -1,9 +1,11 @@
 import os
 import shutil
+import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
+from typing import Any
 
 # The engineering loop's script tests load modules from a shipped skill folder;
 # a bytecode cache written there would ship with the package. The variable carries
@@ -28,6 +30,39 @@ from approvals_harness import (  # noqa: F401
     repo_template,
     required,
 )
+
+
+@pytest.fixture
+def no_origin(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """The checkout under test has no origin, as a fresh `git init` has: a `git fetch` or `git ls-remote` of origin, run
+    with `subprocess.run` or started with `subprocess.Popen` (tree_of's), ends at once as git ends there (128; a Popen
+    is a `false`), instead of spending 0.4 s on the real checkout's own remote. A test that takes it is not about a
+    remote; one that is brings a bare repo of its own. The value is the argv of each refused call."""
+    asked: list[list[str]] = []
+    real_run, real_popen = subprocess.run, subprocess.Popen
+
+    def refused(argv: Any) -> list[str] | None:
+        words = [str(word) for word in argv] if isinstance(argv, list) else []
+        if words[:1] == ["git"] and "origin" in words and {"fetch", "ls-remote"} & set(words):
+            asked.append(words)
+            return words
+        return None
+
+    def run(argv: Any, *args: Any, **kw: Any) -> Any:
+        if words := refused(argv):
+            error = "fatal: 'origin' does not appear to be a git repository"
+            if kw.get("check"):
+                raise subprocess.CalledProcessError(128, words, "", error)
+            return subprocess.CompletedProcess(words, 128, "", error)
+        return real_run(argv, *args, **kw)
+
+    class Popen(real_popen):  # type: ignore[type-arg,misc]
+        def __init__(self, argv: Any, *args: Any, **kw: Any) -> None:
+            super().__init__(["false"] if refused(argv) else argv, *args, **kw)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "Popen", Popen)
+    return asked
 
 
 @pytest.fixture(autouse=True)
@@ -117,11 +152,32 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     line naming every such tool, rather than failing each test that runs it partway through; a test with no such
     mark runs, whatever its module's other tests need (#1022)."""
     missing = missing_tools(session.items)
-    if missing:
-        pytest.exit(
-            f"missing tools the tests run: {', '.join(missing)}; put them on PATH",
-            returncode=pytest.ExitCode.USAGE_ERROR,
-        )
+    if not missing:
+        return
+    line = f"missing tools the tests run: {', '.join(missing)}; put them on PATH"
+    if hasattr(session.config, "workerinput"):
+        # An xdist worker that exits here leaves the tests the controller assigned it, which fails the run with an
+        # INTERNALERROR naming whichever test came first; a stop the worker reports ends the run with this line.
+        session.config.stash[_STOP] = line
+        session.shouldstop = line
+        return
+    pytest.exit(line, returncode=pytest.ExitCode.USAGE_ERROR)
+
+
+_STOP = pytest.StashKey[str]()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtestloop(session: pytest.Session) -> bool | None:
+    """A worker stopped by `pytest_collection_finish` runs none of its tests."""
+    return True if _STOP in session.config.stash else None
+
+
+def pytest_testnodedown(node: object, error: object) -> None:
+    """On the xdist controller: a worker's missing-tools stop ends the whole run as the serial run does."""
+    stop = getattr(node, "workeroutput", {}).get("shouldstop")
+    if isinstance(stop, str) and stop.startswith("missing tools the tests run: "):
+        pytest.exit(stop, returncode=pytest.ExitCode.USAGE_ERROR)
 
 
 @pytest.fixture(autouse=True)
@@ -150,6 +206,20 @@ def _no_cold_start_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     )  # loaded by test_omnigent_agent, which the other modules import from
     if module:
         monkeypatch.setattr(module, "COLD_START_SECONDS", 0)
+
+
+# The modules that read loop events from a real bare remote on purpose; every other omnigent_agent test gets none.
+READS_LOOP_EVENTS = {"test_omnigent_agent_events", "test_lead_event"}
+
+
+@pytest.fixture(autouse=True)
+def _no_loop_events_read(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The supervisor's loop-event read is an `ls-remote origin` of the real checkout, one per poll: 0.5 s on a quiet
+    host, a minute and a timeout where the proxy is slow (#1610). A module that imports its fixtures by name from
+    test_omnigent_agent (as the traffic one does) misses that module's `no_loop_events`, so this applies it to all."""
+    module = sys.modules.get("omnigent_agent")
+    if module and request.module.__name__ not in READS_LOOP_EVENTS:
+        monkeypatch.setattr(module, "read_loop_events", lambda cwd=None: None)
 
 
 @pytest.fixture(autouse=True)

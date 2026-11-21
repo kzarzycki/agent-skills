@@ -46,6 +46,7 @@ jobs:
       - if: github.event_name == 'schedule'
         env:
           COVERAGE_FILE: .test-map/coverage
+          GATE_TEST_PARALLEL: "0" # serial: under xdist --cov-context=test records no per-test contexts, so the map would name no test (#1610)
           PYTEST_ADDOPTS: --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
         run: mise run check
       # Only a green run: the map names the lines every test ran, which a failed run leaves incomplete.

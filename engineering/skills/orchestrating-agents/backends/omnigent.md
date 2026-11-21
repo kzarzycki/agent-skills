@@ -86,9 +86,19 @@ takes a Claude mode (codex-native hands launch args to the `codex` CLI, whose te
 `--dangerously-bypass-approvals-and-sandbox` (approval policy `never`, full-access sandbox), since a prompt
 nobody answers blocks an unattended session; `--permission-mode default` keeps Codex's own stance.
 A claude-cloud child takes `auto` or `bypassPermissions`, sent as the session create's
-`permission_mode` (the server answers the VM's tool requests itself under bypass), starts in
-`bypassPermissions` when neither the flag nor the variable names a mode (it runs unattended in a disposable VM), and
-`start` treats any other mode for it as it does a mode for Codex.
+`permission_mode` (the server answers the VM's tool requests itself under bypass), and starts in
+`bypassPermissions` unless the flag names a mode, since it runs unattended in a disposable VM where an
+`auto` prompt waits on nobody: a mode from the variable alone is not applied to it, and `start` says
+so on stderr. `start` refuses a flag naming any other mode for it. Until
+Omnigent applies a default mode per agent definition on every start path (kzarzycki/omnigent#529), this
+bypass default is the pack's own; after it, `start` passes no mode unless asked. Omnigent hands
+bypass on only from a session that runs in it itself (kzarzycki/omnigent#526) and answers any other
+creator's bypass request with HTTP 400, so `start` from such a session fails, naming the two ways on:
+start the worker from a session or host shell in bypass, or pass `--permission-mode auto` to accept
+one that waits on prompts. It never falls back to `auto` itself. Either way `start` prints the mode
+the session got, read back from its record (`session <id>: permission mode <mode>`, `unknown` when
+the record can't be read). Start every child through `start` or `run`, never a raw
+`sys_session_create` with a mode of its own, since only these pick the mode and report it.
 
 **Effort.** `--effort <level>` sets the child's reasoning effort, as its harness names the levels
 (Claude, native or cloud: `low` to `max`). Without it the level comes from `OMNIGENT_EFFORT_<AGENT>`
@@ -691,7 +701,14 @@ as `watch` counts an end; any other turn end only once the lead, its live childr
 subscribes to wrote nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
 another's merge and a question with no ending), since a lead briefed or active again within that
 time was not stuck; a prompt once it has been pending 120 s across looks, since Omnigent shows each
-child's prompt on its parent too and the lead answers it itself, usually within a minute; a failure
+child's prompt on its parent too and the lead answers it itself, usually within a minute (Omnigent
+shows a `--top-level` session's prompt on no one, since it has no parent, so a prompt on a live
+session the lead created counts as the lead's own, every such session's in one line
+(`<lead> (in <n> session(s) it created): blocked on a prompt: <id>: <text> (in <session> <title>)`),
+while the lead runs or its turn has ended. The creator is read from Omnigent's
+`omnigent.created_by_session_id` label, which its session tool stamps, or the pack's own
+`omni.created_by`, which `start --top-level` stamps with the starting session, since a REST create
+records none; one listing of every session serves all leads for 30 s); a failure
 at once; each once per occurrence; and `archived`, which is the
 only event that drops the line, so a relay needs no re-arm. Each is posted once per message.
 A restart posts an end it finds again.

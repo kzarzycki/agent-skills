@@ -11,6 +11,7 @@ import itertools
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -1245,7 +1246,7 @@ def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.Mon
 
 
 def test_without_ci_the_merge_proof_is_the_heads_pass_never_a_comment(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_origin: list[list[str]]
 ) -> None:
     """Anyone who can comment can write `Local check passed`, the PR's author from a fork included, and an old comment
     says nothing about today's command and env: only a pass reusable() finds on the head's tree proves it."""
@@ -2151,7 +2152,9 @@ def test_approve_merge_refuses_a_closed_pr(
 
 
 def test_the_owners_go_covers_its_head_only(
-    hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+    no_origin: list[list[str]],
 ) -> None:
     """A status belongs to one commit: a push moves the head off it, with no label to remove. The status needs the
     owner's record naming the head beside it, so a status alone is no go."""
@@ -2915,7 +2918,7 @@ def test_a_later_pass_on_the_same_commit_supersedes_an_earlier_one() -> None:
     ]
 
 
-def test_a_review_on_an_older_commit_never_covers_the_head() -> None:
+def test_a_review_on_an_older_commit_never_covers_the_head(no_origin: list[list[str]]) -> None:
     """Every commit after a verdict needs one of its own, a merge of main that touches no PR file included."""
     line = (
         f"PR #7: the newest verifier review is on {OLD}, not on the head {HEAD}:"
@@ -6460,16 +6463,26 @@ def test_without_github_or_origin_the_pass_is_recorded_here_and_says_what_was_no
 
 
 def gate_faked(
-    tmp_path: Path, exit_code: int = 0, seconds: float = 0
+    tmp_path: Path, exit_code: int = 0, seconds: float = 0, held: bool = False
 ) -> tuple[Path, str, dict[str, str]]:
-    """A clean repo and an environment whose `mise` is a fake gate: it sleeps, prints, counts its runs, exits."""
+    """A clean repo and an environment whose `mise` is a fake gate: it sleeps (`held`: until the test creates
+    `tmp_path / "release"`, so it ends when the test says; it says `gate started` and appends to `starts` first, and
+    gives up after 60 s, so a red test leaves no process looping), prints, counts its runs, exits."""
     repo = tmp_path / "repo"
     head = committed(repo)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = bin_dir / "mise"
     fake.write_text(
-        f"#!/bin/sh\nsleep {seconds}\necho gate done\necho run >> {tmp_path / 'runs'}\nexit {exit_code}\n"
+        "#!/bin/sh\n"
+        + (
+            f"echo gate started\necho started >> {tmp_path / 'starts'}\n"
+            f"end=$(( $(date +%s) + 60 ))\n"
+            f'while [ ! -e {tmp_path / "release"} ] && [ "$(date +%s)" -lt "$end" ]; do sleep 0.02; done\n'
+            if held
+            else f"sleep {seconds}\n"
+        )
+        + f"echo gate done\necho run >> {tmp_path / 'runs'}\nexit {exit_code}\n"
     )
     fake.chmod(0o755)
     return repo, head, {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
@@ -6501,14 +6514,19 @@ def polled(until: Callable[[], bool], seconds: float = 30) -> None:
 
 
 def test_a_killed_caller_leaves_the_detached_check_to_finish_and_record(tmp_path: Path) -> None:
-    repo, head, env = gate_faked(tmp_path, seconds=2)
+    repo, head, env = gate_faked(tmp_path, held=True)
     common = repo / ".git" / "approvals" / "local-ci"
     run = caller(repo, env, "--record")
     pid = common / f"{head}.pid"
-    # detach() fills the pid file only after the child's setsid, so the kill can't reach it (#732)
-    polled(lambda: pid.exists() and pid.read_text())
-    os.killpg(run.pid, signal.SIGKILL)
-    run.wait()
+    try:
+        # detach() fills the pid file only after the child's setsid, so the kill can't reach it (#732)
+        polled(lambda: pid.exists() and pid.read_text())
+        os.killpg(run.pid, signal.SIGKILL)
+        run.wait()
+    finally:
+        (
+            tmp_path / "release"
+        ).touch()  # the gate was held through the kill, and ends now (or the test failed)
     polled(lambda: (common / f"{head}.exit").exists())
     assert (common / f"{head}.exit").read_text() == "0\n"
     [record] = common.glob("*.json")  # keyed by tree and env
@@ -6620,21 +6638,42 @@ def test_a_caller_left_alone_exits_and_prints_as_an_attached_run(
 
 
 def test_a_second_local_ci_on_a_running_head_follows_it(tmp_path: Path) -> None:
-    repo, head, env = gate_faked(tmp_path, seconds=2)
+    repo, head, env = gate_faked(tmp_path, held=True)
     first = caller(repo, env, "--record")
     pid = repo / ".git" / "approvals" / "local-ci" / f"{head}.pid"
-    polled(lambda: pid.exists() and pid.read_text())  # detach() writes it once the child runs
-    second = caller(repo, env, "--record")
-    status = subprocess.run(
-        [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", "HEAD"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
+    second = None
+    try:
+        polled(lambda: pid.exists() and pid.read_text())  # detach() writes it once the child runs
+        claimed = pid.read_text()
+        second = caller(repo, env, "--record")
+        status = subprocess.run(
+            [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", "HEAD"],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert status.returncode == 3 and status.stdout.startswith(f"running on {head}")
+        # the held gate is released only once the second caller shows the run's output: it has joined the run, and a
+        # second that started its own would have written a second line to `starts` by then
+        assert second.stdout is not None
+        seen = ""
+        deadline = time.monotonic() + 30
+        while "gate started\n" not in seen:
+            assert time.monotonic() < deadline, "the second caller never showed the run's output"
+            if select.select([second.stdout], [], [], 0.1)[0]:
+                seen += os.read(second.stdout.fileno(), 4096).decode()
+        assert (tmp_path / "starts").read_text() == "started\n"
+        # a follower never writes the claim; a second caller that started its own run replaces it
+        assert pid.read_text() == claimed
+    finally:
+        (tmp_path / "release").touch()
+    assert (
+        first.communicate(timeout=60)[0]
+        .replace(UNBASED, "")
+        .startswith("gate started\ngate done\n")
     )
-    assert status.returncode == 3 and status.stdout.startswith(f"running on {head}")
-    assert first.communicate(timeout=60)[0].replace(UNBASED, "").startswith("gate done\n")
     second.communicate(timeout=60)
     assert (first.returncode, second.returncode) == (0, 0)
     assert (tmp_path / "runs").read_text() == "run\n"  # one gate ran
@@ -6657,7 +6696,9 @@ def test_a_caller_starts_no_gate_while_another_holds_the_pid_file(tmp_path: Path
         fcntl.flock(claim, fcntl.LOCK_EX)
         run = caller(repo, env, "--record")
         time.sleep(2)  # long enough for an unlocked caller to start the gate and finish
+        # an unlocked caller writes its claim into the pid file, and opens the log, well before the gate ends
         assert (run.poll(), (tmp_path / "runs").exists()) == (None, False)
+        assert (common / f"{head}.pid").read_text() == "" and not (common / f"{head}.log").exists()
     run.communicate(timeout=30)
     assert (run.returncode, (tmp_path / "runs").read_text()) == (0, "run\n")
 
@@ -7560,7 +7601,7 @@ def test_risk_high_another_word_or_no_line_waits_for_the_owner_and_flags_the_pr(
 
 
 def test_a_risk_low_on_an_older_head_or_by_a_stranger_does_not_count(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_origin: list[list[str]]
 ) -> None:
     monkeypatch.setattr(approvals, "writer", lambda login: False)
     issues = [approved(1, "area:web", "kind:enhancement")]
@@ -9782,7 +9823,7 @@ def orders_pull(*files: str, labels: tuple[str, ...] = ()) -> dict[str, Any]:
 
 @pytest.mark.parametrize("loop", [ORDERS, ORDERS_AUTO], ids=["spec-auto-off", "spec-auto-on"])
 def test_merge_paths_hold_a_matching_pr_for_the_owners_go_naming_the_path(
-    loop: str, hub: dict[str, list[dict[str, Any]]]
+    loop: str, hub: dict[str, list[dict[str, Any]]], no_origin: list[list[str]]
 ) -> None:
     """No `risk:high`, a verifier that says low, and still the owner's go on the head; it covers that head only."""
     issues = [approved(1, "area:web")]
