@@ -229,3 +229,10 @@ def test_stderr_names_the_rule_behind_each_target(mapped, capsys) -> None:
     assert "affected-tests: everything: pyproject.toml is test setup" in capsys.readouterr().err
     a.targets(None, "origin/main")
     assert "affected-tests: everything: no diff against origin/main" in capsys.readouterr().err
+
+
+def test_a_new_function_beside_a_def_line_selects_only_the_tests_around_it(mapped) -> None:
+    """#1609: a function inserted after `one` borders `def two` (line 5), which only the import ran; that line is not
+    changed, so it doesn't send the whole file to the name match."""
+    picked = a.targets(mapped("\n\ndef two()", "\n\ndef new():\n    return 0\n\n\ndef two()"))
+    assert "tests/test_one.py" not in picked and "tests/test_both.py" not in picked

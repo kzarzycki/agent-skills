@@ -11,7 +11,8 @@ The test map is `.test-map/` (env `TEST_MAP`): `coverage`, the nightly suite's c
 position (the diff runs from that commit), and the tests that executed it run, one node id each (a file when the id
 holds a space, since the gate splits this output on whitespace, or names a test the file no longer has). The name match
 is the fallback for a script the map does not hold or that changed on main since it, a map whose commit is missing or
-data is unreadable, and a changed line that any import or subprocess ran, since no test is named for that run. It also
+data is unreadable, and a changed line that any import or subprocess ran, since no test is named for that run (a
+line beside an insertion only stands for the inserted code, so its import run is no reason). It also
 adds, beside the map's tests, every test file that names the script and changed on main since the map, or can skip
 (the nightly's skips leave no context). A line no test ran selects nothing: no test depends on it.
 """
@@ -41,19 +42,21 @@ def changed(base: str) -> list[str] | None:
     return done.stdout.split() if done.returncode == 0 else None
 
 
-def old_lines(sha: str, path: str) -> set[int]:
-    """The lines of `path` at `sha` that the diff to HEAD changes; an insertion counts the lines around it."""
+def old_lines(sha: str, path: str) -> tuple[set[int], set[int]]:
+    """The lines of `path` at `sha` that the diff to HEAD changes, and the lines around each pure insertion, which
+    stand for the inserted code (they are not changed themselves)."""
     diff = subprocess.run(
         ["git", "diff", "-U0", "--no-renames", sha, "HEAD", "--", path],
         capture_output=True,
         text=True,
         check=False,
     ).stdout
-    lines: set[int] = set()
+    changed: set[int] = set()
+    around: set[int] = set()
     for start, count in re.findall(r"^@@ -(\d+)(?:,(\d+))? ", diff, re.MULTILINE):
         first, n = int(start), int(count or 1)
-        lines.update(range(first, first + n) if n else (first, first + 1))
-    return lines
+        (changed.update(range(first, first + n)) if n else around.update((first, first + 1)))
+    return changed, around - changed
 
 
 def executed_by(path: str, sha: str, data) -> set[str] | None:
@@ -62,8 +65,12 @@ def executed_by(path: str, sha: str, data) -> set[str] | None:
     if ran is None:
         return None
     ids: set[str] = set()
-    for line in old_lines(sha, path):
-        if "" in ran.get(line, ()):  # import or a subprocess ran it: no test is named for that run
+    changed, around = old_lines(sha, path)
+    for line in changed | around:
+        # import or a subprocess ran a changed line: no test is named for that run. A line beside an insertion is
+        # not changed, so the import that ran it (a `def` line above a new function, say) says nothing of the
+        # inserted code: only the tests that ran it count.
+        if line in changed and "" in ran.get(line, ()):
             return None
         ids |= {c.split("|")[0] for c in ran.get(line, ()) if c}
     return ids
