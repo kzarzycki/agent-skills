@@ -126,12 +126,12 @@ run = """mise run vendor-engineering-check
 mise run lint"""
 
 [tasks.check-fast]
-description = "The PR check (`qualify`): vendor check, lint, and only the tests the change touches (tools/affected_tests.py). The full suite runs nightly in CI."
+description = "The PR check (`qualify`): vendor check, lint, and only the tests the change touches (tools/affected_tests.py), on pytest-xdist (a file per free core, tools/gate_workers.py; GATE_TEST_PARALLEL=0 runs them serially). The full suite runs nightly in CI."
 # ponytail: a PR runs its own touched tests only, so a combination that breaks an untouched test reaches main; the nightly
 # full run catches it, a bisect names the PR, and the fix goes forward on main. Upgrade path: a suite that runs in seconds
 # lets `check` come back as the gate.
 run = """mise run vendor-engineering-check
-uv run python tools/gate_slot.py sh -c 'uv run pytest -q -m "not live_agent" $(uv run python tools/affected_tests.py ${GATE_BASE:-origin/main})'
+uv run python tools/gate_slot.py sh -c 'uv run pytest -q -m "not live_agent" $([ "${GATE_TEST_PARALLEL:-1}" = 1 ] && printf "%s" "-p tools.gate_workers -n auto --dist loadfile") $(uv run python tools/affected_tests.py ${GATE_BASE:-origin/main})'
 mise run lint"""
 
 [tasks.check]
