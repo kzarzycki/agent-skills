@@ -8590,6 +8590,7 @@ def test_a_second_stall_without_progress_escalates_and_sends_no_second_nudge(
         console=True,
     )
     assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_NUDGE]
+    assert f"[Message from Supervisor]\n{omnigent_agent.LEAD_NUDGE}" in og.raw  # to the lead too
     [post] = posted(og)
     assert post.startswith("Supervisor [act] b-")
     assert "[act] a t-a: turn ended, quiet 301s (quiet again after its nudge)" in post
@@ -10453,6 +10454,10 @@ def test_send_given_text_lists_it_as_a_followup_file_in_the_registry(
     followup = tmp_path / "r.md.followup"
     assert followup.read_text() == "use main as the base"
     assert str(followup) in seen[0]
+    sent = [i for i in og.sessions[sid] if i.get("role") == "user"][-1]
+    raw = sent["content"][0]["text"]  # the chip, then the relay line, then the text
+    first, second, *_ = raw.split("\n")
+    assert first.startswith("[Message from ") and second.startswith("[relayed by ")
 
 
 def test_a_report_s_ending_is_read_past_its_title_and_a_report_without_one_still_acts(
@@ -14132,3 +14137,19 @@ def test_a_chipped_relay_is_a_copy_of_itself_and_still_parks_a_lead() -> None:
     item = typed(sent, 1)
     assert omnigent_agent.told_park(item)
     assert omnigent_agent.text_of(item).strip() == omnigent_agent.unchip(sent)
+
+
+def test_relay_opens_with_the_chip_then_its_marker_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    assert og.sessions[sid][-1]["content"][0]["text"] == "[Message from cos]\n[relayed by cos]\ngo"
+    assert relay(og, sid, tmp_path, monkeypatch, "go", "--from", "the nightly") == 0
+    sent = og.sessions[sid][-1]["content"][0]["text"]
+    assert sent == (
+        "[Message from the nightly]\n"
+        + omnigent_agent.RELAY_FROM.format(source="the nightly")
+        + "\ngo"
+    )

@@ -2500,6 +2500,7 @@ def relay(
     source: str = "",
     by: str = "",
     skip: bool = False,
+    label: str = "",
 ) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered, or queued behind the
     session's running step (it lands when the step ends); raise ``Queued`` while a prompt or
@@ -2513,7 +2514,8 @@ def relay(
     any prompt pending (a question or an approval) is skipped instead, sent nothing. With a
     ``source`` (a task or an agent, not the owner) ``text`` goes after a ``RELAY_FROM`` line and
     never answers a question, even with ``answer``. With ``by`` (the relaying session) a message
-    sent, not an answer, opens with a ``RELAYED`` line."""
+    sent, not an answer, opens with a ``RELAYED`` line. With ``label`` and neither of those, ``text``
+    only gains the chip line (the supervisor's own message to a lead)."""
     if source:
         text = chip(source, f"{RELAY_FROM.format(source=source)}\n{text}")
     info = og.info(sid)
@@ -2533,6 +2535,8 @@ def relay(
         return f"session {sid}: answered its open question: {'; '.join(_asks(e) for e in asked)}"
     if by and not source:
         text = chip(by, f"{RELAYED.format(who=by)}\n{text}")
+    elif label and not source:
+        text = chip(label, text)
     outcome, posted = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
     if outcome == "queued":
         try:
@@ -7324,7 +7328,7 @@ def supervise_registry(
             try:
                 if prompts_of(og.info(sid)):  # the text would wait unread behind it
                     raise Fail("it waits on a prompt, which the supervisor never answers")
-                relay(og, sid, text, ACTION_SECONDS)
+                relay(og, sid, text, ACTION_SECONDS, label="Supervisor")
             except (Queued, SentUnconfirmed):
                 pass  # held behind a prompt or question, or out and unconfirmed: it lands or landed
             except Exception as e:  # noqa: BLE001 - never fatal; the chief of staff is told
