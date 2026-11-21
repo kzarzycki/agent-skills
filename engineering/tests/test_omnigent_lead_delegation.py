@@ -339,7 +339,9 @@ def test_user_needed_with_no_card_is_its_own_event_and_with_one_the_card_alone_t
     supervised(og, registry, monkeypatch, 3, notify="cos")
     news = [p for p in posted(og) if "asked its user" not in p]  # a card is told once, by itself
     # with a card open the end is not forwarded too: the card already reaches the owner (#1529)
-    assert news == ([f"Supervisor: a t-a: {line}\nlast message: USER NEEDED: land it?"] if line else [])
+    assert news == (
+        [f"Supervisor: a t-a: {line}\nlast message: USER NEEDED: land it?"] if line else []
+    )
 
 
 def test_the_unasked_kind_routes_as_a_user_needed_turn_end_does() -> None:
