@@ -3699,7 +3699,7 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert (tmp_path / "r.md").read_text() == "Head: abc\nGates: 0\n"
     assert ("api", "repos/o/r/issues/comments/42") in calls and og.posts == 1  # no nudge
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
-    assert "PR #7" in brief and "gh api repos/{owner}/{repo}/issues/7/comments" in brief
+    assert "PR #7" in brief and "`approvals.py comment 7 <file>`" in brief
     # a cloud brief swaps the detach pointer for the in-turn rule (#1002)
     assert "A run may not outlive the turn" in brief and "setsid" not in brief
     assert "detached" in omnigent_agent.NUDGE and "foreground" not in omnigent_agent.NUDGE
@@ -3914,7 +3914,7 @@ def test_with_a_deny_list_a_cloud_worker_replies_with_its_report_and_the_host_ch
         omnigent_agent.wait(og, sid, report, pr=7)
     assert not [call for call in calls if "body=" in " ".join(call)]
     monkeypatch.delenv("LOOP_DENY_LIST")
-    assert "gh api repos/{owner}/{repo}/issues/7/comments" in omnigent_agent.pr_preamble().format(
+    assert "`approvals.py comment 7 <file>`" in omnigent_agent.pr_preamble().format(
         pr=7, report=report, unposted="U", role=""
     )
 
@@ -4063,7 +4063,7 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     assert omnigent_agent.main(argv) == 0
     assert og.top_level == [True] and og.workspaces == ["/there/repo"]
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
-    assert brief.startswith("Work on t. Your brief:") and "issues/7/comments" in brief
+    assert brief.startswith("Work on t. Your brief:") and "approvals.py comment 7" in brief
     assert "owner's own words" not in brief  # not the lead preamble
     # what the clone holds; the foreground limit is the role file's long-run rule, not the brief's
     assert "checked out in the workspace this session started from" in brief
@@ -10621,11 +10621,11 @@ def test_the_cloud_preamble_forbids_a_question_tool_a_page_and_a_session_link() 
 
 
 def test_the_cloud_preamble_reads_issues_and_prs_through_rest() -> None:
-    """GraphQL answers 403 in a cloud VM, so `gh issue view` and `gh pr view` fail there (#1011)."""
+    """GraphQL answers 403 in a cloud VM, so a cloud worker's every GitHub call is an approvals.py verb (#1011, #1637)."""
     preamble = omnigent_agent.PR_PREAMBLE
-    assert "Read issues and PRs through REST too, since GraphQL answers 403 here" in preamble
-    assert "`gh api repos/{{owner}}/{{repo}}/issues/<n>` and `.../pulls/<n>`" in preamble
-    assert "never `gh issue view` or `gh pr view`" in preamble
+    assert "engineering-loop's `scripts/approvals.py` verbs, the same here as on a host" in preamble
+    assert "`show <n>` reads an issue or PR" in preamble and "`threads <pr>`" in preamble
+    assert "`approvals.py comment {pr} <file>`" in preamble
 
 
 class CloudFake(FakeOmnigent):

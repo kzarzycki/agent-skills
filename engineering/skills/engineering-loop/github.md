@@ -108,16 +108,17 @@ from the remote.
   the PR's diff at that commit refuses the whole review (422, `Path could not be resolved`
   or `Line could not be resolved`), so `verdict` moves a line to the nearest diff line and
   puts a finding whose file is outside the diff in the body.
-- List the threads, each with the id to resolve it and its first comment's id to reply:
-  `gh api graphql -F o='{owner}' -F r='{repo}' -F n=<pr> -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved path line comments(first:1){nodes{databaseId body}}}}}}}'`.
-- Reply and resolve in one step, on a host or in a cloud session (where GraphQL answers 403, so it uses the proxy's REST route): `uv run <this skill's folder>/scripts/approvals.py resolve <pr> <first comment databaseId>… --reply "Fixed in <sha>."`; without `--reply` it only resolves, and it exits 1 naming any thread it couldn't resolve. By hand:
-- Reply on a thread: `gh api 'repos/{owner}/{repo}/pulls/<pr>/comments/<first comment databaseId>/replies' -f body="Fixed in <sha>."`
-- Resolve it with the triage's reason, `ADDRESSED`, `WONT_FIX` or `INVALID` (SKILL.md,
-  Review trail on the PR): `gh api graphql -f t=<thread id> -f r=ADDRESSED -f query='mutation($t:ID!,$r:PullRequestReviewThreadResolutionReason){resolveReviewThread(input:{threadId:$t,resolutionReason:$r}){thread{isResolved}}}'`.
-  GitHub keeps no readable reason, so the reply says why.
+- List the threads: `uv run <this skill's folder>/scripts/approvals.py threads <pr>`, one line per unresolved
+  thread (every one with `--all`): its root comment's id, its state, `path:line` and the comment's first line.
+- Reply and resolve: `uv run <this skill's folder>/scripts/approvals.py resolve <pr> <root comment id>… --reply "<why>"`.
+  The reply holds the triage's reason, `ADDRESSED` (with the fixing SHA), `WONT_FIX` or `INVALID` (SKILL.md, Review
+  trail on the PR), since GitHub keeps no readable reason; without `--reply` it only resolves, and it exits 1 naming
+  any thread it couldn't resolve.
+- Both, and `comment`, `show` and `edit` (gatekeeper.py's docstring), are one command on a host and in a cloud
+  session, where GraphQL answers 403: REST there, or the cloud proxy's routes where GitHub's REST has none.
 - Dismiss a review, only as SKILL.md, Review trail on the PR allows:
   `gh api -X PUT 'repos/{owner}/{repo}/pulls/<pr>/reviews/<id>/dismissals' -f message="<the owner's ask, quoted>" -f event=DISMISS`.
-- `gh pr create --draft` needs a commit the base lacks: before anything is built, push an
+- A draft PR needs a commit the base lacks: before anything is built, push an
   empty one (`git commit --allow-empty -m "<spec title>"`), which the squash drops.
 
 ## Board
