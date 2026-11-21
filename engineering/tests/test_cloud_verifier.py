@@ -1106,3 +1106,19 @@ def test_a_verdict_in_no_line_form_fails_the_pass_and_names_the_next_step(checko
     assert posted == []
     assert "no verifier review was posted and this pass failed (exit 1)" in out
     assert "run the pass again" in out and "approvals.py verdict <pr> <report>" in out
+
+
+def test_a_verdict_that_is_neither_yes_nor_no_fails_the_pass(checkout, capsys) -> None:
+    _, _, brief, posted, seen = checkout
+    seen["final"] = "**SATISFIED:** pending\n"
+    assert cv.verify(7, brief, None, None) == 1
+    assert posted == [] and "run the pass again" in capsys.readouterr().out
+
+
+def test_a_linked_report_with_a_bold_verdict_is_read(checkout) -> None:
+    work, _, brief, posted, seen = checkout
+    seen["do"] = lambda: (work / "tmp/loop/pr12-v2.md").write_text("Head: x\n**SATISFIED:** yes\n")
+    seen["final"] = "Report: [pr12-v2.md](tmp/loop/pr12-v2.md)\n"
+    assert cv.verify(7, brief, None, None) == 0
+    [comment] = posted
+    assert "SATISFIED: yes" in comment.split("<details>")[0]

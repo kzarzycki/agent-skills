@@ -588,8 +588,8 @@ def linked_report(final: str, root: Path) -> tuple[str, str] | None:
     for name in linked_files(final):
         path = (top / name).resolve()
         if top in path.parents and path.is_file():
-            body = text(path)
-            if re.search(r"^SATISFIED:", body, re.MULTILINE):
+            body = plain(text(path))
+            if verdict(body):
                 return str(path.relative_to(top)), body
     return None
 
@@ -885,8 +885,8 @@ def review(
         wrote = {path: plain(said) for path, said in wrote.items()}
         # A verdict of its own in the report file, else in the final message, wins. Failing both, the CLI may have
         # written the report elsewhere and ended on a link to it: read it before the checkout goes back.
-        if not re.search(r"^SATISFIED:", wrote.get(report, ""), re.MULTILINE):
-            if re.search(r"^SATISFIED:", wrote[final], re.MULTILINE):
+        if not verdict(wrote.get(report, "")):
+            if verdict(wrote[final]):
                 wrote.pop(report, None)
             elif linked := linked_report(wrote[final], Path.cwd()):
                 print(f"the report is read from {linked[0]}, which the final message names")
@@ -916,7 +916,7 @@ def review(
             )
             event.state, event.question = "needs-owner", ask
             return 4 if stuck else 3
-        if code or not re.search(r"^SATISFIED:", body, re.MULTILINE):
+        if code or not verdict(body):
             print(
                 f"{NO_VERDICT.format(harness=harness, code=code)}; the last of what it wrote:\n{body[-1500:]}"
             )
@@ -950,6 +950,12 @@ NO_VERDICT = (
     " (exit 1): run the pass again, or, if the report holds a verdict in another form, write its closing lines as"
     " `SATISFIED: yes|no` and post it with `approvals.py verdict <pr> <report>`"
 )
+
+
+def verdict(body: str) -> str | None:
+    """The report's last `SATISFIED:` answer, `yes` or `no`; None without one, so `SATISFIED: pending` is no verdict."""
+    said = re.findall(r"^SATISFIED:[ \t]*(yes|no)\b", body, re.MULTILINE | re.IGNORECASE)
+    return said[-1].lower() if said else None
 
 
 def plain(body: str) -> str:
@@ -1292,13 +1298,11 @@ def thread_review(
         code, body = thread_exec(rpc, thread, env, f"cat {shlex.quote(checkout + '/' + str(out))}")
         body = body if not code else ""
     body, final = plain(body.strip() or final.strip()), plain(final)
-    if (
-        "SATISFIED:" not in body and "SATISFIED:" in final
-    ):  # the final message's own verdict beats a link
+    if not verdict(body) and verdict(final):  # the final message's own verdict beats a link
         body = final.strip()
     print(f"quota after: {quota(token)}")
-    if (
-        out and "SATISFIED:" not in body
+    if out and not verdict(
+        body
     ):  # a verifier that stops on a question writes `<report>.question` (verifier.md)
         code, asked = thread_exec(
             rpc, thread, env, f"cat {shlex.quote(checkout + '/' + str(out) + '.question')}"
@@ -1313,7 +1317,7 @@ def thread_review(
             print(question)
             event.state, event.url, event.question = "needs-owner", str(question), asked
             return 3
-    if "SATISFIED:" not in body:
+    if not verdict(body):
         # the final message may end on a link to a report written elsewhere in the checkout (never outside it)
         top = shlex.quote(checkout)
         for name in linked_files(final):
@@ -1324,11 +1328,11 @@ def thread_review(
                 f'cd {top} && p=$(realpath -- {shlex.quote(name)}) && test -f "$p" '
                 f'&& case "$p" in "$(realpath .)"/*) cat "$p";; *) exit 1;; esac',
             )
-            if not code and re.search(r"^SATISFIED:", got, re.MULTILINE):
+            if not code and verdict(got := plain(got)):
                 print(f"the report is read from {name}, which the final message names")
                 body = got
                 break
-    if "SATISFIED:" not in body:
+    if not verdict(body):
         print(
             f"{NO_VERDICT.format(harness='codex thread', code=0)}; its last message: {final.strip()[-500:]}",
             file=sys.stderr,

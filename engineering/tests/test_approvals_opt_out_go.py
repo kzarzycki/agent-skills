@@ -16,10 +16,11 @@ GO = approvals.fold(
 )
 
 
-def pull(*bodies: str) -> dict[str, Any]:
+def pull(*bodies: str, labels: tuple[str, ...] = ()) -> dict[str, Any]:
     return {
         "number": 7,
         "body": "A change.",
+        "labels": {"nodes": [{"name": name} for name in labels]},
         "comments": {"totalCount": len(bodies), "nodes": [{"body": b} for b in bodies]},
     }
 
@@ -42,3 +43,9 @@ def test_a_pr_with_a_merge_go_and_no_trail_is_told_what_trail_is_missing(opted: 
 def test_a_pr_with_no_go_and_no_trail_is_still_its_authors(opted: None) -> None:
     why = approvals.outside(pull("Looks fine."), "")
     assert why is not None and why.endswith("its author merges it")
+
+
+def test_the_approved_merge_label_is_a_go_too(opted: None) -> None:
+    """Into a feature branch the owner's go may be the label alone, with no record."""
+    why = approvals.outside(pull(labels=(approvals.MERGE_LABEL,)), "")
+    assert why is not None and "carries a merge go" in why
