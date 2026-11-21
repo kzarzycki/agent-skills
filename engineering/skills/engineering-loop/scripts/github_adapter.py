@@ -1045,7 +1045,17 @@ def statuses(head: str) -> list[dict[str, Any]]:
     return found
 
 
+# what a commit-status write in a cloud session says instead of calling: its proxy answers 403 to every one, so the
+# call is never made, tried again or asked about
+NO_STATUS = "a cloud session can't write commit statuses (its GitHub proxy answers 403): the host writes `{context}` on {head}"
+
+
 def post_status(head: str, context: str, description: str, state: str = "success") -> None:
+    """Set commit status `context` on `head`; in a cloud session, fail at once with NO_STATUS, making no call."""
+    if in_cloud():
+        raise subprocess.CalledProcessError(
+            1, "gh", stderr=NO_STATUS.format(context=context, head=head)
+        )
     gh(
         "api",
         f"repos/{{owner}}/{{repo}}/statuses/{head}",
@@ -1145,6 +1155,104 @@ def resolve_thread(number: int, comment_id: int) -> None:
             return
     raise subprocess.CalledProcessError(
         1, "gh", stderr=f"no review thread holds comment {comment_id}"
+    )
+
+
+# where GitHub's REST has no review-thread route, a cloud session's proxy serves one (`ccr/review_threads`), so a
+# thread list takes GraphQL on a host and that route in a cloud session, never one after the other
+LISTED = "reviewThreads(first: 100) { totalCount nodes { isResolved path line comments(first: 1) { nodes { databaseId body } } } }"
+
+
+def review_threads(number: int) -> list[dict[str, Any]]:
+    """PR #number's review threads, each {comment_id (its root comment, which `resolve` takes), resolved, path, line,
+    body (the root comment's)}: through the proxy's route in a cloud session, GraphQL on a host. More than 100 on a
+    host raises, since a thread past the page would read as none."""
+    if in_cloud():
+        threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
+        listed = {
+            found["id"]: found for found in rest_pages(f"pulls/{number}/comments?per_page=100")
+        }
+        found_threads = []
+        for thread in threads:
+            ids = thread.get("comment_ids") or []
+            root = listed.get(ids[0], {}) if ids else {}
+            found_threads.append(
+                {
+                    "comment_id": ids[0] if ids else None,
+                    "resolved": bool(thread.get("resolved")),
+                    "path": thread.get("path") or root.get("path"),
+                    "line": thread.get("line") or root.get("line") or root.get("original_line"),
+                    "body": root.get("body") or "",
+                }
+            )
+        return found_threads
+    found = _graphql(_repository(f"pullRequest(number: $n) {{ {LISTED} }}"), n=number)[
+        "pullRequest"
+    ]
+    threads = found["reviewThreads"]
+    if (threads.get("totalCount") or 0) > len(threads["nodes"]):
+        raise subprocess.CalledProcessError(
+            1,
+            "gh",
+            stderr=f"PR #{number} has more than {len(threads['nodes'])} review threads: one page is read",
+        )
+    return [
+        {
+            "comment_id": (root := (thread["comments"]["nodes"] or [{}])[0]).get("databaseId"),
+            "resolved": thread["isResolved"],
+            "path": thread.get("path"),
+            "line": thread.get("line"),
+            "body": root.get("body") or "",
+        }
+        for thread in threads["nodes"]
+    ]
+
+
+def show(number: int) -> dict[str, Any]:
+    """Issue or PR #number over REST, the same call on a host and in a cloud session: the issue, and for a PR its
+    `pull` (the PR's REST object: head, base, draft, merged, merge commit)."""
+    found: dict[str, Any] = rest(f"repos/{{owner}}/{{repo}}/issues/{number}")
+    if "pull_request" in found:
+        found["pull"] = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}")
+    return found
+
+
+def retarget(number: int, base: str) -> None:
+    """Point PR #number at base branch `base`, over REST."""
+    gh(
+        "api",
+        "-X",
+        "PATCH",
+        f"repos/{{owner}}/{{repo}}/pulls/{number}",
+        "-f",
+        f"base={base}",
+        "--silent",
+    )
+
+
+def request_review(number: int, logins: list[str]) -> None:
+    """Request a review of PR #number from each of `logins`, over REST."""
+    fields = [arg for login in logins for arg in ("-f", f"reviewers[]={login}")]
+    gh(
+        "api",
+        "-X",
+        "POST",
+        f"repos/{{owner}}/{{repo}}/pulls/{number}/requested_reviewers",
+        *fields,
+        "--silent",
+    )
+
+
+def reopen_issue(number: int) -> None:
+    """Reopen issue #number, over REST; reopening an open one is fine."""
+    gh(
+        "api",
+        "-X",
+        "PATCH",
+        f"repos/{{owner}}/{{repo}}/issues/{number}",
+        "-f",
+        "state=open",
+        "--silent",
     )
 
 
@@ -1348,7 +1456,7 @@ class Port:
         return found
 
 
-tracker = Port("issue_node", "issues", "comment", "label", "assign", "close_issue")
+tracker = Port("issue_node", "issues", "comment", "label", "assign", "close_issue", "reopen_issue")
 forge = Port(
     "pull_request",
     "pull_status",
@@ -1374,6 +1482,10 @@ forge = Port(
     "ready",
     "reply",
     "resolve_thread",
+    "review_threads",
+    "show",
+    "retarget",
+    "request_review",
     "merge",
     "edit_text",
     "enqueue_pull",
