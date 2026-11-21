@@ -9924,10 +9924,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         # against its workspace the same way: else the follow-up file is written to a path the
         # session cannot see, and the only symptom is "<report>.followup: not found" (#1586).
         if (
-            (
-                not remote
-                or (args.cmd == "send" and report.is_absolute() and session.get("workspace"))
-            )
+            (not remote or (args.cmd == "send" and report.is_absolute()))
             and not (args.cmd == "send" and args.pr)
             and not report.is_relative_to(workspace)
         ):
