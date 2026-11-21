@@ -92,6 +92,7 @@ class FakeOmnigent:
         ]
         self.overrides: dict[str, str | None] = {}  # the model_override each session took
         self.efforts: dict[str, str | None] = {}  # the reasoning_effort each session took
+        self.modes: dict[str, str | None] = {}  # the permission_mode each session was created with
         # the levels a Codex model lists, by model (None: the default one); unlisted: none named
         self.levels: dict[str | None, list[str]] = {}
 
@@ -187,6 +188,7 @@ class FakeOmnigent:
         self.roles.append(role)
         self.prs.append(pr)
         self.efforts[sid] = effort
+        self.modes[sid] = permission_mode
         self.workspaces.append(workspace)
         self.hosts_of[sid] = host_id or self.host_id
         self.sessions[sid] = [{"type": "resource_event"}]
@@ -9853,6 +9855,20 @@ def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_w
     assert sent("claude-cloud", None)["permission_mode"] == "bypassPermissions"
 
 
+def test_a_claude_cloud_start_defaults_to_bypass_permissions_unless_told_otherwise(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS}
+    omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0)
+    assert og.modes["s0"] == "bypassPermissions"
+    omnigent_agent.start(
+        og, "claude-cloud", "t2", "do X", tmp_path / "r.md", None, 0, permission_mode="auto"
+    )
+    assert og.modes["s1"] == "auto"
+
+
 def test_antigravity_runs_a_role_only_with_its_approvals_bypassed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -13097,8 +13113,8 @@ def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
     # Another harness's child never inherits: Codex takes no mode, claude-cloud and agy keep
     # their own opt-in.
     assert child("codex", bypass) == (None, "")
-    mode, err = child("claude-cloud", bypass)
-    assert mode is None and "inherited" not in err and "not applied" not in err
+    mode, err = child("claude-cloud", bypass)  # its own default, bypass, not the starter's
+    assert mode == "bypassPermissions" and "inherited" not in err and "not applied" not in err
     with pytest.raises(omnigent_agent.Fail, match="a --role child blocks unattended"):
         Starter.launch = bypass
         omnigent_agent.start(og, "agy", "t-agy", "x", tmp_path / "r.md", "worker.md", 0)

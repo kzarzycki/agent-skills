@@ -101,7 +101,7 @@ def test_it_runs_the_command_with_the_cheap_model_auto_and_no_keep_and_exits_wit
     assert run[run.index("--workspace") + 1] == str(place)
     assert "--no-keep" in run
     assert run[run.index("--model") + 1] == "haiku"
-    assert run[run.index("--permission-mode") + 1] == "auto"
+    assert run[run.index("--permission-mode") + 1] == "bypassPermissions"
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
     assert f"git checkout --detach {head}" in brief and "```sh\nuv run pytest -q\n```" in brief
     assert "`EXIT: <n>`" in brief

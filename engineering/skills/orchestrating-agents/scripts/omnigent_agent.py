@@ -3781,7 +3781,7 @@ def cloud_run_route(
         "--model",
         model,
         "--permission-mode",
-        "auto",
+        BYPASS,
         "--timeout",
         str(timeout),
     ]
@@ -3967,6 +3967,14 @@ def start(
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
 
+    if (
+        harness == CLOUD_HARNESS
+        and not permission_mode
+        and not os.environ.get("OMNIGENT_PERMISSION_MODE")
+    ):
+        # A cloud session runs unattended in its own disposable VM: in `auto` a command the classifier
+        # doubts waits on a prompt that reaches the owner's inbox, so it starts in bypass unless told otherwise.
+        permission_mode = BYPASS
     if agent == "claude" and not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
         # Neither flag nor variable: a Claude child takes its Claude starter's own mode, and only
         # a Claude child, since another harness keeps its own explicit opt-in (the agy --role guard).
@@ -9075,7 +9083,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--permission-mode",
             help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
-            " else the harness default); claude-cloud takes auto or bypassPermissions, codex none",
+            " else the harness default); claude-cloud takes auto or bypassPermissions (default bypassPermissions), codex none",
         )
         p.add_argument(
             "--author",
