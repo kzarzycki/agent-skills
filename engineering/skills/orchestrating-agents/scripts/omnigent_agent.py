@@ -885,6 +885,16 @@ CLOUD_NO_PUSH = (
     " your report names that branch and its head SHA. The lead opens the PR from it or retargets it. Never ask"
     " the owner which branch to push to.\n"
 )
+# Every acp:claude-cloud session's preamble (#1651): a cloud lead that believed a verb needs a host
+# started a child session as a "host helper", which landed on the orchestration host and ran a suite
+# there; every approvals.py verb a cloud session runs reads GitHub through REST where GraphQL answers 403.
+CLOUD_NO_HOST_HELPER = (
+    "Never create a child session to run host work (a suite, a build, a gate, `local-ci --record`,"
+    " `land`): a cloud session's child lands on the orchestration host, which runs none of them, and"
+    " approvals.py reads GitHub through REST where GraphQL answers 403, so each of them runs in this"
+    " session itself; a child you start is a cloud worker or verifier (engineering-loop's SKILL.md,"
+    " Cloud worker), never a host helper.\n"
+)
 # A child placed on a host (any harness but the cloud one, never a top-level lead, whose own heavy
 # runs go to the cloud): its placement already chose the host, so it prefixes heavy runs past the
 # engineering pack's hook, which refuses one on a host without the prefix (#1233).
@@ -976,12 +986,19 @@ def first_message(
 
 def cloud_preamble(preamble: str, pr: int | None) -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
-    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_BRANCHES`` and ``CLOUD_NO_PUSH`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_NO_HOST_HELPER``, ``CLOUD_BRANCHES`` and ``CLOUD_NO_PUSH`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
     preamble = preamble.replace(DETACH_LINE, CLOUD_RUN_LINE)
-    return preamble.removesuffix("\n") + CLOUD_NOTE + CLOUD_BRANCHES + CLOUD_NO_PUSH + "\n"
+    return (
+        preamble.removesuffix("\n")
+        + CLOUD_NOTE
+        + CLOUD_NO_HOST_HELPER
+        + CLOUD_BRANCHES
+        + CLOUD_NO_PUSH
+        + "\n"
+    )
 
 
 def cloud_reply(items: list[dict], verdict: bool = False) -> tuple[str, str] | None:

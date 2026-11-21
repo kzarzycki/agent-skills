@@ -14143,3 +14143,14 @@ def test_reap_prunes_the_demo_branch_of_a_worker_whose_pr_is_closed(
     monkeypatch.setattr(omnigent_agent, "EVENTS", None)
     omnigent_agent.reap(og, [sid])
     assert ("api", "-X", "DELETE", "repos/o/r/git/refs/heads/claude/ready-demo-7") in calls
+
+
+@pytest.mark.parametrize(("top_level", "pr"), [(True, None), (False, None), (True, 7), (False, 7)])
+def test_every_cloud_preamble_forbids_a_host_helper_child(top_level: bool, pr: int | None) -> None:
+    """A cloud lead never starts a child session to run host work: it lands on the orchestration host (#1651)."""
+    brief = omnigent_agent.first_message(True, top_level, pr, "r.md", None, "do X")
+    assert "Never create a child session to run host work" in brief
+    assert "reads GitHub through REST where GraphQL answers 403" in brief
+    assert "never a host helper" in brief
+    host = omnigent_agent.first_message(False, top_level, None, "r.md", None, "do X")
+    assert "host helper" not in host

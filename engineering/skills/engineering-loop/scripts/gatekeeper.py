@@ -377,7 +377,7 @@ tree's record branch under today's command whose commit says that tree, command 
 its write access, so one on a PR's fork never counts, and it counts at every risk. A clone that reuses a record writes
 the `gate` status it holds on the head, so the PR shows the pass. So any clone reuses a pass from any other, and
 adding a name to `local_ci_env` keeps every pass. `local-ci <pr>` reads the PR's head through REST
-where GraphQL answers 403, so it runs in a cloud session too. `local-ci <pr>`, `local-ci --record`, `land`, `check
+where GraphQL answers 403, so it runs in a cloud session too. A `gh` call that fails there anyway prints, after gh's reason, that the verb runs in that session and needs no host or child session (CLOUD_READ_NOTE). `local-ci <pr>`, `local-ci --record`, `land`, `check
 queue`, `batch` and `check merge` read it the same way; the posted comment then says it was reused by tree from the
 pass recorded on that commit, and when, instead of running the check again. A refusal for a missing pass names each
 other command the tree passed under, from this clone's records and the tree's record branches, and today's. The host stays
@@ -10544,6 +10544,8 @@ def main(argv: list[str]) -> int:
     except subprocess.CalledProcessError as exc:
         # gh's reason, e.g. a closing line that names a number with no issue
         print(exc.stderr.strip() or exc)
+        if note := cloud_read_note(exc):
+            print(note)
         return 1
     finally:
         running, using = False, None
@@ -10647,6 +10649,23 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "graduate":
         return graduate(args.epic, args.pr)
     return verdict(args.pr, args.report)
+
+
+# a GitHub read that failed in a cloud session (#1651): a lead that read it as "this needs a host" started a child
+# session as a host helper, which landed on the orchestration host and ran the suite there
+CLOUD_READ_NOTE = (
+    "This is a cloud session, and approvals.py reads GitHub here through REST wherever GraphQL answers 403 (the"
+    " proxy's refusal), so this verb does not need a host: the failure is the one `gh` printed above (an expired"
+    " token, a missing PR, a rate limit). Fix that and run this same command again in this session; never start a"
+    " host or child session for it, since a cloud session's child lands on the orchestration host."
+)
+
+
+def cloud_read_note(exc: subprocess.CalledProcessError, env: Any = None) -> str:
+    """CLOUD_READ_NOTE for a failed `gh` call in a cloud session (`CLAUDE_CODE_REMOTE=true`), else nothing."""
+    command = exc.cmd if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd).split()
+    remote = (os.environ if env is None else env).get("CLAUDE_CODE_REMOTE") == "true"
+    return CLOUD_READ_NOTE if remote and command[:1] == ["gh"] else ""
 
 
 def cli(argv: list[str]) -> int:

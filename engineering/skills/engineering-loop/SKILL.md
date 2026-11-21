@@ -924,6 +924,7 @@ or the owner's private network.
   Codex-written PR: it needs a Claude verifier. The endpoint is undocumented and may change, so every surprise ends
   in exit 2 ("use route 2 or the host verifier"): take that exit as the cue to use the next route, never to skip the
   verifier. Exit 1 is a pass that wrote no report with a `SATISFIED:` line.
+- **No host helper.** A cloud lead never creates a child session to run host work: a cloud session's child lands on the orchestration host, and every `approvals.py` verb the VM runs (`check`, `local-ci`, `local-ci --record`, `verdict`, `land`) reads GitHub through REST where GraphQL answers 403, so it runs in the lead's own session; only the steps listed above as the VM's limits go to a host, through the lead's own `--host` start or `ssh`, never through a child of the cloud session.
 - **Auto-fix stays off on loop PRs** (a cloud session that subscribes to its own PR), since it
   pushes fixes and replies on threads by its own judgment, which is the lead's triage, and the
   lead already briefs the worker on each fix.
