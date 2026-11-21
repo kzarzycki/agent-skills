@@ -294,6 +294,9 @@ CONFIG = Path.home() / ".omnigent" / "config.yaml"
 AUTH_TOKENS = Path.home() / ".omnigent" / "auth_tokens.json"
 # the label start puts on a --pr worker: the PR whose closing or merge ends it
 PR_LABEL = "omni.pr"
+# who started a session: the pack's own label on a top-level one it creates, and Omnigent's on one
+# its session tool creates (read too, as is a top-level field, should the server add one)
+CREATOR_LABEL, OMNIGENT_CREATOR_LABEL = "omni.created_by", "omnigent.created_by_session_id"
 RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
@@ -318,6 +321,8 @@ TURN_END_SECONDS = 30.0
 # so a lead in bypassPermissions shows its child's prompt, which the lead's own supervisor
 # reports and the lead answers within a minute; one that clears sooner was never the owner's.
 PROMPT_CONFIRM_SECONDS = 120.0
+# how long one listing of every session serves ``Omnigent.creations``: well inside the prompt's hold
+CREATED_SECONDS = 30.0
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
 # A loaded server times out reads the child never noticed; a GET is retried after each of these.
 RETRY_SECONDS = (2.0, 5.0, 15.0, 30.0, 60.0)  # a GET outlasts a server restart
@@ -1547,6 +1552,10 @@ class Omnigent:
         labels = {"omni.role": name} if role and (name := Path(role).stem) in ROLES else {}
         if pr:
             labels[PR_LABEL] = pr
+        if top_level and (me := own_id()):
+            # a REST create records no creator (Omnigent stamps one on its own tool's sessions
+            # alone), so a top-level session names the session that started it for ``creations``
+            labels[CREATOR_LABEL] = me
         if labels:
             body["labels"] = labels
         return str(self.call("POST", "/v1/sessions", body)["id"])
@@ -1810,6 +1819,30 @@ class Omnigent:
         """When any of ``sid``'s ``kin`` was last updated, else 0. Not ``busy``: a child whose
         turn end was lost stays busy for good."""
         return max(self.kin(sid).values(), default=0.0)
+
+    def creations(self, sid: str) -> list[str]:
+        """The live sessions ``sid`` created (``created_by_session_id``) that are not its children:
+        its ``--top-level`` ones, whose prompts Omnigent mirrors onto no session, since it mirrors
+        a child's onto its parent alone. One listing of every session serves every caller for
+        ``CREATED_SECONDS``: a supervisor asks it of each lead at every poll."""
+        cache = self.__dict__.setdefault("_created", [float("-inf"), []])
+        if time.monotonic() - cache[0] >= CREATED_SECONDS:
+            path, rows, after = "/v1/sessions?kind=any&limit=1000", [], ""
+            while True:
+                page = self.call("GET", path + (f"&after={after}" if after else ""))
+                rows += page.get("data", [])
+                if not (page.get("has_more") and page.get("last_id")):
+                    break
+                after = str(page["last_id"])
+            cache[:] = [time.monotonic(), rows]
+        return [
+            str(s["id"])
+            for s in cache[1]
+            if sid in creators(s)
+            and str(s.get("parent_session_id") or "") != sid
+            and str(s.get("id")) != sid
+            and not s.get("archived")
+        ]
 
 
 def checkout_root(workspace: str) -> str:
@@ -6316,6 +6349,44 @@ def supervise(
         time.sleep(POLL_SECONDS)
 
 
+def creators(row: dict) -> set[str]:
+    """The sessions a session record or listing row names as its creator, wherever it names one."""
+    labels = row.get("labels") or {}
+    named = (
+        row.get("created_by_session_id"),
+        labels.get(OMNIGENT_CREATOR_LABEL),
+        labels.get(CREATOR_LABEL),
+    )
+    return {str(n) for n in named if n}
+
+
+def created_prompt(og: Omnigent, sid: str) -> tuple[tuple, str] | None:
+    """The ``blocked`` key and line ``observe`` gives a prompt, for every session ``sid`` created
+    (``Omnigent.creations``) that waits on one, each prompt naming its session; else None. The
+    line keeps ``observe``'s ``: blocked on a prompt: <id>: <text>`` shape, which ``owner_item``
+    reads."""
+    try:
+        made = og.creations(sid)
+    except Fail:  # unreadable this poll: the lead's own state stands
+        return None
+    ids, asks = [], []
+    for child in made:
+        try:
+            info = og.info(child)
+        except Fail:
+            continue
+        held = [e for e in info.get("pending_elicitations") or [] if holds_input(e)]
+        title = f"{child} {info.get('title') or ''}".rstrip()
+        ids += [f"{child}:{e.get('elicitation_id') or e}" for e in held]
+        asks += [f"{_asks(e)} (in {title})" for e in held]
+    if not ids:
+        return None
+    return ("blocked", ",".join(ids)), (
+        f"{sid} (in {len({i.split(':')[0] for i in ids})} session(s) it created):"
+        f" blocked on a prompt: {'; '.join(asks)}"
+    )
+
+
 def follow(
     og: Omnigent,
     sid: str,
@@ -6335,6 +6406,11 @@ def follow(
     key, line = observe(og, sid, idle_since)
     if key[0] == "stuck":  # a followed lead has its progress deadline, which says this already
         key = ("running",)
+    if key[0] in ("running", "ended") and (held_by := created_prompt(og, sid)):
+        # a prompt on a session it created that Omnigent mirrors nowhere (a --top-level one) is
+        # its lead's blocked prompt, held and told as a mirrored one is; before a turn end, since a
+        # lead whose turn ended waiting on its workers is the one nobody else would see it for
+        key, line = held_by
     if key[0] == "archived":
         return line, key
     if key[0] != "ended":
