@@ -8084,9 +8084,8 @@ def supervise_registry(
             result = LEAD_TOLD.format(lead=head, line=lead.get("last_line") or "")
             waiters = [other for other, owes in owed.items() if owes[4] == sid]
             act_on(eid, [(other, "tell", result) for other in waiters])
-            if (
-                waiters and not event["direct"]
-            ):  # a followed lead is taken once its follower is told
+            # a followed lead is taken once its follower is told
+            if waiters and not event["direct"]:
                 finish_relayed(sid)
         logged_line = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind}
         logged_line.update(line=line, settled=by, action=action, why=why)
