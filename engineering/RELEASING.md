@@ -4,6 +4,16 @@ A release is a PR that moves the entries in `changelog.d/` under a version headi
 [changelog.d/README.md](changelog.d/README.md)), then a tag. Whoever cuts it, a person or the routine in
 [ROUTINE.md](ROUTINE.md), follows this page.
 
+## Prepare the release PR
+
+`uv run python -m tools.capability_pack.cli cut-release engineering` prepares the release PR's tree: it folds
+the `changelog.d/` entries in issue order under `## X.Y.Z - <date>` in `CHANGELOG.md` (or extends that heading
+when the routine already wrote it), deletes them, and sets X.Y.Z in `apm.yml`, `.claude-plugin/plugin.json`
+and `tests/consumer/apm.yml`. X.Y.Z is `apm.yml`'s version, or its next patch when that one is already
+tagged; `--version X.Y.Z` overrides it, and `--dry-run` prints the version and the section and writes nothing.
+It refuses when `changelog.d/` holds no entry, and commits, pushes and tags nothing: commit its tree on a
+branch and open the PR.
+
 ## Check the gatekeeper against real github.com, before the tag
 
 This pre-tag smoke run is a required step. The in-repo job

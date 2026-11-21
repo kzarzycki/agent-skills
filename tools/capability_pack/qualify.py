@@ -586,18 +586,27 @@ def _update_package_version(stage: Path, magnitude: str, released: str | None) -
     proposed = _next_version(released or current, magnitude)
     if released and _semver(current) > _semver(proposed):
         proposed = current
-    apm["version"] = proposed
-    plugin["version"] = proposed
+    write_package_version(stage, proposed)
+    return proposed
+
+
+def write_package_version(package: Path, version: str) -> None:
+    """Set `version` everywhere a release sets it: both manifests and the consumer fixture's ref."""
+    apm_path = package / "apm.yml"
+    plugin_path = package / ".claude-plugin" / "plugin.json"
+    apm = _mapping(yaml.safe_load(apm_path.read_text()), "apm.yml")
+    plugin = _mapping(json.loads(plugin_path.read_text()), "plugin.json")
+    apm["version"] = version
+    plugin["version"] = version
     apm_path.write_text(yaml.safe_dump(apm, sort_keys=False))
     plugin_path.write_text(json.dumps(plugin, indent=2) + "\n")
-    consumer = stage / "tests" / "consumer" / "apm.yml"
+    consumer = package / "tests" / "consumer" / "apm.yml"
     if consumer.exists():
         data = _mapping(yaml.safe_load(consumer.read_text()), "consumer apm.yml")
         for dependency in data.get("dependencies", {}).get("apm", []):
             if dependency.get("git") == "kzarzycki/agent-skills/engineering":
-                dependency["ref"] = f"^{proposed}"
+                dependency["ref"] = f"^{version}"
         consumer.write_text(yaml.safe_dump(data, sort_keys=False))
-    return proposed
 
 
 def _manifest_files(root: Path) -> list[Path]:

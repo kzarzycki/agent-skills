@@ -20,6 +20,7 @@ from tools.capability_pack.qualify import (
     upstream_deltas,
     validate_release_candidate,
 )
+from tools.capability_pack.release import cut_release
 
 # EX_CONFIG: this machine isn't ready. A step that stops on QUALIFY_TIMEOUT failed for the
 # host's load, not the change, so a loop.md naming it as machine_exit reruns, then stops.
@@ -63,6 +64,13 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="the tag check's run: the smoke run gated the release before the tag was pushed",
     )
+    cut = subparsers.add_parser(
+        "cut-release",
+        help="fold changelog.d/ into CHANGELOG.md and set the version; commits nothing",
+    )
+    cut.add_argument("package", type=Path)
+    cut.add_argument("--version", help="X.Y.Z; default: apm.yml's, or its next patch if tagged")
+    cut.add_argument("--dry-run", action="store_true", help="print the version and section only")
     consumer = subparsers.add_parser("prepare-consumer")
     consumer.add_argument("repository", type=Path)
     consumer.add_argument("source_tag")
@@ -100,6 +108,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "assert-codex-inventory":
             assert_codex_inventory(args.repository, args.source_tag, args.source_commit)
+            return 0
+        if args.command == "cut-release":
+            release = cut_release(args.package, version=args.version, dry_run=args.dry_run)
+            print(f"version: {release.version}")
+            print(release.section, end="")
             return 0
         if args.command == "release-check":
             validate_release_candidate(args.package, args.tag)
