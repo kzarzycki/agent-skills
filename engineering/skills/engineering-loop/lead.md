@@ -483,7 +483,7 @@ finished to the backend.
 A step only the owner can unblock is parked (SKILL.md, Owner steps park): a reported child's
 process still hung on one is yours to stop and release, since its owner has ended its turn.
 A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
-End every `STILL WORKING` with one last line from `python3 <orchestrating-agents' folder>/scripts/omnigent_agent.py wait-on
+End every `STILL WORKING` line with one last line, right after it, from `python3 <orchestrating-agents' folder>/scripts/omnigent_agent.py wait-on
 supervisor|session <id>|pr <n>|ci|run <Actions run URL>|until <UTC time>`, pasted as printed (`Waits: supervisor`, `Waits: session <id>`,
 `Waits: #<pr>`, `Waits: CI`, `Waits: https://github.com/<owner>/<repo>/actions/runs/<n>`, `Waits: until 2026-10-21T23:17Z`): it refuses a malformed wait, and the supervisor reads
 that line exactly, where prose such as "waiting on the CoS spec approval" or "cloud session <id>" is only a fallback it
