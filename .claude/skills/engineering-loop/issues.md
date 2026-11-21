@@ -111,6 +111,9 @@ filing a new one. Its stories are filed before its approval is asked for (lead.m
 Spec). An epic lands as its sub-issues' PRs, one per sub-issue, each off
 main, with no epic or integration branch; a sub-issue whose work isn't usable yet lands
 unexposed, and the sub-issue that exposes it comes last (SKILL.md, Land small and soon).
+A slice's PR says `Closes #<its sub-issue>`: GitHub shows a PR in an issue's Development panel only for a closing
+keyword, so `Part of #<epic>` alone leaves the epic and the PR unlinked, and `check build` refuses a PR with no
+`Closes` of an open issue. The epic shows progress through its sub-issues and closes when the last one does. One issue is one PR: the merge closes the issue, and `check build` already refuses a second open PR for it, so more work gets its own sub-issue. A PR may close several issues, but one is the norm.
 Two levels only: a sub-issue never has sub-issues of its own, since the
 board's Parent issue field names only the direct parent and a grandchild would not show
 under its epic.

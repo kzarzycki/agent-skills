@@ -196,8 +196,7 @@ workspace is, since the report is the file `wait` writes here, and takes only a 
 created after the report already there, so a turn that ends on the old comment's link, or on
 none, gets the nudge and then fails. `--pr` arms no supervisor registry, since the supervisor reads the report file and
 would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
-with `wait <session> <report> --pr <n>`. A `--role` path names the role file by its path in
-the repo, since the VM has the checkout but not this host's paths. The preamble also tells the
+with `wait <session> <report> --pr <n>`. The preamble also tells the
 worker that its checkout is the branch checked out in the workspace the session started from,
 not necessarily the PR's; that a foreground command there stops at 10 minutes, so a long one
 runs detached and is polled within the same turn, is the role file's long-run rule. It forbids an interactive
@@ -206,11 +205,20 @@ and ends each commit message with the co-author line and no session link, since 
 reaches a public repository. A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
-Every `acp:claude-cloud` session's preamble, lead or worker, with or without `--pr`, also says
+A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, not its path: the VM has none of this host's paths, and a target repo without the pack installed holds no copy, so a path would read nothing. The skill's other files that the role names may not be in the checkout either; the brief says so.
+Every `acp:claude-cloud` session's preamble, lead or worker, with or without `--pr`, says how to open a
+PR when its brief or role asks for one: `curl` to `https://api.github.com/repos/<owner>/<repo>/pulls` with a
+`Content-Type: application/json` header. The VM's HTTPS proxy authenticates that host as the GitHub App, so no
+token is set, while the GitHub connector's host is not allowed there. It also says
 never to write under `.git/`, since a write there waits on a permission prompt nobody in the
 cloud answers, and that `tmp/loop/` is scratch, never committed: a fresh clone lacks the host's
 `.git/info/exclude`, so the project's own `.gitignore` names `tmp/loop/`, and a session that
 sees its report untracked has nothing to "fix".
+It closes with the owner's standing branch grant (`CLOUD_BRANCHES`): new `claude/ready-*` branches, one
+per PR, besides the one the session started on; no force-push, no deleting a branch it didn't create, nothing
+pushed to `main` or outside `claude/`. A cloud session takes a push grant only from its first user message and
+refuses a later relayed one, so a lead building several PRs gets its branches only this way.
+It ends with the no-push rule (`CLOUD_NO_PUSH`): reports, logs and verifier output are never committed or pushed, since a commit on the PR's branch moves the head under review and the branch grant is for code; the gate record that `approvals.py local-ci --record` pushes itself is the one exception; they travel in the report comment (or the final message with no PR), a file too large for one comment goes in a short follow-up comment or is trimmed with its path named, and a push target or branch question never goes to the owner.
 
 **Cloud environments.** Which claude.ai environment a cloud session runs in is the project's
 loop.md line `Cloud worker: <agent>, gate <task>, env <name>`; an environment id belongs to one
@@ -242,12 +250,30 @@ reviewer must be of the other family is the caller's policy.
 `start` and `wait <session> <report>` are the two halves, for a start whose wait runs
 elsewhere.
 
+**Cold start.** `start` (after waiting up to `COLD_START_SECONDS`, 20 s, for a first turn), `wait` and
+`run` print on stderr `cold start: <n|unknown> s to first turn`: the seconds from the session record's
+`created_at` (set by the create call) to the `created_at` of its first assistant item (a message or
+tool call of the assistant), read from the session's oldest items so a long session still times it.
+A time the API does not give, or a session with no turn yet, prints
+`unknown`, never 0; `wait` prints it again once the turn exists. The lead's log keeps the line.
+
 **Signature.** `python3 scripts/omnigent_agent.py signature` prints `<harness>/<model>/<effort>` of the session it
 runs in, read at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and transcript), so it holds
 however the session started. It reads the session's Omnigent record first (`llm_model` once the harness has
 reported it, and `reasoning_effort`), since a Codex child's rollout sits under a private `CODEX_HOME`. The
 `AGENT_SIGNATURE=` line `start` puts atop a brief names the model the server took for the session (its
 `model_override`, `?` for the harness default), never the id asked for.
+
+**Host steps over SSH.** Run a step on another host as `python3 scripts/omnigent_agent.py ssh <host> --why
+<purpose> -- <command...>`, never a bare `ssh`, since a host whose SSH layer asks the owner to approve each
+connection (an SSH check) shows the owner a login link with no word of who asks or why. It runs `ssh -o
+BatchMode=yes <host> <command>` (one word after `--` is a shell command as written; several are joined as
+argv, quoted for the remote shell) and passes its output and exit code through. When ssh prints the check's
+`To authenticate, visit:` line it stops ssh, which otherwise waits there however long the approval takes, prints a
+question card's text on stdout (the session asking, the host, the command, `--why` and the link, with a **Done**
+option) and exits 75. Post that text as an owner card (`sys_ask_user_question`), or, in a child, as its
+`<report>.question` (Questions), wait for **Done**, then run the same command again. It answers no card and opens
+no link itself: the approval is the owner's.
 
 **Usage.** `python3 scripts/omnigent_agent.py usage [<session>...]` prints the tokens and cost of the session it
 runs in and of each session named, one line each, read from each session's record (`usage_by_model`,
@@ -688,7 +714,7 @@ wait comes from the lead's last message: `parked` for a `PARKED` ending, the thi
 WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`, a child's session id, or a
 background task id such as `bz3jp5aod`, `b` and 8 lowercase letters and digits with one digit at
 least, opening it or after `on`/`for`), else
-`unknown`. A last line `Waits: supervisor|session <id>|#<pr>|CI|until <UTC>` (printed by `omnigent_agent.py wait-on`, which refuses any other form) is read first and exactly, and one that names no supervisor makes prose decide nothing about routing to it; without one, prose decides: any single 32-hex id in the wait paragraph is a named wait, and `CoS`, `chief of staff` or a `CoS:` line count as waiting on the supervisor like `pm`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
+`unknown`. A last line `Waits: supervisor|session <id>|#<pr>|CI|until <UTC>|<Actions run URL>` (printed by `omnigent_agent.py wait-on`, which refuses any other form, and a bare `#<pr>` that this repo has no PR or issue for; a run's end is news once, and a line that does not parse is told to its lead once, with these forms) is read first and exactly, and a line that does not parse still decides alone: a wait on the supervisor only when it names it (supervisor, CoS or chief of staff), else none, so prose and a `CoS:` footer decide nothing; without one, prose decides: any single 32-hex id in the wait paragraph is a named wait, and `CoS`, `chief of staff` or a `CoS:` line count as waiting on the supervisor like `pm`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
 UTC`) is a timed wait, `until <time>`: no deadline before that time plus 20 minutes, then the
 named-wait rule. A last message that
 is only a report's path takes its ending and wait from the report's first line, read once per
@@ -876,8 +902,10 @@ kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent wit
 session that is done (not running, no prompt or input waiting), printing `archived` for
 each and `already archived` for one finished before, and prints which it kept. It keeps a `--pr` worker, `--force` included, until its PR is merged or closed, saying why: `start --pr`
 labels the session `omni.pr=<owner>/<name>#<n>` (a start whose label fails archives the session and fails), and
-`reap` looks the PR up in that repository, never the caller's checkout; a PR it can't read keeps the worker. A
-verdict does not release it, since the landing gate alone judges a verdict. `reap --merged [--pr <n>]` also
+`reap` looks the PR up in that repository, never the caller's checkout; a PR it can't read keeps the worker. A verifier
+started with `--pr` carries the same label, so its spend groups by PR, but neither `reap` nor `reap --merged` holds or finds one
+on it: a verifier ends with its verdict. A
+verdict does not release a worker, since the landing gate alone judges a verdict. `reap --merged [--pr <n>]` also
 finishes every live `--pr` worker whose PR is merged or closed, leaving an open PR's; `approvals.py land` starts it
 detached for each PR it merged, so a slow server never holds the land, and the outcome goes to a log it names. A finish that fails is printed and the rest still run, and
 `reap` then exits 1. It cannot tell an idle child whose report is still

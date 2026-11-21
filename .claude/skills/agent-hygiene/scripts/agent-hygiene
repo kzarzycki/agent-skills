@@ -113,7 +113,7 @@ def processes():
 
 
 # An Omnigent terminal wrapper: python, its flags, then the script as the first argument (a tmux server only names it later).
-WRAPPER = re.compile(r'^\S*python[\d.]*\s+(-\S+\s+)*\S*omnigent/terminals/program_status\.py\s')
+WRAPPER = re.compile(r'^\S*python[\d.]*\s+(-\S+\s+)*\S*omnigent/terminals/program_status\.py\s', re.I)
 # A plain, unescaped bridge dir ending .../claude-native/<id>; any other spelling (a space, a quote, a JSON escape) cannot be
 # read unambiguously from a flattened command line, so it does not parse and the wrapper is kept.
 BRIDGE_DIR = re.compile(r'--bridge-dir[\s"\',=]+((?:/[\w.-]+)+/(?:claude|codex)-native/[0-9a-f]+)(?=["\',\s\]}]|$)')
