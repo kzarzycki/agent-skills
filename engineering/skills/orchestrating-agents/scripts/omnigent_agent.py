@@ -730,7 +730,7 @@ This file is your brief. Only the owner's own words approve, quoted in it with w
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
 Every heavy run (a test suite, a build, an e2e, a gate, a mutation or proof run) goes where engineering-loop's SKILL.md, Where heavy steps run says, by default a Claude cloud session: a host worktree this brief names for a test run says where the code is, not where the run goes.
 The owner reads this session: ask them here when you need a decision, as your role says, never in a question file.
-Write your final report to {report}. End every turn with one line that opens with an ending word and gives the report path on that same line: `DONE: <result in one line>. Report: {report}`, `STILL WORKING: waiting on <verifier, worker, lead, CI or a session id>. Report: {report}`, `USER NEEDED: <the question>. Report: {report}`. The supervisor routes on that line, and the owner reads it.
+Write your final report to {report}. End every turn with one line that opens with an ending word and gives the report path on that same line: `DONE: <result in one line>. Report: {report}`, `STILL WORKING: waiting on <verifier, worker, lead, CI or a session id>. Report: {report}`, `USER NEEDED: <the question>. Report: {report}`. A `STILL WORKING` line is followed by a last line `Waits: <what it waits on>` (`Waits: session <id>`, `Waits: #<pr>`, `Waits: CI`, `Waits: supervisor`; a set is `Waits: session <id> and session <id>`). The supervisor routes on that line, and the owner reads it.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEEDED`, never `STILL WORKING`. Only a message that starts with `Park: ` tells you to park; after it, end `PARKED: <why>. Report: {report}`, and never otherwise.
 
@@ -6667,13 +6667,14 @@ def own_run_only(text: str) -> bool:
 
 
 def trailer_items(text: str) -> list[tuple[str, str]]:
-    """The forms the last ``Waits:`` line of a ``STILL WORKING`` message names, in order, each
+    """The forms the last ``Waits:`` line of a ``STILL WORKING`` message (before or after its
+    ``STILL WORKING`` line) names, in order, each
     ``(form, value)`` with the form ``supervisor``, ``session``, ``ref``, ``ci`` or ``until``. The
     line is a set: items split by a comma or "and", all of which must be a form, else none count,
     since a line half read would wake a lead on a wrong thing. Empty when there is no such line."""
     if "STILL WORKING" not in text:
         return []
-    found = TRAILER.findall(text[text.find("STILL WORKING") :])
+    found = TRAILER.findall(text)
     items = []
     for part in re.split(r"\s*,\s*|\s+and\s+", found[-1].strip()) if found else []:
         if not (m := TRAILER_FORMS.fullmatch(part.strip())):
@@ -6693,7 +6694,7 @@ def unparsed_trailer(text: str) -> str:
     ``trailer_items`` drops), else empty: the lead is told once that it did not parse."""
     if "STILL WORKING" not in text or trailer_items(text):
         return ""
-    found = TRAILER.findall(text[text.find("STILL WORKING") :])
+    found = TRAILER.findall(text)
     return found[-1].strip() if found else ""
 
 
@@ -6849,6 +6850,14 @@ def wait_of(text: str, at: float | None = None) -> str:
             return f"until {pick[0][2]}"
     if len(ids := named_of(text)) == 1:  # a child's id anywhere in the wait, not only after "on"
         return ids[0]
+    if (m := WAIT_OBJECT.search(text)) and len(
+        waited := list(
+            dict.fromkeys(re.findall(r"(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])", m.group("object")))
+        )
+    ) > 1:
+        return ", ".join(
+            waited
+        )  # several sessions after "waiting on": a set, as a parsed line gives
     if m := WAIT.search(text):
         return m.group(1) if m.group(1) == "CI" else m.group(1).lower()
     if m := NAMED.search(text):
