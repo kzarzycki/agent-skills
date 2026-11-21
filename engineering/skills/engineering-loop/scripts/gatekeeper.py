@@ -9,6 +9,7 @@
     uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run --python '>=3.11' scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
+    uv run scripts/approvals.py check ready <pr>                # the author's step before the verifier: the PR body's `## Evidence` (and demo form) alone, the check merge runs; exit 0 or 1
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
@@ -2370,6 +2371,13 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
     return found
 
 
+def no_evidence(pull: dict[str, Any]) -> list[str]:
+    """A line when the PR's body has no `## Evidence` section with content: `check merge`'s proof and `check ready`'s."""
+    if section(pull["body"] or "", "Evidence").strip():
+        return []
+    return [f"PR #{pull['number']}: its body has no `## Evidence` section with content"]
+
+
 def demo_form(pull: dict[str, Any]) -> list[str]:
     """A line when the PR's newest `## Demo` comment by a trusted author, not minimized as outdated, links a video or
     screenshot (a release asset, any URL but a user-attachments one) instead of embedding it, or embeds none; a PR
@@ -2454,9 +2462,8 @@ def proofs(
     if point != "merge":
         return found
     where = f"PR #{pull['number']}"
-    evidence = section(pull["body"] or "", "Evidence")
-    if "evidence" not in waived and not evidence.strip():
-        found.append(f"{where}: its body has no `## Evidence` section with content")
+    if "evidence" not in waived:
+        found += no_evidence(pull)
     if loop is not None:
         found += linked(pull, issues, loop)
     if revert is None and "verifier" not in waived and not exempt(pull, loop):
@@ -4982,6 +4989,17 @@ def full_check_line() -> None:
 
 def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
     tracker, loop = project()
+    if (
+        point == "ready"
+    ):  # the PR body alone: the author's step before the verifier, when no verdict or gate exists yet
+        waived = incubation(pull, adopted(closing_issues(pull), loop), loop)[0]
+        found = [] if "evidence" in waived else no_evidence(pull) + demo_form(pull)
+        print(
+            "\n".join(found)
+            if found
+            else f"PR #{pull['number']}: its body holds the evidence proof"
+        )
+        return 1 if found else 0
     if point == "queue" and head is not None:
         return queueable(pull, head, tracker, loop)
     if point == "merge" and (why := outside(pull, loop)):
@@ -10466,7 +10484,7 @@ def main(argv: list[str]) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser("check")
-    checking.add_argument("point", choices=("build", "merge", "queue", "setup"))
+    checking.add_argument("point", choices=("build", "merge", "queue", "ready", "setup"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--head")
     checking.add_argument("--issue", type=int)
