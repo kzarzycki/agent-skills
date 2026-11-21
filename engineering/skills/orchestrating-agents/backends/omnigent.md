@@ -12,7 +12,7 @@ directory the session's workspace; `--workspace <dir>` names another, such as th
 several repos for a lead whose change spans them. Give each child its own: a `--role` start on a
 host harness is refused, naming the session, when a live session on that host (its parent
 included) already uses that workspace, since two children there move the tree under each other. The report path goes in a gitignored directory of that
-workspace (under the engineering loop, `tmp/loop/`): outside its workspace a Codex child's sandbox refuses the write and a Claude Code
+workspace (under the engineering loop, `tmp/loop/`): outside its workspace a Codex child under `--permission-mode default` has a sandbox that refuses the write and a Claude Code
 child is prompted for a read (denied in auto mode), which nobody answers, so the script refuses
 such a path. Titles look like `s120-parser-worker`,
 `pr182-verifier-p1`: the issue or PR, then the role. The brief (a file, or the text itself, as
@@ -940,11 +940,11 @@ transcript.
 
 **Permission prompts.** An agent's workspace is the directory it was started in, so its
 reads there, its children's checkouts included, never prompt, in any harness; its writes
-there follow the permission mode (Codex's workspace-write allows them). So put each child's
+there follow the permission mode (a Codex child under `--permission-mode default` has workspace-write, which allows them). So put each child's
 checkout inside the workspace of the agent that starts it, in a directory the project
 gitignores (where and how is the project's: under the engineering loop, loop.md § Worktree),
 and run the child's command from there. Outside it, Claude Code prompts for a read, or denies it in auto mode (`cd <sibling>; grep ...` or a plain
-`cat <sibling>/f`), which nobody answers, and Codex's workspace-write sandbox refuses a write.
+`cat <sibling>/f`), which nobody answers, and a Codex child under `--permission-mode default` has a workspace-write sandbox that refuses a write.
 No allow rule stands in for the layout: a project rule `Read(/../**)` or `Read(../**)` never
 matches a sibling, an absolute `//…` or `~/…` rule names one machine's layout, and a project's
 rules are ignored in a workspace nobody has trusted. Nor does an Omnigent policy: its native

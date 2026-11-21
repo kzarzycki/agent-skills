@@ -4010,7 +4010,8 @@ def start(
         )
     # The flag was refused above, so a mode not applied here came from the environment (an inherited
     # one is a Claude child's, always applied): the session starts in its harness's default stance,
-    # which a run counting on the mode is told (#987).
+    # which a run counting on the mode is told (#987). Codex is left out: it starts in no-approvals
+    # whatever the variable says, so there is nothing to tell.
     mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
     if mode and agent != "codex" and not applied(mode):
         print(
@@ -9095,7 +9096,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--permission-mode",
             help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
-            " else the harness default); claude-cloud takes auto or bypassPermissions (default bypassPermissions), codex none",
+            " else the harness default); claude-cloud takes auto or bypassPermissions (default bypassPermissions), codex takes bypassPermissions (its default) or default (codex's own stance)",
         )
         p.add_argument(
             "--author",
