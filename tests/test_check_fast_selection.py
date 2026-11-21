@@ -8,6 +8,10 @@ from pathlib import Path
 
 import pytest
 
+# ponytail: check-fast runs no tests until the suite runs whole in a few minutes (#1653); these pin the selection step
+# #1653 brings back, so they come back with it.
+pytestmark = pytest.mark.skip(reason="check-fast runs no tests until #1653")
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
