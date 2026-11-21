@@ -3,6 +3,7 @@ the loop's roles to write, run and hand them over (#1156)."""
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -116,6 +117,87 @@ def test_a_check_that_cannot_start_fails(repo: Path) -> None:
 
     assert result.returncode == 1, result
     assert verdicts(result.stdout) == ["FAIL acceptance/7/noshebang"]
+
+
+BROKEN = "trap 'true' EXIT\necho ran\nX=1 \\\nfor a in b; do\n echo $a\ndone\n"
+
+
+@pytest.mark.parametrize(
+    "shebang",
+    [
+        "#!/bin/bash -e",
+        "#!/usr/bin/env bash\nset -e",
+        "#!/usr/bin/env -S /bin/bash -e",
+        '#!/usr/bin/env -S "/bin/bash" -e',
+        "#!/usr/bin/env -S/bin/bash -e",
+        "#!/bin/sh -e",
+        "#!/bin/bash\nset -e\ncase abc in +(abc)) echo extglob is off;; esac",
+    ],
+    ids=[
+        "bash -e",
+        "env bash",
+        "env -S",
+        "env -S quoted",
+        "env -S attached",
+        "sh -e",
+        "extglob never on",
+    ],
+)
+def test_a_shell_check_that_does_not_parse_fails_before_it_runs(repo: Path, shebang: str) -> None:
+    # under set -e, bash 3.2 (macOS's /bin/bash) runs the EXIT trap on a syntax error and exits with its 0 (#1545)
+    check(repo, "acceptance/7/01-broken.sh", f"{shebang}\n{BROKEN}")
+
+    result = acceptance(repo, "7")
+
+    assert result.returncode == 1, result
+    assert verdicts(result.stdout) == ["FAIL acceptance/7/01-broken.sh"]
+    assert "does not parse" in result.stdout
+    assert "ran" not in result.stdout.split()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "#!/bin/bash --\necho ran\n",
+        "#!/bin/bash\nshopt -s extglob\ncase abc in +(abc)) echo ran;; esac\n",
+        "#!/bin/bash\nset -e\neval 'for x in; do' || true\nbash -c 'for x in; do' || true\necho ran\n",
+        "#!/bin/bash --posix\necho ran\n",
+        "#!/bin/bash +n\necho ran\n",
+        "#!/usr/bin/env -S /bin/bash -e # a comment env drops\necho ran\n",
+        "#!/bin/bash\nset -e\n!(case x in x) false;; esac) && echo ran\n",
+        '#!/usr/bin/env python3\nprint("ran")\n',
+    ],
+    ids=[
+        "end of options",
+        "grammar set in the body",
+        "a syntax error the check catches",
+        "a long option first",
+        "a flag that undoes -n",
+        "env -S comment",
+        "a negated subshell, extglob off",
+        "not a shell",
+    ],
+)
+def test_a_check_that_runs_to_its_end_passes(repo: Path, body: str) -> None:
+    check(repo, "acceptance/7/01-ok.sh", body)
+
+    result = acceptance(repo, "7")
+
+    assert result.returncode == 0, result
+    assert verdicts(result.stdout) == ["PASS acceptance/7/01-ok.sh"]
+    assert result.stdout.split().count("ran") == 1  # the parse runs nothing
+
+
+def test_an_execute_only_program_runs(repo: Path) -> None:
+    true = repo / "acceptance" / "7" / "true"
+    true.parent.mkdir(parents=True)
+    shutil.copy("/usr/bin/true", true)
+    true.chmod(0o111)
+
+    result = acceptance(repo, "7")
+
+    assert result.returncode == 0, result
+    assert verdicts(result.stdout) == ["PASS acceptance/7/true"]
 
 
 def test_all_runs_every_folder_in_issue_order_and_exits_1_when_one_fails(repo: Path) -> None:

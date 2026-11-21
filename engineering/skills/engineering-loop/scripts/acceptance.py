@@ -18,7 +18,8 @@ a subfolder are not checks and are skipped. Each check's own output passes throu
     PASS acceptance/7/01-ok.sh (0.1s)
     FAIL acceptance/7/02-broken.sh (2.3s)
 
-A file that cannot be started (no shebang, say) is a FAIL with the reason. `--all` runs every
+A file that cannot be started (no shebang, say) is a FAIL with the reason, and so is a shell check
+(its shebang names sh or bash) that does not parse, which `<shell> -n` checks before it runs. `--all` runs every
 `acceptance/*/` folder in issue order, for the nightly. The last line is the total:
 `TOTAL <n> checks, <passed> passed, <failed> failed (<s>s)`.
 
@@ -38,6 +39,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -97,16 +99,75 @@ def issue_order(folder: Path) -> tuple[int, int, str]:
     return (0, int(name), name) if name.isdigit() else (1, 0, name)
 
 
+EXTGLOB = re.compile(rb"(?:\bshopt\s+-s|(?:^|\s)-O)\s+(?:[\w-]+\s+)*?extglob\b")
+
+
+def interpreter(line: bytes) -> str | None:
+    """The program a `#!` line runs, as the kernel and `env` find it: the first word, or for
+    `env` the first word after its assignments, its `-S` string split as `env -S` splits it
+    (quotes, `#` comments). None for no shebang, or an `env` option other than `-S`."""
+    if not line.startswith(b"#!"):
+        return None
+    text = line[2:].decode(errors="replace").strip()
+    program, _, rest = text.partition(" ")
+    if Path(program).name != "env":
+        return program or None
+    rest = rest.strip()
+    try:
+        words = shlex.split(rest[2:], comments=True) if rest.startswith("-S") else rest.split()
+    except ValueError:  # an unbalanced quote: env refuses it on the run
+        return None
+    while words and ASSIGNMENT.match(words[0]):
+        words.pop(0)
+    return None if not words or words[0].startswith("-") else words[0]
+
+
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def parsers(check: Path) -> list[list[str]]:
+    """The commands that parse a sh or bash check without running it, any of which parsing it
+    counts: `<shell> -n`, and for a bash check that turns extglob on (`shopt -s extglob`,
+    `-O extglob`) the same with `-O extglob`, the one shopt that changes bash's grammar. bash 3.2,
+    macOS's /bin/bash, runs the EXIT trap on a syntax error under `set -e` and exits with the
+    trap's status, so a check that never ran past the error would PASS (#1545). The shebang's own
+    flags stay off the parse, since one can undo `-n` (`+n`) or must come first (`--posix`). Empty
+    for any other check, and one that cannot be read, which runs as before. ponytail: an alias that
+    expands to syntax, and code parsed at run time (`eval`, `source`), are not followed."""
+    try:
+        with check.open("rb") as file:
+            line = file.readline(256)
+            body = line + file.read()
+    except OSError:  # an execute-only program runs unread
+        return []
+    shell = interpreter(line)
+    if not shell or Path(shell).name not in ("sh", "bash"):
+        return []
+    plain = [shell, "-n"]
+    if Path(shell).name == "bash" and EXTGLOB.search(body):
+        return [plain, [shell, "-n", "-O", "extglob"]]
+    return [plain]
+
+
 def run(check: Path, root: Path) -> bool:
     """Run one check from the repo root and print its PASS or FAIL line."""
     shown = check.relative_to(root).as_posix()
     sys.stdout.flush()
     started = time.monotonic()
     try:
-        code = subprocess.run(
-            [str(check)], cwd=root, stdin=subprocess.DEVNULL, check=False
-        ).returncode
-        reason = "" if code == 0 else f", exit {code}"
+        tries = parsers(check)
+        if tries and all(
+            subprocess.run(
+                [*command, str(check)], cwd=root, stdin=subprocess.DEVNULL, check=False
+            ).returncode
+            for command in tries
+        ):
+            code, reason = 2, ", does not parse"
+        else:
+            code = subprocess.run(
+                [str(check)], cwd=root, stdin=subprocess.DEVNULL, check=False
+            ).returncode
+            reason = "" if code == 0 else f", exit {code}"
     except OSError as error:
         code, reason = -1, f", not started: {error.strerror or error}"
     seconds = time.monotonic() - started
