@@ -208,6 +208,20 @@ def _no_cold_start_wait(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(module, "COLD_START_SECONDS", 0)
 
 
+# The modules that read loop events from a real bare remote on purpose; every other omnigent_agent test gets none.
+READS_LOOP_EVENTS = {"test_omnigent_agent_events", "test_lead_event"}
+
+
+@pytest.fixture(autouse=True)
+def _no_loop_events_read(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The supervisor's loop-event read is an `ls-remote origin` of the real checkout, one per poll: 0.5 s on a quiet
+    host, a minute and a timeout where the proxy is slow (#1610). A module that imports its fixtures by name from
+    test_omnigent_agent (as the traffic one does) misses that module's `no_loop_events`, so this applies it to all."""
+    module = sys.modules.get("omnigent_agent")
+    if module and request.module.__name__ not in READS_LOOP_EVENTS:
+        monkeypatch.setattr(module, "read_loop_events", lambda cwd=None: None)
+
+
 @pytest.fixture(autouse=True)
 def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests run as if outside an Omnigent session; one that needs a session sets it."""

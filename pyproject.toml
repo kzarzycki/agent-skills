@@ -24,6 +24,7 @@ timeout = 60
 timeout_method = "signal"
 markers = [
   "live_agent: tests that require a live agent runtime",
+  "slow: tests that take seconds each (a nested pytest, a real install, a heartbeat on real time): `mise run test` leaves them out, `mise run test-slow` runs them, and the release tag check runs both (#1610)",
   "needs_tool(*tools): the external tools a test runs beyond git and Python; a run selecting it stops first when PATH lacks one",
 ]
 

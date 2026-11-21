@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.slow  # each test starts a nested pytest run, 4-5 s each (#1610)
+
 HERE = Path(__file__).parent
 REPOSITORY = HERE.parents[1]
 
