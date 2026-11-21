@@ -148,6 +148,12 @@ def test_a_cloud_start_and_a_launch_dir_pin_the_environment_the_login_resolves(
     # the worktree takes that pin, as pin_environment gives a worktree with none
     omnigent_agent.launch_dir(url, "plain", None, tmp_path / "ld3", here=plain)
     assert pin(tmp_path / "ld3") == "own"
+    # a line that names an environment the checkout's pin shadows (#1152): refused once resolved,
+    # naming both, and what it made is taken back
+    with pytest.raises(omnigent_agent.Fail, match=r"would pin environment env_dev.*'s own"):
+        omnigent_agent.launch_dir(url, "main", None, tmp_path / "ld6", here=plain)
+    assert not (tmp_path / "ld6").exists()
+    assert git("branch", "--list", "launch/ld6", cwd=plain) == ""
     # a start in a worktree whose line names an environment its main checkout's pin shadows: refused
     git("worktree", "add", "-q", "-b", "wt", str(tmp_path / "wt"), cwd=named)
     (named / ".claude/settings.local.json").write_text('{"remote": {"defaultEnvironmentId": "x"}}')
