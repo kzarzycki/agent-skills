@@ -306,7 +306,7 @@ class FakeOmnigent:
         self.interrupted.append(sid)
 
     def children(self, sid: str) -> list[str]:
-        return list(self.kids)
+        return [] if sid in self.kids else list(self.kids)  # a sub-agent has none of its own
 
     def label(self, sid: str, labels: dict[str, str]) -> None:
         self.labels.setdefault(sid, {}).update(labels)
@@ -5175,7 +5175,7 @@ def test_reap_finishes_done_children_and_keeps_the_busy_ones() -> None:
     }
     og = FakeOmnigent()
     og.info = lambda s: dict(states[s], title=f"t-{s}")  # type: ignore[method-assign]
-    og.children = lambda p: list(states)  # type: ignore[attr-defined]
+    og.children = lambda p: list(states) if p == "p" else []  # type: ignore[attr-defined]
     lines, failed = omnigent_agent.reap(og, [], parent="p")
     assert not failed
     assert og.archived == ["idle", "failed"]
@@ -5682,6 +5682,9 @@ class Fleet:
 
     def archive(self, sid: str) -> None:
         self.archived.append(sid)
+
+    def children(self, sid: str) -> list[str]:
+        return []
 
     def label(self, sid: str, labels: dict[str, str]) -> None:
         if self.unlabelled:
