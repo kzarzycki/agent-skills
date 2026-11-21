@@ -867,7 +867,8 @@ CLOUD_NOTE = (
 CLOUD_BRANCHES = (
     "Branches (the owner's standing permission for this session): you may create and push any number"
     " of new branches named `claude/ready-*`, one per PR, besides the branch this session started on."
-    " Push each PR to its own new branch. Never force-push, never delete a branch you didn't create"
+    " Push each PR to its own new branch, and its demo (the GIF or PNG `demo.sh` makes, nothing else) to the"
+    " media-only branch `claude/ready-demo-<pr>`. Never force-push, never delete a branch you didn't create"
     " in this session, and never push to `main` or to any branch outside `claude/`.\n"
 )
 # Every acp:claude-cloud session's preamble (#1534): where a file goes is mechanics, so a session that
@@ -875,7 +876,7 @@ CLOUD_BRANCHES = (
 # branch moves the head a verifier reviewed.
 CLOUD_NO_PUSH = (
     "Reports, logs and verifier output are never committed or pushed, to any branch: a commit on the PR's"
-    " branch moves the head under review, and the `claude/ready-*` grant above is for code only. The one exception is the gate record that"
+    " branch moves the head under review, and the `claude/ready-*` grant above is for code, plus the demo media branch it names. The one exception is the gate record that"
     " `approvals.py local-ci --record` pushes itself, which is not a report. They travel"
     " in your report comment (or, with no PR, your final message); a file too large for one comment goes in a"
     " short follow-up comment, or is trimmed with its path named. A push target or branch question never goes"
@@ -1518,10 +1519,15 @@ class Omnigent:
         # Omnigent's list, and nothing more: a harness drops a level it lacks, so ``start`` checks it.
         if effort:
             body["reasoning_effort"] = effort
-        # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
-        # starts its terminal (the session fails "Codex native bridge state is missing").
+        # claude-native takes Claude's own words; codex-native passes launch args to the codex CLI, which
+        # takes only its own flags (a Claude word makes it fail "Codex native bridge state is missing").
         mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
-        if agent == "claude":
+        if agent == "codex":
+            # No approvals, full access: an unattended session must never stop on a prompt nobody answers.
+            # `--permission-mode default` keeps codex's own stance (on-request, its own sandbox).
+            if permission_mode != CODEX_DEFAULT:
+                body["terminal_launch_args"] = [CODEX_BYPASS]
+        elif agent == "claude":
             args = ["--permission-mode", mode] if mode else []
             if role and (stem := Path(role).stem) in LEAN_ROLES:
                 args += lean_args(str(body["workspace"]), stem, self, host_id)
@@ -2998,6 +3004,9 @@ AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
 VERIFIER_ROUTES = ("codex", "gemini", "claude")
 GEMINI_AGENT = "antigravity-native-ui"
 BYPASS = "bypassPermissions"
+# codex's own flag for approval_policy "never" with the danger-full-access sandbox; CODEX_DEFAULT is the
+# `--permission-mode` word that opts a codex session back into codex's default stance
+CODEX_BYPASS, CODEX_DEFAULT = "--dangerously-bypass-approvals-and-sandbox", "default"
 # the stances Omnigent's session create takes as ``permission_mode`` for a claude-cloud session; it
 # refuses any other word with a 400 (#987)
 CLOUD_MODES = ("auto", BYPASS)
@@ -3362,7 +3371,7 @@ def launch_dir(
     that briefs and reports use. The folder-trust entry in the user's Claude config (``config``,
     default ``~/.claude.json``) is written only with ``trust``: trust is the user's decision, never
     this script's. With no ``env`` id it pins the environment the branch's loop.md ``Cloud worker:`` line
-    names (``env <name>``), else the one named after the repository, else the account's ``Default``,
+    names (``env <name>``), else the one its main checkout pins, else the one named after the repository, else the account's ``Default``,
     resolved on this host's claude login; a name with no environment there removes what was made and
     fails, naming ``cloud-env``. It prints whether the folder is trusted."""
     if path.exists() and any(path.iterdir()):
@@ -3394,9 +3403,14 @@ def launch_dir(
     if not env:
         try:
             line = cloud_worker(committed(path, "HEAD", LOOP_FILE) or "")
-            env, named = resolve_environment(line.env if line else "", url_repo_name(remote))
-            if source:
-                refuse_shadowed_pin(path, env, listed_main(source[0]))
+            main = listed_main(source[0]) if source else None
+            if line and line.env:
+                env, named = resolve_environment(line.env, "")
+            elif main and (env := environment_pin(own_settings(main))):
+                named = "the main checkout's pin"  # what pin_environment gives a worktree with none
+            else:
+                env, named = resolve_environment("", url_repo_name(remote))
+            refuse_shadowed_pin(path, env, main)
         except Fail:
             unmake_launch_dir(path, source[0] if source else None)
             raise
@@ -3982,6 +3996,7 @@ def start(
         """Whether ``agent``'s session can start in ``mode``: ``create`` sends it only then."""
         return (
             agent == "claude"
+            or (agent == "codex" and mode in (BYPASS, CODEX_DEFAULT))
             or (agy and mode == BYPASS)
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
@@ -4013,7 +4028,7 @@ def start(
             permission_mode = inherited
     if permission_mode and not applied(permission_mode):
         raise Fail(
-            f"--permission-mode is for claude sessions ({BYPASS} for antigravity, and"
+            f"--permission-mode is for claude sessions ({BYPASS} or {CODEX_DEFAULT} for codex, {BYPASS} for antigravity, and"
             f" {' or '.join(CLOUD_MODES)} for {CLOUD_HARNESS}); a {agent} session fails to"
             " launch with it"
         )
@@ -4024,9 +4039,10 @@ def start(
         )
     # The flag was refused above, so a mode not applied here came from the environment (an inherited
     # one is a Claude child's, always applied): the session starts in its harness's default stance,
-    # which a run counting on the mode is told (#987).
+    # which a run counting on the mode is told (#987). Codex is left out: it starts in no-approvals
+    # whatever the variable says, so there is nothing to tell.
     mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
-    if mode and not applied(mode):
+    if mode and agent != "codex" and not applied(mode):
         print(
             f"{agent} takes no permission mode: {mode} was not applied; its session starts in"
             " the harness default",
@@ -5483,6 +5499,16 @@ def pr_hold(repo: str, pr: int) -> str | None:
     return f"{repo}#{pr} is open" if state == "OPEN" else None
 
 
+def prune_demo_branch(repo: str, pr: int) -> None:
+    """Delete the media-only branch ``claude/ready-demo-<pr>`` a cloud session pushed a PR's demo to (a cloud
+    session can push a branch but not delete one), once the PR is merged or closed. A branch already gone
+    or a failed delete is no error: the demo stays linked from the PR's comment until the next reap."""
+    try:
+        gh("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/claude/ready-demo-{pr}")
+    except Fail:
+        pass
+
+
 def clear_closed_pr_events(repo: str, pr: int, workspace: object) -> None:
     """Remove the loop events (refs of every kind) of the head branch of PR ``pr`` of ``repo``, here and on origin,
     from the checkout ``workspace``: a closed PR's steps are over, and a ref no producer clears (an unmerged close, a
@@ -5651,6 +5677,7 @@ def reap(
                 continue
             if found and found not in cleared and not elsewhere(og, info):
                 cleared.add(found)  # the PR is merged or closed: its steps' events are over
+                prune_demo_branch(*found)
                 clear_closed_pr_events(*found, info.get("workspace"))
         # an open card is the owner's question: archiving ends its way back, --force too
         if cards := cards_of(info):
@@ -9208,7 +9235,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             "--permission-mode",
             help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
             " else the harness default); claude-cloud takes auto or bypassPermissions from this flag only (default"
-            " bypassPermissions, whatever the variable says), codex none",
+            " bypassPermissions, whatever the variable says), codex takes bypassPermissions (its default) or"
+            " default (codex's own stance)",
         )
         p.add_argument(
             "--author",
@@ -10046,7 +10074,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 f"--host {args.host} is another host: --workspace and the report are absolute paths there"
             )
         if args.cmd == "send":  # a live session keeps its own workspace, wherever this runs
-            workspace = Path(session.get("workspace") or Path.cwd()).resolve()
+            workspace = Path(session.get("workspace") or Path.cwd())
+            workspace = workspace if remote else workspace.resolve()  # a remote path is not here's
         else:
             workspace = getattr(args, "workspace", None) or Path.cwd()
             if not remote:
@@ -10058,8 +10087,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         # which nobody answers. The child also saves its repro files beside the report. A follow-up
         # with --pr goes inline and is answered on the PR: the child never touches the report, and
         # its workspace can be on another host.
+        # On another host a relative report is the session's own, and an absolute one is checked
+        # against its workspace the same way: else the follow-up file is written to a path the
+        # session cannot see, and the only symptom is "<report>.followup: not found" (#1586).
         if (
-            not remote
+            (not remote or (args.cmd == "send" and report.is_absolute()))
             and not (args.cmd == "send" and args.pr)
             and not report.is_relative_to(workspace)
         ):
