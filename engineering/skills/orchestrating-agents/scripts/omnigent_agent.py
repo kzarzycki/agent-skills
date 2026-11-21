@@ -89,9 +89,9 @@ tool call it answered; exit 1 when none was pending (naming any pending question
 approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
 seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for`` is how a role
 waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
-call), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change; a live ``--pid`` run not on the lock whose ``--log`` has not grown for ``--stall`` seconds (default 300, 0 off) is hung: its process group gets SIGTERM, then SIGKILL after 5 s, unless the pid is not the run's, and the outcome is ``stalled: no output in <log> for <n>s; killed pid <pid>'s group`` and the log's last 30 lines, exit 1), and ends at the first of: the log's ``exit <n>`` line (the detached
+call), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change; a live ``--pid`` run not on the lock whose ``--log`` has not grown for ``--stall`` seconds (default 300, 0 off) is hung: its process group gets SIGTERM, then SIGKILL after 5 s, unless the pid is not the run's, and the outcome is ``stalled: no output in <log> for <n>s; killed pid <pid>'s group`` and the log's last 30 lines, exit 1), and ends at the first of: the log's ``loop-exit <pid> <n>`` line (a bare ``exit <n>`` ends it only once the pid is gone and it is the last line; the detached
 recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
-exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
+exiting with that code (with ``--pid``, only a ``loop-exit <pid> <n>`` line after the ``run <pid>`` marker naming that run,
 which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
 ``--until`` condition settled (``checks``, the default: all done, exit 0 green, 1 red naming them;
 ``merged``; ``closed``: exit 0 once it holds, 1 when a PR closes unmerged; ``gate``: the PR's current
@@ -4713,12 +4713,24 @@ def run_lines(log: Path, run: str | None) -> list[str] | None:
     return lines[starts[-1] + 1 :] if starts else None
 
 
-def exit_of(log: Path, run: str | None = None) -> int | None:
-    """The code on the last ``exit <n>`` line of ``run_lines(log, run)``, or None."""
-    ends = [
-        m for line in run_lines(log, run) or [] if (m := re.fullmatch(r"exit (\d+)", line.strip()))
-    ]
-    return int(ends[-1][1]) if ends else None
+def recipe_end(line: str, run: str | None) -> re.Match | None:
+    """The match of an end line in ``line``: ``loop-exit <run> <n>`` (the detached recipe's own
+    token, which no command prints by accident, and with ``run`` only that run's), else None."""
+    who = re.escape(run) if run else r"\d+"
+    return re.fullmatch(rf"loop-exit ({who}) (\d+)", line.strip())
+
+
+def exit_of(log: Path, run: str | None = None, gone: bool = True) -> int | None:
+    """The code on the last end line of ``run_lines(log, run)``: ``loop-exit <run> <n>``, else,
+    only once the run's pid is ``gone`` (or no pid is given), a last line that is a bare
+    ``exit <n>``, as the old recipe wrote it; a live run's own ``exit 0`` output is no end."""
+    lines = run_lines(log, run) or []
+    ends = [m for line in lines if (m := recipe_end(line, run))]
+    if ends:
+        return int(ends[-1][2])
+    if gone and lines and (m := re.fullmatch(r"exit (\d+)", lines[-1].strip())):
+        return int(m[1])
+    return None
 
 
 def lock_wait(log: Path, run: str | None = None) -> str | None:
@@ -4749,7 +4761,9 @@ def lock_text(log: Path, run: str | None) -> str | None:
 
 
 PROGRESS_LINES = 3  # the log lines wait-for prints with ``still running``
-LOG_MARKERS = re.compile(r"(run \d+|lock .*|locked)")  # the detached recipe's own lines
+LOG_MARKERS = re.compile(
+    r"(run \d+|lock .*|locked|loop-exit \d+ \d+)"
+)  # the detached recipe's own lines
 
 
 def log_progress(log: Path, run: str | None) -> list[str]:
@@ -4763,7 +4777,12 @@ def log_outcome(log: Path, code: int, run: str | None = None) -> str:
     """``exit <n>``, then on green the last line before it (the gate's summary), on red its last
     ``LOG_TAIL`` lines, all from ``run_lines(log, run)``."""
     lines = run_lines(log, run) or []
-    body = lines[: max(i for i, line in enumerate(lines) if line.strip() == f"exit {code}")]
+    ends = [
+        i
+        for i, line in enumerate(lines)
+        if line.strip() == f"exit {code}" or ((m := recipe_end(line, run)) and int(m[2]) == code)
+    ]
+    body = lines[: ends[-1]]
     return "\n".join([f"exit {code}", *(body[-LOG_TAIL:] if code else body[-1:])])
 
 
@@ -5087,7 +5106,11 @@ def wait_for(
         """The log's exit line: with ``--pid``, only one after the marker of the run it names, so a
         pid file missing or empty trusts no line."""
         run = run_of(pid) if pid else None
-        if not log or (pid and run is None) or (code := exit_of(log, run)) is None:
+        if (
+            not log
+            or (pid and run is None)
+            or (code := exit_of(log, run, gone=not pid or pid_of(pid) is None)) is None
+        ):
             return None
         return code, log_outcome(log, code, run)
 

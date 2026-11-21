@@ -1456,7 +1456,7 @@ def test_a_detached_gate_tells_the_session_that_started_it_once(tmp_path: Path) 
     # verifier.md's detached recipe with its notify step
     wrapper = (
         f'echo $$ > {pid}; echo "run $$" > {log}; sh -c "echo 4 passed; exit 3" >> {log} 2>&1;'
-        f' echo "exit $?" >> {log}; {sys.executable} {script} wait-for --log {log} --pid $$ --notify'
+        f' echo "loop-exit $$ $?" >> {log}; {sys.executable} {script} wait-for --log {log} --pid $$ --notify'
     )
     env = {**os.environ, "LOOP_NOTIFY": f"{tell} session-1"}
     subprocess.run(["sh", "-c", wrapper], env=env, check=False, capture_output=True, timeout=30)
