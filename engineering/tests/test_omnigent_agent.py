@@ -1358,7 +1358,9 @@ def test_wait_for_takes_an_exit_line_only_from_the_run_its_pid_names(
         argv[4] = str(run.pid)  # a bare pid restarted at once: no time slack lets the old line in
         assert omnigent_agent.main(argv) == 6
         assert capsys.readouterr().out == "still running\n"
-        log.write_text(f"run {run.pid}\n3 passed\nexit 0\n")  # this run's own line counts
+        log.write_text(
+            f"run {run.pid}\n3 passed\nloop-exit {run.pid} 0\n"
+        )  # this run's own line counts
         assert omnigent_agent.main(argv) == 0
         assert capsys.readouterr().out == "exit 0\n3 passed\n"
         log.write_text("run 1\nprevious run passed\nexit 0\n")
