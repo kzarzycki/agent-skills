@@ -7770,6 +7770,12 @@ def accepted(lines: list[str], report: Path) -> list[tuple[str, str]]:
     names no proof log, since an acceptance taken on evidence nobody can find is no acceptance."""
     found = []
     for line in lines:
+        if ACCEPTED in line.replace("*", "") and not line.startswith(ACCEPTED):
+            # inline, a line the high-risk refusal and the posted review would never see
+            raise Refused(
+                f"{report}: `{ACCEPTED}` inside `{line[:60]}`: write it as a line of its own, "
+                f"`{ACCEPTED} <line> — <proof log>`"
+            )
         if not line.startswith(ACCEPTED):
             continue
         said = re.fullmatch(r"(\S.*)[ \t]+[—–][ \t]+(\S.*)", line[len(ACCEPTED) :].strip())
@@ -10275,6 +10281,26 @@ def overlap(pr: int | None, files: Sequence[str], base: str | None) -> int:
     return 0
 
 
+def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
+    """The findings pass `number` posted on the PR, each as its comment's text (`verdict` heads it `**Verifier (<family>),
+    pass <n> · <id>** (<severity>): <title>`), the ones on a file outside the diff from the review's body, as their
+    first line. Read from GitHub, so a verifier on any host gets them the way a host one does."""
+    mine = re.compile(rf"\**Verifier \([^)]*\), pass {number} · ")
+    found = [
+        note["body"].strip()
+        for thread in (pull.get("reviewThreads") or {}).get("nodes") or []
+        for note in (thread.get("comments") or {}).get("nodes") or []
+        if mine.match(note.get("body") or "")
+    ]
+    for review in (pull.get("reviews") or {}).get("nodes") or []:
+        found += [
+            line.strip()[2:]
+            for line in (review.get("body") or "").splitlines()
+            if line.startswith("- ") and mine.match(line[2:].strip())
+        ]
+    return found
+
+
 def brief(
     pr: int,
     priorities: Path | None,
@@ -10358,6 +10384,9 @@ def brief(
             f"- Previous report: {loop_dir / f'pr{pr}-v{number - 1}.md'}, on {newest}: review the diff since that head"
             " and rerun its repros"
         )
+        # the findings themselves, since the previous report stays on the lead's host and a cloud verifier can't read it
+        if prior := previous_findings(pull, number - 1):
+            lines += [f"- Previous findings, pass {number - 1}:", *(f"  {n}. " + f.replace("\n", "\n     ") for n, f in enumerate(prior, 1))]
         # a far verifier works in its worktree, but the last one saved its repros beside its report, in the clone's
         # tmp/loop/: each by its path there, from the copy wait brought home
         if far and (home := Path("tmp/loop") / f"pr{pr}-v{number - 1}.md").is_file():

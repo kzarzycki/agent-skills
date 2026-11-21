@@ -141,6 +141,18 @@ def test_a_satisfied_report_with_a_not_run_line_is_still_refused(
     assert posting == []
 
 
+def test_an_inline_accepted_phrase_is_refused_and_an_out_of_scope_line_blocks_nothing(
+    posting: list[tuple[int, dict[str, Any]]], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report = tmp_path / "report.md"
+    report.write_text(report_text(extra="7. Manual: a demo. **Accepted on evidence:** the PR has one\n"))
+    assert approvals.main(["verdict", "7", str(report)]) == 1
+    assert "write it as a line of its own" in capsys.readouterr().out
+    report.write_text(report_text(extra="Out of scope: the full gate, left to the lead\n"))
+    assert approvals.main(["verdict", "7", str(report)]) == 0
+    assert len(posting) == 1
+
+
 def test_report_json_gives_the_criteria_and_each_line_taken_on_evidence(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
