@@ -5551,6 +5551,7 @@ class Fleet:
 
     def __init__(self, **histories: list[dict]) -> None:
         self.histories, self.reads, self.inbox, self.retried = histories, [], [], []
+        self.raw: list[str] = []
         self.kids: dict[str, float] = {}  # when a child of each session was last updated
         self.kin_of: dict[
             str, list[str] | Exception
@@ -5625,7 +5626,8 @@ class Fleet:
             self.refuse -= 1
             raise omnigent_agent.Fail(f"POST /v1/sessions/{sid}/events: HTTP 503")
         if sid not in self.offline:
-            self.inbox.append((sid, text))
+            self.raw.append(text)
+            self.inbox.append((sid, omnigent_agent.unchip(text)))  # the body; ``raw`` has the chip
 
     def retry(self, sid: str) -> dict:
         self.retried.append(sid)
@@ -5729,6 +5731,7 @@ def test_a_terminal_event_is_posted_to_the_notify_session_and_drops_only_its_lin
     og = Fleet(a=[told("brief", 60)], b=[told("brief", 60)])
     supervised(og, registry, monkeypatch, 1, notify="cos")
     assert og.inbox == [("cos", f"Supervisor: a t-a: report written: {report}")]
+    assert og.raw == [f"[Message from Supervisor]\nSupervisor: a t-a: report written: {report}"]
     assert registry.read_text() == f"# leads\nb={tmp_path / 'b.md'}\n"
     assert re.fullmatch(f"{STAMP}a t-a: report written: {report}\n", capsys.readouterr().out)
 
@@ -8587,6 +8590,7 @@ def test_a_second_stall_without_progress_escalates_and_sends_no_second_nudge(
         console=True,
     )
     assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_NUDGE]
+    assert f"[Message from Supervisor]\n{omnigent_agent.LEAD_NUDGE}" in og.raw  # to the lead too
     [post] = posted(og)
     assert post.startswith("Supervisor [act] b-")
     assert "[act] a t-a: turn ended, quiet 301s (quiet again after its nudge)" in post
@@ -10450,6 +10454,10 @@ def test_send_given_text_lists_it_as_a_followup_file_in_the_registry(
     followup = tmp_path / "r.md.followup"
     assert followup.read_text() == "use main as the base"
     assert str(followup) in seen[0]
+    sent = [i for i in og.sessions[sid] if i.get("role") == "user"][-1]
+    raw = sent["content"][0]["text"]  # the chip, then the relay line, then the text
+    first, second, *_ = raw.split("\n")
+    assert first.startswith("[Message from ") and second.startswith("[relayed by ")
 
 
 def test_a_report_s_ending_is_read_past_its_title_and_a_report_without_one_still_acts(
@@ -14095,3 +14103,53 @@ def test_brief_refuses_an_unreadable_role_and_takes_a_long_brief(
     monkeypatch.setattr(Path, "is_file", raises_on_long)
     assert omnigent_agent.main(["brief", long, "r.md", "--cloud"]) == 0
     assert capsys.readouterr().out.endswith(long)
+
+
+@pytest.mark.parametrize(
+    ("label", "shown"),
+    [
+        ("Supervisor", "Supervisor"),
+        ("cos]\nx", "cos x"),
+        ("session abc123", "abc123"),
+        ("", "agent"),
+        ("n" * 90, "n" * 64),
+    ],
+)
+def test_chip_labels_are_made_valid_in_one_place(label: str, shown: str) -> None:
+    assert omnigent_agent.chip(label, "body") == f"[Message from {shown}]\nbody"
+    assert omnigent_agent.unchip(omnigent_agent.chip(label, "body")) == "body"
+
+
+def test_a_chipped_supervisor_post_is_read_as_posted_and_never_as_the_owners_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    post = omnigent_agent.chip("Supervisor", f"Supervisor [act] b-1: owner said {QUOTE}")
+    raw = typed(post, 1)
+    assert omnigent_agent.text_of(raw).startswith("Supervisor [act]")
+    assert omnigent_agent.agent_posted(post)  # the second guard: the chip opening itself
+    og = Fleet(cos=[raw, typed(omnigent_agent.chip("cos", f"[relayed by cos]\n{QUOTE}"), 2)])
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    assert omnigent_agent.main(["owner-said", "cos", QUOTE]) == 1
+
+
+def test_a_chipped_relay_is_a_copy_of_itself_and_still_parks_a_lead() -> None:
+    sent = omnigent_agent.chip("cos", f"[relayed by cos]\n{omnigent_agent.PARK}now")
+    item = typed(sent, 1)
+    assert omnigent_agent.told_park(item)
+    assert omnigent_agent.text_of(item).strip() == omnigent_agent.unchip(sent)
+
+
+def test_relay_opens_with_the_chip_then_its_marker_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    assert og.sessions[sid][-1]["content"][0]["text"] == "[Message from cos]\n[relayed by cos]\ngo"
+    assert relay(og, sid, tmp_path, monkeypatch, "go", "--from", "the nightly") == 0
+    sent = og.sessions[sid][-1]["content"][0]["text"]
+    assert sent == (
+        "[Message from the nightly]\n"
+        + omnigent_agent.RELAY_FROM.format(source="the nightly")
+        + "\ngo"
+    )
