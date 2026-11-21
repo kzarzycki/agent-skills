@@ -34,6 +34,16 @@ for recording in "$@"; do
   esac
 done
 
+# With several GitHub remotes and no `gh repo set-default`, gh reads the PR as `upstream`'s: refuse rather than
+# post to a repo nobody chose.
+repos="$(git remote -v | awk '{print $2}' | sed -E 's#/+$##; s#\.git/*$##' |
+  sed -nE 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)?([^@/]*@)?([^/:]+)(:[0-9]+)?[:/]/*([^/]+/[^/]+)$#\3 \5#p' |
+  awk 'tolower($1) == "github.com" { print tolower($2) }' | sort -u)"
+if [ "$(printf '%s' "$repos" | grep -c .)" -gt 1 ] && ! git config --get-regexp '^remote\..*\.gh-resolved$' >/dev/null; then
+  echo "demo: this checkout's remotes name $(echo $repos) and gh has no default among them: run gh repo set-default <owner>/<repo>" >&2
+  exit 1
+fi
+
 # One cheap GraphQL call decides the route: where it is refused, post over REST (see the header).
 rest=0
 gh api graphql -f query='{ viewer { login } }' >/dev/null 2>&1 || rest=1
@@ -51,16 +61,6 @@ if [ "$rest" = 0 ] && { [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor"
 fi
 if [ "$tapes" = 1 ] && ! command -v ttyd >/dev/null; then
   echo "demo: VHS needs ttyd on PATH to render a tape; install it" >&2
-  exit 1
-fi
-
-# With several GitHub remotes and no `gh repo set-default`, gh reads the PR as `upstream`'s: refuse rather than
-# post to a repo nobody chose.
-repos="$(git remote -v | awk '{print $2}' | sed -E 's#/+$##; s#\.git/*$##' |
-  sed -nE 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)?([^@/]*@)?([^/:]+)(:[0-9]+)?[:/]/*([^/]+/[^/]+)$#\3 \5#p' |
-  awk 'tolower($1) == "github.com" { print tolower($2) }' | sort -u)"
-if [ "$(printf '%s' "$repos" | grep -c .)" -gt 1 ] && ! git config --get-regexp '^remote\..*\.gh-resolved$' >/dev/null; then
-  echo "demo: this checkout's remotes name $(echo $repos) and gh has no default among them: run gh repo set-default <owner>/<repo>" >&2
   exit 1
 fi
 
