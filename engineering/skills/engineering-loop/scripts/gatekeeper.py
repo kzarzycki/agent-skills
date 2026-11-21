@@ -7638,7 +7638,8 @@ def merges(
             try:
                 if gate_batch(work, [])[1]:
                     publish(tip, landed_pass(tip, actual))
-            except MachineFault as exc:  # the PRs landed: each still gets its comment
+            # the PRs landed: each still gets its comment, also when `host_gate: false` refuses the tip's tree
+            except (MachineFault, Refused) as exc:
                 print(exc)
     # after every publication above, which pushes the landed tree's record again when it is the heads' tree
     drop_records([pull["headRefOid"] for pull, *_ in done])

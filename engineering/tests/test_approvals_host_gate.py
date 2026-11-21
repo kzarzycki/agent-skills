@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import time as real_time
 from typing import Any
 
@@ -155,3 +156,26 @@ def test_host_gate_must_be_a_boolean() -> None:
         approvals.Refused, match="`land.host_gate` must be true or false, not 'never'"
     ):
         approvals.settings(block)
+
+
+def test_a_refused_tip_after_merges_still_comments_each_landed_pr(
+    lands: dict[str, Any], cloud: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub refuses #8's merge after #7 merged: the base's tree was never gated, and its re-gate meets the
+    refusal, which must not cost #7 its `Landed` comment."""
+    policy(lands, CLOUD_ONLY)
+    for number in (7, 8, 9):
+        lands["open"](number, {f"{number}.txt": f"{number}\n"})
+    cloud["clock"].tick = lambda now: cloud["record"](cloud["asked"][0]) if now >= 60 else None
+    fake = approvals.github.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:3] == ("pr", "merge", "8"):
+            raise subprocess.CalledProcessError(1, args, stderr="Required status check is expected")
+        return fake(*args, data=data)
+
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    _, lines = lands["land"]()
+    landed = [n for n, body in lands["comments"] if body.startswith("Landed\n")]
+    assert (lands["merged"](), landed, lands["runs"]()) == (["7"], [7], 0), lines
+    assert any("no cloud record for tree " in line for line in lines), lines
