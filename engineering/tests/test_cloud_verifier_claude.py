@@ -72,7 +72,9 @@ def test_a_claude_pass_posts_the_report_file_returns_the_checkout_and_passes_the
         "--model",
         "claude-sonnet-5-5",
     ]
-    assert got["stdin"] == "AGENT_SIGNATURE=cc/sonnet-5.5/?\n" + brief.read_text()
+    assert got["stdin"] == (
+        "AGENT_SIGNATURE=cc/sonnet-5.5/?\n" + brief.read_text().rstrip() + cv.VERDICT_FORM
+    )
     assert got["head"] == head  # it ran in the checkout, at the PR's head
     assert got["seeded"] is False  # the seeded Codex login stays out of the verifier's environment
     assert "cmd" not in seen  # Codex never ran

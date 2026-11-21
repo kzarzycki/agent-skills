@@ -17,7 +17,8 @@ On a host with no worker VM (route 1b), a Codex Cloud thread driven with the hos
 `thread-exec --thread ID --env ID -- CMD` runs a command in a thread's VM without a model turn.
 `thread` starts a thread, checks out the PR's head in its VM, sends the brief as a turn and writes the report (read
 back from the thread's checkout, else its final message; one without a `SATISFIED:` line is not written) at the
-brief's `- Report:` path. Exit 0 report written, 1 no report, 3 the verifier stopped on a question (written at `<report>.question`), 2 route 1b unusable (the endpoint is undocumented):
+brief's `- Report:` path. A verdict line set in bold or italics (`**SATISFIED:** yes`) is read as its plain line, and the brief
+ends by pinning that plain form; a pass with no `SATISFIED:` line posts nothing, exits 1 and says the next step. Exit 0 report written, 1 no report, 3 the verifier stopped on a question (written at `<report>.question`), 2 route 1b unusable (the endpoint is undocumented):
 use route 2 or the host verifier. No token is sent to the VM.
 
 No command prints a secret's value: each one (`$CODEX_AUTH_JSON` and the tokens it decodes to, the host's and the seed
@@ -815,7 +816,7 @@ def review(
     began = time.time()
     if harness == "claude" and effort:
         raise Refused("`--effort` is Codex's only: the Claude CLI has no effort flag, so pass none")
-    brief = brief_file.read_text()
+    brief = brief_file.read_text().rstrip() + VERDICT_FORM
     if not brief.startswith("AGENT_SIGNATURE="):
         brief = f"AGENT_SIGNATURE={signature(model, effort, harness)}\n{brief}"
     os.chdir(run("git", "rev-parse", "--show-toplevel").stdout.strip())
@@ -881,6 +882,7 @@ def review(
             p: text(p) for p in (report, question) if p and written(p) not in (None, before[p])
         }
         wrote[final] = text(final)
+        wrote = {path: plain(said) for path, said in wrote.items()}
         # A verdict of its own in the report file, else in the final message, wins. Failing both, the CLI may have
         # written the report elsewhere and ended on a link to it: read it before the checkout goes back.
         if not re.search(r"^SATISFIED:", wrote.get(report, ""), re.MULTILINE):
@@ -916,7 +918,7 @@ def review(
             return 4 if stuck else 3
         if code or not re.search(r"^SATISFIED:", body, re.MULTILINE):
             print(
-                f"no report with a SATISFIED: line ({harness} exit {code}); the last of what it wrote:\n{body[-1500:]}"
+                f"{NO_VERDICT.format(harness=harness, code=code)}; the last of what it wrote:\n{body[-1500:]}"
             )
             print(pass_line(pr, phases))
             return 4 if stuck else 1
@@ -927,6 +929,32 @@ def review(
         print(pass_line(pr, phases))  # a failed pass's time counts too
         return 4 if stuck else 1
     return 4 if stuck else 0
+
+
+# a verdict line a model set in bold or italics (`**SATISFIED:** yes`, `**SATISFIED: yes**`), which the `^SATISFIED:`
+# reads and the gate's parser miss (#1648); plain() writes it as the plain line
+MARKED = re.compile(
+    r"^[ \t]*[*_]{1,2}(Head|VERDICT|SATISFIED|Risk|Logic change)[*_]{0,2}[ \t]*:[ \t]*[*_]{0,2}[ \t]*(.*?)[ \t]*[*_]{0,2}[ \t]*$"
+    r"|^(Head|VERDICT|SATISFIED|Risk|Logic change):[ \t]*[*_]{1,2}(.*?)[*_]{1,2}[ \t]*$",
+    re.MULTILINE,
+)
+# the brief's closing line: the exact form of the verdict lines every reader parses, so a model writes no bold one
+VERDICT_FORM = (
+    "\n\nEnd the report with its verdict lines exactly as `Head: <sha>`, `VERDICT: <n> blocker, <n> major, <n> minor`,"
+    " `SATISFIED: yes` or `SATISFIED: no`, and `Risk: <low|medium|high>`, each at the start of its own line, in plain"
+    " text with no bold, italics or heading, since the gate parses these lines and skips any other form.\n"
+)
+# what a pass with no verdict tells its caller to do next (#1648)
+NO_VERDICT = (
+    "no report with a SATISFIED: line ({harness} exit {code}), so no verifier review was posted and this pass failed"
+    " (exit 1): run the pass again, or, if the report holds a verdict in another form, write its closing lines as"
+    " `SATISFIED: yes|no` and post it with `approvals.py verdict <pr> <report>`"
+)
+
+
+def plain(body: str) -> str:
+    """`body` with each verdict line a model marked up in bold or italics written as its plain `Key: value` line."""
+    return MARKED.sub(lambda m: f"{m[1] or m[3]}: {(m[2] if m[1] else m[4]).strip('*_ ')}", body)
 
 
 # the lines a reader of the comment needs in view: the verdict, as omnigent_agent.py's verdict_outcome reads them
@@ -1216,7 +1244,7 @@ def thread_review(
 ) -> int:
     """One pass on a Codex Cloud thread: clone the PR head (a later pass reuses the thread's checkout), run the brief,
     read the report back from the thread's checkout, else take its final message, and write it at the brief's path."""
-    brief = brief_file.read_text()
+    brief = brief_file.read_text().rstrip() + VERDICT_FORM
     out = report_path(brief)
     token = host_token()
     print(f"quota before: {quota(token)}")
@@ -1263,7 +1291,7 @@ def thread_review(
     if out:
         code, body = thread_exec(rpc, thread, env, f"cat {shlex.quote(checkout + '/' + str(out))}")
         body = body if not code else ""
-    body = body.strip() or final.strip()
+    body, final = plain(body.strip() or final.strip()), plain(final)
     if (
         "SATISFIED:" not in body and "SATISFIED:" in final
     ):  # the final message's own verdict beats a link
@@ -1302,7 +1330,7 @@ def thread_review(
                 break
     if "SATISFIED:" not in body:
         print(
-            f"the verifier wrote no report with a SATISFIED: line; its last message: {final.strip()[-500:]}",
+            f"{NO_VERDICT.format(harness='codex thread', code=0)}; its last message: {final.strip()[-500:]}",
             file=sys.stderr,
         )
         return 1

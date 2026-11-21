@@ -432,7 +432,10 @@ def test_a_pass_runs_on_the_pr_head_posts_the_report_file_and_returns_the_checko
     seen["report"] = "# Report\n\nHead: x\nVERDICT: 0 blocker\nSATISFIED: yes\nRisk: low\n"
     assert cv.verify(7, brief, "gpt-x", "medium") == 0
     assert seen["head"] == head  # Codex ran on the PR's head, not the worker's branch
-    assert seen["brief"] == "AGENT_SIGNATURE=codex/x/med\n" + brief.read_text()
+    assert (
+        seen["brief"]
+        == "AGENT_SIGNATURE=codex/x/med\n" + brief.read_text().rstrip() + cv.VERDICT_FORM
+    )
     assert seen["cmd"][-5:] == ["-m", "gpt-x", "-c", "model_reasoning_effort=medium", "-"]
     # the file the brief names, whole, folded under its closing lines (folding.py)
     [comment] = posted
@@ -1071,3 +1074,35 @@ def test_a_marker_line_with_no_text_after_it_is_refused(checkout, marker) -> Non
     seen.update(question=f"{marker}Run X.\n")
     assert cv.verify(7, brief, None, None) == 1
     assert posted == []
+
+
+# --- a verdict a model set in bold, and a pass with none (#1648) ---
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["**SATISFIED:** yes", "**SATISFIED: yes**", "SATISFIED: **yes**", "__SATISFIED__: yes"],
+)
+def test_a_bold_verdict_line_reads_as_the_plain_line(line: str) -> None:
+    assert cv.plain(f"# Report\n\n{line}\n") == "# Report\n\nSATISFIED: yes\n"
+
+
+def test_a_bold_verdict_is_posted_as_plain_lines(checkout) -> None:
+    _, _, brief, posted, seen = checkout
+    seen["report"] = (
+        "# Report\n\n**Head:** x\n**VERDICT:** 0 blocker, 0 major, 0 minor\n**SATISFIED:** yes\n"
+    )
+    assert cv.verify(7, brief, None, None) == 0
+    [comment] = posted
+    shown = comment.split("<details>")[0]
+    assert "SATISFIED: yes" in shown and "VERDICT: 0 blocker, 0 major, 0 minor" in shown
+
+
+def test_a_verdict_in_no_line_form_fails_the_pass_and_names_the_next_step(checkout, capsys) -> None:
+    _, _, brief, posted, seen = checkout
+    seen["final"] = "**SATISFIED** for PR #7\n"
+    assert cv.verify(7, brief, None, None) == 1
+    out = capsys.readouterr().out
+    assert posted == []
+    assert "no verifier review was posted and this pass failed (exit 1)" in out
+    assert "run the pass again" in out and "approvals.py verdict <pr> <report>" in out
