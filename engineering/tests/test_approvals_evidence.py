@@ -134,8 +134,6 @@ def test_a_failed_tag_deletion_keeps_the_branch_and_the_next_prune_retries_it(
         url = " ".join(args)
         if "pulls/7" in url:
             return "2020-01-01T00:00:00Z"
-        if args[-1] == ".[].tag_name":
-            return "verify/pr-7-evidence" if releases else ""
         if "per_page" in url:
             return " ".join(releases)
         if "DELETE" in url and "/releases/1" in url:

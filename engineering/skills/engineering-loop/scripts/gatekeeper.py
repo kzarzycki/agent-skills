@@ -10003,23 +10003,13 @@ def evidence(pr: int, number: int, finding: str, repro: Path, log: Path) -> int:
 def prune_evidence() -> None:
     """Delete, from origin, the evidence release, its tag and the evidence branch of each PR that merged or closed more
     than EVIDENCE_AGE ago, in that order: the branch is what names the PR to the next land, so a release or tag whose
-    deletion failed is retried then, not forgotten. PRs are found from the `verify/pr-*` branches and from the
-    `verify/pr-*-evidence` releases. A host only, since a cloud session can't delete a ref; a refusal is said. A PR whose
+    deletion failed is retried then, not forgotten. PRs are found from the `verify/pr-*` branches. A host only, since a cloud session can't delete a ref; a refusal is said. A PR whose
     state can't be read keeps its evidence."""
     named: set[int] = set()
     try:
         listed = git("ls-remote", "--heads", "origin", "refs/heads/verify/pr-*")
         named |= {
             int(m[1]) for m in re.finditer(r"refs/heads/verify/pr-(\d+)$", listed, re.MULTILINE)
-        }
-    except (subprocess.CalledProcessError, OSError):
-        pass
-    try:
-        tags = github.gh(
-            "api", "repos/{owner}/{repo}/releases?per_page=100", "--jq", ".[].tag_name"
-        ).split()
-        named |= {
-            int(m[1]) for tag in tags if (m := re.fullmatch(r"verify/pr-(\d+)-evidence", tag))
         }
     except (subprocess.CalledProcessError, OSError):
         pass

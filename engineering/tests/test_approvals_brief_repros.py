@@ -37,9 +37,8 @@ def test_a_fresh_brief_gives_a_rerun_command_that_runs_the_linked_script_in_the_
     assert path1 != path2  # the writer suffixes the second slug
     one = f"**Verifier (codex), pass 1 · F1** (major): same title\n\nsee https://x/blob/{sha1}/{path1}"
     two = f"**Verifier (codex), pass 1 · F2** (major): same title\n\nsee https://x/blob/{sha2}/{path2}"
-    done = "**Verifier (codex), pass 1 · F3** (major): fixed one\n\nsee https://x/blob/%s/%s" % (
-        sha1,
-        path1,
+    done = (
+        f"**Verifier (codex), pass 1 · F3** (major): fixed one\n\nsee https://x/blob/{sha1}/{path1}"
     )
     found = pull(
         body="Closes #12.\n", reviews=(verdict_on("c" * 40, heading="Verifier (codex), pass 1"),)
