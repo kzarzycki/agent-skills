@@ -406,7 +406,7 @@ public board would show both. The posted comment names the gate's command and th
 With loop.md's `head_proof` under `loop` (`status: <context>`, `env: [<names>]`), each head proves itself under a tier
 the lead picks, which the batch gate's fixed tier doesn't. `local-ci --record --head-proof` runs the gate as `--record`
 does, but takes each `env` name the caller's environment sets from it instead of clearing it, over the gate line's own
-assignment of that name, so the command it records names the value (`GATE_UI_TESTS=smoke mise run check:all`). It
+assignment of that name, so the command it records names the value (`GATE_UI_TESTS=LoginAcceptanceTest mise run check:all`). It
 publishes the pass as the commit status `<context>` instead of `gate`, described `Tree <tree> on <commit's first 12>:
 <name>=<value> ...` for the `env` names it ran with (`default` for none), so the verifier reads the tier off the head.
 `land` reads it, the one status a decision reads for a pass: a green status of that context on the head commit itself, naming the head's tree,
