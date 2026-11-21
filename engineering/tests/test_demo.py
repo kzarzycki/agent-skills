@@ -14,6 +14,11 @@ HEAD = "a" * 40
 FAKE_GH = """#!/usr/bin/env bash
 args="$*"; echo "gh ${args//$'\\n'/ }" >> "$LOG"
 case "$*" in
+  "api graphql "*) [ -z "$GRAPHQL_REFUSED" ] || { echo "use the REST API" >&2; exit 1; } ;;
+  "api repos/{owner}/{repo}/pulls/"*) echo "$PR_HEAD" ;;
+  "api repos/{owner}/{repo}") echo o/r ;;
+  "api repos/{owner}/{repo}/issues/comments/"*) echo "## Demo old" ;;
+  "api repos/{owner}/{repo}/issues/"*" | .id"*) echo 42 ;;
   "--version") echo "gh version $GH_VERSION (2026-10-26)" ;;
   "pr view --json number --jq .number") echo 7 ;;
   "pr view "*" --json headRefOid --jq .headRefOid") echo "$PR_HEAD" ;;
@@ -25,7 +30,10 @@ esac
 """
 FAKE_GIT = f"""#!/usr/bin/env bash
 echo "git $*" >> "$LOG"
+[ "$1" != -C ] || {{ mkdir -p "$2"; shift 2; }}
 case "$1" in
+  worktree) for last; do :; done; mkdir -p "$last" ;;
+  fetch) exit 1 ;;
   rev-parse) echo {HEAD} ;;
   status) printf '%s' "$STATUS" ;;
   config) exit 1 ;;
@@ -45,6 +53,7 @@ def run(
     pr_head: str = HEAD,
     status: str = "",
     gh_version: str = "2.103.3",
+    graphql_refused: bool = False,
     ttyd: bool = True,
     command: tuple[str, ...] | None = None,
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
@@ -65,6 +74,7 @@ def run(
         "PR_HEAD": pr_head,
         "STATUS": status,
         "GH_VERSION": gh_version,
+        "GRAPHQL_REFUSED": "1" if graphql_refused else "",
     }
     if command:
         env["PATH"] += f":{Path(shutil.which('mise') or 'mise').parent}"
@@ -103,7 +113,7 @@ def test_one_comment_attaches_every_recording_and_minimizes_only_my_earlier_demo
     assert "-c:v libx264 -pix_fmt yuv420p" in next(c for c in calls if c.startswith("ffmpeg "))
     listing = next(call for call in calls if call.startswith("gh api repos/"))
     assert '.user.login == "me"' in listing
-    minimized = [call for call in calls if call.startswith("gh api graphql")]
+    minimized = [call for call in calls if call.startswith("gh api graphql -f query=mutation")]
     assert [call.split("id=")[-1] for call in minimized] == ["IC_old1", "IC_old2"]
     assert calls.index(listing) < calls.index(comment) < calls.index(minimized[0])
     assert not any(call.startswith("gh release") for call in calls)
@@ -206,3 +216,26 @@ run = 'eval "set -- $usage_recording"; bash {SCRIPT} "$@"'
 
     assert result.returncode == 0, result.stderr
     assert "my demo.mp4, on aaaaaaa." in next(c for c in calls if c.startswith("gh pr comment"))
+
+
+def test_a_cloud_session_posts_the_demo_over_rest_with_a_gif_on_its_media_branch(
+    tmp_path: Path,
+) -> None:
+    rec = tmp_path / "run.webm"
+    rec.write_text("video")
+    result, calls = run(tmp_path, "--pr", "7", str(rec), graphql_refused=True)
+    assert result.returncode == 0, result.stderr
+    log = "\n".join(calls)
+    assert "-vf fps=10,scale=800:-2" in log and ".gif" in log
+    assert "push -q origin HEAD:refs/heads/claude/ready-demo-7" in log
+    assert "gh pr comment" not in log and "gh pr view" not in log and "minimizeComment" not in log
+    assert "api repos/{owner}/{repo}/issues/7/comments -f body=## Demo" in log
+    assert f"blob/{HEAD}/pr7-aaaaaaa-1.gif?raw=true" in log
+    assert "api -X PATCH repos/{owner}/{repo}/issues/comments/42" in log
+
+
+def test_a_cloud_session_without_pr_is_told_to_pass_it(tmp_path: Path) -> None:
+    rec = tmp_path / "a.png"
+    rec.write_text("x")
+    result, _ = run(tmp_path, str(rec), graphql_refused=True)
+    assert result.returncode == 2 and "pass --pr" in result.stderr
