@@ -29,7 +29,7 @@ elif do == "fail":
     print("SATISFIED: yes")
     sys.exit(1)
 else:
-    print("# Report\\nSATISFIED: yes, from the final message")
+    print("# Report, from the final message\\nSATISFIED: yes")
 """
 
 
@@ -72,7 +72,9 @@ def test_a_claude_pass_posts_the_report_file_returns_the_checkout_and_passes_the
         "--model",
         "claude-sonnet-5-5",
     ]
-    assert got["stdin"] == "AGENT_SIGNATURE=cc/sonnet-5.5/?\n" + brief.read_text()
+    assert got["stdin"] == (
+        "AGENT_SIGNATURE=cc/sonnet-5.5/?\n" + brief.read_text().rstrip() + cv.VERDICT_FORM
+    )
     assert got["head"] == head  # it ran in the checkout, at the PR's head
     assert got["seeded"] is False  # the seeded Codex login stays out of the verifier's environment
     assert "cmd" not in seen  # Codex never ran
@@ -89,7 +91,7 @@ def test_a_claude_pass_without_a_report_file_posts_its_final_message_and_no_mode
     _, _, brief, posted, _, _, call = claude
     assert cv.verify(7, brief, None, None, "claude") == 0
     # stdout only: the stderr warning never joins the report
-    assert posted == [cv.folded_report("# Report\nSATISFIED: yes, from the final message\n")]
+    assert posted == [cv.folded_report("# Report, from the final message\nSATISFIED: yes\n")]
     assert "--model" not in call()["argv"]
 
 

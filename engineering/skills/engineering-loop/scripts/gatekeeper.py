@@ -3186,7 +3186,8 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
     """Why the PR is outside the loop, or None when it left a loop trail or loop.md lacks `opt_out: true`. A trail
     is a verifier review (passes), an `Approved: spec` record or `approved:spec` on an issue it links, a `Reverts #<n>`
     line, or a bot PR loop.md exempts. A spec a policy covers is no trail: under `spec.auto: true` every issue is covered,
-    so a person who opted out could never link one."""
+    so a person who opted out could never link one. A PR carrying a merge go (an `Approved: merge` record, or `approved:merge`) is named as missing its
+    trail rather than left to its author, since a go means the loop took it."""
     if not opted_out(loop):
         return None
     found = passes(pull)
@@ -3197,10 +3198,18 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
     for issue in closing_issues(pull):
         if READY in names(issue) or records(issue, "spec"):
             return None
-    return (
+    said = (
         f"PR #{pull['number']} is outside the loop ({source(loop)} `opt_out: true`, no verifier review, spec approval,"
-        " revert or bot exemption): its author merges it"
+        " revert or bot exemption)"
     )
+    # a go was given (a record, or the label that is a go into a feature branch), so the PR is the loop's and only its
+    # trail is missing (#1648)
+    if records(pull, "merge") or MERGE_LABEL in names(pull):
+        return (
+            f"{said}, yet it carries a merge go: its trail is missing, so post its verifier review"
+            " (`approvals.py verdict <pr> <report>`) or link an issue whose spec is approved, then land it again"
+        )
+    return f"{said}: its author merges it"
 
 
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:

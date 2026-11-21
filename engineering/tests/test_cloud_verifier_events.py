@@ -199,3 +199,29 @@ def test_a_thread_pass_with_no_verdict_ends_failed(thread) -> None:
     run, wrote = thread(report="no verdict here")
     assert cv.thread_verify(7, run.brief, None, None, None, "env") == 1
     assert [w[0] for w in wrote] == ["waiting", "failed"]
+
+
+# --- the thread route: the pinned verdict form, a bold verdict, and a pass with none (#1648) ---
+
+
+def test_a_thread_pass_reads_a_bold_verdict_as_the_plain_line(thread, tmp_path) -> None:
+    run, wrote = thread(report="# Report\n\n**SATISFIED:** yes\n")
+    assert cv.thread_verify(7, run.brief, None, None, None, "env") == 0
+    assert [w[0] for w in wrote] == ["waiting", "ok"]
+    assert "\nSATISFIED: yes\n" in (tmp_path / "out.md").read_text()
+
+
+def test_a_thread_pass_with_a_pending_verdict_fails_naming_the_next_step(thread, capsys) -> None:
+    run, wrote = thread(report="**SATISFIED:** pending\n")
+    assert cv.thread_verify(7, run.brief, None, None, None, "env") == 1
+    err = capsys.readouterr().err
+    assert "no verifier review was posted and this pass failed (exit 1)" in err
+    assert "run the pass again" in err and [w[0] for w in wrote] == ["waiting", "failed"]
+
+
+def test_a_thread_pass_s_brief_ends_with_the_pinned_verdict_form(thread, monkeypatch) -> None:
+    run, _ = thread(report="SATISFIED: yes\n")
+    sent: list[str] = []
+    monkeypatch.setattr(cv, "thread_turn", lambda *a: sent.append(a[2]) or "final message")
+    assert cv.thread_verify(7, run.brief, None, None, None, "env") == 0
+    assert sent and sent[0].endswith(cv.VERDICT_FORM)
