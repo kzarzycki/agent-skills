@@ -955,10 +955,13 @@ NO_VERDICT = (
 def verdict(body: str) -> str | None:
     """The answer of the report's last status line when that line is exactly `SATISFIED: yes` or `SATISFIED: no`
     (case and surrounding spaces aside); None without one, or when the last line naming SATISFIED says anything else
-    (`pending`, `yes/no`, `yes or no`, `Yes.`, a colon-less `SATISFIED for PR #N`), since a verifier's revised or
+    (`pending`, `yes/no`, `yes or no`, `Yes.`, a colon-less `SATISFIED for PR #N`, a heading or an indent), since a verifier's revised or
     malformed last word is no verdict, whatever an earlier line said."""
-    said = re.findall(r"^[ \t*_#]*SATISFIED\b(.*)$", body, re.MULTILINE)
-    exact = re.fullmatch(r":[ \t]*(yes|no)[ \t\r]*", said[-1], re.IGNORECASE) if said else None
+    said = re.findall(r"^[ \t*_#]*SATISFIED\b.*$", body, re.MULTILINE)
+    # the whole line, from its first column: a heading (`### SATISFIED: yes`) or an indented one is no status line
+    exact = (
+        re.fullmatch(r"SATISFIED:[ \t]*(yes|no)[ \t\r]*", said[-1], re.IGNORECASE) if said else None
+    )
     return exact[1].lower() if exact else None
 
 

@@ -1146,19 +1146,33 @@ def test_a_thread_pass_reads_a_bold_verdict_in_the_file_the_final_message_links(
         "SATISFIED: yes\n\nSATISFIED: pending",
         "SATISFIED: yes\n\n**SATISFIED** for PR #7",
         "**SATISFIED:** pending",
+        "### SATISFIED: yes",
+        "  SATISFIED: yes",
     ],
-    ids=["choice", "spelled-choice", "prose", "revised", "colon-less-after", "pending"],
+    ids=[
+        "choice",
+        "spelled-choice",
+        "prose",
+        "revised",
+        "colon-less-after",
+        "pending",
+        "heading",
+        "indent",
+    ],
 )
 def test_only_a_last_satisfied_line_of_exactly_yes_or_no_is_a_verdict(said: str) -> None:
     assert cv.verdict(cv.plain(said)) is None
     assert cv.verdict("SATISFIED: no\n") == "no" and cv.verdict("SATISFIED: YES \r\n") == "yes"
 
 
+@pytest.mark.parametrize(
+    "status", ["**SATISFIED:** pending", "**SATISFIED** for PR #7", "### SATISFIED: yes"]
+)
 def test_a_malformed_report_fails_the_pass_even_when_the_final_message_has_a_verdict(
-    checkout, capsys
+    checkout, capsys, status: str
 ) -> None:
     _, _, brief, posted, seen = checkout
-    seen["report"] = "# Report\n\nHead: x\n**SATISFIED:** pending\n"
+    seen["report"] = f"# Report\n\nHead: x\n{status}\n"
     seen["final"] = "SATISFIED: yes\n"
     assert cv.verify(7, brief, None, None) == 1
     assert posted == [] and "run the pass again" in capsys.readouterr().out
@@ -1191,14 +1205,26 @@ def test_a_thread_pass_posts_a_bold_verdict_of_its_final_message_plain(
     ["SATISFIED: yes", "Report: [pr12-v2.md](tmp/loop/pr12-v2.md)"],
     ids=["a verdict of its own", "a link to another report"],
 )
+@pytest.mark.parametrize(
+    "status", ["SATISFIED: pending", "**SATISFIED** for PR #1"], ids=["pending", "colon-less"]
+)
 def test_a_thread_pass_whose_report_is_malformed_fails_whatever_its_final_message_says(
-    route_1b, monkeypatch, tmp_path, final: str
+    route_1b, monkeypatch, tmp_path, final: str, status: str
 ) -> None:
     _, brief, out = route_1b
     root = tmp_path / "pr1"
     (root / "tmp/loop").mkdir(parents=True)
     (root / "tmp/loop/pr12-v2.md").write_text("Head: abc123\nSATISFIED: yes\n")
-    fake = FakeCloud("Head: abc123\nSATISFIED: pending\n", final=final, root=str(root))
+    fake = FakeCloud(f"Head: abc123\n{status}\n", final=final, root=str(root))
     monkeypatch.setattr(cv, "WS_URL", fake.url)
     assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 1
     assert not out.exists()
+
+
+def test_a_colon_less_report_fails_even_where_a_linked_report_holds_a_verdict(checkout) -> None:
+    work, _, brief, posted, seen = checkout
+    seen["report"] = "# Report\n\n**SATISFIED** for PR #7\n"
+    seen["do"] = lambda: (work / "tmp/loop/pr12-v2.md").write_text("Head: x\nSATISFIED: yes\n")
+    seen["final"] = "Report: [pr12-v2.md](tmp/loop/pr12-v2.md)\n"
+    assert cv.verify(7, brief, None, None) == 1
+    assert posted == []
