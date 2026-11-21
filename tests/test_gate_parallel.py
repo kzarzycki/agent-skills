@@ -1,4 +1,4 @@
-"""The gate's parallel test run (#941): `mise run test` runs pytest on pytest-xdist only with GATE_TEST_PARALLEL=1,
+"""The gate's parallel test run (#941, #1610): `mise run test` runs pytest on pytest-xdist unless GATE_TEST_PARALLEL=0,
 and `-n auto` there takes GATE_JOBS, else the cores free at start (tools/gate_workers.py)."""
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tools import gate_workers
 
@@ -39,21 +40,26 @@ def pytest_words(tmp_path: Path, env: dict[str, str]) -> list[str]:
     return first[first.index("pytest") :]
 
 
-@pytest.mark.parametrize("env", [{}, {"GATE_TEST_PARALLEL": "0"}, {"GATE_TEST_PARALLEL": ""}])
-def test_the_test_task_runs_pytest_serially_unless_the_gate_turns_parallel_on(
+DEFAULT = ["pytest", "-q", "-m", "not live_agent and not slow"]
+
+
+@pytest.mark.parametrize("env", [{}, {"GATE_TEST_PARALLEL": "1"}, {"GATE_TEST_PARALLEL": ""}])
+def test_the_test_task_runs_pytest_on_xdist_a_file_per_worker_by_default(
     tmp_path: Path, env: dict[str, str]
 ) -> None:
-    assert pytest_words(tmp_path, env) == ["pytest", "-q", "-m", "not live_agent"]
+    assert pytest_words(tmp_path, env) == [*DEFAULT, *PARALLEL]
 
 
-def test_gate_test_parallel_1_runs_pytest_on_xdist_a_file_per_worker(tmp_path: Path) -> None:
-    assert pytest_words(tmp_path, {"GATE_TEST_PARALLEL": "1"}) == [
-        "pytest",
-        "-q",
-        "-m",
-        "not live_agent",
-        *PARALLEL,
-    ]
+def test_gate_test_parallel_0_runs_pytest_serially(tmp_path: Path) -> None:
+    assert pytest_words(tmp_path, {"GATE_TEST_PARALLEL": "0"}) == DEFAULT
+
+
+def test_the_nightly_test_map_run_stays_serial() -> None:
+    """Under xdist `--cov-context=test` records no per-test contexts, so the map would name no test (#1610)."""
+    steps = yaml.safe_load((ROOT / ".github/workflows/engineering-ci.yml").read_text())
+    jobs = [s for job in steps["jobs"].values() for s in job["steps"]]
+    mapped = [s for s in jobs if "--cov-context=test" in s.get("env", {}).get("PYTEST_ADDOPTS", "")]
+    assert mapped and all(s["env"]["GATE_TEST_PARALLEL"] == "0" for s in mapped)
 
 
 def test_free_cores_are_the_cores_less_the_load(monkeypatch: pytest.MonkeyPatch) -> None:

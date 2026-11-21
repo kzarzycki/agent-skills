@@ -111,6 +111,7 @@ def test_brew_skips_a_prefix_whose_lock_folder_it_cannot_write(tmp_path, monkeyp
     assert said().endswith(f"skip brew: this account does not own {prefix}\n")
 
 
+@pytest.mark.slow  # 16k git and gh calls over 35 worktrees: ~1 min alone, 2+ on a loaded host (#1610)
 @pytest.mark.timeout(600)  # one test walks the whole account's checks: about 3 minutes
 def test_agent_hygiene(tmp_path, monkeypatch):
     """agent-hygiene against a temporary home: real git checkouts, fake tools, lsof, ps and gh."""

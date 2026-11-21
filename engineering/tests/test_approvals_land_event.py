@@ -620,6 +620,7 @@ def gated_wait(
     return result
 
 
+@pytest.mark.slow  # real seconds on purpose: 6 s beats and a 20 s gate (#1610)
 @pytest.mark.timeout(
     240
 )  # scaled real seconds: beats of 6 s and a 20 s gate, longer on a loaded host
@@ -634,6 +635,7 @@ def test_a_wait_on_a_land_whose_round_starts_late_and_gates_long_never_goes_sile
     assert result.get("code") == 0, result
 
 
+@pytest.mark.slow  # a real heartbeat thread and a 1 s gate (#1610)
 def test_v2_heartbeat_beat_in_flight_does_not_replace_ok(
     events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
