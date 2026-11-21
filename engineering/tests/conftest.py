@@ -117,11 +117,32 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     line naming every such tool, rather than failing each test that runs it partway through; a test with no such
     mark runs, whatever its module's other tests need (#1022)."""
     missing = missing_tools(session.items)
-    if missing:
-        pytest.exit(
-            f"missing tools the tests run: {', '.join(missing)}; put them on PATH",
-            returncode=pytest.ExitCode.USAGE_ERROR,
-        )
+    if not missing:
+        return
+    line = f"missing tools the tests run: {', '.join(missing)}; put them on PATH"
+    if hasattr(session.config, "workerinput"):
+        # An xdist worker that exits here leaves the tests the controller assigned it, which fails the run with an
+        # INTERNALERROR naming whichever test came first; a stop the worker reports ends the run with this line.
+        session.config.stash[_STOP] = line
+        session.shouldstop = line
+        return
+    pytest.exit(line, returncode=pytest.ExitCode.USAGE_ERROR)
+
+
+_STOP = pytest.StashKey[str]()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtestloop(session: pytest.Session) -> bool | None:
+    """A worker stopped by `pytest_collection_finish` runs none of its tests."""
+    return True if _STOP in session.config.stash else None
+
+
+def pytest_testnodedown(node: object, error: object) -> None:
+    """On the xdist controller: a worker's missing-tools stop ends the whole run as the serial run does."""
+    stop = getattr(node, "workeroutput", {}).get("shouldstop")
+    if isinstance(stop, str) and stop.startswith("missing tools the tests run: "):
+        pytest.exit(stop, returncode=pytest.ExitCode.USAGE_ERROR)
 
 
 @pytest.fixture(autouse=True)
