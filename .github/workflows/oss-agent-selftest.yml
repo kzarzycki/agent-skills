@@ -1,0 +1,25 @@
+# Runs oss-agent.yml in its dry run on a change to it: the push refusal, the patch and the
+# project-test step run for real, with no model key, no agent and no publish.
+name: OSS agent self-test
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/oss-agent.yml
+      - .github/workflows/oss-agent-selftest.yml
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dry-run:
+    # the called workflow's publish job asks for these; the dry run skips it
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/oss-agent.yml
+    with:
+      task: self-test
+      dry_run: true
+      test_command: test -f .oss-agent-dry-run.txt
+      timeout_minutes: 10
