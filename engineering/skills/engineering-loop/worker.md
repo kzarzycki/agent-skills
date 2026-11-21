@@ -30,7 +30,10 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
-2. **Gates and push.** Run `mise run test:changed` while iterating. Lint runs at commit, in the hook's `lint:` tasks on
+2. **Gates and push.** Iterate on the narrowest check that covers the change: an incremental build of the touched
+   target, then `mise run test:changed` (that module's tests), then the gate limited to one step where the project has
+   one, since a full gate can take twenty minutes to show a compile error a build shows in one. The full gate runs once,
+   as the proof on a head expected to pass; when it fails, find the cheaper check that was skipped before the next run. Lint runs at commit, in the hook's `lint:` tasks on
    the staged files, so the gate adds none. Before each push (after it on a fix round, below), where loop.md has an
    `Affected tests:` line, run `uv run <this skill's folder>/scripts/approvals.py affected-tests` on every head, a fix
    round's too: it runs that selection against `git merge-base origin/<base> HEAD` (the base of the branch's open PR,
