@@ -3820,19 +3820,36 @@ def cloud_run(
         ) from e
 
 
+def offers_cloud(og: Omnigent, hosts: list[dict]) -> bool | None:
+    """Whether this host offers ``acp:claude-cloud``, by its ``configured_harnesses`` (harness to readiness,
+    ``True`` when ready): on its row in ``hosts`` (``GET /v1/hosts``), else on the record of the session
+    this runs in, which describes its host's. None when neither names it."""
+    rows = [h for h in hosts if h.get("host_id") == og.host_id]
+    found = [r.get("configured_harnesses") for r in rows]
+    if not any(isinstance(f, dict) for f in found) and (me := own_id() or parent_id()):
+        try:
+            found = [og.info(me).get("configured_harnesses")]
+        except Fail:
+            found = []
+    named = [f[CLOUD_HARNESS] for f in found if isinstance(f, dict) and CLOUD_HARNESS in f]
+    return (named[0] is True) if named else None
+
+
 def cloud_placement(og: Omnigent) -> tuple[str, str] | None:
     """Where a ``claude-cloud`` session this host can't run goes: the host and the launch dir of the
     newest cloud session in this project (``GET /v1/sessions?project=<name>``) on an online host other
     than this one, whose workspace there holds ``.git`` and the pin (``.claude/settings.local.json``,
-    listed through the host's file API). None when this host runs one itself or none is found: the
-    caller then starts here, as before. It reads only the server's records, so no host or path is
+    listed through the host's file API). None when this host offers the cloud harness
+    (``offers_cloud``), runs the project's newest cloud session, or none is found: the caller then starts
+    here, as before. It reads only the server's records, so no host or path is
     configured: a project's cloud lead, started with ``start --top-level --host``, names both. Any
     launch dir of the repository will do, since a cloud run's brief checks out its own head."""
+    hosts = og.call("GET", "/v1/hosts")["hosts"]
+    if offers_cloud(og, hosts):
+        return None  # this host runs cloud sessions: the local launch dir, as before
     project = quote((og.home(project_name()) or {}).get("name", ""))
     rows = og.call("GET", f"/v1/sessions?kind=default&project={project}&limit=100").get("data", [])
-    online = {
-        h["host_id"] for h in og.call("GET", "/v1/hosts")["hosts"] if h.get("status") == "online"
-    }
+    online = {h["host_id"] for h in hosts if h.get("status") == "online"}
     seen: set[tuple[str, str]] = set()
     for row in sorted(rows, key=lambda r: float(r.get("created_at") or 0), reverse=True):
         host, place = str(row.get("host_id") or ""), str(row.get("workspace") or "")

@@ -58,6 +58,9 @@ class RunFake(CloudFake):
         super().__init__(**kwargs)
         self.projected: list[dict] = []
         self.online = {"h": "host"}
+        self.ready: dict[
+            str, dict
+        ] = {}  # each host's configured_harnesses, as GET /v1/hosts lists them
 
     def home(self, name: str) -> dict:
         return {"id": "p1", "name": "proj"}
@@ -71,7 +74,13 @@ class RunFake(CloudFake):
         if (method, path) == ("GET", "/v1/hosts"):
             return {
                 "hosts": [
-                    {"host_id": i, "name": n, "status": "online"} for i, n in self.online.items()
+                    {
+                        "host_id": i,
+                        "name": n,
+                        "status": "online",
+                        "configured_harnesses": self.ready.get(i),
+                    }
+                    for i, n in self.online.items()
                 ]
             }
         return super().call(method, path, body)
@@ -265,6 +274,9 @@ def test_a_caller_on_a_host_without_the_cloud_harness_starts_on_the_bridge_host_
     its report still lands under the caller's checkout, where the exit is read."""
     og = cloud(monkeypatch, "REPORT\nEXIT: 4\n1 failed")
     bridge(og)
+    og.ready["h"] = {
+        omnigent_agent.CLOUD_HARNESS: "binary-missing"
+    }  # listed, not ready: not offered
     launched = launched_argv(monkeypatch)
     assert cloud_run(checkout, "pytest") == 4
     run = launched[1]
@@ -281,7 +293,7 @@ def test_a_caller_on_a_host_without_the_cloud_harness_starts_on_the_bridge_host_
     assert "exited 4" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("why", ["here", "unpinned", "offline", "none"])
+@pytest.mark.parametrize("why", ["here", "harness", "unpinned", "offline", "none"])
 def test_without_a_usable_bridge_elsewhere_it_starts_here_from_the_local_launch_dir(
     checkout: Path, monkeypatch: pytest.MonkeyPatch, why: str
 ) -> None:
@@ -297,8 +309,12 @@ def test_without_a_usable_bridge_elsewhere_it_starts_here_from_the_local_launch_
             }
         )
         bridge(og)
+    elif why == "harness":  # this host offers the harness, with no cloud session of the project yet
+        bridge(og)
+        og.ready["h"] = {omnigent_agent.CLOUD_HARNESS: True}
+        og.ready["b"] = {omnigent_agent.CLOUD_HARNESS: True}
     elif why != "none":
-        bridge(og, pinned=why != "offline")
+        bridge(og, pinned=True)  # pinned, so only the online check turns the offline one away
         if why == "offline":
             del og.online["b"]
         else:
@@ -340,3 +356,25 @@ def test_run_host_is_refused_for_a_host_agent_without_top_level(
         and "--host needs --top-level, or a run of a cloud agent" in capsys.readouterr().err
     )
     assert og.sessions == {}
+
+
+def test_a_host_row_without_harnesses_is_read_from_the_callers_own_session_record(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hosts listing may name no harnesses: the record of the session this runs in names its host's."""
+    og = cloud(monkeypatch, "REPORT\nEXIT: 0")
+    bridge(og)
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "me")
+    real = og.info
+    monkeypatch.setattr(
+        og,
+        "info",
+        lambda sid: (
+            {"configured_harnesses": {omnigent_agent.CLOUD_HARNESS: True}}
+            if sid == "me"
+            else real(sid)
+        ),
+    )
+    launched = launched_argv(monkeypatch)
+    assert cloud_run(checkout, "pytest") == 0
+    assert "--host" not in launched[1]
