@@ -82,6 +82,7 @@ class FakeOmnigent:
         self.resolved: list[tuple[str, str, str, dict | None]] = []
         self.host_id = "h"  # this host, named "host"
         self.host_names: dict[str, str] = {}  # other hosts' names, by id
+        self.host_rows: list[dict] = []  # GET /v1/hosts rows, when a test sets them
         self.procs: dict[str, dict[str, str]] = {}  # each host's /proc files, by host id
         self.harnesses: dict[str, str] = {}  # a registered agent's harness, by its name
         self.listed = [
@@ -106,7 +107,7 @@ class FakeOmnigent:
     def call(self, method: str, path: str, body: object = None) -> dict:
         if path == "/v1/hosts":  # hosts as an older server lists them: no harnesses, no memory
             rows = [{"host_id": i, "name": n, "status": "online"} for i, n in self.hosts().items()]
-            return {"hosts": rows}
+            return {"hosts": self.host_rows or rows}
         if path.startswith("/v1/hosts/"):  # a host's folder listing: the names under it in procs
             host, folder = path.split("?")[0].removeprefix("/v1/hosts/").split("/filesystem/")
             under = "/" + unquote(folder).strip("/") + "/"
@@ -4105,6 +4106,9 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     og.host = lambda name: "far"  # type: ignore[method-assign]
     og.harnesses = {"claude-cloud": "acp:claude-cloud"}
     og.procs["far"] = {"/there/repo/.claude/settings.local.json": PINNED}
+    og.others = [
+        {"id": "x1", "host_id": "far", "status": "idle", "updated_at": 1}
+    ]  # a file reads through it
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     fake_gh(monkeypatch, {"42": on_pr(7, "Branch: claude/x at abc\n")})
     monkeypatch.chdir(tmp_path)
@@ -12340,6 +12344,10 @@ def test_a_cloud_pr_start_on_another_host_says_its_launch_dir_head_is_not_moved(
 ) -> None:
     og = far_verifier(tmp_path, monkeypatch, "")
     og.procs.setdefault("mac", {})["/there/repo/.claude/settings.local.json"] = PINNED
+    og.others = [
+        {"id": "x1", "host_id": "mac", "status": "idle", "updated_at": 1}
+    ]  # a file reads through it
+    og.files["/there/repo/.claude/settings.local.json"] = PINNED  # what the session reads
     og.harnesses = {"claude-cloud": "acp:claude-cloud"}
     argv = ["start", "claude-cloud", "w", "do X", str(tmp_path / "tmp" / "r.md"), "--top-level"]
     argv += ["--host", "mac", "--pr", "7", "--workspace", "/there/repo", "--confirm-seconds", "0"]

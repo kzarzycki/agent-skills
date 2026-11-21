@@ -222,7 +222,9 @@ starts a ``--top-level`` lead on another Omnigent host, by name or id (``GET /v1
 child always runs on its parent's runner, except a claude-cloud child (worker or verifier), which
 takes ``--host`` too (#838): the host must configure ``acp:claude-cloud`` and, since the VM lands in
 the account's default environment without it, hold ``remote.defaultEnvironmentId`` in the workspace's
-``.claude/settings.local.json``, both refused before the create. With no ``--host`` and an absolute
+``.claude/settings.local.json`` and Claude Code must trust the workspace there (found through the host's
+``~/.claude.json`` when its home folder is known, else not checked); all refused before the create, as is what
+can't be read (start any session on the host so a file can be read through it). With no ``--host`` and an absolute
 ``--workspace`` it goes to the online host configuring that harness with the most
 ``memory_available_mb`` that holds the workspace (printed), else stays here; a lead never moves. A
 create that times out is looked up by title for a while and reused, never repeated. On a host other than this one ``--workspace`` and the
@@ -3852,11 +3854,95 @@ def configures_cloud(row: dict) -> bool | None:
     return CLOUD_HARNESS in found if isinstance(found, (dict, list)) else None
 
 
+class Unverified(Fail):
+    """A host's file that a cloud start depends on can't be read, so its content is unknown."""
+
+
+def far_json(og: Omnigent, host_id: str, path: str, what: str, bad: type[Fail] = Fail) -> dict:
+    """The JSON object in ``path`` on host ``host_id``, read through a live session there
+    (``read_on_host``); ``Unverified`` when it can't be read, ``bad`` when it is not JSON."""
+    host = host_name(og, host_id)
+    try:
+        text = read_on_host(og, host_id, path)
+    except (Fail, Gone) as e:
+        raise Unverified(f"{what}: {path} on host {host} can't be read ({e})") from e
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise bad(f"{what}: {path} on host {host} is not JSON ({e})") from e
+    return data if isinstance(data, dict) else {}
+
+
+def far_home(og: Omnigent, host_id: str, row: dict, workspace: Path) -> str:
+    """The user folder on host ``host_id`` holding ``.claude.json``: the host row's ``home`` or
+    ``home_dir``, else the ``/home/<user>`` or ``/Users/<user>`` the workspace sits under when that
+    folder lists the file; ``""`` when neither does."""
+    named = str(row.get("home") or row.get("home_dir") or "")
+    parts = workspace.parts
+    guess = str(Path(*parts[:3])) if len(parts) > 3 and parts[1] in ("home", "Users") else ""
+    for home in (named, guess):
+        try:
+            if home and ".claude.json" in host_listing(og, host_id, home, "folder trust check"):
+                return home
+        except (Gone, Fail):
+            continue
+    return ""
+
+
+def far_trusted(og: Omnigent, host_id: str, row: dict, workspace: Path) -> bool | None:
+    """Whether Claude Code on host ``host_id`` trusts ``workspace``, by ``folder_trusted``'s rule
+    (its own entry in the host's ``~/.claude.json``, or the main worktree's, named by the ``gitdir:``
+    line of a linked worktree's ``.git`` file). None, not checked, when the home folder can't be
+    found through the host row or a listing; ``Unverified`` when the config can't be read."""
+    if not (home := far_home(og, host_id, row, workspace)):
+        return None
+    projects = far_json(og, host_id, f"{home}/.claude.json", "folder trust check", Unverified).get(
+        "projects"
+    )
+    places = {str(workspace)}
+    if (root := far_checkout_root(og, host_id, str(workspace), "folder trust check")) is not None:
+        places.add(str(root))
+        try:
+            link = read_on_host(og, host_id, str(root / ".git")).strip()
+        except (Fail, Gone) as e:
+            raise Unverified(f"folder trust check: {root / '.git'} can't be read ({e})") from e
+        if link.startswith("gitdir:") and "/.git/worktrees/" in link:
+            places.add(link.removeprefix("gitdir:").strip().split("/.git/worktrees/")[0])
+    return isinstance(projects, dict) and any(
+        isinstance(projects.get(p), dict) and projects[p].get("hasTrustDialogAccepted") is True
+        for p in places
+    )
+
+
+def check_far_workspace(og: Omnigent, host_id: str, row: dict, workspace: Path) -> None:
+    """What a cloud session on another host needs of ``workspace`` (#838), read through the host's
+    file API and a live session there: it is on the host, ``SETTINGS`` sets
+    ``remote.defaultEnvironmentId`` (else the session lands in the account's default environment
+    without the repository's tools), and Claude Code trusts it (not checked when the host's home
+    folder isn't found, since neither the host row nor the workspace's path names it). ``Fail``
+    when it is wrong or not JSON, ``Unverified`` when a file can't be read."""
+    host, what = host_name(og, host_id), "cloud workspace check"
+    try:
+        listed = SETTINGS.name in host_listing(og, host_id, str(workspace / SETTINGS.parent), what)
+    except Gone:
+        listed = False
+    if not listed:
+        raise Fail(f"{workspace / SETTINGS} on host {host} is missing: pin an environment there")
+    if not environment_pin(far_json(og, host_id, str(workspace / SETTINGS), what)):
+        raise Fail(
+            f"{workspace / SETTINGS} on host {host} names no remote.defaultEnvironmentId: the"
+            " session would land in the account's default environment without the repository's tools"
+        )
+    if far_trusted(og, host_id, row, workspace) is False:
+        raise Fail(f"{workspace} on host {host} is not trusted by Claude Code: trust it there")
+
+
 def pick_cloud_host(og: Omnigent, workspace: Path) -> str | None:
     """The host a cloud child started with no ``--host`` goes to (#838): the online one configuring
-    ``CLOUD_HARNESS`` with the most ``memory_available_mb`` whose file API holds ``workspace``, since
-    each bridge holds memory on its host. None, so the start stays here, when none qualifies or
-    the hosts call fails. The choice is printed."""
+    ``CLOUD_HARNESS`` with the most ``memory_available_mb`` whose workspace passes
+    ``check_far_workspace``, since each bridge holds memory on its host. A host that fails or can't
+    be verified is skipped with the reason printed. None, so the start stays here, when none
+    qualifies or the hosts call fails. The choice is printed."""
     try:
         rows = og.call("GET", "/v1/hosts")["hosts"]
     except (Fail, KeyError):
@@ -3868,9 +3954,10 @@ def pick_cloud_host(og: Omnigent, workspace: Path) -> str | None:
             continue
         try:
             if host != og.host_id:
-                host_listing(og, host, str(workspace), "cloud host pick")
-        except (Gone, Fail):
-            continue  # the workspace is not there
+                check_far_workspace(og, host, row, workspace)
+        except Fail as e:
+            print(f"host {row.get('name') or host} skipped for a cloud child: {e}", file=sys.stderr)
+            continue
         best = (mb, host, str(row.get("name") or host))
     if best:
         print(f"cloud child placed on host {best[2]} ({best[0]:.0f} MB available)", file=sys.stderr)
@@ -3879,12 +3966,8 @@ def pick_cloud_host(og: Omnigent, workspace: Path) -> str | None:
 
 def refuse_unfit_cloud_host(og: Omnigent, host_id: str, workspace: Path) -> None:
     """Before a cloud session is created on host ``host_id`` (#838): refuse a host whose configured
-    harnesses lack ``CLOUD_HARNESS``, and, on another host than this one, a workspace whose
-    ``SETTINGS`` sets no ``remote.defaultEnvironmentId``, since the session would land in the
-    account's default environment without the repository's tools. The pin is read through the
-    host's file API (``read_on_host``); a file listed but unreadable prints a line and goes on.
-    Folder trust is in the host's ``~/.claude.json``, whose path the API does not give, so it is
-    not checked."""
+    harnesses lack ``CLOUD_HARNESS``, and on another host than this one a workspace that fails
+    ``check_far_workspace``. What can't be verified is refused too, saying how to go on."""
     row = next((h for h in og.call("GET", "/v1/hosts")["hosts"] if h["host_id"] == host_id), {})
     host = str(row.get("name") or host_id)
     if configures_cloud(row) is False:
@@ -3895,26 +3978,13 @@ def refuse_unfit_cloud_host(og: Omnigent, host_id: str, workspace: Path) -> None
         )
     if host_id == og.host_id:
         return
-    what = "cloud environment pin check"
-    folder = str(workspace / SETTINGS.parent)
     try:
-        listed = SETTINGS.name in host_listing(og, host_id, folder, what)
-    except Gone:
-        listed = False
-    if not listed:
+        check_far_workspace(og, host_id, row, workspace)
+    except Unverified as e:
         raise Fail(
-            f"{workspace / SETTINGS} on host {host} is missing: the session would land in the account's default environment; pin one there"
-        )
-    try:
-        pin = environment_pin(json.loads(read_on_host(og, host_id, str(workspace / SETTINGS))))
-    except (Fail, Gone, ValueError) as e:
-        print(f"{workspace}: pin check skipped on {host}: {e}", file=sys.stderr)
-        return
-    if not pin:
-        raise Fail(
-            f"{workspace / SETTINGS} on host {host} names no remote.defaultEnvironmentId: the"
-            " session would land in the account's default environment without the repository's tools"
-        )
+            f"{e}: start any session on {host} so the file can be read, or omit --host to"
+            " place the child by what can be verified"
+        ) from e
 
 
 def offers_cloud(og: Omnigent, hosts: list[dict]) -> bool | None:
