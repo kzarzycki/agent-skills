@@ -398,8 +398,10 @@ command is the whole narrowed check: the project's selector plus its cheap whole
 base from the variable `Gate base:` names, else `GATE_BASE`. `affected-tests` runs it against `--base <rev>` (a PR's
 base SHA, a push's previous tip), else the merge base with the branch's base; a `<rev>` git can't resolve (all zeros,
 a new branch) runs `mise run check`, said in one line, as do the opt-out and a loop.md without the line. In narrowed
-mode `land`'s batch gate runs that command with the variable set to the base tip the batch merges onto, so it selects
-over the batch's combined diff, in place of the gate: under the same slot, `machine_exit`, records and cloud gate (whose
+mode under `ci: false`, or where the base requires no check, `land`'s batch gate runs that command with the variable set
+to the base tip the batch merges onto, so it selects over the batch's combined diff, in place of the gate; where the base
+requires a check, which already ran each head's tests on that head, the batch gate is the `gate` line (batch_narrows),
+so it runs what that line runs (whole-tree checks such as a vendor check and lint, say). The narrowed batch gate runs under the same slot, `machine_exit`, records and cloud gate (whose
 `local-ci --record` it passes `--base <tip>`). Under `ci: false`, `local-ci --record` runs it against `--base`, else the
 merge base, as the ready head's gate of record, and `check merge` takes that pass on the head's tree, against the merge
 base of the head and the PR's base, in place of a full one; `local-ci <pr>` posts it. A narrowed pass's command is the
@@ -6253,6 +6255,8 @@ def local_queue(
     failed: set[int] = set()
     # each PR to land, the tree it lands, the tree gated with it, and how that passed
     landed: list[tuple[dict[str, Any], str, str, str]] = []
+    # narrowed mode selects tests only where no required CI check ran them on each head already (batch_narrows)
+    narrows = batch_narrows(loop, required)
     if candidates and policy_ref(toplevel()) is not None:
         # no working tree here: the batch is computed in objects and gated only by a recorded pass, never run here
         if settings(loop).get("pre_land"):
@@ -6262,7 +6266,7 @@ def local_queue(
             )
         tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
         # narrowed mode: the batch gate selects against the tip the batch merges onto (narrowed_gate)
-        with narrowed_to(tip):
+        with narrowed_to(tip if narrows else None):
             landed = merged_trees(candidates, base, tip, failed)
             # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
             if landed and held is not None:
@@ -6272,7 +6276,7 @@ def local_queue(
     elif candidates:
         with batch_tree(base) as work:
             tip = run_in(work, "rev-parse", "HEAD")
-            with narrowed_to(tip):
+            with narrowed_to(tip if narrows else None):
                 candidates = [
                     pull for pull in candidates if pre_landed(pull, base, work, loop, failed)
                 ]
@@ -6285,6 +6289,15 @@ def local_queue(
     # each named PR's exit: its wait's, else 0 when it merged, else 1
     done = {pull["number"] for pull, *_ in landed} - failed
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
+
+
+def batch_narrows(loop: str | None, required: set[str]) -> bool:
+    """Whether `land`'s batch gate runs loop.md's `Affected tests:` command (narrowed mode) in place of the `gate`
+    line: only under `ci: false` or where the base requires no check. A required check already ran each head's tests
+    on that exact head, so selecting them again over the batch only holds the lock; the batch gate is then the `gate`
+    line, the project's whole-tree checks (a vendor check and lint, say), and a combination that breaks an untouched
+    test is the full run's to catch (a nightly, say)."""
+    return no_ci(loop) or not required
 
 
 def check_never_comes(pull: dict[str, Any], required: set[str]) -> bool:
