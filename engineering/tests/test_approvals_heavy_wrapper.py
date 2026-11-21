@@ -45,9 +45,9 @@ def interrupted(signum, _frame):
     raise Interrupted(signum)
 
 mode = sys.argv[2]
-if mode != "default":
-    for sig in approvals.STOPS:
-        signal.signal(sig, stopped if mode == "stopped" else interrupted)
+for sig in approvals.STOPS:
+    # `default` resets the stops itself: a runner inherits an ignored SIGHUP from a gate run under nohup
+    signal.signal(sig, signal.SIG_DFL if mode == "default" else stopped if mode == "stopped" else interrupted)
 try:
     print(approvals.run_heavy(sys.argv[3:])[0])
 except Interrupted:
