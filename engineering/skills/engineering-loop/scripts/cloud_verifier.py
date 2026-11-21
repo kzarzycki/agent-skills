@@ -885,7 +885,7 @@ def review(
         wrote = {path: plain(said) for path, said in wrote.items()}
         # A verdict of its own in the report file, else in the final message, wins. Failing both, the CLI may have
         # written the report elsewhere and ended on a link to it: read it before the checkout goes back.
-        if not verdict(wrote.get(report, "")):
+        if not verdict(wrote.get(report, "")) and not malformed(wrote.get(report, "")):
             if verdict(wrote[final]):
                 wrote.pop(report, None)
             elif linked := linked_report(wrote[final], Path.cwd()):
@@ -953,9 +953,18 @@ NO_VERDICT = (
 
 
 def verdict(body: str) -> str | None:
-    """The report's last `SATISFIED:` answer, `yes` or `no`; None without one, so `SATISFIED: pending` is no verdict."""
-    said = re.findall(r"^SATISFIED:[ \t]*(yes|no)\b", body, re.MULTILINE | re.IGNORECASE)
-    return said[-1].lower() if said else None
+    """The report's last `SATISFIED:` line's answer when it is exactly `yes` or `no`; None without one or when that
+    line's first word is anything else (`pending`, `yes/no`), since an earlier line a verifier revised is no verdict."""
+    said = re.findall(r"^SATISFIED:(.*)$", body, re.MULTILINE)
+    # its first word, a comma or full stop after it allowed (`yes, from the final message`), as the gate reads it
+    answer = (said[-1].split() or [""])[0].lower().rstrip(".,;") if said else ""
+    return answer if answer in ("yes", "no") else None
+
+
+def malformed(body: str) -> bool:
+    """Whether `body` has a `SATISFIED:` line but no verdict(): a report that tried and failed, which no other source
+    of the same pass stands in for."""
+    return bool(re.search(r"^SATISFIED:", body, re.MULTILINE)) and verdict(body) is None
 
 
 def plain(body: str) -> str:
@@ -1298,7 +1307,7 @@ def thread_review(
         code, body = thread_exec(rpc, thread, env, f"cat {shlex.quote(checkout + '/' + str(out))}")
         body = body if not code else ""
     body, final = plain(body.strip() or final.strip()), plain(final)
-    if not verdict(body) and verdict(final):  # the final message's own verdict beats a link
+    if not verdict(body) and not malformed(body) and verdict(final):  # its own verdict beats a link
         body = final.strip()
     print(f"quota after: {quota(token)}")
     if out and not verdict(
@@ -1317,7 +1326,7 @@ def thread_review(
             print(question)
             event.state, event.url, event.question = "needs-owner", str(question), asked
             return 3
-    if not verdict(body):
+    if not verdict(body) and not malformed(body):
         # the final message may end on a link to a report written elsewhere in the checkout (never outside it)
         top = shlex.quote(checkout)
         for name in linked_files(final):
