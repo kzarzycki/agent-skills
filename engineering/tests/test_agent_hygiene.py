@@ -131,7 +131,7 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         "docker": f'echo "$@" >> {home}/docker.calls',
         "lsof": f"cat {home}/lsof.txt",
         "ps": f"cat {home}/ps.txt",
-        "gh": f'exec python3 {home}/gh.py "$@"',
+        "gh": f'exec python3 -S {home}/gh.py "$@"',
     }.items():
         (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
         (bin_ / name).chmod(0o755)
@@ -560,7 +560,7 @@ def landing_world(tmp_path, monkeypatch):
     for name, body in {
         "lsof": "true",
         "ps": "true",
-        "gh": f'exec python3 {home}/gh.py "$@"',
+        "gh": f'exec python3 -S {home}/gh.py "$@"',
     }.items():
         (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
         (bin_ / name).chmod(0o755)
@@ -681,7 +681,7 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
         home / "no-checkout",
         home / "no-doctor",
     )  # the real ones would fetch and run
-    hygiene.CACHES = [(n, c, 1 if n == "go" else t, b) for n, c, t, b in hygiene.CACHES]
+    hygiene.CACHES = [(n, c, 0.1 if n == "go" else t, b) for n, c, t, b in hygiene.CACHES]
     told = []
     hygiene.told_to = []
     hygiene.tell = lambda text, repo=None: (
