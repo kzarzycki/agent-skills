@@ -3042,6 +3042,16 @@ def git_dirs(workspace: Path) -> list[str]:
     ).stdout.splitlines()
 
 
+def main_checkout_refusal(checkout: Path, agent: str) -> str:
+    """The one line both pinned-checkout refusals print: what is wrong, and the two ways out."""
+    return (
+        f"{checkout} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
+        f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
+        " give the local agent a worktree of it (--workspace), or make a launch dir for the"
+        " cloud session with `launch-dir <remote> <branch> <path>`"
+    )
+
+
 def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
     """A main checkout pinned for cloud sessions is where they are launched from: a local agent
     working there switched its branch under every later start, and carried another worker's
@@ -3050,11 +3060,7 @@ def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
     even when its git dir lives elsewhere (``--separate-git-dir``)."""
     dirs = git_dirs(workspace)
     if len(dirs) == 3 and dirs[0] == dirs[1] and environment_pin(own_settings(Path(dirs[2]))):
-        raise Fail(
-            f"{workspace} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
-            f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
-            " give the local agent a worktree of it (--workspace)"
-        )
+        raise Fail(main_checkout_refusal(workspace, agent))
 
 
 def refuse_far_pinned_checkout(og: Omnigent, agent: str, workspace: Path, host_id: str) -> None:
@@ -3080,11 +3086,7 @@ def refuse_far_pinned_checkout(og: Omnigent, agent: str, workspace: Path, host_i
         print(f"{workspace}: pinned-checkout check skipped on {host}: {e}", file=sys.stderr)
         return
     if main:
-        raise Fail(
-            f"{root} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
-            f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
-            " give the local agent a worktree of it (--workspace)"
-        )
+        raise Fail(main_checkout_refusal(root, agent))
 
 
 def _load_environments() -> Any:
@@ -10124,9 +10126,16 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             )
         # --pr is a cloud worker's report channel; a native worker given it runs its build on this host
         if args.pr and og.harness(args.agent) != CLOUD_HARNESS:
+            route = ""
+            if "codex" in og.harness(args.agent).lower():  # the harness, never the agent's name
+                route = (
+                    f"; a cloud PR's verifier runs through engineering-loop's cloud_verifier.py"
+                    f" (`verify --pr {args.pr}` in the worker's VM, or `thread` from a host, per"
+                    " loop.md's Placement: line; SKILL.md, Cloud worker, Starting a PR's cloud worker)"
+                )
             raise Fail(
                 f"--pr {args.pr}: {args.agent} is not a cloud agent; start claude-cloud for a cloud"
-                " worker, or drop --pr for one on this host"
+                f" worker, or drop --pr for one on this host{route}"
             )
         brief = text_or_file(args.brief)[0]
         if args.file and not remote:
