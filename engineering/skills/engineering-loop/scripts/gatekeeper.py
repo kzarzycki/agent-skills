@@ -7952,7 +7952,10 @@ def verdict(pr: int, report: Path) -> int:
     for name, severity, path, line, title, body in found:
         said = f"**{heading} · {name}** ({severity}): {title}"
         if not diff.get(path):
-            outside.append(f"- {said}, at `{path}:{line}`, a file outside the diff\n\n{body}")
+            # between markers, so a reader takes the whole finding, bullets and links in its body included
+            outside.append(
+                f"{FINDING_OPEN.format(name)}\n- {said}, at `{path}:{line}`, a file outside the diff\n\n{body}\n{FINDING_CLOSE}"
+            )
             continue
         last = int(line.rpartition("-")[2])  # a range anchors at its last line
         at = min(diff[path], key=lambda candidate: abs(candidate - last))
@@ -10554,6 +10557,10 @@ def overlap(pr: int | None, files: Sequence[str], base: str | None) -> int:
     return 0
 
 
+# the boundary `verdict` writes around each finding in a review's body, which previous_findings splits on
+FINDING_OPEN = "<!-- finding: {} -->"
+FINDING_CLOSE = "<!-- /finding -->"
+FINDING_BLOCK = re.compile(r"<!-- finding: [^>]*-->\n(.*?)\n<!-- /finding -->", re.DOTALL)
 # the closing lines of a verifier's review body, which end the last finding in it
 VERDICT_END = re.compile(r"(?:Head|VERDICT|SATISFIED|Risk|Logic change|Scope):")
 PASS_FINDING = re.compile(r"\**Verifier \([^)]*\), pass \d+ · ")
@@ -10575,7 +10582,15 @@ def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
         # a finding on a file outside the diff is a bullet in the review's body: its heading and the lines under it
         # (its evidence link among them) up to the next bullet or closing line
         current: list[str] | None = None
-        for line in (review.get("body") or "").splitlines():
+        text = review.get("body") or ""
+        if "<!-- finding: " in text:
+            for block in FINDING_BLOCK.findall(text):
+                head = block.strip()[2:] if block.startswith("- ") else block.strip()
+                if mine.match(head):
+                    found.append(head)
+            continue
+        # a body from before the markers: a bullet's lines up to the next bullet
+        for line in text.splitlines():
             if line.startswith("- ") and mine.match(line[2:].strip()):
                 current = [line.strip()[2:]]
                 found.append("")

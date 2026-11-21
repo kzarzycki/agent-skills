@@ -2524,8 +2524,9 @@ def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
             f"{heading} on {HEAD[:7]}.",
             "VERDICT: 1 blocker, 0 major, 2 minor\nSATISFIED: no\nRisk: low — a test fixture",
             "## Criteria\n\n- A draft never merges on its skipped checks: Before merge line 1, its check.\n\n"
+            "<!-- finding: S1 -->\n"
             f"- **{heading} · S1** (minor): a file outside the diff, at `docs/old.md:3`, a file outside the diff\n\n"
-            "The doc.",
+            "The doc.\n<!-- /finding -->",
         ),
         "comments": [
             {
