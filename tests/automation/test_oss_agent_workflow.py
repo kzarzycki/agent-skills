@@ -63,6 +63,14 @@ def test_agent_job_reads_only_and_proves_it_cannot_push() -> None:
     assert checkout["with"]["persist-credentials"] == "false"
 
 
+def test_a_failing_command_in_a_pipe_fails_its_step() -> None:
+    # an explicit `bash` runs with -o pipefail; GitHub's default `bash -e` does not
+    assert WORKFLOW["defaults"]["run"]["shell"] == "bash"
+    for job in WORKFLOW["jobs"].values():
+        for step in job["steps"]:
+            assert "shell" not in step, step
+
+
 def test_agent_job_has_a_time_limit() -> None:
     assert AGENT["timeout-minutes"] == "${{ inputs.timeout_minutes }}"
     assert int(WORKFLOW["on"]["workflow_call"]["inputs"]["timeout_minutes"]["default"]) > 0
