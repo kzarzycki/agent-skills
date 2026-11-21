@@ -48,10 +48,11 @@ the policy's `adapters` section names for it (`tracker`, `forge`, `evidence`), `
 github_adapter.py, through `gh`, with its GraphQL reads falling back to REST where GitHub refuses GraphQL, and every
 posted body checked against the deny list first. `threads`, `resolve`, `comment`, `show` and `edit` are every forge call a
 cloud agent makes, each the same command on a host and in a cloud session, where GraphQL answers 403: REST, or the
-cloud proxy's `ccr` routes where GitHub's REST has none (review threads, resolve, back to draft). A commit-status
-write in a cloud session (the `gate` status of `local-ci --record`, the `owner` status of `approve merge`) makes no
-call: it says, in one line, that the host writes it. `local-ci --record` still passes, since its pushed record is the
-pass; `approve merge` exits 1. A name no adapter has is refused, naming it. The gate's own commit
+cloud proxy's `ccr` routes where GitHub's REST has none (review threads, resolve, back to draft). A write the
+cloud proxy is known to refuse (cloud_limits.py's list: every commit status) makes no call there and prints one
+`cloud VM:` line naming its stand-in: `local-ci --record` still passes, since its pushed `loop-gate/` record is the
+pass and the host's `local-ci <pr>` posts the `gate` status; `approve merge` exits 1, since without its status there
+is no go, and the host gives it. A name no adapter has is refused, naming it. The gate's own commit
 status counts under `loop:approvals`, the name the project template's workflow posts, and under `gatekeeper` for one
 release line: `check merge` and `land` wait for neither.
 
@@ -9921,7 +9922,16 @@ def pushed_commands(held: str) -> set[str]:
 
 def shown(head: str, record: dict[str, Any]) -> str | None:
     """Write the `gate` status for `record` on `head`, which the PR page shows and nothing reads; refused or
-    unreachable: why, which is no error, since the record branch is the pass."""
+    unreachable: why, which is no error, since the record branch is the pass. In a cloud VM, whose proxy refuses it,
+    no call: the stand-in's line (cloud_limits.py) is printed, and None returned."""
+    ref = record.get("ref") or (
+        RECORD_BRANCH.format(record_name(record["tree"], record["command"]))
+        if "tree" in record and "command" in record
+        else RECORD_BRANCH.format("<tree>-*")
+    )
+    if line := github.limits.skip("gate status", head=head, ref=ref):
+        print(line)
+        return None
     try:
         post_status(head, PUBLISHED, described(record["tree"], record["head"], record["command"]))
     except (subprocess.CalledProcessError, OSError) as exc:
@@ -9934,6 +9944,8 @@ def failed(head: str, tree: str, command: str, code: int, machine: bool) -> str:
     change), so a lead waiting on the head (orchestrating-agents' `wait-for --until gate`) learns the run ended without a
     pass; returns the line saying so, or, refused or unreachable, why, which is no error, as a pass's is (shown)."""
     line = f"Failed: {command} exited {code} on tree {tree[:12]} at {head[:12]}"[:DESCRIBED]
+    if skipped := github.limits.skip("gate failure status", head=head):
+        return skipped
     try:
         post_status(head, PUBLISHED, line, "error" if machine else "failure")
     except (subprocess.CalledProcessError, OSError) as exc:
@@ -9951,6 +9963,9 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
     if proof is not None:
         context, line = proof["status"], proof_line(record, proof["env"])
         if stated(head, context, lambda status, _named: status["description"] == line):
+            return
+        if skipped := github.limits.skip("proof status", context=context, head=head):
+            print(skipped)
             return
         try:
             post_status(head, context, line)

@@ -9,6 +9,7 @@ session's proxy does. Reads return GitHub's GraphQL node shapes (ISSUE, PULL), w
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import random
@@ -17,7 +18,23 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, TypeVar
+
+
+def _limits() -> Any:
+    """cloud_limits.py beside this file, loaded by path, as gatekeeper.py loads this one."""
+    spec = importlib.util.spec_from_file_location(
+        f"{__name__}_cloud_limits", Path(__file__).with_name("cloud_limits.py")
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# the writes a cloud session's proxy is known to refuse, each skipped with the line naming its stand-in
+limits = _limits()
 
 
 # gatekeeper.py sets these three once it has loaded this module (sibling): the refusal that exits 1, the masking of a
@@ -1045,17 +1062,10 @@ def statuses(head: str) -> list[dict[str, Any]]:
     return found
 
 
-# what a commit-status write in a cloud session says instead of calling: its proxy answers 403 to every one, so the
-# call is never made, tried again or asked about
-NO_STATUS = "a cloud session can't write commit statuses (its GitHub proxy answers 403): the host writes `{context}` on {head}"
-
-
 def post_status(head: str, context: str, description: str, state: str = "success") -> None:
-    """Set commit status `context` on `head`; in a cloud session, fail at once with NO_STATUS, making no call."""
-    if in_cloud():
-        raise subprocess.CalledProcessError(
-            1, "gh", stderr=NO_STATUS.format(context=context, head=head)
-        )
+    """Set commit status `context` on `head`; in a cloud VM, whose proxy refuses it, no call: cloud_limits.Skipped."""
+    if line := limits.skip("status", context=context, head=head):
+        raise limits.Skipped(line)
     gh(
         "api",
         f"repos/{{owner}}/{{repo}}/statuses/{head}",
@@ -1098,7 +1108,7 @@ def default_branch() -> str:
 
 def in_cloud() -> bool:
     """Whether this runs in a cloud session's VM, as gatekeeper.py's in_cloud() reads it."""
-    return os.environ.get("CLAUDE_CODE_REMOTE") == "true"
+    return limits.in_cloud()
 
 
 def ready(number: int, undo: bool = False) -> None:
