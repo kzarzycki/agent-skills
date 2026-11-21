@@ -55,13 +55,11 @@ def test_gate_test_parallel_0_runs_pytest_serially(tmp_path: Path) -> None:
     assert pytest_words(tmp_path, {"GATE_TEST_PARALLEL": "0"}) == DEFAULT
 
 
-def test_check_runs_the_slow_tests_the_test_task_leaves_out() -> None:
-    """`check` (the nightly) runs `test` and `test-slow`, and their `-m` expressions together cover the whole non-live
-    suite, so a test moved to `slow` still runs somewhere (#1610)."""
+def test_test_and_test_slow_together_select_the_whole_non_live_suite() -> None:
+    """`test` leaves the slow tests out and `test-slow` runs exactly them, so a test moved to `slow` still runs in the
+    tasks that call both: the release tag check, pinned in tests/automation/test_workflows.py (#1610). The nightly's
+    `check` runs no tests while #1653 holds, so it is not one."""
     tasks = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]
-    assert (
-        "mise run test" in tasks["check"]["run"] and "mise run test-slow" in tasks["check"]["run"]
-    )
     marks = {
         name: re.search(r"-m '([^']+)'", tasks[name]["run"])[1] for name in ("test", "test-slow")
     }

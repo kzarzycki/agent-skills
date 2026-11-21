@@ -2144,7 +2144,13 @@ def test_create_sets_a_claude_session_s_permission_mode_from_the_flag_or_the_env
     monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "acceptEdits")
     og.create("claude", "t")
     assert bodies[-1]["terminal_launch_args"] == ["--permission-mode", "acceptEdits"]
-    og.create("codex", "t")  # codex-native would hand it to the codex CLI, which fails to start
+    # codex-native hands launch args to the codex CLI: Claude's word would fail it, so the default is
+    # codex's own no-approvals, full-access flag whatever the variable says
+    og.create("codex", "t")
+    assert bodies[-1]["terminal_launch_args"] == ["--dangerously-bypass-approvals-and-sandbox"]
+    og.create(
+        "codex", "t", permission_mode="default"
+    )  # an explicit stricter ask keeps codex's own stance
     assert "terminal_launch_args" not in bodies[-1]
     with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
         omnigent_agent.start(
@@ -2381,8 +2387,10 @@ def test_create_starts_a_claude_worker_or_verifier_lean_with_what_the_project_na
     for role in ("/x/lead.md", None):  # a lead and a plain child start as before
         og.create("claude", "t", workspace=ws, role=role)
         assert "terminal_launch_args" not in bodies[-1]
-    og.create("codex", "t", workspace=ws, role="/x/worker.md")  # a claude flag, not codex's
-    assert "terminal_launch_args" not in bodies[-1]
+    og.create(
+        "codex", "t", workspace=ws, role="/x/worker.md"
+    )  # codex's own flag, not claude's lean ones
+    assert bodies[-1]["terminal_launch_args"] == ["--dangerously-bypass-approvals-and-sandbox"]
     og.create("claude", "t", workspace=str(tmp_path), role="/x/worker.md")  # outside a checkout
     assert bodies[-1]["terminal_launch_args"] == lean
     (repo / "docs" / "agents").mkdir(parents=True)
@@ -2456,8 +2464,8 @@ def test_create_starts_a_claude_lead_with_the_project_s_autocompact_window(
     ]
     og.create("claude", "t", workspace=ws)  # a child keeps the user's window
     assert "terminal_launch_args" not in bodies[-1]
-    og.create("codex", "t", workspace=ws, top_level=True)  # a claude flag, not codex's
-    assert "terminal_launch_args" not in bodies[-1]
+    og.create("codex", "t", workspace=ws, top_level=True)  # codex's own flag, not claude's
+    assert bodies[-1]["terminal_launch_args"] == ["--dangerously-bypass-approvals-and-sandbox"]
     (tmp_path / "home" / ".claude").mkdir(parents=True)
     (tmp_path / "home" / ".claude" / "settings.json").write_text(
         json.dumps({"env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "330000"}})
@@ -9790,21 +9798,24 @@ def test_start_says_when_the_environment_s_permission_mode_is_not_applied_and_cr
     og.harnesses["agy"] = "antigravity-native"
     sid, _ = omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
     assert sid in og.sessions
-    err = capsys.readouterr().err.splitlines()
-    dropped = [line for line in err if "not applied" in line]
-    assert dropped == [
-        (
-            "codex takes no permission mode: bypassPermissions was not applied; its session starts"
-            " in the harness default"
+    monkeypatch.setenv(
+        "OMNIGENT_PERMISSION_MODE", "acceptEdits"
+    )  # a Claude word, which codex never takes
+    omnigent_agent.start(og, "codex", "t2", "do X", tmp_path / "r.md", None, 0)
+    for mode in ("default", "bypassPermissions"):  # the two words codex's start takes
+        omnigent_agent.start(
+            og, "codex", f"t-{mode}", "do X", tmp_path / "r.md", None, 0, permission_mode=mode
         )
-    ]
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")
+    # codex starts in no-approvals whatever it says, so it is never told a mode was dropped
+    assert "not applied" not in capsys.readouterr().err
     for agent in ("claude", "agy"):  # each takes this mode, so nothing is dropped
         omnigent_agent.start(og, agent, f"t-{agent}", "do X", tmp_path / "r.md", None, 0)
         assert "not applied" not in capsys.readouterr().err
     monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "plan")  # agy takes bypass alone
     omnigent_agent.start(og, "agy", "t-plan", "do X", tmp_path / "r.md", None, 0)
     assert "agy takes no permission mode: plan was not applied" in capsys.readouterr().err
-    # The create a codex session gets is the one it got before: no launch args, no mode field.
+    # A codex create gets codex's own no-approvals flag and no mode field.
     calls = _agent_server(
         monkeypatch,
         {
@@ -9816,7 +9827,8 @@ def test_start_says_when_the_environment_s_permission_mode_is_not_applied_and_cr
     )
     omnigent_agent.Omnigent().create("codex", "t")
     body = calls[-1][2]
-    assert "terminal_launch_args" not in body and "permission_mode" not in body
+    assert body["terminal_launch_args"] == ["--dangerously-bypass-approvals-and-sandbox"]
+    assert "permission_mode" not in body
 
 
 def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_warns_of_none(
@@ -10674,6 +10686,7 @@ def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its
         and "whatever other branch the brief names" in brief
         and "Never ask the owner which branch" in brief
     )
+    assert "claude/ready-demo-<pr>" in brief and "the demo media branch it names" in brief
     assert "never committed.\n" in brief and brief.endswith(omnigent_agent.CLOUD_NO_PUSH + "\ndo X")
     assert (
         "curl -sS -X POST -H 'Content-Type: application/json'" in brief
@@ -14095,3 +14108,38 @@ def test_brief_refuses_an_unreadable_role_and_takes_a_long_brief(
     monkeypatch.setattr(Path, "is_file", raises_on_long)
     assert omnigent_agent.main(["brief", long, "r.md", "--cloud"]) == 0
     assert capsys.readouterr().out.endswith(long)
+
+
+def test_prune_demo_branch_deletes_the_pr_s_media_branch_and_ignores_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_gh(*args: str, **kw: object) -> str:
+        calls.append(args)
+        if len(calls) == 2:
+            raise omnigent_agent.Fail("HTTP 404")
+        return ""
+
+    monkeypatch.setattr(omnigent_agent, "gh", fake_gh)
+    omnigent_agent.prune_demo_branch("o/r", 7)
+    omnigent_agent.prune_demo_branch("o/r", 8)  # already gone: no error
+    assert calls[0] == ("api", "-X", "DELETE", "repos/o/r/git/refs/heads/claude/ready-demo-7")
+
+
+def test_reap_prunes_the_demo_branch_of_a_worker_whose_pr_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude-cloud", "w")
+    og.labels[sid] = {omnigent_agent.PR_LABEL: "o/r#7"}
+    calls: list[tuple[str, ...]] = []
+
+    def fake_gh(*args: str, **kw: object) -> str:
+        calls.append(args)
+        return '{"state": "CLOSED"}'
+
+    monkeypatch.setattr(omnigent_agent, "gh", fake_gh)
+    monkeypatch.setattr(omnigent_agent, "EVENTS", None)
+    omnigent_agent.reap(og, [sid])
+    assert ("api", "-X", "DELETE", "repos/o/r/git/refs/heads/claude/ready-demo-7") in calls
