@@ -1358,7 +1358,9 @@ def test_wait_for_takes_an_exit_line_only_from_the_run_its_pid_names(
         argv[4] = str(run.pid)  # a bare pid restarted at once: no time slack lets the old line in
         assert omnigent_agent.main(argv) == 6
         assert capsys.readouterr().out == "still running\n"
-        log.write_text(f"run {run.pid}\n3 passed\nexit 0\n")  # this run's own line counts
+        log.write_text(
+            f"run {run.pid}\n3 passed\nloop-exit {run.pid} 0\n"
+        )  # this run's own line counts
         assert omnigent_agent.main(argv) == 0
         assert capsys.readouterr().out == "exit 0\n3 passed\n"
         log.write_text("run 1\nprevious run passed\nexit 0\n")
@@ -1456,7 +1458,7 @@ def test_a_detached_gate_tells_the_session_that_started_it_once(tmp_path: Path) 
     # verifier.md's detached recipe with its notify step
     wrapper = (
         f'echo $$ > {pid}; echo "run $$" > {log}; sh -c "echo 4 passed; exit 3" >> {log} 2>&1;'
-        f' echo "exit $?" >> {log}; {sys.executable} {script} wait-for --log {log} --pid $$ --notify'
+        f' printf "\\nloop-exit $$ $?\\n" >> {log}; {sys.executable} {script} wait-for --log {log} --pid $$ --notify'
     )
     env = {**os.environ, "LOOP_NOTIFY": f"{tell} session-1"}
     subprocess.run(["sh", "-c", wrapper], env=env, check=False, capture_output=True, timeout=30)
