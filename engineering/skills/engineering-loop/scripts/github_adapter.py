@@ -70,7 +70,7 @@ PULL = f"""id number url title isCrossRepository author {{ __typename login }} {
   files(first: 100) {{ totalCount nodes {{ path changeType additions deletions }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
   {THREADS}
-  authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
+  authored: commits(first: 100) {{ totalCount nodes {{ commit {{ author {{ user {{ login }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
   mergeQueueEntry {{ state position headCommit {{ committedDate checkSuites {{ totalCount }} }} }}
@@ -432,25 +432,20 @@ def rest_issue(number: int) -> dict[str, Any] | None:
 CHANGE_TYPES = {"added": "ADDED", "removed": "DELETED", "renamed": "RENAMED", "copied": "COPIED"}
 
 
-# a trailer naming a commit's co-author, which GraphQL resolves to an account and REST does not
-CO_AUTHOR = re.compile(r"^co-authored-by:", re.IGNORECASE | re.MULTILINE)
-
-
 def rest_authored(number: int, total: int) -> dict[str, Any]:
-    """A PR's commits as `authored` reads them, from REST: each commit's author and committer account. A co-author
-    trailer, which only GraphQL resolves to an account, counts as an author not read, so exempt() exempts nothing."""
+    """A PR's commits as `authored` reads them, from REST: each commit's author and committer account. A
+    `Co-Authored-By:` trailer is not read: it is text the committer wrote, not another account's push, so exempt()
+    ignores it (GraphQL's `author` is the commit's own author likewise, never a trailer's)."""
     nodes = []
     for found in rest_pages(f"pulls/{number}/commits?per_page=100"):
-        authors = [{"user": actor(found.get("author"))}]
         committer = actor(found.get("committer"))
         # GitHub's web-flow commits for a bot or the API: GraphQL gives that committer no account
         if committer and committer["login"] == "web-flow":
             committer = None
-        co = len(CO_AUTHOR.findall((found.get("commit") or {}).get("message") or ""))
         nodes.append(
             {
                 "commit": {
-                    "authors": {"totalCount": 1 + co, "nodes": authors},
+                    "author": {"user": actor(found.get("author"))},
                     "committer": {"user": committer},
                 }
             }
