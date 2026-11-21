@@ -717,7 +717,9 @@ URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
 ATTACHMENT = "https://github.com/user-attachments/"
 # a cloud session's `demo.sh` pushes each image to a media branch and links it as the PR's own repo's blob at a commit sha;
 # `?raw=true` renders it inline, so it counts as embedded (#1620)
-BLOB = re.compile(r"https://github\.com/([^/?#]+/[^/?#]+)/blob/[0-9a-f]{40}/[^/?#]+\.(?:gif|png|jpe?g)\?raw=true")
+BLOB = re.compile(
+    r"https://github\.com/([^/?#]+/[^/?#]+)/blob/[0-9a-f]{40}/[^/?#]+\.(?:gif|png|jpe?g)\?raw=true"
+)
 # land --wait: seconds between tries, and how long it waits in all before it exits 3; a landing lock older than the
 # ceiling is stale
 POLL, CEILING = 30, 2 * 60 * 60
