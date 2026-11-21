@@ -11,9 +11,12 @@ The test map is `.test-map/` (env `TEST_MAP`): `coverage`, the nightly suite's c
 position (the diff runs from that commit), and the tests that executed it run, one node id each (a file when the id
 holds a space, since the gate splits this output on whitespace, or names a test the file no longer has). The name match
 is the fallback for a script the map does not hold or that changed on main since it, a map whose commit is missing or
-data is unreadable, and a changed line that any import or subprocess ran, since no test is named for that run. It also
-adds, beside the map's tests, every test file that names the script and changed on main since the map, or can skip
-(the nightly's skips leave no context). A line no test ran selects nothing: no test depends on it.
+data is unreadable, and a changed line that any import or subprocess ran, since no test is named for that run. A
+line beside an inserted whole new undecorated function or class is not changed, so its import run is no reason;
+beside any other insertion (a decorator, a constant, an import) it counts as changed, since that code runs at import. It also
+adds, beside the map's tests, every test file that names the script and changed on main since the map, and of those
+files the tests the nightly skipped (a skip leaves no context): by node id from the map's `skipped` list, else, for a
+map without one, every such file that can skip. A line no test ran selects nothing: no test depends on it.
 """
 
 from __future__ import annotations
@@ -41,19 +44,44 @@ def changed(base: str) -> list[str] | None:
     return done.stdout.split() if done.returncode == 0 else None
 
 
-def old_lines(sha: str, path: str) -> set[int]:
-    """The lines of `path` at `sha` that the diff to HEAD changes; an insertion counts the lines around it."""
+HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? [^\n]*\n((?:[-+ \\][^\n]*\n?)*)", re.MULTILINE)
+NEW_BLOCK = re.compile(r"(?:async\s+def|def|class)\s")
+
+
+def new_block(added: list[str]) -> bool:
+    """Whether inserted lines are only whole new undecorated `def`s or `class`es (blank lines between): code no import
+    runs but its definition, so no existing test runs it until a changed caller does."""
+    lines = [line for line in added if line.strip()]
+    if not lines or not NEW_BLOCK.match(lines[0].lstrip()):
+        return False
+    indent = len(lines[0]) - len(lines[0].lstrip())
+    for line in lines:
+        depth = len(line) - len(line.lstrip())
+        if depth < indent or (depth == indent and not NEW_BLOCK.match(line.lstrip())):
+            return False  # a decorator, a constant, a statement at the block's own level
+    return True
+
+
+def old_lines(sha: str, path: str) -> tuple[set[int], set[int]]:
+    """The lines of `path` at `sha` that the diff to HEAD changes, and the lines around each insertion of whole new
+    undecorated functions or classes (new_block), which stand for that code without being changed themselves. Any
+    other insertion counts the lines around it as changed: a decorator or a module-level line runs at import."""
     diff = subprocess.run(
         ["git", "diff", "-U0", "--no-renames", sha, "HEAD", "--", path],
         capture_output=True,
         text=True,
         check=False,
     ).stdout
-    lines: set[int] = set()
-    for start, count in re.findall(r"^@@ -(\d+)(?:,(\d+))? ", diff, re.MULTILINE):
+    changed: set[int] = set()
+    around: set[int] = set()
+    for start, count, body in HUNK.findall(diff):
         first, n = int(start), int(count or 1)
-        lines.update(range(first, first + n) if n else (first, first + 1))
-    return lines
+        if n:
+            changed.update(range(first, first + n))
+        else:
+            added = [line[1:] for line in body.splitlines() if line.startswith("+")]
+            (around if new_block(added) else changed).update((first, first + 1))
+    return changed, around - changed
 
 
 def executed_by(path: str, sha: str, data) -> set[str] | None:
@@ -62,8 +90,12 @@ def executed_by(path: str, sha: str, data) -> set[str] | None:
     if ran is None:
         return None
     ids: set[str] = set()
-    for line in old_lines(sha, path):
-        if "" in ran.get(line, ()):  # import or a subprocess ran it: no test is named for that run
+    changed, around = old_lines(sha, path)
+    for line in changed | around:
+        # import or a subprocess ran a changed line: no test is named for that run. A line beside a new function or
+        # class (old_lines) is not changed, so the import that ran it (the `def` line above, say) says nothing of
+        # that code: only the tests that ran it count.
+        if line in changed and "" in ran.get(line, ()):
             return None
         ids |= {c.split("|")[0] for c in ran.get(line, ()) if c}
     return ids
@@ -89,6 +121,15 @@ def load_map():
         return None
 
 
+def skipped() -> set[str] | None:
+    """The node ids the map's run skipped (`skipped` beside it, from tools/test_map_plugin.py), or None for a map with no
+    such list, whose skips are then guessed from the test files' text (SKIPS)."""
+    try:
+        return set((MAP / "skipped").read_text().split())
+    except OSError:
+        return None
+
+
 def moved_since(sha: str, base: str | None) -> set[str]:
     """The files that changed between the map's commit and the PR's base: the map has not seen them."""
     if base is None:
@@ -103,46 +144,81 @@ def moved_since(sha: str, base: str | None) -> set[str]:
 
 
 def node_files(ids: set[str]) -> set[str]:
-    """Node ids as pytest targets: the id itself when it has no whitespace and its test still exists, else its file."""
+    """Node ids as pytest targets: the id itself when it has no whitespace and its test still exists; a parametrized id
+    with whitespace (the gate splits on it) as its test function, every parameter of it; else its file."""
     out = set()
     for node in ids:
         file, _, name = node.partition("::")
         if not Path(file).exists():
             continue
-        alive = f"def {re.split(r'[\[]', name)[0]}(" in Path(file).read_text(errors="ignore")
-        out.add(node if alive and not re.search(r"\s", node) else file)
+        function = re.split(r"[\[]", name)[0]  # `test_x`, or `TestK::test_x` in a class
+        alive = f"def {function.rsplit('::', 1)[-1]}(" in Path(file).read_text(errors="ignore")
+        if alive and not re.search(r"\s", node):
+            out.add(node)
+        elif alive and not re.search(r"\s", function):
+            out.add(f"{file}::{function}")
+        else:
+            out.add(file)
     return out
 
 
+def say(line: str) -> None:
+    """One line on stderr naming the rule that picked a target, so a slow run's log shows why it ran what it did."""
+    print(f"affected-tests: {line}", file=sys.stderr)
+
+
 def targets(files: list[str] | None, base: str | None = None) -> list[str]:
-    if files is None or any(
-        f.startswith(EVERYTHING) or Path(f).name == "conftest.py" for f in files
-    ):
+    if files is None:
+        say(f"everything: no diff against {base}")
+        return ALL
+    if setup := [f for f in files if f.startswith(EVERYTHING) or Path(f).name == "conftest.py"]:
+        say(f"everything: {setup[0]} is test setup")
         return ALL
     tests = [
         p for r in ALL for p in sorted(Path(r).rglob("test_*.py")) if "/e2e/" not in p.as_posix()
     ]
     picked = set(CHEAP)
     mapped = load_map()
+    say(
+        f"map of {mapped[0][:12]}"
+        if mapped
+        else f"no map at {MAP}: a script runs every test that names it"
+    )
     ran: set[str] = set()
     moved = moved_since(mapped[0], base) if mapped else set()
+    skips = skipped() if mapped else None
     for f in files:
         path = Path(f)
         if path.name.startswith("test_") and path.suffix == ".py" and path.exists():
             picked.add(f)
+            say(f"{f}: a changed test")
         elif path.suffix != ".md":
             by_run = executed_by(f, *mapped) if mapped and path.suffix == ".py" else None
             needle = path.stem if path.suffix == ".py" else path.name
             named = {t: t.read_text(errors="ignore") for t in tests}
             named = {t: text for t, text in named.items() if needle in text}
             if by_run is not None and f not in moved:
+                say(f"{f}: {len(by_run)} tests from the map")
                 ran |= by_run
                 # the name match stays the floor where the map is blind: a test the map has not seen (new or
                 # changed on main since it) and a test the nightly may skip (it has no context)
                 picked.update(
-                    str(t) for t, text in named.items() if str(t) in moved or SKIPS.search(text)
+                    str(t)
+                    for t, text in named.items()
+                    if str(t) in moved or (skips is None and SKIPS.search(text))
                 )
+                if skips is not None:  # the tests of these files the map's run skipped, by node id
+                    ran |= {n for n in skips if n.split("::")[0] in {str(t) for t in named}}
                 continue
+            if mapped and path.suffix == ".py":
+                why = (
+                    "changed on main since the map"
+                    if f in moved
+                    else "not in the map, or an import ran its change"
+                )
+                say(f"{f}: {len(named)} test files name it ({why})")
+            else:
+                say(f"{f}: {len(named)} test files name it")
             picked.update(str(t) for t in named)
     picked.update(n for n in node_files(ran) if n.split("::")[0] not in picked)
     return sorted(picked)

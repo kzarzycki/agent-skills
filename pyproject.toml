@@ -16,6 +16,8 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests", "engineering/tests"]
 pythonpath = ["."]
+# tools/test_map_plugin.py: a nested pytest never inherits this run's PYTEST_ADDOPTS, and a subprocess runs under its test's context
+addopts = "-p tools.test_map_plugin"
 # A test that outlives 60 s fails with every thread's traceback instead of holding the landing lock for the queue;
 # a test that needs longer carries @pytest.mark.timeout(N). QUALIFY_TIMEOUT does not cover pytest.
 timeout = 60
@@ -28,7 +30,7 @@ markers = [
 
 # The test map (tools/affected_tests.py): the nightly runs the suite with `--cov-context=test`, so the data says which
 # test executed each line. relative_files keeps the paths the same across checkouts; patch/parallel record the scripts
-# a test runs as a subprocess (their lines carry no test, so the selector falls back to the name match for them).
+# a test runs as a subprocess, under that test's context (tools/test_map_plugin.py).
 [tool.coverage.run]
 relative_files = true
 parallel = true

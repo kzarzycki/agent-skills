@@ -159,10 +159,14 @@ def test_a_test_the_file_no_longer_has_runs_as_its_file(mapped) -> None:
     assert "tests/test_both.py" in a.targets(mapped("return 2", "return 22"))
 
 
-def test_a_node_id_with_a_space_runs_as_its_file(tmp_path, monkeypatch) -> None:
+def test_a_parametrized_id_with_a_space_runs_as_its_function(tmp_path, monkeypatch) -> None:
+    """#1609: the gate splits targets on whitespace, so `test_p[a b]` runs as `test_p`, every parameter, not its file."""
     monkeypatch.chdir(tmp_path)
     Path("t.py").write_text("def test_p(): pass\n")
-    assert a.node_files({"t.py::test_p[a b]", "t.py::test_p[a]"}) == {"t.py", "t.py::test_p[a]"}
+    assert a.node_files({"t.py::test_p[a b]", "t.py::test_p[a]"}) == {
+        "t.py::test_p",
+        "t.py::test_p[a]",
+    }
 
 
 def land_on_main(name: str, text: str) -> str:
@@ -216,3 +220,59 @@ def test_a_test_that_can_skip_runs_by_name_beside_the_map(mapped) -> None:
 
 def test_a_changed_line_no_test_ran_selects_only_the_cheap_checks(mapped) -> None:
     assert a.targets(mapped("\n\n\ndef two", "\n# c\n\ndef two")) == a.CHEAP
+
+
+def test_stderr_names_the_rule_behind_each_target(mapped, capsys) -> None:
+    """#1609: a slow run's log says why: the map, a test, a name match and why, or everything and which file."""
+    a.targets(mapped("return 1", "return 11") + ["tests/test_one.py", "notes.md"])
+    said = capsys.readouterr().err
+    assert "affected-tests: map of " in said
+    assert "affected-tests: pkg/mod.py: 2 tests from the map" in said
+    assert "affected-tests: tests/test_one.py: a changed test" in said
+    a.targets(["pyproject.toml"])
+    assert "affected-tests: everything: pyproject.toml is test setup" in capsys.readouterr().err
+    a.targets(None, "origin/main")
+    assert "affected-tests: everything: no diff against origin/main" in capsys.readouterr().err
+
+
+def test_a_new_function_beside_a_def_line_selects_only_the_tests_around_it(mapped) -> None:
+    """#1609: a function inserted after `one` borders `def two` (line 5), which only the import ran; that line is not
+    changed, so it doesn't send the whole file to the name match."""
+    picked = a.targets(mapped("\n\ndef two()", "\n\ndef new():\n    return 0\n\n\ndef two()"))
+    assert "tests/test_one.py" not in picked and "tests/test_both.py" not in picked
+
+
+def test_a_map_with_a_skip_list_adds_only_the_skipped_tests(mapped) -> None:
+    """#1609: a test file that can skip no longer runs whole beside the map: only the tests the map's run skipped do."""
+    Path("tests/test_skips.py").write_text(
+        "import pytest\nfrom pkg import mod\n\n\n@pytest.mark.skipif(True, reason='x')\ndef test_s(): mod.two()\n\n\n"
+        "def test_kept(): pass\n"
+    )
+    (a.MAP / "skipped").write_text("tests/test_skips.py::test_s\n")
+    picked = a.targets(mapped("return 2", "return 22"))
+    assert "tests/test_skips.py::test_s" in picked
+    assert "tests/test_skips.py" not in picked
+
+
+@pytest.mark.parametrize(
+    "inserted",
+    [
+        "@staticmethod\n",
+        "LIMIT = 0\n\n\n",
+        "import os\n\n\n",
+        "def new():\n    return 0\n\n\nLIMIT = 0\n\n\n",
+    ],
+    ids=["decorator", "constant", "import", "def then constant"],
+)
+def test_code_that_runs_at_import_beside_a_def_line_falls_back_to_the_name_match(
+    mapped, inserted
+) -> None:
+    """Verifier F2 on #1617: only a whole new undecorated def or class leaves the import run of the line beside it out."""
+    picked = a.targets(mapped("def two()", inserted + "def two()"))
+    assert {"tests/test_one.py", "tests/test_both.py"} <= set(picked)
+
+
+def test_a_class_test_id_with_a_space_runs_as_its_method(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    Path("t.py").write_text("class TestK:\n    def test_m(self): pass\n")
+    assert a.node_files({"t.py::TestK::test_m[a b]"}) == {"t.py::TestK::test_m"}
