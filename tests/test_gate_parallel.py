@@ -1,4 +1,4 @@
-"""The gate's parallel test run (#941): `mise run test` runs pytest on pytest-xdist only with GATE_TEST_PARALLEL=1,
+"""The gate's parallel test run (#941): `mise run test` runs pytest on pytest-xdist only with GATE_TEST_PARALLEL=1, `mise run check-fast` unless it is 0,
 and `-n auto` there takes GATE_JOBS, else the cores free at start (tools/gate_workers.py)."""
 
 from __future__ import annotations
@@ -104,3 +104,55 @@ def test_the_plugin_sets_the_worker_count_xdist_auto_starts(tmp_path: Path) -> N
     )
     assert said.returncode == 0, said.stdout + said.stderr
     assert f"{jobs} workers [1 item]" in said.stdout
+
+
+def check_fast_pytest_words(tmp_path: Path, env: dict[str, str]) -> list[str]:
+    """The words `mise run check-fast` passes to pytest, from its run string under `sh -c` with a fake `uv` (the
+    slot wrapper runs its command, the selector names one test file, pytest records its words) and a fake `mise`."""
+    run = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]["check-fast"]["run"]
+    calls = tmp_path / "calls"
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "mise").write_text("#!/bin/sh\nexit 0\n")
+    (fake / "uv").write_text(
+        "#!/bin/sh\nshift\n"  # drop `run`
+        'case "$1 $2" in\n'
+        '  "python tools/gate_slot.py") shift 2; exec "$@" ;;\n'
+        '  "python tools/affected_tests.py") echo tests/test_a.py ;;\n'
+        f'  pytest*) printf "%s\\n" "$@" > "{calls}" ;;\n'
+        "esac\n"
+    )
+    for tool in ("mise", "uv"):
+        (fake / tool).chmod(0o755)
+    base = {k: v for k, v in os.environ.items() if k != "GATE_TEST_PARALLEL"}
+    subprocess.run(
+        ["sh", "-c", run],
+        env={**base, "PATH": f"{fake}:{base['PATH']}", **env},
+        check=True,
+        cwd=tmp_path,
+    )
+    return calls.read_text().splitlines()
+
+
+@pytest.mark.parametrize("env", [{}, {"GATE_TEST_PARALLEL": "1"}])
+def test_check_fast_runs_the_touched_tests_on_xdist_by_default(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    assert check_fast_pytest_words(tmp_path, env) == [
+        "pytest",
+        "-q",
+        "-m",
+        "not live_agent",
+        *PARALLEL,
+        "tests/test_a.py",
+    ]
+
+
+def test_check_fast_runs_serially_with_gate_test_parallel_0(tmp_path: Path) -> None:
+    assert check_fast_pytest_words(tmp_path, {"GATE_TEST_PARALLEL": "0"}) == [
+        "pytest",
+        "-q",
+        "-m",
+        "not live_agent",
+        "tests/test_a.py",
+    ]
