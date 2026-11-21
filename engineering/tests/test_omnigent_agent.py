@@ -10674,6 +10674,7 @@ def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its
         and "whatever other branch the brief names" in brief
         and "Never ask the owner which branch" in brief
     )
+    assert "claude/ready-demo-<pr>" in brief and "the demo media branch it names" in brief
     assert "never committed.\n" in brief and brief.endswith(omnigent_agent.CLOUD_NO_PUSH + "\ndo X")
     assert (
         "curl -sS -X POST -H 'Content-Type: application/json'" in brief
@@ -14095,3 +14096,38 @@ def test_brief_refuses_an_unreadable_role_and_takes_a_long_brief(
     monkeypatch.setattr(Path, "is_file", raises_on_long)
     assert omnigent_agent.main(["brief", long, "r.md", "--cloud"]) == 0
     assert capsys.readouterr().out.endswith(long)
+
+
+def test_prune_demo_branch_deletes_the_pr_s_media_branch_and_ignores_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_gh(*args: str, **kw: object) -> str:
+        calls.append(args)
+        if len(calls) == 2:
+            raise omnigent_agent.Fail("HTTP 404")
+        return ""
+
+    monkeypatch.setattr(omnigent_agent, "gh", fake_gh)
+    omnigent_agent.prune_demo_branch("o/r", 7)
+    omnigent_agent.prune_demo_branch("o/r", 8)  # already gone: no error
+    assert calls[0] == ("api", "-X", "DELETE", "repos/o/r/git/refs/heads/claude/ready-demo-7")
+
+
+def test_reap_prunes_the_demo_branch_of_a_worker_whose_pr_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude-cloud", "w")
+    og.labels[sid] = {omnigent_agent.PR_LABEL: "o/r#7"}
+    calls: list[tuple[str, ...]] = []
+
+    def fake_gh(*args: str, **kw: object) -> str:
+        calls.append(args)
+        return '{"state": "CLOSED"}'
+
+    monkeypatch.setattr(omnigent_agent, "gh", fake_gh)
+    monkeypatch.setattr(omnigent_agent, "EVENTS", None)
+    omnigent_agent.reap(og, [sid])
+    assert ("api", "-X", "DELETE", "repos/o/r/git/refs/heads/claude/ready-demo-7") in calls

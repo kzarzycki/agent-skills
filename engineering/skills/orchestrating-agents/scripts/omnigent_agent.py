@@ -867,7 +867,8 @@ CLOUD_NOTE = (
 CLOUD_BRANCHES = (
     "Branches (the owner's standing permission for this session): you may create and push any number"
     " of new branches named `claude/ready-*`, one per PR, besides the branch this session started on."
-    " Push each PR to its own new branch. Never force-push, never delete a branch you didn't create"
+    " Push each PR to its own new branch, and its demo (the GIF or PNG `demo.sh` makes, nothing else) to the"
+    " media-only branch `claude/ready-demo-<pr>`. Never force-push, never delete a branch you didn't create"
     " in this session, and never push to `main` or to any branch outside `claude/`.\n"
 )
 # Every acp:claude-cloud session's preamble (#1534): where a file goes is mechanics, so a session that
@@ -875,7 +876,7 @@ CLOUD_BRANCHES = (
 # branch moves the head a verifier reviewed.
 CLOUD_NO_PUSH = (
     "Reports, logs and verifier output are never committed or pushed, to any branch: a commit on the PR's"
-    " branch moves the head under review, and the `claude/ready-*` grant above is for code only. The one exception is the gate record that"
+    " branch moves the head under review, and the `claude/ready-*` grant above is for code, plus the demo media branch it names. The one exception is the gate record that"
     " `approvals.py local-ci --record` pushes itself, which is not a report. They travel"
     " in your report comment (or, with no PR, your final message); a file too large for one comment goes in a"
     " short follow-up comment, or is trimmed with its path named. A push target or branch question never goes"
@@ -5458,6 +5459,16 @@ def pr_hold(repo: str, pr: int) -> str | None:
     return f"{repo}#{pr} is open" if state == "OPEN" else None
 
 
+def prune_demo_branch(repo: str, pr: int) -> None:
+    """Delete the media-only branch ``claude/ready-demo-<pr>`` a cloud session pushed a PR's demo to (a cloud
+    session can push a branch but not delete one), once the PR is merged or closed. A branch already gone
+    or a failed delete is no error: the demo stays linked from the PR's comment until the next reap."""
+    try:
+        gh("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/claude/ready-demo-{pr}")
+    except Fail:
+        pass
+
+
 def clear_closed_pr_events(repo: str, pr: int, workspace: object) -> None:
     """Remove the loop events (refs of every kind) of the head branch of PR ``pr`` of ``repo``, here and on origin,
     from the checkout ``workspace``: a closed PR's steps are over, and a ref no producer clears (an unmerged close, a
@@ -5626,6 +5637,7 @@ def reap(
                 continue
             if found and found not in cleared and not elsewhere(og, info):
                 cleared.add(found)  # the PR is merged or closed: its steps' events are over
+                prune_demo_branch(*found)
                 clear_closed_pr_events(*found, info.get("workspace"))
         # an open card is the owner's question: archiving ends its way back, --force too
         if cards := cards_of(info):
