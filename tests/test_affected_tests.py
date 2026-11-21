@@ -256,8 +256,13 @@ def test_a_map_with_a_skip_list_adds_only_the_skipped_tests(mapped) -> None:
 
 @pytest.mark.parametrize(
     "inserted",
-    ["@staticmethod\n", "LIMIT = 0\n\n\n", "import os\n\n\n"],
-    ids=["decorator", "constant", "import"],
+    [
+        "@staticmethod\n",
+        "LIMIT = 0\n\n\n",
+        "import os\n\n\n",
+        "def new():\n    return 0\n\n\nLIMIT = 0\n\n\n",
+    ],
+    ids=["decorator", "constant", "import", "def then constant"],
 )
 def test_code_that_runs_at_import_beside_a_def_line_falls_back_to_the_name_match(
     mapped, inserted
