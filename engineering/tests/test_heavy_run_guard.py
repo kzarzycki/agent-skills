@@ -449,6 +449,9 @@ def marked(tmp_path: Path) -> dict[str, str]:
         "cd sub && LOOP_HOST_RUN=x pytest",
         "LOOP_HOST_RUN=x uv run engineering/skills/engineering-loop/scripts/approvals.py local-ci --record",
         "bash -c 'LOOP_HOST_RUN=x make test'",
+        'cd "$WT" && mise run check-fast',
+        "cd $(git rev-parse --show-toplevel) && mise run check-fast",
+        "sh -c 'cd \"$X\" && pytest'",
     ],
 )
 def test_an_orchestration_only_host_refuses_every_heavy_run(

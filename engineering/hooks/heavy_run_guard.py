@@ -353,11 +353,17 @@ def find_heavy(command: str, cwd: Path, depth: int = 0, anywhere: bool = False) 
     """The directory a heavy segment of ``command`` runs in, inside a loop repo (``loop_repo``),
     following each ``cd`` from ``cwd`` and judging a ``sh -c`` string as a command of its own; None
     when there is none. A segment after a ``cd`` it can't follow is not judged. With ``anywhere``
-    (an orchestration-only host) a segment counts in any directory and its ``LOOP_HOST_RUN`` prefix
-    is ignored."""
+    (an orchestration-only host) a segment counts in any directory, its ``LOOP_HOST_RUN`` prefix is
+    ignored, and one after a ``cd`` it can't follow (``cd "$WT"``) is judged in the last directory
+    it knew, since where it runs no longer matters there."""
     here: Path | None = cwd
+    known = cwd
     for words in segments(command):
         rest, host, here = strip_leading(words, here)
+        if anywhere and here is None:
+            here = known
+        if here is not None:
+            known = here
         if (host and not anywhere) or here is None or not rest:
             continue
         if (inner := shell_string(rest)) is not None:
