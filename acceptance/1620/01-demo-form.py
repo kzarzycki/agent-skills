@@ -1,4 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["pyyaml"]
+# ///
 """#1620 Before merge line 2: demo_form takes a fixture PR whose `## Demo` comment links the repo's own sha blob
 `?raw=true` (exit 0), and refuses one that links another repo's blob (exit 1). Synthetic data, no network."""
 
