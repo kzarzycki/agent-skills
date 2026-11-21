@@ -172,7 +172,7 @@ count its report; a ``start --top-level`` run from a lead the registry follows, 
 child, arms nothing and subscribes that lead, since its helper is the lead's to hear); ``run``, ``send`` and ``wait`` disarm it when they
 return the report or a question; ``reap`` drops the line of each session it finishes, before
 finishing it, so the supervisor posts no ``archived`` for a finish its notified session ran.
-``run``, ``wait``, ``reap`` and the supervisor (a child's relayed ``DONE`` report or failure; a followed lead's ``DONE`` once a lead waiting on it is told) all finish a session through
+``run``, ``wait``, ``reap`` and the supervisor (a child's relayed ``DONE`` report or failure; a followed lead's ``DONE`` once a lead waiting on it (``--after``) is told; a lead a followed lead started is reaped by its starter) all finish a session through
 ``finish_delivered``, the one place a taken result archives it: never one that asked a
 question, nor one given ``--keep`` (``run`` or ``start``, which labels it ``omni.keep``, so the supervisor leaves it open too), nor one with an open question card, a pending prompt or background work, nor a worker given ``--pr`` unless ``--no-keep`` (``--keep`` stays accepted):
 a fix round or the next verifier pass reaches a kept worker with ``send``, warm, where a fresh one repeats its setup.
@@ -5523,8 +5523,6 @@ def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
 RELAYED_END = re.compile(r": (report written: |failed: )")
 # A session's final states that end its run without a result: each counts as finished, as ``DONE`` does.
 FAILED_STATUSES = {"failed", "cancelled", "canceled", "errored", "error"}
-# ``omnigent.keep`` is set when a round needs the owner and nothing clears it: it is no hold here, since
-# the open card it stood for is what keeps a session (``cards_of``), and a stale label must not outlast it.
 KEEP_LABEL = "omni.keep"  # set by ``start --keep``: the session stays open once its result is taken
 
 
@@ -5540,6 +5538,7 @@ def finish_delivered(
     held: dict[tuple[str, int], str | None] | None = None,
     cleared: set[tuple[str, int]] | None = None,
     seen: set[str] | None = None,
+    named: bool = False,
 ) -> tuple[str, bool]:
     """The one place a taken result finishes its session (``Omnigent.archive``, which frees its agent
     process and runner file descriptors; the transcript stays and an unarchive covers follow-ups).
@@ -5558,6 +5557,11 @@ def finish_delivered(
     session first. The session leaves ``registry`` (the caller the supervisor would tell) before it
     is archived. ``held`` and ``cleared`` carry the PR lookups across a ``reap``'s sessions.
 
+    ``named`` is a ``reap`` of this very session, its starter's acknowledgement of the result: the
+    ``KEEP_LABEL`` is then no hold, ``force`` included (the supervisor's relay and the children of
+    a finished parent honour it). A stale ``omnigent.keep`` label, set when a round needs the owner
+    and cleared by nothing, holds nothing here: only the open card it stood for does (``cards_of``).
+
     Once a session is archived its children are finished the same way (``settled`` False: one still
     running, with an open card, held or kept stays), since a parent that ended has nobody to take
     their results; ``seen`` stops a loop in the children listing. Their lines follow the parent's."""
@@ -5568,7 +5572,7 @@ def finish_delivered(
     status, name = str(info.get("status")), f"{sid} {info.get('title') or ''}"
     if info.get("archived"):
         return f"{name}: already archived", False
-    if keep or (info.get("labels") or {}).get(KEEP_LABEL):
+    if keep or (not named and (info.get("labels") or {}).get(KEEP_LABEL)):
         return f"{name}: kept (--keep)", False
     if hold_pr and (label := held_by(info)):
         found = pr_label(label)
@@ -5594,20 +5598,18 @@ def finish_delivered(
             f"{name}: archived (stuck); check git status in"
             f" {info.get('workspace') or '(workspace unknown)'}"
         ), False
-    if (
-        prompts_of(info)
-        or live_tasks(info)
-        or (not settled and (status in RUNNING or info.get("pending_inputs")))
-    ):
-        busy = (
-            "blocked on a prompt"
-            if prompts_of(info)
-            else "background work"
-            if live_tasks(info)
-            else status
-            if status in RUNNING
-            else "input pending"
-        )
+    busy = (
+        "blocked on a prompt"
+        if prompts_of(info)
+        else "background work"
+        if live_tasks(info)
+        else status
+        if not settled and status in RUNNING
+        else "input pending"
+        if not settled and info.get("pending_inputs")
+        else ""
+    )
+    if busy:
         note = " (running with recent activity, not stuck)" if force and busy == status else ""
         return f"{name}: kept ({busy}){note}", False
     # ponytail: a supervisor that read the registry just before this drop can still post
@@ -5665,7 +5667,14 @@ def reap(
     named = pr_workers(og, pr) if merged else []
     for sid in dict.fromkeys(sessions + (og.children(parent) if parent else []) + named):
         line, bad = finish_delivered(
-            og, sid, registry=registry, force=force, settled=False, held=held, cleared=cleared
+            og,
+            sid,
+            registry=registry,
+            force=force,
+            settled=False,
+            held=held,
+            cleared=cleared,
+            named=sid in sessions,
         )
         lines.append(line)
         failed |= bad
@@ -10204,17 +10213,16 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     except Fail as e:
         if e.code == ASKED and sid:  # the caller has the question
             arm_quietly(registry, sid)
-        elif unreported:
-            write_failed(og, sid, unreported, e)
-        elif sid and args.cmd in (
-            "run",
-            "wait",
-        ):  # a run that ended failed, cancelled or errored is finished too
-            try:
-                if str(og.info(sid).get("status")) in FAILED_STATUSES:
-                    finish_delivered(og, sid, keep=bool(getattr(args, "keep", False)))
-            except Fail:
-                pass  # the failure is what the caller reads
+        else:
+            if unreported:
+                write_failed(og, sid, unreported, e)
+            # a run that ended failed, cancelled or errored is finished too, its FAILED report written
+            if sid and args.cmd in ("run", "wait"):
+                try:
+                    if str(og.info(sid).get("status")) in FAILED_STATUSES:
+                        finish_delivered(og, sid, keep=bool(getattr(args, "keep", False)))
+                except Fail:
+                    pass  # the failure is what the caller reads
         print(e, file=sys.stderr)
         ended["failure"] = (str(e).splitlines() or [""])[0]
         return e.code

@@ -124,9 +124,22 @@ def test_reap_goes_through_the_same_function_and_keeps_what_it_keeps(
     )
     a, b = child(og, tmp_path, "a"), child(og, tmp_path, "b")
     og.labels[b] = {omnigent_agent.KEEP_LABEL: "1"}
-    lines, failed = omnigent_agent.reap(og, [a, b])
-    assert seen == [a, b] and not failed and og.archived == [a]
-    assert "kept (--keep)" in lines[1]
+    og.kids = [b]  # b is a's child: the cascade honours the label
+    lines, failed = omnigent_agent.reap(og, [a])
+    assert seen == [a, b] and not failed and og.archived == [a]  # b by the cascade
+    assert "kept (--keep)" in lines[0]
+
+
+def test_a_reap_naming_the_session_finishes_it_despite_its_keep_label_force_included(
+    og: base.FakeOmnigent, tmp_path: Path
+) -> None:
+    a, b = child(og, tmp_path, "a"), child(og, tmp_path, "b")
+    og.labels[a] = og.labels[b] = {omnigent_agent.KEEP_LABEL: "1"}
+    og.kids = [b]
+    assert "s0 : archived (idle)" in omnigent_agent.reap(og, [a], force=True)[0][0]
+    assert og.archived == [a]  # b is a child, not named: it keeps
+    assert omnigent_agent.reap(og, [b])[0][0].endswith("archived (idle)")
+    assert og.archived == [a, b]
 
 
 def test_a_top_level_lead_is_archived_when_its_starter_reaps_it(
@@ -143,7 +156,7 @@ def test_a_top_level_lead_is_archived_when_its_starter_reaps_it(
 
 
 class Archiving(base.Leads):
-    """Leads whose archive and cards are visible."""
+    """Leads that record each session archived."""
 
     def __init__(self, **histories: list[dict]) -> None:
         super().__init__(**histories)
@@ -265,6 +278,17 @@ def test_a_stale_owner_round_label_holds_nothing_but_an_open_card_does(
     og.prompts = []  # answered or withdrawn
     assert omnigent_agent.finish_delivered(og, sid)[0].endswith("archived (idle)")
     assert og.archived == [sid]
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled", "errored"])
+def test_run_writes_the_failed_report_and_archives_a_child_that_ended_without_a_result(
+    og: base.FakeOmnigent, tmp_path: Path, status: str
+) -> None:
+    og.final = status
+    (tmp_path / "brief.md").write_text("do it")
+    assert omnigent_agent.main(["run", "claude", "t", "brief.md", "r.md", "--timeout", "5"]) != 0
+    assert (tmp_path / "r.md").read_text().startswith("FAILED:")
+    assert og.archived == ["s0"]
 
 
 @pytest.mark.parametrize("status", ["failed", "cancelled", "errored"])
