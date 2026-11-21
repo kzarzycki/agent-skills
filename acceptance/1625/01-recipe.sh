@@ -1,7 +1,9 @@
 #!/bin/sh
-# #1625 Before merge: SKILL.md's Cloud worker section holds the recipe bullet naming launch-dir, --pr, --workspace,
-# --host and host.md; lead.md's step 4 and verifier step point to it; omnigent.md points back; none names a
-# hostname or an absolute path.
+# #1625 Before merge (with its addendum): SKILL.md's Cloud worker section holds the recipe bullet, with each command in
+# its full form (launch-dir, run --pr ... --workspace, start ... --top-level --host <host> --workspace ... --pr, wait
+# <session> <report> --pr), the host sources (host.md, Placement:), the verifier routes (cloud_verifier.py verify and
+# thread, the start codex refusal) and the brief; lead.md's step 4 and verifier step point to it; omnigent.md points
+# back; the bullet fixes no hostname and no absolute path.
 set -e
 cd "$(git rev-parse --show-toplevel)/engineering/skills"
 python3 - <<'PY'
@@ -9,8 +11,7 @@ import re, sys
 skill = open("engineering-loop/SKILL.md").read()
 lead = open("engineering-loop/lead.md").read()
 back = open("orchestrating-agents/backends/omnigent.md").read()
-sec = skill[skill.index("\n## Cloud worker\n"):]
-sec = sec[1:]
+sec = skill[skill.index("\n## Cloud worker\n") + 1:]
 nxt = re.search(r"\n## ", sec)
 sec = sec[: nxt.start()] if nxt else sec
 m = re.search(r"^- \*\*Starting a PR's cloud worker\.\*\*.*?(?=^- \*\*|\Z)", sec, re.S | re.M)
@@ -18,12 +19,36 @@ fails = []
 if not m:
     fails.append("SKILL.md Cloud worker has no 'Starting a PR's cloud worker' bullet")
 else:
-    for t in ("launch-dir", "--pr", "--workspace", "--host", "host.md"):
-        if t not in m.group(0):
-            fails.append(f"recipe bullet lacks {t}")
-    for pat in (r"(?<![\w.])/(?:home|Users|tmp|opt|var)/", r"\b[\w-]+\.(?:local|lan|internal|com)\b"):
-        if re.search(pat, m.group(0)):
-            fails.append(f"recipe bullet matches {pat}")
+    b = m.group(0)
+    need = {
+        "launch-dir": r"launch-dir <remote> <branch> <path>",
+        "worktrees convention": r"\.worktrees/",
+        "environment pin": r"Cloud worker:[^`]*env <name>",
+        "run form": r"run --pr <n> <agent> \"<title>\" <brief> <report> --workspace <launch dir>",
+        "start form": r"start <agent> \"<title>\" <brief> <report> --top-level --host <host> --workspace <launch dir on that host> --pr <n>",
+        "wait form": r"wait <session> <report> --pr <n>",
+        "host note": r"~/\.agents/host\.md",
+        "placement": r"`Placement:`",
+        "verify route": r"cloud_verifier\.py verify --pr <n>",
+        "thread route": r"cloud_verifier\.py thread",
+        "worker-VM pointer": r"Verifier in the worker's VM",
+        "thread pointer": r"Verifier on a Codex Cloud thread",
+        "brief": r"approvals\.py brief <pr>",
+        "codex refusal": r"start codex … --pr` is refused by design, since Codex has no cloud bridge",
+    }
+    for name, pat in need.items():
+        if not re.search(pat, b):
+            fails.append(f"recipe bullet lacks {name}")
+    for flag in re.findall(r"--host (\S+)", b):
+        if not flag.startswith("<"):
+            fails.append(f"--host names {flag}, not a placeholder")
+    for flag in re.findall(r"--workspace (\S+)", b):
+        if not flag.startswith("<"):
+            fails.append(f"--workspace names {flag}, not a placeholder")
+    if re.search(r"(?<![\w.<>~])/[\w.-]+/", b):
+        fails.append("recipe bullet holds an absolute path")
+    if re.search(r"\b[\w-]+\.(?:local|lan|internal|com|org|net|io)\b", b):
+        fails.append("recipe bullet holds a hostname")
 ref = "Starting a PR's cloud worker"
 s4 = lead[lead.index("\n4. **Build.**"):lead.index("\n5. **After each merge")]
 s7 = lead[lead.index("\n7. **Verify**"):lead.index("\n8. **Land**")]
