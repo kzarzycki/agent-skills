@@ -5495,6 +5495,75 @@ def held_by(session: dict) -> str:
     return "" if labels.get("omni.role") == "verifier" else str(labels.get(PR_LABEL, ""))
 
 
+def replaced(og: Omnigent, sid: str, info: dict) -> bool:
+    """Whether ``sid``, a ``--pr`` worker, was replaced: a live worker (``omni.role`` ``worker``, as ``sid`` is) of the same
+    PR (the same ``PR_LABEL``) was made after it, which is how ``start --pr`` replaces one; a proof run on the PR is no
+    replacement. A session with no PR label, or whose lists can't be
+    read, is not known to be replaced."""
+    label, made = held_by(info), float(info.get("created_at") or 0)
+    if not label or not made or (info.get("labels") or {}).get("omni.role") != "worker":
+        return False
+    try:
+        page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
+    except Exception:  # noqa: BLE001 - unread: not known to be replaced, so it stays news
+        return False
+    return any(
+        str(s.get("id")) != sid
+        and not s.get("archived")
+        and held_by(s) == label
+        and (s.get("labels") or {}).get("omni.role") == "worker"
+        and float(s.get("created_at") or 0) > made
+        for s in page.get("data", [])
+    )
+
+
+# a line that is itself an owner question or a wait on the owner's card: the line's own words, never a quoted (``>``) or
+# bullet (``-``) line, and never a bare mention (``USER NEEDED`` takes its colon, as the others do)
+OWNER_ASK = re.compile(
+    r"[\s*_#]*(?:(?:USER NEEDED|needs?[ -]owner|question for the owner)\s*:|"
+    r"waiting on (?:a|the|an|its|your) (?:owner )?card\b)",
+    re.IGNORECASE,
+)
+
+
+def asks_owner(text: str) -> bool:
+    """Whether any line of ``text`` is an owner question (see ``OWNER_ASK``): a turn end puts it last, after its body."""
+    return any(OWNER_ASK.match(line) for line in text.splitlines())
+
+
+def waits_on_card(og: Omnigent, sid: str, text: str) -> bool:
+    """Whether a turn end ``text`` of ``sid`` waits on an open owner card: ``og`` (the supervisor's ``Uncarded``, which
+    takes cards out of ``info``) kept one it read, and the end asks the owner. A message whose first line opens ``DONE`` is
+    no wait, though it mentions the owner."""
+    first = next((x for x in text.splitlines() if x.strip()), "")
+    return (
+        bool(getattr(og, "cards", {}).get(sid))
+        and not ENDING_DONE.match(first)
+        and asks_owner(text)
+    )
+
+
+ENDING_DONE = re.compile(r"[\s*_#]*DONE\b")
+
+
+def withdraw(og: Omnigent, sid: str, card: str = "") -> list[str]:
+    """Cancel the open question cards of ``sid`` (only ``card``, an elicitation id, when given): whoever settles a
+    card's question withdraws it, so the owner never answers a moot one. A line per card; ``Fail`` when none is open."""
+    info = og.info(sid)
+    open_ = [
+        e
+        for e in info.get("pending_elicitations") or []
+        if not holds_input(e) and (not card or str(e.get("elicitation_id")) == card)
+    ]
+    if not open_:
+        raise Fail(f"session {sid}: no open question card{f' {card}' if card else ''}")
+    lines = []
+    for e in open_:
+        og.resolve(sid, str(e["elicitation_id"]), "cancel")
+        lines.append(f"session {sid}: withdrew card {e['elicitation_id']}: {_asks(e)}")
+    return lines
+
+
 def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
     """The live sessions labelled with a PR (``PR_LABEL``), of PR number ``pr`` when given."""
     page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
@@ -5536,7 +5605,8 @@ def reap(
     A ``--pr`` worker (labelled ``PR_LABEL`` ``owner/name#N``) is kept, ``force`` included, while its PR
     is open (or can't be read), since a fix round or the next verifier pass reaches it warm; it is
     finished once the PR is merged or closed, and the loop events of its branch are cleared (``clear_closed_pr_events``). ``merged`` also takes every live worker of a
-    PR number (``pr``'s, when given), finishing those whose PR is merged or closed and leaving the open ones."""
+    PR number (``pr``'s, when given), finishing those whose PR is merged or closed and leaving the open ones.
+    ``force`` also finishes a replaced worker (``replaced``) while its PR is open: its successor holds the PR."""
     lines, failed = [], False
     held: dict[tuple[str, int], str | None] = {}
     cleared: set[tuple[str, int]] = set()
@@ -5547,7 +5617,7 @@ def reap(
         if info.get("archived"):
             lines.append(f"{sid} {info.get('title') or ''}: already archived")
             continue
-        if label := held_by(info):
+        if (label := held_by(info)) and not (force and replaced(og, sid, info)):
             found = pr_label(label)
             if found and found not in held:
                 held[found] = pr_hold(*found)
@@ -6206,6 +6276,9 @@ def follow(
         return "", key
     items = og.items(sid)
     last = last_message(items)
+    if last and last.get("role") != "user" and waits_on_card(og, sid, text_of(last)):
+        told[sid] = key  # its owner card reaches the owner; this end is no news above
+        return "", key
     if not (last and last.get("role") != "user" and ENDING.search(text_of(last))):
         # ponytail: item and child clocks against the local one, as check does; the end is when
         # this loop first saw it, so a poll interval late. Upgrade: the turn's end time, if Omnigent
@@ -6536,6 +6609,7 @@ def lead_status(info: dict, items: list[dict]) -> dict:
         "still": "STILL WORKING" in text,  # an intermediate turn: its wait is not its end
         "asked": bool(items) and items[-1].get("role") == "user",  # prompted since it answered
         "last_line": text.splitlines()[0][:200] if text else "",
+        "last_text": text,
         "turn": str(said[-1].get("id") or said[-1].get("created_at") or "") if said else "",
         "last": str(items[-1].get("id") or items[-1].get("created_at") or "") if items else "",
         "turn_at": float(said[-1].get("created_at") or 0) if said else 0.0,
@@ -8371,6 +8445,7 @@ def supervise_registry(
         )
         head = f"{sid} {lead['title']}".rstrip()
         done: list[str] = []  # members that ended well
+        seen: dict[str, tuple[dict, dict]] = {}  # each session read: its info and ``lead_status``
         failed = ""
         pending = False
         ends: list[str] = []  # each member's end, the id of its news
@@ -8389,11 +8464,13 @@ def supervise_registry(
             lead did not name that counts only when the message came after the lead's own turn,
             so an old idle session is no news."""
             try:
-                over = lead_status(og.info(other), og.items(other))
+                info = og.info(other)
+                over = lead_status(info, og.items(other))
             except Exception as e:  # noqa: BLE001 - unread: not known to have ended
                 log(("kin", other), f"{other}: history not read: {reason(e)}")
                 return None
             log(("kin", other), None)
+            seen[other] = (info, over)
             at = datetime.fromtimestamp(over["turn_at"], timezone.utc).strftime("%H:%MZ")
             if over["state"] in ("failed", "archived"):
                 return f"{other} {over['state']}", True, end_of(over)
@@ -8484,9 +8561,28 @@ def supervise_registry(
             return
         for other in kin:
             end = session_end(other, named=False)
+            if end and other in seen and quiet_end(sid, other, *seen[other]):
+                continue
             if end and (end[1] or not pending):
                 line = f"{head}: {end[0]}; a session it started"
                 say(line, sid, f"deadline:{sid}:{other}:{end[2]}", "news")
+
+    def quiet_end(sid: str, other: str, info: dict, over: dict) -> bool:
+        """Whether ``other``'s end is no news to ``sid``, which started it: it is archived, or failed and was replaced
+        (the lead has its successor); it ended a turn the lead's history already holds an item after (it read it, or
+        Omnigent's notice reached it); or it waits on an open owner card, which reaches the owner itself. A failure,
+        and a turn end the lead has not read, stay news."""
+        if over["state"] == "archived":
+            return True
+        if over["state"] == "failed":
+            return replaced(og, other, info)
+        if over["state"] != "idle":
+            return False
+        read = any(  # an item after the end that names the child: the lead's read of it, or Omnigent's notice
+            float(i.get("created_at") or 0) > over["turn_at"] > 0 and other in str(i)
+            for i in looks.get(sid, ({}, []))[1]
+        )
+        return read or waits_on_card(og, other, over["last_text"])
 
     def due(sid: str, lead: dict) -> None:
         """Send a transient failure's revive once its backoff (``retrying.at``) has passed, through
@@ -9289,6 +9385,15 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     )
     p.add_argument("session")
     p.add_argument("quote", help="the owner's words verbatim, a file or the text itself")
+    p = sub.add_parser(
+        "withdraw",
+        description="cancel a session's open question cards (or one, by id): whoever settles a card's question"
+        " withdraws it, so the owner never answers a moot card",
+    )
+    p.add_argument("session")
+    p.add_argument(
+        "card", nargs="?", default="", help="the card's question id; default: every open card"
+    )
     p = sub.add_parser("approve")
     p.add_argument("session")
     p.add_argument("--decline", action="store_true", help="decline instead of accept")
@@ -9736,6 +9841,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             print(og.read_file(sid, args.path))
             return 0
         if args.cmd == "relay":
+            if not (args.answer or args.source) and asks_owner(text_or_file(args.message)[0]):
+                raise Fail(
+                    "relay refused: the message carries a question for the owner, which is a card, never a relayed"
+                    " line (post it with sys_ask_user_question); say the fact and the action wanted instead"
+                )
             print(
                 relay(
                     og,
@@ -9773,6 +9883,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             said, line = owner_said(og, args.session, text_or_file(args.quote)[0])
             print(line)
             return 0 if said else 1
+        if args.cmd == "withdraw":
+            print("\n".join(withdraw(og, args.session, args.card)))
+            return 0
         if args.cmd == "approve":
             lines, failed = approve(og, args.session, args.decline)
             print("\n".join(lines))

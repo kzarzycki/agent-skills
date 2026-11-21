@@ -285,7 +285,7 @@ it quoted.
   often hours later. Their reply arrives as your next message. Omnigent's
   `sys_ask_user_question` is the way to ask without stopping: it posts a card and returns at
   once, so keep working, and act on the answer when it arrives as a message
-  (`[answer to <question id>]`).
+  (`[answer to <question id>]`). Withdraw a card whose question you settle (orchestrating-agents' backends/omnigent.md, Settle it).
 - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge go on a head): a question
   alone holds nothing, since `land` batches every PR that is ready.
 
