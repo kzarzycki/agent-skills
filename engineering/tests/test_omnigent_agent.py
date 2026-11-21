@@ -14151,8 +14151,10 @@ def test_every_cloud_preamble_says_a_helper_is_a_native_subagent(
 ) -> None:
     """A created child of a cloud session lands on the bridge host, which runs no loop work (#1659)."""
     rule = (
-        "Inside a claude-cloud session, a helper is a native subagent in the VM, never a session made"
-        " with `sys_session_create`: a created child lands on the bridge host, which runs no loop work."
+        "Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native"
+        " subagent in the VM, never a session made with `sys_session_create`: a created child lands on the"
+        " bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent,"
+        " not a helper, and starts as `brief` describes."
     )
     assert rule in omnigent_agent.first_message(True, top_level, pr, "r.md", None, "do X")
     assert "sys_session_create`: a created child" not in omnigent_agent.first_message(

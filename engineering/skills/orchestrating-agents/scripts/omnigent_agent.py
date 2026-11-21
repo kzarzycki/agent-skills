@@ -888,8 +888,10 @@ CLOUD_NO_PUSH = (
 # Every acp:claude-cloud session's preamble (#1659): a cloud lead started a "host helper" with
 # sys_session_create, which landed on the bridge host and ran a suite there.
 CLOUD_HELPER = (
-    "Inside a claude-cloud session, a helper is a native subagent in the VM, never a session made"
-    " with `sys_session_create`: a created child lands on the bridge host, which runs no loop work.\n"
+    "Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native"
+    " subagent in the VM, never a session made with `sys_session_create`: a created child lands on the"
+    " bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent,"
+    " not a helper, and starts as `brief` describes.\n"
 )
 # A child placed on a host (any harness but the cloud one, never a top-level lead, whose own heavy
 # runs go to the cloud): its placement already chose the host, so it prefixes heavy runs past the
