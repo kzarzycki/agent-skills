@@ -8,8 +8,10 @@
 # which the next `land` evicts back to draft.
 #
 # No CI check is named here: Mergify reads the base's required checks from its rules (`branch_protection_injection_mode`,
-# default `queue`) and requires them on the PR to queue it and on the draft PR to merge it, so the file suits any repo
-# whose main requires its CI check and does not require `land` itself, which never reaches the draft PR.
+# default `queue`) and requires them on the PR to queue it and on the draft PR to merge it. So the file suits any repo
+# whose default branch is `main`, whose main requires its CI check and does not require `land` itself (`land` never
+# reaches the draft PR), and whose required check runs on Mergify's draft PRs: a `pull_request` trigger that filters
+# out neither drafts nor `mergify/merge-queue/*` head branches, else no batch ever merges.
 
 queue_rules:
   - name: default
