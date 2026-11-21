@@ -13104,7 +13104,8 @@ def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
         n += 1
         Starter.launch = starter
         omnigent_agent.start(og, agent, f"t{n}", "do X", tmp_path / "r.md", None, 0, **kw)
-        return modes[-1], capsys.readouterr().err
+        err = capsys.readouterr().err  # less the mode read back, which every start prints
+        return modes[-1], re.sub(r"session \S+: permission mode .*\n", "", err)
 
     mode, err = child("claude", bypass)
     assert mode == "bypassPermissions" and "bypassPermissions inherited" in err

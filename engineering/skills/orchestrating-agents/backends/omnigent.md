@@ -87,7 +87,10 @@ A claude-cloud child takes `auto` or `bypassPermissions`, sent as the session cr
 `permission_mode` (the server answers the VM's tool requests itself under bypass), and starts in
 `bypassPermissions` unless the flag names a mode, since it runs unattended in a disposable VM where an
 `auto` prompt waits on nobody: a mode from the variable alone is not applied to it, and `start` says
-so on stderr. `start` treats a flag naming any other mode for it as it does a mode for Codex.
+so on stderr. `start` treats a flag naming any other mode for it as it does a mode for Codex. Until
+Omnigent applies a default mode per agent definition on every start path (kzarzycki/omnigent#529), this
+bypass default is the pack's own; after it, `start` passes no mode unless asked. Either way `start`
+prints the mode the session got, read back from its record (`session <id>: permission mode <mode>`).
 
 **Effort.** `--effort <level>` sets the child's reasoning effort, as its harness names the levels
 (Claude, native or cloud: `low` to `max`). Without it the level comes from `OMNIGENT_EFFORT_<AGENT>`

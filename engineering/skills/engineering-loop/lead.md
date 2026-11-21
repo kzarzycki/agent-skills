@@ -117,7 +117,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    worktree so the worker's sits inside it (../orchestrating-agents/backends/omnigent.md, Permission prompts),
    and start it
    with one message: the spec, the item, the PR, worktree, branch, notes path, gates, and "Your
-   role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
+   role: `worker.md` in the `engineering-loop` skill". Start every child through orchestrating-agents'
+   `start` or `run`, never a raw session create (`sys_session_create`) with a mode of your own: they
+   pick the permission mode and print the one the session got, so a worker never blocks on a prompt
+   nobody sees. Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
    both are yours (worker.md, Gates and push). Its model: SKILL.md, Models.
    Before starting a worker, run `approvals.py overlap --files <the files the story names>`: another open PR that

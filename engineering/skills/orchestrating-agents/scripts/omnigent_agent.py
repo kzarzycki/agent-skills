@@ -3913,6 +3913,22 @@ def newer_generation(model: str, listed: list[str]) -> list[str]:
     return [i for g, i in newer if g == newer[0][0]]
 
 
+def granted_mode(info: dict) -> str:
+    """The permission mode session record ``info`` says the session got: the server's own
+    ``permission_mode`` field (a cloud session's), else its ``omnigent.acp.permission_mode`` label
+    or metadata, else the ``--permission-mode`` in its launch args (a Claude terminal's); else says
+    the record names none, as one never read back does."""
+    for where in (info, info.get("labels") or {}, info.get("metadata") or {}):
+        if isinstance(where, dict):
+            for key in ("permission_mode", "omnigent.acp.permission_mode"):
+                if where.get(key):
+                    return str(where[key])
+    args = [str(a) for a in info.get("terminal_launch_args") or []]
+    if "--permission-mode" in args and (at := args.index("--permission-mode") + 1) < len(args):
+        return args[at]
+    return "not named in the session record (the harness default)"
+
+
 def model_for(agent: str, model: str | None = None) -> tuple[str | None, str]:
     """The model ``agent`` runs on and where it came from: ``model`` (``--model``), else
     ``$OMNIGENT_MODEL_<AGENT>`` (``-`` as ``_``), else ``DEFAULT_MODELS``; None for an agent with
@@ -3971,6 +3987,9 @@ def start(
         )
 
     if harness == CLOUD_HARNESS and not permission_mode:
+        # ponytail: the pack's own default until kzarzycki/omnigent#529 ships, which gives each agent
+        # definition a default mode the server applies on every start path; then drop this branch and
+        # pass no mode unless the caller asks for one.
         # A cloud session runs unattended in its own disposable VM: in `auto` a command the classifier
         # doubts waits on a prompt that reaches the owner's inbox, so it starts in bypass unless the
         # command line asks otherwise. The variable is often set for a host's native children, so a
@@ -4234,6 +4253,8 @@ def start(
         except Fail as e:  # the session is there, so a brief signed "?" beats none
             took = {}
             print(f"no session record read back for {sid} ({e}): it signs ?", file=sys.stderr)
+        # what the session got, never what was asked: the server's default can differ from both
+        print(f"session {sid}: permission mode {granted_mode(took)}", file=sys.stderr)
         if pr and not reviews(role):
             # the PR `reap` reads to hold this worker until it closes: an unlabelled one can be
             # neither held nor found by `reap --merged`, so a failed label fails the start
