@@ -27,6 +27,13 @@ States: `waiting` (the step runs and will beat again), `ok` (ended well), `faile
 `needs-owner` (the step needs the owner's answer: `question.md` holds it). A reader treats `ok`, `failed` and `needs-owner`
 as ends and leaves a ref it cannot read or parse as `unknown`, never as ended; the deadline then applies.
 
+A cloud session (`CLAUDE_CODE_REMOTE=true`) cannot push a ref outside `refs/heads/` (its proxy answers HTTP 403), so
+`emit` there also pushes the same commit as the branch `loop-event/<kind>/<branch>` (probed: the bare `loop-event/`
+prefix pushes, as does `claude/loop-event/`; the proxy refuses a delete, so a host's `clear` removes the branch). `read`
+and `wait` list both forms in one `ls-remote`, show one event per kind and branch, take the newer where both exist (later
+`at`, then `seq`) and keep its commit in the one `refs/loop-remote/<kind>/<branch>` mirror. A host emits the `refs/loop/`
+form only, and `clear` (so `land` and `reap`) deletes both forms.
+
 ## Kinds
 
 | Kind | Writer | Beat interval | `url` points to |
