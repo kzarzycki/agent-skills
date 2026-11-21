@@ -27,6 +27,11 @@ def test_the_prs_own_sha_blob_raw_link_is_embedded_for_each_image_extension(ext:
     assert lines(demo(blob(f"card.{ext}"))) == []
 
 
+@pytest.mark.parametrize("sha", [SHA.upper(), "0123456789ABCdef0123456789abcDEF01234567"])
+def test_a_sha_of_either_hex_case_is_embedded(sha: str) -> None:
+    assert lines(demo(blob(sha=sha))) == []
+
+
 def test_the_repo_compares_case_insensitively() -> None:
     assert lines(demo(blob(repo=REPO.upper()))) == []
 
@@ -50,6 +55,12 @@ def test_a_markdown_image_of_the_blob_link_is_embedded() -> None:
         blob(name="dir/card.png"),
         blob(name=".png"),
         blob(name="card.webp"),
+        blob(sha="g" * 40),
+        blob(sha=SHA[:-1] + "z"),
+        blob().replace("/blob/", "/tree/"),
+        blob().replace("/blob/", "/raw/"),
+        blob(name="card.png?x=y.png"),
+        blob(name="card.png#x.png"),
         f"https://github.com/{REPO}/releases/download/demo-1/card.png",
         f"https://raw.githubusercontent.com/{REPO}/{SHA}/card.png",
         f"https://example.com/{REPO}/blob/{SHA}/card.png?raw=true",
