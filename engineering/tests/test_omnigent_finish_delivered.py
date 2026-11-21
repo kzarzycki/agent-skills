@@ -106,6 +106,9 @@ def test_run_finishes_the_session_unless_keep(
     assert omnigent_agent.main(["run", "claude", "u", "brief.md", "r2.md", "--keep"]) == 0
     assert og.archived == ["s0"]
     assert og.labels["s1"] == {omnigent_agent.KEEP_LABEL: "1"}  # the supervisor reads it too
+    og.label = lambda *_: None  # type: ignore[method-assign]  # the flag alone keeps it, label or not
+    assert omnigent_agent.main(["run", "claude", "v", "brief.md", "r3.md", "--keep"]) == 0
+    assert og.archived == ["s0"]
 
 
 # --- reap -------------------------------------------------------------------------------------
@@ -229,3 +232,24 @@ def test_a_followed_lead_nobody_waits_on_stays_until_its_starter_reaps_it(
 
     base.supervised(og, registry, monkeypatch, 3, done, notify="cos", console=True)
     assert og.archived == []
+
+
+def test_a_lead_the_owner_drives_is_never_archived_by_the_supervisor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    registry.write_text(
+        f"a={tmp_path / 'a'}.md\tfollow\t{omnigent_agent.DIRECT_FIELD}\n"
+        f"b={tmp_path / 'b'}.md\tfollow\tafter=a\n"
+    )
+    og = Archiving(
+        a=[base.told("brief", 60)],
+        b=[base.told("brief", 60), base.ending("STILL WORKING: waiting on lead a", 5)],
+    )
+
+    def done(poll: int) -> None:
+        if poll == 1:
+            og.histories["a"].append(base.ending("DONE: PR #7 merged", 0))
+
+    base.supervised(og, registry, monkeypatch, 3, done, notify="cos", console=True)
+    assert [s for s, _ in og.inbox if s == "b"] and og.archived == []  # told b, kept a
