@@ -24,7 +24,7 @@ is posted as it is, and a `.png` or `.jpg` screenshot is posted as it is. All of
 attached with `gh pr comment --attach` (gh 2.99.0 or later), so it plays inline. Your
 earlier `## Demo` comments are minimized as outdated, so only the current one is open;
 other people's are left alone. The PR defaults to the current branch's, and without
-`--caption` the comment names the recordings. Then name the demo in the PR body's Evidence.
+`--caption` the comment names the recordings. `check merge` takes a cloud session's demo too, an image linked as the repo's own `blob/<commit sha>/<file>?raw=true`, as embedded. Then name the demo in the PR body's Evidence.
 
 Pick the form by the change. A screenshot when the change is a still result (a card that
 renders differently, a new label, a layout fix): it is read at a glance, and a video of a

@@ -85,7 +85,7 @@ one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md)
 only for a change it rates low (a fallback verifier's family, `agy`, `gemini` or `same-family`, is no tier), and on a PR
 that only bumps the pack's pin, the pin target's tier rule judges that pass instead (pin_target); no unresolved
 review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
-author posted one, that embeds its videos and screenshots as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
+author posted one, that embeds its videos and screenshots as user-attachments or, from a cloud session, the repo's own commit-sha blob `?raw=true` links (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
 `ci: false` in loop.md, a `local-ci` pass on the head's tree under today's gate command, read as `local-ci` reads
@@ -715,6 +715,11 @@ OWN = {APPROVALS, GATEKEEPER, LAND}
 # a URL in a `## Demo` comment; gh's --attach embeds a video or image as a bare user-attachments one, which plays inline
 URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
 ATTACHMENT = "https://github.com/user-attachments/"
+# a cloud session's `demo.sh` pushes each image to a media branch and links it as the PR's own repo's blob at a commit sha;
+# `?raw=true` renders it inline, so it counts as embedded (#1620)
+BLOB = re.compile(
+    r"https://github\.com/([^/?#]+/[^/?#]+)/blob/[0-9a-fA-F]{40}/[^/?#]+\.(?:gif|png|jpe?g)\?raw=true"
+)
 # land --wait: seconds between tries, and how long it waits in all before it exits 3; a landing lock older than the
 # ceiling is stale
 POLL, CEILING = 30, 2 * 60 * 60
@@ -2372,21 +2377,25 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
 
 def demo_form(pull: dict[str, Any]) -> list[str]:
     """A line when the PR's newest `## Demo` comment by a trusted author, not minimized as outdated, links a video or
-    screenshot (a release asset, any URL but a user-attachments one) instead of embedding it, or embeds none; a PR
+    screenshot (a release asset, any URL but a user-attachments one or this repo's own sha blob `?raw=true`) instead of
+    embedding it, or embeds none; a PR
     with no demo has none. A stranger's demo neither holds nor clears the merge."""
     shown = lambda note: not note.get("isMinimized") and trusted(pull, note)
     demo = headed(pull, "## Demo", shown) if "comments" in pull else None
     if demo is None:
         return []
     urls = URL.findall(demo["body"])
-    linked = [url for url in urls if not url.startswith(ATTACHMENT)]
+    repo = pull["baseRepository"]["nameWithOwner"].lower()
+    own = lambda url: (m := BLOB.fullmatch(url)) is not None and m.group(1).lower() == repo
+    linked = [url for url in urls if not url.startswith(ATTACHMENT) and not own(url)]
     if not linked and urls:
         return []
     what = f"links {linked[0]}" if linked else "embeds no video or screenshot"
     return [
         (
             f"PR #{pull['number']}: its `## Demo` comment {what}: post the demo with the demo skill's"
-            " `scripts/demo.sh`, which embeds each video or screenshot as an attachment that plays inline"
+            " `scripts/demo.sh`, which embeds each video or screenshot as an attachment (or, from a cloud session, this repo's"
+            " `blob/<commit sha>/<file>?raw=true` image link) that plays inline"
         )
     ]
 
