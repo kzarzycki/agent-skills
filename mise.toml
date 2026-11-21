@@ -131,7 +131,10 @@ description = "The PR check (`qualify`): vendor check, lint, and only the tests 
 # full run catches it, a bisect names the PR, and the fix goes forward on main. Upgrade path: a suite that runs in seconds
 # lets `check` come back as the gate.
 run = """mise run vendor-engineering-check
-uv run python tools/gate_slot.py sh -c 'uv run pytest -q -m "not live_agent" $(uv run python tools/affected_tests.py ${GATE_BASE:-origin/main})'
+# the selection first: a selector that fails or prints nothing must fail here, since pytest given no targets runs the whole suite
+targets="$(uv run python tools/affected_tests.py ${GATE_BASE:-origin/main})" || { echo "error: tools/affected_tests.py failed" >&2; exit 1; }
+[ -n "$targets" ] || { echo "error: tools/affected_tests.py selected nothing" >&2; exit 1; }
+uv run python tools/gate_slot.py pytest -q -m "not live_agent" $targets
 mise run lint"""
 
 [tasks.check]
