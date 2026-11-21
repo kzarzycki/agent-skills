@@ -94,6 +94,7 @@ def test_xdist_auto_takes_gate_jobs_when_it_is_a_positive_count_else_the_free_co
     assert gate_workers.pytest_xdist_auto_num_workers(None) == workers  # type: ignore[arg-type]
 
 
+@pytest.mark.slow  # a nested pytest run with its own xdist workers (#1610)
 def test_the_plugin_sets_the_worker_count_xdist_auto_starts(tmp_path: Path) -> None:
     # one more than every core, so xdist's own count (every core) can't pass for it
     jobs = (os.process_cpu_count() or 1) + 1
