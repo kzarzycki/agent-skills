@@ -134,6 +134,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    Unless loop.md's `Cloud worker:` line says `none`, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch (a branch it names anyway is ignored: the worker pushes to its own `claude/…` branch and reports it).
+   The launch dir, `--workspace`, `--host` and `--pr` of that start are SKILL.md, Cloud worker, Starting a PR's cloud worker.
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
    abort), push it, start what the merge unblocked, and tell the live workers the new
    head, plus any step loop.md § Proof on a branch says a schema or build change needs.
@@ -157,6 +158,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    prints the ones to rerun. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
    instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
    brief and the priorities file already in that checkout (copied there like the logs). Where else it runs is SKILL.md, Where heavy steps run.
+   For a cloud PR, start no separate verifier: SKILL.md, Cloud worker, Starting a PR's cloud worker.
    A verifier on a host starts on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
