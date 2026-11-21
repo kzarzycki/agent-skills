@@ -294,6 +294,9 @@ CONFIG = Path.home() / ".omnigent" / "config.yaml"
 AUTH_TOKENS = Path.home() / ".omnigent" / "auth_tokens.json"
 # the label start puts on a --pr worker: the PR whose closing or merge ends it
 PR_LABEL = "omni.pr"
+# who started a session: the pack's own label on a top-level one it creates, and Omnigent's on one
+# its session tool creates (read too, as is a top-level field, should the server add one)
+CREATOR_LABEL, OMNIGENT_CREATOR_LABEL = "omni.created_by", "omnigent.created_by_session_id"
 RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
@@ -1543,6 +1546,10 @@ class Omnigent:
         labels = {"omni.role": name} if role and (name := Path(role).stem) in ROLES else {}
         if pr:
             labels[PR_LABEL] = pr
+        if top_level and (me := own_id()):
+            # a REST create records no creator (Omnigent stamps one on its own tool's sessions
+            # alone), so a top-level session names the session that started it for ``creations``
+            labels[CREATOR_LABEL] = me
         if labels:
             body["labels"] = labels
         return str(self.call("POST", "/v1/sessions", body)["id"])
@@ -1825,7 +1832,7 @@ class Omnigent:
         return [
             str(s["id"])
             for s in cache[1]
-            if str(s.get("created_by_session_id") or "") == sid
+            if sid in creators(s)
             and str(s.get("parent_session_id") or "") != sid
             and str(s.get("id")) != sid
             and not s.get("archived")
@@ -6256,29 +6263,42 @@ def supervise(
         time.sleep(POLL_SECONDS)
 
 
+def creators(row: dict) -> set[str]:
+    """The sessions a session record or listing row names as its creator, wherever it names one."""
+    labels = row.get("labels") or {}
+    named = (
+        row.get("created_by_session_id"),
+        labels.get(OMNIGENT_CREATOR_LABEL),
+        labels.get(CREATOR_LABEL),
+    )
+    return {str(n) for n in named if n}
+
+
 def created_prompt(og: Omnigent, sid: str) -> tuple[tuple, str] | None:
-    """The ``blocked`` key and line ``observe`` gives a prompt, for the first session ``sid``
-    created (``Omnigent.creations``) that waits on one, naming that session; else None."""
+    """The ``blocked`` key and line ``observe`` gives a prompt, for every session ``sid`` created
+    (``Omnigent.creations``) that waits on one, each prompt naming its session; else None. The
+    line keeps ``observe``'s ``: blocked on a prompt: <id>: <text>`` shape, which ``owner_item``
+    reads."""
     try:
         made = og.creations(sid)
     except Fail:  # unreadable this poll: the lead's own state stands
         return None
+    ids, asks = [], []
     for child in made:
         try:
             info = og.info(child)
         except Fail:
             continue
-        if prompts := prompts_of(info):
-            ids = ",".join(
-                str(e.get("elicitation_id") or e)
-                for e in info["pending_elicitations"]
-                if holds_input(e)
-            )
-            title = f"{child} {info.get('title') or ''}".rstrip()
-            return ("blocked", f"{child}:{ids}"), (
-                f"{sid}: session it created, {title}, blocked on a prompt: {'; '.join(prompts)}"
-            )
-    return None
+        held = [e for e in info.get("pending_elicitations") or [] if holds_input(e)]
+        title = f"{child} {info.get('title') or ''}".rstrip()
+        ids += [f"{child}:{e.get('elicitation_id') or e}" for e in held]
+        asks += [f"{_asks(e)} (in {title})" for e in held]
+    if not ids:
+        return None
+    return ("blocked", ",".join(ids)), (
+        f"{sid} (in {len({i.split(':')[0] for i in ids})} session(s) it created):"
+        f" blocked on a prompt: {'; '.join(asks)}"
+    )
 
 
 def follow(
