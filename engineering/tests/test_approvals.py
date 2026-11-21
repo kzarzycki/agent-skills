@@ -256,7 +256,7 @@ def verdict_on(
 
 VERDICT = verdict_on(HEAD, "0 blocker, 0 major, 2 minor")
 OWNED = ("approved:merge",)
-HELD = f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: "
+HELD = f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main `approved:merge` is no go; `loop.delegate: all` in the policy file lets a delegate's go count), since it is high risk: "
 
 
 def given_go(pr: dict[str, Any], hub: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
@@ -1054,7 +1054,10 @@ def test_a_label_approves_a_high_risk_merge_into_a_feature_branch_only(
     assert merge(given_go(by_hand, hub), [approved(1, "area:web")]) == []
     feature = into_feature(pull(reviews=(VERDICT,), labels=("risk:high",)))
     assert merge(feature, [approved(1, "area:web")]) == [
-        HELD.replace("; into main `approved:merge` is no go", ", or `approved:merge`")
+        HELD.replace(
+            "; into main `approved:merge` is no go; `loop.delegate: all` in the policy file lets a delegate's go count",
+            ", or `approved:merge`",
+        )
         + "`risk:high` is on PR #7"
     ]
 
@@ -1530,7 +1533,7 @@ def test_an_exact_revert_still_needs_check_and_the_merge_approval(
     assert gated(monkeypatch, capsys, "merge", unapproved) == (
         approvals.WAITING,
         [
-            f"PR #2 waits for the owner's go on its head (`approve merge 2 --head {REVERT_HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: it matches a risk rule (path `billing/**`)"
+            f"PR #2 waits for the owner's go on its head (`approve merge 2 --head {REVERT_HEAD} --by owner`; into main `approved:merge` is no go; `loop.delegate: all` in the policy file lets a delegate's go count), since it is high risk: it matches a risk rule (path `billing/**`)"
         ],
     )
     bare = given_go(revert_pr(body="Reverts #1\n"), hub)
@@ -1584,7 +1587,7 @@ def test_an_exact_revert_of_a_high_risk_change_waits_for_the_owners_go(
     """The risk of the change a revert undoes (or re-lands) carries over: `risk:high` on an issue the revert closes,
     on the PR it reverts, or that PR's last verdict saying `Risk: high`."""
     low = {**pull(), "number": 1}
-    held = f"PR #2 waits for the owner's go on its head (`approve merge 2 --head {REVERT_HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: "
+    held = f"PR #2 waits for the owner's go on its head (`approve merge 2 --head {REVERT_HEAD} --by owner`; into main `approved:merge` is no go; `loop.delegate: all` in the policy file lets a delegate's go count), since it is high risk: "
     closing = revert_pr(body=REVERT_BODY + "\nCloses #71\n")
     closing["closingIssuesReferences"] = {"nodes": [specced(71, "kind:bug", "risk:high")]}
     assert held_revert(monkeypatch, capsys, closing, low) == (
@@ -8408,12 +8411,12 @@ def test_an_owner_approved_high_risk_pr_may_enter_the_queue(
         (
             ("risk:high",),
             LABELED,
-            f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: `risk:high` is on PR #7",
+            f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main `approved:merge` is no go; `loop.delegate: all` in the policy file lets a delegate's go count), since it is high risk: `risk:high` is on PR #7",
         ),
         (
             ("risk:high", "approved:merge"),
             LABELED,
-            f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: `risk:high` is on PR #7",
+            f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main `approved:merge` is no go; `loop.delegate: all` in the policy file lets a delegate's go count), since it is high risk: `risk:high` is on PR #7",
         ),
     ],
 )
@@ -9007,6 +9010,10 @@ DELEGATE_RECORD = (
     f"Approved under the owner's delegation.\nApproved: merge\nBy: delegate\nHead: {HEAD}\n"
 )
 LABELLED_HIGH = HELD + "`risk:high` is on PR #7"
+DELEGATED_HIGH = LABELLED_HIGH.replace(
+    "--by owner`; into main `approved:merge` is no go; `loop.delegate: all` in the policy file lets a delegate's go count)",
+    f"--by owner`, or the delegate's: `approve merge 7 --head {HEAD} --by delegate`; into main `approved:merge` is no go)",
+)
 OWNER_RECORD = f"Approved by the owner.\nApproved: merge\nBy: owner\nHead: {HEAD}\n"
 
 
@@ -9033,7 +9040,7 @@ def test_with_delegate_all_the_delegates_go_into_main_posts_its_status_and_recor
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     code, lines = gate(capsys, "check", "merge", "7")
-    assert (code, lines[0]) == (approvals.WAITING, LABELLED_HIGH)
+    assert (code, lines[0]) == (approvals.WAITING, DELEGATED_HIGH)
     assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate") == (
         0,
         [f"PR #7: the delegate's go is on {HEAD}, under the owner's delegation"],
@@ -9100,7 +9107,7 @@ def test_a_delegates_status_no_longer_counts_once_the_setting_is_removed(
     assert (code, lines) == (approvals.WAITING, [LABELLED_HIGH])
     # nor is the delegate's record read as the owner's, or the owner's status with the delegate's record
     hub[HEAD] = [status("owner", f"The owner's go on {HEAD[:12]}")]
-    assert approvals.owner_waits(landing["pull"], [], DELEGATE_ALL) == [LABELLED_HIGH]
+    assert approvals.owner_waits(landing["pull"], [], DELEGATE_ALL) == [DELEGATED_HIGH]
 
 
 def test_the_owners_and_the_delegates_records_open_with_their_own_plain_line(
@@ -9126,7 +9133,7 @@ def test_the_owners_and_the_delegates_records_open_with_their_own_plain_line(
     )
     assert delegating[-1] == (7, f"Withdrawn: merge\nBy: delegate\nHead: {HEAD}\n")
     assert hub[HEAD][0]["state"] == "failure"
-    assert approvals.owner_waits(landing["pull"], [], DELEGATE_ALL) == [LABELLED_HIGH]
+    assert approvals.owner_waits(landing["pull"], [], DELEGATE_ALL) == [DELEGATED_HIGH]
 
 
 def test_land_says_whose_go_it_landed_on(
@@ -9811,7 +9818,6 @@ def test_merge_paths_take_no_label_and_no_delegate_status_as_the_go(
     hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # the default branch's policy is the one passed here, not the repo's real origin/main (#842)
-    monkeypatch.setattr(approvals, "base_policy", lambda _base, checkout: checkout)
     labelled = into_feature(orders_pull(labels=("risk:high", "approved:merge")))
     held = ORDERS_HELD
     assert approvals.owner_waits(labelled, [], ORDERS) == [held]

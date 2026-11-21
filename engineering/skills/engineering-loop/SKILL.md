@@ -783,7 +783,7 @@ A brief that names a host worktree for a test run says where the code is, not wh
 
 Where the orchestration backend is native (no Omnigent), a heavy run's cloud route is orchestrating-agents' `scripts/claude_cloud.py start <task file>`, which pushes the branch and starts the cloud session from any agent's Bash, since a bare `claude --cloud` needs a terminal a subagent lacks. The lead or subagent then waits on the session's results through the branch's PR (`gh pr view`, `gh pr checks`). Where the project's cloud environment is missing, `start` prints one line naming `claude-cloud:setup` and exits 2: the step then runs locally, and the report says so in one line that names `claude-cloud:setup`, since the colleague who has not run it is the one who can fix it.
 
-With a cloud worker, a host makes no gate pass, since the worker's VM already holds the checkout and build and the host's cores run the sessions. When `local-ci <pr>` on a host finds no pass for the head, have the worker run `local-ci --record` on that head and push its record, then run `local-ci <pr>` again; never `--run` it, or `--record` it, on the host. Two steps stay on the host because no cloud pass can cover them: a `host` step of `gate_steps`, and `land`'s gate of a batch tree that no recorded pass covers.
+With a cloud worker, a host makes no gate pass, since the worker's VM already holds the checkout and build and the host's cores run the sessions. When `local-ci <pr>` on a host finds no pass for the head, have the worker run `local-ci --record` on that head and push its record, then run `local-ci <pr>` again; never `--run` it, or `--record` it, on the host. Two steps stay on the host because no cloud pass can cover them: a `host` step of `gate_steps`, and `land`'s gate of a batch tree that no recorded pass covers. A lead that reaches a host step over SSH runs it through orchestrating-agents' `omnigent_agent.py ssh <host> --why <purpose> -- <command>` and posts the card it prints when the host's SSH check asks the owner to approve (its Omnigent backend, Host steps over SSH).
 
 ## Cloud worker
 
@@ -819,7 +819,7 @@ or the owner's private network.
   pass is pushed as its record branch as a host's is, and the host's `local-ci <pr>`,
   `check merge` and `land` reuse it from there, so nobody pastes or copies the record. Its brief names the role
   file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs in the worker's VM by default (Where heavy steps run), else on a host in a detached worktree at the head, or on another host loop.md's `Placement: hosts:` line lists, as lead.md step 7 says.
-- **The PR is the interface for content.** The code is the worker's pushed branch. Its
+- **The PR is the interface for content.** The code is the worker's pushed branch; reports, logs and verifier output are never pushed, only posted as comments (a file too large for one goes in a follow-up comment, or is trimmed with its path named). Its
   report is one comment on the PR: its branch and head SHA, each light-gate command with its
   exit code, what it left out and why. If the post fails, since the session's proxy-injected
   `GH_TOKEN` can expire 10 to 20 min in, its reply is `UNPOSTED REPORT` and then the body

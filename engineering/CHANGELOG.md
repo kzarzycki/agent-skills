@@ -5,6 +5,22 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.33.5 - 2026-11-20
+
+- A supervise poll reads each session's record without its items and spawn-tree usage (about 3.5 KB instead of about 88 KB), which spares the Omnigent server a usage read per lead every 5 s; `usage` still reads the full record (#1533).
+- A claude-cloud session never commits or pushes a report, log or verifier output (the gate record `local-ci --record` pushes itself is the exception) and never asks the owner where to push: it puts the file in its PR comment, or its final message with no PR (#1534).
+- Loop pollers no longer drain the account's GitHub REST limit: `wait-for --pr` polls every 120 s, caches commits and skips an unchanged PR's verdict read; `supervise` reads each default branch every 300 s through gh's shared on-disk cache; `land --wait` polls the queue every 300 s; all sleep to the rate limit's reset instead of retrying (#1537).
+
+## 0.33.4 - 2026-11-20
+
+- orchestrating-agents: `omnigent_agent.py ssh <host> --why <purpose> -- <command>` runs a host step over `ssh -o BatchMode=yes`; when the host's SSH check prints its `To authenticate, visit:` line, it stops ssh and prints an owner card naming the session, host, command, purpose and link, exit 75. engineering-loop points host steps over SSH at it (#1491).
+- `land` refuses, merging nothing, when its heartbeat finds another land took the landing lock while the batch was gated, and stops before its next merge when that happens during the merges: an emptied lock list no longer reads as "no lock" (#1498).
+- At the verifier pass cap the lead decides, not the owner: the cap no longer rates a PR `risk:high`, and majors left open on a pass at the cap or later land once the lead files them as a follow-up and records `Cap: #<follow-up>` in the PR body. An open blocker still refuses (#1517).
+- A code block in a PR or issue body now ends only on a fence of its own character at least as long as its opening (CRLF included), so a closing, sign-off, revert or `Cap:` line shown inside a longer-fenced example no longer counts; a `Cap:` line indented as code no longer counts either (#1517).
+- The supervise tests no longer fail by turns under parallel load: a second `supervised` run in one test took the first run's patched sleep for the real one, so a git poll-sleep ended its poll early and left it with no events (#1526, #1474).
+- `test_wait_for_reads_a_lock_wait...` measures the budget from before the lock is written, not after, so a descheduled timer thread can no longer make it 13 ms short (#1526, #1474).
+- A new test pins that cause with a subprocess poll-sleep inside a second `supervised` run, so it fails on an idle machine too (#1526).
+
 ## 0.33.3 - 2026-11-20
 
 - A verifier started for a PR now carries the label `omni.pr=<owner/name>#<n>`, as a `--pr` worker does, so the spend of both groups by PR; `reap` still holds only the worker until its PR closes (#945).

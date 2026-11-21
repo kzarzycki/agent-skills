@@ -29,7 +29,7 @@ def github(
 
     def gh(*args: str, timeout: float = 0) -> str:
         calls.append(args)
-        if args[1] == "repos/o/r/commits/HEAD":
+        if "repos/o/r/commits/HEAD" in args:
             return head[0] + "\n"
         if args[1] == f"repos/o/r/compare/{OLD}...{NEW}":
             return "".join(f"{sha}\t2026-11-01T10:00:00Z\n" for sha in shas.values())

@@ -17,6 +17,7 @@ from approvals_harness import (
     pull,
 )
 
+REAL = approvals.base_policy  # the shared fixtures replace it per test
 RULE = loop_md("risk:\n  paths:\n    - .github/**\n")
 ALL = add(RULE, "loop", "delegate: all\n")
 LOOP = Path("docs/agents/loop.md")
@@ -56,6 +57,7 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     posted: list[str] = []
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
     monkeypatch.setattr(approvals, "comment", lambda _n, body: posted.append(body))
+    monkeypatch.setattr(approvals, "base_policy", REAL)
     monkeypatch.chdir(work)
     return {"main": main, "posted": posted, "work": work, "origin": origin}
 

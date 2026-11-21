@@ -84,7 +84,8 @@ choice, set in the environment once. Omnigent applies it as the session's
 none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
 `start` refuses the flag for Codex and says on stderr that the variable's mode was not applied.
 A claude-cloud child takes `auto` or `bypassPermissions`, sent as the session create's
-`permission_mode` (the server answers the VM's tool requests itself under bypass), and
+`permission_mode` (the server answers the VM's tool requests itself under bypass), starts in
+`bypassPermissions` when neither the flag nor the variable names a mode (it runs unattended in a disposable VM), and
 `start` treats any other mode for it as it does a mode for Codex.
 
 **Effort.** `--effort <level>` sets the child's reasoning effort, as its harness names the levels
@@ -164,7 +165,7 @@ environment resolves. They refuse a local agent in a main checkout whose own fil
 `claude-cloud` and a worktree as the routes: that checkout is where cloud sessions launch from,
 and a local agent working there switches its branch under every later start. A worktree is not that
 checkout, so a local agent there is accepted. For a workspace on another host `start` finds the checkout root through the host's listing and reads the same two files (`.claude/settings.local.json`, `.git`) through a live session there, and refuses a pinned main checkout the same way; a file the listing shows but the read can't give (a 404 from an older host, no live session, not JSON, a failed listing) prints one stderr line and the start goes on. In a worktree, though, `claude --cloud` takes the main checkout's pin when that checkout has one, so a worktree pinned to another environment would silently run that one's setup script and variables: `start`, `run` and `launch-dir` refuse such a worktree before any session exists, naming both pins and the two ways out (repin the main checkout, or launch from a clone, `launch-dir --clone`). A launch dir needs no checked-out files: nothing on the cloud path reads them (the bridge checks for a git repo, the CLI bundles it and reads the pin and the folder trust). `launch-dir <remote> <branch> [<env-id>] <path>` makes one with the pin (an id given, else the one Cloud environments resolves) and a `tmp/loop/`, a few dozen MB instead of a full checkout: run inside a checkout of the same repository (a remote with the same host, in any case, and the same path, in the same case) it is a `git worktree add --no-checkout` of that checkout (on a branch of its own, `launch/<folder>`), which inherits the checkout's folder trust (Claude Code keys a worktree's trust on the main worktree git lists first, which for a `--separate-git-dir` checkout is the git dir, not the checkout), since Claude Code trusts by path and a separate clone, even inside a trusted folder, is untrusted; anywhere else, or with `--clone`, it is a blobless `--no-checkout` clone with HEAD on the branch. It prints whether the new folder is trusted. `--trust` also writes the folder-trust entry in the user's Claude config, which is the user's call and never done otherwise. `start` for a `claude-cloud` agent refuses an untrusted launch dir before any session exists, naming the folder and the two ways out (re-run `launch-dir` from a trusted checkout, or `launch-dir --trust` as the user's decision), since the bridge fails with "has not trusted" only after the session is created. `pin_environment` accepts such a clone with its own pin, and one without when an environment resolves; else it refuses, naming the helper. `start --pr <n>` on a `claude-cloud` agent points the launch dir's HEAD at the PR's branch (fetching it) without checking files out, and leaves a directory with a working tree alone. It fetches the PR's own ref (`refs/pull/<n>/head`, so a fork's branch works), reads the PR from the launch dir's repository, and runs git where the launch dir is: a `start` for a workspace on another host leaves its HEAD to that host's own `start`.
-`claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>` is a lead's own heavy run in one call (engineering-loop's SKILL.md, Where heavy steps run): it runs one shell command in a Claude cloud session on the checkout's HEAD (default: this directory) and exits with the command's own code, printing the report path. One word after `--` is a shell command as written; several are joined as argv. Before any session exists it refuses (exit 125) a checkout with tracked changes, a detached HEAD, or a HEAD its branch's remote doesn't hold, naming `git push`, since the session clones from the remote. It keeps one launch dir per checkout and branch, `<main checkout>/.worktrees/claude-cloud-run-<branch>`: `launch-dir` makes it the first time (the environment resolved as `launch-dir` resolves it), and later runs fetch the branch and point its HEAD there, as `start --pr` does. It writes the brief itself (check out the exact commit, run the command detached, report an `EXIT: <n>` line, the summary line and every failure) and runs `run <the Cloud worker line's agent, else claude-cloud> ... --workspace <launch dir> --no-keep --model haiku --permission-mode auto` (`$OMNIGENT_MODEL_CLAUDE_CLOUD_RUN` names another model), taking the exit code from the report's `EXIT:` line. When the cloud route fails (the launch refused, setup failing, out of quota, no report, no `EXIT:` line) it exits 125, its own code and never the command's, and prints the reason and the host fallback, `LOOP_HOST_RUN=<reason> <command>`. The engineering pack's hook (`hooks/heavy_run_guard.py`) refuses a heavy run on a host with this call for that exact command, where `RUNNER_SERVER_URL` names an Omnigent server (without one it allows the run with a one-line notice); a child started on a host (any harness but the cloud one, never a top-level lead) gets one preamble line telling it to prefix its heavy runs with `LOOP_HOST_RUN=placed`, since its placement already chose the host.
+`claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>` is a lead's own heavy run in one call (engineering-loop's SKILL.md, Where heavy steps run): it runs one shell command in a Claude cloud session on the checkout's HEAD (default: this directory) and exits with the command's own code, printing the report path. One word after `--` is a shell command as written; several are joined as argv. Before any session exists it refuses (exit 125) a checkout with tracked changes, a detached HEAD, or a HEAD its branch's remote doesn't hold, naming `git push`, since the session clones from the remote. It keeps one launch dir per checkout and branch, `<main checkout>/.worktrees/claude-cloud-run-<branch>`: `launch-dir` makes it the first time (the environment resolved as `launch-dir` resolves it), and later runs fetch the branch and point its HEAD there, as `start --pr` does. It writes the brief itself (check out the exact commit, run the command detached, report an `EXIT: <n>` line, the summary line and every failure) and runs `run <the Cloud worker line's agent, else claude-cloud> ... --workspace <launch dir> --no-keep --model haiku --permission-mode bypassPermissions` (`$OMNIGENT_MODEL_CLAUDE_CLOUD_RUN` names another model), taking the exit code from the report's `EXIT:` line. When the cloud route fails (the launch refused, setup failing, out of quota, no report, no `EXIT:` line) it exits 125, its own code and never the command's, and prints the reason and the host fallback, `LOOP_HOST_RUN=<reason> <command>`. The engineering pack's hook (`hooks/heavy_run_guard.py`) refuses a heavy run on a host with this call for that exact command, where `RUNNER_SERVER_URL` names an Omnigent server (without one it allows the run with a one-line notice); a child started on a host (any harness but the cloud one, never a top-level lead) gets one preamble line telling it to prefix its heavy runs with `LOOP_HOST_RUN=placed`, since its placement already chose the host.
 `wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
 report path, so whatever reads the report reads a file as for any child. The worker pushes
@@ -218,6 +219,7 @@ It closes with the owner's standing branch grant (`CLOUD_BRANCHES`): new `claude
 per PR, besides the one the session started on; no force-push, no deleting a branch it didn't create, nothing
 pushed to `main` or outside `claude/`. A cloud session takes a push grant only from its first user message and
 refuses a later relayed one, so a lead building several PRs gets its branches only this way.
+It ends with the no-push rule (`CLOUD_NO_PUSH`): reports, logs and verifier output are never committed or pushed, since a commit on the PR's branch moves the head under review and the branch grant is for code; the gate record that `approvals.py local-ci --record` pushes itself is the one exception; they travel in the report comment (or the final message with no PR), a file too large for one comment goes in a short follow-up comment or is trimmed with its path named, and a push target or branch question never goes to the owner. It also says where code goes: the `claude/…` branch the session started on (or a `claude/ready-*` branch its grant lets it create), whatever other branch the brief names, reported with its head SHA for the lead to open the PR from or retarget.
 
 **Cloud environments.** Which claude.ai environment a cloud session runs in is the project's
 loop.md line `Cloud worker: <agent>, gate <task>, env <name>`; an environment id belongs to one
@@ -262,6 +264,17 @@ however the session started. It reads the session's Omnigent record first (`llm_
 reported it, and `reasoning_effort`), since a Codex child's rollout sits under a private `CODEX_HOME`. The
 `AGENT_SIGNATURE=` line `start` puts atop a brief names the model the server took for the session (its
 `model_override`, `?` for the harness default), never the id asked for.
+
+**Host steps over SSH.** Run a step on another host as `python3 scripts/omnigent_agent.py ssh <host> --why
+<purpose> -- <command...>`, never a bare `ssh`, since a host whose SSH layer asks the owner to approve each
+connection (an SSH check) shows the owner a login link with no word of who asks or why. It runs `ssh -o
+BatchMode=yes <host> <command>` (one word after `--` is a shell command as written; several are joined as
+argv, quoted for the remote shell) and passes its output and exit code through. When ssh prints the check's
+`To authenticate, visit:` line it stops ssh, which otherwise waits there however long the approval takes, prints a
+question card's text on stdout (the session asking, the host, the command, `--why` and the link, with a **Done**
+option) and exits 75. Post that text as an owner card (`sys_ask_user_question`), or, in a child, as its
+`<report>.question` (Questions), wait for **Done**, then run the same command again. It answers no card and opens
+no link itself: the approval is the owner's.
 
 **Usage.** `python3 scripts/omnigent_agent.py usage [<session>...]` prints the tokens and cost of the session it
 runs in and of each session named, one line each, read from each session's record (`usage_by_model`,
@@ -418,13 +431,33 @@ notice. One that still owes its report is covered by your supervisor's registry,
 and `send` armed (Supervising sessions, below); for one that owes none, keep
 `watch --children "$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` running in the background.
 
+**A child's message without a server.** `python3 scripts/omnigent_agent.py brief <brief> <report> [--cloud]
+[--role FILE] [--top-level] [--pr N]` prints, reading no server, the body of the first message `start` would
+send that child: its preamble (with the role line or, with `--cloud`, the role file's text), then the brief, with
+no trailing newline. It leaves out the lines `start` adds once the session exists: the `AGENT_SIGNATURE` line,
+the `LOOP_HEAVY_LOCK` line and the `Work on <title>` wrapper, or the pointer to a brief file. A `claude-cloud`
+session reaches Omnigent only through its `omnigent` MCP tools, which the cloud bridge serves over the
+claude.ai events API (the VM has no route to the server), so a cloud lead passes this text as
+`sys_session_create`'s `message`.
+
 **Top-level leads.** `python3 scripts/omnigent_agent.py start --top-level <claude|codex|AGENT>
 <title> <brief-file> <report-path>` starts a lead with no parent session, still filed under
 the repo's project: the owner opens it from the sidebar and talks to it, its own children
 report to it, and archiving it ends only its own runner. Its brief opens with the lead
 preamble: only the owner's own words, quoted with where they were said, approve, the rest
 of the brief is a colleague's guidance, the lead asks the owner in its own session rather
-than in a question file, and it writes its final report to the path. How it asks and where
+than in a question file, and it writes its final report to the path. Where the base policy
+of its workspace's checkout (`origin/<default branch>`'s policy file, read by engineering-loop's
+`base_policy` and `delegation`) sets `loop.delegate: all`, the preamble adds the delegation: the
+lead settles specs and gives the merge go itself (`approve merge <pr> --head <sha> --by delegate`,
+`risk:high` included) once its gate is green and its verifier satisfied, and asks the owner by
+question card only for a change on `risk.critical_paths`. Without that setting, or without the
+engineering-loop skill, the wording is unchanged. A workspace on another host has no git to ask: its `.git/config` is read through the host's file API for the
+`origin` repo, and `gatekeeper.md` and `loop.md` come from that repo's default branch on GitHub (`gh`; a 404 means the file
+is absent), chosen by gatekeeper's `chosen`, so it follows the base's policy as a local lead does. A read that fails keeps
+today's wording and prints one stderr line; a workspace outside a checkout keeps it silently. A followed lead whose turn ends `USER NEEDED` with no question card open is reported
+as an `unasked` event, which tells its waiter to post a card or act under the delegation; with a card
+open it is reported as any turn end. How it asks and where
 it parks a question is its role's (`--role`; under the engineering loop, `lead.md`). `run --top-level` exits 1, since a lead writes no
 question for `run` to return: follow it with `watch <session>`, and once its report is in,
 archive it with `reap <session>`.

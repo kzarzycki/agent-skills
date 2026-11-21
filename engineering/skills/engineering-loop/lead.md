@@ -133,7 +133,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    verifier's report, so the verifier stays independent and runs the same checks itself.
    Unless loop.md's `Cloud worker:` line says `none`, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
-   brief names no worktree or branch.
+   brief names no worktree or branch (a branch it names anyway is ignored: the worker pushes to its own `claude/…` branch and reports it).
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
    abort), push it, start what the merge unblocked, and tell the live workers the new
    head, plus any step loop.md § Proof on a branch says a schema or build change needs.

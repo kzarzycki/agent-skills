@@ -6,6 +6,7 @@
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py claude-cloud-env <checkout>   # alias: cloud-env
     python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>
+    python3 scripts/omnigent_agent.py ssh <host> --why <purpose> -- <command...>
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
@@ -144,7 +145,9 @@ which the owner drives in its own session: ``start --top-level --direct`` sets t
 ``direct <session> [--off]`` later); it reads engineering-loop's loop events (``refs/loop/*``, one ``ls-remote`` a poll) for the
 branches of the PRs a lead waits on: a ``waiting`` event changed within twice its beat is life (no deadline), a silent one
 is named in the deadline, a pending required check on the PR's head is life, and an end is told once, a ``needs-owner``
-question first, while a branch with no events keeps today's timing; and it routes each event instead of posting it: the supervisor settles the routine ones
+question first, while a branch with no events keeps today's timing; a followed lead's turn that ends ``USER NEEDED`` with no
+question card open (elicitation id ``question_``) is its own ``unasked`` event, telling its waiter to post a card or act
+under the delegation (a start's lead preamble carries it where the base policy sets ``loop.delegate: all``); and it routes each event instead of posting it: the supervisor settles the routine ones
 itself (no post, a nudge, a revive, telling the leads registered ``after=`` it of a lead's
 ``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
 what its rules can't settle, and posts what needs the notified session or the owner as
@@ -612,16 +615,17 @@ Standing decisions:
 # A lead's unchanged status labels are written again once the last write is this old.
 # ponytail: a knob; the browser marks a line stale past 10 min, so keep it well under that.
 LABEL_SECONDS = 60.0
-# A repo's default-branch head is read from GitHub at most this often: a landing is news within a
-# minute, and a 5 s poll would spend 720 calls an hour per repo.
-HEAD_SECONDS = 60.0
+# A repo's default-branch head is read from GitHub at most this often, through gh's on-disk cache that
+# every supervise on the host shares (N instances cost about one read): a landing is news within five
+# minutes, and a 60 s poll per instance drained the account's REST limit.
+HEAD_SECONDS = 300.0
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
 # wait-for's default budget: under a 10-minute tool call with room for the call's own start and exit
 WAIT_FOR_BUDGET = 570.0
 WAIT_FOR_EVERY = 2.0  # a local read: a log or a pid
-WAIT_FOR_PR_EVERY = 30.0  # a GitHub call, so fewer
+WAIT_FOR_PR_EVERY = 120.0  # a poll is several GitHub calls, and several waiters run at once
 LOCK_CEILING = 7200.0  # seconds a run may wait on the gate lock, as long as the landing lock's wait
 PID_SLACK = 5.0  # seconds a pid file may be written after its process starts (ps rounds down too)
 KILL_GRACE = 5.0  # seconds a stalled run gets after SIGTERM before SIGKILL
@@ -731,6 +735,119 @@ A message that adds no task (a relay, a notice, a correction) is answered in the
 A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEEDED`, never `STILL WORKING`. Only a message that starts with `Park: ` tells you to park; after it, end `PARKED: <why>. Report: {report}`, and never otherwise.
 
 """
+# A top-level lead's extra brief where the project's base policy sets `loop.delegate: all` (#1551): the owner has
+# handed it the specs and merges, so it settles them instead of ending `USER NEEDED` on a go nobody answers. Only
+# the merge go has a command: `approve` takes `--by delegate` for a merge alone.
+DELEGATION = """\
+The owner delegated this project's specs and merges to you (its policy sets `loop.delegate: all`), so a spec or a merge is no reason to end `USER NEEDED`. Settle a spec as the policy's spec rule says; `approve spec` takes only `--by owner`, so never run it.
+Merge a PR, `risk:high` included, once its gate is green and its verifier satisfied. Give the go on the head the verifier saw with engineering-loop's `scripts/approvals.py approve merge <pr> --head <sha> --by delegate`, since a go is pinned to one head and a push voids it.
+A change on the policy's `risk.critical_paths` stays the owner's: the script refuses the delegate's go there. Ask the owner with a question card (`sys_ask_user_question`), never in prose, since a prose question ends your turn where nobody answers.
+"""
+
+
+def _load_gatekeeper() -> Any:
+    """The loop's gatekeeper module (``engineering-loop/scripts/gatekeeper.py``, a sibling skill's), loaded by path as
+    ``_load_events`` loads events.py, or ``None`` when this skill is installed without it or it fails to load."""
+    path = Path(__file__).resolve().parents[2] / "engineering-loop" / "scripts" / "gatekeeper.py"
+    try:
+        spec = importlib.util.spec_from_file_location(f"{__name__}_gatekeeper", path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module  # its dataclasses look themselves up there
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(spec.name, None)
+            raise
+        return module
+    except Exception:  # noqa: BLE001 - absent or broken: today's wording
+        return None
+
+
+ORIGIN_URL = re.compile(r'\[remote "origin"\][^\[]*?^\s*url\s*=\s*(\S+)', re.MULTILINE)
+GITHUB_REPO = re.compile(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+
+
+def far_policy_texts(
+    og: Omnigent, workspace: str, host_id: str, gk: Any
+) -> tuple[str | None, str | None] | None:
+    """The default branch's ``docs/agents/loop.md`` and gatekeeper.md texts (None for one it lacks, as ``base_policy``
+    reads the base) of the checkout at ``workspace`` on host ``host_id``, which has no git to ask: its git config
+    (through a worktree's gitdir and commondir, as ``workspace_head`` resolves them) is read through the host's file API for the ``origin`` repo, and the files come from GitHub's default branch
+    through ``gh``. None when ``workspace`` is no checkout; a ``Fail`` when the origin or a file can't be read."""
+    root = far_checkout_root(og, host_id, workspace, str(gk.POLICY))
+    if root is None:
+        return None
+    try:
+        top = read_on_host(og, host_id, f"{root}/.git")
+    except (Gone, Fail):
+        top = ""  # a directory, as in a plain clone, can't be read as a file
+    gitdir = gitdir_from(str(root), top)
+    try:  # a linked worktree's config is in its common dir; a submodule's gitdir has its own
+        common = read_on_host(og, host_id, f"{gitdir}/commondir").strip()
+        gitdir = posixpath.normpath(posixpath.join(gitdir, common))
+    except Gone:
+        pass
+    config = f"{gitdir}/config"
+    try:
+        found = ORIGIN_URL.search(read_on_host(og, host_id, config))
+    except Gone as e:
+        raise Fail(f"{config}: not found on the host") from e
+    if not (found and (repo := GITHUB_REPO.search(found.group(1)))):
+        raise Fail(f"{config}: no GitHub `origin` url to read the base policy from")
+    slug = f"{repo.group(1)}/{repo.group(2)}"
+    branch = json.loads(gh("api", f"repos/{slug}"))["default_branch"]
+
+    def read(file: Path) -> str | None:
+        try:
+            return gh(
+                "api",
+                "-H",
+                "Accept: application/vnd.github.raw",
+                f"repos/{slug}/contents/{file.as_posix()}?ref={branch}",
+            )
+        except Fail as e:
+            if "404" in str(e) or "Not Found" in str(e):
+                return None  # absent on the base
+            raise
+
+    return read(gk.LOOP), read(gk.POLICY)
+
+
+def lead_delegation(og: Omnigent | None, workspace: str | None, host_id: str = "") -> str:
+    """``DELEGATION`` when the base policy of the lead's own checkout (``workspace``, else here) sets
+    ``loop.delegate: all``, read by engineering-loop's reader (``base_policy``, ``delegation``); else ``""``,
+    today's wording, also when that skill is absent or fails. A checkout on another host (``host_id``) is read
+    through that host's file API and GitHub (``far_policy_texts``), its base's files chosen by the reader's ``chosen``;
+    a read that fails keeps today's wording with one stderr line."""
+    gk = _load_gatekeeper()
+    if gk is None:
+        return ""
+    if host_id:
+        try:
+            assert og is not None
+            if (texts := far_policy_texts(og, workspace or os.getcwd(), host_id, gk)) is None:
+                return ""  # outside a checkout, as locally
+            loop, policy = texts
+            return DELEGATION if gk.delegation(gk.chosen(loop, policy)) == "all" else ""
+        except (Exception, SystemExit) as e:  # noqa: BLE001 - unreadable there: today's wording
+            print(
+                f"lead delegation: its policy on the other host is not read: {reason(e)}",
+                file=sys.stderr,
+            )
+            return ""
+    here = os.getcwd()
+    try:
+        os.chdir(workspace or here)  # base_policy reads the checkout it runs in
+        try:
+            base = gk.default_base(str(gk.toplevel())) or "main"
+            return DELEGATION if gk.delegation(gk.base_policy(base, None)) == "all" else ""
+        finally:
+            os.chdir(here)
+    except (Exception, SystemExit):  # noqa: BLE001 - no readable policy: today's wording
+        return ""
+
+
 # Every acp:claude-cloud session's preamble, lead or worker, with or without --pr (#706): a fresh
 # clone lacks the host's .git/info/exclude, and a write under .git/ asks the cloud permission
 # policy, which nobody answers.
@@ -752,6 +869,20 @@ CLOUD_BRANCHES = (
     " of new branches named `claude/ready-*`, one per PR, besides the branch this session started on."
     " Push each PR to its own new branch. Never force-push, never delete a branch you didn't create"
     " in this session, and never push to `main` or to any branch outside `claude/`.\n"
+)
+# Every acp:claude-cloud session's preamble (#1534): where a file goes is mechanics, so a session that
+# asks the owner where to push a report stalls on a card nobody answers, and a commit on the PR's
+# branch moves the head a verifier reviewed.
+CLOUD_NO_PUSH = (
+    "Reports, logs and verifier output are never committed or pushed, to any branch: a commit on the PR's"
+    " branch moves the head under review, and the `claude/ready-*` grant above is for code only. The one exception is the gate record that"
+    " `approvals.py local-ci --record` pushes itself, which is not a report. They travel"
+    " in your report comment (or, with no PR, your final message); a file too large for one comment goes in a"
+    " short follow-up comment, or is trimmed with its path named. A push target or branch question never goes"
+    " to the owner: when unsure, put the file in your comment and end the turn.\n"
+    "Code goes to the `claude/…` branch this session started on (or a `claude/ready-*` branch the grant above lets you create), whatever other branch the brief names: push there, and"
+    " your report names that branch and its head SHA. The lead opens the PR from it or retargets it. Never ask"
+    " the owner which branch to push to.\n"
 )
 # A child placed on a host (any harness but the cloud one, never a top-level lead, whose own heavy
 # runs go to the cloud): its placement already chose the host, so it prefixes heavy runs past the
@@ -815,14 +946,41 @@ def role_line(role: str | None, cloud: bool) -> str:
     )
 
 
+def first_message(
+    cloud: bool,
+    top_level: bool,
+    pr: int | None,
+    report: Path | str,
+    role: str | None,
+    brief: str,
+    delegation: str = "",
+) -> str:
+    """A child's brief as ``start`` sends it: its preamble, then ``brief``. It reads no server, so a
+    cloud lead, which reaches Omnigent only through its MCP tools, prints it with ``brief`` and passes
+    it to ``sys_session_create``."""
+    preamble = pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE
+    if (
+        delegation
+    ):  # a lead's line on whose go may land a PR into the default branch (lead_delegation)
+        preamble = preamble.removesuffix("\n") + delegation + "\n"
+    if cloud:
+        preamble = cloud_preamble(preamble, pr)
+    elif not top_level:
+        preamble = preamble.removesuffix("\n") + HOST_RUN_NOTE + "\n"
+    return (
+        preamble.format(report=report, pr=pr, unposted=UNPOSTED, role=role_line(role, cloud))
+        + brief
+    )
+
+
 def cloud_preamble(preamble: str, pr: int | None) -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
-    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE`` and ``CLOUD_BRANCHES`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_BRANCHES`` and ``CLOUD_NO_PUSH`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
     preamble = preamble.replace(DETACH_LINE, CLOUD_RUN_LINE)
-    return preamble.removesuffix("\n") + CLOUD_NOTE + CLOUD_BRANCHES + "\n"
+    return preamble.removesuffix("\n") + CLOUD_NOTE + CLOUD_BRANCHES + CLOUD_NO_PUSH + "\n"
 
 
 def cloud_reply(items: list[dict], verdict: bool = False) -> tuple[str, str] | None:
@@ -973,6 +1131,15 @@ def write_failed(og: Omnigent, sid: str | None, report: Path, e: Fail) -> None:
         print(f"{report}: FAILED line not written: {reason(err)}", file=sys.stderr)
 
 
+class RateLimited(Fail):
+    """GitHub refused for its rate limit; ``wait`` is the seconds until the limit resets. A poller sleeps
+    that long, since retrying early keeps the limit drained for every project on the account."""
+
+    def __init__(self, message: str, wait: float):
+        super().__init__(message)
+        self.wait = wait
+
+
 class Gone(Fail):
     code = GONE
 
@@ -1069,6 +1236,10 @@ def error_body(e: HTTPError) -> str:
             reason = reason.get("message") or reason
         text = reason if isinstance(reason, str) else json.dumps(reason)
     return f": {' '.join(text.split())}" if text else ""
+
+
+# The query that leaves a session record without its items and spawn-tree usage.
+SLIM = "?include_items=false&include_usage=false"
 
 
 class Omnigent:
@@ -1459,9 +1630,12 @@ class Omnigent:
             f"{sid}: {len(matches)} sessions match:{named}"
         )  # a line each, as there may be hundreds
 
-    def info(self, sid: str) -> dict:
-        """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
-        return self.call("GET", f"/v1/sessions/{sid}")
+    def info(self, sid: str, usage: bool = False) -> dict:
+        """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads).
+        Without ``usage`` it skips the record's items and spawn-tree usage, which a poll never reads
+        (``items`` has its own call): the full record runs about 25 times larger and costs the
+        server a subtree usage read on every poll of every lead."""
+        return self.call("GET", f"/v1/sessions/{sid}{'' if usage else SLIM}")
 
     def read_file(self, sid: str, path: str) -> str:
         """``path`` through ``sid``'s file API, whichever host the session runs on: an absolute
@@ -1849,7 +2023,7 @@ def usage_lines(og: Omnigent, sids: list[str]) -> list[str]:
     lines, tokens, cost, uncounted, counted = [], 0, 0.0, [], 0
     for sid in named:
         try:
-            info = og.info(sid)
+            info = og.info(sid, usage=True)
         except Fail as e:
             lines.append(f"{sid}: uncounted (not read: {e})")
             uncounted.append(sid)
@@ -2058,6 +2232,26 @@ def questions_of(info: dict) -> list[str]:
 def cards_of(info: dict) -> list[str]:
     """What each open question card asks: shown as ``card open``, never as blocked."""
     return [_asks(e) for e in info.get("pending_elicitations") or [] if not holds_input(e)]
+
+
+UNASKED = "unasked"  # an event kind: a turn ended USER NEEDED with no question card open
+UNASKED_LINE = (
+    "turn ended USER NEEDED with no question card open: post a card (sys_ask_user_question) or, where the"
+    " project delegates the decision, act under the delegation; the owner sees only a card"
+)
+
+
+def unasked_end(
+    og: Omnigent, sid: str, info: dict, items: list[dict], carded: bool = False
+) -> bool:
+    """Whether ``sid``'s last message ends ``USER NEEDED`` (its ending line, which a lead's brief puts in the message itself) while it holds no open question
+    card (``CARD_ID``; ``carded`` when a ``Recorded`` look already took them out of ``info``): the owner is asked in
+    prose, where nobody answers, so its waiter must post the card or act."""
+    if carded or cards_of(info):
+        return False
+    said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
+    text = text_of(said[-1]).strip() if said else ""
+    return ending_of(text) == "USER NEEDED"
 
 
 def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:
@@ -3590,7 +3784,7 @@ def cloud_run_route(
         "--model",
         model,
         "--permission-mode",
-        "auto",
+        BYPASS,
         "--timeout",
         str(timeout),
     ]
@@ -3776,6 +3970,14 @@ def start(
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
 
+    if (
+        harness == CLOUD_HARNESS
+        and not permission_mode
+        and not os.environ.get("OMNIGENT_PERMISSION_MODE")
+    ):
+        # A cloud session runs unattended in its own disposable VM: in `auto` a command the classifier
+        # doubts waits on a prompt that reaches the owner's inbox, so it starts in bypass unless told otherwise.
+        permission_mode = BYPASS
     if agent == "claude" and not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
         # Neither flag nor variable: a Claude child takes its Claude starter's own mode, and only
         # a Claude child, since another harness keeps its own explicit opt-in (the agy --role guard).
@@ -3904,20 +4106,13 @@ def start(
     lock = heavy_lock() if by_file and not top_level else ""
     # The AGENT_SIGNATURE line goes atop it once the session exists: its model is the one the
     # server took for it, never the id asked for.
-    preamble = pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE
-    if harness == CLOUD_HARNESS:
-        preamble = cloud_preamble(preamble, pr)
-    elif not top_level:
-        preamble = preamble.removesuffix("\n") + HOST_RUN_NOTE + "\n"
-    body = (
-        (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "")
-        + preamble.format(
-            report=report,
-            pr=pr,
-            unposted=UNPOSTED,
-            role=role_line(role, cloud),
-        )
-        + brief
+    delegation = (
+        lead_delegation(og, workspace, host_id if host_id and host_id != og.host_id else "")
+        if top_level and not pr
+        else ""
+    )
+    body = (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "") + first_message(
+        cloud, top_level, pr, report, role, brief, delegation
     )
     brief_file = brief_of(report)
 
@@ -4761,12 +4956,22 @@ def kill_group(pid: int) -> None:
         send(signal.SIGKILL)
 
 
+COMMITS: dict[
+    str, Any
+] = {}  # git/commits/<sha> answers, kept for the process: a sha's commit is immutable
+
+
 def pr_rest(path: str, end: float, pages: bool = False) -> Any:
     """``repos/{owner}/{repo}/<path>`` through REST (``{owner}/{repo}`` from this clone, which a launch dir with no
     working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list."""
     timeout = max(0.01, min(HTTP_SECONDS, end - time.monotonic()))
     if not pages:
-        return json.loads(gh("api", f"repos/{{owner}}/{{repo}}/{path}", timeout=timeout))
+        if path in COMMITS:  # a commit never changes
+            return COMMITS[path]
+        got = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/{path}", timeout=timeout))
+        if path.startswith("git/commits/"):
+            COMMITS[path] = got
+        return got
     out = gh(
         "api", "--paginate", f"repos/{{owner}}/{{repo}}/{path}", "--jq", ".[]", timeout=timeout
     )
@@ -4809,12 +5014,25 @@ QUESTION = re.compile(r"\s*## Verifier question\b")
 SATISFIED = re.compile(r"^SATISFIED:\s*(\S+)", re.MULTILINE)
 
 
-def verdict_outcome(pr: int, end: float, since: float | None = None) -> tuple[int, str] | None:
+def verdict_outcome(
+    pr: int, end: float, since: float | None = None, seen: dict | None = None
+) -> tuple[int, str] | None:
     """The newest verifier word on PR ``pr``'s current head, from its comments and reviews: a report whose ``Head:``
     line names the head and that holds a ``SATISFIED:`` line (0 for yes, 1 otherwise), or a ``## Verifier question``
     comment posted after the head's commit (1); None while there is neither. A report on an older head, and any word
-    posted before ``since`` (seconds), is ignored."""
-    head = pr_rest(f"pulls/{pr}", end)["head"]["sha"]
+    posted before ``since`` (seconds), is ignored. ``seen`` is one wait's memo: a PR whose head and ``updated_at``
+    (a comment or review bumps it) are those of the last empty look is not read again."""
+    view = pr_rest(f"pulls/{pr}", end)
+    head = view["head"]["sha"]
+    if seen is not None and seen.get("stamp") == (head, view.get("updated_at")):
+        return None
+    result = _verdict(pr, head, end, since)
+    if seen is not None:
+        seen["stamp"] = None if result else (head, view.get("updated_at"))
+    return result
+
+
+def _verdict(pr: int, head: str, end: float, since: float | None) -> tuple[int, str] | None:
     committed = pr_rest(f"git/commits/{head}", end)["committer"]["date"]
     said = [(c["created_at"], c) for c in pr_rest(f"issues/{pr}/comments", end, pages=True)]
     said += [
@@ -4863,6 +5081,7 @@ def wait_for(
     deadline = time.monotonic() + budget
     every = WAIT_FOR_PR_EVERY if pr is not None else WAIT_FOR_EVERY
     settled = {"gate": gate_outcome, "verdict": verdict_outcome}.get(until)
+    seen: dict = {}
 
     def ended() -> tuple[int, str] | None:
         """The log's exit line: with ``--pid``, only one after the marker of the run it names, so a
@@ -4911,10 +5130,19 @@ def wait_for(
                 return None
             try:  # a query may not outlast the budget
                 if settled is not None:
-                    if outcome := settled(pr, time.monotonic() + left, since):
+                    extra = {"seen": seen} if until == "verdict" else {}
+                    if outcome := settled(pr, time.monotonic() + left, since, **extra):
                         return outcome
                 elif outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
                     return outcome
+            except RateLimited as e:  # retrying keeps the limit drained: sleep to its reset
+                print(
+                    f"GitHub rate limit: waiting {e.wait:.0f}s for its reset",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(min(e.wait, max(deadline - time.monotonic(), 0)))
+                continue
             except BLIPS:  # a GitHub blip: the next poll asks again
                 pass
         elif pid and pid_of(pid) is None:
@@ -5004,7 +5232,48 @@ def gh(*args: str, timeout: float = HTTP_SECONDS, cwd: Path | None = None) -> st
         ).stdout
     except (OSError, subprocess.SubprocessError) as e:
         why = (getattr(e, "stderr", "") or str(e)).strip()
+        if wait := rate_wait(why):
+            raise RateLimited(f"gh {' '.join(args)}: {why}", wait) from e
         raise Fail(f"gh {' '.join(args)}: {why}") from e
+
+
+def rate_wait(stderr: str) -> float | None:
+    """Seconds until GitHub's limit resets when ``stderr`` is a 403/429 rate-limit refusal, else None. A secondary
+    limit waits the ``Retry-After`` its text shows, else a minute; a primary one reads its bucket (GraphQL's for
+    a ``GraphQL:`` error, else REST's) from ``gh api rate_limit``, which costs no quota: an empty bucket waits to
+    its reset, one with calls left was refused for the per-minute limit and waits a minute."""
+    if not re.search(r"rate limit|HTTP 429", stderr, re.IGNORECASE):
+        return None
+    if found := re.search(r"retry[- ]after:? *(\d+)", stderr, re.IGNORECASE):
+        return float(found[1])
+    if re.search(r"secondary|abuse|HTTP 429", stderr, re.IGNORECASE):
+        return 60.0
+    bucket = "graphql" if "GraphQL:" in stderr else "core"
+    try:
+        remaining, reset = subprocess.run(
+            [
+                "gh",
+                "api",
+                "rate_limit",
+                "--jq",
+                f'.resources.{bucket} | "\\(.remaining) \\(.reset)"',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=HTTP_SECONDS,
+            check=True,
+        ).stdout.split()
+        return 60.0 if int(remaining) else max(float(reset) - time.time(), 0.0) + 1.0
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return 60.0
+
+
+def gitdir_from(workspace: str, top: str) -> str:
+    """The git dir of ``workspace``, given the text of its ``.git`` when that is a file (``gitdir: <path>``, relative
+    to the checkout unless absolute), else ``<workspace>/.git`` itself."""
+    if top.startswith("gitdir:"):
+        return posixpath.normpath(posixpath.join(workspace, top.split(":", 1)[1].strip()))
+    return f"{workspace}/.git"
 
 
 def workspace_head(og: Omnigent, sid: str, workspace: str) -> str:
@@ -5012,11 +5281,7 @@ def workspace_head(og: Omnigent, sid: str, workspace: str) -> str:
     ``.git`` through the file API (a worktree's ``.git`` is a file naming its gitdir); a branch is
     read from the gitdir, else its common dir. Raises ``Gone`` when a file is not there."""
     top = og.read_file(sid, f"{workspace}/.git")
-    gitdir = (
-        posixpath.join(workspace, top.split(":", 1)[1].strip())
-        if top.startswith("gitdir:")
-        else f"{workspace}/.git"
-    )
+    gitdir = gitdir_from(workspace, top)
     head = og.read_file(sid, f"{gitdir}/HEAD").strip()
     if not head.startswith("ref:"):
         return head
@@ -5113,7 +5378,10 @@ def origin_repo(config: str) -> str:
 
 def default_head(repo: str) -> str:
     """The sha the default branch of GitHub repo ``repo`` points at (``commits/HEAD``)."""
-    sha = gh("api", f"repos/{repo}/commits/HEAD", "--jq", ".sha").strip()
+    # --cache: gh keeps the answer on disk for HEAD_SECONDS, shared by every supervise on this host
+    sha = gh(
+        "api", "--cache", f"{int(HEAD_SECONDS)}s", f"repos/{repo}/commits/HEAD", "--jq", ".sha"
+    ).strip()
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise Fail(f"{repo}: no default-branch head in {sha[:80]!r}")
     return sha
@@ -5509,7 +5777,7 @@ def owner_item(line: str) -> str:
     if (at := first.find(marker)) >= 0:
         head, text = first[at + 2 :].split(": ", 1)
         return f"{head}: " + re.sub(r"(^|; )[^\s:;]+: ", r"\1", text)
-    if re.search(r": turn ended(, quiet \d+s)?$", first) and rest:
+    if re.search(rf": (turn ended|{re.escape(UNASKED_LINE)})(, quiet \d+s)?$", first) and rest:
         return rest
     return line
 
@@ -5792,6 +6060,12 @@ def reviews(role: str | None) -> bool:
     """Whether ``role`` is the verifier's role file (``verifier.md``): only that one reviews a PR,
     so only it takes ``--pr`` as the PR it reviews and may start on a clone other sessions hold."""
     return bool(role) and Path(str(role)).name == "verifier.md"
+
+
+def report_pr(role: str | None, cloud: bool, pr: int | None) -> int | None:
+    """The PR a child reports on, if any: a verifier's --pr names the PR it reviews, so one on a host
+    writes its report file instead; only a cloud one, with no file the host can read, reports on it."""
+    return None if reviews(role) and not cloud else pr
 
 
 def file_unlink(og: Omnigent, sid: str, path: Path, far: bool) -> None:
@@ -6663,6 +6937,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     prompt is the owner's."""
     # ``wait`` is the lead's, from its report when its last message is only the path
     kind, wait = event["kind"], event.get("wait") or wait_of(event.get("last") or "")
+    if kind == UNASKED:  # a turn end like any other: only its line tells the waiter more
+        kind = "ended"
     if kind == "landed":  # read from the repo, never from the lead's words
         return "rule", "act", "its default branch moved: a step owed after a landing"
     if kind == "archived":
@@ -6974,6 +7250,7 @@ def supervise_registry(
     outbox: list[tuple[str | None, tuple[str, Path, float] | None, str, str, str]] = []
     repos: dict[str, str] = {}  # each followed lead's repo, empty for none; read once
     headed: dict[str, float] = {}  # when each repo's default-branch head was last read
+    limited = [0.0]  # monotonic time before which GitHub's rate limit refuses us
     window = time.monotonic()
     started = time.time()  # a lead first seen in this run reports no turn end from before it
     # an end written after the last poll of the run before is news, though it predates this run's start
@@ -7627,9 +7904,21 @@ def supervise_registry(
         for repo, sid in first.items():
             if time.monotonic() - headed.get(repo, -HEAD_SECONDS) < HEAD_SECONDS:
                 continue
+            if (
+                time.monotonic() < limited[0]
+            ):  # GitHub's limit is account-wide: no repo asks before its reset
+                continue
             headed[repo] = time.monotonic()
             try:
                 sha = default_head(repo)
+            except RateLimited as e:
+                limited[0] = time.monotonic() + e.wait
+                headed.pop(repo, None)
+                log(
+                    ("head", repo),
+                    f"GitHub rate limit: default branches not read for {e.wait:.0f}s, until its reset",
+                )
+                continue
             except Exception as e:  # noqa: BLE001 - read again at the next HEAD_SECONDS
                 log(("head", repo), f"{repo}: default branch not read: {reason(e)}")
                 continue
@@ -8421,6 +8710,17 @@ def supervise_registry(
                         else {}
                     )
                     since, kind = time.time(), key[0]
+                    if kind == "ended" and event:
+                        looked_at = (rec.info(sid), rec.items(sid))
+                        carded = bool(getattr(rec, "cards", {}).get(sid))
+                        if unasked_end(rec, sid, *looked_at, carded):
+                            kind = UNASKED
+                            first, nl, rest = event.partition("\n")
+                            event = (
+                                re.sub(r": turn ended(, quiet \d+s)?$", f": {UNASKED_LINE}", first)
+                                + nl
+                                + rest
+                            )
                     nth = [str(lead.get("occurrences"))] if kind in ("blocked", "failed") else []
                     eid = ":".join((kind, sid, *nth, *key[1:]))
                     if kind != "archived":
@@ -8747,6 +9047,50 @@ def uninstall_service(registry: Path) -> None:
     print(f"removed {name}")
 
 
+SSH_CHECK = 75  # EX_TEMPFAIL: the host's SSH check asks the owner to approve; post the card, rerun
+SSH_LOGIN = re.compile(r"To authenticate, visit:\s*(\S+)")
+
+
+def ssh_step(host: str, why: str, command: list[str], server: str = "") -> int:
+    """Run ``command`` on ``host`` over ``ssh -o BatchMode=yes``, its output and exit code passed
+    through. When ssh prints the SSH check's ``To authenticate, visit:`` line, stop it (it hangs
+    there, BatchMode or not) and print the question card text for the owner, naming who asks,
+    the host, the command, why and the login link; exit ``SSH_CHECK``."""
+    # ssh hands the remote shell one string: one word is a shell command as written, several are argv
+    remote = command[0] if len(command) == 1 else shlex.join(command)
+    proc = subprocess.Popen(
+        ["ssh", "-o", "BatchMode=yes", host, remote],
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    link = None
+    for line in proc.stderr:  # the banner is ssh's stderr; stdout passes through untouched
+        sys.stderr.write(line)
+        if m := SSH_LOGIN.search(line):
+            link = m.group(1)
+            proc.terminate()
+            break
+    code = proc.wait()
+    if link is None:
+        return code
+    sid = own_id()
+    try:  # outside a session, or no server: the id alone
+        title = (Omnigent(server).info(sid).get("title") or "") if sid else ""
+    except (Fail, OSError):
+        title = ""
+    who = " ".join(x for x in (title, f"({sid})" if sid else "", harness_signature()) if x)
+    print(
+        f"SSH check on {host}: approve this connection?\n\n"
+        f"- Asking: {who or 'an agent outside Omnigent'}\n"
+        f"- Host: {host}\n"
+        f"- Command: {remote}\n"
+        f"- Why: {why}\n"
+        f"- Approve at: {link}\n\n"
+        "Options: Done (approved; the agent runs it again)"
+    )
+    return SSH_CHECK
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run one command; with ``--notify`` on run, send or wait, tell ``$LOOP_NOTIFY`` how it ended."""
     ended: dict[str, str] = {}
@@ -8838,7 +9182,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--permission-mode",
             help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
-            " else the harness default); claude-cloud takes auto or bypassPermissions, codex none",
+            " else the harness default); claude-cloud takes auto or bypassPermissions (default bypassPermissions), codex none",
         )
         p.add_argument(
             "--author",
@@ -9013,6 +9357,23 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         "signature", description="print <harness>/<model>/<effort> of the session this runs in"
     )
     p = sub.add_parser(
+        "brief",
+        description="print, reading no server, the body of the first message start would send a"
+        " child: its preamble and the brief, without the signature, lock and title lines start adds"
+        " once the session exists. A cloud lead passes it as sys_session_create's message",
+    )
+    p.add_argument("brief", help="the task specifics: a file, or the text itself")
+    p.add_argument("report", type=Path)
+    p.add_argument("--role", help="worker/verifier role file, inlined for a cloud child")
+    p.add_argument("--cloud", action="store_true", help="the child runs in a Claude cloud VM")
+    p.add_argument("--top-level", action="store_true")
+    p.add_argument("--pr", type=int)
+    p.add_argument(
+        "--remote",
+        action="store_true",
+        help="the child runs on another host (start's --host): REPORT is that host's path, kept as given",
+    )
+    p = sub.add_parser(
         "direct",
         description="mark a followed lead as driven by the owner directly: no deadline or nudge",
     )
@@ -9155,6 +9516,20 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("--limit", type=float, required=True, help="seconds before giving up")
     p.add_argument("until", nargs=argparse.REMAINDER, metavar="-- CMD")
     p = sub.add_parser(
+        "ssh",
+        description="run a host step over ssh -o BatchMode=yes; on the host's SSH check, print the"
+        f" owner's question card and exit {SSH_CHECK}",
+    )
+    p.add_argument("host")
+    p.add_argument(
+        "--why", required=True, help="the step's purpose, shown to the owner on the card"
+    )
+    p.add_argument(
+        "command",
+        nargs="+",
+        help="after --: the command to run on the host; one word is a shell command as written, several are argv",
+    )
+    p = sub.add_parser(
         "wait-for",
         description="block on a run's log or pid, or a PR condition, up to --budget; print only the outcome",
     )
@@ -9230,6 +9605,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             "owner-said",
             "wait-until",
             "wait-for",
+            "ssh",
         ):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
         if p.prog.split()[-1] in ("run", "start", "send", "wait", "reap", "direct"):
@@ -9295,6 +9671,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 raise Fail(f"{registry}: no line for {sid}")
             print(f"{sid}: {'not ' * args.off}driven by the owner directly")
             return 0
+        if args.cmd == "ssh":
+            return ssh_step(args.host, args.why, args.command, args.server)
         if args.cmd == "signature":
             try:  # outside a session, or no server: the harness's files alone
                 session = Omnigent(args.server or "").info(own) if (own := own_id()) else None
@@ -9389,10 +9767,29 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             ok, line = capacity()
             print(line)
             return 0 if ok else 1
-        if args.cmd in ("run", "start") and args.role is not None:
+        if args.cmd in ("run", "start", "brief") and args.role is not None:
             role_file = Path(args.role)
             if not (role_file.is_file() and os.access(role_file, os.R_OK)):
                 raise Fail(f"--role {args.role}: not a readable file; the child reads it first")
+        if args.cmd == "brief":
+            # the body only: start adds its signature, lock and title lines once a session exists
+            pr = report_pr(args.role, args.cloud, args.pr)
+            # as start's: a path on another host is neither resolved nor checked here
+            report = args.report.resolve() if not args.remote or pr else args.report
+            # ponytail: a lead's delegation line is read from this checkout, never another host's (start reads that
+            # through the server, which brief does not reach)
+            delegation = lead_delegation(None, None) if args.top_level and not pr else ""
+            body = first_message(
+                args.cloud,
+                args.top_level,
+                pr,
+                report,
+                args.role,
+                text_or_file(args.brief)[0],
+                delegation,
+            )
+            sys.stdout.write(body)
+            return 0
         og = Omnigent(args.server) if args.server else Omnigent()
         if args.cmd == "capacity":
             target = og.host(args.host)
@@ -9573,8 +9970,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         if verifier and args.verifier_route != "codex":
             apply_route(args)
         verifies = args.pr if verifier else None
-        if verifier and args.pr and og.harness(args.agent) != CLOUD_HARNESS:
-            args.pr = None
+        if verifier:
+            args.pr = report_pr(args.role, og.harness(args.agent) == CLOUD_HARNESS, args.pr)
         cloud = os.environ.get("CLAUDE_CODE_REMOTE") == "true"
         if (
             args.cmd in ("run", "start")
