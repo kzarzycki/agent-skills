@@ -3362,7 +3362,7 @@ def launch_dir(
     that briefs and reports use. The folder-trust entry in the user's Claude config (``config``,
     default ``~/.claude.json``) is written only with ``trust``: trust is the user's decision, never
     this script's. With no ``env`` id it pins the environment the branch's loop.md ``Cloud worker:`` line
-    names (``env <name>``), else the one named after the repository, else the account's ``Default``,
+    names (``env <name>``), else the one its main checkout pins, else the one named after the repository, else the account's ``Default``,
     resolved on this host's claude login; a name with no environment there removes what was made and
     fails, naming ``cloud-env``. It prints whether the folder is trusted."""
     if path.exists() and any(path.iterdir()):
@@ -3394,9 +3394,14 @@ def launch_dir(
     if not env:
         try:
             line = cloud_worker(committed(path, "HEAD", LOOP_FILE) or "")
-            env, named = resolve_environment(line.env if line else "", url_repo_name(remote))
-            if source:
-                refuse_shadowed_pin(path, env, listed_main(source[0]))
+            main = listed_main(source[0]) if source else None
+            if line and line.env:
+                env, named = resolve_environment(line.env, "")
+            elif main and (env := environment_pin(own_settings(main))):
+                named = "the main checkout's pin"  # what pin_environment gives a worktree with none
+            else:
+                env, named = resolve_environment("", url_repo_name(remote))
+            refuse_shadowed_pin(path, env, main)
         except Fail:
             unmake_launch_dir(path, source[0] if source else None)
             raise
