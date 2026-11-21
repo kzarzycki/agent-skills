@@ -176,23 +176,35 @@ def test_a_cloud_status_write_makes_no_call_and_names_the_host(
 ) -> None:
     in_cloud(monkeypatch, True)
     with pytest.raises(subprocess.CalledProcessError) as raised:
-        approvals.github.post_status("a" * 40, "gate", "Passed")
-    assert raised.value.stderr == (
-        "a cloud session can't write commit statuses (its GitHub proxy answers 403): the host writes `gate` on "
-        + "a" * 40
+        approvals.github.post_status("a" * 40, "owner", "Go")
+    assert (
+        raised.value.stderr
+        == "cloud VM: the `owner` status on " + "a" * 40 + " is not written; the host writes it"
     )
     assert github.calls == []
 
 
-def test_the_gate_status_line_says_the_host_writes_it(
+def test_a_cloud_gate_pass_prints_its_stand_in_and_is_no_failure(
+    github: Github, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    in_cloud(monkeypatch, True)
+    record = {"tree": "t" * 40, "head": "b" * 40, "command": "mise run check"}
+    assert approvals.shown("b" * 40, record) is None
+    out = capsys.readouterr().out
+    ref = approvals.RECORD_BRANCH.format(approvals.record_name("t" * 40, "mise run check"))
+    assert out == (
+        f"cloud VM: the `gate` status on {'b' * 40} is not written; the record ref {ref} stands in, and the host"
+        " posts the status with `local-ci <pr>`\n"
+    )
+    assert "403" not in out and github.calls == []
+
+
+def test_a_cloud_gate_failure_says_the_host_posts_its_status(
     github: Github, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     in_cloud(monkeypatch, True)
-    why = approvals.shown(
-        "b" * 40, {"tree": "t" * 40, "head": "b" * 40, "command": "mise run check"}
-    )
-    assert why is not None and "the host writes `gate`" in why
-    assert github.calls == []
+    line = approvals.failed("b" * 40, "t" * 40, "mise run check", 1, False)
+    assert line.startswith("cloud VM: the `gate` failure status") and github.calls == []
 
 
 def test_a_host_status_write_still_calls_github(
