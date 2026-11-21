@@ -68,7 +68,7 @@ on questions (``ask_user_question``) holds the message behind them too (exit 5);
 --answer`` gives it as each question's answer instead, exit 0, since its pending inputs wait on
 the answer; an approval prompt it never answers. ``relay --from <name>`` is a notice from a task
 or an agent: a first line says it is not the owner's words, and it never answers a question,
-even with ``--answer``; a plain relay sent as a message opens with ``[relayed by <session>]``.
+even with ``--answer``; a plain relay sent as a message opens with ``[relayed by <session>]``. A relay and a supervisor post start with a ``[Message from <label>]`` line, which the web UI shows as a chip (``chip``).
 ``owner-said`` exits 0 when the owner typed the quote in the session, printing a citation (link,
 item, time, author) and the message, and 1 when it is only in a message an agent or Omnigent posted
 (a brief, a supervisor post, a relay) or nowhere: a lead checks a relayed owner decision with it.
@@ -502,6 +502,19 @@ RELAY_FROM = "[relay from {source}: not the owner's words, and no answer to an o
 # A plain relay's first line: the owner's words relayed are still a relay, which a quote's
 # provenance (``owner_said``) never takes for the owner's own message.
 RELAYED = "[relayed by {who}]"
+# The web UI renders a text whose first line is this as a collapsed "From <label>" chip. Readers
+# strip it once, in ``text_of``, so every start-of-text check sees the body.
+CHIP = "[Message from {label}]\n"
+CHIP_LINE = re.compile(r"\[Message from [^\]\n]+\]\r?\n")
+
+
+def chip(label: str, text: str) -> str:
+    """``text`` under a chip first line. The one place a label is made valid: 1 to 64 characters,
+    no ``]`` or newline, never opening ``session `` (the UI's session-id chip); an empty one
+    reads ``agent``."""
+    label = re.sub(r"[\]\r\n]+", " ", label).strip()[:64].strip()
+    label = re.sub(r"^session\s+", "", label, flags=re.IGNORECASE) or "agent"
+    return CHIP.format(label=label) + text
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
 # What ``run`` writes to its report path when it ends without a report (a failed wait, a kill), so
 # a lead waiting on that file sees the failure. Never a delivered report: whatever replaces it is new.
@@ -2114,8 +2127,14 @@ def runner_log(info: dict) -> str:
     return str(logs[-1]) if logs else str(RUNNER_LOGS / f"runner-{root}-*.log")
 
 
+def unchip(text: str) -> str:
+    """``text`` without a leading chip line, as a reader sees it (``chip``)."""
+    return CHIP_LINE.sub("", text.lstrip(), count=1) if text.lstrip().startswith("[Message from ") else text
+
+
 def text_of(item: dict) -> str:
-    return "".join(c.get("text", "") for c in item.get("content") or [] if isinstance(c, dict))
+    """An item's text, without a leading chip line."""
+    return unchip("".join(c.get("text", "") for c in item.get("content") or [] if isinstance(c, dict)))
 
 
 def ended_on_monitor(info: dict, items: list[dict]) -> bool:
@@ -2267,7 +2286,7 @@ def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:
 
 def queued(info: dict, text: str) -> bool:
     """Whether ``text`` waits in the session's pending inputs: sent, not yet an item."""
-    return any(text_of(p).strip() == text for p in info.get("pending_inputs") or [])
+    return any(text_of(p).strip() == unchip(text) for p in info.get("pending_inputs") or [])
 
 
 def started_late(og: Omnigent, sid: str, text: str) -> bool:
@@ -2378,7 +2397,7 @@ def send(
         return [
             i
             for i in items
-            if i.get("type") == "message" and i.get("role") == "user" and text_of(i).strip() == text
+            if i.get("type") == "message" and i.get("role") == "user" and text_of(i).strip() == unchip(text)
         ]
 
     def pending(info: dict) -> bool:
@@ -2486,7 +2505,7 @@ def relay(
     never answers a question, even with ``answer``. With ``by`` (the relaying session) a message
     sent, not an answer, opens with a ``RELAYED`` line."""
     if source:
-        text = f"{RELAY_FROM.format(source=source)}\n{text}"
+        text = chip(source, f"{RELAY_FROM.format(source=source)}\n{text}")
     info = og.info(sid)
     every = info.get("pending_elicitations") or []
     pending = [e for e in every if holds_input(e)]
@@ -2503,7 +2522,7 @@ def relay(
             )
         return f"session {sid}: answered its open question: {'; '.join(_asks(e) for e in asked)}"
     if by and not source:
-        text = f"{RELAYED.format(who=by)}\n{text}"
+        text = chip(by, f"{RELAYED.format(who=by)}\n{text}")
     outcome, posted = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
     if outcome == "queued":
         try:
@@ -2548,6 +2567,7 @@ def relay(
 POSTED = (
     "Supervisor: ",
     "Supervisor [",
+    "[Message from ",
     RELAY_FROM.split("{")[0],
     RELAYED.split("{")[0],
     "[System:",
@@ -7205,7 +7225,7 @@ def supervise_registry(
             # a message to a reaped session answers `queued` and never arrives
             if not og.info(notify).get("runner_online", True):
                 revive(og, notify)
-            og.send(notify, text)
+            og.send(notify, chip("Supervisor", text))
         except Exception as e:  # noqa: BLE001 - never fatal; the event is found again
             log("post", f"post to {notify} failed: {reason(e)}")
             return False
@@ -9949,7 +9969,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             baseline = tracked_changes(workspace) if not args.pr else None  # as run's
             undeleted = None
             try:
-                send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds, far=far)
+                send(og, args.session, chip(own_id() or "an agent", f"{mark}\n{text}"), report, args.confirm_seconds, far=far)
             except Undeleted as e:  # the answer landed: supervise it, then fail on the question
                 undeleted = e
             # armed once the message is in the history, as start arms: before it, the report or
