@@ -40,5 +40,16 @@ pull_request_rules:
       queue:
         name: default
 
+# Auto-queue: Mergify takes in a PR on its own once it matches the queue's `queue_conditions` and this list. Workflow
+# Automation's `queue` action above did not fire on this repo (no pull_request_rules Summary check ever ran); per
+# Mergify's docs, `auto_merge_conditions` is the auto-queue switch, and it needs Merge Protections enabled for the repo
+# in the Mergify dashboard.
+merge_protections_settings:
+  auto_merge_conditions:
+    - base = main
+    - -draft
+    - label = loop:queued
+    - check-success = land
+
 merge_queue:
   dequeued_label: loop:dequeued
