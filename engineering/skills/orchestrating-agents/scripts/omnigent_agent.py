@@ -318,6 +318,8 @@ TURN_END_SECONDS = 30.0
 # so a lead in bypassPermissions shows its child's prompt, which the lead's own supervisor
 # reports and the lead answers within a minute; one that clears sooner was never the owner's.
 PROMPT_CONFIRM_SECONDS = 120.0
+# how long one listing of every session serves ``Omnigent.creations``: well inside the prompt's hold
+CREATED_SECONDS = 30.0
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
 # A loaded server times out reads the child never noticed; a GET is retried after each of these.
 RETRY_SECONDS = (2.0, 5.0, 15.0, 30.0, 60.0)  # a GET outlasts a server restart
@@ -1804,6 +1806,30 @@ class Omnigent:
         """When any of ``sid``'s ``kin`` was last updated, else 0. Not ``busy``: a child whose
         turn end was lost stays busy for good."""
         return max(self.kin(sid).values(), default=0.0)
+
+    def creations(self, sid: str) -> list[str]:
+        """The live sessions ``sid`` created (``created_by_session_id``) that are not its children:
+        its ``--top-level`` ones, whose prompts Omnigent mirrors onto no session, since it mirrors
+        a child's onto its parent alone. One listing of every session serves every caller for
+        ``CREATED_SECONDS``: a supervisor asks it of each lead at every poll."""
+        cache = self.__dict__.setdefault("_created", [float("-inf"), []])
+        if time.monotonic() - cache[0] >= CREATED_SECONDS:
+            path, rows, after = "/v1/sessions?kind=any&limit=1000", [], ""
+            while True:
+                page = self.call("GET", path + (f"&after={after}" if after else ""))
+                rows += page.get("data", [])
+                if not (page.get("has_more") and page.get("last_id")):
+                    break
+                after = str(page["last_id"])
+            cache[:] = [time.monotonic(), rows]
+        return [
+            str(s["id"])
+            for s in cache[1]
+            if str(s.get("created_by_session_id") or "") == sid
+            and str(s.get("parent_session_id") or "") != sid
+            and str(s.get("id")) != sid
+            and not s.get("archived")
+        ]
 
 
 def checkout_root(workspace: str) -> str:
@@ -6230,6 +6256,31 @@ def supervise(
         time.sleep(POLL_SECONDS)
 
 
+def created_prompt(og: Omnigent, sid: str) -> tuple[tuple, str] | None:
+    """The ``blocked`` key and line ``observe`` gives a prompt, for the first session ``sid``
+    created (``Omnigent.creations``) that waits on one, naming that session; else None."""
+    try:
+        made = og.creations(sid)
+    except Fail:  # unreadable this poll: the lead's own state stands
+        return None
+    for child in made:
+        try:
+            info = og.info(child)
+        except Fail:
+            continue
+        if prompts := prompts_of(info):
+            ids = ",".join(
+                str(e.get("elicitation_id") or e)
+                for e in info["pending_elicitations"]
+                if holds_input(e)
+            )
+            title = f"{child} {info.get('title') or ''}".rstrip()
+            return ("blocked", f"{child}:{ids}"), (
+                f"{sid}: session it created, {title}, blocked on a prompt: {'; '.join(prompts)}"
+            )
+    return None
+
+
 def follow(
     og: Omnigent,
     sid: str,
@@ -6249,6 +6300,11 @@ def follow(
     key, line = observe(og, sid, idle_since)
     if key[0] == "stuck":  # a followed lead has its progress deadline, which says this already
         key = ("running",)
+    if key[0] in ("running", "ended") and (held_by := created_prompt(og, sid)):
+        # a prompt on a session it created that Omnigent mirrors nowhere (a --top-level one) is
+        # its lead's blocked prompt, held and told as a mirrored one is; before a turn end, since a
+        # lead whose turn ended waiting on its workers is the one nobody else would see it for
+        key, line = held_by
     if key[0] == "archived":
         return line, key
     if key[0] != "ended":

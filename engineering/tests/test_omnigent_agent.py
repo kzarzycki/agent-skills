@@ -136,6 +136,9 @@ class FakeOmnigent:
     def harness(self, agent: str) -> str:
         return self.harnesses.get(agent, "")
 
+    def creations(self, sid: str) -> list[str]:
+        return []
+
     def hosts(self) -> dict[str, str]:
         return {self.host_id: "host", **self.host_names}
 
@@ -5241,6 +5244,9 @@ class Owing:
     def active(self, sid: str) -> float:
         return self.kids
 
+    def creations(self, sid: str) -> list[str]:
+        return []
+
     def info(self, sid: str) -> dict:
         snap = self.infos.pop(0) if len(self.infos) > 1 else self.infos[0]
         return {"status": "idle", "runner_online": True, "title": "coord", **snap}
@@ -5555,6 +5561,7 @@ class Fleet:
         self.kin_of: dict[
             str, list[str] | Exception
         ] = {}  # each session's live children (or a read error)
+        self.created_of: dict[str, list[str]] = {}  # the top-level sessions each one created
         self.broken: dict[str, Exception] = {}
         self.offline: set[str] = set()
         self.refuse = 0
@@ -5595,6 +5602,9 @@ class Fleet:
 
     def active(self, sid: str) -> float:
         return self.kids.get(sid, 0.0)
+
+    def creations(self, sid: str) -> list[str]:
+        return self.created_of.get(sid, [])
 
     def kin(self, sid: str) -> dict[str, float]:
         found = self.kin_of.get(sid, [])

@@ -689,7 +689,11 @@ as `watch` counts an end; any other turn end only once the lead, its live childr
 subscribes to wrote nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
 another's merge and a question with no ending), since a lead briefed or active again within that
 time was not stuck; a prompt once it has been pending 120 s across looks, since Omnigent shows each
-child's prompt on its parent too and the lead answers it itself, usually within a minute; a failure
+child's prompt on its parent too and the lead answers it itself, usually within a minute (Omnigent
+shows a `--top-level` session's prompt on no one, since it has no parent, so a prompt on a live
+session the lead created, `created_by_session_id`, counts as the lead's own, named
+`session it created, <id> <title>, blocked on a prompt`, while the lead runs or its turn has ended;
+one listing of every session serves all leads for 30 s); a failure
 at once; each once per occurrence; and `archived`, which is the
 only event that drops the line, so a relay needs no re-arm. Each is posted once per message.
 A restart posts an end it finds again.
