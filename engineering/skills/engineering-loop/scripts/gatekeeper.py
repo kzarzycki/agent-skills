@@ -10386,7 +10386,10 @@ def brief(
         )
         # the findings themselves, since the previous report stays on the lead's host and a cloud verifier can't read it
         if prior := previous_findings(pull, number - 1):
-            lines += [f"- Previous findings, pass {number - 1}:", *(f"  {n}. " + f.replace("\n", "\n     ") for n, f in enumerate(prior, 1))]
+            lines += [
+                f"- Previous findings, pass {number - 1}:",
+                *(f"  {n}. " + f.replace("\n", "\n     ") for n, f in enumerate(prior, 1)),
+            ]
         # a far verifier works in its worktree, but the last one saved its repros beside its report, in the clone's
         # tmp/loop/: each by its path there, from the copy wait brought home
         if far and (home := Path("tmp/loop") / f"pr{pr}-v{number - 1}.md").is_file():

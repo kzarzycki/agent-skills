@@ -2440,7 +2440,9 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
     ]
     assert approvals.main(["brief", "7"]) == 0
     out = capsys.readouterr().out
-    assert "- Previous findings, pass 2:\n  1. **Verifier (codex), pass 2 · F1** (major): a gap" in out
+    assert (
+        "- Previous findings, pass 2:\n  1. **Verifier (codex), pass 2 · F1** (major): a gap" in out
+    )
     assert "F9" not in out
     pr["reviews"] = {"nodes": []}
     assert approvals.main(["brief", "7"]) == 0
