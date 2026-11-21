@@ -18,6 +18,8 @@ from engineering.tests.e2e.conformance import (
 )
 from engineering.tests.e2e.live_contract import run_agent
 
+pytestmark = pytest.mark.slow  # a real install per test, 4-9 s each (#1610)
+
 WAYFINDER_SUPPORT = {
     "domain-modeling",
     "grilling",
