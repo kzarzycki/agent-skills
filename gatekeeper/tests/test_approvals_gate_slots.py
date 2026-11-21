@@ -593,7 +593,9 @@ def test_with_gate_slots_off_a_command_runs_while_another_process_holds_slot_1(
 def test_with_gate_slots_off_mutate_takes_no_short_lane_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    loop_scripts = Path(approvals.__file__).resolve().parents[4] / "loop/skills/engineering-loop/scripts"
+    loop_scripts = (
+        Path(approvals.__file__).resolve().parents[4] / "loop/skills/engineering-loop/scripts"
+    )
     sys.path.insert(0, str(loop_scripts))
     import mutate as module
 

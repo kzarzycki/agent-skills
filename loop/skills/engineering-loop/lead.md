@@ -502,7 +502,7 @@ of another harness or a cloud run that answers in its report does, which counts 
 any other only when it came after your own turn) reaches you as news within a minute of its end, named or not, and a PR your
 wait names that merged, closed or finished its checks the same, read from GitHub; an intermediate `STILL WORKING` turn of a
 child is no end, so the line only has to name what you wait on.
-`wait-on` also writes your state as the `lead` event on your branch (events.md): `waiting`. End `DONE` and `USER NEEDED` the
+`wait-on` also writes your state as the `lead` event on your branch (the `gatekeeper` skill's events.md): `waiting`. End `DONE` and `USER NEEDED` the
 same way, pasting the line printed: `omnigent_agent.py end-on done <result> --report <path>` (event `ok`) and
 `end-on needs-owner --question <file> --report <path>` (event `needs-owner`, with the whole question in `question.md`
 and its first line in the printed line). Write the question to a file, never into the line: the supervisor sends the owner

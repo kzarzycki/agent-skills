@@ -183,7 +183,7 @@ which installs what its inline header declares. `<browsing>/scripts/browse.py` r
 asked, and screenshots it (worker.md, Report; its docstring has the flags). `scripts/mutate.py` applies
 each mutation patch alone, runs the tests and restores the tree, writing a log stamped with the head: the worker
 runs it before its report and the verifier in review (verifier.md, Mutation-check the new tests; its
-docstring has the log format and exit codes). `<gatekeeper>/scripts/events.py` writes and reads a step's state as a git ref (`emit`, `read`, `wait`, `clear`); the kinds, states, beat intervals and `event.json` fields are in [events.md](events.md), which a producer or a reader of an event reads first.
+docstring has the log format and exit codes). `<gatekeeper>/scripts/events.py` writes and reads a step's state as a git ref (`emit`, `read`, `wait`, `clear`); the kinds, states, beat intervals and `event.json` fields are in the `gatekeeper` skill's events.md, which a producer or a reader of an event reads first.
 
 **Acceptance checks.** Each scriptable Before merge line of a spec becomes a check committed in
 its PR, so a later change that breaks the example fails a run rather than a reader's memory.

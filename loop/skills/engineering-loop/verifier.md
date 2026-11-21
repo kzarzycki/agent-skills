@@ -66,7 +66,7 @@ yourself, keeping standards and spec as separate axes.
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
   after a fix for a CI check red on a ready PR is the same: only the change since that
   report's head.
-- **Emit the `verifier` event** on the branch you review, so the lead waits on you as on `land` (events.md). A pass
+- **Emit the `verifier` event** on the branch you review, so the lead waits on you as on `land` (the `gatekeeper` skill's events.md). A pass
   that `cloud_verifier.py` runs (`verify` or `thread`) is emitted by the script: a child it starts emits nothing by
   hand, since an `ok` written before the script posts the review would wake the lead on a review that is not there yet.
   Any other pass emits with the same helper, from the repo's clone, `uv run <gatekeeper>/scripts/events.py

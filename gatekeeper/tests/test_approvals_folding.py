@@ -23,7 +23,8 @@ LOOP_SCRIPTS = SCRIPTS.parents[3] / "loop" / "skills" / "engineering-loop" / "sc
 
 def load(name: str) -> Any:
     spec = importlib.util.spec_from_file_location(
-        f"folded_{name}", (LOOP_SCRIPTS if name in ("cloud_verifier", "nightly") else BASE) / f"{name}.py"
+        f"folded_{name}",
+        (LOOP_SCRIPTS if name in ("cloud_verifier", "nightly") else BASE) / f"{name}.py",
     )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

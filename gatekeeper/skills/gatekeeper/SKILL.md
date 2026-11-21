@@ -36,6 +36,13 @@ script's docstring is the manual: every proof each verb checks and every record 
   forge and the evidence store only through ports, each served by the adapter the policy's
   `adapters` section names; GitHub's is the only one, and `gatekeeper.py` loads it from
   beside itself.
+- `scripts/folding.py`: builds and reads the folded comments the gatekeeper and the loop post.
+- `scripts/events.py` and [events.md](events.md): a step's state written as a small git ref
+  (`emit`, `read`, `wait`, `clear`), which the gatekeeper reads and the loop and a runner write.
+  events.md has the kinds, states, beat intervals and `event.json` fields; read it to write or
+  read an event.
+- `scripts/acceptance.py`: runs one spec's acceptance checks from a folder of executables, and
+  the gatekeeper's `check` reads the evidence it leaves.
 - [policy.md](policy.md): every policy key, its type and default, the rules the policy
   states, the batching queue, carry-over of a merge of main, the opt-out, and
   issue-tracker.md's settings block. Read it when writing or changing a project's policy, or

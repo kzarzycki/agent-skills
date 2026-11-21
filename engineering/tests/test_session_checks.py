@@ -104,6 +104,19 @@ def test_a_run_on_xdist_without_apm_stops_the_same_way_and_no_worker_crashes(
     assert "passed" not in run.stdout and "failed" not in run.stdout
 
 
+PACKAGE_TESTS = ("gatekeeper", "loop", "github", "chief-of-staff", "omnigent")
+
+
+def at(test: str) -> str:
+    """The path of a test given as `<file>::<name>`, whichever package's tests the file moved to."""
+    home = {
+        "test_omnigent_agent.py": "omnigent",
+        "test_approvals.py": "gatekeeper",
+        "test_board.py": "github",
+    }
+    return f"{home.get(test.split('::')[0], 'engineering')}/tests/{test}"
+
+
 # A test that runs no tool, in a module whose other tests run one, beside one that runs it (V1).
 TOOL_FREE = [
     (
@@ -146,7 +159,7 @@ NEEDING = [
 def test_a_selected_test_that_runs_no_tool_runs_though_its_module_s_others_do(
     tmp_path: Path, tool: str, test: str
 ) -> None:
-    run = run_tests(path_without(tmp_path, tool), f"engineering/tests/{test}")
+    run = run_tests(path_without(tmp_path, tool), at(test))
     assert run.returncode == 0 and "missing tools" not in run.stdout + run.stderr, (
         run.stdout + run.stderr
     )
@@ -156,7 +169,7 @@ def test_a_selected_test_that_runs_no_tool_runs_though_its_module_s_others_do(
 def test_a_selected_test_that_runs_a_missing_tool_stops_the_run(
     tmp_path: Path, tool: str, test: str
 ) -> None:
-    run = run_tests(path_without(tmp_path, tool), f"engineering/tests/{test}", "--collect-only")
+    run = run_tests(path_without(tmp_path, tool), at(test), "--collect-only")
     assert stops(run, tool), run.stdout + run.stderr
 
 
@@ -164,8 +177,8 @@ def test_one_line_names_every_missing_tool_of_the_selected_tests(tmp_path: Path)
     run = run_tests(
         path_without(tmp_path, "apm", "perl", "ssh-keygen"),
         "engineering/tests/test_consumer_e2e.py",
-        "engineering/tests/test_omnigent_agent.py",
-        "engineering/tests/test_board.py",
+        "omnigent/tests/test_omnigent_agent.py",
+        "github/tests/test_board.py",
         "--collect-only",
     )
     assert stops(run, "apm, perl"), run.stdout + run.stderr
@@ -175,8 +188,8 @@ def test_deselecting_the_tests_that_need_a_tool_runs_the_rest(tmp_path: Path) ->
     """`-m "not needs_tool"` leaves out a test that needs a tool through a fixture, too."""
     run = run_tests(
         path_without(tmp_path, "ssh-keygen"),
-        "engineering/tests/test_approvals.py::test_land_with_the_line_refuses_a_checkout_that_signs_nothing",
-        "engineering/tests/test_approvals.py::test_the_label_rule_is_the_loops_fixed_set_plus_the_tracker_files_sections",
+        "gatekeeper/tests/test_approvals.py::test_land_with_the_line_refuses_a_checkout_that_signs_nothing",
+        "gatekeeper/tests/test_approvals.py::test_the_label_rule_is_the_loops_fixed_set_plus_the_tracker_files_sections",
         "-m",
         "not needs_tool",
     )
@@ -199,8 +212,9 @@ def marked_tools(path: Path) -> dict[str, tuple[str, ...]]:
 def test_each_test_that_runs_a_tool_itself_carries_its_mark() -> None:
     """The tests that fail without the tool, beyond those that take a fixture in conftest.py's FIXTURE_TOOLS."""
     marked = {
-        f"{path.relative_to(HERE).as_posix()}::{name}": tools
-        for path in sorted(HERE.rglob("test_*.py"))
+        f"{path.relative_to(root).as_posix()}::{name}": tools
+        for root in (HERE, *(REPOSITORY / package / "tests" for package in PACKAGE_TESTS))
+        for path in sorted(root.rglob("test_*.py"))
         for name, tools in marked_tools(path).items()
     }
     apm = ("apm",)
