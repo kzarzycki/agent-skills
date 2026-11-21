@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(
-    0, str(Path(__file__).resolve().parents[1] / "engineering/skills/engineering-loop/scripts")
+    0, str(Path(__file__).resolve().parents[1] / "gatekeeper/skills/gatekeeper/scripts")
 )
 import approvals
 

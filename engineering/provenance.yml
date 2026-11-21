@@ -196,7 +196,7 @@ owned_overlays:
   sha256: 141d874a78f80a5c23f70c5f25ef8542025a7d4d030f408d0dd6a5755452785e
   mode: '100644'
 - path: overlays/skills/triage/SKILL.md
-  sha256: 83686e04ffd92263e939084680979e2cc481c9670eec646e1c8f0783c044cb5c
+  sha256: 55a2844cf3c65113b69405525bfd055e99c641bffaf8c27a0bbdc4791b1a8320
   mode: '100644'
 - path: overlays/skills/triage/agents/openai.yaml
   sha256: 2e683717720cf456d165d0bb1a68bb600d0b6a8ccb61841c172e50d26f95351c
@@ -703,7 +703,7 @@ output_files:
   sha256: 141d874a78f80a5c23f70c5f25ef8542025a7d4d030f408d0dd6a5755452785e
   mode: '100644'
 - path: skills/triage/SKILL.md
-  sha256: 83686e04ffd92263e939084680979e2cc481c9670eec646e1c8f0783c044cb5c
+  sha256: 55a2844cf3c65113b69405525bfd055e99c641bffaf8c27a0bbdc4791b1a8320
   mode: '100644'
 - path: skills/triage/agents/openai.yaml
   sha256: 2e683717720cf456d165d0bb1a68bb600d0b6a8ccb61841c172e50d26f95351c

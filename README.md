@@ -9,7 +9,12 @@ optional adapters.
 | Plugin | What it's for |
 |---|---|
 | **research** | Deep-research orchestration — parallel multi-source web search producing cited reports, plus delegation to hosted research assistants. |
-| **engineering** | The engineering loop (spec, build, gates, proof, an independent verifier, landing), its issue conventions, and the design, testing and review skills it calls. |
+| **engineering** | The design, testing, review and browsing skills a coding agent uses, and how it starts and collects other agents. For one release line it also pulls in the five packages below. |
+| **gatekeeper** | May this change be built, enter a merge queue or merge: decided from proof on the forge and the team's policy. |
+| **loop** | The engineering loop: a lead, workers and an independent verifier take a change from intent to a landed PR. Pulls in `gatekeeper` and `github`. |
+| **github** | The GitHub tracker and forge conventions the loop and the gatekeeper run on, with label sync and board moves. Pulls in `gatekeeper`. |
+| **chief-of-staff** | One person's view over many leads and repos. Pulls in `loop` and `omnigent`. |
+| **omnigent** | Running agents through Omnigent: the backend, operating an install, and its telemetry. |
 | **content** | Understanding and reproducing a person's writing voice for outreach, content, and proposals. |
 | **experimental** | Skills under active iteration. **Contract:** anything here may change, break, or be removed at any time — not held to the stability of the other plugins. |
 
@@ -48,7 +53,7 @@ Add the marketplace, then install plugins by name.
 /plugin install experimental@kzarzycki-agent-skills
 ```
 
-Pick the plugins you want. Each is independent.
+Pick the plugins you want. Installing one installs the packages it depends on (`docs/layers.md` has the map).
 
 The imported `engineering` payload is generated from its pinned vendir lock,
 then qualified and patched. Edit `engineering/vendir.yml` or the owned patch
@@ -81,4 +86,4 @@ To pull in changes from a local edit without pushing first, see `.claude/CLAUDE.
   `<pack>/.claude-plugin/plugin.json` follow semver. Tags are package-scoped:
   `<pack>-vX.Y.Z`.
 - PR titles use Conventional Commits (`feat:`, `fix:`, `chore:`, etc.).
-- Each plugin can be installed independently. Cross-plugin dependencies are documented in the plugin's README.
+- A package declares the packages it uses in both manifests (`dependencies` in `plugin.json` and in `apm.yml`), so installing it installs them.
