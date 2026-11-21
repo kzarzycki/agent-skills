@@ -250,6 +250,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
 8. **Land** once the last verdict is triaged with no core finding open, or at the cap with no
    blocker open and your `Cap: #<follow-up>` line in the PR body (SKILL.md, The cap); the merge itself
    waits for the landing rule (SKILL.md):
+   - You land your own PRs and never merge `origin/main` into one, stacked or not, unless the gate forces it
+     (the next point): a merge of main changes the head, which voids the verifier's verdict and costs another pass and gate.
    - Merge `origin/main` into the PR only when `land` comments that it conflicts with main
      (`Conflicts in the landing batch`): both merge queues test each head on top of main (the
      local one on the host, GitHub's in its `merge_group` CI), so a PR behind main lands
@@ -303,8 +305,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      check, reaches you as an event from the project's watcher; the PR is not landed until then. A removal's next
      step is `land <pr>` again, which reads the PR once. Exit 1 names what stopped your PR, and the fix is yours:
      - a missing proof, with nothing on the PR changed: add the proof;
-     - a conflict with main or the PRs merged before it: merge `origin/main` in, as the first
-       bullet says;
+     - a conflict with main or the PRs merged before it: merge `origin/main` in, as step 8's
+       `Conflicts in the landing batch` bullet says;
      - an eviction, red alone twice in the local queue or red twice on one head in GitHub's:
        the PR is a draft again with the failing log's tail in a comment; fix it like a check
        red after ready, and `land <pr>` marks it ready again;
@@ -373,9 +375,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    - Fast-forward the main checkout (`git -C <main checkout> pull --ff-only`), and tell
      the live peers that main moved: the merge SHA, plus any setup step they must run.
    - A PR stacked on this one moves onto main now. When you own it,
-     `gh pr edit <stacked> --base main`, then merge `origin/main` into its branch and push.
+     `gh pr edit <stacked> --base main`; merge `origin/main` into its branch only when `land` reports a conflict.
      Otherwise comment on it, naming the merge SHA, so its owner moves it
-     (`gh pr comment <stacked> --body "Base #<pr> landed in <merge sha>: retarget onto main and merge it in."`):
+     (`gh pr comment <stacked> --body "Base #<pr> landed in <merge sha>: retarget onto main."`):
      never push to another owner's PR (SKILL.md, One concern per PR).
 9. **Accept.** First read main's push run on the merge SHA
    (`gh run list --branch main --event push --commit <merge sha> --json conclusion,status`;
