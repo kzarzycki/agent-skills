@@ -140,7 +140,7 @@ uv run python tools/gate_slot.py sh -c 'uv run pytest -q -m "not live_agent" $(u
 mise run lint"""
 
 [tasks.check]
-description = "The full suite, nightly in CI: vendor-engineering-check, test, test-engineering-package"
+description = "The full suite, nightly in CI: vendor-engineering-check, test, test-slow, test-engineering-package"
 run = [
   "mise run vendor-engineering-check",
   "mise run test",

@@ -4,6 +4,7 @@ and `-n auto` there takes GATE_JOBS, else the cores free at start (tools/gate_wo
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -52,6 +53,24 @@ def test_the_test_task_runs_pytest_on_xdist_a_file_per_worker_by_default(
 
 def test_gate_test_parallel_0_runs_pytest_serially(tmp_path: Path) -> None:
     assert pytest_words(tmp_path, {"GATE_TEST_PARALLEL": "0"}) == DEFAULT
+
+
+def test_check_runs_the_slow_tests_the_test_task_leaves_out() -> None:
+    """`check` (the nightly) runs `test` and `test-slow`, and their `-m` expressions together cover the whole non-live
+    suite, so a test moved to `slow` still runs somewhere (#1610)."""
+    tasks = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]
+    assert (
+        "mise run test" in tasks["check"]["run"] and "mise run test-slow" in tasks["check"]["run"]
+    )
+    marks = {
+        name: re.search(r"-m '([^']+)'", tasks[name]["run"])[1] for name in ("test", "test-slow")
+    }
+    assert marks == {"test": "not live_agent and not slow", "test-slow": "slow and not live_agent"}
+
+
+def test_test_slow_is_parallel_unless_the_gate_turns_it_off() -> None:
+    run = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]["test-slow"]["run"]
+    assert '"${GATE_TEST_PARALLEL:-1}" != 0' in run and " ".join(PARALLEL) in run
 
 
 def test_the_nightly_test_map_run_stays_serial() -> None:
