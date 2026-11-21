@@ -4210,7 +4210,7 @@ def test_a_cloud_start_is_judged_on_memory_alone_here_and_on_another_host(
     assert omnigent_agent.capacity()[0] is False  # a local start waits on 1% idle
     assert omnigent_agent.capacity(max_load=40, cpu=False) == (
         True,
-        "cloud start, cpu not judged, 4000 MB available (min 1536)",
+        "cloud start, cpu not judged, 4000 MB available (min 1200)",
     )
     monkeypatch.setattr(omnigent_agent, "available_mb", lambda: 1000.0)
     assert omnigent_agent.capacity(cpu=False)[0] is False  # memory still refuses
@@ -4262,19 +4262,19 @@ def mem(mb: int) -> str:
     return f"MemTotal: 64000000 kB\nMemAvailable: {mb * 1024} kB\n"
 
 
-def test_a_cloud_start_waits_on_its_bridge_host_s_memory_by_its_row(
+def test_a_cloud_start_waits_on_its_bridge_host_s_memory_by_the_cloud_floor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    og = far_host(monkeypatch, tmp_path, "cc-experiments", meminfo=mem(2000), loadavg="3.00 2 1")
+    og = far_host(monkeypatch, tmp_path, "cc-experiments", meminfo=mem(1000), loadavg="3.00 2 1")
     argv = [*far_start("claude-cloud", "cc-experiments"), "--workspace", "/there/repo"]
     assert omnigent_agent.main(argv) == 1
     err = capsys.readouterr().err
-    assert (
+    assert (  # the cloud floor, not the row's 2500 (#1671)
         "cc-experiments over capacity for 0s: cloud start, cpu not judged,"
-        " 2000 MB available (min 2500)" in err
+        " 1000 MB available (min 1200)" in err
     )
     assert og.sessions == {}
-    og.procs["far"]["/proc/meminfo"] = mem(2500)
+    og.procs["far"]["/proc/meminfo"] = mem(1200)
     assert omnigent_agent.main(argv) == 0  # the minimum itself is room
     og.archived = ["s0"]
     og.procs["far"]["/proc/meminfo"] = mem(3000)
