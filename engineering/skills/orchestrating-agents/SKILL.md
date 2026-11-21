@@ -46,3 +46,9 @@ service that restarts it and survives a reboot (`supervise --registry <file> --i
 - **Whoever starts a child collects it.** Keep a wait or a watch on each child you start,
   read its report before you report yourself, and close it once its report is in; never
   end your own work while one is still out, since its report then reaches nobody.
+- **A taken result archives its session, at one point.** `run`, `wait`, the supervisor's relay of a
+  child's `DONE` report or failure, a followed lead's `DONE` once its follower is told, and `reap` all
+  finish a session through the script's `finish_delivered`, so none has its own rule. A session stays
+  open when it is kept (`--keep`, a `--pr` worker whose PR is open, an open question card, a pending prompt, background work);
+  a lead started `--top-level` that no one waits on is archived by `reap <session>` from whoever started
+  it, once it has its result. An unarchive covers a follow-up.
