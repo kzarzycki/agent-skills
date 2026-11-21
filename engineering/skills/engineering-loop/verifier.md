@@ -60,7 +60,7 @@ yourself, keeping standards and spec as separate axes.
 - **Every pass after the first:** your brief carries the previous pass's findings, the replies on them and
   each finding's repro commands, read from the PR (`approvals.py brief`), since no report file is handed between passes:
   the PR is the record, on any host. Review
-  the diff since the previous pass's head and the files it touches yourself, both axes in your own session
+  the diff since its head (the brief names it) and the files it touches yourself, both axes in your own session
   with no axis subagents (code-review, step 4), not the whole change again. Rerun all of its
   repros from one script that prints each one's command, result and exit code, rather than
   one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the lead runs after a
