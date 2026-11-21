@@ -932,6 +932,12 @@ SCHEMA: dict[str, dict[str, Any]] = {
         ),
     ),
     "carry_over_main": Table({"except": list}),
+    # the narrowed gate's first cut (classify): the project's build inputs, and the checks a non-product path still gets
+    "select": Table(
+        build_inputs=list,
+        checks=Rows(paths=list, command=str, unique=("command",)),
+        optional=("checks",),
+    ),
     # each port's adapter by name (ADAPTERS), `github` for a port not named
     "adapters": Table(
         tracker=str, forge=str, evidence=str, optional=("tracker", "forge", "evidence")
@@ -8275,6 +8281,88 @@ def selection_base(given: str | None) -> str | None:
         ) from exc
 
 
+# what is never a build input, whatever a project declares (select.build_inputs): docs, prose, an agent's config and
+# vendored skills, the pack's own pin. fnmatch's `*` crosses `/`, so `docs/*` is the whole tree under docs.
+NON_PRODUCT = ("docs/*", "*.md", ".agents/*", ".claude/*", "apm.yml", "apm.lock.yaml")
+# the policy the selection reads: a change to it is a build input, since the base's rule can't judge its own edit
+SELECTION_FILES = (str(POLICY), str(LOOP))
+
+
+def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """The narrowed gate's first cut, by gatekeeper.md's `select`: the changed `files` that are build inputs, and the
+    `checks` commands the rest touch. A file is a build input when it matches `build_inputs`, is the selection's own
+    policy (SELECTION_FILES), or matches neither NON_PRODUCT nor a check's `paths`: a path whose effect on the build
+    is unclear tests. Without `select` every file is one, as before the setting."""
+    if not select:
+        return list(files), []
+    checks = select.get("checks", [])
+    inputs, commands = [], []
+    for path in files:
+        hit = [
+            check["command"]
+            for check in checks
+            if any(fnmatch.fnmatch(path, g) for g in check["paths"])
+        ]
+        if (
+            path in SELECTION_FILES
+            or any(fnmatch.fnmatch(path, glob) for glob in select["build_inputs"])
+            or not (hit or any(fnmatch.fnmatch(path, glob) for glob in NON_PRODUCT))
+        ):
+            inputs.append(path)
+        commands += [command for command in hit if command not in commands]
+    return inputs, commands
+
+
+def changed_since(base: str) -> list[str] | None:
+    """The files HEAD changes since `base` (a moved file both names), None when git can't tell."""
+    try:
+        found = git("diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD")
+    except subprocess.CalledProcessError:
+        return None
+    return found.split("\0")[:-1]
+
+
+def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
+    """affected-tests' cut by `select` (classify): None when the change since `base` holds a build input, or git
+    can't list it, so the `Affected tests:` command runs; else the exit of the `checks` the change touches, each run in
+    turn under the gate slot, the first that fails ending the run, 0 when none applies. A policy that can't be read
+    selects nothing here, since the `Affected tests:` command then tests everything it would have."""
+    select = None
+    with contextlib.suppress(Refused):
+        select = settings(project()[1]).get("select")
+    files = changed_since(base) if select else None
+    if files is None:
+        return None
+    inputs, commands = classify(files, select)
+    if inputs:
+        print(
+            f"affected-tests: build input {inputs[0]}: the `Affected tests:` command runs",
+            file=sys.stderr,
+        )
+        return None
+    if not commands:
+        print(
+            "affected-tests: no build input changed and no check applies: nothing to run",
+            file=sys.stderr,
+        )
+        return 0
+    for command in commands:
+        _, words, sets = command_line(command, "select.checks")
+        print(
+            f"affected-tests: no build input changed: {shlex.join(words)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            with heavy_slot("affected-tests") as (slot, _):
+                code = run_heavy(words, env=env | sets | {SLOT_HELD: slot}, cwd=root)[0]
+        except OSError as exc:
+            raise Refused(f"`{words[0]}` can't run: {exc}") from None
+        if code:
+            return code
+    return 0
+
+
 def affected_tests(given: str | None = None) -> int:
     """`affected-tests [--base <rev>]`: the worker's test run on a head, from loop.md's line `Affected tests:
     <command>` (the command selects and runs the tests a change affects against the base it reads from the variable
@@ -8290,6 +8378,8 @@ def affected_tests(given: str | None = None) -> int:
     env = {name: value for name, value in os.environ.items() if name != variable}
     words, sets = [*LOCAL_CI[:-1], "check"], {}
     if written is not None and (base := selection_base(given)) is not None:
+        if (code := non_product_run(base, root, env)) is not None:
+            return code
         _, words, sets = command_line(written, "Affected tests")
         sets = {
             name: value for name, value in sets.items() if name != variable
