@@ -1372,8 +1372,6 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
             if name is not None
         ):
             return False
-        if not wrote:
-            return False
 
     def names(bot: dict[str, Any]) -> bool:
         if "branch" in bot:

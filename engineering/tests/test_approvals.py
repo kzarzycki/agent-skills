@@ -3094,6 +3094,18 @@ def test_a_co_author_trailer_does_not_refuse_the_bot_exemption_but_another_commi
     assert not approvals.exempt(pr, BOTS)
     pr["authored"]["nodes"] = [authored("dependabot[bot]", committer="claude")]
     assert not approvals.exempt(pr, BOTS)
+    for trailer in (
+        False,
+        True,
+    ):  # an author GitHub ties to no account, with and without a trailer's account
+        pr["authored"]["nodes"] = [authored(None)]
+        if trailer:
+            pr["authored"]["nodes"][0]["commit"]["authors"] = {
+                "totalCount": 2,
+                "nodes": [{"user": None}, {"user": {"login": "dependabot[bot]"}}],
+            }
+        assert pr["authored"]["nodes"][0]["commit"]["author"] == {"user": None}
+        assert not approvals.exempt(pr, BOTS)
 
 
 RENOVATE = add(LOOP, "bot", "renovate:\n  branch: renovate/\n  paths:\n    - uv.lock\n")
@@ -10624,6 +10636,9 @@ def test_a_co_author_trailer_in_rest_leaves_the_bot_exemption_but_another_accoun
     assert not approvals.exempt(approvals.pull_request(7), loop)
     commit["author"] = user("renovate[bot]", "Bot")
     commit["committer"] = user("mallory")
+    assert not approvals.exempt(approvals.pull_request(7), loop)
+    commit["committer"] = None
+    commit["author"] = None  # an author GitHub ties to no account
     assert not approvals.exempt(approvals.pull_request(7), loop)
 
 
