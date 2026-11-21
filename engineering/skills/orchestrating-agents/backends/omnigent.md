@@ -86,9 +86,19 @@ takes a Claude mode (codex-native hands launch args to the `codex` CLI, whose te
 `--dangerously-bypass-approvals-and-sandbox` (approval policy `never`, full-access sandbox), since a prompt
 nobody answers blocks an unattended session; `--permission-mode default` keeps Codex's own stance.
 A claude-cloud child takes `auto` or `bypassPermissions`, sent as the session create's
-`permission_mode` (the server answers the VM's tool requests itself under bypass), starts in
-`bypassPermissions` when neither the flag nor the variable names a mode (it runs unattended in a disposable VM), and
-`start` treats any other mode for it as it does a mode for Codex.
+`permission_mode` (the server answers the VM's tool requests itself under bypass), and starts in
+`bypassPermissions` unless the flag names a mode, since it runs unattended in a disposable VM where an
+`auto` prompt waits on nobody: a mode from the variable alone is not applied to it, and `start` says
+so on stderr. `start` refuses a flag naming any other mode for it. Until
+Omnigent applies a default mode per agent definition on every start path (kzarzycki/omnigent#529), this
+bypass default is the pack's own; after it, `start` passes no mode unless asked. Omnigent hands
+bypass on only from a session that runs in it itself (kzarzycki/omnigent#526) and answers any other
+creator's bypass request with HTTP 400, so `start` from such a session fails, naming the two ways on:
+start the worker from a session or host shell in bypass, or pass `--permission-mode auto` to accept
+one that waits on prompts. It never falls back to `auto` itself. Either way `start` prints the mode
+the session got, read back from its record (`session <id>: permission mode <mode>`, `unknown` when
+the record can't be read). Start every child through `start` or `run`, never a raw
+`sys_session_create` with a mode of its own, since only these pick the mode and report it.
 
 **Effort.** `--effort <level>` sets the child's reasoning effort, as its harness names the levels
 (Claude, native or cloud: `low` to `max`). Without it the level comes from `OMNIGENT_EFFORT_<AGENT>`
