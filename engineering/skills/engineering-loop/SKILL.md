@@ -658,7 +658,7 @@ isolated (one PR at a time, or GitHub's per-entry groups). The local merge queue
   name for its own tree, since the batch gate runs one fixed tier and some changes need
   their own proof: the PR's own acceptance tests, written as e2e tests in that PR and named by
   their test classes. A full UI or e2e suite is never a gate step, since it tests far more than
-  the change and holds every landing for its run; the project runs it by hand. The lead records
+  the change and holds every landing for its run; the project runs it by hand or in its nightly. The lead records
   the proof on a clean checkout of the head with the classes set in the caller's environment,
   `GATE_UI_TESTS=<the PR's acceptance test classes> uv run <this skill's folder>/scripts/approvals.py
   local-ci --record --head-proof`: the caller's value of each `env` name wins over the gate
