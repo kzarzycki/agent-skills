@@ -282,6 +282,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      feature branch the label is a go too, and the delegated approver loop.md names may add it
      with `approvals.py delegate <pr>`. `land` adds `risk:high` to the PR when it infers the risk, and a failure
      to add it is reported, not fatal.
+   - Once the body is written, run `uv run <this skill's folder>/scripts/approvals.py check ready <pr>` before you start the verifier: it checks the body's `## Evidence` section with the same code `check merge` runs, so a missing proof is yours to fix now, not after a pass spent on a PR `land` would refuse.
    - End the PR body with `Impl: <signature>` of the agent that did most of the work, instead of the harness's
      "Generated with" footer: the worker's from its report, or yours, what orchestrating-agents'
      `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
