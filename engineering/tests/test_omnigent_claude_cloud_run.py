@@ -51,10 +51,55 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return work
 
 
-def cloud(monkeypatch: pytest.MonkeyPatch, reply: str) -> CloudFake:
-    og = CloudFake(reply=reply)
+class RunFake(CloudFake):
+    """A cloud server whose project lists ``projected`` (session rows) and whose hosts are ``online``."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.projected: list[dict] = []
+        self.online = {"h": "host"}
+
+    def home(self, name: str) -> dict:
+        return {"id": "p1", "name": "proj"}
+
+    def host(self, name: str) -> str:
+        return next(i for i, n in self.hosts().items() if name in (i, n))
+
+    def call(self, method: str, path: str, body: object = None) -> dict:
+        if (method, path) == ("GET", "/v1/sessions?kind=default&project=proj&limit=100"):
+            return {"data": self.projected}
+        if (method, path) == ("GET", "/v1/hosts"):
+            return {
+                "hosts": [
+                    {"host_id": i, "name": n, "status": "online"} for i, n in self.online.items()
+                ]
+            }
+        return super().call(method, path, body)
+
+
+def cloud(monkeypatch: pytest.MonkeyPatch, reply: str) -> RunFake:
+    og = RunFake(reply=reply)
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: og)
     return og
+
+
+def bridge(og: RunFake, workspace: str = "/srv/repo-cloud", pinned: bool = True) -> None:
+    """The project's cloud lead on host ``b`` (online), from ``workspace`` there."""
+    og.online["b"] = "bridge"
+    og.host_names["b"] = "bridge"
+    og.projected.append(
+        {
+            "id": "lead",
+            "agent_name": "claude-cloud",
+            "host_id": "b",
+            "workspace": workspace,
+            "created_at": 5,
+        }
+    )
+    files = {f"{workspace}/.git/HEAD": "ref", "/proc/meminfo": "MemAvailable: 99999999 kB\n"}
+    if pinned:
+        files[f"{workspace}/.claude/settings.local.json"] = "{}"
+    og.procs["b"] = files
 
 
 def cloud_run(checkout: Path, *command: str) -> int:
@@ -201,3 +246,97 @@ def test_any_failure_of_the_route_exits_with_its_own_code_and_the_fallback(
     assert cloud_run(checkout, "pytest") == FAILED
     err = capsys.readouterr().err
     assert "FileNotFoundError" in err and "LOOP_HOST_RUN=<reason> pytest" in err
+
+
+def launched_argv(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    launched: list[list[str]] = []
+    real = omnigent_agent.command
+    monkeypatch.setattr(
+        omnigent_agent, "command", lambda argv, ended: launched.append(argv) or real(argv, ended)
+    )
+    return launched
+
+
+def test_a_caller_on_a_host_without_the_cloud_harness_starts_on_the_bridge_host_from_its_launch_dir(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1664: the placement is read from the server, the project's cloud lead's host and workspace,
+    and the session is parentless there (a child would take the caller's runner, which answers 412);
+    its report still lands under the caller's checkout, where the exit is read."""
+    og = cloud(monkeypatch, "REPORT\nEXIT: 4\n1 failed")
+    bridge(og)
+    launched = launched_argv(monkeypatch)
+    assert cloud_run(checkout, "pytest") == 4
+    run = launched[1]
+    assert run[run.index("--host") + 1] == "b"
+    assert run[run.index("--workspace") + 1] == "/srv/repo-cloud"
+    assert "--top-level" not in run  # a runner, not a lead: the child preamble
+    assert og.hosts_of["s0"] == "b" and og.workspaces[0] == "/srv/repo-cloud"
+    assert og.top_level == [True]  # no parent session: placed on the host --host names
+    brief = omnigent_agent.text_of(og.sessions["s0"][1])
+    assert "opening with its ending line" not in brief  # no lead preamble
+    report = Path(run[4])
+    assert report.parent == checkout / "tmp" / "loop" and report.read_text().startswith("EXIT: 4")
+    assert not (checkout / ".worktrees").exists()  # no local launch dir
+    assert "exited 4" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("why", ["here", "unpinned", "offline", "none"])
+def test_without_a_usable_bridge_elsewhere_it_starts_here_from_the_local_launch_dir(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    og = cloud(monkeypatch, "REPORT\nEXIT: 0")
+    if why == "here":  # this host runs the project's cloud sessions itself
+        og.projected.append(
+            {
+                "id": "x",
+                "agent_name": "claude-cloud",
+                "host_id": "h",
+                "workspace": "/a",
+                "created_at": 9,
+            }
+        )
+        bridge(og)
+    elif why != "none":
+        bridge(og, pinned=why != "offline")
+        if why == "offline":
+            del og.online["b"]
+        else:
+            og.procs["b"].pop("/srv/repo-cloud/.claude/settings.local.json", None)
+    launched = launched_argv(monkeypatch)
+    assert cloud_run(checkout, "pytest") == 0
+    run = launched[1]
+    assert "--host" not in run
+    assert run[run.index("--workspace") + 1] == str(
+        checkout / ".worktrees" / "claude-cloud-run-main"
+    )
+    assert og.top_level == [False]
+
+
+def test_run_host_is_refused_for_a_host_agent_without_top_level(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = RunFake()
+    og.host_names["b"] = "bridge"
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: og)
+    monkeypatch.delenv("CLAUDE_CODE_REMOTE", raising=False)
+    brief = tmp_path / "b.md"
+    brief.write_text("do X")
+    code = omnigent_agent.main(
+        [
+            "run",
+            "claude",
+            "t",
+            str(brief),
+            str(tmp_path / "r.md"),
+            "--host",
+            "b",
+            "--workspace",
+            "/w",
+        ]
+    )
+    assert (
+        code != 0
+        and "--host needs --top-level, or a run of a cloud agent" in capsys.readouterr().err
+    )
+    assert og.sessions == {}

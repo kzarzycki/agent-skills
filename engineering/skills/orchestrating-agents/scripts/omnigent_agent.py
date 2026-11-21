@@ -188,7 +188,8 @@ leave its patch applied); a running session with recent activity stays kept.
 ``claude-cloud-run`` runs one shell command in a Claude cloud session on the checkout's HEAD and exits with
 the command's code from its report's ``EXIT:`` line; it refuses tracked changes and an unpushed HEAD
 before any session exists, reuses ``<main checkout>/.worktrees/claude-cloud-run-<branch>`` as its launch dir,
-and exits ``CLOUD_RUN_FAILED`` (125) with the host fallback when the cloud route fails.
+or, on a host that runs no cloud session, starts on the host and launch dir of the project's newest cloud
+session elsewhere (``cloud_placement``, read from the server), and exits ``CLOUD_RUN_FAILED`` (125) with the host fallback when the cloud route fails.
 
 Cloud environments (``claude_environments.py`` beside this file, on the host's Claude Code login, whose token goes
 into a request header only, never an argument list, a log or the output). The project's loop.md line ``Cloud worker:
@@ -3819,6 +3820,40 @@ def cloud_run(
         ) from e
 
 
+def cloud_placement(og: Omnigent) -> tuple[str, str] | None:
+    """Where a ``claude-cloud`` session this host can't run goes: the host and the launch dir of the
+    newest cloud session in this project (``GET /v1/sessions?project=<name>``) on an online host other
+    than this one, whose workspace there holds ``.git`` and the pin (``.claude/settings.local.json``,
+    listed through the host's file API). None when this host runs one itself or none is found: the
+    caller then starts here, as before. It reads only the server's records, so no host or path is
+    configured: a project's cloud lead, started with ``start --top-level --host``, names both. Any
+    launch dir of the repository will do, since a cloud run's brief checks out its own head."""
+    project = quote((og.home(project_name()) or {}).get("name", ""))
+    rows = og.call("GET", f"/v1/sessions?kind=default&project={project}&limit=100").get("data", [])
+    online = {
+        h["host_id"] for h in og.call("GET", "/v1/hosts")["hosts"] if h.get("status") == "online"
+    }
+    seen: set[tuple[str, str]] = set()
+    for row in sorted(rows, key=lambda r: float(r.get("created_at") or 0), reverse=True):
+        host, place = str(row.get("host_id") or ""), str(row.get("workspace") or "")
+        if not (host and place) or (host, place) in seen or not cloud_session(og, row):
+            continue
+        if host == og.host_id:
+            return None  # this host runs cloud sessions: the local launch dir, as before
+        seen.add((host, place))
+        if host not in online:
+            continue
+        try:
+            pinned = ".git" in host_listing(og, host, place, "launch dir") and SETTINGS.name in (
+                host_listing(og, host, str(Path(place) / SETTINGS.parent), "launch dir")
+            )
+        except (Gone, Fail):
+            continue
+        if pinned:
+            return host, place
+    return None
+
+
 def cloud_run_route(
     root: Path,
     branch: str,
@@ -3830,15 +3865,18 @@ def cloud_run_route(
     launch: Callable[[list[str]], int],
     server: str,
 ) -> int:
-    """``cloud_run`` past its refusals: the launch dir, the brief, the ``run`` and the ``EXIT:`` line."""
+    """``cloud_run`` past its refusals: the placement, the brief, the ``run`` and the ``EXIT:`` line.
+    On a host without the cloud harness the session starts on the host ``cloud_placement`` finds,
+    from its launch dir there, and its report still lands here."""
+    placed = cloud_placement(Omnigent(server) if server else Omnigent())
     try:
-        place = cloud_run_dir(root, branch, remote, merge)
+        place = root / "tmp" / "loop" if placed else cloud_run_dir(root, branch, remote, merge)
     except Fail as e:
         raise cloud_run_failed(f"claude-cloud-run: no launch dir: {e}", command) from e
     line = cloud_worker(project_loop(root))
     agent = line.agent if line else "claude-cloud"
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    report = place / "tmp" / "loop" / f"claude-cloud-run-{stamp}.md"
+    report = (place if placed else place / "tmp" / "loop") / f"claude-cloud-run-{stamp}.md"
     brief = report.with_suffix(".brief.md")
     brief.parent.mkdir(parents=True, exist_ok=True)
     brief.write_text(cloud_run_brief(command, merge, head))
@@ -3850,8 +3888,11 @@ def cloud_run_route(
         f"claude-cloud-run {branch} {head[:8]}",
         str(brief),
         str(report),
-        "--workspace",
-        str(place),
+        *(
+            ["--host", placed[0], "--workspace", placed[1]]
+            if placed
+            else ["--workspace", str(place)]
+        ),
         "--no-keep",
         "--model",
         model,
@@ -4057,6 +4098,8 @@ def start(
     verifier reviews, labelled ``PR_LABEL`` on it as a ``--pr`` worker is, so its spend groups by PR (#945)."""
     harness = agent if agent in AGENTS else og.harness(agent)
     agy = harness == AGY_HARNESS
+    # a session has its parent's runner, so a cloud one placed on another host (run --host) has none
+    parentless = top_level or (harness == CLOUD_HARNESS and bool(host_id) and host_id != og.host_id)
 
     def applied(mode: str) -> bool:
         """Whether ``agent``'s session can start in ``mode``: ``create`` sends it only then."""
@@ -4306,7 +4349,7 @@ def start(
                         agent,
                         name,
                         model,
-                        top_level,
+                        parentless,
                         workspace,
                         permission_mode,
                         host_id,
@@ -4336,7 +4379,7 @@ def start(
                 " accept a worker that waits on approval prompts"
             ) from error
         if error:  # a timed-out create can have made the session: brief that one
-            found = og.find(name, began, top_level)
+            found = og.find(name, began, parentless)
             if not found:
                 raise failed(f"start failed: {error}") from error
             print(
@@ -4454,6 +4497,7 @@ def wait(
     pr: int | None = None,
     baseline: list[str] | None = None,
     relaunch: Callable[[], str] | None = None,
+    home: bool = False,
 ) -> str:
     """Return the report path, or raise with the child's last message once it cannot deliver one.
 
@@ -4477,6 +4521,7 @@ def wait(
     ending on a marked report (``cloud_reply``) has it written to ``report`` (on the session's
     host), one ending on a marked question has it written to ``<report>.question`` and raises
     ``Asked``, and any other gets the nudge; a file already there never counts, as with ``pr``.
+    With ``home`` (a cloud ``run --host``, whose caller reads it) that reply is written here instead.
     """
     deadline = time.monotonic() + timeout
     far = False  # on another host (no ``pr``): its files are read through its file API, not here
@@ -4583,9 +4628,10 @@ def wait(
         if turn_ended and cloud and status != "failed" and (reply := cloud_reply(items, verdict)):
             kind, body = reply
             path = question if kind == "question" else report
-            if not far:
+            there = far and not home
+            if not there:
                 path.parent.mkdir(parents=True, exist_ok=True)
-            file_write(og, sid, path, body, far)
+            file_write(og, sid, path, body, there)
             if kind == "question":
                 raise Asked(str(question))
             break  # the turn has ended on it: a later turn is a follow-up's
@@ -9399,7 +9445,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--host",
             help="with --top-level, the Omnigent host (name or id) to start the lead, the --pr"
-            " cloud worker, or a verifier (one loop.md's Placement: hosts: line lists) on",
+            " cloud worker, or a verifier (one loop.md's Placement: hosts: line lists) on; without"
+            " it, the host a cloud agent's run starts on (claude-cloud-run's bridge host)",
         )
         p.add_argument(
             "--file",
@@ -10187,9 +10234,22 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         # paths on another host: neither resolved nor checked here
         remote = elsewhere(og, session) or host != og.host_id
         here = not remote or bool(args.pr)  # with --pr the report is the file wait writes here
+        # a cloud agent's run on another host: no parent, so placed where --host says, and its
+        # report comes home, since the caller reads it (claude-cloud-run from any host)
+        placed = (
+            args.cmd == "run"
+            and bool(args.host)
+            and not args.top_level
+            and args.agent not in AGENTS
+            and og.harness(args.agent) == CLOUD_HARNESS
+        )
+        here = here or placed
         report = args.report.resolve() if here else args.report
-        if args.cmd != "send" and args.host and not args.top_level:
-            raise Fail("--host needs --top-level: Omnigent runs a child on its parent's runner")
+        if args.cmd != "send" and args.host and not args.top_level and not placed:
+            raise Fail(
+                "--host needs --top-level, or a run of a cloud agent: Omnigent runs a child on its"
+                " parent's runner"
+            )
         if (
             remote
             and args.cmd != "send"
@@ -10413,7 +10473,18 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             report_cold_start(og, sid, COLD_START_SECONDS)
         if args.cmd == "run":
             print(
-                wait(og, sid, report, args.timeout, verifier, launched, args.pr, baseline, launch)
+                wait(
+                    og,
+                    sid,
+                    report,
+                    args.timeout,
+                    verifier,
+                    launched,
+                    args.pr,
+                    baseline,
+                    launch,
+                    home=placed,
+                )
             )
             report_cold_start(og, sid)
             arm_quietly(registry, sid)
