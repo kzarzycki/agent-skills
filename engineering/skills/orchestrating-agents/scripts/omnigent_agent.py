@@ -4668,6 +4668,23 @@ def alive(pid: int) -> bool:
     return True
 
 
+def gone(pid: str, run: str | None) -> bool:
+    """True when ``--pid``'s run has ended: its process is gone, or exited and unreaped."""
+    return (run is not None and zombie(int(run))) or pid_of(pid) is None
+
+
+def zombie(pid: int) -> bool:
+    """True when ``pid`` has exited but nothing has reaped it (``ps`` state ``Z``), as in a container
+    whose PID 1 reaps no orphans: it still answers ``kill(pid, 0)`` though its run is over."""
+    try:
+        ps = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return False
+    return ps.stdout.strip().startswith("Z")
+
+
 def elapsed(pid: int) -> float | None:
     """Seconds since ``pid`` started, from ``ps -o etime=`` (``[[dd-]hh:]mm:ss``), or None once it
     is gone. A ``Fail`` when ``ps`` cannot say for a live one, since a pid of unknown age may be
@@ -4720,16 +4737,18 @@ def recipe_end(line: str, run: str | None) -> re.Match | None:
     return re.fullmatch(rf"loop-exit ({who}) (\d+)", line.strip())
 
 
-def exit_of(log: Path, run: str | None = None, gone: bool = True) -> int | None:
+def exit_of(
+    log: Path, run: str | None = None, gone: Callable[[], bool] = lambda: True
+) -> int | None:
     """The code on the last end line of ``run_lines(log, run)``: ``loop-exit <run> <n>``, else,
-    only once the run's pid is ``gone`` (or no pid is given), a last line that is a bare
+    only once ``gone()`` says the run's pid is gone, asked just then, since the query can fail, a last line that is a bare
     ``exit <n>``, as the old recipe wrote it; a live run's own ``exit 0`` output is no end."""
     lines = run_lines(log, run) or []
     ends = [m for line in lines if (m := recipe_end(line, run))]
     if ends:
         return int(ends[-1][2])
-    if gone and lines and (m := re.fullmatch(r"exit (\d+)", lines[-1].strip())):
-        return int(m[1])
+    if lines and (m := re.fullmatch(r"exit (\d+)", lines[-1].strip())):
+        return int(m[1]) if gone() else None
     return None
 
 
@@ -5109,7 +5128,7 @@ def wait_for(
         if (
             not log
             or (pid and run is None)
-            or (code := exit_of(log, run, gone=not pid or pid_of(pid) is None)) is None
+            or (code := exit_of(log, run, lambda: not pid or gone(pid, run))) is None
         ):
             return None
         return code, log_outcome(log, code, run)

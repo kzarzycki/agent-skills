@@ -83,12 +83,12 @@ yourself, keeping standards and spec as separate axes.
 - **A long or locked run is detached.** This is every role's rule for a long run, worker's
   and lead's too. A gate, repro or e2e run that may wait on a lock
   or a queue, or outlast one tool call, starts detached (in its own session) with its pid, output and exit code
-  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; echo "run $$" > <log>; echo "lock <lock>" >> <log>; flock <lock> sh -c "echo \$\$ > <lock>; echo locked; exec \"\$@\"" sh <cmd> >> <log> 2>&1; echo "loop-exit $$ $?" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --pid $$ --notify' >/dev/null 2>&1`
+  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; echo "run $$" > <log>; echo "lock <lock>" >> <log>; flock <lock> sh -c "echo \$\$ > <lock>; echo locked; exec \"\$@\"" sh <cmd> >> <log> 2>&1; printf "\nloop-exit $$ $?\n" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --pid $$ --notify' >/dev/null 2>&1`
   (a build, test or mutation `<cmd>` on a host is `uv run <this skill's folder>/scripts/approvals.py heavy <cmd>`,
   so it runs under the host's heavy wrapper: SKILL.md, One heavy gate per host slot;
   Perl's `setsid`, since macOS has no `setsid` command; the `run <pid>` line marks where this
   run's log starts, so `wait-for --pid` never takes a previous run's end line from a reused
-  log path; the end line is `loop-exit <pid> <n>`, a token no command prints by accident, so a command's own `exit 0` output never ends the wait; `lock` and `locked` bracket the wait on the lock, so `wait-for` reads a run still queued behind another's gate as waiting, not as out of budget: its own budget starts at `locked`, and past 2 hours of waiting it ends "gave up waiting on the gate lock", which is no verdict on the change, so report the check as not yet run; the last step tells the session in `$LOOP_NOTIFY`, when set, how it ended),
+  log path; the end line is `loop-exit <pid> <n>`, a token no command prints by accident, written on a fresh line so a command's unterminated last line cannot swallow it, so a command's own `exit 0` output never ends the wait; `lock` and `locked` bracket the wait on the lock, so `wait-for` reads a run still queued behind another's gate as waiting, not as out of budget: its own budget starts at `locked`, and past 2 hours of waiting it ends "gave up waiting on the gate lock", which is no verdict on the change, so report the check as not yet run; the last step tells the session in `$LOOP_NOTIFY`, when set, how it ended),
   and is waited on up to a total budget you state, in as few calls as you can: each call is
   `omnigent_agent.py wait-for --log <log> --pid <pid>`, which blocks close to a 10-minute tool
   call (`--budget` for another limit) and prints only the outcome, never short polls or a sleep

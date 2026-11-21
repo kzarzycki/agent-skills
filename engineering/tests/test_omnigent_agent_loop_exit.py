@@ -1,5 +1,7 @@
 """wait-for ends only on the recipe's own ``loop-exit <pid> <n>`` line, not a command's ``exit 0`` (#1607)."""
 
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -75,3 +77,59 @@ def test_no_copy_of_the_recipe_writes_the_old_exit_line():
         and OLD_LINE in p.read_text(errors="replace")
     ]
     assert stale == []
+
+
+def test_recipe_end_line_survives_an_unterminated_last_output_line(tmp_path):
+    """The recipe's own end step, taken from verifier.md, run after output with no final newline."""
+    step = re.search(
+        r"(printf \"\\nloop-exit \$\$ \$\?\\n\" >> <log>)",
+        (PACK / "engineering-loop/verifier.md").read_text(),
+    )
+    assert step, "verifier.md's recipe no longer ends with the fresh-line loop-exit step"
+    for status in (0, 3):
+        log = tmp_path / f"run{status}.log"
+        pid = tmp_path / f"pid{status}"
+        end = step[1].replace("<log>", str(log))
+        subprocess.run(
+            [
+                "sh",
+                "-c",
+                f'echo $$ > {pid}; echo "run $$" > {log}; sh -c "printf done; exit {status}" >> {log} 2>&1; {end}',
+            ],
+            check=True,
+        )
+        out = omnigent_agent.wait_for(log, str(pid), None, "checks", 5)
+        assert out is not None and out[0] == status
+
+
+def test_cli_progress_never_shows_another_runs_end_line(tmp_path, live, capsys):
+    log = write(tmp_path, live.pid, "collecting tests", f"loop-exit {live.pid + 1} 0")
+    argv = ["wait-for", "--log", str(log), "--pid", str(live.pid), "--budget", "0.2"]
+    assert omnigent_agent.main(argv) == 6
+    assert capsys.readouterr().out == "still running\ncollecting tests\n"
+
+
+def test_a_failing_pid_query_does_not_hide_a_loop_exit_line(tmp_path, live, monkeypatch):
+    pidfile = tmp_path / "pid"
+    pidfile.write_text(f"{live.pid}\n")
+    log = write(tmp_path, live.pid, f"loop-exit {live.pid} 3")
+
+    def denied(_pid):
+        raise omnigent_agent.Fail("ps: operation not permitted")
+
+    monkeypatch.setattr(omnigent_agent, "pid_of", denied)
+    out = omnigent_agent.wait_for(log, str(pidfile), None, "checks", 5)
+    assert out is not None and out[0] == 3
+
+
+def test_an_exited_unreaped_wrapper_with_a_legacy_last_line_ends_the_wait(tmp_path):
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    try:
+        os.waitid(
+            os.P_PID, child.pid, os.WEXITED | os.WNOWAIT
+        )  # exited, still in the process table
+        log = write(tmp_path, child.pid, "gate failed", "exit 3")
+        out = omnigent_agent.wait_for(log, str(child.pid), None, "checks", 5)
+        assert out is not None and out[0] == 3
+    finally:
+        child.wait()
