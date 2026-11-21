@@ -650,6 +650,9 @@ BROADCAST_WORKERS = 8  # sessions a broadcast relays to at once
 MIN_CPU_IDLE = float(os.environ.get("OMNIGENT_MIN_CPU_IDLE") or 10)  # percent
 MAX_LOAD_PER_CORE = float(os.environ.get("OMNIGENT_MAX_LOAD_PER_CORE") or 4)  # idle not measured
 MIN_AVAILABLE_MB = float(os.environ.get("OMNIGENT_MIN_AVAILABLE_MB") or 1536)
+# A cloud start's floor, whatever the host's row says: it adds only its bridge runner (~150 MB)
+# on the host, its work runs in the VM (#1671)
+CLOUD_MIN_AVAILABLE_MB = float(os.environ.get("OMNIGENT_CLOUD_MIN_AVAILABLE_MB") or 1200)
 # start waits this long for room, then fails; a queue runner sets it longer
 CAPACITY_WAIT_SECONDS = float(os.environ.get("OMNIGENT_CAPACITY_WAIT_SECONDS") or 600)
 # A running session whose newest history item is older than this is stuck. A long foreground
@@ -2841,7 +2844,7 @@ def capacity(
     cannot be measured. A host row's ``max_load`` (absolute) also refuses, and ``min_mb`` replaces
     the default memory line (``host_limits``). ``cpu=False`` judges memory alone: a cloud start
     adds only its bridge here, and its work runs in the VM (#868)."""
-    min_mb = MIN_AVAILABLE_MB if min_mb is None else min_mb
+    min_mb = min_available_mb("", cloud=not cpu) if min_mb is None else min_mb
     mb = available_mb()
     if not cpu:
         memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
@@ -2871,17 +2874,24 @@ def host_row(name: str) -> dict[str, float]:
     return next((r for p, r in HOST_PREFIX_LIMITS.items() if name.startswith(p)), {})
 
 
-def host_limits(name: str) -> tuple[float, float | None]:
-    """Host ``name``'s ``min_mb`` and ``max_load`` (None: judged per core, or by idle CPU here):
-    its ``HOST_LIMITS`` row over the defaults, under its OMNIGENT_MIN_AVAILABLE_MB_<HOST> and
-    OMNIGENT_MAX_LOAD_<HOST> overrides."""
+def min_available_mb(name: str, cloud: bool = False) -> float:
+    """The available memory a start on host ``name`` needs, the one place that decides it: a cloud
+    start's is ``CLOUD_MIN_AVAILABLE_MB`` on every host (#1671); a host start's is its row's
+    ``min_mb`` under its OMNIGENT_MIN_AVAILABLE_MB_<HOST> override, else ``MIN_AVAILABLE_MB``."""
+    if cloud:
+        return CLOUD_MIN_AVAILABLE_MB
+    key = re.sub(r"\W", "_", name.upper())
+    min_mb = os.environ.get(f"OMNIGENT_MIN_AVAILABLE_MB_{key}") or host_row(name).get("min_mb")
+    return MIN_AVAILABLE_MB if min_mb is None else float(min_mb)
+
+
+def host_limits(name: str, cloud: bool = False) -> tuple[float, float | None]:
+    """Host ``name``'s memory floor (``min_available_mb``) and ``max_load`` (None: judged per core,
+    or by idle CPU here): its ``HOST_LIMITS`` row over the defaults, under its
+    OMNIGENT_MAX_LOAD_<HOST> override."""
     row, key = host_row(name), re.sub(r"\W", "_", name.upper())
-    min_mb = os.environ.get(f"OMNIGENT_MIN_AVAILABLE_MB_{key}") or row.get("min_mb")
     max_load = os.environ.get(f"OMNIGENT_MAX_LOAD_{key}") or row.get("max_load")
-    return (
-        MIN_AVAILABLE_MB if min_mb is None else float(min_mb),
-        None if max_load is None else float(max_load),
-    )
+    return min_available_mb(name, cloud), None if max_load is None else float(max_load)
 
 
 def host_listing(og: Omnigent, host_id: str, folder: str, what: str) -> list[str]:
@@ -3008,8 +3018,8 @@ def host_capacity(
 ) -> tuple[bool | None, str]:
     """``capacity`` for host ``host_id`` under its limits: measured here on this host, read
     through a session on another (``far_capacity``, None when unreadable); ``cpu=False`` for a
-    cloud start, judged on memory and the session cap alone."""
-    min_mb, max_load = host_limits(name)
+    cloud start, judged on memory (its own floor) and the session cap alone."""
+    min_mb, max_load = host_limits(name, cloud=not cpu)
     if host_id == og.host_id:
         ok, line = capacity(min_mb=min_mb, max_load=max_load, cpu=cpu)
     else:
@@ -9052,6 +9062,7 @@ SERVICE_VARIABLES = (
     "OMNIGENT_MIN_CPU_IDLE",
     "OMNIGENT_MAX_LOAD_PER_CORE",
     "OMNIGENT_MIN_AVAILABLE_MB",
+    "OMNIGENT_CLOUD_MIN_AVAILABLE_MB",
     "LOOP_DENY_LIST",
     "LOOP_HEAVY_LOCK",
     "XDG_CACHE_HOME",
@@ -9532,6 +9543,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument(
         "--host", metavar="NAME|ID", help="judge that host, read through a session there"
     )
+    p.add_argument(
+        "--cloud",
+        action="store_true",
+        help="judge a claude-cloud start: memory alone, against OMNIGENT_CLOUD_MIN_AVAILABLE_MB",
+    )
     sub.add_parser(
         "signature", description="print <harness>/<model>/<effort> of the session this runs in"
     )
@@ -9943,7 +9959,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             print(cloud_env(args.checkout))
             return 0
         if args.cmd == "capacity" and not args.host:
-            ok, line = capacity()
+            ok, line = capacity(cpu=not args.cloud)
             print(line)
             return 0 if ok else 1
         if args.cmd in ("run", "start", "brief") and args.role is not None:
@@ -9973,7 +9989,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         if args.cmd == "capacity":
             target = og.host(args.host)
             name = host_name(og, target)
-            ok, line = host_capacity(og, target, name)
+            ok, line = host_capacity(og, target, name, cpu=not args.cloud)
             print(unchecked(name, line) if ok is None else f"{name}: {line}")
             return 1 if ok is False else 0
         if args.cmd in ("relay", "send", "report"):
