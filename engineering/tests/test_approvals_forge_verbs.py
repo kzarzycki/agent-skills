@@ -213,3 +213,20 @@ def test_a_host_status_write_still_calls_github(
     in_cloud(monkeypatch, False)
     approvals.github.post_status("a" * 40, "gate", "Passed")
     assert github.calls[0][1] == "repos/{owner}/{repo}/statuses/" + "a" * 40
+
+
+def test_a_failed_read_in_the_vm_names_rest_and_this_session(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    in_cloud(monkeypatch, True)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+
+    def refused(*args: str, data: str | None = None) -> str:
+        raise subprocess.CalledProcessError(1, ["gh", *args], stderr="gh: Not Found (HTTP 404)")
+
+    monkeypatch.setattr(approvals.github, "gh", refused)
+    assert approvals.main(["show", "7"]) == 1
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "gh: Not Found (HTTP 404)"
+    assert out[1].startswith("cloud VM: approvals.py made this GitHub call over REST")
+    assert "runs in this cloud session" in out[1]

@@ -36,6 +36,24 @@ REFUSED = {
 }
 
 
+# what a failed GitHub call of approvals.py adds in a cloud VM: the call already went the VM's way, so the lead fixes
+# the cause GitHub names here instead of looking for a host or a bridge session to run it (#1637)
+FAILED_CALL = (
+    "cloud VM: approvals.py made this GitHub call over REST, the route it takes here by itself (GraphQL answers 403, so"
+    " every read falls back to REST or the proxy's routes), and the command runs in this cloud session as it is: no"
+    " host helper or bridge session is needed. The line above is GitHub's answer to that REST call."
+)
+
+
+def failed_call(exc: BaseException) -> str | None:
+    """In a cloud VM, FAILED_CALL for a `gh` call that failed (not a skipped write, which says its own line); else None."""
+    command = getattr(exc, "cmd", None)
+    first = command[0] if isinstance(command, (list, tuple)) and command else command
+    if not in_cloud() or isinstance(exc, Skipped) or first != "gh":
+        return None
+    return FAILED_CALL
+
+
 def in_cloud() -> bool:
     return os.environ.get(CLOUD) == "true"
 
