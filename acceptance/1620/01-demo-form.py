@@ -3,11 +3,13 @@
 # dependencies = ["pyyaml"]
 # ///
 """#1620 Before merge line 2: demo_form takes a fixture PR whose `## Demo` comment links the repo's own sha blob
-`?raw=true` (exit 0), and refuses one that links another repo's blob (exit 1). Synthetic data, no network."""
+`?raw=true` (status 0), and refuses one that links another repo's blob (status 1); the script runs each as its own
+process and asserts both statuses. Synthetic data, no network."""
 
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -34,7 +36,23 @@ def refused(repo: str) -> list[str]:
     return gatekeeper.demo_form(pull)
 
 
-own, other = refused(REPO), refused("example-owner/other-repo")
-print("own repo:", own or "accepted")
-print("other repo:", other or "accepted")
-sys.exit(0 if not own and other else 1)
+REPOS = {"own": REPO, "other": "example-owner/other-repo"}
+
+
+def main(argv: list[str]) -> int:
+    """With `own` or `other`: that fixture's verdict as the exit status, 0 embedded, 1 refused. Without: run each
+    fixture as its own process and assert its status, 0 for the repo's own blob and 1 for another repo's."""
+    if argv:
+        found = refused(REPOS[argv[0]])
+        print(f"{argv[0]}:", found or "accepted")
+        return 1 if found else 0
+    expected = {"own": 0, "other": 1}
+    for name, want in expected.items():
+        got = subprocess.run([sys.executable, __file__, name], check=False).returncode
+        print(f"{name}: exit {got}, want {want}")
+        if got != want:
+            return 1
+    return 0
+
+
+sys.exit(main(sys.argv[1:]))
