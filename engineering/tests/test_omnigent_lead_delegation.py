@@ -328,17 +328,18 @@ CARD = {"elicitation_id": "question_1", "params": {"message": "Land it?"}}
 
 @pytest.mark.parametrize(
     ("snap", "line"),
-    [({}, omnigent_agent.UNASKED_LINE), ({"pending_elicitations": [CARD]}, "turn ended")],
+    [({}, omnigent_agent.UNASKED_LINE), ({"pending_elicitations": [CARD]}, "")],
 )
-def test_user_needed_with_no_card_is_its_own_event_and_with_one_it_is_as_before(
+def test_user_needed_with_no_card_is_its_own_event_and_with_one_the_card_alone_tells_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, snap: dict, line: str
 ) -> None:
     registry = following(tmp_path)
     og = Lead(told("brief", 60), ending("USER NEEDED: land it?", 1))
     og.snap = snap
     supervised(og, registry, monkeypatch, 3, notify="cos")
-    news = [p for p in posted(og) if "asked its user" not in p]  # a card is told once, as before
-    assert news == [f"Supervisor: a t-a: {line}\nlast message: USER NEEDED: land it?"]
+    news = [p for p in posted(og) if "asked its user" not in p]  # a card is told once, by itself
+    # with a card open the end is not forwarded too: the card already reaches the owner (#1529)
+    assert news == ([f"Supervisor: a t-a: {line}\nlast message: USER NEEDED: land it?"] if line else [])
 
 
 def test_the_unasked_kind_routes_as_a_user_needed_turn_end_does() -> None:
