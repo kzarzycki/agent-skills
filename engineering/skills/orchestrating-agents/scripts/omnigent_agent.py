@@ -880,6 +880,9 @@ CLOUD_NO_PUSH = (
     " in your report comment (or, with no PR, your final message); a file too large for one comment goes in a"
     " short follow-up comment, or is trimmed with its path named. A push target or branch question never goes"
     " to the owner: when unsure, put the file in your comment and end the turn.\n"
+    "Code goes to the `claude/…` branch this session started on (or a `claude/ready-*` branch the grant above lets you create), whatever other branch the brief names: push there, and"
+    " your report names that branch and its head SHA. The lead opens the PR from it or retargets it. Never ask"
+    " the owner which branch to push to.\n"
 )
 # A child placed on a host (any harness but the cloud one, never a top-level lead, whose own heavy
 # runs go to the cloud): its placement already chose the host, so it prefixes heavy runs past the

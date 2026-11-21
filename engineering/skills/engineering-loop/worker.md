@@ -6,6 +6,7 @@ Read the notes, the spec, [coding-standards.md](coding-standards.md) and the pro
 `docs/agents/coding-standards.md` first. Run every command in your worktree, never in the
 main checkout. A lead that builds an item itself follows this file on its own PR
 branch: it pushes that branch, merges nothing, and writes the report into its notes.
+A worker in a cloud session pushes to the `claude/…` branch its session started on, not to a `<branch>` a brief names, and reports that branch and its head SHA (SKILL.md, Cloud worker).
 Where your build, gate and proof runs go is SKILL.md, Where heavy steps run; a worker in a
 cloud session (the default unless loop.md's `Cloud worker:` line says `none`) follows SKILL.md, Cloud worker.
 
