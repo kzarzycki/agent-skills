@@ -943,6 +943,33 @@ def role_line(role: str | None, cloud: bool) -> str:
     )
 
 
+def first_message(
+    cloud: bool,
+    top_level: bool,
+    pr: int | None,
+    report: Path | str,
+    role: str | None,
+    brief: str,
+    delegation: str = "",
+) -> str:
+    """A child's brief as ``start`` sends it: its preamble, then ``brief``. It reads no server, so a
+    cloud lead, which reaches Omnigent only through its MCP tools, prints it with ``brief`` and passes
+    it to ``sys_session_create``."""
+    preamble = pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE
+    if (
+        delegation
+    ):  # a lead's line on whose go may land a PR into the default branch (lead_delegation)
+        preamble = preamble.removesuffix("\n") + delegation + "\n"
+    if cloud:
+        preamble = cloud_preamble(preamble, pr)
+    elif not top_level:
+        preamble = preamble.removesuffix("\n") + HOST_RUN_NOTE + "\n"
+    return (
+        preamble.format(report=report, pr=pr, unposted=UNPOSTED, role=role_line(role, cloud))
+        + brief
+    )
+
+
 def cloud_preamble(preamble: str, pr: int | None) -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
     ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_BRANCHES`` and ``CLOUD_NO_PUSH`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
@@ -4068,23 +4095,13 @@ def start(
     lock = heavy_lock() if by_file and not top_level else ""
     # The AGENT_SIGNATURE line goes atop it once the session exists: its model is the one the
     # server took for it, never the id asked for.
-    preamble = pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE
-    if top_level and not pr:
-        far = host_id if host_id and host_id != og.host_id else ""
-        preamble = preamble.removesuffix("\n") + lead_delegation(og, workspace, far) + "\n"
-    if harness == CLOUD_HARNESS:
-        preamble = cloud_preamble(preamble, pr)
-    elif not top_level:
-        preamble = preamble.removesuffix("\n") + HOST_RUN_NOTE + "\n"
-    body = (
-        (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "")
-        + preamble.format(
-            report=report,
-            pr=pr,
-            unposted=UNPOSTED,
-            role=role_line(role, cloud),
-        )
-        + brief
+    delegation = (
+        lead_delegation(og, workspace, host_id if host_id and host_id != og.host_id else "")
+        if top_level and not pr
+        else ""
+    )
+    body = (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "") + first_message(
+        cloud, top_level, pr, report, role, brief, delegation
     )
     brief_file = brief_of(report)
 
@@ -5962,6 +5979,12 @@ def reviews(role: str | None) -> bool:
     """Whether ``role`` is the verifier's role file (``verifier.md``): only that one reviews a PR,
     so only it takes ``--pr`` as the PR it reviews and may start on a clone other sessions hold."""
     return bool(role) and Path(str(role)).name == "verifier.md"
+
+
+def report_pr(role: str | None, cloud: bool, pr: int | None) -> int | None:
+    """The PR a child reports on, if any: a verifier's --pr names the PR it reviews, so one on a host
+    writes its report file instead; only a cloud one, with no file the host can read, reports on it."""
+    return None if reviews(role) and not cloud else pr
 
 
 def file_unlink(og: Omnigent, sid: str, path: Path, far: bool) -> None:
@@ -9227,6 +9250,23 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         "signature", description="print <harness>/<model>/<effort> of the session this runs in"
     )
     p = sub.add_parser(
+        "brief",
+        description="print, reading no server, the body of the first message start would send a"
+        " child: its preamble and the brief, without the signature, lock and title lines start adds"
+        " once the session exists. A cloud lead passes it as sys_session_create's message",
+    )
+    p.add_argument("brief", help="the task specifics: a file, or the text itself")
+    p.add_argument("report", type=Path)
+    p.add_argument("--role", help="worker/verifier role file, inlined for a cloud child")
+    p.add_argument("--cloud", action="store_true", help="the child runs in a Claude cloud VM")
+    p.add_argument("--top-level", action="store_true")
+    p.add_argument("--pr", type=int)
+    p.add_argument(
+        "--remote",
+        action="store_true",
+        help="the child runs on another host (start's --host): REPORT is that host's path, kept as given",
+    )
+    p = sub.add_parser(
         "direct",
         description="mark a followed lead as driven by the owner directly: no deadline or nudge",
     )
@@ -9611,10 +9651,29 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             ok, line = capacity()
             print(line)
             return 0 if ok else 1
-        if args.cmd in ("run", "start") and args.role is not None:
+        if args.cmd in ("run", "start", "brief") and args.role is not None:
             role_file = Path(args.role)
             if not (role_file.is_file() and os.access(role_file, os.R_OK)):
                 raise Fail(f"--role {args.role}: not a readable file; the child reads it first")
+        if args.cmd == "brief":
+            # the body only: start adds its signature, lock and title lines once a session exists
+            pr = report_pr(args.role, args.cloud, args.pr)
+            # as start's: a path on another host is neither resolved nor checked here
+            report = args.report.resolve() if not args.remote or pr else args.report
+            # ponytail: a lead's delegation line is read from this checkout, never another host's (start reads that
+            # through the server, which brief does not reach)
+            delegation = lead_delegation(None, None) if args.top_level and not pr else ""
+            body = first_message(
+                args.cloud,
+                args.top_level,
+                pr,
+                report,
+                args.role,
+                text_or_file(args.brief)[0],
+                delegation,
+            )
+            sys.stdout.write(body)
+            return 0
         og = Omnigent(args.server) if args.server else Omnigent()
         if args.cmd == "capacity":
             target = og.host(args.host)
@@ -9787,8 +9846,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         if verifier and args.verifier_route != "codex":
             apply_route(args)
         verifies = args.pr if verifier else None
-        if verifier and args.pr and og.harness(args.agent) != CLOUD_HARNESS:
-            args.pr = None
+        if verifier:
+            args.pr = report_pr(args.role, og.harness(args.agent) == CLOUD_HARNESS, args.pr)
         cloud = os.environ.get("CLAUDE_CODE_REMOTE") == "true"
         if (
             args.cmd in ("run", "start")

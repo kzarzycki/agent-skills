@@ -363,3 +363,29 @@ def test_unasked_end_wants_a_user_needed_ending_and_no_card(
 ) -> None:
     items = [ending(text, 1)]
     assert omnigent_agent.unasked_end(None, "a", info, items, carded) is expected
+
+
+def test_brief_prints_a_top_level_leads_delegation_as_start_sends_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`brief` prints the body `start` sends, so under `delegate: all` a cloud lead's child lead gets the
+    delegation line through sys_session_create as well (#1509)."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    work = checkout(tmp_path, policy_with("loop:\n  delegate: all\n"))
+    report = tmp_path / "r.md"
+    omnigent_agent.start(
+        base.FakeOmnigent(),
+        "claude",
+        "t",
+        "do X",
+        report,
+        None,
+        0,
+        top_level=True,
+        workspace=str(work),
+    )
+    sent = Path(f"{report}.brief").read_text().partition("\n")[2]
+    monkeypatch.chdir(work)
+    assert omnigent_agent.main(["brief", "do X", str(report), "--top-level"]) == 0
+    printed = capsys.readouterr().out
+    assert printed == sent and omnigent_agent.DELEGATION.strip() in printed

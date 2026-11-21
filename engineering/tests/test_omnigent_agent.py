@@ -1,5 +1,6 @@
 """scripts/omnigent_agent.py with the Omnigent server faked."""
 
+import errno
 import importlib.util
 import inspect
 import io
@@ -13952,3 +13953,124 @@ def test_a_cloud_child_gets_its_role_file_s_text_and_a_host_child_its_path(
     omnigent_agent.start(host, "claude", "h", "do X", tmp_path / "h.md", str(role), 0)
     brief = omnigent_agent.brief_of(tmp_path / "h.md").read_text()
     assert f"Your role file is {role}; read it first." in brief and "RULE-X" not in brief
+
+
+@pytest.mark.parametrize("pr", [None, 7])
+@pytest.mark.parametrize("top_level", [False, True])
+@pytest.mark.parametrize("cloud", [False, True])
+@pytest.mark.parametrize("as_file", [False, True])
+def test_brief_prints_the_body_start_sends_a_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    cloud: bool,
+    top_level: bool,
+    pr: int | None,
+    as_file: bool,
+) -> None:
+    """A cloud lead reaches Omnigent only through its MCP tools, so it composes a child's message with
+    `brief` and passes it to sys_session_create: it prints, byte for byte and reading no server, the
+    body `start` sends under its signature, lock and title lines (#1509)."""
+    monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+    monkeypatch.chdir(tmp_path)
+    role = tmp_path / "worker.md"
+    role.write_text("# Worker\nrule\n")
+    text = "do X\nthen Y\n"
+    brief = tmp_path / "brief.md"
+    brief.write_text(text)
+    report = tmp_path / "r.md"
+    og = CloudFake() if cloud else FakeOmnigent()
+    agent = "claude-cloud" if cloud else "claude"
+    sid, _ = omnigent_agent.start(
+        og, agent, "t", text, report, str(role), 0, top_level=top_level, pr=pr
+    )
+    sent = omnigent_agent.text_of(og.sessions[sid][1])
+    inline = sent.partition("Your brief:\n\n")[2]
+    full = inline or omnigent_agent.brief_of(report).read_text()
+    body = re.sub(r"\A(?:AGENT_SIGNATURE|LOOP_HEAVY_LOCK)=.*\n", "", full)
+    body = re.sub(r"\A(?:AGENT_SIGNATURE|LOOP_HEAVY_LOCK)=.*\n", "", body)
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: pytest.fail("brief read a server"))
+    argv = ["brief", str(brief) if as_file else text, "r.md", "--role", str(role)]
+    argv += ["--cloud"] * cloud + ["--top-level"] * top_level + ["--pr", str(pr)] * bool(pr)
+    assert omnigent_agent.main(argv) == 0
+    printed = capsys.readouterr().out
+    assert printed == body and printed.endswith(text)
+    assert ("<role-file>\n# Worker\nrule\n</role-file>" in printed) == cloud
+
+
+@pytest.mark.parametrize(
+    ("role", "agent"),
+    [("verifier.md", "claude"), ("verifier.md", "claude-cloud"), ("worker.md", "claude-cloud")],
+)
+def test_brief_prints_the_body_the_start_command_sends_with_pr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    role_file: Callable[[str], str],
+    role: str,
+    agent: str,
+) -> None:
+    """Through the CLI, as a lead runs both: a host verifier's --pr names the PR it reviews, so
+    neither command tells it to report on that PR; a cloud child's --pr is its report channel (#1509)."""
+    monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("review\n")
+    cloud = agent == "claude-cloud"
+    og = CloudFake() if cloud else FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: og)
+    for name in ("pin_environment", "refuse_untrusted_launch_dir"):  # this host's Claude setup
+        monkeypatch.setattr(omnigent_agent, name, lambda *a: None)
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(tmp_path)]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "pr 7"], check=True)
+    head = subprocess.run(
+        [*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout
+    monkeypatch.setattr(omnigent_agent, "pr_head", lambda *a: head.strip())  # the checkout is at it
+    argv = ["b.md", "r.md", "--role", role_file(role), "--pr", "7"]
+    assert omnigent_agent.main(["start", agent, "t", *argv, "--same-family"]) == 0
+    sid = next(iter(og.sessions))
+    sent = omnigent_agent.text_of(og.sessions[sid][1])
+    full = (
+        sent.partition("Your brief:\n\n")[2]
+        or omnigent_agent.brief_of(tmp_path / "r.md").read_text()
+    )
+    body = re.sub(r"\A(?:(?:AGENT_SIGNATURE|LOOP_HEAVY_LOCK)=.*\n)+", "", full)
+    capsys.readouterr()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: pytest.fail("brief read a server"))
+    assert omnigent_agent.main(["brief", *argv, *["--cloud"] * cloud]) == 0
+    assert capsys.readouterr().out == body
+    assert ("PR #7" in body) == cloud
+
+
+def test_brief_keeps_another_hosts_report_path_as_given(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A path on the target host means nothing here, so --remote keeps it unresolved, as start does (#1509)."""
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: pytest.fail("brief read a server"))
+    far = "/there/repo/../repo/tmp/loop/r.md"
+    for remote, shown in ((True, far), (False, str(Path(far).resolve()))):
+        argv = ["brief", "do X", far, "--top-level"] + ["--remote"] * remote
+        assert omnigent_agent.main(argv) == 0
+        assert shown in capsys.readouterr().out
+
+
+def test_brief_refuses_an_unreadable_role_and_takes_a_long_brief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`brief` checks --role as start does, with a one-line error, and takes an inline brief too
+    long for a file name as text, even where Path.is_file raises on it as on Python 3.12 (#1509)."""
+    assert omnigent_agent.main(["brief", "do X", "r.md", "--cloud", "--role", "gone.md"]) == 1
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "--role gone.md: not a readable file" in err
+    long = "x" * 5000
+    real = Path.is_file
+
+    def raises_on_long(self: Path) -> bool:
+        if len(self.name) > 255:
+            raise OSError(errno.ENAMETOOLONG, "File name too long", str(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, "is_file", raises_on_long)
+    assert omnigent_agent.main(["brief", long, "r.md", "--cloud"]) == 0
+    assert capsys.readouterr().out.endswith(long)
