@@ -39,7 +39,7 @@ def run(tmp_path, monkeypatch, pending):
 
 def test_card_open_records(tmp_path, monkeypatch):
     routed, posts = run(tmp_path, monkeypatch, [CARD])
-    assert ("ended", "record") in routed
+    assert not any(kind == "ended" for kind, _ in routed)  # told above, as #1529 does
     assert not any("USER NEEDED" in p for p in posts)
 
 
