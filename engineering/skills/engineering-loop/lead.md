@@ -305,8 +305,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      check, reaches you as an event from the project's watcher; the PR is not landed until then. A removal's next
      step is `land <pr>` again, which reads the PR once. Exit 1 names what stopped your PR, and the fix is yours:
      - a missing proof, with nothing on the PR changed: add the proof;
-     - a conflict with main or the PRs merged before it: merge `origin/main` in, as the first
-       bullet says;
+     - a conflict with main or the PRs merged before it: merge `origin/main` in, as step 8's
+       `Conflicts in the landing batch` bullet says;
      - an eviction, red alone twice in the local queue or red twice on one head in GitHub's:
        the PR is a draft again with the failing log's tail in a comment; fix it like a check
        red after ready, and `land <pr>` marks it ready again;
