@@ -66,7 +66,9 @@ The intervals are the kinds' starting values: the code that writes a kind may se
 
 Only `git` and an `origin` are needed. `emit` writes the local ref first; a push that fails prints one warning and
 exits 0, so an event reports a step and is never part of it. A native lead in the same clone still sees the event with
-`wait`; another host sees it when a later push goes through. `read` with origin down shows the local events (kinds below, nested branches included) and warns.
+`wait`; another host sees it when a later push goes through. `read` with origin down shows the local events (kinds below, nested branches included) and warns. In a cloud VM,
+whose proxy refuses refs outside `refs/heads/`, `emit` and `clear` make no push: they print `cloud VM: events stay
+local (events.md)` with the ref, and exit 0 (scripts/cloud_limits.py).
 
 ## Measured on GitHub
 
@@ -79,5 +81,5 @@ exits 0, so an event reports a step and is never part of it. A native lead in th
 - **A push of `refs/loop/probe/<branch>`:** accepted by GitHub with a plain token from a host. One `events.py emit` took
   2.3 s end to end (process start, commit, push); `git ls-remote origin 'refs/loop/*'` with one such ref took 0.46 s;
   `events.py clear` removed it from `origin`. A cloud session's proxy refuses refs outside `refs/heads/` (`RPC failed;
-  HTTP 403`), so **a cloud session's events stay local and warn once** (Degraded); only a host with push access
+  HTTP 403`), so **a cloud session's events stay local, with no push tried** (Degraded); only a host with push access
   writes events another host reads.

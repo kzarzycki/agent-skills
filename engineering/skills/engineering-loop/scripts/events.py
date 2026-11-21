@@ -32,6 +32,22 @@ import time
 from pathlib import Path
 from typing import Any
 
+
+def _limits() -> Any:
+    """cloud_limits.py beside this file, loaded by path: the writes a cloud session's proxy is known to refuse."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "events_cloud_limits", Path(__file__).with_name("cloud_limits.py")
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+limits = _limits()
+
 # kind -> beat interval in seconds (events.md); a wait is live while its ref changed within twice its kind's beat
 BEATS = {"lead": 300, "land": 300, "gate": 120, "verifier": 300, "probe": 60}
 STATES = ("waiting", "ok", "failed", "needs-owner")
@@ -208,6 +224,11 @@ def emit(
         env=IDENTITY,
     ).strip()
     run(cwd, "update-ref", ref, commit)
+    if line := limits.skip("events", ref=ref):
+        print(
+            line, file=sys.stderr
+        )  # the proxy refuses refs outside refs/heads/, so no push is tried
+        return commit
     try:
         # the lease is the sha origin holds now: this writer rewrites its own ref, and only a push that races another
         # writer between the two calls is refused
@@ -371,6 +392,9 @@ def clear(branch: str, *, cwd: Path | str | None = None) -> None:
         mirror = mirror_of(ref)
         if local_sha(cwd, mirror):
             run(cwd, "update-ref", "-d", mirror)
+    if line := limits.skip("events clear", branch=branch):
+        print(line, file=sys.stderr)
+        return
     try:
         there = [ref for ref in mine if ref in remote_refs(cwd, f"{NAMESPACE}/*/{branch}")]
         if there:

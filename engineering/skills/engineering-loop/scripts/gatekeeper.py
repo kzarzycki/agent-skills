@@ -24,6 +24,11 @@
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
     uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's gate on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; else `check`
+    uv run scripts/approvals.py threads <pr> [--all]       # unresolved review threads: root comment id, state, path:line, first line
+    uv run scripts/approvals.py resolve <pr> <comment id>... [--reply <text>]  # reply on each thread, then resolve it
+    uv run scripts/approvals.py comment <n> <file|->       # post a comment on issue or PR n, deny-list checked; its URL
+    uv run scripts/approvals.py show <n>                   # issue n as JSON over REST, a PR's own object under `pull`
+    uv run scripts/approvals.py edit <n> [--base <b>] [--reviewer <login>]... [--draft] [--close|--reopen]
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
@@ -41,7 +46,13 @@ unchanged. Its own names for three of them, and one verb more:
 The policy reaches the tracker, the forge and the evidence only through their ports (PORTS), each run by the adapter
 the policy's `adapters` section names for it (`tracker`, `forge`, `evidence`), `github` for one it doesn't:
 github_adapter.py, through `gh`, with its GraphQL reads falling back to REST where GitHub refuses GraphQL, and every
-posted body checked against the deny list first. A name no adapter has is refused, naming it. The gate's own commit
+posted body checked against the deny list first. `threads`, `resolve`, `comment`, `show` and `edit` are every forge call a
+cloud agent makes, each the same command on a host and in a cloud session, where GraphQL answers 403: REST, or the
+cloud proxy's `ccr` routes where GitHub's REST has none (review threads, resolve, back to draft). A write the
+cloud proxy is known to refuse (cloud_limits.py's list: every commit status) makes no call there and prints one
+`cloud VM:` line naming its stand-in: `local-ci --record` still passes, since its pushed `loop-gate/` record is the
+pass and the host's `local-ci <pr>` posts the `gate` status; `approve merge` exits 1, since without its status there
+is no go, and the host gives it. A name no adapter has is refused, naming it. The gate's own commit
 status counts under `loop:approvals`, the name the project template's workflow posts, and under `gatekeeper` for one
 release line: `check merge` and `land` wait for neither.
 
@@ -4234,8 +4245,16 @@ class MachineFault(Refused):
 # ponytail: GitHub's node shapes are the data model; give the ports their own when a second adapter needs them.
 PORTS = {
     # issue_node(n) (an issue, Refused for a PR), issues(numbers) (the issues among them), comment(n, body),
-    # label(n, name, add), assign(n, login, add), close_issue(n)
-    "tracker": ("issue_node", "issues", "comment", "label", "assign", "close_issue"),
+    # label(n, name, add), assign(n, login, add), close_issue(n), reopen_issue(n)
+    "tracker": (
+        "issue_node",
+        "issues",
+        "comment",
+        "label",
+        "assign",
+        "close_issue",
+        "reopen_issue",
+    ),
     "forge": (
         "pull_request",  # (pr) -> the PR node, with its reviews, threads, checks, comments and closing issues
         "pull_status",  # (pr) -> {state, baseRefName, headRefOid, mergeable} alone, for a caller that reads no more
@@ -4262,6 +4281,10 @@ PORTS = {
         "ready",  # (pr, undo=False) -> marks a draft ready, or a ready PR a draft
         "reply",  # (pr, comment_id, body) -> replies to a review thread's root comment
         "resolve_thread",  # (pr, comment_id) -> resolves the thread holding the comment; raises CalledProcessError if it can't
+        "review_threads",  # (pr) -> each thread's root comment id, resolved, path, line and root comment body
+        "show",  # (n) -> the issue or PR as the forge's REST gives it, a PR's own object under `pull`
+        "retarget",  # (pr, base) -> points the PR at another base branch
+        "request_review",  # (pr, logins) -> requests a review from each login
         "merge",  # (pr, method, body, head) -> merges pinned to head, `body` None for the forge's default
         "edit_text",  # (method, path, body) -> replaces the body of a PR, comment or review at the forge's route
         "enqueue_pull",  # (pr, node, head, method) -> puts the PR in its base's merge queue pinned to head; its position, or None
@@ -9899,7 +9922,16 @@ def pushed_commands(held: str) -> set[str]:
 
 def shown(head: str, record: dict[str, Any]) -> str | None:
     """Write the `gate` status for `record` on `head`, which the PR page shows and nothing reads; refused or
-    unreachable: why, which is no error, since the record branch is the pass."""
+    unreachable: why, which is no error, since the record branch is the pass. In a cloud VM, whose proxy refuses it,
+    no call: the stand-in's line (cloud_limits.py) is printed, and None returned."""
+    ref = record.get("ref") or (
+        RECORD_BRANCH.format(record_name(record["tree"], record["command"]))
+        if "tree" in record and "command" in record
+        else RECORD_BRANCH.format("<tree>-*")
+    )
+    if line := github.limits.skip("gate status", head=head, ref=ref):
+        print(line)
+        return None
     try:
         post_status(head, PUBLISHED, described(record["tree"], record["head"], record["command"]))
     except (subprocess.CalledProcessError, OSError) as exc:
@@ -9912,6 +9944,8 @@ def failed(head: str, tree: str, command: str, code: int, machine: bool) -> str:
     change), so a lead waiting on the head (orchestrating-agents' `wait-for --until gate`) learns the run ended without a
     pass; returns the line saying so, or, refused or unreachable, why, which is no error, as a pass's is (shown)."""
     line = f"Failed: {command} exited {code} on tree {tree[:12]} at {head[:12]}"[:DESCRIBED]
+    if skipped := github.limits.skip("gate failure status", head=head):
+        return skipped
     try:
         post_status(head, PUBLISHED, line, "error" if machine else "failure")
     except (subprocess.CalledProcessError, OSError) as exc:
@@ -9929,6 +9963,9 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
     if proof is not None:
         context, line = proof["status"], proof_line(record, proof["env"])
         if stated(head, context, lambda status, _named: status["description"] == line):
+            return
+        if skipped := github.limits.skip("proof status", context=context, head=head):
+            print(skipped)
             return
         try:
             post_status(head, context, line)
@@ -10511,6 +10548,22 @@ def main(argv: list[str]) -> int:
     resolving.add_argument("pr", type=int)
     resolving.add_argument("comments", type=int, nargs="+", metavar="comment_id")
     resolving.add_argument("--reply", metavar="TEXT")
+    # the forge calls a cloud agent makes, each the same on a host and in a cloud session (#1637)
+    listing = commands.add_parser("threads")
+    listing.add_argument("pr", type=int)
+    listing.add_argument("--all", action="store_true")
+    commenting = commands.add_parser("comment")
+    commenting.add_argument("number", type=int)
+    commenting.add_argument("body", metavar="file")
+    commands.add_parser("show").add_argument("number", type=int)
+    editing = commands.add_parser("edit")
+    editing.add_argument("number", type=int)
+    editing.add_argument("--base")
+    editing.add_argument("--reviewer", action="append", default=[], metavar="login")
+    editing.add_argument("--draft", action="store_true")
+    closing = editing.add_mutually_exclusive_group()
+    closing.add_argument("--close", action="store_true")
+    closing.add_argument("--reopen", action="store_true")
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int, nargs="*")
     merging.add_argument("--wait", action="store_true")
@@ -10551,6 +10604,10 @@ def main(argv: list[str]) -> int:
     except subprocess.CalledProcessError as exc:
         # gh's reason, e.g. a closing line that names a number with no issue
         print(exc.stderr.strip() or exc)
+        if said := github.limits.failed_call(
+            exc
+        ):  # in a cloud VM: the call already went its REST way
+            print(said)
         return 1
     finally:
         running, using = False, None
@@ -10578,6 +10635,54 @@ def resolve(pr: int, comments: list[int], text: str | None) -> int:
     if failed:
         print(f"could not resolve the thread of comment {', '.join(map(str, failed))}")
         return 1
+    return 0
+
+
+def threads(pr: int, every: bool) -> int:
+    """PR #pr's unresolved review threads (every one with `every`), a line each: the root comment's id, which
+    `resolve` takes, whether it is resolved, its path and line, and the comment's first line."""
+    for thread in port("forge").review_threads(pr):
+        if thread["resolved"] and not every:
+            continue
+        where = (
+            f"{thread['path']}:{thread['line']}"
+            if thread.get("line")
+            else thread.get("path") or "-"
+        )
+        first = next(iter((thread["body"] or "").strip().splitlines()), "")[:120]
+        state = "resolved" if thread["resolved"] else "open"
+        print(f"{thread['comment_id']}\t{state}\t{where}\t{first}")
+    return 0
+
+
+def post_comment(number: int, source: str) -> int:
+    """Post the file `source` (`-`: stdin) as a comment on issue or PR #number, deny-list checked; its URL."""
+    body = sys.stdin.read() if source == "-" else Path(source).read_text()
+    if not body.strip():
+        raise Refused(f"{source} is empty: nothing to post")
+    print(comment(number, body))
+    return 0
+
+
+def edit(args: argparse.Namespace) -> int:
+    """`edit <n>`: each change the flags ask, in a fixed order, one line each; no flag is refused."""
+    if not (args.base or args.reviewer or args.draft or args.close or args.reopen):
+        raise Refused("edit takes --base, --reviewer, --draft, --close or --reopen")
+    if args.base:
+        port("forge").retarget(args.number, args.base)
+        print(f"#{args.number}: base is {args.base}")
+    if args.reviewer:
+        port("forge").request_review(args.number, args.reviewer)
+        print(f"#{args.number}: review requested from {', '.join(args.reviewer)}")
+    if args.draft:
+        port("forge").ready(args.number, undo=True)
+        print(f"#{args.number}: back to draft")
+    if args.close:
+        port("tracker").close_issue(args.number)
+        print(f"#{args.number}: closed")
+    if args.reopen:
+        port("tracker").reopen_issue(args.number)
+        print(f"#{args.number}: reopened")
     return 0
 
 
@@ -10635,6 +10740,15 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         )
     if args.command == "resolve":
         return resolve(args.pr, args.comments, args.reply)
+    if args.command == "threads":
+        return threads(args.pr, args.all)
+    if args.command == "comment":
+        return post_comment(args.number, args.body)
+    if args.command == "show":
+        print(json.dumps(port("forge").show(args.number), indent=2))
+        return 0
+    if args.command == "edit":
+        return edit(args)
     if args.command == "delegate":
         return delegate(args.pr)
     if args.command == "local-ci":
