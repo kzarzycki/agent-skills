@@ -12,7 +12,7 @@ directory the session's workspace; `--workspace <dir>` names another, such as th
 several repos for a lead whose change spans them. Give each child its own: a `--role` start on a
 host harness is refused, naming the session, when a live session on that host (its parent
 included) already uses that workspace, since two children there move the tree under each other. The report path goes in a gitignored directory of that
-workspace (under the engineering loop, `tmp/loop/`): outside its workspace a Codex child's sandbox refuses the write and a Claude Code
+workspace (under the engineering loop, `tmp/loop/`): outside its workspace a Codex child under `--permission-mode default` has a sandbox that refuses the write and a Claude Code
 child is prompted for a read (denied in auto mode), which nobody answers, so the script refuses
 such a path. Titles look like `s120-parser-worker`,
 `pr182-verifier-p1`: the issue or PR, then the role. The brief (a file, or the text itself, as
@@ -80,13 +80,25 @@ chose.
 `OMNIGENT_PERMISSION_MODE`, else the `--permission-mode` its Claude starter was launched with
 (named on stderr; none there, none here), else the harness default; the mode is the project's or owner's
 choice, set in the environment once. Omnigent applies it as the session's
-`terminal_launch_args` when it launches the terminal, so `info` shows it. A Codex child takes
-none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
-`start` refuses the flag for Codex and says on stderr that the variable's mode was not applied.
+`terminal_launch_args` when it launches the terminal, so `info` shows it. A Codex child never
+takes a Claude mode (codex-native hands launch args to the `codex` CLI, whose terminal then never starts), so
+`start` refuses `--permission-mode` words for it other than `bypassPermissions` and `default`. It starts with
+`--dangerously-bypass-approvals-and-sandbox` (approval policy `never`, full-access sandbox), since a prompt
+nobody answers blocks an unattended session; `--permission-mode default` keeps Codex's own stance.
 A claude-cloud child takes `auto` or `bypassPermissions`, sent as the session create's
-`permission_mode` (the server answers the VM's tool requests itself under bypass), starts in
-`bypassPermissions` when neither the flag nor the variable names a mode (it runs unattended in a disposable VM), and
-`start` treats any other mode for it as it does a mode for Codex.
+`permission_mode` (the server answers the VM's tool requests itself under bypass), and starts in
+`bypassPermissions` unless the flag names a mode, since it runs unattended in a disposable VM where an
+`auto` prompt waits on nobody: a mode from the variable alone is not applied to it, and `start` says
+so on stderr. `start` refuses a flag naming any other mode for it. Until
+Omnigent applies a default mode per agent definition on every start path (kzarzycki/omnigent#529), this
+bypass default is the pack's own; after it, `start` passes no mode unless asked. Omnigent hands
+bypass on only from a session that runs in it itself (kzarzycki/omnigent#526) and answers any other
+creator's bypass request with HTTP 400, so `start` from such a session fails, naming the two ways on:
+start the worker from a session or host shell in bypass, or pass `--permission-mode auto` to accept
+one that waits on prompts. It never falls back to `auto` itself. Either way `start` prints the mode
+the session got, read back from its record (`session <id>: permission mode <mode>`, `unknown` when
+the record can't be read). Start every child through `start` or `run`, never a raw
+`sys_session_create` with a mode of its own, since only these pick the mode and report it.
 
 **Effort.** `--effort <level>` sets the child's reasoning effort, as its harness names the levels
 (Claude, native or cloud: `low` to `max`). Without it the level comes from `OMNIGENT_EFFORT_<AGENT>`
@@ -219,7 +231,7 @@ It closes with the owner's standing branch grant (`CLOUD_BRANCHES`): new `claude
 per PR, besides the one the session started on; no force-push, no deleting a branch it didn't create, nothing
 pushed to `main` or outside `claude/`. A cloud session takes a push grant only from its first user message and
 refuses a later relayed one, so a lead building several PRs gets its branches only this way.
-It ends with the no-push rule (`CLOUD_NO_PUSH`): reports, logs and verifier output are never committed or pushed, since a commit on the PR's branch moves the head under review and the branch grant is for code; the gate record that `approvals.py local-ci --record` pushes itself is the one exception; they travel in the report comment (or the final message with no PR), a file too large for one comment goes in a short follow-up comment or is trimmed with its path named, and a push target or branch question never goes to the owner. It also says where code goes: the `claude/…` branch the session started on (or a `claude/ready-*` branch its grant lets it create), whatever other branch the brief names, reported with its head SHA for the lead to open the PR from or retarget.
+It ends with the no-push rule (`CLOUD_NO_PUSH`): reports, logs and verifier output are never committed or pushed, since a commit on the PR's branch moves the head under review and the branch grant is for code and a PR's `claude/ready-demo-<pr>` media branch; the gate record that `approvals.py local-ci --record` pushes itself is the one exception; they travel in the report comment (or the final message with no PR), a file too large for one comment goes in a short follow-up comment or is trimmed with its path named, and a push target or branch question never goes to the owner. It also says where code goes: the `claude/…` branch the session started on (or a `claude/ready-*` branch its grant lets it create), whatever other branch the brief names, reported with its head SHA for the lead to open the PR from or retarget.
 
 **Cloud environments.** Which claude.ai environment a cloud session runs in is the project's
 loop.md line `Cloud worker: <agent>, gate <task>, env <name>`; an environment id belongs to one
@@ -689,7 +701,14 @@ as `watch` counts an end; any other turn end only once the lead, its live childr
 subscribes to wrote nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
 another's merge and a question with no ending), since a lead briefed or active again within that
 time was not stuck; a prompt once it has been pending 120 s across looks, since Omnigent shows each
-child's prompt on its parent too and the lead answers it itself, usually within a minute; a failure
+child's prompt on its parent too and the lead answers it itself, usually within a minute (Omnigent
+shows a `--top-level` session's prompt on no one, since it has no parent, so a prompt on a live
+session the lead created counts as the lead's own, every such session's in one line
+(`<lead> (in <n> session(s) it created): blocked on a prompt: <id>: <text> (in <session> <title>)`),
+while the lead runs or its turn has ended. The creator is read from Omnigent's
+`omnigent.created_by_session_id` label, which its session tool stamps, or the pack's own
+`omni.created_by`, which `start --top-level` stamps with the starting session, since a REST create
+records none; one listing of every session serves all leads for 30 s); a failure
 at once; each once per occurrence; and `archived`, which is the
 only event that drops the line, so a relay needs no re-arm. Each is posted once per message.
 A restart posts an end it finds again.
@@ -940,11 +959,11 @@ transcript.
 
 **Permission prompts.** An agent's workspace is the directory it was started in, so its
 reads there, its children's checkouts included, never prompt, in any harness; its writes
-there follow the permission mode (Codex's workspace-write allows them). So put each child's
+there follow the permission mode (a Codex child under `--permission-mode default` has workspace-write, which allows them). So put each child's
 checkout inside the workspace of the agent that starts it, in a directory the project
 gitignores (where and how is the project's: under the engineering loop, loop.md § Worktree),
 and run the child's command from there. Outside it, Claude Code prompts for a read, or denies it in auto mode (`cd <sibling>; grep ...` or a plain
-`cat <sibling>/f`), which nobody answers, and Codex's workspace-write sandbox refuses a write.
+`cat <sibling>/f`), which nobody answers, and a Codex child under `--permission-mode default` has a workspace-write sandbox that refuses a write.
 No allow rule stands in for the layout: a project rule `Read(/../**)` or `Read(../**)` never
 matches a sibling, an absolute `//…` or `~/…` rule names one machine's layout, and a project's
 rules are ignored in a workspace nobody has trusted. Nor does an Omnigent policy: its native

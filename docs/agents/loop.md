@@ -30,7 +30,7 @@ of staff's `approved:merge` (`approvals.py delegate`), so dependent work doesn't
 main the chief of staff's go is `approvals.py approve merge --by delegate` on the head (`delegate: all` in
 gatekeeper.md).
 
-`land`'s batch gate runs the `Affected tests:` command (`check-fast`: the tests the batch's combined diff touches plus lint) against the tip the batch merges onto; `check-land`, the vendor check and lint without tests, is the `gate` line's full-mode command. The PR's `qualify` check runs the tests it touches and the nightly run covers the rest.
+`land`'s batch gate is the `gate` line, `check-land`: the vendor check and lint, no tests, since main requires the `qualify` check, which ran each head's touched tests on that exact head. The nightly run covers the rest.
 
 ## Cloud worker
 
