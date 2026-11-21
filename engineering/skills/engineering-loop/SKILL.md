@@ -656,12 +656,15 @@ isolated (one PR at a time, or GitHub's per-entry groups). The local merge queue
   Several named PRs land in one batch; one that is no candidate is left out with its reason and the rest land, the exit being the worst of them (1 over 3 over 0).
 - With gatekeeper.md's `head_proof`, a candidate's head also carries a green status of its `status`
   name for its own tree, since the batch gate runs one fixed tier and some changes need
-  another (a UI test tier). The lead records it on a clean checkout of the head with the tier
-  set in the caller's environment, `GATE_UI_TESTS=smoke uv run <this skill's folder>/scripts/approvals.py
+  their own proof: the PR's own acceptance tests, written as e2e tests in that PR and named by
+  their test classes. A full UI or e2e suite is never a gate step, since it tests far more than
+  the change and holds every landing for its run; the project runs it by hand or in its nightly. The lead records
+  the proof on a clean checkout of the head with the classes set in the caller's environment,
+  `GATE_UI_TESTS=<the PR's acceptance test classes> uv run <this skill's folder>/scripts/approvals.py
   local-ci --record --head-proof`: the caller's value of each `env` name wins over the gate
-  line's, and the status names the values, so the verifier sees the tier. Which tier a change
-  needs is the project's rule, in its own docs; `land` checks only that the proof is there,
-  and its refusal names the command.
+  line's, and the status names the values, so the verifier sees which tests ran. How a project
+  selects tests by class is its own rule, in its own docs; `land` checks only that the proof is
+  there, and its refusal names the command.
 - It merges their heads onto the base in a temporary worktree, oldest first, skipping a PR
   that conflicts with a comment saying so, and gates the result's tree once, or reuses the
   gate's pass on that tree, never GitHub's required checks in its place: a PR already up to

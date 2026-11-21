@@ -23,7 +23,7 @@
     uv run scripts/approvals.py local-ci <pr> [--head <sha>] [--run]  # --head: the commit just pushed, refused if GitHub's head stays another; with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
     uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed under `ci: false` or with --base (Narrowed mode)
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
-    uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
+    uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
     uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's gate on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; else `check`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
@@ -403,15 +403,15 @@ other command the tree passed under, from this clone's records and the tree's re
 in the record: nothing `approvals.py` posts names it, and posted text writes the home directory `~` (public), since a
 public board would show both. The posted comment names the gate's command and the variables it sets (`Env: A=1`, or
 `Env: default`).
-With loop.md's `head_proof` under `loop` (`status: <context>`, `env: [<names>]`), each head proves itself under a tier
-the lead picks, which the batch gate's fixed tier doesn't. `local-ci --record --head-proof` runs the gate as `--record`
+With loop.md's `head_proof` under `loop` (`status: <context>`, `env: [<names>]`), each head proves itself under env values
+the lead picks (the PR's acceptance test classes), which the batch gate's fixed env doesn't. `local-ci --record --head-proof` runs the gate as `--record`
 does, but takes each `env` name the caller's environment sets from it instead of clearing it, over the gate line's own
-assignment of that name, so the command it records names the value (`GATE_UI_TESTS=smoke mise run check:all`). It
+assignment of that name, so the command it records names the value (`GATE_UI_TESTS=LoginAcceptanceTest mise run check:all`). It
 publishes the pass as the commit status `<context>` instead of `gate`, described `Tree <tree> on <commit's first 12>:
-<name>=<value> ...` for the `env` names it ran with (`default` for none), so the verifier reads the tier off the head.
+<name>=<value> ...` for the `env` names it ran with (`default` for none), so the verifier reads the values off the head.
 `land` reads it, the one status a decision reads for a pass: a green status of that context on the head commit itself, naming the head's tree,
 by the account running this or a writer. A status on an older head never counts, since a status belongs to one commit.
-Which tier a change needs is the project's rule; `land` checks only that a head proof exists.
+Which tests prove a change is the project's rule (the PR's own acceptance tests); `land` checks only that a head proof exists.
 Narrowed mode: loop.md's line `Affected tests: <command>` without the line `Gate: full`, the opt-out (narrowing). Its
 command is the whole narrowed check: the project's selector plus its cheap whole-repo lint and type checks, reading the
 base from the variable `Gate base:` names, else `GATE_BASE`. `affected-tests` runs it against `--base <rev>` (a PR's
@@ -10023,7 +10023,7 @@ def head_proof(loop: str | None) -> dict[str, Any] | None:
 
 def proof_line(record: dict[str, Any], names: list[str]) -> str:
     """A head proof's status description: the tree, the commit the pass ran on, and the value of each of `names` it
-    ran under (`default` for none), so the verifier reads the tier off the head."""
+    ran under (`default` for none), so the verifier reads the values off the head."""
     values = " ".join(
         f"{name}={public(record['env'][name])}" for name in names if name in record["env"]
     )
