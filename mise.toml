@@ -100,23 +100,28 @@ run = "uv run python -m tools.capability_pack.cli assert-codex-inventory ."
 run = "uv run python tests/adoption/run_renovate_probe.py"
 
 [tasks.test-engineering-package]
-run = "uv run pytest -q engineering/tests/test_contract.py engineering/tests/test_package_metadata.py engineering/tests/test_consumer_e2e.py engineering/tests/test_approvals_acceptance_evidence.py"
+run = "uv run pytest -q engineering/tests/test_contract.py engineering/tests/test_package_metadata.py engineering/tests/test_consumer_e2e.py gatekeeper/tests/test_approvals_acceptance_evidence.py"
 
 [tasks.test-engineering-agents]
 run = "CLAUDE_CODE_E2E=1 CODEX_E2E=1 uv run pytest -q -m live_agent engineering/tests/e2e"
 
 [tasks.test-chief-of-staff-live]
 description = "A chief of staff has a lead of the other harness do an ask, in its repo and across two, both ways, through a logged-in Omnigent"
-run = "OMNIGENT_E2E=1 uv run pytest -q -m live_agent engineering/tests/e2e/test_live_chief_of_staff.py"
+run = "OMNIGENT_E2E=1 uv run pytest -q -m live_agent chief-of-staff/tests/test_live_chief_of_staff.py"
 
 [tasks.test]
 # pytest holds a host gate slot (tools/gate_slot.py: approvals.take_slot, the one local-ci and land take), so gates on one host queue (#395, #1138).
-# GATE_TEST_PARALLEL=1 runs it on pytest-xdist, one worker per free core (tools/gate_workers.py), a file per worker (#941); unset, serially.
-run = """uv run python tools/gate_slot.py pytest -q -m 'not live_agent' $([ "${GATE_TEST_PARALLEL:-0}" = 1 ] && printf '%s' '-p tools.gate_workers -n auto --dist loadfile') && uv run ruff check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts engineering/skills/chief-of-staff/scripts engineering/skills/omnigent-telemetry/scripts engineering/hooks && uv run ruff format --check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts engineering/skills/chief-of-staff/scripts engineering/skills/omnigent-telemetry/scripts engineering/hooks"""
+# It runs on pytest-xdist, one worker per free core (tools/gate_workers.py), a file per worker (#941); GATE_TEST_PARALLEL=0 runs serially.
+# The `slow` tests run in `test-slow` (and so in the release tag check), not here (#1610).
+run = """uv run python tools/gate_slot.py pytest -q -m 'not live_agent and not slow' $([ "${GATE_TEST_PARALLEL:-1}" != 0 ] && printf '%s' '-p tools.gate_workers -n auto --dist loadfile') && uv run ruff check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent"""
+
+[tasks.test-slow]
+description = "The tests marked slow: nested pytest runs, real installs, heartbeats on real time"
+run = """uv run python tools/gate_slot.py pytest -q -m 'slow and not live_agent' $([ "${GATE_TEST_PARALLEL:-1}" != 0 ] && printf '%s' '-p tools.gate_workers -n auto --dist loadfile')"""
 
 [tasks.lint]
 description = "ruff check and format check over the repo's Python"
-run = """uv run ruff check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts engineering/skills/chief-of-staff/scripts engineering/skills/omnigent-telemetry/scripts engineering/hooks && uv run ruff format --check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts engineering/skills/chief-of-staff/scripts engineering/skills/omnigent-telemetry/scripts engineering/hooks"""
+run = """uv run ruff check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent"""
 
 [tasks.check-land]
 description = "The landing gate: vendor check and lint, nothing else, about a minute."
@@ -126,18 +131,14 @@ run = """mise run vendor-engineering-check
 mise run lint"""
 
 [tasks.check-fast]
-description = "The PR check (`qualify`): vendor check, lint, and only the tests the change touches (tools/affected_tests.py). The full suite runs nightly in CI."
-# ponytail: a PR runs its own touched tests only, so a combination that breaks an untouched test reaches main; the nightly
-# full run catches it, a bisect names the PR, and the fix goes forward on main. Upgrade path: a suite that runs in seconds
-# lets `check` come back as the gate.
+description = "The PR check (`qualify`) and the batch gate: vendor check and lint. Tests are off until the suite runs whole in a few minutes."
 run = """mise run vendor-engineering-check
-uv run python tools/gate_slot.py sh -c 'uv run pytest -q -m "not live_agent" $(uv run python tools/affected_tests.py ${GATE_BASE:-origin/main})'
 mise run lint"""
+# ponytail: tests are off while the suite is slower than a few minutes; a break reaches main and is fixed forward. The suite comes back as the gate once it runs whole in a few minutes (#1653).
 
 [tasks.check]
-description = "The full suite, nightly in CI: vendor-engineering-check, test, test-engineering-package"
+description = "Nightly in CI: vendor-engineering-check and lint while tests are off"
 run = [
   "mise run vendor-engineering-check",
-  "mise run test",
-  "mise run test-engineering-package",
-]
+  "mise run lint",
+]  # tests off until the suite runs whole in a few minutes (#1653); `mise run test` still runs them by hand

@@ -24,6 +24,7 @@ jobs:
       - run: uv run python -m tools.capability_pack.cli release-check engineering "$GITHUB_REF_NAME" --skip-smoke
       - run: mise run vendor-engineering-check
       - run: mise run test
+      - run: mise run test-slow
       - run: mise run test-engineering-package
   consumer-sync:
     needs: qualify

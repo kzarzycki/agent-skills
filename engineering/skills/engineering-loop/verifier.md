@@ -66,10 +66,10 @@ yourself, keeping standards and spec as separate axes.
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
   after a fix for a CI check red on a ready PR is the same: only the change since that
   report's head.
-- **Emit the `verifier` event** on the branch you review, so the lead waits on you as on `land` (events.md). A pass
+- **Emit the `verifier` event** on the branch you review, so the lead waits on you as on `land` (the `gatekeeper` skill's events.md). A pass
   that `cloud_verifier.py` runs (`verify` or `thread`) is emitted by the script: a child it starts emits nothing by
   hand, since an `ok` written before the script posts the review would wake the lead on a review that is not there yet.
-  Any other pass emits with the same helper, from the repo's clone, `uv run <this skill's folder>/scripts/events.py
+  Any other pass emits with the same helper, from the repo's clone, `uv run <gatekeeper>/scripts/events.py
   emit verifier <branch> <state>`:
   - at the start, `waiting --beat 900`, and the same command again before 15 minutes pass while the review runs. A
     wait reads a `waiting` ref silent after twice its `beat_s`, and a `wait-for` call blocks close to 10 minutes, so
@@ -84,7 +84,7 @@ yourself, keeping standards and spec as separate axes.
   and lead's too. A gate, repro or e2e run that may wait on a lock
   or a queue, or outlast one tool call, starts detached (in its own session) with its pid, output and exit code
   in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; echo "run $$" > <log>; echo "lock <lock>" >> <log>; flock <lock> sh -c "echo \$\$ > <lock>; echo locked; exec \"\$@\"" sh <cmd> >> <log> 2>&1; printf "\nloop-exit $$ $?\n" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --pid $$ --notify' >/dev/null 2>&1`
-  (a build, test or mutation `<cmd>` on a host is `uv run <this skill's folder>/scripts/approvals.py heavy <cmd>`,
+  (a build, test or mutation `<cmd>` on a host is `uv run <gatekeeper>/scripts/approvals.py heavy <cmd>`,
   so it runs under the host's heavy wrapper: SKILL.md, One heavy gate per host slot;
   Perl's `setsid`, since macOS has no `setsid` command; the `run <pid>` line marks where this
   run's log starts, so `wait-for --pid` never takes a previous run's end line from a reused
@@ -211,10 +211,11 @@ yourself, keeping standards and spec as separate axes.
 ## Report
 
 Write Markdown to the report path; `approvals.py verdict` parses it into the PR review, so
-keep these lines exact:
+keep these lines exact (the `gatekeeper` skill's SKILL.md, Verifier report, is the format the
+gate reads):
 
 - Near the top, `Verifier: <family>, pass <n>`, such as `Verifier: claude, same-family,
-  pass 2` when you are the model family that wrote the diff. Give your signature as the family: what orchestrating-agents'
+  pass 2` when you are the model family that wrote the diff. Give your signature as the family: what omnigent-agents'
   `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
   (`<harness>/<model>/<effort>`, `?` for any part you can't know): `Verifier: codex/terra-6.1/med, pass 5`.
   When your brief names your tier (`mid` or `small`, loop.md's `Verifier model:` line), write it after the
@@ -254,6 +255,6 @@ keep these lines exact:
   as after a reword of commit messages only: every file you reviewed is the same, so your
   verdict, its findings and `Risk:` line included, and the owner's go hold for it.
 
-Before replying, run `uv run <this skill's folder>/scripts/approvals.py report <report path>` and fix the
+Before replying, run `uv run <gatekeeper>/scripts/approvals.py report <report path>` and fix the
 report until it exits 0: it reads the report as `verdict` does, without GitHub, so a report
 the lead can't post never costs another turn. Then reply with only the path.

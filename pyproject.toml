@@ -14,20 +14,23 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "engineering/tests"]
+testpaths = ["tests", "engineering/tests", "gatekeeper/tests", "github/tests", "loop/tests", "chief-of-staff/tests", "omnigent/tests"]
 pythonpath = ["."]
+# tools/test_map_plugin.py: a nested pytest never inherits this run's PYTEST_ADDOPTS, and a subprocess runs under its test's context
+addopts = "-p tools.test_map_plugin"
 # A test that outlives 60 s fails with every thread's traceback instead of holding the landing lock for the queue;
 # a test that needs longer carries @pytest.mark.timeout(N). QUALIFY_TIMEOUT does not cover pytest.
 timeout = 60
 timeout_method = "signal"
 markers = [
   "live_agent: tests that require a live agent runtime",
+  "slow: tests that take seconds each (a nested pytest, a real install, a heartbeat on real time): `mise run test` leaves them out, `mise run test-slow` runs them, and the release tag check runs both (#1610)",
   "needs_tool(*tools): the external tools a test runs beyond git and Python; a run selecting it stops first when PATH lacks one",
 ]
 
 # The test map (tools/affected_tests.py): the nightly runs the suite with `--cov-context=test`, so the data says which
 # test executed each line. relative_files keeps the paths the same across checkouts; patch/parallel record the scripts
-# a test runs as a subprocess (their lines carry no test, so the selector falls back to the name match for them).
+# a test runs as a subprocess, under that test's context (tools/test_map_plugin.py).
 [tool.coverage.run]
 relative_files = true
 parallel = true
@@ -37,11 +40,11 @@ patch = ["subprocess"]
 target-version = "py314"
 line-length = 100
 # Shipped scripts run on a consumer's own `python3`; macOS ships 3.9.
-per-file-target-version = { "engineering/skills/*/scripts/*.py" = "py39", "engineering/hooks/*.py" = "py39" }
+per-file-target-version = { "*/skills/*/scripts/*.py" = "py39", "engineering/hooks/*.py" = "py39" }
 
 [tool.ruff.lint.per-file-ignores]
 # A module of approvals tests imports a non-autouse fixture it takes from the harness by name (with
-# `noqa: F401`), and a test that takes it as a parameter redefines it (engineering/tests/approvals_harness.py).
-"engineering/tests/test_approvals_*.py" = ["F811"]
+# `noqa: F401`), and a test that takes it as a parameter redefines it (gatekeeper/tests/approvals_harness.py).
+"gatekeeper/tests/test_approvals_*.py" = ["F811"]
 # likewise a module that takes test_mutate.py's `repo` fixture by name
-"engineering/tests/test_mutate_*.py" = ["F811"]
+"loop/tests/test_mutate_*.py" = ["F811"]

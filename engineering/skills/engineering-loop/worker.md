@@ -30,9 +30,13 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
-2. **Gates and push.** Run `mise run test:changed` while iterating. Lint runs at commit, in the hook's `lint:` tasks on
+2. **Gates and push.** Iterate on the narrowest check that covers the change: an incremental build of the touched
+   target, then `mise run test:changed` (that module's tests), then the gate limited to one step where the project has
+   one, since a full gate can take twenty minutes to show a compile error a build shows in one. Those narrow checks are
+   the loop between heads; the gate below runs once per head you push, as the proof on a head you expect to pass, and
+   when it fails, find the cheaper check that was skipped before the next run. Lint runs at commit, in the hook's `lint:` tasks on
    the staged files, so the gate adds none. Before each push (after it on a fix round, below), where loop.md has an
-   `Affected tests:` line, run `uv run <this skill's folder>/scripts/approvals.py affected-tests` on every head, a fix
+   `Affected tests:` line, run `uv run <gatekeeper>/scripts/approvals.py affected-tests` on every head, a fix
    round's too: it runs that selection against `git merge-base origin/<base> HEAD` (the base of the branch's open PR,
    else the default branch; a shallow clone is deepened) in the variable `Gate base:` names (else `GATE_BASE`), under the
    host gate slot, in place of the full `mise run check`; without the line, or with loop.md's `Gate: full`, it runs
@@ -48,7 +52,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    under that lock, around the host's heavy wrapper (SKILL.md, One heavy gate per host slot; `affected-tests` and `local-ci` take the slot themselves, so the lock is for `mise run check` and other bare commands), since your lead may run another
    worker beside you and the host's slot counts every caller: `perl -MFcntl=:flock -e '$^F =
    1023; open(F, ">>", shift) or die "$!\n"; flock(F, LOCK_EX) or die "$!\n"; exec @ARGV'
-   <path> uv run <this skill's folder>/scripts/approvals.py heavy mise run check`, or, with an `Affected tests:` line, `<path> uv run <this skill's folder>/scripts/approvals.py affected-tests` (perl, since macOS has no `flock`).
+   <path> uv run <gatekeeper>/scripts/approvals.py heavy mise run check`, or, with an `Affected tests:` line, `<path> uv run <gatekeeper>/scripts/approvals.py affected-tests` (perl, since macOS has no `flock`).
    Once it exits 0, commit and push with `git push -u origin <branch>` as
    its own command, since a pre-tool hook may scan the whole command text. Commit and push
    after each step whose gates are green, not only at the end, so a worker killed mid-task
@@ -72,7 +76,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
    the worktree you are given, then the gate of step 2 (`affected-tests` with an `Affected tests:` line, else `mise run check`) and push the same way. A command that
    may outlast one tool call (a gate, a held lock, a queue) starts detached (verifier.md, A long or locked run is detached),
-   with its log, pid and exit code in files, and is waited on with orchestrating-agents'
+   with its log, pid and exit code in files, and is waited on with omnigent-agents'
    `scripts/omnigent_agent.py wait-for --log <log> --pid <pid>` (a PR's checks: `wait-for --pr
    <n>`), which blocks close to the tool limit and prints only the outcome, since a foreground
    call times out and Claude Code's low-memory reaper stops in-session background shells; never
@@ -99,7 +103,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    proves nothing on the head.
    A change to a web UI gets a rendered check, since passing tests say nothing about what
    the page shows: the project's own browser e2e when it has one, else `uv run
-   <this skill's folder>/scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,
+   <browsing>/scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,
    `--omnigent` to sign in to an Omnigent server; its docstring says what a sandbox needs).
    Every host with Playwright's Chromium in `~/.cache/ms-playwright` can render headless;
    hand over the PNG paths.
