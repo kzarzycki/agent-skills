@@ -276,3 +276,39 @@ def test_a_class_test_id_with_a_space_runs_as_its_method(tmp_path, monkeypatch) 
     monkeypatch.chdir(tmp_path)
     Path("t.py").write_text("class TestK:\n    def test_m(self): pass\n")
     assert a.node_files({"t.py::TestK::test_m[a b]"}) == {"t.py::TestK::test_m"}
+
+
+def suite(root, names: int, naming: int) -> None:
+    """A suite of `names` test files, the first `naming` of them naming `tool`."""
+    (root / "tests").mkdir(parents=True)
+    for n in range(names):
+        (root / "tests" / f"test_{n:02}.py").write_text(
+            "# uses tool\n" if n < naming else "# other\n"
+        )
+    (root / "tool.py").write_text("")
+
+
+def test_a_selection_of_over_half_the_test_files_runs_everything(monkeypatch, tmp_path) -> None:
+    """Waste audit, finding 2: a near-whole selection (~2,800 of ~4,000 tests) ran for 50 min where the whole suite
+    in parallel took 8; past half the files the gate runs the whole suite instead."""
+    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2 + 1)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "ALL", ["tests"])
+    monkeypatch.setattr(a, "CHEAP", [])
+    assert a.targets(["tool.py"]) == ["tests"]
+
+
+def test_a_selection_of_half_the_test_files_or_fewer_runs_only_them(monkeypatch, tmp_path) -> None:
+    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "ALL", ["tests"])
+    monkeypatch.setattr(a, "CHEAP", [])
+    assert a.targets(["tool.py"]) == [f"tests/test_{n:02}.py" for n in range(a.WHOLE_FROM // 2)]
+
+
+def test_a_small_suite_runs_its_selection_as_picked(monkeypatch, tmp_path) -> None:
+    suite(tmp_path, a.WHOLE_FROM - 1, a.WHOLE_FROM - 1)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "ALL", ["tests"])
+    monkeypatch.setattr(a, "CHEAP", [])
+    assert len(a.targets(["tool.py"])) == a.WHOLE_FROM - 1

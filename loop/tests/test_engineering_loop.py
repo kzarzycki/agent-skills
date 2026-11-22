@@ -211,3 +211,15 @@ def test_the_verifier_keeps_real_data_out_of_the_report_it_posts() -> None:
     assert "The report is posted as the PR review, so it holds no real data" in verifier
     assert "local file next to the report (under `tmp/loop/`)" in verifier
     assert "cites that file by path and says what it shows, without the values" in verifier
+
+
+def test_the_verifier_runs_tests_through_the_project_s_test_task() -> None:
+    """A bare `pytest` skips the task's parallel workers: one verifier pass took 4,895 s bare against 223 s through
+    the task (waste audit, finding 2)."""
+    verifier = " ".join((LOOP / "verifier.md").read_text().split())
+    assert "only through the project's test task" in verifier
+    assert "never a bare runner such as `pytest`" in verifier
+    assert (
+        "A selection of more than half the suite runs as the whole suite through that task"
+        in verifier
+    )
