@@ -288,6 +288,10 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
+TWIN_ROLES = (
+    "worker",
+    "verifier",
+)  # one running per PR (#1806): a lead coordinates, and runs no PR's work itself
 # A Claude worker or verifier gets only the built-in tools its role calls and no user MCP servers,
 # whose schemas and listings it would otherwise re-read every turn; Omnigent's own and plugins'
 # servers stay. A project's `Worker tools:` or `Verifier tools:` line names more, or `full`.
@@ -4620,6 +4624,15 @@ def start(
             )
         except Fail:
             label = f"#{int(about)}"
+    # one running session per PR and role (#1806): a second worker or verifier started while the first runs repeats its
+    # whole run on the same head, so the start waits until the first ends or is stopped
+    kind = Path(role).stem if role else ""
+    held = f"{slug}#{pr}" if slug else label
+    if kind in TWIN_ROLES and held and (twin := running_twin(og, held, kind)):
+        raise Fail(
+            f"PR {held} already has a running {kind}, {twin}: wait on it, or stop it with"
+            f" `reap --force {twin}`, then start again"
+        )
     # Omnigent refuses a sibling with a title an earlier child holds, archived or not, abandoned
     # here or left by an earlier run: each refusal and each abandon moves to the next <title>-r<n>.
     n = 0
@@ -5997,6 +6010,26 @@ def replaced(og: Omnigent, sid: str, info: dict) -> bool:
     )
 
 
+def running_twin(og: Omnigent, label: str, role: str) -> str:
+    """The id of a live session labelled ``PR_LABEL`` ``label`` and ``omni.role`` ``role`` whose turn is running, else
+    empty: ``start`` refuses a second one beside it (#1806). An idle kept ``--pr`` worker is no twin, since ``start --pr``
+    replaces it (``replaced``). Sessions that can't be listed are none known, so the start goes on."""
+    try:
+        page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
+    except Exception:  # noqa: BLE001 - unread: no twin known
+        return ""
+    for s in page.get("data", []):
+        labels = s.get("labels") or {}
+        if (
+            not s.get("archived")
+            and str(labels.get(PR_LABEL, "")) == label
+            and labels.get("omni.role") == role
+            and str(s.get("status")) in RUNNING
+        ):
+            return str(s.get("id"))
+    return ""
+
+
 # a line that is itself an owner question or a wait on the owner's card: the line's own words, never a quoted (``>``) or
 # bullet (``-``) line, and never a bare mention (``USER NEEDED`` takes its colon, as the others do)
 OWNER_ASK = re.compile(
@@ -6115,7 +6148,19 @@ def finish_delivered(
         return f"{name}: already archived", False
     if keep or (not named and (info.get("labels") or {}).get(KEEP_LABEL)):
         return f"{name}: kept (--keep)", False
-    if hold_pr and (label := held_by(info)) and not (force and replaced(og, sid, info)):
+    # a role session on a PR named to `reap --force`: what `start` names when it refuses a running twin (#1806)
+    twin_stop = (
+        force
+        and named
+        and str(info.get("status")) in RUNNING
+        and bool((info.get("labels") or {}).get(PR_LABEL))
+        and (info.get("labels") or {}).get("omni.role") in TWIN_ROLES
+    )
+    if (
+        hold_pr
+        and (label := held_by(info))
+        and not (force and (twin_stop or replaced(og, sid, info)))
+    ):
         found = pr_label(label)
         if found and found not in held:
             held[found] = pr_hold(*found)
@@ -6128,7 +6173,8 @@ def finish_delivered(
     # an open card is the owner's question: archiving ends its way back, --force too
     if cards := cards_of(info) or [_asks(e) for e in getattr(og, "cards", {}).get(sid) or []]:
         return f"{name}: kept (card open: {'; '.join(cards)})", False
-    if force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None:
+    stuck = force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None
+    if stuck or twin_stop:
         arm_quietly(registry, sid)
         try:
             og.interrupt(sid)
@@ -6137,7 +6183,7 @@ def finish_delivered(
             print(f"session {sid} was not finished: {e}", file=sys.stderr)
             return f"{name}: finish failed: {e}", True
         return (
-            f"{name}: archived (stuck); check git status in"
+            f"{name}: archived ({'stuck' if stuck else 'stopped'}); check git status in"
             f" {info.get('workspace') or '(workspace unknown)'}"
         ), False
     busy = (
@@ -6197,7 +6243,10 @@ def reap(
 
     ``force`` also finishes a stuck session (``stuck_minutes``): it stops the turn first, then
     archives it, and names the session's workspace, since a dead run can leave a patch applied
-    there. A running session that is not stuck stays kept, and the line says so.
+    there. A running worker or verifier on a PR (``omni.role`` and ``PR_LABEL``) named in ``sessions`` is stopped and
+    finished with ``force`` whether stuck or not, its open PR included (#1806): that is what ``start`` names when it
+    refuses a running twin. An idle one stays held by its open PR, and any other running session that is not stuck
+    stays kept, and the line says so.
 
     A ``--pr`` worker (labelled ``PR_LABEL`` ``owner/name#N``) is kept, ``force`` included, while its PR
     is open (or can't be read), since a fix round or the next verifier pass reaches it warm; it is
@@ -10083,7 +10132,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument(
         "--force",
         action="store_true",
-        help="also stop and finish a session that is running but stuck (no item past OMNIGENT_STUCK_SECONDS)",
+        help="also stop and finish a session that is running but stuck (no item past OMNIGENT_STUCK_SECONDS); a running worker or verifier on a PR named here is stopped and finished whether stuck or not, its open PR included",
     )
     p.add_argument(
         "--merged",
