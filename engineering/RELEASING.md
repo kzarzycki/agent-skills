@@ -6,7 +6,7 @@ A release is a PR that moves the entries in `changelog.d/` under a version headi
 
 ## Check the gatekeeper against real github.com, before the tag
 
-This pre-tag smoke run is a required step. The in-repo job
+This pre-tag smoke run is off: no private organization repository hosts its workflow yet, so `release-check` prints `smoke run: off (RELEASE_SMOKE_REPOSITORY unset)` and passes without it (#1855). Setting the two variables below turns it back on, and then it is a required step. The in-repo job
 `Gatekeeper on real GitHub` runs on every PR that changes the engineering-loop scripts. The one
 place a private organization repository's `github.token` shows (GraphQL `FORBIDDEN`) is the
 smoke run: run the `workflow_dispatch` workflow below in a private organization repository with
