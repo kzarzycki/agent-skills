@@ -33,8 +33,10 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
 2. **Gates and push.** Iterate on the narrowest check that covers the change: an incremental build of the touched
    target, then `mise run test:changed` (that module's tests), then the gate limited to one step where the project has
    one, since a full gate can take twenty minutes to show a compile error a build shows in one. Those narrow checks are
-   the loop between heads; the gate below runs once per head you push, as the proof on a head you expect to pass, and
-   when it fails, find the cheaper check that was skipped before the next run. Lint runs at commit, in the hook's `lint:` tasks on
+   the loop between heads; a review head gets only those narrow checks (tests and lint for what changed). The gate of
+   record runs once, on the head the verifier is satisfied with, and again on any later head, since a push voids a gate;
+   when it fails, find the cheaper check that was skipped before the next run. A gate failure now shows after the
+   verifier, so its fix needs a short re-verify of the delta. Lint runs at commit, in the hook's `lint:` tasks on
    the staged files, so the gate adds none. Before each push (after it on a fix round, below), where loop.md has an
    `Affected tests:` line, run `uv run <gatekeeper>/scripts/approvals.py affected-tests` on every head, a fix
    round's too: it runs that selection against `git merge-base origin/<base> HEAD` (the base of the branch's open PR,

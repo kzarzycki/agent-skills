@@ -135,8 +135,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    another pass. The worker gets those checks only, never a verdict, review text or the
    verifier's report, so the verifier stays independent and runs the same checks itself.
    The brief also names how the worker iterates (worker.md, Gates and push): the narrowest check that covers the
-   change first, and the gate once per head as proof, since a full gate spent finding a compile error costs minutes a
-   build would have saved.
+   change first, and no full gate on a review head: the gate of record runs once, on the head the verifier is satisfied
+   with, and again on any later head, since a full gate spent finding a compile error costs minutes a build would have
+   saved. A gate failure then shows after the verifier, so its fix needs a short re-verify of the delta.
    Unless loop.md's `Cloud worker:` line says `none`, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch (a branch it names anyway is ignored: the worker pushes to its own `claude/…` branch and reports it).
