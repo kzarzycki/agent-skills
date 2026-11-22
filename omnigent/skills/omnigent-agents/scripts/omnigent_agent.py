@@ -428,11 +428,10 @@ LEAD_UNTRACKED = (
     " what wakes you, or USER NEEDED."
 )
 UNTRACKED_WHY = "waits on what does not wake it"
-# Its wait, said right after "waiting on": a pid (``pid 4242``, a pid file) or a log or pid path;
-# a run that notifies is tracked.
+# A process in its wait, anywhere in the STILL WORKING text beside a wait word: a pid (``pid 4242``,
+# ``its pid is 4242``, a pid file) or a log, output or pid path; a run that notifies is tracked.
 UNTRACKED = re.compile(
-    r"\bwait(?:s|ing)?\s+(?:on|for)\b[^.;\n]{0,40}?"
-    r"(?:\bpids?\b\s*[:#]?\s*`?\d+|\bpid[ -]file\b|[\w./~-]+\.(?:log|pid)\b)",
+    r"\bpids?\b(?:\s+is)?\s*[:#]?\s*`?\d+|\bpid[ -]file\b|[\w./~-]+\.(?:log|out|pid)\b",
     re.IGNORECASE,
 )
 NOTIFIES = re.compile(r"--notify\b|\bLOOP_NOTIFY\b")
@@ -445,8 +444,8 @@ SUBAGENT_WAIT = re.compile(
 # PR is ready or a step is the manager's. A STILL WORKING alone leaves the lead looking busy.
 HANDBACK = re.compile(r"^[\s*_>-]*Handback:[ \t]*(.+?)[\s*_]*$", re.MULTILINE | re.IGNORECASE)
 HANDBACK_PROSE = re.compile(
-    r"#\d+\s*(?:is\s+)?READY\b|\bREADY\s+FOR\s+VERIFY\b|\b(?:is|are)\s+(?:now\s+)?yours\b"
-    r"|\bover\s+to\s+you\b"
+    r"#\d+\s*(?:is\s+)?READY\b|\bREADY\s+FOR\s+VERIFY\b"
+    r"|#\d+\b[^\n]{0,80}?\b(?:(?:is|are)\s+(?:now\s+)?yours|over\s+to\s+you)\b"
 )
 # A timed wait's time passed with no progress since: nothing else wakes an idle lead at its time.
 LEAD_WAKE = (
@@ -7507,8 +7506,8 @@ def waits_on(text: str, lead: dict, notify: str | None, event: bool = False) -> 
 
 def untracked_wait(text: str, cloud: bool = False) -> bool:
     """Whether a lead's ``STILL WORKING`` waits on something that does not wake it when it ends
-    (#1753), read from ``STILL WORKING`` on: a process the harness does not track ("waiting on" a
-    pid, a pid file or a log, naming no ``--notify`` or ``LOOP_NOTIFY``, a wrapper that tells the
+    (#1753), read from ``STILL WORKING`` on: a process the harness does not track (a wait word and
+    a pid, a pid file or a log, output or pid path anywhere in it, naming no ``--notify`` or ``LOOP_NOTIFY``, a wrapper that tells the
     session, and no child session, verifier, worker, lead or CI), or, in a ``cloud`` session, a
     subagent it started. A ``Waits:`` trailer names the wait exactly, so it decides alone."""
     if (start := text.find("STILL WORKING")) < 0 or trailer_of(text) or named_of(text):
@@ -7518,13 +7517,15 @@ def untracked_wait(text: str, cloud: bool = False) -> bool:
         return True
     if WAIT.search(text):
         return False
-    return bool(UNTRACKED.search(wait)) and not NOTIFIES.search(wait)
+    found = UNTRACKED.search(wait) and WAIT_WORD.search(wait)
+    return bool(found) and not NOTIFIES.search(wait)
 
 
 def handback_of(text: str) -> str:
     """What a lead's ``STILL WORKING`` hands back to its manager (#1753): its last ``Handback:``
     line's text, else the prose line that says a PR is ready (``#12 READY``, ``READY FOR VERIFY``)
-    or a step is the manager's (``is yours``, ``over to you``); empty when it hands nothing back."""
+    or a PR's step is the manager's (``#12 ... is yours``, ``#12 ... over to you``); empty when it hands
+    nothing back."""
     if (start := text.find("STILL WORKING")) < 0:
         return ""
     body = FENCE.sub("", text[start:])

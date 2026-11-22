@@ -34,6 +34,8 @@ def route(text: str, **event: object) -> tuple[str, str, str]:
         "STILL WORKING: waiting on tmp/loop/gate.log",
         "STILL WORKING: waiting on the build, pid 4242",
         "STILL WORKING: build started.\nWaiting on its pid file before the push.",
+        "STILL WORKING: waiting on gate; its pid is 4242",
+        "STILL WORKING: waiting on nohup build, output in build.out",
     ],
 )
 def test_a_wait_on_a_pid_or_a_log_is_nudged_once_then_escalated(text: str) -> None:
@@ -78,7 +80,10 @@ def test_a_background_subagent_is_an_untracked_wait_only_in_a_cloud_session() ->
             "STILL WORKING: READY FOR VERIFY #1755 abc1234",
             "STILL WORKING: READY FOR VERIFY #1755 abc1234",
         ),
-        ("STILL WORKING: the land is over to you", "STILL WORKING: the land is over to you"),
+        (
+            "STILL WORKING: #1755: the land is over to you",
+            "STILL WORKING: #1755: the land is over to you",
+        ),
     ],
 )
 def test_a_hand_back_inside_still_working_goes_to_the_manager(text: str, what: str) -> None:
@@ -91,6 +96,8 @@ def test_a_hand_back_inside_still_working_goes_to_the_manager(text: str, what: s
     [
         "STILL WORKING: waiting on CI for #12",
         "STILL WORKING: the lead reads its own report; ready soon",
+        "STILL WORKING: waiting on the gate; the choice is yours",
+        "STILL WORKING: hand it over to you once CI is in",
         "DONE: #12 READY",
     ],
 )
