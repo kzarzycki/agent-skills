@@ -4051,6 +4051,13 @@ class Unverified(Fail):
     """A host's file that a cloud start depends on can't be read, so its content is unknown."""
 
 
+def _causes(e: BaseException) -> Iterator[BaseException]:
+    """``e`` and the exceptions it was raised from, nearest first."""
+    while e is not None:
+        yield e
+        e = e.__cause__  # type: ignore[assignment]
+
+
 def far_json(og: Omnigent, host_id: str, path: str, what: str, bad: type[Fail] = Fail) -> dict:
     """The JSON object in ``path`` on host ``host_id``, read through a live session there
     (``read_on_host``); ``Unverified`` when it can't be read, ``bad`` when it is not JSON."""
@@ -4086,12 +4093,20 @@ def far_trusted(og: Omnigent, host_id: str, row: dict, workspace: Path) -> bool 
     """Whether Claude Code on host ``host_id`` trusts ``workspace``, by ``folder_trusted``'s rule
     (its own entry in the host's ``~/.claude.json``, or the main worktree's, named by the ``gitdir:``
     line of a linked worktree's ``.git`` file). None, not checked, when the home folder can't be
-    found through the host row or a listing; ``Unverified`` when the config can't be read."""
+    found through the host row or a listing, or when the config is over the file route's 64 KiB (a
+    warning); ``Unverified`` when the config can't be read."""
     if not (home := far_home(og, host_id, row, workspace)):
         return None
-    projects = far_json(og, host_id, f"{home}/.claude.json", "folder trust check", Unverified).get(
-        "projects"
-    )
+    try:
+        config = far_json(og, host_id, f"{home}/.claude.json", "folder trust check", Unverified)
+    except Unverified as e:
+        # the host file route refuses a read over 64 KiB with a 413 and takes no range, and a
+        # long-lived bridge's config grows past that (#1870): warn, not checked, instead of refusing
+        if not any(isinstance(c, HTTPError) and c.code == 413 for c in _causes(e)):
+            raise
+        print(f"warning: {e}; folder trust not checked", file=sys.stderr)
+        return None
+    projects = config.get("projects")
     places = {str(workspace)}
     if (root := far_checkout_root(og, host_id, str(workspace), "folder trust check")) is not None:
         places.add(str(root))
