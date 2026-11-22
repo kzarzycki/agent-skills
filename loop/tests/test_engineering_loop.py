@@ -243,7 +243,7 @@ def test_the_verifier_runs_tests_through_the_project_s_test_task() -> None:
     verifier = " ".join((LOOP / "verifier.md").read_text().split())
     assert "only through the project's test task" in verifier
     assert "never a bare runner such as `pytest`" in verifier
+    assert "never the whole suite: never widen that selection into a whole-suite run" in verifier
     assert (
-        "never the whole suite: never widen that selection into a whole-suite run" in verifier
-    )
-    assert "A selection of more than half the suite runs as the whole suite" not in verifier  # #1872
+        "A selection of more than half the suite runs as the whole suite" not in verifier
+    )  # #1872
