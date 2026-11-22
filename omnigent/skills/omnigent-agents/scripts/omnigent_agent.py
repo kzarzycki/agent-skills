@@ -642,7 +642,11 @@ HEAD_SECONDS = 300.0
 # this often, and is stopped past STALLED_TIMEOUT, so a hung GitHub read never holds the next one off.
 STALLED_SECONDS = 3600.0
 STALLED_TIMEOUT = 900.0
-STALLED_LINE = re.compile(r"PR #(\d+) has its go and a satisfied verdict at ([0-9a-f]{40}) and .+")
+# a landable PR its queue never took, or a verified one idle on a go or record it lacks (`... missing: go`)
+STALLED_LINE = re.compile(
+    r"PR #(\d+) has (?:its go and a satisfied verdict|a satisfied verdict|its pass \d+ verdict, at the cap,)"
+    r" at ([0-9a-f]{40}) .+"
+)
 UNJUDGED_LINE = re.compile(r"PR #(\d+) into \S+ is not judged here: (.+)")
 SKIPPED_LINE = re.compile(r"(\d+) of (\d+) open PRs not judged here")
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
@@ -8654,8 +8658,13 @@ def supervise_registry(
             }
             for number, (head, line) in listed.items():
                 if before.get(number) != head:
+                    step = (
+                        "ask its approver for what it is missing"
+                        if ": missing: " in line
+                        else f"land it (`land {number} --only`) or flag it"
+                    )
                     say(
-                        f"{repo}: {line}: land it (`land {number} --only`) or flag it",
+                        f"{repo}: {line}: {step}",
                         sid,
                         f"stalled:{repo}#{number}:{head}",
                         "stalled",

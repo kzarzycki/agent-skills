@@ -10,7 +10,7 @@
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run --python '>=3.11' scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
     uv run scripts/approvals.py check ready <pr>                # the author's step before the verifier: the PR body's `## Evidence` (and demo form) alone, the check merge runs; exit 0 or 1
-    uv run scripts/approvals.py check stalled              # every open PR land would take that its queue does not hold: one line each, exit 1; one not judged here: its line, which changes no exit
+    uv run scripts/approvals.py check stalled              # every open PR land would take that its queue does not hold, or verified and idle past loop.stalled_after_hours with no go or record: one line each, exit 1; one not judged here: its line, which changes no exit
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
@@ -912,6 +912,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "head_proof": Table(status=str, env=list),
         "delegate": Choice(("all", "feature")),
         "pack_staleness": Choice(("warn", "refuse")),
+        "stalled_after_hours": int,
     },
     "mutate": {"inconclusive_exit": int},
     "spec": {"auto": SPEC_KINDS},
@@ -7484,6 +7485,9 @@ def stalled() -> int:
     a satisfied verdict) and that its base's queue does not hold: under `land.queue: mergify` not queued at its head
     (QUEUED and a `land` success there, queued_here); where the base's rules require GitHub's merge queue, not in it;
     on a base `land` merges itself, still open, so not landed. A `land` that was stopped, died or never ran left it.
+    Also each one `land` refuses whose newest pass on its head is satisfied (or at the cap) but that lacks the go or
+    the gate record it needs and has waited past `loop.stalled_after_hours` with no go, record or new head
+    (idle_stall), its line naming what is missing: a hand-back that lived only in a session's prose left it.
     One line each, and exit 1 when any is listed, so a sweep can land it (`land <n> --only`) or flag it; judged as
     `land` judges (by the base's policy, read from `origin/<base>`, and only where the gatekeeper code running here is
     the base's: judge_with_base without its policy-file check, since a checkout's own edit of those files is never
@@ -7520,7 +7524,14 @@ def stalled() -> int:
             continue
         seen += 1
         head = pull["headRefOid"]
-        if judged.exit is not None or pull["state"] != "OPEN":
+        if pull["state"] != "OPEN":
+            continue
+        if judged.exit is not None:
+            with policy_from(base), contextlib.redirect_stdout(io.StringIO()):
+                idle = idle_stall(pull, loop)
+            if idle:
+                found = True
+                lines.append(idle)
             continue
         if held_by == MERGIFY:
             if QUEUED in names(pull) and queued_here(head):
@@ -7539,6 +7550,45 @@ def stalled() -> int:
     for line in lines:
         print(line)
     return 1 if found else 0
+
+
+# `check stalled`'s default for `loop.stalled_after_hours`: how long a PR may hold a satisfied verdict on its head with
+# no go, no gate record and no new head before it is listed as waiting on what it lacks
+STALLED_HOURS = 4
+
+
+def idle_stall(pull: dict[str, Any], loop: str | None) -> str | None:
+    """`check stalled`'s line for a PR `landable` refuses that waits only on a person or a record: its newest verifier
+    pass on the head (passes) is satisfied with no blocker or major (held), or is at the cap or past it (cap), and it
+    still lacks the go its rating asks (owner_waits) or the gate record `loop.head_proof` asks on the head (proved), while its
+    head was pushed more than `loop.stalled_after_hours` (default STALLED_HOURS) ago (head_pushed), so no go, record
+    or push came in that time. None for any other PR: one refused for something else is not stalled on a hand-back."""
+    head = pull["headRefOid"]
+    found = passes(pull)
+    if isinstance(found, str):
+        return None
+    on_head = [(number, lines) for commit, number, lines in found if commit == head.lower()]
+    if not on_head:
+        return None
+    last = max(number for number, _ in on_head)
+    satisfied = all(held(lines) for number, lines in on_head if number == last)
+    if not satisfied and last < cap(loop):
+        return None
+    missing = ["go"] if owner_waits(pull, rated_issues(pull), loop) else []
+    if (proof := head_proof(loop)) and not proved(head, proof["status"]):
+        missing.append("record")  # the head's gate record `land` reads (proof_gaps), not a batch's
+    pushed = head_pushed(pull)
+    if not missing or not pushed:
+        return None
+    waited = datetime.now(timezone.utc) - datetime.fromisoformat(pushed.replace("Z", "+00:00"))
+    hours = waited.total_seconds() / 3600
+    if hours <= settings(loop).get("stalled_after_hours", STALLED_HOURS):
+        return None
+    verdict = "a satisfied verdict" if satisfied else f"its pass {last} verdict, at the cap,"
+    return (
+        f"PR #{pull['number']} has {verdict} at {head} and no go, gate record or new head for {hours:.0f}h:"
+        f" missing: {', '.join(missing)}"
+    )
 
 
 def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | str:

@@ -744,7 +744,8 @@ For the same repos it also runs `check stalled`, the landing checks' listing (fr
 skill, so it judges by the base's code), at most once an hour per repo (`STALLED_SECONDS`), in the first of their leads' workspaces that is
 a checkout on this host, detached so the poll goes on, and stopped past 15 minutes (`STALLED_TIMEOUT`). Each PR it
 lists (an approved, verified PR no `land` took) is said once per head, `<owner>/<name>: PR #N has its go and a
-satisfied verdict at <sha> and is not landed: land it (`land N --only`) or flag it`, a `stalled` event on that lead;
+satisfied verdict at <sha> and is not landed: land it (`land N --only`) or flag it`, or for a verified PR idle on a go or
+record it lacks, its line (`... missing: go`) and `: ask its approver for what it is missing`, a `stalled` event on that lead;
 the repo's last listing is kept (`stalled` in the state with `--console`), so the next hour's sweep says nothing new
 for it, and a PR is said again only once its head moved or it left the listing and came back; a PR a sweep could not
 judge keeps what was listed for it. A PR the sweep could not judge, a failed sweep and a lead on another host are logged,

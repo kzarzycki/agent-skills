@@ -9,11 +9,14 @@ fixtures of test_approvals_github_queue.py.
 from __future__ import annotations
 
 import subprocess
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from approvals_harness import approvals, git_in, lands  # noqa: F401
+from test_approvals import add
 from test_approvals_github_queue import queue  # noqa: F401
+from test_approvals_mergify_handover import go, risky
 
 
 @pytest.fixture
@@ -169,3 +172,67 @@ def test_a_base_whose_policy_is_refused_skips_its_prs_alone(
             "1 of 2 open PRs not judged here",
         ],
     )
+
+
+def idle_for(monkeypatch: pytest.MonkeyPatch, hours: float) -> None:
+    """Every PR's head was pushed `hours` ago."""
+    at = datetime.now(UTC) - timedelta(hours=hours)
+    monkeypatch.setattr(approvals, "head_pushed", lambda _pull: at.strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+
+def test_a_verified_pr_waiting_on_its_go_past_the_idle_hours_is_listed_with_what_it_misses(
+    direct: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A satisfied verdict and no go, in a repo without Mergify: listed once idle past the default hours, naming the
+    go; inside them, not listed; once the go is on its head, it is a landable PR (`is not landed`) instead."""
+    head = risky(direct, 7)
+    idle_for(monkeypatch, 13)
+    code, lines = stalled(capsys)
+    assert (code, lines) == (
+        1,
+        [
+            (
+                f"PR #7 has a satisfied verdict at {head} and no go, gate record or new head for 13h:"
+                " missing: go"
+            )
+        ],
+    )
+    idle_for(monkeypatch, approvals.STALLED_HOURS - 1)
+    assert stalled(capsys) == (0, [])
+    assert go(7, head) == 0
+    assert stalled(capsys) == (
+        1,
+        [f"PR #7 has its go and a satisfied verdict at {head} and is not landed"],
+    )
+
+
+def test_the_idle_hours_are_the_policy_s_and_an_unsatisfied_verdict_is_not_listed(
+    direct: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    risky(direct, 7)
+    unverified = risky(direct, 8, reviews=())
+    idle_for(monkeypatch, 13)
+    loop = direct["work"] / "docs" / "agents" / "loop.md"
+    loop.write_text(add(loop.read_text(), "loop", "stalled_after_hours: 24\n"))
+    assert stalled(capsys) == (0, [])
+    idle_for(monkeypatch, 25)
+    code, lines = stalled(capsys)
+    assert code == 1 and [line.split(" at ")[0] for line in lines] == [
+        "PR #7 has a satisfied verdict"
+    ]
+    assert unverified not in "".join(lines)
+
+
+def test_a_verified_pr_with_no_gate_record_on_its_head_is_listed_missing_the_record(
+    direct: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`loop.head_proof` asks a gate record on the head before `land` takes it: none came, so it waits on that."""
+    head = direct["opened"](7)
+    loop = direct["work"] / "docs" / "agents" / "loop.md"
+    loop.write_text(add(loop.read_text(), "loop", "head_proof:\n  status: gate/head\n  env: []\n"))
+    idle_for(monkeypatch, 13)
+    code, lines = stalled(capsys)
+    assert code == 1
+    assert lines == [
+        f"PR #7 has a satisfied verdict at {head} and no go, gate record or new head for 13h: missing: record"
+    ]

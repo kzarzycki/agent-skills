@@ -251,3 +251,18 @@ def test_a_sweep_without_the_installed_check_does_not_start(
     monkeypatch.setattr(omnigent_agent, "installed", lambda skill: None)
     with pytest.raises(omnigent_agent.Fail, match="not installed"):
         omnigent_agent.Sweep(".")
+
+
+def test_a_verified_pr_idle_on_its_go_is_said_once_with_what_it_misses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The listing's hand-back line (#1746): said once per head, its step to ask for what it lacks; the hours it
+    names grow each sweep, which is no news."""
+    og, registry = lead(tmp_path, monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "STALLED_SECONDS", 0)
+    idle = "PR #5 has a satisfied verdict at {} and no go, gate record or new head for {}h: missing: go"
+    Sweeps(monkeypatch, (1, idle.format(A, 13) + "\n"), (1, idle.format(A, 14) + "\n"))
+    base.supervised(og, registry, monkeypatch, 3, notify="cos")
+    assert told(og) == [
+        f"Supervisor: o/r: {idle.format(A, 13)}: ask its approver for what it is missing"
+    ]
