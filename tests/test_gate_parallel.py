@@ -19,10 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 PARALLEL = ["-p", "tools.gate_workers", "-n", "auto", "--dist", "loadfile"]
 
 
-def pytest_words(tmp_path: Path, env: dict[str, str]) -> list[str]:
+def pytest_words(tmp_path: Path, env: dict[str, str], task: str = "test") -> list[str]:
     """The words `mise run test` passes on to pytest, from its run string under `sh -c` with a fake `uv` that records
     each call and succeeds, so the lock wrapper, pytest and ruff never run."""
-    run = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]["test"]["run"]
+    run = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"][task]["run"]
     calls = tmp_path / "calls"
     fake = tmp_path / "bin"
     fake.mkdir()
@@ -51,8 +51,10 @@ def test_the_test_task_runs_pytest_on_xdist_a_file_per_worker_by_default(
     assert pytest_words(tmp_path, env) == [*DEFAULT, *PARALLEL]
 
 
-def test_gate_test_parallel_0_runs_pytest_serially(tmp_path: Path) -> None:
-    assert pytest_words(tmp_path, {"GATE_TEST_PARALLEL": "0"}) == DEFAULT
+@pytest.mark.parametrize("task", ["test", "test-slow"])
+def test_gate_test_parallel_0_runs_pytest_serially(tmp_path: Path, task: str) -> None:
+    words = pytest_words(tmp_path, {"GATE_TEST_PARALLEL": "0"}, task)
+    assert words[-2:] == ["-n", "0"] and "auto" not in words
 
 
 def test_test_and_test_slow_together_select_the_whole_non_live_suite() -> None:
@@ -77,6 +79,16 @@ def test_the_nightly_test_map_run_stays_serial() -> None:
     jobs = [s for job in steps["jobs"].values() for s in job["steps"]]
     mapped = [s for s in jobs if "--cov-context=test" in s.get("env", {}).get("PYTEST_ADDOPTS", "")]
     assert mapped and all(s["env"]["GATE_TEST_PARALLEL"] == "0" for s in mapped)
+    # pyproject's addopts runs every pytest in parallel, so the serial run says `-n 0` itself
+    assert all(" -n 0 " in f" {s['env']['PYTEST_ADDOPTS']} " for s in mapped)
+
+
+def test_a_bare_pytest_is_parallel_by_default() -> None:
+    """A run with no mise task, as an agent types it, costs what `mise run test` does (#1610): `-n auto` is in addopts."""
+    addopts = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"][
+        "addopts"
+    ]
+    assert "-n auto" in addopts and "--dist loadfile" in addopts and "tools.gate_workers" in addopts
 
 
 def test_free_cores_are_the_cores_less_the_load(monkeypatch: pytest.MonkeyPatch) -> None:
