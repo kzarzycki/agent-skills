@@ -1,0 +1,63 @@
+# Posts the `land` status a cloud `land` could not write (#1816). Under `land.queue: mergify`, `land` hands a PR to
+# Mergify with the `land` success on its head and the `loop:queued` label (`.mergify.yml` reads both). A cloud session's
+# GitHub proxy refuses `POST statuses/<sha>` while it passes comments and labels, so there `land` adds the label and
+# comments a `Queued for Mergify` record naming the head (gatekeeper.py's handed_by_record). This job turns that record
+# into the status, on the sha it names, only when all hold:
+# - the comment is on a PR and its first line is exactly `Queued for Mergify`;
+# - its author can write to the repo (a comment is anyone's to post on a public repo);
+# - its `Head:` line is a full sha that is still the PR's head, so a push since leaves the PR out of the queue;
+# - the PR carries `loop:queued`, so an evicted PR (label off) is never put back.
+# It runs the base's copy of this file, checks nothing out and runs no PR code.
+name: land status
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  statuses: write
+  pull-requests: read
+
+concurrency:
+  group: land-status-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  post:
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, 'Queued for Mergify')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post `land` on the head the record names
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          AUTHOR: ${{ github.event.comment.user.login }}
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          first=$(printf '%s\n' "$BODY" | head -n 1 | tr -d '\r')
+          if [ "$first" != "Queued for Mergify" ]; then
+            echo "not a hand-over record: its first line is '$first'"; exit 0
+          fi
+          permission=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission)
+          case "$permission" in
+            admin|maintain|write) ;;
+            *) echo "$AUTHOR can't write to $REPO ($permission): no status"; exit 0 ;;
+          esac
+          head=$(printf '%s\n' "$BODY" | tr -d '\r' | sed -n 's/^Head: \([0-9a-f]\{40\}\)$/\1/p' | head -n 1)
+          if [ -z "$head" ]; then
+            echo "the record names no full head sha: no status"; exit 0
+          fi
+          current=$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)
+          queued=$(gh api "repos/$REPO/pulls/$PR" --jq '[.labels[].name] | index("loop:queued") != null')
+          if [ "$current" != "$head" ]; then
+            echo "PR #$PR's head is $current, not $head: no status"; exit 0
+          fi
+          if [ "$queued" != "true" ]; then
+            echo "PR #$PR lacks loop:queued: no status"; exit 0
+          fi
+          gh api -X POST "repos/$REPO/statuses/$head" -f state=success -f context=land \
+            -f "description=Queued for Mergify at $head" --silent
+          echo "posted land on $head for PR #$PR"

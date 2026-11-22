@@ -5,6 +5,13 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.2 - 2026-11-22
+
+- engineering-loop: verifier.md and worker.md wait on a long run with one wake, one harness-tracked background `wait-for --budget <the run's expected length>`, never a short `wait-for`, `until grep` or `sleep` loop, since each return re-reads the whole context (#1790).
+- engineering-loop: verifier.md runs the suite, or more than a few test files, only through the project's test task, never a bare `pytest`, and a selection of over half the suite as the whole suite (#1798).
+- engineering-loop: lead.md says the lead runs no test suite: the worker's gate and the verifier's runs are the runs of record (#1806).
+- engineering-loop: the verifier reads the gatekeeper's record of a command on the head's tree (`gate-record`) instead of running the same tests again, and runs only what has no record. A worker's log or report never stands in for it; mutation and repro probes stay the verifier's own runs (#1822).
+
 ## 0.1.1 - 2026-11-22
 
 - loop: `brief` prints the findings the previous verifier pass posted, read from the PR, so a cloud verifier needs no host report file (#1591).

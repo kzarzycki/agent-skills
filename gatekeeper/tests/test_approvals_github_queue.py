@@ -428,6 +428,7 @@ def test_required_checks_reports_the_merge_queue_and_its_method(
     found = approvals.required_checks("main")
     assert (found, found.queue) == ({"qualify", "lint"}, "SQUASH")
     answers["rules"] = "qualify\n"
+    approvals.github.forget()  # a new run: one run keeps the rules it read (#1771)
     assert approvals.required_checks("main").queue is None
 
 
