@@ -936,6 +936,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         batch_wait_seconds=int,
         gate_on=Choice(("host", "cloud")),
         cloud_gate_timeout_seconds=int,
+        host_gate=bool,
         queue=Choice(("mergify",)),
         together=("signed_squash_to", "allowed_signers"),
         optional=(
@@ -948,6 +949,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "batch_wait_seconds",
             "gate_on",
             "cloud_gate_timeout_seconds",
+            "host_gate",
             "queue",
         ),
     ),
@@ -7504,6 +7506,7 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
     if cloud_gate(commit, tree):
         return tree, ""
+    no_host_gate(commit, tree)
     for again in (False, True):
         with log.open("w") as out, saying(f"Tree {tree}: gating, log {public(str(log))}"):
             done = run_steps(
@@ -7574,7 +7577,7 @@ def cloud_gate(commit: str, tree: str) -> bool:
     `local-ci --record` failed): the tree is red at once, one printed line, and gate_batch runs nothing on the host,
     since a red suite stays red. A refused start, a session that is gone, a turn that ended with no record and no
     red line (a `machine_exit` fault is not red), or no record in time is one printed line, and the gate then runs on
-    this host as it does without the setting."""
+    this host as it does without the setting, unless `land: host_gate: false`, where no_host_gate refuses the tree."""
     land = settings(project()[1]).get("land", {})
     if land.get("gate_on", "host") != "cloud":
         return False
@@ -7598,8 +7601,30 @@ def cloud_gate(commit: str, tree: str) -> bool:
         print(f"Tree {tree}: {why}: red without a host run")
         return True
     if why:
-        print(f"Tree {tree}: no cloud gate ({why}): gating on this host")
+        then = (
+            "gating on this host"
+            if land.get("host_gate", True)
+            else "`host_gate: false`, no host gate"
+        )
+        print(f"Tree {tree}: no cloud gate ({why}): {then}")
     return False
+
+
+def no_host_gate(commit: str, tree: str) -> None:
+    """With the policy's `land: host_gate: false`, refuse before any gate step would run on this host: every step of
+    the tree, a `where: host` one too, needs a recorded pass (step_pass), from the cloud gate or another clone's
+    `local-ci --record`, since a host that only orchestrates must not start a full gate. Without the key, nothing."""
+    if settings(project()[1]).get("land", {}).get("host_gate", True):
+        return
+    missing = [
+        step["name"] for step in gate_plan() if not step_pass(commit, tree, step, show=False)
+    ]
+    if missing:
+        raise Refused(
+            f"no cloud record for tree {tree}: land's `host_gate: false` runs no gate on this host"
+            f" ({', '.join(f'`{name}`' for name in missing)} has no pass on it); record it with"
+            " `local-ci --record` on a head with this tree elsewhere, then land again"
+        )
 
 
 def wait_records(
@@ -8495,7 +8520,8 @@ def merges(
             try:
                 if gate_batch(work, [])[1]:
                     publish(tip, landed_pass(tip, actual))
-            except MachineFault as exc:  # the PRs landed: each still gets its comment
+            # the PRs landed: each still gets its comment, also when `host_gate: false` refuses the tip's tree
+            except (MachineFault, Refused) as exc:
                 print(exc)
     # after every publication above, which pushes the landed tree's record again when it is the heads' tree
     drop_records([pull["headRefOid"] for pull, *_ in done])
