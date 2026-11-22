@@ -312,3 +312,23 @@ def test_a_small_suite_runs_its_selection_as_picked(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(a, "ALL", ["tests"])
     monkeypatch.setattr(a, "CHEAP", [])
     assert len(a.targets(["tool.py"])) == a.WHOLE_FROM - 1
+
+
+def test_the_over_half_count_leaves_out_the_cheap_checks_and_e2e_and_folds_node_ids(
+    monkeypatch, tmp_path
+) -> None:
+    """The rule counts the suite's own test files: a node id counts as its file, and the always-run cheap checks and
+    `/e2e/` files, which the gate never selects by name, count for nothing."""
+    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2)  # exactly half: no fallback on its own
+    (tmp_path / "tests" / "test_skill_x.py").write_text("# uses tool\n")
+    (tmp_path / "tests" / "e2e").mkdir()
+    (tmp_path / "tests" / "e2e" / "test_live.py").write_text("# uses tool\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "ALL", ["tests"])
+    monkeypatch.setattr(a, "CHEAP", ["tests/test_skill_x.py"])
+    # map node ids of an already-picked file fold into it
+    monkeypatch.setattr(
+        a, "node_files", lambda ran: {"tests/test_00.py::test_one", "tests/test_00.py::test_two"}
+    )
+    picked = a.targets(["tool.py"])
+    assert picked != ["tests"] and "tests/e2e/test_live.py" not in picked
