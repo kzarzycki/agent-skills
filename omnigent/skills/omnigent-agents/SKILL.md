@@ -552,6 +552,14 @@ to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
 answers a question, even with `--answer`. A plain
 `relay` sent as a message, every `broadcast` message and every `send` follow-up open with `[relayed by <the relaying session>]`.
 
+To a lead (`omni.role=lead`), `relay` and `send` print a warning on stderr, and still deliver, when the
+message names an issue (`#N`, `owner/name#N` or its URL, in the lead's own repository) outside the
+lead's request: the issues its brief names, their epic, their sub-issues and the epic's other
+sub-issues. A lead takes one request or epic, so an unrelated item belongs to a fresh lead. A PR
+number, another repository's issue and a GitHub read that fails say nothing, since a false warning
+costs more than a missed one; it costs one GraphQL call, made only when the message names a number
+the brief does not.
+
 **Checking an owner's words.** `python3 scripts/omnigent_agent.py owner-said <session>
 <quote or quote-file>` pages through the session's whole history for the newest message holding the
 quote (whitespace collapsed) that the owner typed: `role: user` with a `created_by`, not
