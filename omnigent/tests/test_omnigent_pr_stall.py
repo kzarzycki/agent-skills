@@ -149,7 +149,7 @@ def stalls(monkeypatch, prs, cards=None, memo=None) -> dict[int, str]:
         ({"mergeable": False, "mergeable_state": "dirty"}, "a conflict with main"),
         (  # a satisfied verdict over an hour old with no go: finding 7 of the waste audit
             {"timeline_extra": [verdict(12, "yes", 90 * 60)]},
-            "a verdict without a go (SATISFIED: yes, 90m old)",
+            "a verdict without a go (SATISFIED: yes, ",  # its age is read when the test runs, after collection
         ),
         (
             {"timeline_extra": [verdict(12, "no", 90 * 60)]},
