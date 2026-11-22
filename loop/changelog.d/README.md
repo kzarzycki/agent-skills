@@ -6,6 +6,8 @@ the same issue extends that file. Separate files keep two PRs' entries from conf
 when either merges `main` in, while two edits to the same entry still conflict (#244).
 
 A release moves every entry here, in issue order, under its version heading in
-`CHANGELOG.md`, after any still under `## Unreleased`, and deletes the files.
+`CHANGELOG.md`, after any still under `## Unreleased`, and deletes the files. One run of the
+Release workflow (`gh workflow run release.yml`) does that for every package with entries, in
+one PR, and tags each package on the merge commit.
 
-The release's other steps, the pre-tag smoke run and `release-check`, are in [../../engineering/RELEASING.md](../../engineering/RELEASING.md).
+How the release runs, its pre-tag smoke run and `release-check` included, is in [../../engineering/RELEASING.md](../../engineering/RELEASING.md).
