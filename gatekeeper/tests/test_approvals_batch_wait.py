@@ -72,7 +72,7 @@ def batch_line(lands: dict[str, Any], number: int) -> str:
     return next(line for line in body.splitlines() if line.startswith("Batch:"))
 
 
-def test_a_pr_whose_checks_turn_green_during_the_wait_joins_the_one_gate(
+def test_a_pr_whose_checks_turn_green_during_the_wait_joins_the_batch(
     lands: dict[str, Any], clock: Clock
 ) -> None:
     policy(lands, "land:\n  batch_wait_seconds: 600")
@@ -82,7 +82,7 @@ def test_a_pr_whose_checks_turn_green_during_the_wait_joins_the_one_gate(
     clock.tick = lambda now: check(lands, 8, "SUCCESS") if now >= 300 else None
     code, lines = lands["land"]()
     assert code == 0, lines
-    assert lands["merged"]() == ["7", "8"] and lands["runs"]() == 1
+    assert lands["merged"]() == ["7", "8"] and lands["runs"]() == 0
     assert sum(clock.slept) == 300
     assert any("waits up to 600 s" in line and "#8" in line for line in lines), lines
     assert any("PR #8 turned landable" in line for line in lines), lines
@@ -100,7 +100,7 @@ def test_the_wait_ends_at_the_deadline_and_the_pr_that_is_still_pending_stays_ou
     lands["open"](8, {"8.txt": "8\n"})
     check(lands, 8, "PENDING")
     code, _ = lands["land"]()
-    assert (code, lands["merged"](), lands["runs"]()) == (approvals.WAITING, ["7"], 1)
+    assert (code, lands["merged"](), lands["runs"]()) == (approvals.WAITING, ["7"], 0)
     assert sum(clock.slept) == 100
     assert batch_line(lands, 7) == "Batch: #7 (waited 100 s, joined: none)"
 
@@ -117,7 +117,7 @@ def test_a_pr_that_turns_red_during_the_wait_ends_it(lands: dict[str, Any], cloc
 
 
 @pytest.mark.parametrize("other", ["red", "owner", "owner and pending", "gap"])
-def test_no_pr_held_by_its_checks_alone_gates_at_once(
+def test_no_pr_held_by_its_checks_alone_lands_at_once(
     lands: dict[str, Any], clock: Clock, other: str
 ) -> None:
     """A red check, an owner wait (with or without pending checks behind it) and a proof gap are no wait."""
@@ -133,10 +133,10 @@ def test_no_pr_held_by_its_checks_alone_gates_at_once(
     if other == "owner and pending":
         check(lands, 8, "PENDING")
     _, _ = lands["land"]()
-    assert (lands["merged"](), lands["runs"](), clock.slept) == (["7"], 1, [])
+    assert (lands["merged"](), lands["runs"](), clock.slept) == (["7"], 0, [])
 
 
-def test_a_lone_pr_gates_at_once(lands: dict[str, Any], clock: Clock) -> None:
+def test_a_lone_pr_lands_at_once(lands: dict[str, Any], clock: Clock) -> None:
     policy(lands, "land:\n  batch_wait_seconds: 600")
     lands["open"](7, {"7.txt": "7\n"})
     assert lands["land"]()[0] == 0
@@ -283,7 +283,7 @@ def test_a_pr_whose_required_check_never_comes_holds_no_lock(
     assert (code, lands["merged"](), lands["runs"](), clock.slept) == (
         approvals.WAITING,
         ["7"],
-        1,
+        0,
         [],
     )
 
@@ -346,7 +346,7 @@ def test_a_land_with_no_working_tree_names_the_wait_in_its_landed_comment(
     monkeypatch.setattr(approvals, "policy_ref", lambda _top: "refs/remotes/origin/main")
     monkeypatch.setattr(approvals, "toplevel", lambda: None)
     monkeypatch.setattr(approvals, "git", lambda *_a: "b" * 40)
-    monkeypatch.setattr(approvals, "merged_trees", lambda *_a: [(pull, "t", "t", "pass")])
-    monkeypatch.setattr(approvals, "merges", lambda *a: seen.append(a[6]))
+    monkeypatch.setattr(approvals, "merged_trees", lambda *_a: [(pull, "t")])
+    monkeypatch.setattr(approvals, "merges", lambda *a: seen.append(a[5]))
     approvals.local_queue([pull], "main", None, None, {"check"})
     assert seen == [" (waited 60 s, joined: none)"]

@@ -14,14 +14,14 @@ PULL = {"number": 7, "headRefOid": "a" * 40}
 
 
 @pytest.mark.parametrize("working_tree", [True, False])
-def test_a_lock_the_heartbeat_lost_mid_gate_refuses_with_no_merge(
+def test_a_lock_the_heartbeat_lost_mid_batch_refuses_with_no_merge(
     working_tree: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     held = ["ours"]
 
-    def gate(*_a: Any) -> list[tuple[dict[str, Any], str, str, str]]:
+    def gate(*_a: Any) -> list[tuple[dict[str, Any], str]]:
         held.clear()  # what heartbeat() does when another land's tip holds the lock
-        return [(PULL, "t" * 40, "t" * 40, "run")]
+        return [(PULL, "t" * 40)]
 
     merged: list[Any] = []
     monkeypatch.setattr(approvals, "candidates_of", lambda named, *_a: (named, {}, {}))
@@ -51,7 +51,7 @@ def test_a_lock_the_heartbeat_lost_during_the_merges_stops_the_next_merge(
         pytest.skip("a signed squash posts no status before its push")
     held = ["ours"]
     pulls = [{"number": n, "headRefOid": str(n) * 40} for n in (7, 8)]
-    landed = [(pull, "t", "t", "run") for pull in pulls]
+    landed = [(pull, "t") for pull in pulls]
     merged: list[int] = []
 
     def step(name: str) -> Any:
@@ -71,15 +71,14 @@ def test_a_lock_the_heartbeat_lost_during_the_merges_stops_the_next_merge(
         held.clear()
     monkeypatch.setattr(approvals, "signed", lambda loop: ("key", "keys") if signed else None)
     monkeypatch.setattr(approvals, "signed_squash", merge)
-    monkeypatch.setattr(approvals, "gate", lambda: ("gate",))
     monkeypatch.setattr(approvals, "git", lambda *a: "nonce n" if a[0] == "log" else "t")
     monkeypatch.setattr(approvals, "port", lambda name: SimpleNamespace(merge=merge))
     monkeypatch.setattr(approvals, "pull_status", lambda number: {"state": "MERGED"})
     monkeypatch.setattr(approvals, "merge_method", lambda *a: "squash")
-    stubbed = ("post_status", "publish", "landed_pass", "drop_records", "comment")
+    stubbed = ("post_status", "drop_records", "comment")
     for name in (*stubbed, "archive_workers", "land_ended"):
         monkeypatch.setattr(approvals, name, step(name))
     failed: set[int] = set()
-    approvals.merges(landed, "main", "t", None, None, failed, "", held)
+    approvals.merges(landed, "main", "t", None, failed, "", held)
     assert merged == ([7] if lost_at == "merged" else [])
     assert failed == {7, 8} - set(merged)

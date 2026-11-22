@@ -146,21 +146,6 @@ def test_land_wait_beats_waiting(
     assert lands["merged"]() == ["7"]
 
 
-def test_land_evicted_event(events_pushed: dict[str, Any]) -> None:
-    """A PR red alone twice ends `failed`, its `url` the comment `land` wrote with the log's last lines."""
-    lands = events_pushed
-    lands["open"](7, {"red.txt": "red\n"})
-    code, lines = lands["land"]()
-    assert code == 1, lines
-    # the reference: the draft state and the comment land already writes
-    assert ("pr", "ready", "--undo", "7") in lands["calls"]
-    [(_, body)] = [(n, b) for n, b in lands["comments"] if n == 7]
-    assert body.startswith(approvals.EVICTED)
-    event = lands["event"]("pr7")
-    assert event and event["state"] == "failed" and event["url"] == COMMENT_URL.format(7)
-    assert (event["seq"], event["beat_s"]) == (1, 300)
-
-
 def test_land_merged_event_and_cleanup(
     events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -213,16 +198,13 @@ def test_native_wait_follows_land(
 
 
 @pytest.mark.parametrize("how", ["push refused", "emit raises"])
-@pytest.mark.parametrize(("files", "code"), [({"7.txt": "7\n"}, 0), ({"red.txt": "r\n"}, 1)])
 def test_land_exit_codes_without_origin_push(
     lands: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
     how: str,
-    files: dict[str, str],
-    code: int,
 ) -> None:
     """An origin that refuses the event's push (as a cloud session's proxy does), or an
-    emit that raises, changes none of `land`'s exit codes: a merge is 0, an eviction 1."""
+    emit that raises, changes none of `land`'s exit codes: a merge is 0."""
     if how == "push refused":
         hook = lands["origin"] / "hooks" / "pre-receive"
         hook.write_text(
@@ -236,11 +218,10 @@ def test_land_exit_codes_without_origin_push(
 
         monkeypatch.setattr(approvals.loop_events, "emit", boom)
     monkeypatch.setattr(approvals, "EVENT_GRACE", 0)
-    lands["open"](7, files)
+    lands["open"](7, {"7.txt": "7\n"})
     got, lines = lands["land"]("7")
-    assert got == code, lines
+    assert got == 0, lines
     assert not git_in(lands["origin"], "for-each-ref", "refs/loop").strip()
-    assert (("pr", "ready", "--undo", "7") in lands["calls"]) == (code == 1)
 
 
 def test_land_wait_ceiling_asks_the_owner(
@@ -671,43 +652,3 @@ def test_v2_heartbeat_beat_in_flight_does_not_replace_ok(
     event = lands["event"]("pr7")
     assert code == 0 and lands["merged"]() == ["7"] and held["n"] >= 1
     assert event and event["state"] == "ok", event
-
-
-def red_main(lands: dict[str, Any]) -> None:
-    work = lands["work"]
-    (work / "red.txt").write_text("red\n")
-    git_in(work, "add", "red.txt")
-    git_in(work, "commit", "-qm", "red main")
-    git_in(work, "push", "-q", "origin", "HEAD:main")
-
-
-@pytest.mark.parametrize(
-    "argv", [pytest.param(("7",), id="one-shot"), pytest.param(("7", "--wait"), id="wait")]
-)
-def test_a_land_that_ends_leaves_no_waiting(
-    events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch, argv: tuple[str, ...]
-) -> None:
-    """events.md: `waiting` only under `--wait`. main is
-    red, so the batch gates, nothing lands and nobody is evicted, and land exits 1. A land that is not waiting
-    beats nothing at the lock, so no `waiting` is left behind for a wait to read as live."""
-    lands = events_pushed
-    red_main(lands)
-    lands["open"](7, {"7.txt": "7\n"})
-    code, _lines = lands["land"](*argv)
-    event = lands["event"]("pr7")
-    assert code == 1
-    # a one-shot land beats nothing; a `--wait` one ends `failed`, so a native wait exits 1 instead of timing out
-    assert event is None if argv == ("7",) else event and event["state"] == "failed", event
-
-
-def test_a_wait_that_evicts_its_pr_keeps_the_eviction_comments_url(
-    events_pushed: dict[str, Any],
-) -> None:
-    """`land 7 --wait`, PR 7 red alone twice: evicted, and land exits 1. The `failed` carries the eviction comment's
-    URL, which the exit's own `failed` (unless_ended) must not replace by the PR's."""
-    lands = events_pushed
-    lands["open"](7, {"red.txt": "red\n"})
-    code, lines = lands["land"]("7", "--wait")
-    event = lands["event"]("pr7")
-    assert code == 1, lines
-    assert event and event["state"] == "failed" and event["url"] == COMMENT_URL.format(7), event

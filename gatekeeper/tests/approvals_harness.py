@@ -155,11 +155,6 @@ def refs(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, Any]]:
 
     monkeypatch.setattr(approvals, "record_ref", read)
     monkeypatch.setattr(approvals, "push_record", push)
-    monkeypatch.setattr(
-        approvals,
-        "pushed_commands",
-        lambda held: {found["command"] for found in pushed.values() if found["tree"] == held},
-    )
     monkeypatch.setattr(approvals, "drop_records", lambda _heads: None)
     return pushed
 

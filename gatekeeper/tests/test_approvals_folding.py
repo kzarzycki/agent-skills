@@ -1,5 +1,5 @@
 """Every comment the loop writes opens with a short summary and folds the rest (folding.py), and every reader of a
-comment's key lines still reads it folded: the approval records, the batch proof, the verifier's review, the
+comment's key lines still reads it folded: the approval records, the verifier's review, the
 assignment record, the conflict and queue notes, the cloud verifier's report and the nightly's marker."""
 
 from __future__ import annotations
@@ -10,12 +10,6 @@ import sys
 from typing import Any
 
 from approvals_harness import HEAD, SCRIPTS, approvals, node, note, pull, verdict_on
-from test_approvals import (  # noqa: F401 -- the fixture
-    batch_note,
-    batched,
-    gated_head,
-    queued_merge,
-)
 
 BASE = SCRIPTS
 LOOP_SCRIPTS = SCRIPTS.parents[3] / "loop" / "skills" / "engineering-loop" / "scripts"
@@ -82,22 +76,6 @@ def test_approval_records_parse_folded() -> None:
     assert approvals.parsed(spec, "merge") is None
     withdrawn = fold("Withdrawn: merge", "withdrew", f"By: owner\nHead: {HEAD}")
     assert approvals.parsed(withdrawn, "merge") is None
-
-
-def test_the_batch_proof_reads_folded(batched: dict[str, str]) -> None:
-    head, merged, batch = batched["head"], batched["merge"], batched["batch"]
-    gated_head(head)
-    flat = batch_note(head, merged, batch)
-    fields = flat.split("\n", 1)[1].strip()
-    body = fold(approvals.BATCHED, "The batch passed.", fields)
-    body += "\n<details><summary>The gate's last lines</summary>\n\n````\nok\n````\n</details>\n"
-    assert queued_merge(head, flat) == []
-    assert (
-        queued_merge(head, body) == []
-    )  # the folded proof stands in for the CI wait as the plain one does
-    # a proof naming another head is still no proof, folded
-    other = fold(approvals.BATCHED, "x", fields.replace(head, "0" * 40))
-    assert queued_merge(head, other) != []
 
 
 def test_the_verifiers_review_reads_folded() -> None:

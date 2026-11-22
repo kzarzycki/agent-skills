@@ -45,8 +45,8 @@ def test_a_land_that_merges_posts_land_on_the_head_before_the_merge_call(
 def test_a_land_that_does_not_merge_posts_no_land_status(
     lands: dict[str, Any], posted: list[tuple[Any, ...]]
 ) -> None:
-    lands["open"](7, {"7.txt": "7\n", "red.txt": ""})
-    code, lines = lands["land"]()
+    lands["open"](7, {"7.txt": "7\n"}, reviews=())
+    code, lines = lands["land"]("7")
     assert code == 1, lines
     assert not any(call[:2] == ("pr", "merge") for call in lands["calls"])
     assert [p for p in posted if p[1] == "land"] == []
