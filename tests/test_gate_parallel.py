@@ -19,10 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 PARALLEL = ["-p", "tools.gate_workers", "-n", "auto", "--dist", "loadfile"]
 
 
-def pytest_words(tmp_path: Path, env: dict[str, str]) -> list[str]:
+def pytest_words(tmp_path: Path, env: dict[str, str], task: str = "test") -> list[str]:
     """The words `mise run test` passes on to pytest, from its run string under `sh -c` with a fake `uv` that records
     each call and succeeds, so the lock wrapper, pytest and ruff never run."""
-    run = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]["test"]["run"]
+    run = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"][task]["run"]
     calls = tmp_path / "calls"
     fake = tmp_path / "bin"
     fake.mkdir()
@@ -51,8 +51,10 @@ def test_the_test_task_runs_pytest_on_xdist_a_file_per_worker_by_default(
     assert pytest_words(tmp_path, env) == [*DEFAULT, *PARALLEL]
 
 
-def test_gate_test_parallel_0_runs_pytest_serially(tmp_path: Path) -> None:
-    assert pytest_words(tmp_path, {"GATE_TEST_PARALLEL": "0"}) == [*DEFAULT, "-n", "0"]
+@pytest.mark.parametrize("task", ["test", "test-slow"])
+def test_gate_test_parallel_0_runs_pytest_serially(tmp_path: Path, task: str) -> None:
+    words = pytest_words(tmp_path, {"GATE_TEST_PARALLEL": "0"}, task)
+    assert words[-2:] == ["-n", "0"] and "auto" not in words
 
 
 def test_test_and_test_slow_together_select_the_whole_non_live_suite() -> None:
