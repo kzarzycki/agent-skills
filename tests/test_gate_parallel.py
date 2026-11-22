@@ -52,7 +52,7 @@ def test_the_test_task_runs_pytest_on_xdist_a_file_per_worker_by_default(
 
 
 def test_gate_test_parallel_0_runs_pytest_serially(tmp_path: Path) -> None:
-    assert pytest_words(tmp_path, {"GATE_TEST_PARALLEL": "0"}) == DEFAULT
+    assert pytest_words(tmp_path, {"GATE_TEST_PARALLEL": "0"}) == [*DEFAULT, "-n", "0"]
 
 
 def test_test_and_test_slow_together_select_the_whole_non_live_suite() -> None:
@@ -77,6 +77,16 @@ def test_the_nightly_test_map_run_stays_serial() -> None:
     jobs = [s for job in steps["jobs"].values() for s in job["steps"]]
     mapped = [s for s in jobs if "--cov-context=test" in s.get("env", {}).get("PYTEST_ADDOPTS", "")]
     assert mapped and all(s["env"]["GATE_TEST_PARALLEL"] == "0" for s in mapped)
+    # pyproject's addopts runs every pytest in parallel, so the serial run says `-n 0` itself
+    assert all(" -n 0 " in f" {s['env']['PYTEST_ADDOPTS']} " for s in mapped)
+
+
+def test_a_bare_pytest_is_parallel_by_default() -> None:
+    """A run with no mise task, as an agent types it, costs what `mise run test` does (#1610): `-n auto` is in addopts."""
+    addopts = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"][
+        "addopts"
+    ]
+    assert "-n auto" in addopts and "--dist loadfile" in addopts and "tools.gate_workers" in addopts
 
 
 def test_free_cores_are_the_cores_less_the_load(monkeypatch: pytest.MonkeyPatch) -> None:
