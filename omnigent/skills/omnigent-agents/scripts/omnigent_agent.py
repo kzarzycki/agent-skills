@@ -1038,7 +1038,9 @@ def resolve_role(role: str) -> str:
         found = skills / "engineering-loop" / f"{role}.md"
         if found.is_file():
             return str(found)
-    raise Fail(f"--role {role}: engineering-loop's {role}.md is not beside this skill; pass its path")
+    raise Fail(
+        f"--role {role}: engineering-loop's {role}.md is not beside this skill; pass its path"
+    )
 
 
 def role_line(role: str | None, cloud: bool) -> str:
@@ -10100,7 +10102,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument("title")
         p.add_argument("brief", help="the task specifics: a file, or the text itself")
         p.add_argument("report", type=Path)
-        p.add_argument("--role", help="worker/verifier role file the child reads first, or lead|worker|verifier for the pack's own")
+        p.add_argument(
+            "--role",
+            help="worker/verifier role file the child reads first, or lead|worker|verifier for the pack's own",
+        )
         p.add_argument("--confirm-seconds", type=float, default=START_CONFIRM_SECONDS)
         p.add_argument(
             "--model",

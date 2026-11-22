@@ -14270,7 +14270,9 @@ def test_role_name_resolves_to_the_pack_role_file_with_no_file_in_the_launch_dir
     """`--role verifier` names the pack's role file, so a cloud child's launch dir needs none (#1868)."""
     monkeypatch.chdir(tmp_path)
     found = Path(omnigent_agent.resolve_role(role))
-    assert found.is_file() and found.name == f"{role}.md" and found.parent.name == "engineering-loop"
+    assert (
+        found.is_file() and found.name == f"{role}.md" and found.parent.name == "engineering-loop"
+    )
     assert omnigent_agent.main(["brief", "do X", "r.md", "--cloud", "--role", role]) == 0
     assert f"<role-file>\n{found.read_text().rstrip()}" in capsys.readouterr().out
     # a path, or a name that is no role, is left as given
