@@ -10702,12 +10702,12 @@ def test_report_head_keeps_little_of_a_long_report() -> None:
     assert omnigent_agent.wait_of(head) == "verifier"
 
 
-def test_the_cloud_preamble_forbids_a_question_tool_a_page_and_a_session_link() -> None:
-    """Each waits on a prompt nobody in the cloud sees, or leaks a session into a public repo."""
+def test_the_cloud_preamble_forbids_a_question_tool_and_a_page() -> None:
+    """Each waits on a prompt nobody in the cloud sees."""
     preamble = omnigent_agent.PR_PREAMBLE
     assert "never call an interactive question tool, since its prompt waits on someone" in preamble
     assert "Never publish a page or artifact, since it waits on a permission nobody" in preamble
-    assert "co-author line only, with no session link, since the commit reaches a" in preamble
+    assert "session link" not in preamble
 
 
 def test_the_cloud_preamble_reads_issues_and_prs_through_rest() -> None:
