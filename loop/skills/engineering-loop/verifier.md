@@ -111,9 +111,10 @@ yourself, keeping standards and spec as separate axes.
   whether it tests what the line says. A check that doesn't is a major, since a passing wrong
   check proves nothing.
 - **Run the checks yourself.** Run the acceptance command the brief's `Acceptance tests:` line
-  names on the head (SKILL.md, Acceptance checks), and the tests the PR adds or changes, picked
-  from `git diff --name-only <base>...<head>`, each as a long run is (above). You never rely on
-  the worker's gate log, which is the worker's own file, and run no full gate (Gates and repros).
+  names on the head (SKILL.md, Acceptance checks), and the e2e tests the worker wrote for this PR,
+  which its report names and `git diff --name-only <base>...<head>` shows, each as a long run is
+  (above): they are the run that proves the change works. You never rely on the worker's test
+  log, which is the worker's own file, and run no full suite and no gate (Gates and repros).
 - **Manual lines.** Probe a `Manual:` line by hand when you rate the change high or the line is
   risky in itself. Otherwise you may accept it on the worker's evidence, written `Accepted on
   evidence: <line> — <proof log>`, the log stamped with the head (Proof provenance); `verdict`
@@ -143,7 +144,7 @@ yourself, keeping standards and spec as separate axes.
   ran it on its own patches, so its log is a starting point, not the check. A change whose undoing leaves every test green is untested: report it as a
   major. Before the report, `git status --porcelain` must match what it showed at the start:
   revert any mutation of yours still applied, and report a tree you cannot clean as a finding
-  naming its paths, since the lead's next gate and push run in it (`wait` fails a host
+  naming its paths, since the lead's next test run and push run in it (`wait` fails a host
   verifier that leaves a tracked change).
 - **Proof provenance.** Each proof log starts with `git rev-parse HEAD` and the command
   that produced it (worker.md, Report). One whose SHA isn't the reviewed head counts as a
@@ -173,12 +174,12 @@ yourself, keeping standards and spec as separate axes.
   the host's heavy slot past a 30-minute limit, waited on in the foreground as above. Stop the run (so its mutation can't apply after
   you), redo any patch you undid so the tree is as you found it, and write
   `<report>.question` asking the lead for a proof run with the brief in
-  [proof-run.md](proof-run.md). Name the gate command, the tests, each patch verbatim and
+  [proof-run.md](proof-run.md). Name the test command, the tests, each patch verbatim and
   the commands that undo and redo it, since the lead fills the brief from the question
   alone. The lead has the runs made off this host and answers with the head-stamped logs; a
   verdict without them would be repeated once the logs exist. Before you write the question,
   go through the whole pass and list every run it needs in that one question: each acceptance
-  line not yet run, each mutant, each instance or device proof and each gate step, since every
+  line not yet run, each mutant, each instance or device proof and each test run, since every
   later question costs another run and heavy-slot hold. After an answer (a brief with a
   `## Answer to your question` section), ask again only for a run the answer itself made
   necessary, such as a log that shows a new failure, with a `New in the answer: <the log>` line
@@ -199,7 +200,7 @@ yourself, keeping standards and spec as separate axes.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is
   the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
-- **Gates and repros:** one test run per tree: never rerun the gate, and before you run the brief's acceptance command or the PR's tests, ask whether the gatekeeper already ran that exact command on the head's tree, with `uv run <the gatekeeper skill's folder>/scripts/approvals.py gate-record <head> -- <command>` (bare, `gate-record <head>`, for the gate itself). Exit 0 names origin's record branch: read it and don't run that command again. Exit 1 names what has no record: run it. A record is keyed by the tree and the command, so another tree, another command or another test list is never reused. Only that record counts, never a log, report or exit code the worker wrote, since the worker is what you check. Mutation and repro probes are always your own runs: the gate never exercises the code that way. On a review head, the worker's report (its narrow-check command and exit code) is the check the worker ran, and no gate of record exists yet: it runs on the head you are satisfied with. The `gate` status and the `loop-gate/` record are a ready head's. Run the suite, or more than a few test files, only through the project's test task (its `mise run` task, which carries the suite's parallel workers), never a bare runner such as `pytest`, which runs serially: one bare pass took 20 times the task's time. A selection of more than half the suite runs as the whole suite through that task. Run a repro or that task as the bare command, with no wrapper, redirect or detach around it, and keep it running with
+- **Gates and repros:** one test run per tree: your run of the brief's acceptance command and the PR's e2e tests is the proof the change works, and no gate or full suite runs on the PR after it, so run no full suite and no gate. Before you run one of them, ask whether the gatekeeper already ran that exact command on the head's tree, with `uv run <the gatekeeper skill's folder>/scripts/approvals.py gate-record <head> -- <command>`. Exit 0 names origin's record branch: read it and don't run that command again. Exit 1 names what has no record: run it. A record is keyed by the tree and the command, so another tree, another command or another test list is never reused. Only that record counts, never a log, report or exit code the worker wrote, since the worker is what you check. Mutation and repro probes are always your own runs: a test run never exercises the code that way. The worker's report (its affected-test command and exit code) is the check the worker ran, never a gate of record, which no head gets. Run the suite, or more than a few test files, only through the project's test task (its `mise run` task, which carries the suite's parallel workers), never a bare runner such as `pytest`, which runs serially: one bare pass took 20 times the task's time. Your run is the PR's e2e tests and acceptance command, never the whole suite: never widen that selection into a whole-suite run. Run a repro or that task as the bare command, with no wrapper, redirect or detach around it, and keep it running with
   your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain
   command, so a wrapped one asks for approval, and on a reviewed sandbox each ask is a paid
   model call. Then write its proof log from what it printed: the head's SHA, the command, its
@@ -242,7 +243,7 @@ gate reads):
   after it; `verdict` refuses one without the log, and one written inline in another line (`7. Manual: … **Accepted on
   evidence:** …`), which the risk check and the posted review would not see.
 - `Not run:` names only a run the verdict relies on (it blocks `SATISFIED: yes`, as above). A step outside this pass's
-  scope, such as the gate or mutation patches the brief leaves to the lead, goes on an `Out of scope: <step>, <why>`
+  scope, such as a test run or mutation patches the brief leaves to the lead, goes on an `Out of scope: <step>, <why>`
   line, which blocks nothing.
 - End with `Head: <sha>`, the full commit you reviewed (`git rev-parse HEAD` in your
   worktree), then `VERDICT: <n> blocker, <n> major, <n> minor`, `SATISFIED: yes|no` and
