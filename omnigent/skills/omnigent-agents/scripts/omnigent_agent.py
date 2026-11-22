@@ -416,6 +416,37 @@ LEAD_NUDGE_CLOUD = (
     " (never your own background run), or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
 )
+# A STILL WORKING whose wait nothing wakes the lead for (#1753): a harness re-invokes a session for
+# its own tracked background tasks, and a cloud session not even for a subagent it started, so a
+# detached pid, its log or such a subagent ending never does.
+LEAD_UNTRACKED = (
+    "Supervisor: your turn ended waiting on something that does not wake you when it ends (a pid,"
+    " a log, or a background subagent in a cloud session). Check whether it has ended; if not, wait"
+    " on it in this turn (`omnigent_agent.py wait-for --log <log> --pid <pid file>`, called again on"
+    " `still running`, or the subagent's own result), or restart it as a harness-tracked background"
+    " task, or detached with LOOP_NOTIFY set. Then end your turn with DONE, STILL WORKING naming"
+    " what wakes you, or USER NEEDED."
+)
+UNTRACKED_WHY = "waits on what does not wake it"
+# A process in its wait, anywhere in the STILL WORKING text beside a wait word: a pid (``pid 4242``,
+# ``its pid is 4242``, a pid file) or a log, output or pid path; a run that notifies is tracked.
+UNTRACKED = re.compile(
+    r"\bpids?\b(?:\s+is)?\s*[:#]?\s*`?\d+|\bpid[ -]file\b|[\w./~-]+\.(?:log|out|pid)\b",
+    re.IGNORECASE,
+)
+NOTIFIES = re.compile(r"--notify\b|\bLOOP_NOTIFY\b")
+# A subagent the lead started, which a cloud session is not re-invoked for when it finishes.
+SUBAGENT_WAIT = re.compile(
+    r"\bwait(?:s|ing)?\s+(?:on|for)\b[^.;\n]{0,40}?\b(?:sub-?agents?|background\s+agents?)\b",
+    re.IGNORECASE,
+)
+# A hand-back to the manager (#1753): a ``Handback: #<n> <what>`` line, exact, else prose that says a
+# PR is ready or a step is the manager's. A STILL WORKING alone leaves the lead looking busy.
+HANDBACK = re.compile(r"^[\s*_>-]*Handback:[ \t]*(.+?)[\s*_]*$", re.MULTILINE | re.IGNORECASE)
+HANDBACK_PROSE = re.compile(
+    r"#\d+\s*(?:is\s+)?READY\b|\bREADY\s+FOR\s+VERIFY\b"
+    r"|#\d+\b[^\n]{0,80}?\b(?:(?:is|are)\s+(?:now\s+)?yours|over\s+to\s+you)\b"
+)
 # A timed wait's time passed with no progress since: nothing else wakes an idle lead at its time.
 LEAD_WAKE = (
     "Supervisor: the time your STILL WORKING named, {time}, has passed. Check what you wait on and"
@@ -7473,6 +7504,39 @@ def waits_on(text: str, lead: dict, notify: str | None, event: bool = False) -> 
     return start >= 0 and bool(SUPERVISOR_WAIT.search(text[start:]) or COS_LINE.search(text))
 
 
+def untracked_wait(text: str, cloud: bool = False) -> bool:
+    """Whether a lead's ``STILL WORKING`` waits on something that does not wake it when it ends
+    (#1753), read from ``STILL WORKING`` on: a process the harness does not track (a wait word and
+    a pid, a pid file or a log, output or pid path anywhere in it, naming no ``--notify`` or ``LOOP_NOTIFY``, a wrapper that tells the
+    session, and no child session, verifier, worker, lead or CI), or, in a ``cloud`` session, a
+    subagent it started. A ``Waits:`` trailer names the wait exactly, so it decides alone."""
+    if (start := text.find("STILL WORKING")) < 0 or trailer_of(text) or named_of(text):
+        return False
+    wait = FENCE.sub("", text[start:])
+    if cloud and SUBAGENT_WAIT.search(wait):
+        return True
+    if WAIT.search(text):
+        return False
+    found = UNTRACKED.search(wait) and WAIT_WORD.search(wait)
+    return bool(found) and not NOTIFIES.search(wait)
+
+
+def handback_of(text: str) -> str:
+    """What a lead's ``STILL WORKING`` hands back to its manager (#1753): its last ``Handback:``
+    line's text, else the prose line that says a PR is ready (``#12 READY``, ``READY FOR VERIFY``)
+    or a PR's step is the manager's (``#12 ... is yours``, ``#12 ... over to you``); empty when it hands
+    nothing back."""
+    if (start := text.find("STILL WORKING")) < 0:
+        return ""
+    body = FENCE.sub("", text[start:])
+    if found := HANDBACK.findall(body):
+        return found[-1].strip()
+    for line in body.splitlines():
+        if HANDBACK_PROSE.search(line):
+            return line.strip()[:200]
+    return ""
+
+
 def waits(wait: str) -> str:
     """A named wait as words: ``waits until <time>`` or ``waits on <wait>``."""
     return f"waits {wait}" if wait.startswith("until ") else f"waits on {wait}"
@@ -7578,6 +7642,15 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if ending == "DONE":
             return "rule", "done", "done, driven by the owner: told only to the leads waiting on it"
         return "rule", "record", "the owner drives it directly: they read its turn there"
+    still = ending not in ("DONE", "USER NEEDED", "PARKED")  # those route below, as they say
+    if still and (handback := handback_of(text)):  # the manager's to act on, whatever it waits on
+        if event.get("repeat"):
+            return "rule", "record", "an exact repeat of its hand-back"
+        return "rule", "act", f"hands back to its manager: {handback}"
+    if still and untracked_wait(text, bool(event.get("cloud"))):  # before ``repeat``: it escalates
+        if event.get("nudged"):
+            return "rule", "act", f"{UNTRACKED_WHY} again after its nudge"
+        return "rule", "nudge", UNTRACKED_WHY
     if event.get("nudged") and not ending and wait == "unknown":  # its last words, unchanged
         return "rule", "act", "quiet again after its nudge"
     if event.get("repeat"):
@@ -8034,6 +8107,8 @@ def supervise_registry(
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
             "supervisor": notify if waits_on(parsed, lead, notify, bool(lead_ev)) else "",
+            # a subagent's end re-invokes no cloud session (#1753): read only for a wait that names one
+            "cloud": bool(SUBAGENT_WAIT.search(parsed or "")) and cloud_session(og, info),
         }
 
         def ask() -> tuple[str, str]:
@@ -8071,6 +8146,8 @@ def supervise_registry(
             lead.update(nudges=lead.get("nudges", 0) + 1, nudged_at=lead.get("progress_at"))
             text = LEAD_WAKE.format(time=lead["wait"].removeprefix("until "))
             nudge = LEAD_NUDGE_CLOUD if cloud_session(og, info) else LEAD_NUDGE
+            if why.startswith(UNTRACKED_WHY):
+                nudge = LEAD_UNTRACKED
             act_on(eid, [(sid, action, nudge if action == "nudge" else text)])
         elif action == "revive":
             if kind == "failed":  # its one revive after a failure; a lost runner is no failure

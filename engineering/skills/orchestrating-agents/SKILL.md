@@ -43,6 +43,16 @@ service that restarts it and survives a reboot (`supervise --registry <file> --i
   writes its question to `<report>.question`, replies with that path and stops. Whoever
   started it answers from the brief, the spec and the owner's stated intent, asks the owner
   only when none of them settles it, and sends the answer to the same child.
+- **A wait wakes you, or you stay in the turn.** A harness wakes a session only for its own
+  background tasks (Claude Code's `run_in_background` or Monitor, Codex's equivalent), a child's
+  turn end through the backend, or a message, never for a process it does not track, and a cloud
+  session not even for a native subagent it started. So a long
+  build, test, gate or land runs as a harness-tracked background task, whose exit wakes you; or
+  detached with a wrapper that tells you when it ends (the `omnigent-agents` skill's `wait-for
+  --notify` with `LOOP_NOTIFY` set); or you wait on it in the same turn (`wait-for --log <log>
+  --pid <pid file>`, called again on `still running`, or a cloud subagent's result). Never end a
+  turn waiting on a bare pid, a log or, in a cloud session, a subagent, since nothing re-invokes
+  you when it ends; Omnigent's supervisor nudges a lead that does.
 - **Whoever starts a child collects it.** Keep a wait or a watch on each child you start,
   read its report before you report yourself, and close it once its report is in; never
   end your own work while one is still out, since its report then reaches nobody.
