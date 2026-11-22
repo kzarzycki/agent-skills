@@ -3950,6 +3950,7 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
         # the owner's go names this PR, so the hold it waited on is theirs to lift; the delegate's never is
         label(number, NEEDS_OWNER, add=False)
         print(f"PR #{number}: `{NEEDS_OWNER}` removed, since the owner's go names it")
+    hand_over(number)
     return 0
 
 
@@ -5288,6 +5289,8 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
     """`check <point>`: with a PR, under the policy of the base it merges onto (policy_from), else the default
     branch's."""
     toplevel()  # outside a checkout, refused before GitHub is asked
+    if point == "stalled":
+        return stalled()
     if point == "build":
         full_check_line()
     if issue is not None:
@@ -7453,6 +7456,61 @@ def queued_here(head: str) -> bool:
     return bool(found) and found.get("state") == "success"
 
 
+def hand_over(number: int) -> None:
+    """The end of `approve merge` and `record verdict` under `land.queue: mergify`: when `check merge` passes on the PR's
+    head, land it (`land --only`, so the hand-over is mergify_step's, and a PR already queued at its head is left
+    alone); when something is still missing, print what it is (checked) and queue nothing. A draft, a closed PR and a
+    base with another queue are left to `land`, as before. The record is already written, so a refusal here changes
+    no exit code."""
+    pull = pull_request(number)
+    if pull["state"] != "OPEN" or pull["isDraft"]:
+        return
+    with policy_from(pull["baseRefName"]):
+        if not mergify(project()[1]):
+            return
+        if checked("merge", pull, None):
+            print(f"PR #{number} is not queued: what is missing is above")
+            return
+        if landing([number], only=True)[0]:
+            print(f"PR #{number} is not queued: what holds it is above")
+
+
+def stalled() -> int:
+    """`check stalled`: each open PR into a base whose policy names Mergify that `landable` finds a candidate (its go on
+    its head, every proof, a satisfied verdict) and that is neither queued at its head (QUEUED and a `land` success
+    there, queued_here) nor merged: a `land` that was stopped or died left it. One line each, and exit 1 when any
+    is listed, so a sweep can queue it (`land <n> --only`) or flag it; judged as `land` judges, and written nowhere."""
+    bases: dict[str, tuple[str | None, str | None, set[str]] | None] = {}
+    found = []
+    for listed in sorted(open_pulls(), key=lambda each: each["number"]):
+        if listed["isDraft"]:
+            continue
+        base = listed["baseRefName"]
+        if base not in bases:
+            with policy_from(base):
+                tracker, loop = project()
+                if mergify(loop):
+                    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+                    bases[base] = (tracker, loop, required_checks(base) - OWN)
+                else:
+                    bases[base] = None
+        if (known := bases[base]) is None:
+            continue
+        pull = pull_request(listed["number"])
+        with policy_from(base):
+            judge_with_base(base)
+            with contextlib.redirect_stdout(io.StringIO()):
+                judged = landable(pull, known[0], known[1], known[2])
+        head = pull["headRefOid"]
+        if judged.exit is None and not (QUEUED in names(pull) and queued_here(head)):
+            found.append(
+                f"PR #{pull['number']} has its go and a satisfied verdict at {head} and is not queued"
+            )
+    for line in found:
+        print(line)
+    return 1 if found else 0
+
+
 def mergify_step(pull: dict[str, Any]) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
@@ -8512,6 +8570,7 @@ def verdict(pr: int, report: Path) -> int:
         ),
     )
     post_review(pr, {"commit_id": head, "event": "COMMENT", "body": summary, "comments": comments})
+    hand_over(pr)
     return 0
 
 
@@ -10905,7 +10964,7 @@ def main(argv: list[str]) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser("check")
-    checking.add_argument("point", choices=("build", "merge", "queue", "ready", "setup"))
+    checking.add_argument("point", choices=("build", "merge", "queue", "ready", "setup", "stalled"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--head")
     checking.add_argument("--issue", type=int)
@@ -11017,6 +11076,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused(
                 "check queue takes a PR number and --head <sha>, the head the queue would merge"
             )
+        if args.point == "stalled" and (args.pr is not None or args.issue is not None):
+            raise Refused("check stalled takes no PR: it lists every open PR")
         if args.point != "queue" and args.head is not None:
             raise Refused("--head goes with check queue only")
         if args.issue is not None and (args.point != "build" or args.pr is not None):
