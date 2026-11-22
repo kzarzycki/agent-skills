@@ -808,6 +808,8 @@ offline while idle raises nothing.
 | a PR or session a lead's wait names settled, or a session it started reached a final state | rule | tell that lead within a minute, read from GitHub and the session; a set tells on its first failure or its last end |
 | `archived` | rule | its line and state entry dropped; no post |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
+| a `STILL WORKING` that hands back to its manager: a `Handback: #<n> <what>` line, else prose saying a PR is ready (`#12 READY`, `READY FOR VERIFY`) or a PR's step is the manager's (`#12 ... is yours`, `#12 ... over to you`) (#1753) | rule | act, to the session it notifies, with what it hands back; an exact repeat: recorded |
+| a `STILL WORKING` whose wait does not wake it (#1753): a wait word and a pid, a pid file or a log, output or pid path anywhere in it, naming no `--notify` or `LOOP_NOTIFY`, no child or CI; or, in a cloud session, a background subagent; no `Waits:` line either way | rule | the untracked-wait nudge (`LEAD_UNTRACKED`: wait on it in the turn, or restart it as a harness-tracked background task or detached with `LOOP_NOTIFY`); the same wait again after it: act |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
 | a quiet end again with no progress since the nudge | rule | act |
 | `deadline` | rule | a named wait: act, or with no live runner (nothing can end its wait) the revive, which acts only when it fails; unknown: the nudge, then act at the deadline after it; parked: none |
