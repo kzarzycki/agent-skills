@@ -14261,3 +14261,20 @@ def test_every_cloud_preamble_says_a_helper_is_a_native_subagent(
     assert "sys_session_create`: a created child" not in omnigent_agent.first_message(
         False, top_level, None, "r.md", None, "do X"
     )
+
+
+@pytest.mark.parametrize("role", ["lead", "worker", "verifier"])
+def test_role_name_resolves_to_the_pack_role_file_with_no_file_in_the_launch_dir(
+    role: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--role verifier` names the pack's role file, so a cloud child's launch dir needs none (#1868)."""
+    monkeypatch.chdir(tmp_path)
+    found = Path(omnigent_agent.resolve_role(role))
+    assert (
+        found.is_file() and found.name == f"{role}.md" and found.parent.name == "engineering-loop"
+    )
+    assert omnigent_agent.main(["brief", "do X", "r.md", "--cloud", "--role", role]) == 0
+    assert f"<role-file>\n{found.read_text().rstrip()}" in capsys.readouterr().out
+    # a path, or a name that is no role, is left as given
+    assert omnigent_agent.resolve_role("x/verifier.md") == "x/verifier.md"
+    assert omnigent_agent.resolve_role("other") == "other"
