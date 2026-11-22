@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import subprocess
+import time
 from typing import Any
 
 import pytest
@@ -319,6 +320,36 @@ def test_locked_records_a_round_that_left_the_lock_to_an_older_waiter(
     monkeypatch.setattr(approvals, "stamp_wait", lambda base, pr: None)
     monkeypatch.setattr(approvals, "git", lambda *args: "")  # origin has no lock yet
     monkeypatch.setattr(approvals, "waiter_ahead", lambda base: "PR #3")
+    monkeypatch.setitem(approvals.watched, "deferred", False)
+    assert approvals.locked("main", [], 7) is False
+    assert approvals.watched["deferred"] is True
+
+
+def test_locked_records_a_round_that_other_lands_kept_beating_to_the_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each of locked()'s three pushes loses to another land that took the free lock and freed it again."""
+    tips = iter(f"t{n}" for n in range(10))
+    tip = [""]
+
+    def git(*args: str) -> str:
+        if args[0] == "ls-remote":
+            tip[0] = next(tips)
+            return f"{tip[0]}\t{LOCK}\n"
+        if args[0] == "rev-parse":
+            return tip[0]
+        if args[0] == "log":
+            return f"{int(time.time())}\0{approvals.FREE} [skip ci]\0pid 1, nonce 0"
+        return ""
+
+    monkeypatch.setattr(approvals, "waiting", False)
+    monkeypatch.setattr(approvals, "git", git)
+    monkeypatch.setattr(approvals, "lock_commit", lambda *a, **k: "ours")
+    monkeypatch.setattr(
+        approvals,
+        "leased",
+        lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "stale info"),
+    )
     monkeypatch.setitem(approvals.watched, "deferred", False)
     assert approvals.locked("main", [], 7) is False
     assert approvals.watched["deferred"] is True
