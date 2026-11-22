@@ -6750,7 +6750,7 @@ def landable(
     if required and (lines := ci(where, pull, required)):
         covered = breakglass_cover(pull, loop, lines)
         if covered.said:  # the owner's own merge: land verifies it and leaves it
-            return breakglass_held(pull, covered, issues, named)
+            return breakglass_held(pull, covered, issues, named, loop)
         lines = covered.lines
         for line in lines:
             print(line)
@@ -6781,7 +6781,11 @@ def trailer(pull: dict[str, Any], check: str, proof_url: str) -> str:
 
 
 def breakglass_held(
-    pull: dict[str, Any], covered: Covered, issues: list[dict[str, Any]], named: bool
+    pull: dict[str, Any],
+    covered: Covered,
+    issues: list[dict[str, Any]],
+    named: bool,
+    loop: str | None,
 ) -> Verdict:
     """What land does with a PR whose break-glass proof it verified (breakglass_cover): nothing is merged, since the
     owner merges it in the GitHub UI with the ruleset's bypass. Neither `loop:queued` nor a `land` success stays on it
@@ -6802,7 +6806,7 @@ def breakglass_held(
         )
     for line in covered.said:
         print(line)
-    stand = standing(pull, None)
+    stand = standing(pull, loop)
     proof_url = (stand.proof or {}).get("url") or pull.get("url", "")
     heading = f"{VERIFIED_COMMENT}"
     if not any(

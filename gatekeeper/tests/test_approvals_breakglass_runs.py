@@ -344,6 +344,7 @@ def test_land_leaves_a_verified_break_glass_pr_unmerged_unqueued_and_not_landed(
     assert status[1:3] == (HEAD, "land") and status[-1] == "error"
     [comment] = [d for d in done if d[0] == "comment"]
     assert comment[2].startswith("Break-glass verified\n")
+    assert "Proof: https://example.test/7#proof" in comment[2]
     [ask] = [d for d in done if d[0] == "ask"]
     assert "the owner merges it in the GitHub UI" in ask[2][0]
     assert "break-glass approved by the owner" in capsys.readouterr().out
