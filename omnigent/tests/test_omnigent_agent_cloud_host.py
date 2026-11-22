@@ -273,6 +273,26 @@ def test_trust_that_cannot_be_read_is_refused_and_a_home_not_found_is_not_checke
     omnigent_agent.refuse_unfit_cloud_host(og, "there", Path("/srv/u/repo"))
 
 
+def test_a_claude_config_over_the_file_route_limit_warns_and_is_not_checked(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    work = Path("/home/u/repo")
+    og = trusting(trust("/other"))  # untrusted, but the config can't be read to say so
+    og.serves_files = True
+    real = og.call
+
+    def call(method: str, path: str, body: object = None, **kw: object) -> dict:
+        if path.endswith("/files/home/u/.claude.json"):
+            raise omnigent_agent.Fail(f"GET {path}: HTTP 413 too large") from (
+                HTTPError(path, 413, "Request Entity Too Large", Message(), None)
+            )
+        return real(method, path, body, **kw)
+
+    og.call = call  # type: ignore[method-assign]
+    omnigent_agent.refuse_unfit_cloud_host(og, "there", work)
+    assert "folder trust not checked" in capsys.readouterr().err
+
+
 def cloud_far(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, rows: list[dict], work: str = "/there/repo"
 ) -> FakeOmnigent:
