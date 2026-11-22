@@ -219,9 +219,11 @@ def cloud_far(
     return og
 
 
-def started(og: FakeOmnigent, work: str, *argv: str) -> int:
+def started(og: FakeOmnigent, work: str, *argv: str, report: str = "") -> int:
+    """``report`` defaults to a file in ``work``; a start the launcher places makes its folder here, so
+    a fake remote ``work`` needs one that exists locally (a test run as root would create ``/there``)."""
     return omnigent_agent.main(
-        ["start", "claude-cloud", "t", "b.md", f"{work}/r.md", "--confirm-seconds", "0"]
+        ["start", "claude-cloud", "t", "b.md", report or f"{work}/r.md", "--confirm-seconds", "0"]
         + ["--workspace", work, *argv]
     )
 
@@ -231,7 +233,7 @@ def test_start_places_a_cloud_child_on_the_picked_host(
 ) -> None:
     rows = [row("h", 100, CLOUD), row("far", 9000, CLOUD)]
     og = cloud_far(monkeypatch, tmp_path, rows)
-    assert started(og, "/there/repo") == 0
+    assert started(og, "/there/repo", report=str(tmp_path / "r.md")) == 0
     assert og.hosts_of == {"s0": "far"}
 
 
