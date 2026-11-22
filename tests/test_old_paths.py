@@ -2,7 +2,8 @@
 checkout of this repo, since a manager, a lead or a verifier start runs them there (`approvals.py ...`, `--role
 engineering/skills/engineering-loop/verifier.md`) until the release that drops engineering's dependencies on the
 packages split out of it. A script forwards to the new one with the same arguments, input and exit code; a doc is a
-link to the moved file, readable as before."""
+copy of the moved file (the capability-pack check refuses a link out of the package), which this test holds
+identical."""
 
 from __future__ import annotations
 
