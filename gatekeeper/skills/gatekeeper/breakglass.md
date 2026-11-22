@@ -21,6 +21,32 @@ blocks a PR the owner wants landed anyway, or when writing the proof.
 The approval counts only when `loop.owner` (the policy) names the login that created the status and wrote the comment.
 Without `loop.owner` no login is the owner's, and every record is refused.
 
+## What land verifies
+
+`land` reads each item from GitHub's runs (`GET /actions/runs/{id}`, its jobs and its artifacts), never from the proof
+comment's words, which only name the run ids. A run counts only in this repo, completed, and within `breakglass.max_age` of
+its `completed_at`; all but the failing run's own must be of the workflow that produces the required check.
+
+- **The failure on this head**: the failing run on the exact head and the test ids it failed, from its `failed-tests`
+  artifact (`{"failed": [...], "selected": [...]}`; `tools/failed_tests.py` makes it from pytest's JUnit file, and this
+  repo's `qualify` uploads it). A failure with no test ids (the runner lost, CI down) is `infra`: only the smoke run and the
+  earlier runs apply, and the owner is shown it.
+- **Classification**: each failed test against completed runs of the workflow on `main`'s recent heads and the PR's merge
+  base, within `max_commits` of the head. It is `not caused by this change` when it also failed there, else `unexplained`,
+  which refuses: only the change can explain it. The classification and the run links go in the proof comment.
+- **Re-run alone**: a green run on the exact head whose `selected` list holds every failed test (`gh workflow run` with
+  `tests` set, on the workflow that has that input). Not asked for `infra`.
+- **Smoke**: a local-ci record for the head's tree whose command is `breakglass.smoke`, exit 0; or a green Actions run of it
+  on the head (`--smoke <run id>`).
+- **Earlier green runs**: `breakglass.earlier_runs` green runs of the workflow on recent heads that are ancestors of the head
+  or of the base.
+
+`breakglass-proof` runs this check before it posts, so a gap is said before the owner is asked; `check merge` and `land`
+run it again on every call. A verified PR is left unmerged: `land` removes `loop:queued` and turns a `land` success on the
+head to an error (a Mergify queue would merge on it), posts a `Break-glass verified` comment with the proof's link and the
+trailer to paste into the squash message, and ends `needs-owner`. After the owner's merge, `land <pr>` writes the
+`Break-glass land` comment (head, merge commit, the red or missing checks with run links, record and proof links).
+
 ## Settings
 
 `breakglass` in the policy (policy.md): `max_age` (`7d`), `max_commits` (`20`), `smoke` (the gate command), `earlier_runs`
