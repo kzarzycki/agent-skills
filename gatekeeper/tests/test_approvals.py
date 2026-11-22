@@ -5344,7 +5344,9 @@ def rest_land(cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> di
     """`cloud_land` with a land section that names no signed squash and no key, and GitHub's GraphQL (`gh pr merge`)
     refused as a cloud session's proxy does; `puts` keeps each REST merge call, `PUT pulls/N/merge`, made as GitHub
     does: a `sha` that is not the PR's head is a 409, else it squashes the head onto main."""
-    cloud_land["loop"].write_text(GITHUB_RULE + "land:\n  where: cloud\n")
+    cloud_land["loop"].write_text(
+        GITHUB_RULE.replace("```yaml\n", "```yaml\nland:\n  where: cloud\n")
+    )
     monkeypatch.delenv("LAND_KEY")
     puts: list[tuple[str, ...]] = []
     faked = approvals.github.gh
@@ -5390,6 +5392,44 @@ def test_a_cloud_land_with_no_signed_squash_merges_over_rest_pinned_to_the_gated
     assert [args[:2] for args in rest_land["calls"] if args[:2] == ("pr", "merge")] == [
         ("pr", "merge")
     ]
+
+
+def test_a_cloud_rest_squash_sends_the_land_body_without_the_session_line(
+    rest_land: dict[str, Any],
+) -> None:
+    """The PUT's `commit_message` is `land_body`: the commits' text with the session line dropped, so a session link
+    never reaches the base's public history."""
+    git_in(rest_land["work"], "config", "commit.gpgsign", "false")  # the VM's signer fails
+    link = "Claude-Session: https://claude.ai/code/session_01AbCdEf"
+    head = rest_land["open"](8, {"8.txt": "8\n"}, (f"PR 8\n\nWhat it does.\n\n{link}",))
+    code, lines = rest_land["land"]("8")
+    assert code == 0, lines
+    [put] = [args for args in rest_land["puts"] if args[3].endswith("/pulls/8/merge")]
+    sent = next(arg for arg in put if arg.startswith("commit_message="))
+    assert f"sha={head}" in put and "merge_method=squash" in put
+    assert sent == f"commit_message={approvals.land_body(rest_land['pulls'][8])}"
+    assert "What it does." in sent and "Claude-Session" not in sent and "claude.ai" not in sent
+
+
+def test_a_cloud_rest_land_of_a_merge_commit_head_sends_merge_with_no_body(
+    rest_land: dict[str, Any],
+) -> None:
+    """A PR whose head matches `land.merge_commit_heads` lands as a merge commit: `merge_method=merge`, and no
+    `commit_message`, which only a squash carries."""
+    rest_land["loop"].write_text(
+        GITHUB_RULE.replace(
+            "```yaml\n", "```yaml\nland:\n  where: cloud\n  merge_commit_heads: [sync/*]\n"
+        )
+    )
+    git_in(rest_land["work"], "config", "commit.gpgsign", "false")  # the VM's signer fails
+    head = rest_land["open"](9, {"9.txt": "9\n"})
+    rest_land["pulls"][9]["headRefName"] = "sync/up"
+    code, lines = rest_land["land"]("9")
+    assert code == 0, lines
+    assert "PR #9 lands as a merge" in lines
+    [put] = [args for args in rest_land["puts"] if args[3].endswith("/pulls/9/merge")]
+    assert "merge_method=merge" in put and f"sha={head}" in put
+    assert not any(arg.startswith("commit_message=") for arg in put)
 
 
 def test_a_cloud_rest_land_refuses_a_head_that_moved_and_leaves_main_alone(
