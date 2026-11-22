@@ -8,6 +8,7 @@ GitHub answers 304, at no quota, while nothing changed. The budgets below fail a
 
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 from typing import Any
@@ -96,7 +97,12 @@ def wait(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     def landing(pr: Any, only: bool = False) -> tuple[int, bool]:
         state["rounds"].append(state["now"])
-        pull = {"number": 7, "headRefName": "feature", "headRefOid": origin.head}
+        pull = {
+            "number": 7,
+            "headRefName": "feature",
+            "headRefOid": origin.head,
+            "baseRefOid": origin.base,
+        }
         approvals.watched.update(base="main", pulls=[pull], required={"check"})
         if state["held"]:
             approvals.held_tip = (LOCK, origin.lock)
@@ -204,3 +210,80 @@ def test_a_push_to_the_head_runs_the_round_after_its_poll(wait: dict[str, Any]) 
     wait["ticks"].append((90, lambda: setattr(wait["origin"], "head", "c" * 40)))
     approvals.land(7, wait=True)
     assert wait["rounds"][:2] == [0.0, float(approvals.QUEUE_POLL)]
+
+
+def test_a_base_that_moves_before_the_first_poll_still_runs_the_round(wait: dict[str, Any]) -> None:
+    """The base the round read is where the probe starts, so a merge (the PR's own, by a queue) seconds after the
+    round is still a move (#1915 review)."""
+    wait["held"] = False
+    wait["ticks"].append((10, lambda: setattr(wait["origin"], "base", "d" * 40)))
+    approvals.land(7, wait=True)
+    assert wait["rounds"][:2] == [0.0, float(approvals.QUEUE_POLL)]
+
+
+def test_a_required_check_that_turns_red_before_the_first_poll_runs_the_round(
+    wait: dict[str, Any],
+) -> None:
+    wait["held"] = False
+
+    def red() -> None:
+        wait["hub"].runs = [{"name": "check", "status": "completed", "conclusion": "failure"}]
+
+    wait["ticks"].append((10, red))
+    approvals.land(7, wait=True)
+    assert wait["rounds"][:2] == [0.0, float(approvals.QUEUE_POLL)]
+
+
+def test_a_lock_freed_while_waiting_on_ci_runs_the_round(wait: dict[str, Any]) -> None:
+    """A land that deferred to an older waiter watches the lock too, and runs its round once that waiter frees it."""
+    wait["held"] = False
+    wait["ticks"].append((60, wait["origin"].stamp))  # the older waiter takes it: still held
+    wait["ticks"].append((150, lambda: wait["origin"].stamp(approvals.FREE)))
+    approvals.land(7, wait=True)
+    assert wait["rounds"][:2] == [0.0, float(approvals.QUEUE_POLL)]
+
+
+def test_a_ci_probe_that_fails_runs_the_round_and_never_ends_the_wait(
+    wait: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wait["held"] = False
+    origin = wait["origin"]
+
+    def offline(*args: str) -> str:
+        if args[0] == "ls-remote" and 30 <= wait["now"] < 240:
+            raise subprocess.CalledProcessError(
+                128, ["git"], "", "Could not resolve host: github.com"
+            )
+        return origin(*args)
+
+    monkeypatch.setattr(approvals, "git", offline)
+    assert approvals.land(7, wait=True) == approvals.WAITING  # to the ceiling, not a failure
+    assert wait["rounds"][:2] == [0.0, float(approvals.QUEUE_POLL)]
+
+
+def test_the_real_round_records_what_the_probe_watches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """landing() itself, its batch stubbed: the base, the named PRs and the base's required checks but the loop's own."""
+    pull = {"number": 7, "headRefName": "feature", "headRefOid": HEAD, "baseRefOid": BASE_TIP}
+    seen: dict[str, Any] = {}
+
+    def batch(*_a: Any, **_k: Any) -> tuple[int, bool]:
+        seen.update(
+            base=approvals.watched["base"],
+            pulls=approvals.watched["pulls"],
+            required=set(approvals.watched["required"]),
+        )
+        return approvals.WAITING, True
+
+    monkeypatch.setattr(approvals, "land_base", lambda pr: ([pull], "main", 0))
+    monkeypatch.setattr(
+        approvals.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", "")
+    )
+    monkeypatch.setattr(approvals, "policy_from", lambda base: contextlib.nullcontext())
+    monkeypatch.setattr(approvals, "project", lambda: (None, None))
+    monkeypatch.setattr(approvals, "required_checks", lambda base: {"check", approvals.LAND})
+    monkeypatch.setattr(approvals, "placed", lambda *a: contextlib.nullcontext())
+    monkeypatch.setattr(approvals, "mergify", lambda loop: False)
+    monkeypatch.setattr(approvals, "landing_here", batch)
+    monkeypatch.setattr(approvals, "land_event", lambda *a, **k: None)
+    assert approvals.landing(7) == (approvals.WAITING, True)
+    assert seen == {"base": "main", "pulls": [pull], "required": {"check"}}

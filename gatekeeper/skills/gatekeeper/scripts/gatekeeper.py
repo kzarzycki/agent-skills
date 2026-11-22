@@ -6098,6 +6098,15 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
             try:
                 moved = probe.moved()
             except subprocess.CalledProcessError as exc:
+                if not probe.lock:
+                    # a CI probe that failed is no news, never the wait's end: the round, after its poll, reads all
+                    # again and has its own network retries
+                    print(
+                        f"land --wait: the CI probe failed, the round reads again: {stderr_of(exc)}",
+                        flush=True,
+                    )
+                    probe.stirred = True
+                    continue
                 missed += 1
                 if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
                     raise
@@ -6113,8 +6122,10 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
 
 class Probe:
     """What a waiting land reads between two landing() rounds (FULL says what): the held lock the last round waited
-    on, else the base and the named PRs' heads and their checks. `idle` when it has neither, `stirred` once a CI state
-    moved (the round then runs again after its poll, with nothing more read meanwhile)."""
+    on, else the base, the base's lock and the named PRs' heads and their checks. `idle` when it has neither,
+    `stirred` once a CI state moved (the round then runs again after its poll, with nothing more read meanwhile). Each
+    starts from what the round read (the base's tip and each head as the PRs gave them, each head's checks read at
+    once), so a move between the round and the first poll is still a move."""
 
     def __init__(self) -> None:
         self.lock = held_tip
@@ -6125,10 +6136,19 @@ class Probe:
         self.heads = {
             f"refs/pull/{p['number']}/head": p.get("headRefOid") or "" for p in self.pulls
         }
-        self.base_tip: str | None = None
+        self.base_tip: str | None = next(
+            (p["baseRefOid"] for p in self.pulls if p.get("baseRefOid")), None
+        )
+        self.lock_tip: str | None = None
         self.checks: dict[str, tuple[tuple[str, str], ...]] = {}
         self.idle = not self.lock and not self.heads
         self.stirred = False
+        if not self.lock:
+            for head in filter(None, self.heads.values()):
+                try:
+                    self.checks[head] = ci_state(head, self.required)
+                except subprocess.CalledProcessError:
+                    pass  # the first poll reads it
 
     def beat(self) -> None:
         """This land's place in the waiting order and each named PR's `waiting` event, as a round writes them, so a
@@ -6167,9 +6187,9 @@ class Probe:
         return True
 
     def ci_moved(self) -> bool:
-        branch = f"refs/heads/{self.base}"
+        branch, lock = f"refs/heads/{self.base}", LOCK.format(self.base)
         listed: dict[str, str] = {}
-        for line in git("ls-remote", "origin", branch, *self.heads).splitlines():
+        for line in git("ls-remote", "origin", branch, lock, *self.heads).splitlines():
             sha, _, name = line.partition("\t")
             listed[name.strip()] = sha.strip()
         base = listed.get(branch)
@@ -6177,6 +6197,11 @@ class Probe:
             self.base_tip = base
         elif base != self.base_tip:
             return True
+        # the base's lock freed: a land this one deferred to (waiter_ahead) is done with it, so this round may take it
+        tip = listed.get(lock)
+        if tip and self.lock_tip is not None and tip != self.lock_tip and lock_free(lock, tip):
+            return True
+        self.lock_tip = tip or ""
         for ref, head in list(self.heads.items()):
             now = listed.get(ref) or head
             if head and now != head:
@@ -6197,6 +6222,13 @@ def restamped(ref: str, tip: str, old: str) -> bool:
     git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
     title, _, parents = git("log", "-1", "--format=%s%x00%P", tip).strip().partition("\0")
     return title.startswith(HELD) and parents.split()[:1] == [old]
+
+
+def lock_free(ref: str, tip: str) -> bool:
+    """Whether the lock's `tip` says it is free (FREE), fetched first: git only, no API call."""
+    name = ref.removeprefix("refs/heads/")
+    git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
+    return git("log", "-1", "--format=%s", tip).strip().startswith(FREE)
 
 
 def ci_state(head: str, required: set[str]) -> tuple[tuple[str, str], ...]:
