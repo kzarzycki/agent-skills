@@ -22,8 +22,8 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 
-# gatekeeper.py sets these three once it has loaded this module (sibling): the refusal that exits 1, the masking of a
-# home or temp path in a posted text, and the deny list's refusal of a text naming a listed term
+# gatekeeper.py sets these four once it has loaded this module (sibling): the refusal that exits 1, the masking of a
+# home or temp path in a posted text, the deny list's refusal of a text naming a listed term, and OWN_CHECKS
 class Refused(Exception):
     """A reason to stop with exit 1, printed as is: gatekeeper.py's own, once it loads this module."""
 
@@ -216,39 +216,68 @@ def texts(data: str) -> list[str]:
 # act as the same Admin account, so this check is the only thing that keeps the bypass the owner's (#1722). Written in two
 # parts so that no script of the pack holds it whole, which a test asserts.
 BYPASS_FLAG = "-" * 2 + "ad" + "min"
-# the one REST route that merges, and the only fields a helper may send it
-MERGE_ROUTE = re.compile(r"/pulls/\d+/merge(?:\?|$)")
+# the one REST route that merges, and the only fields a helper may send it; the route may end in slashes
+MERGE_ROUTE = re.compile(r"/pulls/\d+/merge/*(?:\?|$)")
 MERGE_FIELDS = frozenset({"merge_method", "sha", "commit_title", "commit_message"})
+# `gh api`'s field flags, in every spelling it accepts: `-f k=v`, `-fk=v`, `--field k=v`, `--field=k=v`, and the same
+# for -F and --raw-field. A short flag may sit in a cluster (`-if k=v`), and these short flags take a value
 FIELD_FLAGS = frozenset({"-f", "-F", "--field", "--raw-field"})
+VALUE_SHORT = frozenset("HqtXpfF")
+
+
+def api_fields(words: list[str]) -> tuple[list[str], bool]:
+    """The field names a `gh api` call sends, and whether it reads its body from `--input` (either spelling)."""
+    sent, body, i = [], False, 0
+    while i < len(words):
+        word, i = words[i], i + 1
+        value: str | None = None
+        if word == "--input" or word.startswith("--input="):
+            body = True
+        elif word in FIELD_FLAGS:
+            value, i = (words[i] if i < len(words) else ""), i + 1
+        elif word.startswith(("--field=", "--raw-field=")):
+            value = word.split("=", 1)[1]
+        elif word.startswith("-") and not word.startswith("--") and len(word) > 1:
+            for at, char in enumerate(word[1:], 1):
+                if char not in VALUE_SHORT:
+                    continue
+                rest = word[at + 1 :]
+                if char in "fF":
+                    value = rest.removeprefix("=") if rest else (words[i] if i < len(words) else "")
+                if not rest:
+                    i += 1
+                break
+        if value is not None:
+            sent.append(value.split("=", 1)[0])
+    return sent, body
 
 
 def refuse_bypass(args: tuple[str, ...]) -> None:
-    """Refuse a gh call that asks to merge past the base's rules: `gh pr merge` with the bypass flag, or a call to the
-    REST merge route (`PUT pulls/N/merge`) that sends any field but MERGE_FIELDS or its body as `--input`, since either
-    could carry a bypass the pack cannot read. Every gh call of the pack goes through gh(), so no helper of it merges
-    that way."""
+    """Refuse a gh call that asks to merge past the base's rules: `gh pr merge` with the bypass flag, a call to the REST
+    merge route (`PUT pulls/N/merge`) that sends any field but MERGE_FIELDS or its body as `--input`, or a GraphQL
+    `mergePullRequest`, since any of them could carry a bypass the pack cannot read. Every gh call of the pack goes
+    through gh(), so no helper of it merges that way."""
     words = [str(arg) for arg in args]
     if any(word == BYPASS_FLAG or word.startswith(f"{BYPASS_FLAG}=") for word in words):
         raise Refused(
             "refused: a merge past the base's rules is the owner's, in the GitHub UI; no helper of the pack passes the"
             " bypass flag"
         )
-    if words[:1] == ["api"] and any(MERGE_ROUTE.search(word) for word in words):
-        sent = [
-            words[i + 1].split("=", 1)[0]
-            for i, word in enumerate(words[:-1])
-            if word in FIELD_FLAGS
-        ]
-        if "--input" in words or (extra := sorted(set(sent) - MERGE_FIELDS)):
+    if words[:1] != ["api"]:
+        return
+    sent, body = api_fields(words)
+    if any(MERGE_ROUTE.search(word) for word in words):
+        if body or (extra := sorted(set(sent) - MERGE_FIELDS)):
             raise Refused(
                 "refused: a REST merge sends merge_method, sha, commit_title and commit_message only"
-                + (
-                    f", not {', '.join(extra)}"
-                    if "--input" not in words
-                    else ", not a body read from --input"
-                )
+                + (f", not {', '.join(extra)}" if not body else ", not a body read from --input")
                 + ": a merge past the base's rules is the owner's, in the GitHub UI"
             )
+    elif "graphql" in words and any("mergepullrequest" in word.lower() for word in words):
+        raise Refused(
+            "refused: a GraphQL mergePullRequest is a merge the pack does not make: a merge past the base's rules is the"
+            " owner's, in the GitHub UI"
+        )
 
 
 def gh(*args: str, data: str | None = None) -> str:
@@ -1158,8 +1187,9 @@ def pull_commits(number: int) -> list[dict[str, Any]]:
     ]
 
 
-# the statuses the loop posts itself, which a base's required checks never wait for (gatekeeper.py's OWN)
-OWN_CHECKS = frozenset({"loop:approvals", "gatekeeper", "land"})
+# the statuses the loop posts itself, which a base's required checks never wait for: gatekeeper.py's OWN, set when it
+# loads this module, so the two never differ (empty until then, which only makes a required check of one of them count)
+OWN_CHECKS: frozenset[str] = frozenset()
 GREEN_CHECKS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
 
 

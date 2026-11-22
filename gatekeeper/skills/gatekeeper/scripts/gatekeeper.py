@@ -4893,6 +4893,7 @@ def sibling(name: str) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.Refused, module.public, module.denied = Refused, public, denied
+    module.OWN_CHECKS = frozenset(OWN)
     return module
 
 

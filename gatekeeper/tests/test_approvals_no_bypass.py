@@ -71,6 +71,76 @@ def test_a_rest_merge_asking_to_bypass_is_refused_before_gh_runs(
     assert ran == []
 
 
+ROUTE = "repos/{owner}/{repo}/pulls/7/merge"
+# every spelling gh api accepts for sending one field, each carrying the field `bypass`
+SPELLINGS = {
+    "-f spaced": ("-f", "bypass=true"),
+    "-F spaced": ("-F", "bypass=true"),
+    "-f attached": ("-fbypass=true",),
+    "-F attached": ("-Fbypass=true",),
+    "-f attached with =": ("-f=bypass=true",),
+    "--field spaced": ("--field", "bypass=true"),
+    "--field=": ("--field=bypass=true",),
+    "--raw-field spaced": ("--raw-field", "bypass=true"),
+    "--raw-field=": ("--raw-field=bypass=true",),
+    "a short cluster": ("-if", "bypass=true"),
+    "a nested key": ("-f", "bypass[x]=true"),
+}
+
+
+@pytest.mark.parametrize("spelling", SPELLINGS)
+@pytest.mark.parametrize("before", [True, False])
+def test_a_rest_merge_asking_to_bypass_is_refused_in_every_spelling_of_a_field_flag(
+    ran: list[tuple[str, ...]], spelling: str, before: bool
+) -> None:
+    flags = SPELLINGS[spelling]
+    words = (*flags, ROUTE) if before else (ROUTE, *flags)
+    with pytest.raises(approvals.Refused, match="sends merge_method, sha, commit_title"):
+        GITHUB.gh("api", "-X", "PUT", *words)
+    assert ran == []
+
+
+@pytest.mark.parametrize(
+    "flags", [("--input", "body.json"), ("--input=body.json",), ("--input", "-")]
+)
+def test_a_rest_merge_reading_its_body_from_input_is_refused_in_either_spelling(
+    ran: list[tuple[str, ...]], flags: tuple[str, ...]
+) -> None:
+    with pytest.raises(approvals.Refused, match="--input"):
+        GITHUB.gh("api", "-X", "PUT", ROUTE, *flags)
+    assert ran == []
+
+
+@pytest.mark.parametrize("route", [ROUTE + "/", ROUTE + "//", ROUTE + "/?x=1", ROUTE + "?x=1"])
+def test_the_merge_route_is_refused_with_a_trailing_slash_or_a_query(
+    ran: list[tuple[str, ...]], route: str
+) -> None:
+    with pytest.raises(approvals.Refused, match="sends merge_method"):
+        GITHUB.gh("api", "-X", "PUT", route, "-f", "x=1")
+    assert ran == []
+
+
+def test_a_graphql_merge_pull_request_is_refused_before_gh_runs(ran: list[tuple[str, ...]]) -> None:
+    query = 'mutation { mergePullRequest(input: {pullRequestId: "X"}) { clientMutationId } }'
+    for words in (("-f", f"query={query}"), (f"-fquery={query}",), ("--field", f"query={query}")):
+        with pytest.raises(approvals.Refused, match="GraphQL mergePullRequest"):
+            GITHUB.gh("api", "graphql", *words)
+    assert ran == []
+
+
+def test_a_rest_merge_in_each_spelling_of_its_own_fields_goes_through(
+    ran: list[tuple[str, ...]],
+) -> None:
+    GITHUB.gh("api", "-X", "PUT", ROUTE + "/", "-fmerge_method=squash", "--field=sha=abc")
+    GITHUB.gh("api", "-XPUT", ROUTE, "--raw-field", "commit_title=t", "-H", "Accept: x")
+    GITHUB.gh("api", "graphql", "-f", "query={ viewer { login } }")
+    assert len(ran) == 3
+
+
+def test_the_adapters_own_checks_are_the_gatekeepers() -> None:
+    assert GITHUB.OWN_CHECKS == frozenset(approvals.OWN)
+
+
 def test_a_rest_merge_with_its_own_fields_goes_through(ran: list[tuple[str, ...]]) -> None:
     GITHUB.gh(
         "api",
