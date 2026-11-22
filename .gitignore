@@ -26,3 +26,4 @@ apm_modules/
 # Upstream deltas the capability-pack CLI saves when a port is required (never committed)
 artifacts/engineering-deltas/
 .test-map/
+*.orig

@@ -6,7 +6,17 @@ targets:
 - claude
 - codex
 dependencies:
-  apm: []
+  apm:
+  - git: kzarzycki/agent-skills/gatekeeper
+    ref: ^0.1.0
+  - git: kzarzycki/agent-skills/loop
+    ref: ^0.1.0
+  - git: kzarzycki/agent-skills/github
+    ref: ^0.1.0
+  - git: kzarzycki/agent-skills/chief-of-staff
+    ref: ^0.1.0
+  - git: kzarzycki/agent-skills/omnigent
+    ref: ^0.1.0
   mcp: []
 includes: auto
 scripts: {}
