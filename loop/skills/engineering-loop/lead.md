@@ -243,7 +243,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    verifier's session across passes instead: `send` it the next pass's brief (`loop.py brief`, as above)
    rather than starting one, and close it once the PR lands. Start it as soon as the fixer reports the pushed head, which has had the narrow checks only. When
    the verifier is satisfied with a head, start the gate of record on that head (worker.md, Gates and push) and wait on it
-   yourself (`wait-for --log <log> --pid <pid>`): `land` needs a satisfied verdict and a green gate on the same head, so
+   yourself, with one wake (verifier.md, A long or locked run is detached): `land` needs a satisfied verdict and a green gate on the same head, so
    neither check weakens, and a red gate's failure goes to a worker as a fix round, whose new head gets a short
    re-verify of the delta, then a new gate. A finding that doesn't make the PR wrong or unmergeable, a note on a
    satisfied verdict included, waits for the merge and starts from main (SKILL.md, One
@@ -451,14 +451,14 @@ timeout, a failure) (orchestrating-agents' backends/omnigent.md, One wake per ch
 Your own long runs (a build, a test, a gate, a land, a live check) end in something that wakes you, since a harness
 re-invokes a session only for its own tracked background tasks and a detached pid is none
 (orchestrating-agents, A wait wakes you, or you stay in the turn): a harness-tracked background task, a
-detached run with `LOOP_NOTIFY` set, or a `wait-for` in the same turn; never a turn ended on "waiting on pid N",
+detached run with `LOOP_NOTIFY` set, or one tracked background `wait-for --budget <its expected length>`; never a turn ended on "waiting on pid N",
 a log or, in a cloud session, a subagent of yours, which the supervisor nudges. Detached, they start the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, since Claude Code's low-memory reaper stops
 in-session background shells. Start each with `LOOP_NOTIFY` naming your session (omnigent-agents'
 SKILL.md, Waiting on a run or a PR), so its wrapper's `wait-for --notify` step tells you
-how it ended and you end your turn meanwhile; to block on one instead, the only way is
-`omnigent_agent.py wait-for --log <log> --pid <pid>`, or `wait-for --pr <n>` for a PR's checks,
-which blocks close to the tool limit and prints only the outcome. Start each with `exec`, or in its own process group under
+how it ended and you end your turn meanwhile; else wait on one with one wake, never a loop of short calls:
+`omnigent_agent.py wait-for --log <log> --pid <pid> --budget <its expected length>`, or `wait-for --pr <n>` for a PR's checks,
+as a background call your harness tracks. Start each with `exec`, or in its own process group under
 `trap 'kill 0' EXIT`, since stopping a wrapper shell leaves its command running, gating a target
 you have moved past; count runs with a pattern anchored at the interpreter
 (`pgrep -f '^python3 <script> run'`), since one the wrapper's own command line holds never drops.

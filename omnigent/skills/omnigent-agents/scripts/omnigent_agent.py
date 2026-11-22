@@ -89,7 +89,7 @@ tool call it answered; exit 1 when none was pending (naming any pending question
 approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
 seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for`` is how a role
 waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
-call), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change; a live ``--pid`` run not on the lock whose ``--log`` has not grown for ``--stall`` seconds (default 300, 0 off) is hung: its process group gets SIGTERM, then SIGKILL after 5 s, unless the pid is not the run's, and the outcome is ``stalled: no output in <log> for <n>s; killed pid <pid>'s group`` and the log's last 30 lines, exit 1), and ends at the first of: the log's ``exit <n>`` line (the detached
+call; the run's expected length for one call the harness tracks in the background, so the wait wakes once), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change; a live ``--pid`` run not on the lock whose ``--log`` has not grown for ``--stall`` seconds (default 300, 0 off) is hung: its process group gets SIGTERM, then SIGKILL after 5 s, unless the pid is not the run's, and the outcome is ``stalled: no output in <log> for <n>s; killed pid <pid>'s group`` and the log's last 30 lines, exit 1), and ends at the first of: the log's ``exit <n>`` line (the detached
 recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
 exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
 which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
@@ -363,8 +363,8 @@ NO_REPORT = "Your turn ended without the report."
 # What a cloud session's nudge says in place of "poll a run you started detached": that run died.
 CLOUD_RUN_NUDGE = (
     "A run you started in the background may not have outlived your turn (a cloud VM may not): check"
-    " whether it finished and posted its result, restart it only if it did not, and keep this turn"
-    " open, looping on `wait-for`, until it ends,"
+    " whether it finished and posted its result, restart it only if it did not, and wait on it with one"
+    " harness-tracked background `wait-for --budget <its expected length>` (engineering-loop's verifier.md, its long-run rule),"
 )
 NUDGE = NO_REPORT + " Poll any long run you started detached, then write the report to {report}."
 # A cloud worker's report: a comment on the PR its last message links (wait --pr).
@@ -411,9 +411,9 @@ LEAD_NUDGE = (
 LEAD_NUDGE_CLOUD = (
     "Supervisor: your turn ended with no ending and no named wait. If it ended on your own background"
     " run, that run may not outlive the turn (a cloud VM may not): check whether it finished and"
-    " posted its result, restart it only if it did not, and keep the turn open, looping on"
-    " `wait-for`, until it ends. Then end your turn with DONE, STILL WORKING naming what you wait on"
-    " (never your own background run), or USER NEEDED."
+    " posted its result, restart it only if it did not, and wait on it with one harness-tracked"
+    " background `wait-for --budget <its expected length>`. Then end your turn with DONE, STILL WORKING"
+    " naming what you wait on (that tracked wait's task id, never your detached run), or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
 )
 # A STILL WORKING whose wait nothing wakes the lead for (#1753): a harness re-invokes a session for
@@ -422,9 +422,9 @@ LEAD_NUDGE_CLOUD = (
 LEAD_UNTRACKED = (
     "Supervisor: your turn ended waiting on something that does not wake you when it ends (a pid,"
     " a log, or a background subagent in a cloud session). Check whether it has ended; if not, wait"
-    " on it in this turn (`omnigent_agent.py wait-for --log <log> --pid <pid file>`, called again on"
-    " `still running`, or the subagent's own result), or restart it as a harness-tracked background"
-    " task, or detached with LOOP_NOTIFY set. Then end your turn with DONE, STILL WORKING naming"
+    " on it with one harness-tracked background `omnigent_agent.py wait-for --log <log> --pid <pid file>"
+    " --budget <its expected length>` (or the subagent's own result), or restart it detached with"
+    " LOOP_NOTIFY set. Then end your turn with DONE, STILL WORKING naming"
     " what wakes you, or USER NEEDED."
 )
 UNTRACKED_WHY = "waits on what does not wake it"
@@ -671,7 +671,8 @@ HEAD_SECONDS = 300.0
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
-# wait-for's default budget: under a 10-minute tool call with room for the call's own start and exit
+# wait-for's default budget, for a foreground call: under a 10-minute tool call with room for the call's own start
+# and exit. A wait the harness tracks in the background passes the run's expected length instead, so it wakes once.
 WAIT_FOR_BUDGET = 570.0
 WAIT_FOR_EVERY = 2.0  # a local read: a log or a pid
 WAIT_FOR_PR_EVERY = 120.0  # a poll is several GitHub calls, and several waiters run at once
@@ -729,12 +730,14 @@ DETACH_LINE = "A long run follows engineering-loop's verifier.md, A long or lock
 CLOUD_RUN_LINE = (
     "A run may not outlive the turn that started it, since a cloud VM may be replaced between turns,"
     " and a foreground call there is cut short: start it detached as engineering-loop's verifier.md's recipe says (its"
-    " log, pid and exit in files), then loop on `omnigent_agent.py wait-for --log <log> --pid <pid>"
-    " --budget 480` in the same turn, calling it again each time it prints `still running` (exit 6),"
-    " and end the turn only once the run has ended and its result is posted; never use a plain"
-    " `sleep`, which the harness blocks. The lead waits on the completion signal you post (the PR"
-    " comment or a status file), not on your turn, so a `STILL WORKING` that names only your own"
-    " background run is not a valid ending."
+    " log, pid and exit in files), then wait on it with one wake: one `omnigent_agent.py wait-for --log <log>"
+    " --pid <pid> --budget <the run's expected length>` started as a background call your harness tracks"
+    " (Claude Code: Bash `run_in_background`, which keeps running across turns and wakes you when it"
+    " exits), never a short `wait-for`, `until grep` or `sleep` loop, since each return re-reads your"
+    " whole context. Before the run has ended and its result is posted, end a turn only on that tracked"
+    " wait, naming its task id. The lead waits on the completion signal you post (the PR comment or a"
+    " status file), not on your turn, so a `STILL WORKING` that names only your own detached run is not"
+    " a valid ending."
 )
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
@@ -10209,7 +10212,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         "--budget",
         type=float,
         default=WAIT_FOR_BUDGET,
-        help=f"seconds before `still running`, exit {LIMIT} (default {WAIT_FOR_BUDGET:.0f})",
+        help=f"seconds before `still running`, exit {LIMIT}: the run's expected length for a background call, so it wakes once (default {WAIT_FOR_BUDGET:.0f}, a foreground call)",
     )
     p.add_argument(
         "--stall",
