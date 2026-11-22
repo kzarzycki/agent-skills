@@ -309,9 +309,11 @@ matches with `gh pr merge --merge --match-head-commit`, a merge commit that keep
 PR needs it), instead of the squash above; every other PR lands as before. `land` prints each PR's method, and a
 match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form.
 `where: host | cloud | both` (default `both`) says where `land` runs: it refuses elsewhere, exit 1, before reading any
-PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`; its checkout signs with the session's own
-key, shared across that service's users, so there `land` refuses without `signed_squash_to` unless the base requires GitHub's merge queue (GitHub's merge is GraphQL, which
-the session's proxy refuses, and signs with GitHub's key), when it names no `signing_key_env`, and when that variable
+PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`. There, without `signed_squash_to`, `land`
+merges each PR over REST (`PUT pulls/N/merge`, squash, `sha` the gated head), since GitHub's GraphQL merge is refused by
+the session's proxy; GitHub signs that commit as it does a host's, and no signing key is needed. With `signed_squash_to`
+its checkout signs with the session's own key, shared across that service's users, so `land` refuses without
+`ssh-keygen` installed, when it names no `signing_key_env`, and when that variable
 is unset, empty, no unencrypted SSH private key, or a key whose public half is no line of the allowed signers file, each
 refusal naming which and never the key. Else it writes the key to a mode-0600 file in a fresh temporary directory,
 removed however the land ends, and every git command of the land runs with it (`-c gpg.format=ssh -c
@@ -2953,6 +2955,10 @@ CLOUD = "CLAUDE_CODE_REMOTE"
 SIGNING: list[str] = []
 
 
+# a signed land runs ssh-keygen to read the key and to sign and verify each squash
+NO_KEYGEN = "land with `land.signed_squash_to` needs `ssh-keygen` (the OpenSSH client), which is not installed: install it"
+
+
 def in_cloud() -> bool:
     return os.environ.get(CLOUD) == "true"
 
@@ -2987,10 +2993,10 @@ def armoured(value: str) -> str:
 @contextlib.contextmanager
 def placed(loop: str | None, queue: bool = False) -> Any:
     """Refuse a land where loop.md's `land.where` (default `both`) excludes the place it runs, before any PR is read.
-    In a cloud session (CLOUD) also refuse one on a base without GitHub's merge queue (`queue`, which merges and signs
-    each PR itself) and without `land.signed_squash_to`, since otherwise GitHub's own merge is GraphQL there and signs
-    with GitHub's key. On a base without the queue refuse there too one whose `signing_key_env` variable is unset, empty or holds a key the allowed
-    signers lack; else hold that key (armoured(), if a one-line variable stripped its armour) in a mode-0600 file in
+    A cloud session (CLOUD) on a base without GitHub's merge queue (`queue`, which merges and signs each PR itself) and
+    without `land.signed_squash_to` holds no key: GitHub's merge, over REST there, signs with GitHub's key. With
+    `land.signed_squash_to` refuse a land with no `ssh-keygen` installed, and one whose `signing_key_env` variable is
+    unset, empty or holds a key the allowed signers lack; else hold that key (armoured(), if a one-line variable stripped its armour) in a mode-0600 file in
     a fresh temporary directory, removed whatever happens, and sign each squash with it (SIGNING). The key and the variable's value are never printed."""
     global SIGNING
     land, cloud = settings(loop).get("land"), in_cloud()
@@ -2999,15 +3005,12 @@ def placed(loop: str | None, queue: bool = False) -> Any:
     where = LAND_WHERE.aliases.get(where, where)
     if where not in ("both", "cloud" if cloud else "host"):
         raise Refused(f"loop.md's `land.where` is `{where}`, so land does not run in {place}")
-    if cloud and not queue and not (land or {}).get("signed_squash_to"):
-        raise Refused(
-            "land in a cloud session needs a base that requires GitHub's merge queue, or loop.md's"
-            " `land.signed_squash_to`: otherwise GitHub merges, over GraphQL, which the session's proxy refuses, and"
-            " signs with GitHub's key"
-        )
-    if not cloud or queue:
+    # a cloud land without `signed_squash_to` merges over REST, which GitHub signs: no key is held
+    if not cloud or queue or not (land or {}).get("signed_squash_to"):
         yield
         return
+    if not shutil.which("ssh-keygen"):
+        raise Refused(NO_KEYGEN)
     name = land.get("signing_key_env")
     if not name:
         raise Refused(
@@ -3133,6 +3136,8 @@ def signed_squash(pull: dict[str, Any], signers: Path, onto: tuple[str, str] | N
     base. The head must be the one the gates checked and contain the base's tip, so the squash undoes nothing; with
     `onto` (a commit and a tree, from land's batch), the base's tip must be that commit and the squash holds that
     tree, the merge of the head the batch gated."""
+    if not shutil.which("ssh-keygen"):
+        raise Refused(NO_KEYGEN)
     pr, base, branch, head = (
         pull["number"],
         pull["baseRefName"],

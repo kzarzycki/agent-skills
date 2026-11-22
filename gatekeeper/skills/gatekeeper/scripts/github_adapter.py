@@ -1118,15 +1118,34 @@ def pull_commits(number: int) -> list[dict[str, Any]]:
 
 def merge(number: int, method: str, body: str | None, head: str) -> None:
     """Merge PR #number by `method` (merge, squash or rebase), pinned to `head`, with `body` as the commit's body unless
-    it is None (GitHub's default). A base requiring a merge queue only queues it."""
-    gh(
-        "pr",
-        "merge",
-        str(number),
-        f"--{method}",
-        *(("--body", body) if body is not None else ()),
-        "--match-head-commit",
-        head,
+    it is None (GitHub's default). A base requiring a merge queue only queues it. Where GitHub refuses GraphQL, which
+    `gh pr merge` goes over, a cloud session's proxy for one, the same merge goes over REST (`PUT pulls/N/merge`, whose
+    `sha` is the pin and whose `commit_message` is the body)."""
+
+    def rest_merge() -> str:
+        return gh(
+            "api",
+            "-X",
+            "PUT",
+            f"repos/{{owner}}/{{repo}}/pulls/{number}/merge",
+            "-f",
+            f"merge_method={method}",
+            "-f",
+            f"sha={head}",
+            *(("-f", f"commit_message={body}") if body is not None else ()),
+        )
+
+    fast(
+        lambda: gh(
+            "pr",
+            "merge",
+            str(number),
+            f"--{method}",
+            *(("--body", body) if body is not None else ()),
+            "--match-head-commit",
+            head,
+        ),
+        rest_merge,
     )
 
 
