@@ -144,8 +144,11 @@ run = """targets=$(uv run python tools/affected_tests.py "${GATE_BASE:-origin/ma
 uv run python tools/gate_slot.py pytest -q -m 'not live_agent and not slow' -p tools.gate_workers -n auto --dist loadfile $targets"""
 
 [tasks.check]
-description = "Nightly in CI: vendor-engineering-check and lint while tests are off"
+description = "Nightly in CI: vendor-engineering-check, lint and the full suite, slow tests included: the one run of the whole suite (#1872)"
+# No PR runs the whole suite: the worker runs a PR's affected tests and the Mergify batch the batch's (test-batch), so
+# a break the selector misses reaches main and this run finds it within a day (#1872). `test` lints too.
 run = [
   "mise run vendor-engineering-check",
-  "mise run lint",
-]  # tests off until the suite runs whole in a few minutes (#1653); `mise run test` still runs them by hand
+  "mise run test",
+  "mise run test-slow",
+]
