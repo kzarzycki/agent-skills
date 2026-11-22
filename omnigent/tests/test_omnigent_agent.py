@@ -4744,7 +4744,8 @@ def test_a_failed_line_is_no_report_to_the_supervisor_a_start_a_follow_up_or_a_r
     assert omnigent_agent.main(["start", "claude", "t", "b.md", "r.md"]) == 0
     # stamped later than the next write: what the kernel's coarse clock can do within one tick
     os.utime(report, (2**31, 2**31))
-    killed_mid_run(fake, 2, lambda: report.write_text("fixed"))
+    # send's first look is off_request's (#1835), before the message: the kill comes during the wait after it
+    killed_mid_run(fake, 3, lambda: report.write_text("fixed"))
     assert omnigent_agent.main(["send", "s0", "b.md", "r.md"]) == 0
     assert report.read_text() == "fixed"
 
