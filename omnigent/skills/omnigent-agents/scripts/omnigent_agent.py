@@ -288,6 +288,10 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
+TWIN_ROLES = (
+    "worker",
+    "verifier",
+)  # one running per PR (#1806): a lead coordinates, and runs no PR's work itself
 # A Claude worker or verifier gets only the built-in tools its role calls and no user MCP servers,
 # whose schemas and listings it would otherwise re-read every turn; Omnigent's own and plugins'
 # servers stay. A project's `Worker tools:` or `Verifier tools:` line names more, or `full`.
@@ -4624,7 +4628,7 @@ def start(
     # whole run on the same head, so the start waits until the first ends or is stopped
     kind = Path(role).stem if role else ""
     held = f"{slug}#{pr}" if slug else label
-    if kind in ROLES and held and (twin := running_twin(og, held, kind)):
+    if kind in TWIN_ROLES and held and (twin := running_twin(og, held, kind)):
         raise Fail(
             f"PR {held} already has a running {kind}, {twin}: wait on it, or stop it with"
             f" `reap --force {twin}`, then start again"
@@ -6150,7 +6154,7 @@ def finish_delivered(
         and named
         and str(info.get("status")) in RUNNING
         and bool((info.get("labels") or {}).get(PR_LABEL))
-        and (info.get("labels") or {}).get("omni.role") in ROLES
+        and (info.get("labels") or {}).get("omni.role") in TWIN_ROLES
     )
     if (
         hold_pr

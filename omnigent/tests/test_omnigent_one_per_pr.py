@@ -98,3 +98,50 @@ def test_reap_force_keeps_an_idle_kept_worker_and_reap_alone_a_running_one(monke
     status["first"] = "running"
     assert "kept" in omnigent_agent.reap(og, ["first"])[0][0]
     assert og.archived == [] and og.interrupted == []
+
+
+def running(og, sid: str, labels: dict) -> None:
+    """``sid``, running and not stuck (no dated item), with ``labels``."""
+    og.labels[sid] = labels
+    og.sessions[sid] = []
+    infos = getattr(og, "_infos", {})
+    infos[sid] = {"id": sid, "status": "running", "labels": labels}
+    og._infos = infos
+    og.info = lambda s: dict(og._infos[s])  # type: ignore[method-assign]
+
+
+@pytest.mark.parametrize("how", ["children", "merged"])
+def test_reap_force_keeps_a_running_pr_worker_it_reached_without_naming(monkeypatch, how) -> None:
+    """Only a session named on the command line is stopped: one reached through `--children` or `--merged` keeps
+    today's rules, so a running worker of an open PR stays."""
+    og = base.FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "pr_hold", lambda repo, pr: "o/r#7 is open")
+    running(og, "w", {"omni.role": "worker", "omni.pr": "o/r#7"})
+    og.call = lambda method, path, *a: {"data": [dict(og._infos["w"])]}  # type: ignore[method-assign]
+    if how == "children":
+        og.kids = ["w"]
+        lines, _ = omnigent_agent.reap(og, [], parent="lead", force=True)
+    else:
+        lines, _ = omnigent_agent.reap(og, [], force=True, merged=True, pr=7)
+    assert (
+        og.interrupted == [] and og.archived == [] and any("w" in l and "kept" in l for l in lines)
+    )
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        {},  # no PR, no role
+        {"omni.pr": "o/r#7"},  # a PR label but no role
+        {"omni.role": "lead", "omni.pr": "o/r#7"},  # a role outside the worker and verifier
+        {"omni.role": "worker"},  # a role but no PR
+    ],
+)
+def test_reap_force_keeps_a_named_running_session_that_is_no_role_session_on_a_pr(
+    monkeypatch, labels
+) -> None:
+    og = base.FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "pr_hold", lambda repo, pr: "o/r#7 is open")
+    running(og, "s", labels)
+    lines, _ = omnigent_agent.reap(og, ["s"], force=True)
+    assert og.interrupted == [] and og.archived == [] and "kept" in lines[0]
