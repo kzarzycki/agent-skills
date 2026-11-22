@@ -557,7 +557,7 @@ deleted file's, and a renamed or copied file's old name as well as its new one. 
 page of files it reads or an old name GitHub won't give, hold. The `plan` rule asks
 for the owner's plan approval, and has no `paths`, since a plan comes before the change. A `bot.<login>` section,
 such as `bot.dependabot[bot]` with `paths` uv.lock and **/package.json, lets that bot's PR merge without a verifier
-review when every commit is the bot's (authors, and a committer that is the bot or no account) and each file it changes, none renamed or copied,
+review when every commit is the bot's (author, and a committer that is the bot or no account) and each file it changes, none renamed or copied,
 matches one of its paths (exempt); with `branch: renovate/` it names an updater opening PRs under a person's token by
 its head branch instead, and a `verify` label refuses either; without one, every PR needs the review. The `signoff` rule says whose change the
 owner signs off in use after it lands: `check merge` needs the PR to link each issue it matches, or whose spec has a
@@ -1343,8 +1343,10 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
     head must be this repository's own branch, since a fork's PR may name any branch and only a writer pushes one
     here. GitHub's GraphQL spells a bot's login without the `bot` REST and the setting write, so both compare
     without it; a person can't hold a bot's login, so for a login the author's type is checked too. Every commit's
-    authors must be the PR's author, and its committer the author or no account (GitHub's web-flow committer on a
+    author must be the PR's author, and its committer the author or no account (GitHub's web-flow committer on a
     bot's or an API's commits), since another person's push or rebase of its branch is a change no verifier saw. A
+    `Co-Authored-By:` trailer names no one here: it is text the committer wrote in the message, not another account's
+    push, and GitHub resolves it into the commit's `authors` list, so only the commit's own `author` is read. A
     renamed or copied file refuses it, since GraphQL gives only the new path, which may hide code moved onto a lock
     file's name, and so does the label `verify`, which asks for the review (a major update). No entry, or more files
     or commits than the gate reads: no exemption."""
@@ -1360,14 +1362,14 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
     if not login or not nodes or (commits.get("totalCount") or 0) > len(nodes):
         return False
     for node in nodes:
-        authors = node["commit"]["authors"]
-        logins = [((a.get("user") or {}).get("login") or "") for a in authors["nodes"]]
-        if not logins or (authors.get("totalCount") or 0) > len(logins):
-            return False
-        committer = ((node["commit"].get("committer") or {}).get("user") or {}).get("login")
-        if committer is not None:
-            logins.append(committer)
-        if any(name.removesuffix("[bot]").lower() != login for name in logins):
+        commit = node["commit"]
+        wrote = ((commit.get("author") or {}).get("user") or {}).get("login") or ""
+        committer = ((commit.get("committer") or {}).get("user") or {}).get("login")
+        if any(
+            name.removesuffix("[bot]").lower() != login
+            for name in (wrote, committer)
+            if name is not None
+        ):
             return False
 
     def names(bot: dict[str, Any]) -> bool:
