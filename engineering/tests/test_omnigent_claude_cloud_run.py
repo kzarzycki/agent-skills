@@ -65,6 +65,11 @@ class RunFake(CloudFake):
     def home(self, name: str) -> dict:
         return {"id": "p1", "name": "proj"}
 
+    def project(
+        self, name: str
+    ) -> dict:  # the repository's project, which the launch dirs file under
+        return {"id": "p1", "name": "proj"}
+
     def host(self, name: str) -> str:
         return next(i for i, n in self.hosts().items() if name in (i, n))
 

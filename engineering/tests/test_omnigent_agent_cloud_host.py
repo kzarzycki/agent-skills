@@ -36,7 +36,7 @@ class Hosts(omnigent_agent.Omnigent):
         if path == "/v1/hosts":
             return {"hosts": self.rows}
         if path == "/v1/projects":
-            return {"data": [{"id": "p1", "name": "repo"}]}
+            return {"data": [{"id": "p0", "name": "Chief of staff"}, {"id": "p1", "name": "repo"}]}
         if path.startswith("/v1/sessions?kind=default&project=repo"):
             return {"data": self.records}
         if path.startswith("/v1/hosts/"):
@@ -49,6 +49,9 @@ class Hosts(omnigent_agent.Omnigent):
 
     def harness(self, name: str) -> str:
         return CLOUD if name == "claude-cloud" else "claude-native"
+
+    def home(self, name: str) -> dict:  # the caller's session files under another project
+        return {"id": "p0", "name": "Chief of staff"}
 
     def read_file(self, sid: str, path: str) -> str:
         if path in self.gone:
@@ -70,7 +73,8 @@ def row(host: str, mb: float, *harnesses: str, status: str = "online") -> dict:
 
 @pytest.fixture(autouse=True)
 def project(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OMNIGENT_PROJECT", "repo")
+    monkeypatch.delenv("OMNIGENT_PROJECT", raising=False)
+    monkeypatch.setattr(omnigent_agent, "repo_name", lambda: "repo")
 
 
 @pytest.fixture(autouse=True)
@@ -300,13 +304,14 @@ def test_a_create_that_timed_out_is_looked_up_by_title_and_reused_not_duplicated
 
 
 LOCAL = "/Users/me/dev/repo"  # the launcher's checkout, on no bridge host
+FAR_ID = "4673a77ef6ad4a169d5e86c10bafc5ee"  # how a session row names host far, as the server does
 LAUNCH = "/home/a/dev/repo-cloud"  # the repository's pinned launch dir on the bridge host
 
 
 def bridge(*records: dict) -> Hosts:
     """A launcher configuring no cloud harness beside bridge host ``far`` holding ``LAUNCH``."""
     og = Hosts(
-        [row("here", 9000, "claude-native"), row("far", 500, CLOUD)],
+        [row("here", 9000, "claude-native"), {**row("far", 500, CLOUD), "id": FAR_ID}],
         {f"{LAUNCH}/.claude/settings.local.json": pinned(), f"{LAUNCH}/.git": ""},
     )
     og.records = list(records)
@@ -314,7 +319,9 @@ def bridge(*records: dict) -> Hosts:
 
 
 def record(host: str, place: str, at: float = 1, agent: str = "claude-cloud") -> dict:
-    return {"host_id": host, "workspace": place, "agent_name": agent, "created_at": at}
+    """A session row on ``host``, which names host far by its hex id."""
+    named = FAR_ID if host == "far" else host
+    return {"host_id": named, "workspace": place, "agent_name": agent, "created_at": at}
 
 
 def test_a_launcher_without_the_cloud_harness_maps_its_path_to_the_bridges_launch_dir() -> None:
@@ -327,6 +334,8 @@ def test_a_launcher_without_the_cloud_harness_maps_its_path_to_the_bridges_launc
     assert omnigent_agent.pick_cloud_host(og, Path(LOCAL)) == ("far", Path(LAUNCH))
     assert omnigent_agent.pick_cloud_host(og, None) == ("far", Path(LAUNCH))
     assert omnigent_agent.cloud_placement(og) == ("far", LAUNCH)
+    assert omnigent_agent.far_launch_dirs(og, "far") == ["/home/a/old", LAUNCH]
+    assert omnigent_agent.far_launch_dirs(og, "FAR") == ["/home/a/old", LAUNCH]  # by name too
 
 
 def test_a_launcher_with_the_cloud_harness_never_has_its_path_mapped() -> None:
@@ -350,8 +359,11 @@ def test_a_launcher_without_the_cloud_harness_and_no_launch_dir_is_refused_not_s
 class Bridged(FakeOmnigent):
     """``cloud_far``'s server, whose project lists one cloud session on ``far`` at ``LAUNCH``."""
 
-    def home(self, name: str) -> dict:
-        return {"id": "p1", "name": "repo"}
+    def home(self, name: str) -> dict:  # the caller's session files under another project
+        return {"id": "p0", "name": "Chief of staff"}
+
+    def project(self, name: str) -> dict | None:
+        return {"id": "p1", "name": "repo"} if name == "repo" else None
 
     def call(self, method: str, path: str, body: object = None) -> dict:
         if path.startswith("/v1/sessions?kind=default&project=repo"):
@@ -371,8 +383,10 @@ def test_start_and_run_from_a_launcher_without_the_cloud_harness_land_on_the_bri
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, argv: list[str]
 ) -> None:
     monkeypatch.setattr(base, "FakeOmnigent", Bridged)
-    rows = [row("h", 9000, "claude-native"), row("far", 500, CLOUD)]
+    rows = [row("h", 9000, "claude-native"), {**row("far", 500, CLOUD), "id": FAR_ID}]
     og = cloud_far(monkeypatch, tmp_path, rows, LAUNCH)
+    og.others = [{"id": "x1", "host_id": FAR_ID, "status": "idle", "updated_at": 1}]
+    og.procs[FAR_ID] = og.procs["far"]  # read through a session the server files under the hex id
     og.procs["far"][f"{LAUNCH}/.git"] = ""
     monkeypatch.setattr(omnigent_agent, "wait", lambda *a, **k: "done")
     cmd, *rest = argv

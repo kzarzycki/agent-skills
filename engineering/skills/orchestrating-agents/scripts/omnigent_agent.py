@@ -2951,15 +2951,29 @@ def read_on_host(og: Omnigent, host_id: str, path: str) -> str:
     raise why
 
 
+def host_aliases(og: Omnigent, host_id: str) -> set[str]:
+    """Every value naming host ``host_id`` in its ``GET /v1/hosts`` row (``host_id``, ``id``,
+    ``name``), since a session row's ``host_id`` need not be the value the hosts list keys by
+    (#1693); just ``host_id`` when the row or the call is missing."""
+    try:
+        rows = og.call("GET", "/v1/hosts")["hosts"]
+    except (Fail, KeyError):
+        rows = []
+    keys = ("host_id", "id", "name")
+    row = next((r for r in rows if host_id in {str(r.get(k) or "") for k in keys}), {})
+    return {host_id} | {str(row[k]) for k in keys if row.get(k)}
+
+
 def live_sessions(og: Omnigent, host_id: str) -> list[dict]:
     """The live sessions (not archived, not failed) on host ``host_id``, sub-agents included."""
     path, found, after = "/v1/sessions?kind=any&limit=1000", [], ""
+    named = host_aliases(og, host_id)
     while True:
         page = og.call("GET", path + (f"&after={after}" if after else ""))
         found += [
             s
             for s in page.get("data", [])
-            if str(s.get("host_id") or "") == host_id
+            if str(s.get("host_id") or "") in named
             and not s.get("archived")
             and s.get("status") != "failed"
         ]
@@ -4033,20 +4047,25 @@ def offers_cloud(og: Omnigent, hosts: list[dict]) -> bool | None:
 
 
 def far_launch_dirs(og: Omnigent, host_id: str) -> list[str]:
-    """The workspaces of this project's cloud sessions (``GET /v1/sessions?project=<name>``) on host
-    ``host_id``, newest first: the repository's launch dirs there. It reads only the server's
-    records, so no host or path is configured: a project's cloud lead, started with ``start
-    --top-level --host``, names both."""
+    """The workspaces of the repository's project's cloud sessions (``GET
+    /v1/sessions?project=<name>``) on host ``host_id`` (by any of its ``host_aliases``), newest
+    first: its launch dirs there. The project is the one named for the repository
+    (``project_name``), never the caller's session's (``home``), which can file under another
+    project. It reads only the server's records, so no host or path is configured: a project's
+    cloud lead, started with ``start --top-level --host``, names both."""
     try:
-        project = quote((og.home(project_name()) or {}).get("name", ""))
+        project = quote((og.project(project_name()) or {}).get("name", ""))
+        if not project:
+            return []
         path = f"/v1/sessions?kind=default&project={project}&limit=100"
         rows = og.call("GET", path).get("data", [])
     except Fail:
         return []
     found: list[str] = []
+    named = host_aliases(og, host_id)
     for row in sorted(rows, key=lambda r: float(r.get("created_at") or 0), reverse=True):
         place = str(row.get("workspace") or "")
-        here = str(row.get("host_id") or "") == host_id and place and place not in found
+        here = str(row.get("host_id") or "") in named and place and place not in found
         if here and cloud_session(og, row):
             found.append(place)
     return found
