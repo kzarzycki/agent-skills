@@ -145,3 +145,20 @@ def test_reap_force_keeps_a_named_running_session_that_is_no_role_session_on_a_p
     running(og, "s", labels)
     lines, _ = omnigent_agent.reap(og, ["s"], force=True)
     assert og.interrupted == [] and og.archived == [] and "kept" in lines[0]
+
+
+def test_a_lead_with_a_pr_starts_beside_a_running_lead_of_that_pr(tmp_path: Path) -> None:
+    """Only a worker or a verifier repeats a PR's run: a lead coordinates, so a second one is no twin."""
+    og = base.Posting()
+    listing(og, twin("lead"))
+    sid, _ = omnigent_agent.start(
+        og,
+        "claude-cloud",
+        "t",
+        "do X",
+        tmp_path / "r.md",
+        "/x/engineering-loop/lead.md",
+        0,
+        pr=omnigent_agent.pr_ref("o/r#7"),
+    )
+    assert sid and og.bodies
