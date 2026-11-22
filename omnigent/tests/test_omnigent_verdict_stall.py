@@ -106,3 +106,36 @@ def test_the_supervisor_wakes_the_lead_once_per_stalled_head(tmp_path, monkeypat
     supervised(og, registry, monkeypatch, 4, notify="cos", console=True)
     told_lead = [t for s, t in og.inbox if s == "a" and "SATISFIED: no" in t]
     assert len(told_lead) == 1 and "a fix round" in told_lead[0]
+
+
+def test_a_go_withdrawn_since_is_no_go(monkeypatch) -> None:
+    """Only a context's newest status counts: an `owner` go later failed (withdrawn) holds nothing."""
+    newest_first = (
+        {"context": "owner", "state": "failure"},
+        {"context": "owner", "state": "success"},
+    )
+    github(monkeypatch, word="yes", statuses=newest_first)
+    assert omnigent_agent.verdict_stall(12, "o/r")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        {"snap": {"status": "running"}},  # its turn runs
+        {"direct": True},  # the owner drives it in its own session
+        {"ago": 600},  # it wrote 10 minutes ago: working, not stalled
+    ],
+)
+def test_a_working_or_direct_lead_is_neither_told_nor_read(tmp_path, monkeypatch, case) -> None:
+    registry = following(tmp_path)
+    if case.get("direct"):
+        assert omnigent_agent.mark_direct(registry, "a")
+    ago = case.get("ago", 8000)
+    og = Lead(told("brief", ago + 1000), ending("STILL WORKING: waiting on CI\nWaits: CI", ago))
+    og.snap = {"labels": {omnigent_agent.PR_LABEL: "o/r#12"}, **case.get("snap", {})}
+    in_checkout(og)
+    calls = github(monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "VERDICT_STALL_POLL", 0.0)
+    supervised(og, registry, monkeypatch, 4, notify="cos", console=True)
+    assert not [t for s, t in og.inbox if "SATISFIED:" in t]
+    assert not [c for c in calls if any("issues/12/comments" in a for a in c)]

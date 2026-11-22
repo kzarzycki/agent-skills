@@ -5572,9 +5572,13 @@ def verdict_stall(pr: int, repo: str = "") -> tuple[str, str] | None:
     if word == "yes":
         if QUEUED_LABEL in {str(l.get("name")) for l in view.get("labels") or []}:
             return None
+        newest: dict[
+            str, str
+        ] = {}  # GitHub lists a head's statuses newest first: a later one supersedes
         for status in pages(f"commits/{head}/statuses?per_page=100"):
-            if status.get("context") in ("owner", "land") and status.get("state") == "success":
-                return None
+            newest.setdefault(str(status.get("context")), str(status.get("state")))
+        if "success" in (newest.get("owner"), newest.get("land")):
+            return None
     step = "the go and `land`" if word == "yes" else "a fix round"
     return head, (
         f"PR #{pr}: the verdict on {head[:12]} (SATISFIED: {word}) is {age / 60:.0f}m old with no push or go"
