@@ -740,6 +740,15 @@ is kept in the state (`heads`), so a restart reports a landing made while it was
 that one. A workspace outside a checkout is not watched; a failed read is logged once and tried
 again. The event is for whoever owes the step after a landing (the chief of staff under `--console`), not for other leads: they read the new base on their next fetch, since a notice wakes each with its whole context. The lead's words play no part, so `route` and `lead.md` stay as they are.
 
+For the same repos it also runs `check stalled`, the landing checks' listing (from their copy installed beside this
+skill, so it judges by the base's code), at most once an hour per repo (`STALLED_SECONDS`), in the first of their leads' workspaces that is
+a checkout on this host, detached so the poll goes on, and stopped past 15 minutes (`STALLED_TIMEOUT`). Each PR it
+lists (an approved, verified PR no `land` took) is said once per head, `<owner>/<name>: PR #N has its go and a
+satisfied verdict at <sha> and is not landed: land it (`land N --only`) or flag it`, a `stalled` event on that lead;
+the repo's last listing is kept (`stalled` in the state with `--console`), so the next hour's sweep says nothing new
+for it, and a PR is said again only once its head moved or it left the listing and came back. A PR the sweep could not
+judge, a failed sweep and a lead on another host are logged, never posted.
+
 **`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
 state file, an events log, status labels, a progress deadline, settled events kept across
 restarts, and routing (below). Without it `supervise --registry` writes none of them, and the paragraphs above are
@@ -804,6 +813,7 @@ offline while idle raises nothing.
 |---|---|---|
 | a default branch of a repo the followed, non-direct leads work in moved with a PR a lead's wait names or owns | rule | tell that lead (act, to the supervisor, when the lead waits on it), naming the new sha and the PRs merged since; no other lead and not the chief of staff |
 | a PR or session a lead's wait names settled, or a session it started reached a final state | rule | tell that lead within a minute, read from GitHub and the session; a set tells on its first failure or its last end |
+| `stalled`: a PR `check stalled` lists, once per head | rule | act: the chief of staff lands it (`land N --only`) or flags it |
 | `archived` | rule | its line and state entry dropped; no post |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |

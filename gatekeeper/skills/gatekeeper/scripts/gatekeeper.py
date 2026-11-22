@@ -10,6 +10,7 @@
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run --python '>=3.11' scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
     uv run scripts/approvals.py check ready <pr>                # the author's step before the verifier: the PR body's `## Evidence` (and demo form) alone, the check merge runs; exit 0 or 1
+    uv run scripts/approvals.py check stalled              # every open PR land would take that its queue does not hold: one line each, exit 1; one not judged here: its line, no exit
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
@@ -7476,39 +7477,78 @@ def hand_over(number: int) -> None:
 
 
 def stalled() -> int:
-    """`check stalled`: each open PR into a base whose policy names Mergify that `landable` finds a candidate (its go on
-    its head, every proof, a satisfied verdict) and that is neither queued at its head (QUEUED and a `land` success
-    there, queued_here) nor merged: a `land` that was stopped or died left it. One line each, and exit 1 when any
-    is listed, so a sweep can queue it (`land <n> --only`) or flag it; judged as `land` judges, and written nowhere."""
-    bases: dict[str, tuple[str | None, str | None, set[str]] | None] = {}
-    found = []
+    """`check stalled`: each open PR, into any base, that `landable` finds a candidate (its go on its head, every proof,
+    a satisfied verdict) and that its base's queue does not hold: under `land.queue: mergify` not queued at its head
+    (QUEUED and a `land` success there, queued_here); where the base's rules require GitHub's merge queue, not in it;
+    on a base `land` merges itself, still open, so not landed. A `land` that was stopped, died or never ran left it.
+    One line each, and exit 1 when any is listed, so a sweep can land it (`land <n> --only`) or flag it; judged as
+    `land` judges (from the base's code and policy, judge_with_base), and written nowhere. A PR that can't be judged
+    from this checkout (its base's code or policy differs from what runs here, as a PR stacked on another's branch
+    has, or GitHub refused a read) gets one `not judged` line and is skipped; the rest are still judged, and a skip
+    alone changes no exit."""
+    bases: dict[str, tuple[str | None, str | None, set[str], str] | str] = {}
+    lines, found = [], False
     for listed in sorted(open_pulls(), key=lambda each: each["number"]):
         if listed["isDraft"]:
             continue
-        base = listed["baseRefName"]
-        if base not in bases:
+        number, base = listed["number"], listed["baseRefName"]
+        try:
+            if base not in bases:
+                bases[base] = stalled_base(base)
+            if isinstance(known := bases[base], str):
+                raise Refused(known)
+            tracker, loop, required, held_by = known
             with policy_from(base):
-                tracker, loop = project()
-                if mergify(loop):
-                    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
-                    bases[base] = (tracker, loop, required_checks(base) - OWN)
-                else:
-                    bases[base] = None
-        if (known := bases[base]) is None:
+                judge_with_base(base)
+                pull = pull_request(number)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    judged = landable(pull, tracker, loop, required)
+        except (Refused, subprocess.CalledProcessError) as exc:
+            if base in bases and not isinstance(bases[base], str) and isinstance(exc, Drifted):
+                bases[base] = str(
+                    exc
+                )  # the base's code differs for every PR into it: said once per PR, not fetched again
+            why = str(exc) if isinstance(exc, Refused) else stderr_of(exc)
+            lines.append(f"PR #{number} into {base} is not judged here: {why}")
             continue
-        pull = pull_request(listed["number"])
-        with policy_from(base):
-            judge_with_base(base)
-            with contextlib.redirect_stdout(io.StringIO()):
-                judged = landable(pull, known[0], known[1], known[2])
         head = pull["headRefOid"]
-        if judged.exit is None and not (QUEUED in names(pull) and queued_here(head)):
-            found.append(
-                f"PR #{pull['number']} has its go and a satisfied verdict at {head} and is not queued"
-            )
-    for line in found:
+        if judged.exit is not None or pull["state"] != "OPEN":
+            continue
+        if held_by == MERGIFY:
+            if QUEUED in names(pull) and queued_here(head):
+                continue
+            left = "is not queued"
+        elif held_by == "github":
+            if pull.get("mergeQueueEntry") or pull.get("isInMergeQueue"):
+                continue
+            left = "is not in the merge queue"
+        else:
+            left = "is not landed"
+        found = True
+        lines.append(f"PR #{number} has its go and a satisfied verdict at {head} and {left}")
+    for line in lines:
         print(line)
     return 1 if found else 0
+
+
+def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | str:
+    """What `check stalled` judges every PR into `base` by, read once: its tracker and policy, its required checks
+    (OWN aside) and which queue holds a candidate (MERGIFY, `github` where its rules require GitHub's merge queue, else
+    `land`, which merges it itself); or, when the base can't be fetched or its policy is refused, why, which each PR
+    into it is skipped with."""
+    try:
+        git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        with policy_from(base):
+            tracker, loop = project()
+            rules = required_checks(base)
+            held_by = (
+                MERGIFY if mergify(loop) else "github" if getattr(rules, "queue", None) else "land"
+            )
+    except subprocess.CalledProcessError as exc:
+        return f"could not fetch or read {base}: {stderr_of(exc)}"
+    except Refused as exc:
+        return str(exc)
+    return tracker, loop, rules - OWN, held_by
 
 
 def mergify_step(pull: dict[str, Any]) -> int:
