@@ -23,6 +23,7 @@
     uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed under `ci: false` or with --base (Narrowed mode)
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
+    uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
     uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's gate on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; else `check`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
@@ -97,7 +98,12 @@ shown; `--withdraw` posts a newer failing status and a `Withdrawn: merge` record
 label. A status belongs to one commit, so no push carries the go to a head the owner didn't see. `--by delegate` is
 the delegated approver's go, pinned to one head the same way: the `owner` status described as the delegate's (`The
 delegate's go on <sha>, under the owner's delegation`) and the record `Approved under the owner's delegation.`, then
-`Approved: merge`, `By: delegate`, `Head: <sha>`, so the PR shows whose go it is. Into the default branch it is
+`Approved: merge`, `By: delegate`, `Head: <sha>`, so the PR shows whose go it is. Where GitHub refuses the status
+write with a 403, as a cloud session's proxy does (#1816), the record is posted with a `Status: refused` line and
+stands as the go alone on a head with no `owner` status: the newest such record, or `Withdrawn: merge` record, naming
+that head and written by the account running this or a writer decides, still pinned to its head; over a status on
+the head only such a record written after it decides (so a withdrawal recorded from the cloud takes back a host's
+go), and a record without the line still needs its status. Into the default branch it is
 refused unless loop.md's `delegate: all` under `loop` (default `feature`) lets the delegate's go cover that branch
 too, and a delegate's status there counts only while it does, so removing the setting withdraws those goes on open
 PRs; into a feature branch it counts either way. `check merge` and `land` print whose go, the owner's or the
@@ -273,7 +279,11 @@ queue (they win), a Mergify queue that `.mergify.yml` configures merges instead,
 no GitHub queue for: `land` takes no lock, runs no gate and merges nothing. It judges the same candidates (step 2) with
 the base's code, and hands each to Mergify by posting the `land` status (success, `Queued for Mergify at <sha>`) on its
 head and adding `loop:queued`; `.mergify.yml`'s queue conditions
-read both, and the status binds the hand-over to that head, so a push leaves them unmet. A PR already carrying the label
+read both, and the status binds the hand-over to that head, so a push leaves them unmet. Where GitHub refuses the
+status write with a 403 (a cloud session's proxy), `land` adds the label and comments a `Queued for Mergify` record
+with `Head: <sha>`, once per head, and the repo's `.github/workflows/land-status.yml` posts the `land` success on that
+sha for a writer's record while it is the PR's head and the label is on; an eviction's `land` error refused there is
+said, and the label coming off leaves the queue. A PR already carrying the label
 with `land` green on its head is reported queued and left alone. Mergify tests each batch as a draft PR on top of the
 base in CI, retries a red one once itself and squash-merges on green; a PR it dequeues (red again, or conflicting) gets
 its `dequeued_label`, `loop:dequeued`, and the next land that reads it with `land` green on the head evicts it: `land`
@@ -936,6 +946,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         batch_wait_seconds=int,
         gate_on=Choice(("host", "cloud")),
         cloud_gate_timeout_seconds=int,
+        host_gate=bool,
         queue=Choice(("mergify",)),
         together=("signed_squash_to", "allowed_signers"),
         optional=(
@@ -948,6 +959,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "batch_wait_seconds",
             "gate_on",
             "cloud_gate_timeout_seconds",
+            "host_gate",
             "queue",
         ),
     ),
@@ -1344,40 +1356,58 @@ def ineligible(
 
 
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
-    """Whether the PR needs no verifier review: a `bot.<name>` section of gatekeeper.md names it, and every file it changes
-    matches one of that section's `paths` (lock and manifest files). A section names a bot by its login, or, with
-    `branch`, a head-branch prefix (`renovate/`), for an updater that opens its PRs under a person's token; then the
-    head must be this repository's own branch, since a fork's PR may name any branch and only a writer pushes one
-    here. GitHub's GraphQL spells a bot's login without the `bot` REST and the setting write, so both compare
-    without it; a person can't hold a bot's login, so for a login the author's type is checked too. Every commit's
-    author must be the PR's author, and its committer the author or no account (GitHub's web-flow committer on a
-    bot's or an API's commits), since another person's push or rebase of its branch is a change no verifier saw. A
-    `Co-Authored-By:` trailer names no one here: it is text the committer wrote in the message, not another account's
-    push, and GitHub resolves it into the commit's `authors` list, so only the commit's own `author` is read. A
-    renamed or copied file refuses it, since GraphQL gives only the new path, which may hide code moved onto a lock
-    file's name, and so does the label `verify`, which asks for the review (a major update). No entry, or more files
-    or commits than the gate reads: no exemption."""
+    """Whether the PR needs no verifier review: a `bot.<name>` section of gatekeeper.md names it (exempting)."""
+    return exempting(pull, loop) is not None
+
+
+def exempting(pull: dict[str, Any], loop: str | None) -> dict[str, Any] | None:
+    """The `bot.<name>` section of gatekeeper.md that names the PR and covers every file it changes with one of its
+    `paths` (lock and manifest files), or None. A section names a bot by its login, or, with `branch`, a head-branch
+    prefix (`renovate/`), for an updater that opens its PRs under a person's token; then the head must be this
+    repository's own branch, since a fork's PR may name any branch and only a writer pushes one here. GitHub's GraphQL
+    spells a bot's login without the `bot` REST and the setting write, so both compare without it; a person can't
+    hold a bot's login, so for a login the author's type is checked too. Every commit's author must be the PR's
+    author, and its committer the author or no account (GitHub's web-flow committer on a bot's or an API's commits),
+    since another person's push or rebase of its branch is a change no verifier saw. Under a `branch` section an
+    author with no account counts as the PR's author too, as a committer does: a cloud worker commits as a git
+    identity GitHub ties to no one, and only a writer can push that branch here. A `Co-Authored-By:` trailer names
+    no one here: it is text the committer wrote in the message, not another account's push, and GitHub resolves it
+    into the commit's `authors` list, so only the commit's own `author` is read. A renamed or copied file refuses
+    it, since GraphQL gives only the new path, which may hide code moved onto a lock file's name, and so does the
+    label `verify`, which asks for the review (a major update). No entry, or more files or commits than the gate
+    reads: no exemption."""
     labels = {label["name"] for label in pull["labels"]["nodes"]}
     if moved_files(pull) != [] or "verify" in labels:
-        return False
+        return None
     author, files = pull.get("author") or {}, paths(pull)
     if not files:
-        return False
+        return None
     login = (author.get("login") or "").removesuffix("[bot]").lower()
     commits = pull.get("authored") or {}
     nodes = commits.get("nodes") or []
     if not login or not nodes or (commits.get("totalCount") or 0) > len(nodes):
-        return False
-    for node in nodes:
-        commit = node["commit"]
-        wrote = ((commit.get("author") or {}).get("user") or {}).get("login") or ""
-        committer = ((commit.get("committer") or {}).get("user") or {}).get("login")
-        if any(
-            name.removesuffix("[bot]").lower() != login
-            for name in (wrote, committer)
-            if name is not None
-        ):
-            return False
+        return None
+    # each commit's author and committer login; None for no GitHub account
+    accounts = [
+        tuple(
+            ((node["commit"].get(role) or {}).get("user") or {}).get("login") or None
+            for role in ("author", "committer")
+        )
+        for node in nodes
+    ]
+
+    def by(bot: dict[str, Any]) -> bool:
+        """Whether every commit is the PR author's; under a `branch` section an author with no account is too."""
+        for wrote, committer in accounts:
+            if wrote is None and "branch" not in bot:
+                return False
+            if any(
+                name.removesuffix("[bot]").lower() != login
+                for name in (wrote, committer)
+                if name is not None
+            ):
+                return False
+        return True
 
     def names(bot: dict[str, Any]) -> bool:
         if "branch" in bot:
@@ -1387,11 +1417,102 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
             and bot["login"].removesuffix("[bot]").lower() == login
         )
 
-    return any(
-        names(bot)
-        and all(any(fnmatch.fnmatch(path, glob) for glob in bot["paths"]) for path in files)
-        for bot in settings(loop).get("bot", [])
+    return next(
+        (
+            bot
+            for bot in settings(loop).get("bot", [])
+            if names(bot)
+            and by(bot)
+            and all(any(fnmatch.fnmatch(path, glob) for glob in bot["paths"]) for path in files)
+        ),
+        None,
     )
+
+
+# the package a pack bump moves: its `apm.yml` dependency names it, and a bump changes only its `ref:` line
+PACK = "kzarzycki/agent-skills/engineering"
+# a release the pack tagged: a version or a range of one (`^0.36.0`, `0.36.0`), or the tag (`engineering-v0.36.0`),
+# never a branch or a commit, which no release review saw
+RELEASE = r"(?:(?:\^|~|>=|=)?v?\d+\.\d+\.\d+|engineering-v\d+\.\d+\.\d+)"
+REF_LINE = re.compile(r"^[ \t]*(?:-[ \t]+)?ref:[ \t]*(['\"]?)" + RELEASE + r"\1[ \t]*(?:#.*)?$")
+ITEM_LINE = re.compile(r"^([ \t]*)-[ \t]+")
+GIT_LINE = re.compile(
+    r"^[ \t]*(?:-[ \t]+)?git:[ \t]*['\"]?" + re.escape(PACK) + r"(?:\.git)?['\"]?[ \t]*$"
+)
+
+
+def mechanical(pull: dict[str, Any], loop: str | None) -> str | None:
+    """Why the PR is no mechanical pack bump, whose spec then needs no approval, or None when it is one: a `branch`
+    section of `bot` exempts it (exempting); it changes the root `apm.yml`, so it moves the pack; and every `apm.yml`
+    it changes changes only the `ref:` line of its dependency on PACK (ref_only), so the rest of the diff is the lock
+    and generated files the section's `paths` cover. The release such a bump pins was reviewed and tagged already.
+    A PR that leaves `apm.yml` alone (an updater's lock-only PR, a hand edit of a generated file), any other
+    `apm.yml` change, a login section's PR, or a patch GitHub can't give keeps the spec gate."""
+    bot = exempting(pull, loop)
+    if bot is None or "branch" not in bot:
+        return "no `bot` section with a `branch` exempts it"
+    manifests = [path for path in paths(pull) or [] if path.rsplit("/", 1)[-1] == "apm.yml"]
+    if "apm.yml" not in manifests:
+        return f"it doesn't change `apm.yml`'s `{PACK}` `ref:` line, so it moves no pack"
+    changes = changed(pull)
+    if changes is None:
+        return "GitHub can't give its `apm.yml` patch"
+    patches = {change.get("filename"): change.get("patch") for change in changes}
+    for path in manifests:
+        if not ref_only(patches.get(path) or ""):
+            return f"`{path}` changes more than its `{PACK}` `ref:` line"
+    return None
+
+
+def ref_only(patch: str) -> bool:
+    """Whether a unified diff of `apm.yml` changes one line, the `ref:` line of the dependency on PACK, to another
+    release: one hunk, whose only edits are one REF_LINE removed and then one added, each naming a release (RELEASE)
+    and each in a list item with a GIT_LINE naming PACK on its own side of the hunk (pack_item). Any line that is no
+    hunk header, context, edit or `\\ No newline` marker fails it, and so does an item whose `git:` line is out of
+    the hunk's context."""
+    hunks: list[list[str]] = []
+    for line in patch.split("\n"):
+        if line.startswith("@@"):
+            hunks.append([])
+        elif hunks and line[:1] in (" ", "-", "+"):
+            hunks[-1].append(line)
+        elif hunks and line.startswith("\\"):  # \ No newline at end of file
+            continue
+        elif line:
+            return False
+    edited = [hunk for hunk in hunks if any(line[:1] in "-+" for line in hunk)]
+    if len(edited) != 1:
+        return False
+    hunk = edited[0]
+    edits = [line for line in hunk if line[:1] in "-+"]
+    if [line[:1] for line in edits] != ["-", "+"]:
+        return False
+    if not all(REF_LINE.match(line[1:]) for line in edits):
+        return False
+    return all(pack_item(hunk, edit, " " + edit[0]) for edit in edits)
+
+
+def pack_item(hunk: list[str], edit: str, side: str) -> bool:
+    """Whether the line `edit` of `hunk` sits in the list item of PACK on its side of the diff (`side`: the context
+    and the edits of that side, ` -` old or ` +` new): the item opens at the nearest `- ` line at or above it, runs
+    while lines are indented past that dash, and holds a GIT_LINE naming PACK."""
+    lines = [line for line in hunk if line[:1] in side]
+    text = [line[1:] for line in lines]
+    at = lines.index(edit)
+
+    def indent(line: str) -> int:
+        return len(line) - len(line.lstrip(" \t"))
+
+    start = at
+    while start >= 0 and not ITEM_LINE.match(text[start]):
+        start -= 1
+    if start < 0:
+        return False
+    depth = len(ITEM_LINE.match(text[start])[1])
+    end = start + 1
+    while end < len(text) and text[end].strip() and indent(text[end]) > depth:
+        end += 1
+    return at < end and any(GIT_LINE.match(line) for line in text[start:end])
 
 
 REST_FILE_CAP = 3000  # the most files GitHub's REST list of a PR holds
@@ -2254,7 +2375,9 @@ def scoped(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str
 def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
     """A line per issue whose spec `spec.auto: true` leaves to the owner (spec_hold), approved or not, so a gate run says
     why that spec needed them and its merge waits for no `approved:merge`; without it, per issue a kind `spec.auto`
-    names would cover but whose rating leaves to the owner (spec_owned)."""
+    names would cover but whose rating leaves to the owner (spec_owned). A mechanical pack bump holds none (mechanical)."""
+    if issues and loop is not None and "number" in pull and mechanical(pull, loop) is None:
+        return []
     if not spec_auto(loop):
         kinds = spec_kinds(loop)
         return [
@@ -2432,11 +2555,14 @@ def proofs(
     """One line per approval or proof the PR and its issues lack at `point` (build or merge); an exact revert of
     #`revert` names no issue and needs no verdict. Without a policy file (`loop` None) an issue needs only the
     `approved:spec` label; with it, the owner's record and the label, unless a kind `spec.auto` names covers it
-    (spec_policy), `spec.auto: true` does (spec_hold), or its `paths` term does an issue labelled SCOPED (scoped).
+    (spec_policy), `spec.auto: true` does (spec_hold), its `paths` term does an issue labelled SCOPED (scoped), or
+    the PR is a mechanical pack bump (mechanical).
     A plan needs them where the `plan` rule asks. What the merge
     waits for is waits()'s."""
     rule, found = settings(loop), []
     kinds, every = spec_kinds(loop), spec_auto(loop)
+    # a mechanical pack bump's spec needs no approval: the release it pins was reviewed and tagged (mechanical)
+    bump = loop is not None and "number" in pull and mechanical(pull, loop) is None
     for issue in issues:
         labels = names(issue)
         if point == "build" and (line := others(issue)):
@@ -2453,6 +2579,7 @@ def proofs(
             and spec_hold(pull, issue, loop) is None
             or spec_policy(issue, kinds)
             and spec_owned(pull, issue, loop) is None
+            or bump
         )
         if not covered and SCOPED in labels:
             why = scoped(pull, issue, loop)
@@ -3827,7 +3954,8 @@ def unchanged(pull: dict[str, Any], old: str) -> str | None:
 def go_on(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
     """Whose go (go) is on `head`, `owner` or `delegate`; '' when a status there is no go; None with no status there:
     the newest `owner` status there by the account running this or a writer (a status is the repo's to write) is green,
-    so a later one withdrawing it wins, and the PR holds the record by the same approver naming that head. The
+    so a later one withdrawing it wins, and the PR holds the record by the same approver naming that head. A record
+    recorded_go counts, written after that status, decides over it; with no status, those records decide alone. The
     delegate's (its description says so) counts into the default branch only while the default branch's `delegate` is `all`, so
     removing the setting withdraws it. A status once turned from the label (LABELLED) is no go. GitHub unreachable: no
     go."""
@@ -3843,6 +3971,12 @@ def go_on(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
             or not (login == viewer() or writer(login))
         ):
             continue
+        # a record written after this status, where a later status write was refused (a cloud withdrawal or go,
+        # #1816), decides over it, so a withdrawal that could only be recorded still takes the go back
+        if (at := status.get("created_at")) and (
+            later := recorded_go(pull, head, loop, at)
+        ) is not None:
+            return later
         description = status.get("description") or ""
         by = DELEGATE if description.endswith(DELEGATED) else "owner"
         if (
@@ -3854,6 +3988,54 @@ def go_on(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
         ):
             return ""
         return by if current(pull, "merge", "head", head, by) else ""
+    return recorded_go(pull, head, loop)
+
+
+# the first line of the record `approve merge --withdraw` writes, beside `Approved: merge`
+WITHDRAWN = "Withdrawn: merge"
+# the line an `Approved: merge` record carries when GitHub refused its `owner` status (unwritten), which lets it stand
+# as the go alone (recorded_go); a record without it still needs its status
+UNSTATUSED = "Status: refused"
+
+
+def recorded_go(
+    pull: dict[str, Any], head: str, loop: str | None, after: str | None = None
+) -> str | None:
+    """go_on for a head with no `owner` status, as a cloud session leaves it when its proxy refuses the status write
+    (#1816): the newest `Approved: merge` record that says its status was refused (UNSTATUSED), or `Withdrawn: merge`
+    record, naming `head` and written by the account running this or a writer (a comment is anyone's to write in a
+    public repo, so its author is what counts), decides: whose go it is, '' for a withdrawal or a delegate's go the
+    delegation no longer covers, None with no such record. An `Approved: merge` record without the line, as a host
+    writes beside its status, is still no go alone. With `after` (an ISO 8601 UTC time, a status's), only records
+    written after it count."""
+    for note in reversed(notes(pull)):
+        if after is not None and not (note.get("createdAt") or "") > after:
+            continue
+        lines = machine(note["body"]).strip().splitlines()
+        if lines and lines[0].strip() in VOICED.values():
+            lines = lines[1:]
+        if not lines or lines[0].strip() not in {"Approved: merge", WITHDRAWN}:
+            continue
+        found = fields("\n".join(lines))
+        login = (note.get("author") or {}).get("login")
+        if (
+            found.get("head", "").lower() != head.lower()
+            or found.get("by") not in VOICED
+            or lines[0].strip() != WITHDRAWN
+            and found.get("status") != UNSTATUSED.split(": ", 1)[1].lower()
+            or login is None
+            or not (login == viewer() or writer(login))
+        ):
+            continue
+        by = found["by"]
+        if (
+            lines[0].strip() == WITHDRAWN
+            or by == DELEGATE
+            and default(pull)
+            and delegation(base_policy(pull["baseRefName"], loop)) != "all"
+        ):
+            return ""
+        return by
     return None
 
 
@@ -3880,6 +4062,32 @@ def whose(pull: dict[str, Any], loop: str | None) -> list[str]:
             f" verifier's pass on it says `{LOGIC}: none`"
         )
     return [line]
+
+
+# what a cloud session's GitHub proxy answers a commit-status write it refuses (#1816): comments, labels and the
+# merge pass, `POST statuses/<sha>` alone does not
+STATUS_REFUSED = "HTTP 403"
+
+
+def status_refused(exc: BaseException) -> bool:
+    """Whether a status write failed because GitHub, or a proxy in front of it, refuses this token the path: a 403.
+    Any other failure (unreachable, a 422 on a bad sha) is no refusal, and stops as before."""
+    return isinstance(exc, subprocess.CalledProcessError) and STATUS_REFUSED in (exc.stderr or "")
+
+
+def unwritten(head: str, context: str, description: str, state: str = "success") -> str | None:
+    """post_status, and None; the refusal's text when the write is refused (status_refused), printed with what still
+    carries the step, so a cloud session goes on: the go's record (go_on reads it with no status there), or
+    `loop:queued` and the hand-over record (mergify_step). Any other failure raises."""
+    try:
+        post_status(head, context, description, state)
+    except subprocess.CalledProcessError as exc:
+        if not status_refused(exc):
+            raise
+        why = stderr_of(exc)
+        print(f"the `{context}` status on {head} was not written, GitHub refused it: {why}")
+        return why
+    return None
 
 
 def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int:
@@ -3916,13 +4124,11 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
     if withdraw:
         # the label off too, since into a feature branch it is a go of its own
         label(number, MERGE_LABEL, add=False)
-        post_status(
-            head, OWNER_GO, f"{who.capitalize()} withdrew their go on {head[:12]}", state="failure"
-        )
+        unwritten(head, OWNER_GO, f"{who.capitalize()} withdrew their go on {head[:12]}", "failure")
         comment(
             number,
             fold(
-                "Withdrawn: merge",
+                WITHDRAWN,
                 f"{who.capitalize()} withdrew their go on {head[:7]}.",
                 f"By: {by}\nHead: {head}",
             ),
@@ -3930,17 +4136,20 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
         print(f"PR #{number}: {who}'s go on {head} is withdrawn")
         return 0
     if by == DELEGATE:
-        post_status(head, OWNER_GO, f"The delegate's go on {head[:12]}{DELEGATED}")
+        refused = unwritten(head, OWNER_GO, f"The delegate's go on {head[:12]}{DELEGATED}")
     else:
-        post_status(head, OWNER_GO, f"The owner's go on {head[:12]}")
+        refused = unwritten(head, OWNER_GO, f"The owner's go on {head[:12]}")
     comment(
         number,
         fold(
             VOICED[by],
             f"Go to merge {head[:7]}.",
-            f"Approved: merge\nBy: {by}\nHead: {head}",
+            f"Approved: merge\nBy: {by}\nHead: {head}"
+            + (f"\n{UNSTATUSED}" if refused is not None else ""),
         ),
     )
+    if refused is not None:
+        print(f"PR #{number}: the record alone carries the go on {head}")
     print(f"PR #{number}: {who}'s go is on {head}{DELEGATED if by == DELEGATE else ''}")
     if by != DELEGATE and NEEDS_OWNER in names(pull):
         # the owner's go names this PR, so the hold it waited on is theirs to lift; the delegate's never is
@@ -7389,6 +7598,7 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
     if cloud_gate(commit, tree):
         return tree, ""
+    no_host_gate(commit, tree)
     for again in (False, True):
         with log.open("w") as out, saying(f"Tree {tree}: gating, log {public(str(log))}"):
             done = run_steps(
@@ -7459,7 +7669,7 @@ def cloud_gate(commit: str, tree: str) -> bool:
     `local-ci --record` failed): the tree is red at once, one printed line, and gate_batch runs nothing on the host,
     since a red suite stays red. A refused start, a session that is gone, a turn that ended with no record and no
     red line (a `machine_exit` fault is not red), or no record in time is one printed line, and the gate then runs on
-    this host as it does without the setting."""
+    this host as it does without the setting, unless `land: host_gate: false`, where no_host_gate refuses the tree."""
     land = settings(project()[1]).get("land", {})
     if land.get("gate_on", "host") != "cloud":
         return False
@@ -7483,8 +7693,30 @@ def cloud_gate(commit: str, tree: str) -> bool:
         print(f"Tree {tree}: {why}: red without a host run")
         return True
     if why:
-        print(f"Tree {tree}: no cloud gate ({why}): gating on this host")
+        then = (
+            "gating on this host"
+            if land.get("host_gate", True)
+            else "`host_gate: false`, no host gate"
+        )
+        print(f"Tree {tree}: no cloud gate ({why}): {then}")
     return False
+
+
+def no_host_gate(commit: str, tree: str) -> None:
+    """With the policy's `land: host_gate: false`, refuse before any gate step would run on this host: every step of
+    the tree, a `where: host` one too, needs a recorded pass (step_pass), from the cloud gate or another clone's
+    `local-ci --record`, since a host that only orchestrates must not start a full gate. Without the key, nothing."""
+    if settings(project()[1]).get("land", {}).get("host_gate", True):
+        return
+    missing = [
+        step["name"] for step in gate_plan() if not step_pass(commit, tree, step, show=False)
+    ]
+    if missing:
+        raise Refused(
+            f"no cloud record for tree {tree}: land's `host_gate: false` runs no gate on this host"
+            f" ({', '.join(f'`{name}`' for name in missing)} has no pass on it); record it with"
+            " `local-ci --record` on a head with this tree elsewhere, then land again"
+        )
 
 
 def wait_records(
@@ -7900,14 +8132,49 @@ def mergify_step(pull: dict[str, Any]) -> int:
         if QUEUED in labels and ours:
             print(f"{where} is queued for Mergify at {head}")
             return 0
-        post_status(head, LAND, MERGIFY_QUEUED.format(head))
+        refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
         if QUEUED not in labels:
             label(number, QUEUED, add=True)
+        if refused is not None:
+            handed_by_record(pull)
     except subprocess.CalledProcessError as exc:
         print(f"{where}: GitHub refused its hand-over to Mergify at {head}: {stderr_of(exc)}")
         return 1
     print(f"{where} queued for Mergify at {head}")
     return 0
+
+
+# the first line of the hand-over record a cloud land comments when the `land` status is refused (#1816); the
+# workflow `.github/workflows/land-status.yml` reads it and posts the `land` status on its `Head:`
+HANDED = "Queued for Mergify"
+
+
+def handed_by_record(pull: dict[str, Any]) -> None:
+    """The hand-over where the `land` status can't be written (unwritten): a HANDED record naming the head, once per
+    head, which the repo's land-status workflow turns into the `land` success on that sha while it is still the PR's
+    head and the PR carries QUEUED, so `.mergify.yml` reads the same status and a push still leaves the queue."""
+    where, head = f"PR #{pull['number']}", pull["headRefOid"]
+    if any(
+        machine(note["body"]).strip().splitlines()[:1] == [HANDED]
+        and fields(note["body"]).get("head", "").lower() == head.lower()
+        for note in notes(pull)
+    ):
+        print(
+            f"{where}: its hand-over record for {head} is already on the PR; with no `land` status on {head} yet,"
+            " re-run the land-status workflow's run for that comment, or `land` from a host"
+        )
+        return
+    comment(
+        pull["number"],
+        fold(
+            HANDED,
+            f"Queued for Mergify at {head[:7]}: the land-status workflow posts the `land` status on it.",
+            f"Head: {head}",
+        ),
+    )
+    print(
+        f"{where}: the hand-over record names {head}, for the land-status workflow to post `land` on"
+    )
 
 
 def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
@@ -7916,7 +8183,9 @@ def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
     reason where its check run on the head gives one (mergify_reason). Mergify already retried a red batch once
     (`max_checks_retries: 1`), so its dequeue is the second red and land keeps no count."""
     head, number = pull["headRefOid"], pull["number"]
-    post_status(head, LAND, "Evicted from the Mergify merge queue", "error")
+    # refused (unwritten), the label coming off is what leaves the queue, since the land-status workflow posts nothing
+    # without it
+    unwritten(head, LAND, "Evicted from the Mergify merge queue", "error")
     for name in (QUEUED, DEQUEUED):
         if name in labels:
             label(number, name, add=False)
@@ -8380,7 +8649,8 @@ def merges(
             try:
                 if gate_batch(work, [])[1]:
                     publish(tip, landed_pass(tip, actual))
-            except MachineFault as exc:  # the PRs landed: each still gets its comment
+            # the PRs landed: each still gets its comment, also when `host_gate: false` refuses the tip's tree
+            except (MachineFault, Refused) as exc:
                 print(exc)
     # after every publication above, which pushes the landed tree's record again when it is the heads' tree
     drop_records([pull["headRefOid"] for pull, *_ in done])
@@ -10218,6 +10488,39 @@ def finished(head: str, code: int, command: str | None = None) -> None:
     os.replace(partial, exit_file)
 
 
+def gate_record(head: str, words: list[str]) -> int:
+    """`gate-record <head> [-- <command>]`: whether origin holds a pass record (record_ref) of the gate, each step of
+    `gate_steps` (gate_plan), or of `<command>`, on `head`'s tree, so the verifier reads it instead of running the
+    same tests again. Exit 0 names each record branch; exit 1 names each command with
+    no record and why, which the verifier then runs. A record is keyed by the tree and the command's digest
+    (record_name), so another tree, another command or another test list in it is another record and never reused.
+    Only origin counts, the branch `local-ci --record` pushes: never this clone's own record file, which a worker
+    sharing the clone may have written, and never a worker's log or report."""
+    # tree_of fetches a head this clone lacks from origin, as reusable() does
+    if (held := tree_of(head)) is None:
+        print(f"no tree for {head}: run the tests")
+        return 1
+    # ponytail: a step keyed by its inputs (inputs_key) is read by its tree here, so a pass on another tree with the
+    # same inputs is not found and the verifier runs it; reading step_pass's inputs match would lift that
+    commands = [shlex.join(words)] if words else [step["command"] for step in gate_plan()]
+    missing = 0
+    for command in commands:
+        why: list[str] = []
+        record = record_ref(held, command, command_line(command, "gate")[2], why)
+        if record is None:
+            missing += 1
+            reason = (
+                "; ".join(why)
+                or f"origin holds no record branch {RECORD_BRANCH.format(record_name(held, command))}"
+            )
+            print(f"no record of `{command}` on tree {held}: run it ({reason})")
+        else:
+            print(
+                f"recorded: {described(held, record['head'], command)}, as {record['ref']} at {record['time']}"
+            )
+    return 1 if missing else 0
+
+
 def local_ci_status(head: str) -> int:
     """Say whether the detached local-ci run on `head` is running (exit 3), passed (0) or failed (1), with its log;
     passed only when a pass on `head`'s tree under this environment is recorded: with `gate_steps`, of each step the
@@ -11252,6 +11555,9 @@ def main(argv: list[str]) -> int:
     graduating.add_argument("--pr", type=int, required=True)
     # --base: the commit to select against (a PR's base SHA, a push's previous tip), over the merge base
     commands.add_parser("affected-tests").add_argument("--base", metavar="REV")
+    recording_read = commands.add_parser("gate-record")
+    recording_read.add_argument("head")
+    recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
     wrapping = commands.add_parser("heavy")
     wrapping.add_argument("--plan", action="store_true")
     wrapping.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
@@ -11343,6 +11649,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         )
     if args.command == "delegate":
         return delegate(args.pr)
+    if args.command == "gate-record":
+        return gate_record(args.head, args.words[1:] if args.words[:1] == ["--"] else args.words)
     if args.command == "local-ci":
         if args.status is not None:
             if args.pr is not None or args.record:

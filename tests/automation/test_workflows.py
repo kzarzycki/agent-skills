@@ -34,17 +34,25 @@ def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
     )
     assert "HEAD^" not in whitespace["run"]
     fast = next(st for st in _steps(workflow) if st.get("run") == "mise run check-fast")
+    batch = next(st for st in _steps(workflow) if st.get("run") == "mise run test-batch")
     full = next(st for st in _steps(workflow) if st.get("run") == "mise run check")
+    test_map = next(st for st in _steps(workflow) if st.get("with", {}).get("path") == ".test-map")
     # a `tests` dispatch (the break-glass proof's re-run alone) runs those tests instead
     assert (
         fast["if"] == "github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'"
     )
-    assert fast["env"]["GATE_BASE"] == whitespace["env"]["BASE_SHA"]
+    # one test run per tree (#1821): only a Mergify batch's draft PR runs the tests, against its base, and only it
+    # reads the test map; a PR head runs the cheap checks alone
+    assert "env" not in fast
+    on_a_batch = "startsWith(github.head_ref, 'mergify/merge-queue/')"
+    assert batch["if"] == test_map["if"] == on_a_batch
+    assert batch["env"]["GATE_BASE"] == "${{ github.event.pull_request.base.sha }}"
     assert full["if"] == "github.event_name == 'schedule'"
     for command in (
         "mise install",
         "uv sync --frozen",
         "mise run check-fast",
+        "mise run test-batch",
         "mise run check",
         "git diff --check",
     ):

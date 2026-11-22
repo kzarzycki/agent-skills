@@ -42,6 +42,14 @@ Split only asks that share no work item. One epic stays with one lead, which run
 stories in parallel itself, since two leads on one epic would both write its issues and
 its landing order.
 
+The other way round holds too: a lead takes one request or epic. A new, unrelated item goes
+to a fresh lead, never to a lead that is running or done, since a lead pays for its whole
+context on every call, and one that keeps taking unrelated work after its own lands spends
+far more per change than a fresh one would. A follow-up on the lead's own request, its
+epic or a PR it opened is a relay as usual. `send` and `relay` print a warning (and still
+deliver) when the message names an issue outside the lead's request, its epic or the
+epic's sub-issues.
+
 ## Starting a lead
 
 - **Issue first.** File the ask as an intent issue (Problem, Change, Acceptance, from the

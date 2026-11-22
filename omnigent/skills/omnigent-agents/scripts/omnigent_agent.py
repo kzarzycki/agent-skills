@@ -1796,8 +1796,9 @@ class Omnigent:
         """The project's ``docs/agents/loop.md`` on host ``host_id``, which a session started for
         ``workspace`` there will run on; empty when the checkout there has none, or when ``workspace``
         sits outside a checkout. Read once per host and workspace, through the host's file API.
-        That API lists a folder before any session exists but gives no file's text, so the checkout
-        and the file are found by listing, and the text is read through a live session on the host.
+        The host's folder listing works before any session exists, so the checkout and the file are
+        found by listing; the text is read through the host's file route (``read_on_host``), else
+        a live session on the host.
         A host or workspace that can't be read is a ``Fail`` naming the host and the path: a silent
         empty value is how a missing ``Lead autocompact:`` went unnoticed."""
         key = (host_id or "", workspace)
@@ -2595,6 +2596,94 @@ def still_open(og: Omnigent, sid: str) -> str:
     return "; its question is still open (relay --answer answers it): " + "; ".join(asks)
 
 
+ISSUE_REF = re.compile(
+    r"(?:(?<![\w.-])([\w.-]+/[\w.-]+))?#(\d+)\b|github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)"
+)
+FAMILY_QUERY = (
+    """query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { %s } }"""
+)
+FAMILY_NODE = (
+    "n%d: issueOrPullRequest(number: %d) { __typename ... on Issue {"
+    " parent { number } subIssues(first: 100) { nodes { number } } } }"
+)
+
+
+def issue_refs(text: str, repo: str) -> set[int]:
+    """The issue and PR numbers ``text`` names in ``repo``: ``#N``, ``repo#N`` or a GitHub URL;
+    another repository's are left out."""
+    return {
+        int(m[2] or m[4])
+        for m in ISSUE_REF.finditer(text)
+        if not (m[1] or m[3]) or (m[1] or m[3]).lower() == repo.lower()
+    }
+
+
+def off_request(og: Omnigent, sid: str, text: str) -> str:
+    """A warning when ``text`` names an issue outside lead ``sid``'s request, else empty. The
+    request is the issues the lead's first message (its brief) names; a named issue is in it when
+    it is one of them, their epic (parent), one of their sub-issues, or a sub-issue of the same
+    epic. A PR, an issue in another repository, a session that is no lead, and anything that
+    cannot be read stay quiet, since a fix to a PR the lead owns is a normal message and a false
+    warning costs more than a missed one. One GraphQL read, only when ``text`` names a number the
+    brief does not."""
+    # ponytail: the brief's own refs are the request; an epic's grandchildren and a lead's later
+    # PRs are not traced, which errs on quiet. Read the lead's PRs (omni.pr, its report) if it misses.
+    try:
+        if (og.info(sid).get("labels") or {}).get("omni.role") != "lead":
+            return ""
+        brief = next((text_of(i) for i in og.first_items(sid, 5) if i.get("role") == "user"), "")
+        repo = workspace_repo(og, sid)
+        own = issue_refs(brief, repo) if repo else set()
+        named = issue_refs(text, repo) - own if own else set()
+        if not named:
+            return ""
+        owner, name = repo.split("/")
+        nodes = " ".join(FAMILY_NODE % (n, n) for n in sorted(own | named))
+        found = json.loads(
+            gh(
+                "api",
+                "graphql",
+                "-f",
+                f"query={FAMILY_QUERY % nodes}",
+                "-F",
+                f"owner={owner}",
+                "-F",
+                f"name={name}",
+            )
+        )["data"]["repository"]
+    except Exception:  # noqa: BLE001 - unread: say nothing
+        return ""
+
+    def parent(n: int) -> int | None:
+        return ((found.get(f"n{n}") or {}).get("parent") or {}).get("number")
+
+    epics = {e for o in own if (e := parent(o))}
+    family = (
+        own
+        | epics
+        | {
+            s["number"]
+            for o in own
+            for s in ((found.get(f"n{o}") or {}).get("subIssues") or {}).get("nodes") or []
+        }
+    )
+    stray = [
+        n
+        for n in sorted(named)
+        if (found.get(f"n{n}") or {}).get("__typename") == "Issue"
+        and n not in family
+        and parent(n) not in own | epics
+    ]
+    if not stray:
+        return ""
+    return (
+        f"warning: {', '.join(f'#{n}' for n in stray)} is outside lead {sid}'s request"
+        f" ({', '.join(f'#{n}' for n in sorted(own))}) and its epic; a lead takes one request or"
+        " epic, so an unrelated item goes to a fresh lead."
+        " Sent anyway."
+    )
+
+
 def relay(
     og: Omnigent,
     sid: str,
@@ -3000,10 +3089,32 @@ def far_checkout_root(og: Omnigent, host_id: str, workspace: str, what: str) -> 
     return root
 
 
+def host_file(og: Omnigent, host_id: str, path: str) -> str | None:
+    """``path``'s text through the host's file route (``GET /v1/hosts/<id>/files/<path>``, which
+    needs no session on the host): a UTF-8 file up to 64 KiB. None, so the caller reads through a
+    live session, on a 404 or 405 (a server or host without the route, or a missing file), a 400
+    (a folder, such as a main checkout's ``.git``, or not UTF-8: a session lists the one and
+    reads the other), a 403 for ``~/.claude.json`` (the folder-trust check must read it), and a
+    200 with no text. Any other refusal (403 a credential file, 413 too large, 503 host offline) is
+    a ``Fail`` carrying the server's message, with no fallback."""
+    url = "/v1/hosts/" + host_id + "/files/" + quote(path.strip("/"), safe="/")
+    try:
+        content = og.call("GET", url).get("content")
+    except Fail as e:
+        code = e.__cause__.code if isinstance(e.__cause__, HTTPError) else 0
+        if code in (400, 404, 405) or (code == 403 and path.endswith("/.claude.json")):
+            return None
+        raise
+    return content if isinstance(content, str) else None
+
+
 def read_on_host(og: Omnigent, host_id: str, path: str) -> str:
-    """``path`` (absolute, on host ``host_id``) read through a live session there, since the host's
-    own file API lists a folder but gives no file's text. ``Gone`` when a session answered 404
-    (naming it), else ``Fail``: no live session, or the read failed."""
+    """``path`` (absolute, on host ``host_id``) read through the host's file route, which needs no
+    session there (``host_file``); a server or host without it is read through a live session
+    instead. ``Gone`` when a session answered 404 (naming it), else ``Fail``: no live session, a
+    refused read, or the read failed."""
+    if (text := host_file(og, host_id, path)) is not None:
+        return text
     why: Exception = Fail("no live session there to read it through")
     for s in live_sessions(og, host_id)[:FAR_READS]:
         try:
@@ -3054,10 +3165,9 @@ def far_capacity(
     row names one, else per core over its ``/proc/stat``'s ``cpuN`` lines; ``cpu=False`` (a cloud
     start) reads and judges ``/proc/meminfo`` alone. None and why when it can't be read: no live
     session, every read failing, or no ``/proc`` (a Mac)."""
-    # ponytail: a host's load and memory read through one of its sessions, since the server reads
-    # no host-level file (GET /v1/hosts/<id>/filesystem/<file> answers 404 "path is not a
-    # directory") and GET /v1/hosts carries no load or memory. Upgrade: either one, which would
-    # also give a Mac's load.
+    # ponytail: a host's load and memory read through one of its sessions, since GET /v1/hosts
+    # carries neither and the host file route (``host_file``) is for regular UTF-8 files, not
+    # /proc, which is unchecked. Upgrade: either one, which would also give a Mac's load.
     sessions = sorted(
         live_sessions(og, host_id),
         key=lambda s: float(s.get("updated_at") or s.get("created_at") or 0),
@@ -3941,6 +4051,13 @@ class Unverified(Fail):
     """A host's file that a cloud start depends on can't be read, so its content is unknown."""
 
 
+def _causes(e: BaseException) -> Iterator[BaseException]:
+    """``e`` and the exceptions it was raised from, nearest first."""
+    while e is not None:
+        yield e
+        e = e.__cause__  # type: ignore[assignment]
+
+
 def far_json(og: Omnigent, host_id: str, path: str, what: str, bad: type[Fail] = Fail) -> dict:
     """The JSON object in ``path`` on host ``host_id``, read through a live session there
     (``read_on_host``); ``Unverified`` when it can't be read, ``bad`` when it is not JSON."""
@@ -3976,12 +4093,20 @@ def far_trusted(og: Omnigent, host_id: str, row: dict, workspace: Path) -> bool 
     """Whether Claude Code on host ``host_id`` trusts ``workspace``, by ``folder_trusted``'s rule
     (its own entry in the host's ``~/.claude.json``, or the main worktree's, named by the ``gitdir:``
     line of a linked worktree's ``.git`` file). None, not checked, when the home folder can't be
-    found through the host row or a listing; ``Unverified`` when the config can't be read."""
+    found through the host row or a listing, or when the config is over the file route's 64 KiB (a
+    warning); ``Unverified`` when the config can't be read."""
     if not (home := far_home(og, host_id, row, workspace)):
         return None
-    projects = far_json(og, host_id, f"{home}/.claude.json", "folder trust check", Unverified).get(
-        "projects"
-    )
+    try:
+        config = far_json(og, host_id, f"{home}/.claude.json", "folder trust check", Unverified)
+    except Unverified as e:
+        # the host file route refuses a read over 64 KiB with a 413 and takes no range, and a
+        # long-lived bridge's config grows past that (#1870): warn, not checked, instead of refusing
+        if not any(isinstance(c, HTTPError) and c.code == 413 for c in _causes(e)):
+            raise
+        print(f"warning: {e}; folder trust not checked", file=sys.stderr)
+        return None
+    projects = config.get("projects")
     places = {str(workspace)}
     if (root := far_checkout_root(og, host_id, str(workspace), "folder trust check")) is not None:
         places.add(str(root))
@@ -10647,6 +10772,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 return 0
             print(og.read_file(sid, args.path))
             return 0
+        if args.cmd in ("relay", "send") and (
+            warning := off_request(
+                og,
+                args.session,
+                text_or_file(args.message if args.cmd == "relay" else args.brief)[0],
+            )
+        ):
+            print(warning, file=sys.stderr, flush=True)
         if args.cmd == "relay":
             if not (args.answer or args.source) and asks_owner(text_or_file(args.message)[0]):
                 raise Fail(
