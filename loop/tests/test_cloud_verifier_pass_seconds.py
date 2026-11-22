@@ -129,7 +129,9 @@ def test_the_footer_stays_out_of_the_verdict_parsers(tmp_path) -> None:
     import sys
     from pathlib import Path
 
-    scripts = Path(cv.__file__).parent
+    scripts = (
+        Path(cv.__file__).resolve().parents[4] / "gatekeeper" / "skills" / "gatekeeper" / "scripts"
+    )
     sys.path.insert(0, str(scripts))
     try:
         import gatekeeper

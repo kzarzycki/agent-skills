@@ -38,7 +38,6 @@ print(
     f"orchestrating-agents/scripts/omnigent_agent.py is deprecated: run the `{skill}` skill's scripts/{target.name}",
     file=sys.stderr,
 )
-sys.argv[0] = str(target)
 # as if the target ran itself, so no forwarder beside this one is importable
 sys.path[0] = str(target.parent)
 runpy.run_path(str(target), run_name="__main__")
