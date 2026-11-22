@@ -450,8 +450,8 @@ timeout, a failure) (orchestrating-agents' backends/omnigent.md, One wake per ch
 Your own long runs (a build, a test, a gate, a land, a live check) end in something that wakes you, since a harness
 re-invokes a session only for its own tracked background tasks and a detached pid is none
 (orchestrating-agents, A wait wakes you, or you stay in the turn): a harness-tracked background task, a
-detached run with `LOOP_NOTIFY` set, or a `wait-for` in the same turn; never a turn ended on "waiting on pid N"
-or a log, which the supervisor nudges. Detached, they start the same way (verifier.md, A long or locked run is detached)
+detached run with `LOOP_NOTIFY` set, or a `wait-for` in the same turn; never a turn ended on "waiting on pid N",
+a log or, in a cloud session, a subagent of yours, which the supervisor nudges. Detached, they start the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, since Claude Code's low-memory reaper stops
 in-session background shells. Start each with `LOOP_NOTIFY` naming your session (omnigent-agents'
 SKILL.md, Waiting on a run or a PR), so its wrapper's `wait-for --notify` step tells you
@@ -516,6 +516,9 @@ the file's whole text, where a summary cuts a long one short. Once your branch h
 that and your parsed `Waits:` line and ignores a `CoS:` footer and prose waits; a `Waits:` line that does not parse
 gets one notice naming the accepted forms. A lead with no branch yet writes no event (its `needs-owner` is the issue's
 label), and a host whose push fails still prints the line: the event only reports the step.
+A step you hand back to your manager (a PR ready for it, a record only it can make) goes on its own line,
+`Handback: #<n> <what>` (`Handback: #12 READY FOR VERIFY abc1234`), which the supervisor reports to the session it
+notifies at once; prose alone in a `STILL WORKING` reads as you still working, and nobody acts on it.
 A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
 supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline
