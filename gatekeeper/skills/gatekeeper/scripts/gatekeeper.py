@@ -1344,40 +1344,58 @@ def ineligible(
 
 
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
-    """Whether the PR needs no verifier review: a `bot.<name>` section of gatekeeper.md names it, and every file it changes
-    matches one of that section's `paths` (lock and manifest files). A section names a bot by its login, or, with
-    `branch`, a head-branch prefix (`renovate/`), for an updater that opens its PRs under a person's token; then the
-    head must be this repository's own branch, since a fork's PR may name any branch and only a writer pushes one
-    here. GitHub's GraphQL spells a bot's login without the `bot` REST and the setting write, so both compare
-    without it; a person can't hold a bot's login, so for a login the author's type is checked too. Every commit's
-    author must be the PR's author, and its committer the author or no account (GitHub's web-flow committer on a
-    bot's or an API's commits), since another person's push or rebase of its branch is a change no verifier saw. A
-    `Co-Authored-By:` trailer names no one here: it is text the committer wrote in the message, not another account's
-    push, and GitHub resolves it into the commit's `authors` list, so only the commit's own `author` is read. A
-    renamed or copied file refuses it, since GraphQL gives only the new path, which may hide code moved onto a lock
-    file's name, and so does the label `verify`, which asks for the review (a major update). No entry, or more files
-    or commits than the gate reads: no exemption."""
+    """Whether the PR needs no verifier review: a `bot.<name>` section of gatekeeper.md names it (exempting)."""
+    return exempting(pull, loop) is not None
+
+
+def exempting(pull: dict[str, Any], loop: str | None) -> dict[str, Any] | None:
+    """The `bot.<name>` section of gatekeeper.md that names the PR and covers every file it changes with one of its
+    `paths` (lock and manifest files), or None. A section names a bot by its login, or, with `branch`, a head-branch
+    prefix (`renovate/`), for an updater that opens its PRs under a person's token; then the head must be this
+    repository's own branch, since a fork's PR may name any branch and only a writer pushes one here. GitHub's GraphQL
+    spells a bot's login without the `bot` REST and the setting write, so both compare without it; a person can't
+    hold a bot's login, so for a login the author's type is checked too. Every commit's author must be the PR's
+    author, and its committer the author or no account (GitHub's web-flow committer on a bot's or an API's commits),
+    since another person's push or rebase of its branch is a change no verifier saw. Under a `branch` section an
+    author with no account counts as the PR's author too, as a committer does: a cloud worker commits as a git
+    identity GitHub ties to no one, and only a writer can push that branch here. A `Co-Authored-By:` trailer names
+    no one here: it is text the committer wrote in the message, not another account's push, and GitHub resolves it
+    into the commit's `authors` list, so only the commit's own `author` is read. A renamed or copied file refuses
+    it, since GraphQL gives only the new path, which may hide code moved onto a lock file's name, and so does the
+    label `verify`, which asks for the review (a major update). No entry, or more files or commits than the gate
+    reads: no exemption."""
     labels = {label["name"] for label in pull["labels"]["nodes"]}
     if moved_files(pull) != [] or "verify" in labels:
-        return False
+        return None
     author, files = pull.get("author") or {}, paths(pull)
     if not files:
-        return False
+        return None
     login = (author.get("login") or "").removesuffix("[bot]").lower()
     commits = pull.get("authored") or {}
     nodes = commits.get("nodes") or []
     if not login or not nodes or (commits.get("totalCount") or 0) > len(nodes):
-        return False
-    for node in nodes:
-        commit = node["commit"]
-        wrote = ((commit.get("author") or {}).get("user") or {}).get("login") or ""
-        committer = ((commit.get("committer") or {}).get("user") or {}).get("login")
-        if any(
-            name.removesuffix("[bot]").lower() != login
-            for name in (wrote, committer)
-            if name is not None
-        ):
-            return False
+        return None
+    # each commit's author and committer login; None for no GitHub account
+    accounts = [
+        tuple(
+            ((node["commit"].get(role) or {}).get("user") or {}).get("login") or None
+            for role in ("author", "committer")
+        )
+        for node in nodes
+    ]
+
+    def by(bot: dict[str, Any]) -> bool:
+        """Whether every commit is the PR author's; under a `branch` section an author with no account is too."""
+        for wrote, committer in accounts:
+            if wrote is None and "branch" not in bot:
+                return False
+            if any(
+                name.removesuffix("[bot]").lower() != login
+                for name in (wrote, committer)
+                if name is not None
+            ):
+                return False
+        return True
 
     def names(bot: dict[str, Any]) -> bool:
         if "branch" in bot:
@@ -1387,11 +1405,102 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
             and bot["login"].removesuffix("[bot]").lower() == login
         )
 
-    return any(
-        names(bot)
-        and all(any(fnmatch.fnmatch(path, glob) for glob in bot["paths"]) for path in files)
-        for bot in settings(loop).get("bot", [])
+    return next(
+        (
+            bot
+            for bot in settings(loop).get("bot", [])
+            if names(bot)
+            and by(bot)
+            and all(any(fnmatch.fnmatch(path, glob) for glob in bot["paths"]) for path in files)
+        ),
+        None,
     )
+
+
+# the package a pack bump moves: its `apm.yml` dependency names it, and a bump changes only its `ref:` line
+PACK = "kzarzycki/agent-skills/engineering"
+# a release the pack tagged: a version or a range of one (`^0.36.0`, `0.36.0`), or the tag (`engineering-v0.36.0`),
+# never a branch or a commit, which no release review saw
+RELEASE = r"(?:(?:\^|~|>=|=)?v?\d+\.\d+\.\d+|engineering-v\d+\.\d+\.\d+)"
+REF_LINE = re.compile(r"^[ \t]*(?:-[ \t]+)?ref:[ \t]*(['\"]?)" + RELEASE + r"\1[ \t]*(?:#.*)?$")
+ITEM_LINE = re.compile(r"^([ \t]*)-[ \t]+")
+GIT_LINE = re.compile(
+    r"^[ \t]*(?:-[ \t]+)?git:[ \t]*['\"]?" + re.escape(PACK) + r"(?:\.git)?['\"]?[ \t]*$"
+)
+
+
+def mechanical(pull: dict[str, Any], loop: str | None) -> str | None:
+    """Why the PR is no mechanical pack bump, whose spec then needs no approval, or None when it is one: a `branch`
+    section of `bot` exempts it (exempting); it changes the root `apm.yml`, so it moves the pack; and every `apm.yml`
+    it changes changes only the `ref:` line of its dependency on PACK (ref_only), so the rest of the diff is the lock
+    and generated files the section's `paths` cover. The release such a bump pins was reviewed and tagged already.
+    A PR that leaves `apm.yml` alone (an updater's lock-only PR, a hand edit of a generated file), any other
+    `apm.yml` change, a login section's PR, or a patch GitHub can't give keeps the spec gate."""
+    bot = exempting(pull, loop)
+    if bot is None or "branch" not in bot:
+        return "no `bot` section with a `branch` exempts it"
+    manifests = [path for path in paths(pull) or [] if path.rsplit("/", 1)[-1] == "apm.yml"]
+    if "apm.yml" not in manifests:
+        return f"it doesn't change `apm.yml`'s `{PACK}` `ref:` line, so it moves no pack"
+    changes = changed(pull)
+    if changes is None:
+        return "GitHub can't give its `apm.yml` patch"
+    patches = {change.get("filename"): change.get("patch") for change in changes}
+    for path in manifests:
+        if not ref_only(patches.get(path) or ""):
+            return f"`{path}` changes more than its `{PACK}` `ref:` line"
+    return None
+
+
+def ref_only(patch: str) -> bool:
+    """Whether a unified diff of `apm.yml` changes one line, the `ref:` line of the dependency on PACK, to another
+    release: one hunk, whose only edits are one REF_LINE removed and then one added, each naming a release (RELEASE)
+    and each in a list item with a GIT_LINE naming PACK on its own side of the hunk (pack_item). Any line that is no
+    hunk header, context, edit or `\\ No newline` marker fails it, and so does an item whose `git:` line is out of
+    the hunk's context."""
+    hunks: list[list[str]] = []
+    for line in patch.split("\n"):
+        if line.startswith("@@"):
+            hunks.append([])
+        elif hunks and line[:1] in (" ", "-", "+"):
+            hunks[-1].append(line)
+        elif hunks and line.startswith("\\"):  # \ No newline at end of file
+            continue
+        elif line:
+            return False
+    edited = [hunk for hunk in hunks if any(line[:1] in "-+" for line in hunk)]
+    if len(edited) != 1:
+        return False
+    hunk = edited[0]
+    edits = [line for line in hunk if line[:1] in "-+"]
+    if [line[:1] for line in edits] != ["-", "+"]:
+        return False
+    if not all(REF_LINE.match(line[1:]) for line in edits):
+        return False
+    return all(pack_item(hunk, edit, " " + edit[0]) for edit in edits)
+
+
+def pack_item(hunk: list[str], edit: str, side: str) -> bool:
+    """Whether the line `edit` of `hunk` sits in the list item of PACK on its side of the diff (`side`: the context
+    and the edits of that side, ` -` old or ` +` new): the item opens at the nearest `- ` line at or above it, runs
+    while lines are indented past that dash, and holds a GIT_LINE naming PACK."""
+    lines = [line for line in hunk if line[:1] in side]
+    text = [line[1:] for line in lines]
+    at = lines.index(edit)
+
+    def indent(line: str) -> int:
+        return len(line) - len(line.lstrip(" \t"))
+
+    start = at
+    while start >= 0 and not ITEM_LINE.match(text[start]):
+        start -= 1
+    if start < 0:
+        return False
+    depth = len(ITEM_LINE.match(text[start])[1])
+    end = start + 1
+    while end < len(text) and text[end].strip() and indent(text[end]) > depth:
+        end += 1
+    return at < end and any(GIT_LINE.match(line) for line in text[start:end])
 
 
 REST_FILE_CAP = 3000  # the most files GitHub's REST list of a PR holds
@@ -2254,7 +2363,9 @@ def scoped(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str
 def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
     """A line per issue whose spec `spec.auto: true` leaves to the owner (spec_hold), approved or not, so a gate run says
     why that spec needed them and its merge waits for no `approved:merge`; without it, per issue a kind `spec.auto`
-    names would cover but whose rating leaves to the owner (spec_owned)."""
+    names would cover but whose rating leaves to the owner (spec_owned). A mechanical pack bump holds none (mechanical)."""
+    if issues and loop is not None and "number" in pull and mechanical(pull, loop) is None:
+        return []
     if not spec_auto(loop):
         kinds = spec_kinds(loop)
         return [
@@ -2432,11 +2543,14 @@ def proofs(
     """One line per approval or proof the PR and its issues lack at `point` (build or merge); an exact revert of
     #`revert` names no issue and needs no verdict. Without a policy file (`loop` None) an issue needs only the
     `approved:spec` label; with it, the owner's record and the label, unless a kind `spec.auto` names covers it
-    (spec_policy), `spec.auto: true` does (spec_hold), or its `paths` term does an issue labelled SCOPED (scoped).
+    (spec_policy), `spec.auto: true` does (spec_hold), its `paths` term does an issue labelled SCOPED (scoped), or
+    the PR is a mechanical pack bump (mechanical).
     A plan needs them where the `plan` rule asks. What the merge
     waits for is waits()'s."""
     rule, found = settings(loop), []
     kinds, every = spec_kinds(loop), spec_auto(loop)
+    # a mechanical pack bump's spec needs no approval: the release it pins was reviewed and tagged (mechanical)
+    bump = loop is not None and "number" in pull and mechanical(pull, loop) is None
     for issue in issues:
         labels = names(issue)
         if point == "build" and (line := others(issue)):
@@ -2453,6 +2567,7 @@ def proofs(
             and spec_hold(pull, issue, loop) is None
             or spec_policy(issue, kinds)
             and spec_owned(pull, issue, loop) is None
+            or bump
         )
         if not covered and SCOPED in labels:
             why = scoped(pull, issue, loop)

@@ -735,6 +735,11 @@ def test_skill_mds_settings_examples_pass_their_schema() -> None:
     assert approvals.settings(loop_md(loop))["bot"] == [
         {"login": "dependabot[bot]", "paths": ["uv.lock", "**/package.json"]},
         {"login": "renovate", "branch": "renovate/", "paths": ["uv.lock"]},
+        {
+            "login": "pack-bump",
+            "branch": "claude/ready-pack-bump-",
+            "paths": ["apm.yml", "apm.lock.yaml", ".agents/**"],
+        },
     ]
     assert approvals.tracker_settings(loop_md(tracker))["renames"] == {"frontend": "area:web"}
     excepted = approvals.settings(loop_md(loop))["carry_over_main"]["except"]
