@@ -742,6 +742,10 @@ QUEUE_POLL = 300
 RECHECK = 300
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
 LOW_POLL, LOW_QUOTA = 600, 0.1
+# the longest poll of a wait whose state stays the same round after round: QUEUE_POLL doubles up to it (#1771). With
+# POLL_JITTER it stays inside the twice-300 s window a `land` event is live in (events.md) and under WAITER_STALE, so a
+# quiet wait never reads as a dead one; a lock that moves is still seen at once, since the sleep checks it each POLL
+QUIET_POLL = 480
 POLL_JITTER = 60  # most seconds of random delay added to a land --wait poll
 # a wait that meets this many network failures in a row (NETWORK) fails with the last one
 MISSES = 3
@@ -5781,6 +5785,9 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
             if handler is not None:
                 signal.signal(sig, handler)
         waiting = False
+        github.wait_until = (
+            None  # the wait is over: gh() no longer guards, nor waits out a rate limit (#1771)
+        )
         unwait(forget=True)
 
 
@@ -5793,6 +5800,8 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
         made.extend(earlier)  # execv runs no atexit: the next re-exec hands these on (caught_up)
         atexit.register(reap, earlier)
     said, spoke, heard = "", 0.0, ""
+    # rounds in a row whose state did not change: the poll backs off with each (poll_seconds)
+    quiet = 0
     github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
     missed = 0  # network failures in a row, of landing() and of the lock poll
     while True:
@@ -5821,6 +5830,7 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
             # a background command's log: each state once, not every 30 seconds, a held lock's age being no new
             # state; again every SLOT_SAY_SECONDS, so wait-for's stall check never reads a long wait as a hang
             state = re.sub(r"\d+ minutes? ago", "", out.getvalue())
+            quiet = quiet + 1 if state == said else 0
             if state != said or time.monotonic() - spoke >= SLOT_SAY_SECONDS:
                 print(out.getvalue(), end="", flush=True)
                 spoke = time.monotonic()
@@ -5831,7 +5841,7 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
             if code:  # a wait that exits with its PR neither merged nor ended (main is red) must not leave `waiting`
                 land_event_of(pr, "failed", unless_ended=True)
             return code
-        nap = poll_seconds()
+        nap = poll_seconds(quiet)
         if time.monotonic() + nap > deadline:
             print(f"land --wait stopped after {CEILING // 3600} hours, still waiting")
             land_event_of(
@@ -5955,19 +5965,17 @@ def reap(worktrees: Sequence[Sequence[str]]) -> None:
         )
 
 
-def poll_seconds() -> float:
-    """QUEUE_POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA, plus up to POLL_JITTER random seconds so
-    waiting lands do not poll in the same minute. `gh api rate_limit` is not counted against the quota; gh shows no
-    response headers, so nothing is read for free. A failed read keeps QUEUE_POLL."""
-    base = max(POLL, QUEUE_POLL)
-    try:
-        left, limit = github.gh(
-            "api", "rate_limit", "--jq", r'.resources.core|"\(.remaining) \(.limit)"'
-        ).split()
-        if int(left) < LOW_QUOTA * int(limit):
-            base = LOW_POLL
-    except (subprocess.CalledProcessError, ValueError):
-        pass
+def poll_seconds(quiet: int = 0) -> float:
+    """QUEUE_POLL, doubled for each of the `quiet` rounds in a row whose state did not change up to QUIET_POLL (#1771),
+    or LOW_POLL when that is longer and the REST quota left is under LOW_QUOTA, plus up to POLL_JITTER random seconds
+    so waiting lands do not poll in the same minute. The quota is the guard's reading (github.quota), from `gh api
+    rate_limit`, which is not counted against it; gh shows no response headers, so nothing is read for free. A failed
+    read keeps the quiet poll."""
+    first = max(POLL, QUEUE_POLL)
+    base = min(first * 2 ** min(quiet, 8), max(QUIET_POLL, first))
+    found = github.quota("core")
+    if found and found[0] < LOW_QUOTA * found[1]:
+        base = max(base, LOW_POLL)
     return base + github.random.randint(0, POLL_JITTER)
 
 
