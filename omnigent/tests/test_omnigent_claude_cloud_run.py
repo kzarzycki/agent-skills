@@ -65,6 +65,11 @@ class RunFake(CloudFake):
     def home(self, name: str) -> dict:
         return {"id": "p1", "name": "proj"}
 
+    def project(
+        self, name: str
+    ) -> dict:  # the repository's project, which the launch dirs file under
+        return {"id": "p1", "name": "proj"}
+
     def host(self, name: str) -> str:
         return next(i for i, n in self.hosts().items() if name in (i, n))
 
@@ -105,9 +110,14 @@ def bridge(og: RunFake, workspace: str = "/srv/repo-cloud", pinned: bool = True)
             "created_at": 5,
         }
     )
+    og.others.append(
+        {"id": "lead", "host_id": "b", "status": "idle"}
+    )  # live: files read through it
     files = {f"{workspace}/.git/HEAD": "ref", "/proc/meminfo": "MemAvailable: 99999999 kB\n"}
     if pinned:
-        files[f"{workspace}/.claude/settings.local.json"] = "{}"
+        files[f"{workspace}/.claude/settings.local.json"] = (
+            '{"remote": {"defaultEnvironmentId": "env_1"}}'  # what the start's pin check reads (#838)
+        )
     og.procs["b"] = files
 
 
@@ -353,7 +363,8 @@ def test_run_host_is_refused_for_a_host_agent_without_top_level(
     )
     assert (
         code != 0
-        and "--host needs --top-level, or a run of a cloud agent" in capsys.readouterr().err
+        and "--host needs --top-level, or a cloud agent"
+        in capsys.readouterr().err  # #838's wording
     )
     assert og.sessions == {}
 

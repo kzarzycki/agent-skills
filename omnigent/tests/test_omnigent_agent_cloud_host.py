@@ -1,6 +1,7 @@
 """omnigent_agent.py places a claude-cloud child on a bridge host (#838): refuses a host without
-the cloud harness or a workspace without the environment pin, picks the roomiest host, and never
-duplicates a session whose create timed out. A stand-in server answers the HTTP calls only."""
+the cloud harness or a workspace without the environment pin, picks the roomiest host, maps a
+launcher's local path to the bridge's launch dir when the launcher has no cloud harness (#1693),
+and never duplicates a session whose create timed out. A stand-in server answers the HTTP calls only."""
 
 import json
 from email.message import Message
@@ -29,10 +30,15 @@ class Hosts(omnigent_agent.Omnigent):
     def __init__(self, rows: list[dict], files: dict[str, str] | None = None) -> None:
         self.base, self.host_id, self._token, self.loops = "http://x", "here", "t", {}
         self.rows, self.files, self.gone = rows, files or {}, set()
+        self.records: list[dict] = []  # the project's sessions, as the server lists them
 
     def call(self, method: str, path: str, body: object = None, **_: object) -> dict:
         if path == "/v1/hosts":
             return {"hosts": self.rows}
+        if path == "/v1/projects":
+            return {"data": [{"id": "p0", "name": "Chief of staff"}, {"id": "p1", "name": "repo"}]}
+        if path.startswith("/v1/sessions?kind=default&project=repo"):
+            return {"data": self.records}
         if path.startswith("/v1/hosts/"):
             folder = "/" + path.split("?")[0].split("/filesystem/")[1].strip("/") + "/"
             names = {f[len(folder) :].split("/")[0] for f in self.files if f.startswith(folder)}
@@ -40,6 +46,12 @@ class Hosts(omnigent_agent.Omnigent):
                 raise omnigent_agent.Fail("GET") from HTTPError(path, 404, "", Message(), None)
             return {"data": [{"name": n} for n in sorted(names)]}
         raise AssertionError(f"unfaked {method} {path}")
+
+    def harness(self, name: str) -> str:
+        return CLOUD if name == "claude-cloud" else "claude-native"
+
+    def home(self, name: str) -> dict:  # the caller's session files under another project
+        return {"id": "p0", "name": "Chief of staff"}
 
     def read_file(self, sid: str, path: str) -> str:
         if path in self.gone:
@@ -57,6 +69,12 @@ def row(host: str, mb: float, *harnesses: str, status: str = "online") -> dict:
         "configured_harnesses": {h: True for h in harnesses},
         "memory_available_mb": mb,
     }
+
+
+@pytest.fixture(autouse=True)
+def project(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OMNIGENT_PROJECT", raising=False)
+    monkeypatch.setattr(omnigent_agent, "repo_name", lambda: "repo")
 
 
 @pytest.fixture(autouse=True)
@@ -91,7 +109,7 @@ def test_the_roomiest_online_host_with_the_cloud_harness_is_picked(
         ],
         {SETTINGS: pinned()},
     )
-    assert omnigent_agent.pick_cloud_host(og, Path(WORK)) == "big"
+    assert omnigent_agent.pick_cloud_host(og, Path(WORK)) == ("big", Path(WORK))
     assert "big".upper() in capsys.readouterr().err.upper()
 
 
@@ -104,7 +122,7 @@ def test_with_no_qualifying_host_or_a_failing_hosts_call_the_start_stays_here() 
 
 def test_the_launchers_own_host_counts_when_it_has_most_memory() -> None:
     og = Hosts([row("here", 5000, CLOUD), row("there", 100, CLOUD)], {SETTINGS: pinned()})
-    assert omnigent_agent.pick_cloud_host(og, Path(WORK)) == "here"
+    assert omnigent_agent.pick_cloud_host(og, Path(WORK)) == ("here", Path(WORK))
 
 
 def test_a_workspace_without_the_environment_pin_is_refused_before_a_session_exists() -> None:
@@ -141,7 +159,7 @@ def test_the_pick_skips_a_host_whose_pin_cannot_be_read_and_says_why(
 ) -> None:
     og = Hosts([row("idle", 9000, CLOUD), row("busy", 100, CLOUD)], {SETTINGS: pinned()})
     live.append("idle")
-    assert omnigent_agent.pick_cloud_host(og, Path(WORK)) == "busy"
+    assert omnigent_agent.pick_cloud_host(og, Path(WORK)) == ("busy", Path(WORK))
     assert "host IDLE skipped for a cloud child" in capsys.readouterr().err
     live.append("busy")  # none readable: the launcher's host
     assert omnigent_agent.pick_cloud_host(og, Path(WORK)) is None
@@ -283,3 +301,147 @@ def test_a_create_that_timed_out_is_looked_up_by_title_and_reused_not_duplicated
     og = Timeout()
     sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0)
     assert sid == "s0" and list(og.sessions) == ["s0"] and og.lookups == 3
+
+
+LOCAL = "/Users/me/dev/repo"  # the launcher's checkout, on no bridge host
+FAR_ID = "4673a77ef6ad4a169d5e86c10bafc5ee"  # how a session row names host far, as the server does
+LAUNCH = "/home/a/dev/repo-cloud"  # the repository's pinned launch dir on the bridge host
+
+
+def bridge(*records: dict) -> Hosts:
+    """A launcher configuring no cloud harness beside bridge host ``far`` holding ``LAUNCH``."""
+    og = Hosts(
+        [row("here", 9000, "claude-native"), {**row("far", 500, CLOUD), "id": FAR_ID}],
+        {f"{LAUNCH}/.claude/settings.local.json": pinned(), f"{LAUNCH}/.git": ""},
+    )
+    og.records = list(records)
+    return og
+
+
+def record(host: str, place: str, at: float = 1, agent: str = "claude-cloud") -> dict:
+    """A session row on ``host``, which names host far by its hex id."""
+    named = FAR_ID if host == "far" else host
+    return {"host_id": named, "workspace": place, "agent_name": agent, "created_at": at}
+
+
+def test_a_launcher_without_the_cloud_harness_maps_its_path_to_the_bridges_launch_dir() -> None:
+    og = bridge(
+        record("far", "/home/a/old", at=5),  # newest, but not pinned there: skipped
+        record("far", LAUNCH, at=2),
+        record("far", "/home/a/native", at=9, agent="claude"),  # not a cloud session
+        record("elsewhere", "/x", at=9),
+    )
+    assert omnigent_agent.pick_cloud_host(og, Path(LOCAL)) == ("far", Path(LAUNCH))
+    assert omnigent_agent.pick_cloud_host(og, None) == ("far", Path(LAUNCH))
+    assert omnigent_agent.cloud_placement(og) == ("far", LAUNCH)
+    assert omnigent_agent.far_launch_dirs(og, "far") == ["/home/a/old", LAUNCH]
+    assert omnigent_agent.far_launch_dirs(og, "FAR") == ["/home/a/old", LAUNCH]  # by name too
+
+
+def test_a_launcher_with_the_cloud_harness_never_has_its_path_mapped() -> None:
+    og = bridge(record("far", LAUNCH))
+    og.rows = [row("here", 100, CLOUD), row("far", 500, CLOUD)]
+    assert omnigent_agent.pick_cloud_host(og, Path(LOCAL)) == ("here", Path(LOCAL))
+    assert omnigent_agent.cloud_placement(og) is None
+
+
+def test_a_launcher_without_the_cloud_harness_and_no_launch_dir_is_refused_not_sent_to_412(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    og = bridge()  # no cloud session of the project on the bridge host names its launch dir
+    with pytest.raises(omnigent_agent.Fail, match=rf"configures no {CLOUD}.*FAR.*pass --host"):
+        omnigent_agent.pick_cloud_host(og, Path(LOCAL))
+    og.rows = [row("here", 9000, "claude-native")]
+    with pytest.raises(omnigent_agent.Fail, match="no online host configures it"):
+        omnigent_agent.cloud_placement(og)
+
+
+class Bridged(FakeOmnigent):
+    """``cloud_far``'s server, whose project lists one cloud session on ``far`` at ``LAUNCH``."""
+
+    def home(self, name: str) -> dict:  # the caller's session files under another project
+        return {"id": "p0", "name": "Chief of staff"}
+
+    def project(self, name: str) -> dict | None:
+        return {"id": "p1", "name": "repo"} if name == "repo" else None
+
+    def call(self, method: str, path: str, body: object = None) -> dict:
+        if path.startswith("/v1/sessions?kind=default&project=repo"):
+            return {"data": [record("far", LAUNCH)]}
+        return super().call(method, path, body)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["start", "--workspace", LOCAL],  # the cloud gate's start: a local launch dir
+        ["start"],  # no --workspace: this directory
+        ["run", "--workspace", LOCAL, "--timeout", "1"],
+    ],
+)
+def test_start_and_run_from_a_launcher_without_the_cloud_harness_land_on_the_bridge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, argv: list[str]
+) -> None:
+    monkeypatch.setattr(base, "FakeOmnigent", Bridged)
+    rows = [row("h", 9000, "claude-native"), {**row("far", 500, CLOUD), "id": FAR_ID}]
+    og = cloud_far(monkeypatch, tmp_path, rows, LAUNCH)
+    og.others = [{"id": "x1", "host_id": FAR_ID, "status": "idle", "updated_at": 1}]
+    og.procs[FAR_ID] = og.procs["far"]  # read through a session the server files under the hex id
+    og.procs["far"][f"{LAUNCH}/.git"] = ""
+    monkeypatch.setattr(omnigent_agent, "wait", lambda *a, **k: "done")
+    cmd, *rest = argv
+    code = omnigent_agent.main(
+        [cmd, "claude-cloud", "t", "b.md", f"{tmp_path}/r.md", "--confirm-seconds", "0", *rest]
+    )
+    assert (code, og.hosts_of, og.workspaces) == (0, {"s0": "far"}, [LAUNCH])
+
+
+def test_the_launch_dir_most_cloud_sessions_ran_in_wins_over_a_newer_one_off(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A verifier's per-PR worktree is newest while its review runs, then removed: a gate or worker
+    placed there would lose its launch dir mid-run, so the standing dir wins."""
+    one_off = "/home/a/dev/v1690-cloud"
+    og = bridge(
+        record("far", LAUNCH, at=1), record("far", LAUNCH, at=2), record("far", one_off, at=9)
+    )
+    og.files[f"{one_off}/.claude/settings.local.json"] = pinned()
+    del og.rows[1]["memory_available_mb"]  # a server that lists no memory
+    assert omnigent_agent.far_launch_dirs(og, "far") == [LAUNCH, one_off]
+    assert omnigent_agent.pick_cloud_host(og, Path(LOCAL)) == ("far", Path(LAUNCH))
+    assert f"at {LAUNCH} (memory not listed)" in capsys.readouterr().err  # never "0 MB"
+
+
+@pytest.mark.parametrize("cmd", ["run", "start"])
+def test_a_launcher_offering_the_cloud_harness_never_picks_for_run_or_a_start_without_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], cmd: str
+) -> None:
+    """As on main (#838): only `start --workspace <absolute>` picks from a launcher offering the
+    harness, so `run` and a start without --workspace read no far host and stay here."""
+    monkeypatch.setattr(base, "FakeOmnigent", Bridged)
+    rows = [row("h", 100, CLOUD), {**row("far", 9000, CLOUD), "id": FAR_ID}]
+    og = cloud_far(monkeypatch, tmp_path, rows, LAUNCH)
+    picks: list[object] = []
+    monkeypatch.setattr(omnigent_agent, "pick_cloud_host", lambda *a: picks.append(a))
+    monkeypatch.setattr(omnigent_agent, "wait", lambda *a, **k: "done")
+    extra = ["--timeout", "1"] if cmd == "run" else []
+    code = omnigent_agent.main(
+        [cmd, "claude-cloud", "t", "b.md", "r.md", "--confirm-seconds", "0", *extra]
+    )
+    assert (code, picks, og.hosts_of) == (0, [], {"s0": "h"})
+    assert "skipped" not in capsys.readouterr().err
+
+
+def test_an_auto_picked_host_takes_a_relative_report_as_a_path_here(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(base, "FakeOmnigent", Bridged)
+    rows = [row("h", 9000, "claude-native"), {**row("far", 500, CLOUD), "id": FAR_ID}]
+    og = cloud_far(monkeypatch, tmp_path, rows, LAUNCH)
+    og.others = [{"id": "x1", "host_id": FAR_ID, "status": "idle", "updated_at": 1}]
+    og.procs[FAR_ID] = og.procs["far"]
+    code = omnigent_agent.main(
+        ["start", "claude-cloud", "t", "b.md", "tmp/r.md", "--confirm-seconds", "0"]
+        + ["--workspace", LOCAL]
+    )
+    assert (code, og.hosts_of, og.workspaces) == (0, {"s0": "far"}, [LAUNCH])
