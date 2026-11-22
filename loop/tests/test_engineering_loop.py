@@ -162,14 +162,23 @@ def test_placement_is_stated_once_and_the_role_files_point_to_it() -> None:
     )
 
 
-def test_the_verifier_waits_in_few_long_calls_and_reruns_repros_together() -> None:
-    """A wait or a repro per short call re-reads the whole context each time."""
+def test_the_verifier_waits_with_one_wake_and_reruns_repros_together() -> None:
+    """A wait or a repro per short call re-reads the whole context each time: a run is waited on
+    by one tracked background wait as long as the run (waste audit, finding 1)."""
     verifier = " ".join((LOOP / "verifier.md").read_text().split())
     assert (
-        "never short polls or a sleep loop of your own, since every call re-reads the whole context"
+        "Never a short `wait-for`, an `until grep` or a `sleep` loop, since each return re-reads your whole context"
         in verifier
     )
-    assert "wait-for --log <log> --pid <pid>" in verifier  # the one verb that blocks to the limit
+    assert (
+        "wait-for --log <log> --pid <pid> --budget <the run's expected length>` started as a background call"
+        in verifier
+    )
+    worker = " ".join((LOOP / "worker.md").read_text().split())
+    assert (
+        "--budget <the run's expected length>`" in worker and "never a short `wait-for`" in worker
+    )
+    assert "blocks close to the tool limit and prints only the outcome" not in worker
     assert "waited on as a detached run is" in verifier  # the bare gate too
     assert "Rerun all of its repros from one script" in verifier
     assert "the diff since its head and the files it touches" in verifier
