@@ -23,6 +23,7 @@
     uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed under `ci: false` or with --base (Narrowed mode)
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
+    uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
     uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's gate on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; else `check`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
@@ -10487,6 +10488,39 @@ def finished(head: str, code: int, command: str | None = None) -> None:
     os.replace(partial, exit_file)
 
 
+def gate_record(head: str, words: list[str]) -> int:
+    """`gate-record <head> [-- <command>]`: whether origin holds a pass record (record_ref) of the gate, each step of
+    `gate_steps` (gate_plan), or of `<command>`, on `head`'s tree, so the verifier reads it instead of running the
+    same tests again. Exit 0 names each record branch; exit 1 names each command with
+    no record and why, which the verifier then runs. A record is keyed by the tree and the command's digest
+    (record_name), so another tree, another command or another test list in it is another record and never reused.
+    Only origin counts, the branch `local-ci --record` pushes: never this clone's own record file, which a worker
+    sharing the clone may have written, and never a worker's log or report."""
+    # tree_of fetches a head this clone lacks from origin, as reusable() does
+    if (held := tree_of(head)) is None:
+        print(f"no tree for {head}: run the tests")
+        return 1
+    # ponytail: a step keyed by its inputs (inputs_key) is read by its tree here, so a pass on another tree with the
+    # same inputs is not found and the verifier runs it; reading step_pass's inputs match would lift that
+    commands = [shlex.join(words)] if words else [step["command"] for step in gate_plan()]
+    missing = 0
+    for command in commands:
+        why: list[str] = []
+        record = record_ref(held, command, command_line(command, "gate")[2], why)
+        if record is None:
+            missing += 1
+            reason = (
+                "; ".join(why)
+                or f"origin holds no record branch {RECORD_BRANCH.format(record_name(held, command))}"
+            )
+            print(f"no record of `{command}` on tree {held}: run it ({reason})")
+        else:
+            print(
+                f"recorded: {described(held, record['head'], command)}, as {record['ref']} at {record['time']}"
+            )
+    return 1 if missing else 0
+
+
 def local_ci_status(head: str) -> int:
     """Say whether the detached local-ci run on `head` is running (exit 3), passed (0) or failed (1), with its log;
     passed only when a pass on `head`'s tree under this environment is recorded: with `gate_steps`, of each step the
@@ -11521,6 +11555,9 @@ def main(argv: list[str]) -> int:
     graduating.add_argument("--pr", type=int, required=True)
     # --base: the commit to select against (a PR's base SHA, a push's previous tip), over the merge base
     commands.add_parser("affected-tests").add_argument("--base", metavar="REV")
+    recording_read = commands.add_parser("gate-record")
+    recording_read.add_argument("head")
+    recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
     wrapping = commands.add_parser("heavy")
     wrapping.add_argument("--plan", action="store_true")
     wrapping.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
@@ -11612,6 +11649,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         )
     if args.command == "delegate":
         return delegate(args.pr)
+    if args.command == "gate-record":
+        return gate_record(args.head, args.words[1:] if args.words[:1] == ["--"] else args.words)
     if args.command == "local-ci":
         if args.status is not None:
             if args.pr is not None or args.record:
