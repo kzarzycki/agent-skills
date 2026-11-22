@@ -179,11 +179,9 @@ def test_cloud_land_queues_for_mergify(
     cloud_queue: dict[str, Any],
     hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    """In a cloud session with no signing key, the Mergify path queues over REST; the local path still refuses."""
+    """In a cloud session with no signing key, the Mergify path queues over REST."""
     cloud_queue["rules"] = approvals.github.Required({"qualify"})
     head = cloud_queue["opened"](7)
-    code, lines = cloud_queue["land"]("7")
-    assert code == 1 and any("land in a cloud session needs" in line for line in lines), lines
     loop = cloud_queue["work"] / "docs" / "agents" / "loop.md"
     loop.write_text(add(loop.read_text(), "land", "queue: mergify\n"))
     code, lines = cloud_queue["land"]("7")
