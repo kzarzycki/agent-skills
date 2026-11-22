@@ -388,7 +388,7 @@ gatekeeper.md's policy (Settings) holds:
   prefix (a fork's PR may name any branch), and every commit is that person's, so the
   updater commits as that person (Renovate's `gitAuthor`), not as its default author, or as
   a git identity with no GitHub account, as a cloud worker does. Such a PR whose `apm.yml`
-  changes only its pack dependency's `ref:` line, the rest being the lock and generated
+  changes only its pack dependency's `ref:` line, to a release, the rest being the lock and generated
   files `paths` covers, is a pack bump: its issue's spec needs no approval, since the
   release it pins was reviewed and tagged. Name the pack bump's section by the branch
   `claude/ready-pack-bump-<tag>`, which a cloud session may push. A PR labelled
