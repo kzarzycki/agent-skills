@@ -328,7 +328,10 @@ quota_left: dict[str, tuple[float, int, int, int]] = {}
 
 
 def forget() -> None:
-    """Drop every answer this run kept: viewer's login, `kept` and the guard's last quota readings."""
+    """Drop every answer this run kept: viewer's login, `kept` and the guard's last quota readings; and end any wait
+    (wait_until), so no guard runs."""
+    global wait_until
+    wait_until = None
     viewer_login.clear()
     kept.clear()
     quota_left.clear()

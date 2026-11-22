@@ -3,6 +3,7 @@ and kept, the poll backs off while nothing changes, and gh()'s quota guard waits
 
 from __future__ import annotations
 
+import itertools
 import json
 import subprocess
 import time
@@ -16,16 +17,20 @@ HEAD = "a" * 40
 
 
 class Hub:
-    """A fake `gh` that answers the reads one poll pass of land makes on the REST path and counts every call by its
-    route; `runs` is the head's check-run status, `bucket` the core calls left that `gh api rate_limit` reports."""
+    """The `gh` binary, faked at subprocess.run under the real github.gh() (so its guard runs as in a land): it answers
+    the reads one poll pass of land makes on the REST path and counts every call by its route; `runs` is the head's
+    check-run status, `bucket` the core calls left that `gh api rate_limit` reports."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.runs = "completed"
         self.bucket = 5000
 
-    def __call__(self, *args: str, data: str | None = None) -> str:
-        github.guard(args)  # the real gh() guards each call first
+    def __call__(self, cmd: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
+        assert cmd[0] == "gh", cmd
+        return subprocess.CompletedProcess(cmd, 0, self.answer(tuple(cmd[1:])), "")
+
+    def answer(self, args: tuple[str, ...]) -> str:
         self.calls.append(args)
         path = " ".join(args)
         if "rate_limit" in path:
@@ -60,7 +65,7 @@ class Hub:
 @pytest.fixture
 def hub(monkeypatch: pytest.MonkeyPatch) -> Hub:
     fake = Hub()
-    monkeypatch.setattr(github, "gh", fake)
+    monkeypatch.setattr(github.subprocess, "run", fake)
     monkeypatch.setattr(github, "wait_until", None)
     monkeypatch.setattr(github.random, "randint", lambda low, high: 0)
     return fake
@@ -188,3 +193,49 @@ def test_a_nearly_spent_bucket_whose_reset_is_past_the_ceiling_stops_naming_it(
         github.required_checks("main")
     assert "core quota nearly spent (0 calls left), resets at" in stopped.value.stderr
     assert not hub.api()  # the last calls are not spent
+
+
+def test_the_real_gh_guards_each_call_only_while_a_wait_runs(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard acts through gh() itself: with an empty bucket and a ceiling it can't wait inside, gh() refuses
+    before it runs the call, and without a wait it runs the call regardless."""
+    hub.bucket = 0
+    assert github.gh("api", "repos/{owner}/{repo}/branches/main") == "qualify\n"
+    github.forget()  # drop the bucket reading the unguarded call did not make
+    monkeypatch.setattr(github, "wait_until", time.monotonic() + 10)
+    with pytest.raises(subprocess.CalledProcessError) as stopped:
+        github.gh("api", "repos/{owner}/{repo}/branches/main")
+    assert "core quota nearly spent" in stopped.value.stderr
+    assert len(hub.api()) == 1  # the guarded call never reached gh
+
+
+def test_land_wait_naps_back_off_while_the_state_holds_and_reset_when_it_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drive land --wait over six rounds (three alike, two of a new state, then an end) and read the gap between
+    rounds, which is the nap poll_seconds gave for the quiet count wait_loop passed it."""
+    now, ran = [0.0], []
+    states = ["checks pending", "checks pending", "checks pending", "lock held", "lock held"]
+    monkeypatch.setattr(github, "wait_until", None)
+    monkeypatch.setattr(github, "quota", lambda bucket: None)  # no quota news: the quiet poll alone
+    monkeypatch.setattr(github.random, "randint", lambda low, high: 0)
+    monkeypatch.setattr(approvals.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        approvals.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)
+    )
+
+    def landing(pr: Any, only: bool = False) -> tuple[int, bool]:
+        ran.append(now[0])
+        if len(ran) > len(states):
+            return 0, False
+        print(states[len(ran) - 1])
+        return approvals.WAITING, True
+
+    monkeypatch.setattr(approvals, "landing", landing)
+    assert approvals.land(1, wait=True) == 0
+    assert (
+        github.wait_until is None
+    )  # the wait is over: a later gh() in this process is not guarded
+    gaps = [b - a for a, b in itertools.pairwise(ran)]
+    assert gaps == [300, 480, 480, 300, 480]

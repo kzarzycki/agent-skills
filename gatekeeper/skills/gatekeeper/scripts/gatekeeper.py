@@ -5785,6 +5785,9 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
             if handler is not None:
                 signal.signal(sig, handler)
         waiting = False
+        github.wait_until = (
+            None  # the wait is over: gh() no longer guards, nor waits out a rate limit (#1771)
+        )
         unwait(forget=True)
 
 
