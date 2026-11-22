@@ -8954,7 +8954,7 @@ def parse_report(
     accepted(lines, report)
     # a run not made can't back a satisfied verdict: that ends in a question for the lead's proof run
     if satisfied[-1].lower().split()[1:2] == ["yes"] and any(
-        re.match(r"Not run:", line) for line in lines
+        re.match(r"Not run:(?!\s*none\.?\s*$)", line, re.IGNORECASE) for line in lines
     ):
         raise Refused(
             f"{report}: `{satisfied[-1]}` lists a `Not run:` line, so a run it relies on was never made: "
