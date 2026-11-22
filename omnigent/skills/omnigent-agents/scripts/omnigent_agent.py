@@ -5686,7 +5686,7 @@ def pr_stall(facts: dict, threshold: float, now: float) -> tuple[float, str | No
     (or a fix round asked with no push since), a card waiting (a loop event on the PR's branch at ``needs-owner``, a
     verifier question newer than the last push). ``facts`` holds GitHub's own records: ``pr`` (the pull, with
     ``mergeable``), ``timeline`` (the issue timeline), ``statuses`` (the head's, newest first), ``checks`` (its check
-    runs), ``required`` (the base's required check names, None when unread: then any red check counts) and ``cards``
+    runs, re-runs included), ``required`` (the base's required check names, None when unread: then any red check counts) and ``cards``
     (the needs-owner events' kinds)."""
     pr, head = facts["pr"], facts["pr"]["head"]["sha"].lower()
     # a plain push has no time of its own on GitHub (a ``committed`` event carries the commit's date, which a commit
@@ -5748,12 +5748,17 @@ def pr_stall(facts: dict, threshold: float, now: float) -> tuple[float, str | No
     last_push = max(pushed)
     blockers = []
     required = facts.get("required")
+    latest: dict[str, dict] = {}  # each check's newest run: a re-run supersedes the run before it
+    for c in facts["checks"]:
+        name, began = str(c.get("name")), c.get("started_at") or ""
+        if name not in latest or began > (latest[name].get("started_at") or ""):
+            latest[name] = c
     red = sorted(
         {
             name
             for name, state in [
                 *((n, str(s.get("state"))) for n, s in newest.items()),
-                *((str(c.get("name")), str(c.get("conclusion"))) for c in facts["checks"]),
+                *((n, str(c.get("conclusion"))) for n, c in latest.items()),
             ]
             if state in RED and (not required or name in required)
         }
@@ -5813,7 +5818,8 @@ def pr_facts(repo: str, pr: dict, bases: dict, refs: dict) -> dict:
         "pr": json.loads(gh("api", f"repos/{repo}/pulls/{n}", timeout=HTTP_SECONDS)),
         "timeline": pages(f"issues/{n}/timeline?per_page=100"),
         "statuses": pages(f"commits/{head}/statuses?per_page=100"),
-        "checks": pages(f"commits/{head}/check-runs?per_page=100", ".check_runs[]"),
+        # every run, a re-run's first too: the first run of a check dates the push, a re-run is no move
+        "checks": pages(f"commits/{head}/check-runs?filter=all&per_page=100", ".check_runs[]"),
         "required": bases[base],
         "cards": refs.get(pr["head"]["ref"], []),
         "seen_at": 0.0,

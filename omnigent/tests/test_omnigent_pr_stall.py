@@ -105,7 +105,15 @@ def github(
             if path.startswith(f"repos/o/r/commits/{sha(n)}/statuses"):
                 return lines(p["statuses"])
             if path.startswith(f"repos/o/r/commits/{sha(n)}/check-runs"):
-                return lines(p["checks"])
+                if "filter=all" in path:
+                    return lines(p["checks"])
+                newest: dict = {}  # GitHub's default, filter=latest: each check's newest run alone
+                for c in p["checks"]:
+                    if (c.get("started_at") or "") >= (
+                        newest.get(c["name"], {}).get("started_at") or ""
+                    ):
+                        newest[c["name"]] = c
+                return lines(list(newest.values()))
         raise AssertionError(f"unexpected read: {args}")
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
@@ -191,7 +199,10 @@ def test_a_red_check_not_required_blocks_nothing_and_a_stall_with_no_blocker_sti
         {"pushed": 20 * 60},  # a push
         {"timeline_extra": [{"event": "head_ref_force_pushed", "created_at": iso(600)}]},
         {"timeline_extra": [verdict(12, "yes", 600)]},  # a verdict
-        {"statuses": [{"context": "owner", "state": "success", "created_at": iso(600)}]},  # a go
+        {  # a go, on a head whose CI started two hours ago: the go, not the status's first sight, moves it
+            "statuses": [{"context": "owner", "state": "success", "created_at": iso(600)}],
+            "checks": [{"name": "qualify", "started_at": iso(2 * HOUR), "conclusion": "success"}],
+        },
         {
             "timeline_extra": [
                 {"event": "labeled", "label": {"name": "loop:queued"}, "created_at": iso(600)}
@@ -303,3 +314,59 @@ def test_a_verdict_on_an_earlier_head_is_no_verdict_blocker(monkeypatch) -> None
     p["timeline"].append(old)
     found = stalls(monkeypatch, [p])
     assert "blocker: none found on GitHub" in found[12] and "without a go" not in found[12]
+
+
+def test_the_heads_first_check_or_status_dates_its_push_not_a_later_one(monkeypatch) -> None:
+    early = pr(
+        12,
+        checks=[
+            {"name": "qualify", "started_at": iso(2 * HOUR)},
+            {"name": "x", "started_at": iso(600)},
+        ],
+    )
+    late = pr(
+        13, statuses=[{"context": "gate", "state": "success", "created_at": iso(600)}]
+    )  # no check run at all
+    assert list(stalls(monkeypatch, [early, late])) == [
+        12
+    ]  # its first check is two hours old; 13's first status is not
+
+
+def test_a_sweep_stores_its_time_so_the_next_dates_a_new_head_after_it(monkeypatch) -> None:
+    """Two sweeps through pr_stalls alone: the second sees a new head (an old commit, no CI) and dates it by the
+    first sweep, so it is no stall."""
+    memo: dict = {}
+    p = pr(12, pushed=3 * HOUR)
+    assert list(stalls(monkeypatch, [p], memo=memo)) == [12]
+    assert memo["swept"] == pytest.approx(time.time(), abs=5)
+    memo["prs"]["12"]["head"] = sha(11)  # it saw another head in that sweep
+    assert stalls(monkeypatch, [p], memo=memo) == {}
+    assert memo["prs"]["12"]["seen_at"] == pytest.approx(time.time(), abs=5)
+
+
+def test_a_rerun_of_a_check_is_no_push_and_its_latest_run_decides_red(monkeypatch) -> None:
+    first, rerun = iso(3 * HOUR), iso(70 * 60)
+    red = pr(
+        12,
+        pushed=3 * HOUR,
+        checks=[
+            {"name": "qualify", "started_at": first, "conclusion": "failure"},
+            {"name": "qualify", "started_at": rerun, "conclusion": "failure"},
+        ],
+    )
+    red["timeline"].append(verdict(12, "no", 90 * 60))
+    green = pr(
+        13,
+        pushed=3 * HOUR,
+        checks=[
+            {"name": "qualify", "started_at": first, "conclusion": "failure"},
+            {"name": "qualify", "started_at": rerun, "conclusion": "success"},
+        ],
+    )
+    found = stalls(monkeypatch, [red, green])
+    # moved by the verdict 90m ago, not by the re-run 70m ago
+    assert "for 90m" in found[12] and "a red required check: qualify" in found[12]
+    assert (
+        "a verdict asking a fix round (SATISFIED: no)" in found[12]
+    )  # the verdict is newer than the push
+    assert "red" not in found[13]  # its re-run passed
