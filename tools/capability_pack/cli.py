@@ -22,7 +22,8 @@ from tools.capability_pack.qualify import (
 )
 
 # EX_CONFIG: this machine isn't ready. A step that stops on QUALIFY_TIMEOUT failed for the
-# host's load, not the change, so a loop.md naming it as machine_exit reruns, then stops.
+# host's load, not the change, so a loop.md naming it as machine_exit has local-ci refuse it as a
+# machine fault, never a red gate.
 MACHINE_EXIT = 78
 
 

@@ -43,12 +43,12 @@ def test_this_repos_policy_and_tracker_settings_parse(copy: str, monkeypatch) ->
             pytest.skip(f"the installed pack predates a setting the docs use: {refusal}")
         raise
     assert approvals.settings(policy)["risk"]["paths"]
-    # settings() takes any string for `gate`; gate() is what land and local-ci refuse a malformed one with
+    # settings() takes any string for `gate`; gate() is what local-ci refuses a malformed one with
     assert approvals.gate()[1]
     assert approvals.tracker_settings(tracker)
     assert approvals.label_names(tracker)["component"]
     # qualify's QUALIFY_TIMEOUT exit (tools/capability_pack/cli.py), so a gate timed out on a loaded host is a
-    # machine fault that land reruns and then stops on, never an eviction (#851)
+    # machine fault local-ci refuses, never a red gate (#851)
     assert approvals.settings(policy).get("machine_exit") == 78
 
 

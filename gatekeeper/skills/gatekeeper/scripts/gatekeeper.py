@@ -3224,9 +3224,9 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
 def signed_squash(pull: dict[str, Any], signers: Path, onto: tuple[str, str] | None = None) -> str:
     """Squash the PR's head onto its base here, signed with this checkout's key and checked against `signers`, then
     push it to the PR's branch and fast-forward the base to it: GitHub marks a PR merged once its head is in the
-    base. The head must be the one the gates checked and contain the base's tip, so the squash undoes nothing; with
+    base. The head must be the one the proofs judged and contain the base's tip, so the squash undoes nothing; with
     `onto` (a commit and a tree, from land's batch), the base's tip must be that commit and the squash holds that
-    tree, the merge of the head the batch gated."""
+    tree, the head merged into the batch."""
     if not shutil.which("ssh-keygen"):
         raise Refused(NO_KEYGEN)
     pr, base, branch, head = (
@@ -4465,7 +4465,7 @@ def breakglass_cover(pull: dict[str, Any], loop: str | None, lines: list[str]) -
     every line a required check red or missing, none, and a line saying so; with a record that is no approval, the
     lines and what is wrong with it; with no record or status, or a pending check among the lines, the lines as they
     were. Every other proof stays required: this replaces the green gate and nothing else."""
-    if not lines:
+    if not lines or no_ci(loop):
         return Covered(lines, [])
     names: dict[str, str] = {}
     for line in lines:
