@@ -8767,7 +8767,22 @@ def accepted(lines: list[str], report: Path) -> list[tuple[str, str]]:
     """Each `Accepted on evidence: <line> — <proof log>` line of a report as (line, proof log), refused when one
     names no proof log, since an acceptance taken on evidence nobody can find is no acceptance."""
     found = []
+    fenced = False
     for line in lines:
+        if line.startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:  # a quoted report line is no acceptance
+            continue
+        # a `Manual:` line that takes itself on evidence inline: the high-risk refusal and the posted review would
+        # never see it; prose, a quote or a fenced block that only mentions the phrase is no acceptance
+        if not line.startswith(ACCEPTED) and re.search(
+            rf"Manual:.*{re.escape(ACCEPTED)}", re.sub(r"`[^`]*`|\*", "", line)
+        ):
+            raise Refused(
+                f"{report}: `{ACCEPTED}` inside `{line[:60]}`: write it as a line of its own, "
+                f"`{ACCEPTED} <line> — <proof log>`"
+            )
         if not line.startswith(ACCEPTED):
             continue
         said = re.fullmatch(r"(\S.*)[ \t]+[—–][ \t]+(\S.*)", line[len(ACCEPTED) :].strip())
