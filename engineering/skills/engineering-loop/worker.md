@@ -33,14 +33,17 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
 2. **Gates and push.** Iterate on the narrowest check that covers the change: an incremental build of the touched
    target, then `mise run test:changed` (that module's tests), then the gate limited to one step where the project has
    one, since a full gate can take twenty minutes to show a compile error a build shows in one. Those narrow checks are
-   the loop between heads; the gate below runs once per head you push, as the proof on a head you expect to pass, and
-   when it fails, find the cheaper check that was skipped before the next run. Lint runs at commit, in the hook's `lint:` tasks on
+   the loop between heads; a review head gets only those narrow checks (tests and lint for what changed). The gate of
+   record runs once, on the head the verifier is satisfied with, and again on any later head, since a push voids a gate;
+   when it fails, find the cheaper check that was skipped before the next run. A gate failure now shows after the
+   verifier, so its fix needs a short re-verify of the delta. Lint runs at commit, in the hook's `lint:` tasks on
    the staged files, so the gate adds none. Before each push (after it on a fix round, below), where loop.md has an
    `Affected tests:` line, run `uv run <gatekeeper>/scripts/approvals.py affected-tests` on every head, a fix
    round's too: it runs that selection against `git merge-base origin/<base> HEAD` (the base of the branch's open PR,
    else the default branch; a shallow clone is deepened) in the variable `Gate base:` names (else `GATE_BASE`), under the
-   host gate slot, in place of the full `mise run check`; without the line, or with loop.md's `Gate: full`, it runs
-   `mise run check`. A selector that selects nothing exits 0. With `ci: false` the draft heads run `affected-tests` too,
+   host gate slot, in place of the full `mise run check`, and is the narrow check for a review head. Without the line, or with loop.md's
+   `Gate: full`, a review head's narrow check is `mise run test:changed`, and `mise run check` is the gate of record only
+   (it runs `affected-tests` under that name where the line exists). A selector that selects nothing exits 0. With `ci: false` the draft heads run `affected-tests` too,
    and the gate of record on the ready head is `approvals.py local-ci --record` on the committed head, run once when the
    PR goes ready (again only if the head moves after that, or its merge base with the PR's base does: a stacked PR whose parent lands, a retarget, since a narrowed record is keyed by that merge base): a narrowed pass against the merge base where loop.md has
    the line and no `Gate: full`, which `check merge` takes, else the full gate, since then `check merge` needs a full
@@ -56,15 +59,16 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    Once it exits 0, commit and push with `git push -u origin <branch>` as
    its own command, since a pre-tool hook may scan the whole command text. Commit and push
    after each step whose gates are green, not only at the end, so a worker killed mid-task
-   leaves its work on the branch. A fix round (a brief of a verdict's findings) pushes before
-   its gate, since the lead starts the next verifier on that head while the gate runs: once
-   `test:changed` and the mutation check (Report) pass, commit and push, start the gate
-   detached on the pushed head (below), and report its log and pid in place of its exit code,
-   never waiting on it. When the brief says the verifier reviews in your worktree (lead.md step 7,
+   leaves its work on the branch. A fix round (a brief of a verdict's findings) runs the narrow checks only:
+   once `test:changed` (or `affected-tests` where loop.md has the line) and the mutation check (Report) pass, commit and
+   push and report the head, since the lead starts the next verifier on it. No gate starts on a review head. When the
+   brief says the verifier is satisfied with the head, start the gate of record detached on it (below), report its log
+   and pid in place of its exit code, and never wait on it: the lead waits on it, and a red gate sends a short
+   re-verify of the delta. When the brief says the verifier reviews in your worktree (lead.md step 7,
    Shared worktree), run no gate there beside the pass: run the changed tests and the
    mutation check, push and stop, since the verifier's mutation patches edit that tree;
-   `land` and CI gate the head. With an `Affected tests:` line the gate is `affected-tests` again, which
-   replaces the delta form below. Without it, when the brief names the last green head (the newest head whose gate
+   `land` and CI gate the head. With an `Affected tests:` line the gate of record is `affected-tests` again, which
+   replaces the delta form below. Without it, for the gate of record, when the brief names the last green head (the newest head whose gate
    passed) and `git merge-base --is-ancestor <it> HEAD` exits 0, put `GATE_BASE=<it>` (or the
    variable loop.md's `Gate base:` line names) in front of `mise run check`, so a check that
    reads it selects only what changed since that head; with `ci: false` run the check that way,

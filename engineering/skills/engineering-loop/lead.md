@@ -135,8 +135,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    another pass. The worker gets those checks only, never a verdict, review text or the
    verifier's report, so the verifier stays independent and runs the same checks itself.
    The brief also names how the worker iterates (worker.md, Gates and push): the narrowest check that covers the
-   change first, and the gate once per head as proof, since a full gate spent finding a compile error costs minutes a
-   build would have saved.
+   change first, and no full gate on a review head: the gate of record runs once, on the head the verifier is satisfied
+   with, and again on any later head, since a full gate spent finding a compile error costs minutes a build would have
+   saved. A gate failure then shows after the verifier, so its fix needs a short re-verify of the delta.
    Unless loop.md's `Cloud worker:` line says `none`, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch (a branch it names anyway is ignored: the worker pushes to its own `claude/…` branch and reports it).
@@ -229,7 +230,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    its family as no tier, and refuses only a `mid` or `small` Codex tier on a high-risk change. agy on another host takes the brief
    as a file there (backends/omnigent.md, Antigravity). Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), naming the last green head (the newest head whose
-   gate passed) for the fix round's gate (worker.md, Gates and push). A correctness finding's fix
+   gate passed) for the gate of record's delta form (worker.md, Gates and push); the fix round itself runs the narrow checks only. A correctness finding's fix
    covers its class: each sibling the verifier lists under it (verifier.md, Siblings), triaged like
    a finding, that the same change fixes in files the PR already touches; a sibling past that cap
    is filed as its own issue (SKILL.md, Triage), since one case a pass costs a round per case and
@@ -240,10 +241,11 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    worktree at the new head, plus the previous report's copy and head; reviving the old one re-reads its whole earlier
    review every turn. With loop.md's `Verifier session: reuse` (SKILL.md, What the project states), keep the
    verifier's session across passes instead: `send` it the next pass's brief (`loop.py brief`, as above)
-   rather than starting one, and close it once the PR lands. Start it as soon as the fixer reports the pushed head, with the fix's gate
-   still running, and wait on that gate yourself (`wait-for --log <log> --pid <pid>`): `land`
-   needs a satisfied verdict and a green gate on the same head, so neither check weakens, and a
-   red gate's failure joins that verdict's findings in the next fix round. A finding that doesn't make the PR wrong or unmergeable, a note on a
+   rather than starting one, and close it once the PR lands. Start it as soon as the fixer reports the pushed head, which has had the narrow checks only. When
+   the verifier is satisfied with a head, start the gate of record on that head (worker.md, Gates and push) and wait on it
+   yourself (`wait-for --log <log> --pid <pid>`): `land` needs a satisfied verdict and a green gate on the same head, so
+   neither check weakens, and a red gate's failure goes to a worker as a fix round, whose new head gets a short
+   re-verify of the delta, then a new gate. A finding that doesn't make the PR wrong or unmergeable, a note on a
    satisfied verdict included, waits for the merge and starts from main (SKILL.md, One
    concern per PR). Every fix after a verdict needs a verdict on its head, because `land`
    (step 8) merges only a head the newest verifier review covers. A fix that changes nothing an
