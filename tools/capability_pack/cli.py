@@ -20,6 +20,7 @@ from tools.capability_pack.qualify import (
     upstream_deltas,
     validate_release_candidate,
 )
+from tools.capability_pack.release import MAGNITUDES, cut_release, release_tags, verify_release
 
 # EX_CONFIG: this machine isn't ready. A step that stops on QUALIFY_TIMEOUT failed for the
 # host's load, not the change, so a loop.md naming it as machine_exit reruns, then stops.
@@ -63,6 +64,23 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="the tag check's run: the smoke run gated the release before the tag was pushed",
     )
+    cut = subparsers.add_parser(
+        "cut-release",
+        help="fold every package's changelog.d into its CHANGELOG.md and set its version; commits nothing",
+    )
+    cut.add_argument("--root", type=Path, default=Path("."))
+    cut.add_argument("--magnitude", choices=MAGNITUDES, default="patch")
+    cut.add_argument("--dry-run", action="store_true", help="print the releases, write nothing")
+    verify = subparsers.add_parser(
+        "release-verify", help="refuse unless HEAD is exactly the release cut of --base"
+    )
+    verify.add_argument("--root", type=Path, default=Path("."))
+    verify.add_argument("--base", required=True)
+    verify.add_argument("--head", default="HEAD")
+    tags = subparsers.add_parser(
+        "release-tags", help="print the tag of each package whose manifest HEAD changes"
+    )
+    tags.add_argument("--root", type=Path, default=Path("."))
     consumer = subparsers.add_parser("prepare-consumer")
     consumer.add_argument("repository", type=Path)
     consumer.add_argument("source_tag")
@@ -100,6 +118,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "assert-codex-inventory":
             assert_codex_inventory(args.repository, args.source_tag, args.source_commit)
+            return 0
+        if args.command in ("cut-release", "release-verify"):
+            if args.command == "cut-release":
+                releases = cut_release(args.root, magnitude=args.magnitude, dry_run=args.dry_run)
+            else:
+                releases = verify_release(args.root, args.base, args.head)
+                print(f"{args.head} is the release cut of {args.base}")
+            for release in releases:
+                issues = " ".join(release.entries)
+                print(f"{release.package} {release.version} ({issues})")
+            return 0
+        if args.command == "release-tags":
+            print("\n".join(release_tags(args.root)))
             return 0
         if args.command == "release-check":
             validate_release_candidate(args.package, args.tag)
