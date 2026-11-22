@@ -2397,6 +2397,27 @@ def test_a_qualifier_naming_another_pass_never_changes_the_pass(
     assert said == qualifier.lstrip(": ")
 
 
+def test_brief_embeds_the_prs_text_labels_and_a_body_fence_stays_inside_its_own(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A verifier with no GitHub access reads the title, body and labels from the brief; a body holding a fence is
+    wrapped in a longer one, so it cannot close the brief's fence early."""
+    monkeypatch.chdir(tmp_path)
+    body = "Closes #12.\n\n```sh\nrm -rf x\n```\n\n````\nnested\n````\n"
+    pr = pull(body=body)
+    pr["title"] = "fix: a `quoted` title"
+    pr["labels"] = {"nodes": [{"name": "kind:bug"}, {"name": "risk:low"}]}
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    monkeypatch.setattr(approvals, "merge_base", lambda base, head: BASE)
+    monkeypatch.setattr(approvals, "project", lambda: (None, LOOP))
+    assert approvals.main(["brief", "7"]) == 0
+    out = capsys.readouterr().out
+    assert "- Spec: #12\n" in out
+    assert "- Labels: kind:bug, risk:low\n" in out
+    assert "PR title:\n```\nfix: a `quoted` title\n```\n" in out
+    assert f"PR body:\n`````\n{body.rstrip()}\n`````" in out
+
+
 def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2442,6 +2463,20 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         f"- Previous report: tmp/loop/pr7-v2.md, on {earlier}: review the diff since that head and rerun its repros",
         f"- Proof log: {proof} (its first line is the head)",
         "",
+        "PR title:",
+        "```",
+        pr["title"],
+        "```",
+        "",
+        "PR body:",
+        "```",
+        "Closes #12.",
+        "",
+        "## Evidence",
+        "",
+        "log",
+        "```",
+        "",
         "Priorities:",
         "- the revert path",
         "",
@@ -2461,6 +2496,31 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         assert "stale proof" in capsys.readouterr().out
     assert approvals.main(["brief", "7", "--proof", str(tmp_path / "absent.log")]) == 1
     assert capsys.readouterr().out == f"PR #7: no proof log at {tmp_path / 'absent.log'}\n"
+    # the previous pass's findings travel in the brief: a cloud verifier can't read the host's report file
+    pr["reviewThreads"]["nodes"] = [
+        {
+            "isResolved": False,
+            "comments": {
+                "nodes": [
+                    {"body": "**Verifier (codex), pass 2 · F1** (major): a gap\n\nit fails"},
+                    {"body": "**Verifier (codex), pass 1 · F9** (minor): older"},
+                ]
+            },
+        }
+    ]
+    assert approvals.main(["brief", "7"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "- Previous findings, pass 2:\n  1. **Verifier (codex), pass 2 · F1** (major): a gap" in out
+    )
+    assert "F9" not in out
+    # a finding on a file outside the diff sits in the review's body
+    pr["reviews"]["nodes"][-1]["body"] += (
+        "- **Verifier (codex), pass 2 · F3** (minor): x, at `a.md:1`\n- **Verifier (codex), pass 1 · F8** (minor): y\n"
+    )
+    assert approvals.main(["brief", "7"]) == 0
+    out = capsys.readouterr().out
+    assert "F3** (minor): x" in out and "F8" not in out
     pr["reviews"] = {"nodes": []}
     assert approvals.main(["brief", "7"]) == 0
     out = capsys.readouterr().out.splitlines()
@@ -2513,6 +2573,16 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
             " rerun its repros"
         ),
         "- Proof log: /there/repo/tmp/loop/gate.log (its first line is the head)",
+        "",
+        "PR title:",
+        "```",
+        "Feature",
+        "```",
+        "",
+        "PR body:",
+        "```",
+        "Closes #12.",
+        "```",
     ]
     # the previous pass saved its repros beside its report in the clone's tmp/loop/: named there by path
     (tmp_path / "tmp" / "loop").mkdir(parents=True)
@@ -3366,7 +3436,6 @@ def lands(
         "pulls": {},
         "calls": [],
         "comments": [],
-        "squash": "COMMIT_MESSAGES",
     }
     pulls = state["pulls"]
 
@@ -3403,34 +3472,12 @@ def lands(
             pulls[int(args[-1])]["isDraft"] = "--undo" in args
             return ""
         if args[:2] == ("api", "-X"):
-            # land's edit of a PR's body or comment, which session_links() names by its REST path
+            # an edit of a PR's body or comment at its REST path, which land no longer makes
             state["calls"].append(args)
             state.setdefault("edits", {})[args[3]] = args[args.index("-f") + 1].removeprefix(
                 "body="
             )
             return ""
-        if args[:2] == ("api", "--paginate") and args[2].split("?")[0].endswith("/commits"):
-            number = int(args[2].split("/")[-2])
-            # REST lists a PR's commits oldest first, each with its author's GitHub login
-            listed = git_in(
-                origin, "rev-list", "--reverse", f"main..{pulls[number]['headRefOid']}"
-            ).split()
-            return "".join(
-                json.dumps(
-                    {
-                        "author": pulls[number]["author"],
-                        "parents": [{"sha": "p"}],
-                        "commit": {
-                            "message": git_in(origin, "log", "-1", "--format=%B", sha).strip(),
-                            "author": {"name": "Builder", "email": "builder@example.com"},
-                        },
-                    }
-                )
-                + "\n"
-                for sha in listed
-            )
-        if args == ("api", "repos/{owner}/{repo}"):
-            return json.dumps({"squash_merge_commit_message": state["squash"]})
         if args[:2] == ("pr", "merge"):
             state["calls"].append(args)
             number, head = int(args[2]), args[args.index("--match-head-commit") + 1]
@@ -3538,152 +3585,17 @@ def landed_note(lands: dict[str, Any], number: int) -> dict[str, str]:
     return dict(line.split(": ", 1) for line in body.splitlines()[1:])
 
 
-def test_land_squashes_with_the_commit_messages_less_every_claude_session_line(
+def test_land_squashes_with_githubs_default_body_a_session_line_included(
     lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
 ) -> None:
-    """GitHub's default squash body copies each commit message, a cloud session's link included (#638)."""
-    trailers = "Co-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://example.com/session_1"
-    lands["open"](7, {"7.txt": "7\n"}, messages=(f"Add 7\n\nWhy 7.\n\n{trailers}",))
-    lands["open"](
-        8,
-        {"8.txt": "8\n"},
-        messages=(f"Add 8\n\nWhy 8.\n\n{trailers}", f"Test 8\n\nClaude-Session: x\n\n{trailers}"),
-    )
+    """land passes no `--body`, so GitHub's squash default writes it, a cloud session's link line kept."""
+    link = "Claude-Session: https://claude.ai/code/session_01AbCdEf"
+    lands["open"](7, {"7.txt": "7\n"}, messages=(f"Add 7\n\nWhy 7.\n\n{link}",))
     code, lines = lands["land"]()
     assert code == 0, lines
-    assert lands["bodies"] == {
-        7: "Why 7.\n\nCo-authored-by: Claude <noreply@anthropic.com>",
-        8: "* Add 8\n\nWhy 8.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n\n"
-        "* Test 8\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n\n"
-        "---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
-    }
-    landed = git_in(lands["origin"], "log", "--format=%B", "main")
-    assert "Claude-Session" not in landed and "Why 8." in landed
-
-
-def rest_commit(
-    message: str, login: str, name: str, email: str, parents: int = 1
-) -> dict[str, Any]:
-    """One commit as REST's `pulls/<n>/commits` lists it, with the fields squash_body reads."""
-    return {
-        "author": {"login": login},
-        "parents": [{"sha": f"p{each}"} for each in range(parents)],
-        "commit": {"message": message, "author": {"name": name, "email": email}},
-    }
-
-
-CLAUDE = ("claude", "Claude", "noreply@anthropic.com")
-OPUS = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-
-
-def test_squash_body_reproduces_a_real_squash_of_several_commits() -> None:
-    """The two commits of this repo's PR #805 as REST lists them, each less its `Claude-Session:` line, and the body
-    GitHub wrote for their squash (fe20c11), less the same lines: the trailers stay in their items and the footer
-    names the commits' author once, since the trailer shares its email (#638)."""
-    first = (
-        "engineering-loop: spec.auto takes a paths term, a spec approved by policy while its PR stays"
-        " inside them (#803)\n\nA spec labelled spec:paths is approved by the policy's `- paths: [...]` term"
-        " at check build and check merge\nwhile every path the PR touches, a renamed or copied file's old"
-        " name included, matches a glob. A file\noutside, a rename across the boundary either way, a file"
-        " list GitHub can't give in full, risk:high, the\nrisk rule (its verifier term too), an author"
-        " without write access, or the label without the term each\nleave the spec to the owner, naming"
-        " why. Renames are read in one function, touched(), the same code\n#791's merge-path hold uses, so"
-        f" the two merge into one.\n\n{OPUS}"
-    )
-    second = (
-        "engineering-loop: check merge and land refuse a spec:paths PR crossing the paths (#803)\n\n"
-        "Entry-point tests drive `check merge`, `check build` then `check merge`, and `land` through main()"
-        " for a\nrename into and out of the paths, a copy into and out of them, a deleted file outside them"
-        " and a diff\nthat left them after check build; a copy into the paths had no test before.\n\n"
-        f"{OPUS}"
-    )
-    commits = [rest_commit(first, *CLAUDE), rest_commit(second, *CLAUDE)]
-    assert approvals.squash_body(commits, "owner") == (
-        f"* {first}\n\n* {second}\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>"
-    )
-
-
-def test_squash_body_of_one_commit_moves_its_co_authors_to_the_end() -> None:
-    """One commit, shaped as this repo's PR #799 (4065939), its link replaced: GitHub empties each trailer line in
-    place and names the co-authors after the message; land then drops the link and the blank lines it leaves."""
-    message = (
-        "Make the test independent\n\nFake the check instead.\n\n"
-        "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nClaude-Session: https://example.com/s"
-    )
-    body = approvals.squash_body([rest_commit(message, *CLAUDE)], "owner")
-    assert body == (
-        "Fake the check instead.\n\n\nClaude-Session: https://example.com/s\n\n"
-        "Co-authored-by: Claude <noreply@anthropic.com>"
-    )
-    assert approvals.unlinked(body) == (
-        "Fake the check instead.\n\nCo-authored-by: Claude <noreply@anthropic.com>"
-    )
-    # a body of trailers alone leaves only the co-authors, and a commit of the PR's author none
-    trailers = rest_commit(f"Fix\n\n{OPUS}", "owner", "Owner", "owner@example.com")
-    assert approvals.squash_body([trailers], "owner") == f"Co-authored-by: {OPUS[16:]}"
-    assert approvals.squash_body([rest_commit("Fix", "owner", "Owner", "o@x")], "owner") == ""
-
-
-def test_squash_body_names_each_co_author_once_by_email_the_first_seen_keeping_its_name() -> None:
-    """As squashes on this repo's main show: in commit order, a commit's author other than the PR's, then the
-    trailers its message names; one line per email (#754 and #759); a merge commit is no item but its author is a
-    co-author (#711)."""
-    commits = [
-        rest_commit(f"One\n\n{OPUS}", "owner", "Owner", "owner@example.com"),
-        rest_commit("Two\n\nCo-authored-by: Claude <NOREPLY@anthropic.com>", *CLAUDE),
-        rest_commit("Three\n\nCo-authored-by: Pat <pat@example.com>", "owner", "Owner", "o@x"),
-    ]
-    assert approvals.squash_body(commits, "owner") == (
-        "* One\n\n" + OPUS + "\n\n* Two\n\nCo-authored-by: Claude <NOREPLY@anthropic.com>\n\n"
-        "* Three\n\nCo-authored-by: Pat <pat@example.com>\n\n---------\n\n"
-        f"Co-authored-by: {OPUS[16:]}\nCo-authored-by: Pat <pat@example.com>"
-    )
-    # with no co-author, no separator either, as this repo's ae30f7e shows
-    alone = [rest_commit(each, "owner", "Owner", "o@x") for each in ("One", "Two")]
-    assert approvals.squash_body(alone, "owner") == "* One\n\n* Two"
-    bump = rest_commit(
-        "chore: adopt v1", "actions[bot]", "actions[bot]", "1+actions[bot]@example.com"
-    )
-    merge = rest_commit("Merge branch 'main'", "owner", "Owner", "owner@example.com", parents=2)
-    assert approvals.squash_body([bump, merge], "updater[bot]") == (
-        "Co-authored-by: actions[bot] <1+actions[bot]@example.com>\n"
-        "Co-authored-by: Owner <owner@example.com>"
-    )
-
-
-def test_land_passes_the_prs_body_under_the_pr_description_default(
-    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
-) -> None:
-    """The repo's squash default is the PR's description: land passes that, less its link (#638)."""
-    lands["squash"] = "PR_BODY"
-    lands["open"](
-        7,
-        {"7.txt": "7\n"},
-        messages=("Add 7\n\nWhy 7.",),
-        body="## Evidence\n\nlog line\n\nClaude-Session: https://example.com/s\n\nThanks.\n",
-    )
-    code, lines = lands["land"]()
-    assert code == 0, lines
-    assert lands["bodies"] == {7: "## Evidence\n\nlog line\n\nThanks."}
-
-
-def test_land_passes_no_body_where_github_writes_none(
-    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
-) -> None:
-    """A blank default, or a commit-messages default with nothing to write, leaves GitHub's own body; one whose body
-    is only a link goes as an empty one (#638)."""
-    lands["squash"] = "BLANK"
-    lands["open"](7, {"7.txt": "7\n"}, messages=("Add 7\n\nClaude-Session: x",))
-    code, lines = lands["land"]()
-    assert code == 0, lines
-    lands["squash"] = "COMMIT_MESSAGES"
-    lands["open"](8, {"8.txt": "8\n"}, messages=("Add 8",))
-    lands["open"](9, {"9.txt": "9\n"}, messages=("Add 9\n\nClaude-Session: x",))
-    code, lines = lands["land"]()
-    assert code == 0, lines
-    merges = {int(args[2]): args for args in lands["calls"] if args[:2] == ("pr", "merge")}
-    assert "--body" not in merges[7] and "--body" not in merges[8]
-    assert lands["bodies"][9] == ""
+    merges = [args for args in lands["calls"] if args[:2] == ("pr", "merge")]
+    assert merges and all("--body" not in args for args in merges)
+    assert lands["bodies"] == {7: "GitHub's default body"}
 
 
 def test_land_gates_three_landable_prs_once_and_the_base_ends_at_the_gated_tree(
@@ -5296,18 +5208,128 @@ def test_a_cloud_land_with_where_unset_lands_like_both(
     cloud_land["out"](capsys, (code, lines))
 
 
-def test_a_cloud_land_without_the_land_section_names_it(
-    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+@pytest.fixture
+def rest_land(cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """`cloud_land` with a land section that names no signed squash and no key, and GitHub's GraphQL (`gh pr merge`)
+    refused as a cloud session's proxy does; `puts` keeps each REST merge call, `PUT pulls/N/merge`, made as GitHub
+    does: a `sha` that is not the PR's head is a 409, else it squashes the head onto main."""
+    cloud_land["loop"].write_text(
+        GITHUB_RULE.replace("```yaml\n", "```yaml\nland:\n  where: cloud\n")
+    )
+    monkeypatch.delenv("LAND_KEY")
+    puts: list[tuple[str, ...]] = []
+    faked = approvals.github.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("pr", "merge"):
+            raise subprocess.CalledProcessError(1, "gh", stderr=REFUSED_GRAPHQL)
+        if args[:3] == ("api", "-X", "PUT") and args[3].endswith("/merge"):
+            puts.append(args)
+            fields = dict(arg.split("=", 1) for arg in args[4:] if arg != "-f")
+            number = int(args[3].split("/")[-2])
+            if fields["sha"] != cloud_land["pulls"][number]["headRefOid"]:
+                raise subprocess.CalledProcessError(
+                    1,
+                    "gh",
+                    stderr="Head branch was modified. Review and try the merge again. (HTTP 409)",
+                )
+            body = ("--body", fields["commit_message"]) if "commit_message" in fields else ()
+            return faked(
+                "pr", "merge", str(number), f"--{fields['merge_method']}", *body,
+                "--match-head-commit", fields["sha"],
+            )  # fmt: skip
+        return faked(*args, data=data)
+
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    monkeypatch.setattr(approvals.github, "_rest_only", False)
+    cloud_land["puts"] = puts
+    return cloud_land
+
+
+def test_a_cloud_land_with_no_signed_squash_merges_over_rest_pinned_to_the_gated_head(
+    rest_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    cloud_land["loop"].write_text(GITHUB_RULE)
-    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
-        (
-            "land in a cloud session needs a base that requires GitHub's merge queue, or loop.md's"
-            " `land.signed_squash_to`: otherwise GitHub merges, over GraphQL, which the session's proxy refuses, and"
-            " signs with GitHub's key"
-        )
+    """No queue, no `signed_squash_to`, no key: the PR lands through `PUT pulls/N/merge` as a squash whose `sha` is the
+    head the gates checked, which GitHub signs."""
+    code, lines = rest_land["land"]("7")
+    assert code == 0, lines
+    assert "PR #7 lands as a squash" in lines
+    assert [args[3] for args in rest_land["puts"]] == ["repos/{owner}/{repo}/pulls/7/merge"]
+    put = rest_land["puts"][0]
+    assert "merge_method=squash" in put and f"sha={rest_land['head']}" in put
+    assert rest_land["main"]() != rest_land["base"]
+    assert [args[:2] for args in rest_land["calls"] if args[:2] == ("pr", "merge")] == [
+        ("pr", "merge")
     ]
+
+
+def test_a_cloud_rest_squash_sends_no_commit_message(
+    rest_land: dict[str, Any],
+) -> None:
+    """The PUT carries no `commit_message`, so GitHub's squash default writes the body, a session link line kept."""
+    git_in(rest_land["work"], "config", "commit.gpgsign", "false")  # the VM's signer fails
+    link = "Claude-Session: https://claude.ai/code/session_01AbCdEf"
+    head = rest_land["open"](8, {"8.txt": "8\n"}, (f"PR 8\n\nWhat it does.\n\n{link}",))
+    code, lines = rest_land["land"]("8")
+    assert code == 0, lines
+    [put] = [args for args in rest_land["puts"] if args[3].endswith("/pulls/8/merge")]
+    assert f"sha={head}" in put and "merge_method=squash" in put
+    assert not any(arg.startswith("commit_message=") for arg in put)
+
+
+def test_a_cloud_rest_land_of_a_merge_commit_head_sends_merge_with_no_body(
+    rest_land: dict[str, Any],
+) -> None:
+    """A PR whose head matches `land.merge_commit_heads` lands as a merge commit: `merge_method=merge`, and no
+    `commit_message`, which only a squash carries."""
+    rest_land["loop"].write_text(
+        GITHUB_RULE.replace(
+            "```yaml\n", "```yaml\nland:\n  where: cloud\n  merge_commit_heads: [sync/*]\n"
+        )
+    )
+    git_in(rest_land["work"], "config", "commit.gpgsign", "false")  # the VM's signer fails
+    head = rest_land["open"](9, {"9.txt": "9\n"})
+    rest_land["pulls"][9]["headRefName"] = "sync/up"
+    code, lines = rest_land["land"]("9")
+    assert code == 0, lines
+    assert "PR #9 lands as a merge" in lines
+    [put] = [args for args in rest_land["puts"] if args[3].endswith("/pulls/9/merge")]
+    assert "merge_method=merge" in put and f"sha={head}" in put
+    assert not any(arg.startswith("commit_message=") for arg in put)
+
+
+def test_a_cloud_rest_land_refuses_a_head_that_moved_and_leaves_main_alone(
+    rest_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub answers a `sha` that is no longer the PR's head with a 409: the PR is not merged and land says so."""
+    sent = approvals.github.merge
+
+    def moved(number: int, method: str, head: str) -> None:
+        sent(number, method, "0" * 40)
+
+    monkeypatch.setattr(approvals.github, "merge", moved)
+    code, lines = rest_land["land"]("7")
+    assert code == 1
+    assert any("the merge was refused" in line and "HTTP 409" in line for line in lines), lines
+    assert rest_land["main"]() == rest_land["base"]
+
+
+def test_a_cloud_land_asking_a_signed_squash_without_ssh_keygen_refuses_naming_it(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    code, lines = cloud_land["land"]("7")
+    assert (code, cloud_land["out"](capsys, (code, lines))) == (1, [approvals.NO_KEYGEN])
+    assert "`ssh-keygen`" in approvals.NO_KEYGEN
     unmoved(cloud_land)
+
+
+def test_a_signed_squash_without_ssh_keygen_is_refused_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(approvals.Refused, match="needs `ssh-keygen`"):
+        approvals.signed_squash({"number": 7}, Path("signers"))
 
 
 def test_the_cloud_key_folder_is_removed_when_the_land_fails_after_taking_it(
@@ -9799,7 +9821,6 @@ def test_a_landing_on_the_gated_tree_leaves_no_record_of_it_and_shows_the_pass_o
 
     monkeypatch.setattr(approvals.github, "gh", gh)
     # the squash body is tested on its own
-    monkeypatch.setattr(approvals, "land_body", lambda _pull: None)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
     monkeypatch.setattr(approvals, "comment", lambda *_a: None)
     hub.clear()
@@ -9818,7 +9839,6 @@ def test_land_deletes_the_record_branches_of_the_prs_it_merged(
     monkeypatch.setattr(approvals, "drop_records", dropped.append)
     monkeypatch.setattr(approvals.github, "gh", lambda *_a, **_k: "")
     # the squash body is tested on its own
-    monkeypatch.setattr(approvals, "land_body", lambda _pull: None)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
     monkeypatch.setattr(approvals, "git", lambda *args: TREE if args[0] == "rev-parse" else "")
     monkeypatch.setattr(approvals, "publish", lambda *_a, **_k: None)
@@ -10231,14 +10251,6 @@ def test_a_gate_nested_under_another_uv_run_sees_the_callers_environment_depth(
         {"VIRTUAL_ENV": sys.prefix, "UV_RUN_RECURSION_DEPTH": "2", "PATH": "/usr/bin:/bin"},
     )
     assert seen["UV_RUN_RECURSION_DEPTH"] == "1"
-
-
-def test_unlinked_keeps_the_blank_lines_no_session_line_left() -> None:
-    """A PR body's own blank lines stay; only those a removed line left beside another fold."""
-    body = "Notes\n\n```text\nfirst\n\n\nsecond\n```\n\nClaude-Session: https://x\n\nend"
-    assert approvals.unlinked(body) == "Notes\n\n```text\nfirst\n\n\nsecond\n```\n\nend"
-    assert approvals.unlinked("a\nClaude-Session: x\nb") == "a\nb"
-    assert approvals.unlinked("a\n\nClaude-Session: x") == "a"
 
 
 def test_land_only_lands_the_named_pr_and_leaves_the_other_untouched(lands: dict[str, Any]) -> None:

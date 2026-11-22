@@ -172,8 +172,9 @@ count its report; a ``start --top-level`` run from a lead the registry follows, 
 child, arms nothing and subscribes that lead, since its helper is the lead's to hear); ``run``, ``send`` and ``wait`` disarm it when they
 return the report or a question; ``reap`` drops the line of each session it finishes, before
 finishing it, so the supervisor posts no ``archived`` for a finish its notified session ran.
-``run`` and ``wait`` finish the session whose report or verdict they return, not one that asked a
-question, nor one given ``--keep``, nor a worker given ``--pr`` unless ``--no-keep`` (``--keep`` stays accepted):
+``run``, ``wait``, ``reap`` and the supervisor (a child's relayed ``DONE`` report or failure; a followed lead's ``DONE`` once a lead waiting on it (``--after``) is told; a lead a followed lead started is reaped by its starter) all finish a session through
+``finish_delivered``, the one place a taken result archives it: never one that asked a
+question, nor one given ``--keep`` (``run`` or ``start``, which labels it ``omni.keep``, so the supervisor leaves it open too), nor one with an open question card, a pending prompt or background work, nor a worker given ``--pr`` unless ``--no-keep`` (``--keep`` stays accepted):
 a fix round or the next verifier pass reaches a kept worker with ``send``, warm, where a fresh one repeats its setup.
 ``start --pr`` labels the worker ``omni.pr=<owner/name>#<n>``, and fails, archiving the session, when it can't. A verifier for ``--pr`` carries the same label, so its spend groups by PR beside the worker's, but ``reap`` never holds a verifier on it. ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
 the rest, exiting 1 when a finish failed; it keeps a ``--pr`` worker, ``--force`` included, until its PR (looked up in the
@@ -414,6 +415,37 @@ LEAD_NUDGE_CLOUD = (
     " `wait-for`, until it ends. Then end your turn with DONE, STILL WORKING naming what you wait on"
     " (never your own background run), or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
+)
+# A STILL WORKING whose wait nothing wakes the lead for (#1753): a harness re-invokes a session for
+# its own tracked background tasks, and a cloud session not even for a subagent it started, so a
+# detached pid, its log or such a subagent ending never does.
+LEAD_UNTRACKED = (
+    "Supervisor: your turn ended waiting on something that does not wake you when it ends (a pid,"
+    " a log, or a background subagent in a cloud session). Check whether it has ended; if not, wait"
+    " on it in this turn (`omnigent_agent.py wait-for --log <log> --pid <pid file>`, called again on"
+    " `still running`, or the subagent's own result), or restart it as a harness-tracked background"
+    " task, or detached with LOOP_NOTIFY set. Then end your turn with DONE, STILL WORKING naming"
+    " what wakes you, or USER NEEDED."
+)
+UNTRACKED_WHY = "waits on what does not wake it"
+# A process in its wait, anywhere in the STILL WORKING text beside a wait word: a pid (``pid 4242``,
+# ``its pid is 4242``, a pid file) or a log, output or pid path; a run that notifies is tracked.
+UNTRACKED = re.compile(
+    r"\bpids?\b(?:\s+is)?\s*[:#]?\s*`?\d+|\bpid[ -]file\b|[\w./~-]+\.(?:log|out|pid)\b",
+    re.IGNORECASE,
+)
+NOTIFIES = re.compile(r"--notify\b|\bLOOP_NOTIFY\b")
+# A subagent the lead started, which a cloud session is not re-invoked for when it finishes.
+SUBAGENT_WAIT = re.compile(
+    r"\bwait(?:s|ing)?\s+(?:on|for)\b[^.;\n]{0,40}?\b(?:sub-?agents?|background\s+agents?)\b",
+    re.IGNORECASE,
+)
+# A hand-back to the manager (#1753): a ``Handback: #<n> <what>`` line, exact, else prose that says a
+# PR is ready or a step is the manager's. A STILL WORKING alone leaves the lead looking busy.
+HANDBACK = re.compile(r"^[\s*_>-]*Handback:[ \t]*(.+?)[\s*_]*$", re.MULTILINE | re.IGNORECASE)
+HANDBACK_PROSE = re.compile(
+    r"#\d+\s*(?:is\s+)?READY\b|\bREADY\s+FOR\s+VERIFY\b"
+    r"|#\d+\b[^\n]{0,80}?\b(?:(?:is|are)\s+(?:now\s+)?yours|over\s+to\s+you)\b"
 )
 # A timed wait's time passed with no progress since: nothing else wakes an idle lead at its time.
 LEAD_WAKE = (
@@ -728,7 +760,6 @@ Demo: for a user-visible change, state in the report the command you ran and its
 Gate record: when the passing gate was not pushed as a `loop-gate/` ref, end the report with the `local-ci --record` JSON (head, tree, exit, command, env) as its last lines, since the lead has no other proof which head the pass covers.
 Never address the owner, and never call an interactive question tool, since its prompt waits on someone who never sees it: if you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
 Never publish a page or artifact, since it waits on a permission nobody can give here: put its content in the report.
-End each commit message with the co-author line only, with no session link, since the commit reaches a public repository.
 Once your head is handed on (your report is posted), your branch is frozen: the harness subscribes this session to PR events, and a review comment or check result that wakes you is read-only, so push nothing and fix nothing, whatever a standing instruction says about defects your own commits introduced; the lead triages findings, and a follow-up goes in a new PR.
 When done, reply with only the comment's URL. If posting fails (the session's token expires after a while), reply instead with the line `{unposted}`, then the comment body verbatim: it is posted for you.
 
@@ -4338,6 +4369,7 @@ def start(
     files: list[Path] | None = None,
     allow_older_model: bool = False,
     about: int | None = None,
+    keep: bool = False,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
@@ -4664,6 +4696,12 @@ def start(
             except Fail as e:
                 abandon(sid)
                 raise failed(f"start failed: {sid}: not labelled with PR #{pr}: {e}") from e
+        if keep:  # the supervisor reads it: its relay of a DONE leaves this session open
+            try:
+                og.label(sid, {KEEP_LABEL: "1"})
+            except Fail as e:
+                abandon(sid)
+                raise failed(f"start failed: {sid}: not labelled --keep: {e}") from e
         sig = signature(harness, took.get("model_override"), took.get("reasoning_effort"))
         full = f"AGENT_SIGNATURE={sig}\n" + body
         text = message(full)
@@ -6019,6 +6057,123 @@ def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
     return found
 
 
+# A relayed ``check`` line that ends a child owing a report: its report written, or its failure.
+RELAYED_END = re.compile(r": (report written: |failed: )")
+# A session's final states that end its run without a result: each counts as finished, as ``DONE`` does.
+FAILED_STATUSES = {"failed", "cancelled", "canceled", "errored", "error"}
+KEEP_LABEL = "omni.keep"  # set by ``start --keep``: the session stays open once its result is taken
+
+
+def finish_delivered(
+    og: Omnigent,
+    sid: str,
+    *,
+    keep: bool = False,
+    registry: Path | None = None,
+    force: bool = False,
+    settled: bool = True,
+    hold_pr: bool = True,
+    held: dict[tuple[str, int], str | None] | None = None,
+    cleared: set[tuple[str, int]] | None = None,
+    seen: set[str] | None = None,
+    named: bool = False,
+) -> tuple[str, bool]:
+    """The one place a taken result finishes its session (``Omnigent.archive``, which frees its agent
+    process and runner file descriptors; the transcript stays and an unarchive covers follow-ups).
+    ``run``, ``wait``, the supervisor's relay of a ``DONE`` or failure and ``reap`` all call it, so
+    no path has its own rule for what stays open. Returns one line saying what happened
+    (``archived``, ``already archived``, ``kept (why)``, ``finish failed``) and whether the
+    finish failed; a failure is also printed, never raised, since the result is already taken.
+
+    Kept, not archived: ``keep`` (the caller's ``--keep``) or a session labelled ``KEEP_LABEL``
+    (``start --keep``); an open question card, whose answer needs the session; a worker whose PR
+    is open or unreadable (``hold_pr``; a caller that decided with ``--no-keep`` passes False);
+    a pending approval prompt; background work still running. ``settled`` says the result was taken from
+    the session itself (a report or verdict read, a ``DONE`` relayed), so a status still ``running``
+    for a moment after it is no hold; ``reap``, which reads sessions it knows nothing of, passes
+    False and keeps any running one or one with input pending. ``force`` stops a stuck running
+    session first. The session leaves ``registry`` (the caller the supervisor would tell) before it
+    is archived. ``held`` and ``cleared`` carry the PR lookups across a ``reap``'s sessions.
+
+    ``named`` is a ``reap`` of this very session, its starter's acknowledgement of the result: the
+    ``KEEP_LABEL`` is then no hold, ``force`` included (the supervisor's relay and the children of
+    a finished parent honour it). A stale ``omnigent.keep`` label, set when a round needs the owner
+    and cleared by nothing, holds nothing here: only the open card it stood for does (``cards_of``).
+
+    Once a session is archived its children are finished the same way (``settled`` False: one still
+    running, with an open card, held or kept stays), since a parent that ended has nobody to take
+    their results; ``seen`` stops a loop in the children listing. Their lines follow the parent's."""
+    held = {} if held is None else held
+    seen = {sid} if seen is None else seen | {sid}
+    cleared = set() if cleared is None else cleared
+    info = og.info(sid)
+    status, name = str(info.get("status")), f"{sid} {info.get('title') or ''}"
+    if info.get("archived"):
+        return f"{name}: already archived", False
+    if keep or (not named and (info.get("labels") or {}).get(KEEP_LABEL)):
+        return f"{name}: kept (--keep)", False
+    if hold_pr and (label := held_by(info)) and not (force and replaced(og, sid, info)):
+        found = pr_label(label)
+        if found and found not in held:
+            held[found] = pr_hold(*found)
+        if why := held[found] if found else f"label {label!r} names no PR":
+            return f"{name}: kept ({why})", False
+        if found and found not in cleared and not elsewhere(og, info):
+            cleared.add(found)  # the PR is merged or closed: its steps' events are over
+            prune_demo_branch(*found)
+            clear_closed_pr_events(*found, info.get("workspace"))
+    # an open card is the owner's question: archiving ends its way back, --force too
+    if cards := cards_of(info) or [_asks(e) for e in getattr(og, "cards", {}).get(sid) or []]:
+        return f"{name}: kept (card open: {'; '.join(cards)})", False
+    if force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None:
+        arm_quietly(registry, sid)
+        try:
+            og.interrupt(sid)
+            og.archive(sid)
+        except Fail as e:
+            print(f"session {sid} was not finished: {e}", file=sys.stderr)
+            return f"{name}: finish failed: {e}", True
+        return (
+            f"{name}: archived (stuck); check git status in"
+            f" {info.get('workspace') or '(workspace unknown)'}"
+        ), False
+    busy = (
+        "blocked on a prompt"
+        if prompts_of(info)
+        else "background work"
+        if live_tasks(info)
+        else status
+        if not settled and status in RUNNING
+        else "input pending"
+        if not settled and info.get("pending_inputs")
+        else ""
+    )
+    if busy:
+        note = " (running with recent activity, not stuck)" if force and busy == status else ""
+        return f"{name}: kept ({busy}){note}", False
+    # ponytail: a supervisor that read the registry just before this drop can still post
+    # `archived` once, and a finish that then fails leaves the session unfollowed; reap again.
+    arm_quietly(registry, sid)
+    try:
+        og.archive(sid)
+    except Fail as e:  # one refused finish leaves the rest to reap
+        print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
+        return f"{name}: finish failed: {e}", True
+    lines, bad = [f"{name}: archived ({status})"], False
+    try:
+        kids = [k for k in og.children(sid) if k not in seen]
+    except Fail:  # the children stay for a reap
+        kids = []
+    for kid in kids:
+        seen.add(kid)
+        kid_line, kid_bad = finish_delivered(
+            og, kid, registry=registry, settled=False, held=held, cleared=cleared, seen=seen
+        )
+        lines.append(f"  {kid_line}")
+        bad |= kid_bad
+    return "\n".join(lines), bad
+
+
 def reap(
     og: Omnigent,
     sessions: list[str],
@@ -6051,61 +6206,18 @@ def reap(
     cleared: set[tuple[str, int]] = set()
     named = pr_workers(og, pr) if merged else []
     for sid in dict.fromkeys(sessions + (og.children(parent) if parent else []) + named):
-        info = og.info(sid)
-        status = str(info.get("status"))
-        if info.get("archived"):
-            lines.append(f"{sid} {info.get('title') or ''}: already archived")
-            continue
-        if (label := held_by(info)) and not (force and replaced(og, sid, info)):
-            found = pr_label(label)
-            if found and found not in held:
-                held[found] = pr_hold(*found)
-            if why := held[found] if found else f"label {label!r} names no PR":
-                lines.append(f"{sid} {info.get('title') or ''}: kept ({why})")
-                continue
-            if found and found not in cleared and not elsewhere(og, info):
-                cleared.add(found)  # the PR is merged or closed: its steps' events are over
-                prune_demo_branch(*found)
-                clear_closed_pr_events(*found, info.get("workspace"))
-        # an open card is the owner's question: archiving ends its way back, --force too
-        if cards := cards_of(info):
-            lines.append(f"{sid} {info.get('title') or ''}: kept (card open: {'; '.join(cards)})")
-            continue
-        if force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None:
-            arm_quietly(registry, sid)
-            try:
-                og.interrupt(sid)
-                og.archive(sid)
-            except Fail as e:
-                lines.append(f"{sid} {info.get('title') or ''}: finish failed: {e}")
-                failed = True
-                continue
-            lines.append(
-                f"{sid} {info.get('title') or ''}: archived (stuck); check git status in"
-                f" {info.get('workspace') or '(workspace unknown)'}"
-            )
-            continue
-        if status in RUNNING or prompts_of(info) or info.get("pending_inputs"):
-            busy = (
-                "blocked on a prompt"
-                if prompts_of(info)
-                else status
-                if status in RUNNING
-                else "input pending"
-            )
-            note = " (running with recent activity, not stuck)" if force and busy == status else ""
-            lines.append(f"{sid} {info.get('title') or ''}: kept ({busy}){note}")
-            continue
-        # ponytail: a supervisor that read the registry just before this drop can still post
-        # `archived` once, and a finish that then fails leaves the session unfollowed; reap again.
-        arm_quietly(registry, sid)
-        try:
-            og.archive(sid)
-        except Fail as e:  # one refused finish leaves the rest to reap
-            lines.append(f"{sid} {info.get('title') or ''}: finish failed: {e}")
-            failed = True
-            continue
-        lines.append(f"{sid} {info.get('title') or ''}: archived ({status})")
+        line, bad = finish_delivered(
+            og,
+            sid,
+            registry=registry,
+            force=force,
+            settled=False,
+            held=held,
+            cleared=cleared,
+            named=sid in sessions,
+        )
+        lines.append(line)
+        failed |= bad
     return lines, failed
 
 
@@ -6599,7 +6711,7 @@ def check(
         return f"{head}: asked: {question_of(report)}", since
     if prompts := prompts_of(info):
         return f"{head}: blocked on a prompt: {'; '.join(prompts)}", since
-    if info.get("status") == "failed":
+    if info.get("status") in FAILED_STATUSES:
         e = info.get("last_task_error") or {}
         return (
             f"{head}: failed: {e.get('message') or e.get('title') or '(no error recorded)'}",
@@ -7391,6 +7503,39 @@ def waits_on(text: str, lead: dict, notify: str | None, event: bool = False) -> 
     return start >= 0 and bool(SUPERVISOR_WAIT.search(text[start:]) or COS_LINE.search(text))
 
 
+def untracked_wait(text: str, cloud: bool = False) -> bool:
+    """Whether a lead's ``STILL WORKING`` waits on something that does not wake it when it ends
+    (#1753), read from ``STILL WORKING`` on: a process the harness does not track (a wait word and
+    a pid, a pid file or a log, output or pid path anywhere in it, naming no ``--notify`` or ``LOOP_NOTIFY``, a wrapper that tells the
+    session, and no child session, verifier, worker, lead or CI), or, in a ``cloud`` session, a
+    subagent it started. A ``Waits:`` trailer names the wait exactly, so it decides alone."""
+    if (start := text.find("STILL WORKING")) < 0 or trailer_of(text) or named_of(text):
+        return False
+    wait = FENCE.sub("", text[start:])
+    if cloud and SUBAGENT_WAIT.search(wait):
+        return True
+    if WAIT.search(text):
+        return False
+    found = UNTRACKED.search(wait) and WAIT_WORD.search(wait)
+    return bool(found) and not NOTIFIES.search(wait)
+
+
+def handback_of(text: str) -> str:
+    """What a lead's ``STILL WORKING`` hands back to its manager (#1753): its last ``Handback:``
+    line's text, else the prose line that says a PR is ready (``#12 READY``, ``READY FOR VERIFY``)
+    or a PR's step is the manager's (``#12 ... is yours``, ``#12 ... over to you``); empty when it hands
+    nothing back."""
+    if (start := text.find("STILL WORKING")) < 0:
+        return ""
+    body = FENCE.sub("", text[start:])
+    if found := HANDBACK.findall(body):
+        return found[-1].strip()
+    for line in body.splitlines():
+        if HANDBACK_PROSE.search(line):
+            return line.strip()[:200]
+    return ""
+
+
 def waits(wait: str) -> str:
     """A named wait as words: ``waits until <time>`` or ``waits on <wait>``."""
     return f"waits {wait}" if wait.startswith("until ") else f"waits on {wait}"
@@ -7496,6 +7641,15 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if ending == "DONE":
             return "rule", "done", "done, driven by the owner: told only to the leads waiting on it"
         return "rule", "record", "the owner drives it directly: they read its turn there"
+    still = ending not in ("DONE", "USER NEEDED", "PARKED")  # those route below, as they say
+    if still and (handback := handback_of(text)):  # the manager's to act on, whatever it waits on
+        if event.get("repeat"):
+            return "rule", "record", "an exact repeat of its hand-back"
+        return "rule", "act", f"hands back to its manager: {handback}"
+    if still and untracked_wait(text, bool(event.get("cloud"))):  # before ``repeat``: it escalates
+        if event.get("nudged"):
+            return "rule", "act", f"{UNTRACKED_WHY} again after its nudge"
+        return "rule", "nudge", UNTRACKED_WHY
     if event.get("nudged") and not ending and wait == "unknown":  # its last words, unchanged
         return "rule", "act", "quiet again after its nudge"
     if event.get("repeat"):
@@ -7731,6 +7885,7 @@ def supervise_registry(
     # ponytail: in memory, so a restart loses the revive and resume lines waiting in it; a terminal
     # event keeps its registry line until posted, and the restarted supervisor finds it again.
     outbox: list[tuple[str | None, tuple[str, Path, float] | None, str, str, str]] = []
+    taken: set[str] = set()  # children whose report or failure is relayed: archived once told
     repos: dict[str, str] = {}  # each followed lead's repo, empty for none; read once
     headed: dict[str, float] = {}  # when each repo's default-branch head was last read
     limited = [0.0]  # monotonic time before which GitHub's rate limit refuses us
@@ -7951,6 +8106,8 @@ def supervise_registry(
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
             "supervisor": notify if waits_on(parsed, lead, notify, bool(lead_ev)) else "",
+            # a subagent's end re-invokes no cloud session (#1753): read only for a wait that names one
+            "cloud": bool(SUBAGENT_WAIT.search(parsed or "")) and cloud_session(og, info),
         }
 
         def ask() -> tuple[str, str]:
@@ -7988,6 +8145,8 @@ def supervise_registry(
             lead.update(nudges=lead.get("nudges", 0) + 1, nudged_at=lead.get("progress_at"))
             text = LEAD_WAKE.format(time=lead["wait"].removeprefix("until "))
             nudge = LEAD_NUDGE_CLOUD if cloud_session(og, info) else LEAD_NUDGE
+            if why.startswith(UNTRACKED_WHY):
+                nudge = LEAD_UNTRACKED
             act_on(eid, [(sid, action, nudge if action == "nudge" else text)])
         elif action == "revive":
             if kind == "failed":  # its one revive after a failure; a lost runner is no failure
@@ -8030,10 +8189,11 @@ def supervise_registry(
                     parked.pop("retrying")
         if action == "done":
             result = LEAD_TOLD.format(lead=head, line=lead.get("last_line") or "")
-            act_on(
-                eid,
-                [(other, "tell", result) for other, owes in owed.items() if owes[4] == sid],
-            )
+            waiters = [other for other, owes in owed.items() if owes[4] == sid]
+            act_on(eid, [(other, "tell", result) for other in waiters])
+            # a followed lead is taken once its follower is told
+            if waiters and not event["direct"]:
+                finish_relayed(sid)
         logged_line = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind}
         logged_line.update(line=line, settled=by, action=action, why=why)
         try:
@@ -8139,6 +8299,16 @@ def supervise_registry(
         log(("label", notify), None)
         state["notify_label"] = {"line": line, "at": str(int(now))}
 
+    def finish_relayed(sid: str) -> None:
+        """Archive a child whose ``DONE`` report or failure the line just relayed has told its
+        caller (``finish_delivered``, which keeps a ``--keep``, card, PR-held or busy one)."""
+        try:
+            finish_delivered(og, sid)  # a failed finish prints itself
+        except Exception as e:  # noqa: BLE001 - never fatal; the result is told, a reap finishes it
+            log(("finish", sid), f"{sid}: not finished: {reason(e)}")
+            return
+        log(("finish", sid), None)
+
     def flush() -> None:
         while outbox:
             line, event, eid, sid, kind = outbox[0]
@@ -8148,6 +8318,9 @@ def supervise_registry(
                 outbox[0] = (None, event, eid, sid, kind)  # posted; only the drop is retried
                 return
             outbox.pop(0)
+            if event and sid in taken:  # told, and no longer owed: its result is taken
+                taken.discard(sid)
+                finish_relayed(sid)
 
     def say(
         line: str,
@@ -8166,6 +8339,8 @@ def supervise_registry(
                 flush()
             return
         print(stamp(line), flush=True)
+        if event and kind == "terminal" and RELAYED_END.search(line):
+            taken.add(sid)
         eid = eid or f"notice:{sid}:{time.time():.0f}"
         if console:
 
@@ -9306,15 +9481,6 @@ def keeps(args: argparse.Namespace, verifier: bool) -> bool:
     return bool(args.keep or (args.pr and not verifier and not args.no_keep))
 
 
-def archive_delivered(og: Omnigent, sid: str) -> None:
-    """Finish a session whose report or verdict came back (``Omnigent.archive``): its agent process
-    frees the runner's file descriptors. A failed finish is reported, not fatal."""
-    try:
-        og.archive(sid)
-    except Fail as e:
-        print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
-
-
 def pack_behind(script: Path | str) -> str | None:
     """One line, or None: how many commits its upstream's last fetched tip holds that the checkout lacks and that
     changed ``script``, counted since the merge base, so a local commit to it, or upstream changes elsewhere, say
@@ -10069,12 +10235,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 action="store_true",
                 help="once it ends, run $LOOP_NOTIFY <outcome> (unset: nothing)",
             )
-        if p.prog.split()[-1] in ("run", "wait"):
+        if p.prog.split()[-1] in ("run", "start", "wait"):
             p.add_argument(
                 "--keep",
                 action="store_true",
-                help="leave the session open once its report is in (the default with --pr)",
+                help="leave the session open once its report is in (the default with --pr); on"
+                " start, the supervisor leaves it open after relaying its DONE or failure",
             )
+        if p.prog.split()[-1] in ("run", "wait"):
             p.add_argument(
                 "--no-keep",
                 action="store_true",
@@ -10444,8 +10612,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 print(got)
             # the caller has the result: the supervisor's line for it would be a second wake
             arm_quietly(registry, args.session)
-            if not keeps(args, args.verdict):
-                archive_delivered(og, args.session)
+            finish_delivered(og, args.session, keep=keeps(args, args.verdict), hold_pr=False)
             return 0
         # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
         # writes its report file as any child does (on another host, there, read back by wait).
@@ -10740,6 +10907,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 pr=args.pr,
                 files=args.file,
                 about=verifies,
+                keep=bool(args.keep),
             )
             survivors.extend(abandoned)
             # a supervisor reads the report file, which for --pr only wait writes: it would revive
@@ -10780,16 +10948,23 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             )
             report_cold_start(og, sid)
             arm_quietly(registry, sid)
-            if not keeps(args, verifier):
-                archive_delivered(og, sid)
+            finish_delivered(og, sid, keep=keeps(args, verifier), hold_pr=False)
         if survivors:
             raise Fail(f"abandoned sessions survive: {', '.join(survivors)}")
         return 0
     except Fail as e:
         if e.code == ASKED and sid:  # the caller has the question
             arm_quietly(registry, sid)
-        elif unreported:
-            write_failed(og, sid, unreported, e)
+        else:
+            if unreported:
+                write_failed(og, sid, unreported, e)
+            # a run that ended failed, cancelled or errored is finished too, its FAILED report written
+            if sid and args.cmd in ("run", "wait"):
+                try:
+                    if str(og.info(sid).get("status")) in FAILED_STATUSES:
+                        finish_delivered(og, sid, keep=bool(getattr(args, "keep", False)))
+                except Fail:
+                    pass  # the failure is what the caller reads
         print(e, file=sys.stderr)
         ended["failure"] = (str(e).splitlines() or [""])[0]
         return e.code

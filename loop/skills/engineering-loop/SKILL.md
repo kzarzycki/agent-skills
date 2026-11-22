@@ -19,7 +19,7 @@ it (the `gatekeeper` skill's policy.md, Opting out); no step runs for their chan
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
 | **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
 | **Build.** Workers, or the lead when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
-| **Gates.** On each head, the worker's loop.md `Affected tests:` selection (`approvals.py affected-tests`; lint ran in the commit hook), else `mise run check` (worker.md, Gates and push; who runs what: Adopting the loop); the test part behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot); GitHub runs every `check:` part. | a broken change |
+| **Gates.** On each head, the worker's loop.md `Affected tests:` selection (`approvals.py affected-tests`; lint ran in the commit hook), else `mise run test:changed` on a review head, with `mise run check` the gate of record on the verifier-satisfied head (worker.md, Gates and push; who runs what: Adopting the loop); the test part behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot); GitHub runs every `check:` part. | a broken change |
 | **Proof.** The spec's Before merge list on the PR branch before review, then its After merge list (checks that need the merged default branch or a deployed environment) after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
@@ -32,7 +32,7 @@ question for the owner, not a guess:
 
 | Where | Sections | Read at |
 |---|---|---|
-| mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` on each pushed head (`approvals.py affected-tests` where loop.md has an `Affected tests:` line, Adopting the loop), `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
+| mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` as the gate of record on the verifier-satisfied head, and on a review head `approvals.py affected-tests` where loop.md has an `Affected tests:` line (Adopting the loop), else `test:changed`, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
 | `docs/agents/gatekeeper.md` | Policy (the block `approvals.py` reads, below), which nothing else reads | Spec, Gates, Land |
 | `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models), `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Lead model: <tier> for <condition>` (the tier a top-level Claude lead starts on when the issues its brief names match the condition: Models), `Gate cost: <cores> cores, <GB> GB` (what one run of the heaviest gate costs, with optional `, reserve <GB> GB`, from which the host's gate slot count follows: Rules, One heavy gate per host slot), `Affected tests: <command>` (the command that selects and runs the tests a change affects, plus the project's cheap whole-repo lint and type checks, against the base it reads from the `Gate base:` variable, else `GATE_BASE`, and from no local state it doesn't select everything without: Adopting the loop; `approvals.py affected-tests` sets it to `git merge-base origin/<base> HEAD`, or to its `--base`; with it every gate is narrowed, `land`'s batch gate included under `ci: false` or where the base requires no check, since a required check already ran each head's tests: Adopting the loop; a project without a selector omits the line and runs the full check), `Gate: full` (the opt-out: every gate runs the full check, as without `Affected tests:`), `Gate base: <variable>` (the one its `check` and `Affected tests:` read as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` (with `, env <name>` for its cloud environment) where a project's cloud workers differ from the default `claude-cloud` with the policy's gate, or `Cloud worker: none` and its reason where its heavy runs stay on hosts (Cloud worker), with `Cloud verifier: worker session` beside it where the verifier runs in the worker's VM, `Verifier hosts: <name>, <name>` (the Omnigent hosts a verifier may run on: lead.md step 7), `Verifier session: reuse | fresh` (default `fresh`, a new verifier session each pass; `reuse` keeps one across passes: Independent verification), `Acceptance tests: <command>` (the command that runs one spec's checks) and `Acceptance budget: <spec minutes>, <nightly minutes>` (both: Acceptance checks), which agents read. | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
@@ -708,22 +708,8 @@ or the owner's private network.
   instance build together, plus at most one compile for the verifier's mutation check, since
   taking builds off the host is the split's point; a worker's iterations compile only in the
   cloud.
-- **Nothing on GitHub names a host, a path or a session**: not the report, the verdict, the
-  evidence or a brief's text quoted there, since a public repo publishes them.
-  The commits too: the cloud harness tells each session to end every commit with a
-  `Claude-Session:` link, and neither a brief nor a committed `attribution.commit` in
-  `.claude/settings.json` removes that instruction; a PR body it writes ends with a bare line
-  holding the link even under an empty `attribution.pr`, and its proxy appends a `_Generated by
-  [Claude Code](<link>)_` footer to every body and comment it writes. `land` drops each of these
-  lines from the squash body and, before the merge, from the PR's body and comments on GitHub,
-  so `main` and the PR page stay clean; `check merge` names any such text the account can't
-  edit (a comment by another account), for a person to clear. The PR branch's commits keep it. A private repo may accept
-  that. A public repo publishes its branch commits, so it strips the line at the source with
-  `approvals.py commit-msg <file>`, which removes every such line and folds the
-  blank lines as `land` does: its pre-commit config runs that command at the `commit-msg`
-  stage (a local hook, `stages: [commit-msg]`), and the cloud environment's setup installs
-  that hook type (`pre-commit install --hook-type commit-msg`), since a session's clone has
-  only the hook types its setup installed.
+- **Nothing on GitHub names a host or a path**: not the report, the verdict, the evidence or
+  a brief's text quoted there, since a public repo publishes them.
 - **Verifier in the worker's VM.** With `Placement: same machine` (or the old `Cloud verifier: worker session`), the verifier of a
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host; the sharing a
@@ -899,7 +885,7 @@ or the owner's private network.
   the PR.
 - **Land small and soon.** Every PR branches off a freshly fetched `origin/main` and merges
   as soon as its gates pass, because a branch that lives as long as the work behind it goes
-  stale against main, and a pile of them cascades on every rebase and breaks main when they
+  stale against main, and a pile of them cascades on every merge of the base and breaks main when they
   land. An epic lands as one PR per sub-issue, each off main, with no epic or integration
   branch. A sub-issue whose work isn't usable yet lands unexposed, so main stays
   releasable while the epic is half done: wired into no entry point, or behind a flag the
@@ -951,7 +937,7 @@ or the owner's private network.
   in the dismissal. A human review follows the same pattern. The PR is marked ready once no core finding (blocker or major)
   is open, or at the cap only majors under the lead's `Cap:` line (The cap), and squashed on merge. The PR keeps a public trail of what was found, fixed and
   iterated, and the project's CI skips draft PRs, so it doesn't run on half-done work:
-  the worker's `Affected tests:` selection (`approvals.py affected-tests`, else `mise run check`) on each pushed head is the check while a PR is a draft.
+  the worker's `Affected tests:` selection (`approvals.py affected-tests`, else `mise run test:changed`) on each pushed head is the check while a PR is a draft; the full gate of record runs once, on the verifier-satisfied head.
 - **Remove, don't append.** Remove a thing as if it never existed. Edit and compress
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds

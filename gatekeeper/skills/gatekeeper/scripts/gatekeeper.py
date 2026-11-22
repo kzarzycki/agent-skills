@@ -26,7 +26,6 @@
     uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's gate on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; else `check`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
-    uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
     uv run scripts/approvals.py heavy --plan               # the host's gate slot count and the limit that set it
 
@@ -200,13 +199,7 @@ from origin's default branch (policy_ref), steps 3 and 4 make no worktree: the h
 --write-tree`), a recorded pass of every gate step on the batch's tree is reused, and with none `land` refuses naming
 the tree, as it refuses a `pre_land` it has no checkout to run in; it never runs the gate there.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
---match-head-commit`), with the body the repo's squash default would write less every session link line (a
-`Claude-Session:` line, or a line that is only a claude.ai session link), since a cloud session's harness adds its link
-to each commit, PR body and comment and the PR may be public, first dropping those lines from the PR's own body and
-comments on GitHub where it can edit them (`check merge` names any it can't): under the commit-messages default the
-body GitHub builds from the commits (one: its message after the subject, its co-author lines moved to the end;
-several: each message as a `* ` item, then `---------` and their co-authors), under the PR-description default the
-PR's body, and under the blank default none. A merge GitHub refuses, or leaves unmerged
+--match-head-commit`), with the body the repo's squash default writes. A merge GitHub refuses, or leaves unmerged
 (a merge queue the base's rules don't name, such as classic branch protection's, only queues it, to merge later on a
 tree no gate saw), stops there: that PR and those
 after it wait for the next land. Then it fetches and compares the base's tree with the gated tree. Equal: the pass is
@@ -267,8 +260,7 @@ a PR the queue merged (a `land <pr>` naming it, or a bare `land`, which reads ev
 queue` with the links of the runs on that commit (the queue's `merge_group` CI), and finishes its worker sessions as
 step 5 does, then takes the label off, so a trail that failed (said, never failing the land) is written by the next
 land. The queue merges with its own `merge_method` and writes the squash message from the repo's squash
-default, which `land` neither sets nor overrides: session link lines stay out of commits through the `commit-msg`
-hook, and the PR's body and comments lose theirs before it is enqueued, as in step 5. A head matching
+default, which `land` neither sets nor overrides, as in step 5. A head matching
 `land.merge_commit_heads` is refused unless the queue's method is `MERGE`, since the queue merges every entry one way;
 `land.signed_squash_to` is refused, since GitHub signs the queue's commit. A cloud session takes this path too, with
 no `land.signing_key_env`, since GitHub signs: REST answers every step (auto-merge off dequeues; the PR's queue state
@@ -280,7 +272,7 @@ With `land.queue: mergify` in the policy (gatekeeper.md's `land:` section), on a
 queue (they win), a Mergify queue that `.mergify.yml` configures merges instead, which needs a repo no organisation owns
 no GitHub queue for: `land` takes no lock, runs no gate and merges nothing. It judges the same candidates (step 2) with
 the base's code, and hands each to Mergify by posting the `land` status (success, `Queued for Mergify at <sha>`) on its
-head and adding `loop:queued`, its session link lines dropped first as in step 5; `.mergify.yml`'s queue conditions
+head and adding `loop:queued`; `.mergify.yml`'s queue conditions
 read both, and the status binds the hand-over to that head, so a push leaves them unmet. A PR already carrying the label
 with `land` green on its head is reported queued and left alone. Mergify tests each batch as a draft PR on top of the
 base in CI, retries a red one once itself and squash-merges on green; a PR it dequeues (red again, or conflicting) gets
@@ -309,9 +301,11 @@ matches with `gh pr merge --merge --match-head-commit`, a merge commit that keep
 PR needs it), instead of the squash above; every other PR lands as before. `land` prints each PR's method, and a
 match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form.
 `where: host | cloud | both` (default `both`) says where `land` runs: it refuses elsewhere, exit 1, before reading any
-PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`; its checkout signs with the session's own
-key, shared across that service's users, so there `land` refuses without `signed_squash_to` unless the base requires GitHub's merge queue (GitHub's merge is GraphQL, which
-the session's proxy refuses, and signs with GitHub's key), when it names no `signing_key_env`, and when that variable
+PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`. There, without `signed_squash_to`, `land`
+merges each PR over REST (`PUT pulls/N/merge`, squash, `sha` the gated head), since GitHub's GraphQL merge is refused by
+the session's proxy; GitHub signs that commit as it does a host's, and no signing key is needed. With `signed_squash_to`
+its checkout signs with the session's own key, shared across that service's users, so `land` refuses without
+`ssh-keygen` installed, when it names no `signing_key_env`, and when that variable
 is unset, empty, no unencrypted SSH private key, or a key whose public half is no line of the allowed signers file, each
 refusal naming which and never the key. Else it writes the key to a mode-0600 file in a fresh temporary directory,
 removed however the land ends, and every git command of the land runs with it (`-c gpg.format=ssh -c
@@ -605,7 +599,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 from pathlib import Path
 from types import ModuleType
@@ -954,6 +948,15 @@ SCHEMA: dict[str, dict[str, Any]] = {
         ),
     ),
     "carry_over_main": Table({"except": list}),
+    # the break-glass land's proof windows (breakglass_settings); every key is optional
+    "breakglass": Table(
+        max_age=str,
+        max_commits=int,
+        smoke=str,
+        earlier_runs=int,
+        artifact=str,
+        optional=("max_age", "max_commits", "smoke", "earlier_runs", "artifact"),
+    ),
     # each port's adapter by name (ADAPTERS), `github` for a port not named
     "adapters": Table(
         tracker=str, forge=str, evidence=str, optional=("tracker", "forge", "evidence")
@@ -2927,9 +2930,11 @@ def waits(
     issues: list[dict[str, Any]],
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
+    checks: list[str] | None = None,
 ) -> list[str]:
-    """One line per thing the merge waits for: ran()'s checks, and the owner's go (owner_waits)."""
-    return ran(pull, loop) + owner_waits(pull, issues, loop, pushed)
+    """One line per thing the merge waits for: ran()'s checks (`checks`, when the caller read them), and the owner's go
+    (owner_waits)."""
+    return (ran(pull, loop) if checks is None else checks) + owner_waits(pull, issues, loop, pushed)
 
 
 def batch_queue(loop: str | None) -> bool:
@@ -2951,6 +2956,10 @@ CLOUD = "CLAUDE_CODE_REMOTE"
 # the config every git command takes during a cloud land (placed): sign and verify a squash with the landing key, through
 # ssh-keygen itself rather than the VM's signing program, which signs with the session's key
 SIGNING: list[str] = []
+
+
+# a signed land runs ssh-keygen to read the key and to sign and verify each squash
+NO_KEYGEN = "land with `land.signed_squash_to` needs `ssh-keygen` (the OpenSSH client), which is not installed: install it"
 
 
 def in_cloud() -> bool:
@@ -2987,10 +2996,10 @@ def armoured(value: str) -> str:
 @contextlib.contextmanager
 def placed(loop: str | None, queue: bool = False) -> Any:
     """Refuse a land where loop.md's `land.where` (default `both`) excludes the place it runs, before any PR is read.
-    In a cloud session (CLOUD) also refuse one on a base without GitHub's merge queue (`queue`, which merges and signs
-    each PR itself) and without `land.signed_squash_to`, since otherwise GitHub's own merge is GraphQL there and signs
-    with GitHub's key. On a base without the queue refuse there too one whose `signing_key_env` variable is unset, empty or holds a key the allowed
-    signers lack; else hold that key (armoured(), if a one-line variable stripped its armour) in a mode-0600 file in
+    A cloud session (CLOUD) on a base without GitHub's merge queue (`queue`, which merges and signs each PR itself) and
+    without `land.signed_squash_to` holds no key: GitHub's merge, over REST there, signs with GitHub's key. With
+    `land.signed_squash_to` refuse a land with no `ssh-keygen` installed, and one whose `signing_key_env` variable is
+    unset, empty or holds a key the allowed signers lack; else hold that key (armoured(), if a one-line variable stripped its armour) in a mode-0600 file in
     a fresh temporary directory, removed whatever happens, and sign each squash with it (SIGNING). The key and the variable's value are never printed."""
     global SIGNING
     land, cloud = settings(loop).get("land"), in_cloud()
@@ -2999,15 +3008,12 @@ def placed(loop: str | None, queue: bool = False) -> Any:
     where = LAND_WHERE.aliases.get(where, where)
     if where not in ("both", "cloud" if cloud else "host"):
         raise Refused(f"loop.md's `land.where` is `{where}`, so land does not run in {place}")
-    if cloud and not queue and not (land or {}).get("signed_squash_to"):
-        raise Refused(
-            "land in a cloud session needs a base that requires GitHub's merge queue, or loop.md's"
-            " `land.signed_squash_to`: otherwise GitHub merges, over GraphQL, which the session's proxy refuses, and"
-            " signs with GitHub's key"
-        )
-    if not cloud or queue:
+    # a cloud land without `signed_squash_to` merges over REST, which GitHub signs: no key is held
+    if not cloud or queue or not (land or {}).get("signed_squash_to"):
         yield
         return
+    if not shutil.which("ssh-keygen"):
+        raise Refused(NO_KEYGEN)
     name = land.get("signing_key_env")
     if not name:
         raise Refused(
@@ -3133,6 +3139,8 @@ def signed_squash(pull: dict[str, Any], signers: Path, onto: tuple[str, str] | N
     base. The head must be the one the gates checked and contain the base's tip, so the squash undoes nothing; with
     `onto` (a commit and a tree, from land's batch), the base's tip must be that commit and the squash holds that
     tree, the merge of the head the batch gated."""
+    if not shutil.which("ssh-keygen"):
+        raise Refused(NO_KEYGEN)
     pr, base, branch, head = (
         pull["number"],
         pull["baseRefName"],
@@ -3934,7 +3942,562 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
         # the owner's go names this PR, so the hold it waited on is theirs to lift; the delegate's never is
         label(number, NEEDS_OWNER, add=False)
         print(f"PR #{number}: `{NEEDS_OWNER}` removed, since the owner's go names it")
+    hand_over(number)
     return 0
+
+
+# The break-glass land (#1722): the owner approves one exact head with a red or missing required check, and land
+# verifies the proof from run data and leaves the merge to the owner's own bypass in the GitHub UI. The status context
+# and the `Approved:` record's point are one name.
+BREAKGLASS = "breakglass"
+# the first line of the proof comment (breakglass_proof): run ids and, once verified, how each failed test was classified
+PROOF = "Break-glass proof"
+# hours an approval lasts when the owner names no `--expires`
+BREAKGLASS_HOURS = 48
+# the proof's windows when the policy sets none: runs and heads older than 7 days or 20 commits count for nothing, and at
+# least 2 earlier green runs show the suite was healthy
+BREAKGLASS_AGE, BREAKGLASS_COMMITS, BREAKGLASS_EARLIER = "7d", 20, 2
+# the Actions artifact `qualify` publishes (JSON `{"failed": [test ids], "selected": [test ids]}`) that the proof reads
+BREAKGLASS_ARTIFACT = "failed-tests"
+ISO = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def parse_time(text: str) -> datetime | None:
+    """An ISO 8601 time as an aware datetime (UTC where it names no zone), None when it is none."""
+    try:
+        found = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return found if found.tzinfo else found.replace(tzinfo=timezone.utc)
+
+
+def breakglass_settings(loop: str | None) -> dict[str, Any]:
+    """The policy's `breakglass` section with its defaults: `max_age` as a timedelta, `max_commits`, `smoke` (the gate
+    command, else `check-land`), `earlier_runs`, and the `artifact` name."""
+    found = settings(loop)
+    given = found.get(BREAKGLASS, {})
+    age = str(given.get("max_age", BREAKGLASS_AGE)).strip()
+    if not (unit := re.fullmatch(r"(\d+)([dh])", age)):
+        raise Refused(
+            f"{source(loop)}'s `breakglass.max_age` is {age!r}: write it as `7d` or `12h`"
+        )
+    span = timedelta(**{"days" if unit[2] == "d" else "hours": int(unit[1])})
+    return {
+        "max_age": span,
+        "max_commits": given.get("max_commits", BREAKGLASS_COMMITS),
+        "smoke": given.get("smoke") or found.get("gate") or "check-land",
+        "earlier_runs": given.get("earlier_runs", BREAKGLASS_EARLIER),
+        "artifact": given.get("artifact", BREAKGLASS_ARTIFACT),
+    }
+
+
+def fields(body: str) -> dict[str, str]:
+    """The lower-cased `Key: value` lines under a comment's first line, as a parser reads it (machine)."""
+    return {
+        key.strip().lower(): value.strip()
+        for key, _, value in (
+            line.partition(":") for line in machine(body).strip().splitlines()[1:]
+        )
+    }
+
+
+def proofs_on(pull: dict[str, Any], head: str) -> list[dict[str, Any]]:
+    """The proof comments (breakglass_proof) that name `head`, oldest first."""
+    return [
+        note
+        for note in notes(pull)
+        if (machine(note["body"]).strip().splitlines() or [""])[0].strip() == PROOF
+        and fields(note["body"]).get("head", "").lower() == head.lower()
+    ]
+
+
+def proof_hash(note: dict[str, Any]) -> str:
+    """The sha256 of a proof comment's text as a parser reads it (machine), which an edit changes."""
+    return hashlib.sha256(machine(note["body"]).strip().encode()).hexdigest()
+
+
+def breakglass_post(number: int, head: str) -> dict[str, Any]:
+    """PR #number as the break-glass verbs may act on it: open, at `head`, which is then the full SHA."""
+    pull = pull_request(number)
+    if pull["state"] != "OPEN":
+        raise Refused(f"PR #{number} is {pull['state'].lower()}: nothing to approve")
+    if pull["headRefOid"].lower() != head.lower():
+        raise Refused(
+            f"PR #{number}'s head is {pull['headRefOid']}, not {head}: ask about the head it has now"
+        )
+    return pull
+
+
+def breakglass(
+    number: int, head: str, reason: str, expires: str | None = None, withdraw: bool = False
+) -> int:
+    """approve breakglass: the owner's word that this exact head may land with a red or missing required check, once
+    land verifies the proof (breakglass_verify): the status BREAKGLASS on the commit and a record naming the head, the
+    hash of the newest proof comment on it and when it lapses. Owner only: the caller refuses `--by delegate`, and a
+    record counts only when the status and the comment are the owner's login's (standing). `withdraw` posts a newer
+    failing status and a `Withdrawn: breakglass` record. A head that moved is refused; a push voids the approval."""
+    pull = breakglass_post(number, head)
+    head = pull["headRefOid"]
+    if withdraw:
+        post_status(
+            head, BREAKGLASS, f"The owner withdrew their break-glass on {head[:12]}", "failure"
+        )
+        comment(
+            number,
+            fold(
+                f"Withdrawn: {BREAKGLASS}",
+                f"The owner withdrew their break-glass on {head[:7]}.",
+                f"By: owner\nHead: {head}",
+            ),
+        )
+        print(f"PR #{number}: the owner's break-glass on {head} is withdrawn")
+        return 0
+    if not re.fullmatch(r"[0-9a-f]{40}", head.lower()) or head.lower() != head:
+        raise Refused(f"PR #{number}: break-glass pins the full 40-character head, got {head}")
+    if "\n" in reason or not reason.strip():
+        raise Refused("approve breakglass --reason is one line")
+    if not (found := proofs_on(pull, head)):
+        raise Refused(
+            f"PR #{number} has no `{PROOF}` comment on {head}: post one first"
+            " (approvals.py breakglass-proof), since the owner's record pins its hash"
+        )
+    until = parse_time(expires) if expires else utcnow() + timedelta(hours=BREAKGLASS_HOURS)
+    if until is None or until <= utcnow():
+        raise Refused(f"--expires {expires!r} is no future ISO 8601 time")
+    post_status(head, BREAKGLASS, f"The owner's break-glass on {head[:12]}")
+    comment(
+        number,
+        fold(
+            VOICED["owner"],
+            f"Break-glass for {head[:7]}.",
+            f"Approved: {BREAKGLASS}\nBy: owner\nHead: {head}\nProof: {proof_hash(found[-1])}\n"
+            f"Expires: {until.astimezone(timezone.utc).strftime(ISO)}\nReason: {reason.strip()}",
+        ),
+    )
+    print(f"PR #{number}: the owner's break-glass is on {head}, until {until.strftime(ISO)}")
+    return 0
+
+
+def breakglass_proof(
+    number: int,
+    head: str,
+    failed: int,
+    rerun: int | None,
+    smoke: int | None,
+    earlier: list[int],
+) -> int:
+    """breakglass-proof: the proof comment for `head`, which any writer or agent posts. It names run ids, and under
+    them what verifying them found (each failed test's classification, with its run links), posted only when every item
+    holds. The owner's record pins its hash, and land reads every item from GitHub's runs again, never from these words."""
+    pull = breakglass_post(number, head)
+    head = pull["headRefOid"]
+    lines = [f"Head: {head}", f"Failed-run: {failed}"]
+    if rerun is not None:
+        lines.append(f"Rerun: {rerun}")
+    if smoke is not None:
+        lines.append(f"Smoke: {smoke}")
+    if earlier:
+        lines.append(f"Earlier-runs: {', '.join(map(str, earlier))}")
+    heading = f"Run ids for the break-glass on {head[:7]}; land reads each from GitHub's runs."
+    # the proof as land will read it, so a refusal is said before the owner is asked to pin it
+    with policy_from(pull["baseRefName"]):
+        loop = project()[1]
+    proved = breakglass_verify(pull, loop, {"body": fold(PROOF, heading, "\n".join(lines))})
+    for line in proved.why:
+        print(line)
+    if proved.why:
+        print(f"PR #{number}: no proof posted: fix what is named, or name other runs")
+        return 1
+    url = comment(
+        number,
+        fold(
+            PROOF,
+            heading,
+            "\n".join(
+                lines + ["", "Found (land reads the runs again, not these lines):", *proved.lines]
+            ),
+        ),
+    )
+    print(f"PR #{number}: proof posted for {head}: {url}")
+    return 0
+
+
+class Standing(NamedTuple):
+    """What the PR holds of the owner's break-glass on its head: `held`, whether anyone wrote a record or status (else the
+    PR is judged as it was before break-glass); `why`, a line per gap, none when the approval is current; the owner's
+    `record` and the `proof` comment it pins."""
+
+    held: bool
+    why: list[str]
+    record: dict[str, str] | None = None
+    proof: dict[str, Any] | None = None
+
+
+def standing(pull: dict[str, Any], loop: str | None) -> Standing:
+    """The owner's break-glass on the PR's head (section 1 and the refusals of section 5 that need no run): the newest
+    `breakglass` status by the owner's login (loop.owner) is green, the record names the head with `By: owner` in the
+    owner's own comment, it has not lapsed, and the proof comment still hashes to what it pins. Any other login's
+    status, record or `--by` counts for nothing and is named."""
+    head, where = pull["headRefOid"], f"PR #{pull['number']}"
+    found = [
+        (note, record)
+        for note in notes(pull)
+        if (record := parsed(note["body"], BREAKGLASS)) is not None
+    ]
+    try:
+        marks = [s for s in statuses(head) if s.get("context") == BREAKGLASS]
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        return Standing(bool(found), [f"{where}: GitHub's statuses on {head} can't be read"])
+    if not found and not marks:
+        return Standing(False, [])
+    owner = str(settings(loop).get("owner") or "").lower()
+    if not owner:
+        return Standing(
+            True,
+            [f"{where}: the policy sets no `loop.owner`, so no login is the owner's break-glass"],
+        )
+    why = []
+    theirs = [s for s in marks if str((s.get("creator") or {}).get("login")).lower() == owner]
+    if not theirs:
+        by = (marks[0].get("creator") or {}).get("login") if marks else None
+        why.append(
+            f"{where}: no `{BREAKGLASS}` status on {head} by the owner {owner}"
+            + (f" (the one there is {by}'s)" if by else "")
+        )
+    elif theirs[0].get("state") != "success":
+        why.append(f"{where}: the owner's break-glass on {head} is withdrawn")
+    on_head = [
+        (note, record) for note, record in found if record.get("head", "").lower() == head.lower()
+    ]
+    owned = [
+        (note, record)
+        for note, record in on_head
+        if record.get("by") == "owner"
+        and str((note.get("author") or {}).get("login")).lower() == owner
+    ]
+    if not owned:
+        if on_head:
+            by = ", ".join(
+                sorted(
+                    {
+                        f"By: {r.get('by')}, comment by {(n.get('author') or {}).get('login')}"
+                        for n, r in on_head
+                    }
+                )
+            )
+            why.append(
+                f"{where}: the `Approved: {BREAKGLASS}` record on {head} is not the owner's ({by})"
+            )
+        elif found:
+            why.append(
+                f"{where}: the owner's break-glass names {found[-1][1].get('head', 'no head')}, not the head {head}:"
+                " a push voids it"
+            )
+        else:
+            why.append(f"{where}: no `Approved: {BREAKGLASS}` record names {head}")
+        return Standing(True, why)
+    record = owned[-1][1]
+    until = parse_time(record.get("expires", ""))
+    if until is None or until <= utcnow():
+        why.append(
+            f"{where}: the owner's break-glass on {head} lapsed at {record.get('expires') or 'no time'}"
+        )
+    pinned = [note for note in proofs_on(pull, head) if proof_hash(note) == record.get("proof")]
+    if not pinned:
+        edited = bool(proofs_on(pull, head))
+        why.append(
+            f"{where}: the proof comment on {head} "
+            + (
+                "was edited after the owner approved it (its hash no longer matches their record)"
+                if edited
+                else "is missing"
+            )
+        )
+    return Standing(True, why, record, pinned[-1] if pinned else None)
+
+
+# the events whose run of `qualify` runs the whole check; a `workflow_dispatch` run runs only its `tests` input
+FULL_EVENTS = ("pull_request", "push", "schedule")
+
+
+class Proved(NamedTuple):
+    """breakglass_verify's answer: `why`, a line per refusal (none: every item holds); `lines`, what was found, one line per
+    fact (the classification of each failed test with its run links, each item's run); `infra`, a failure with no test ids."""
+
+    why: list[str]
+    lines: list[str]
+    infra: bool = False
+
+
+def smoke_recorded(head: str, command: str) -> bool:
+    """Whether a local-ci record for `head`'s tree holds `command` with exit 0 (the record `local-ci --status` reads)."""
+    try:
+        held = str(tree_of(head))
+        record = json.loads(recorded(held, command).read_text())
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return False
+    return isinstance(record, dict) and (
+        record.get("tree"),
+        record.get("command"),
+        record.get("exit"),
+    ) == (
+        held,
+        command,
+        0,
+    )
+
+
+def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, Any]) -> Proved:
+    """Section 2: every item of the proof read from GitHub's runs, never from the proof comment's words, which only name
+    the run ids. A run counts only in this repo, completed, within `breakglass.max_age` of its `completed_at`, and, but
+    for the failed run's own, of the workflow that produces the required check. 2a the failing run on the exact head and
+    the test ids it failed (`infra` when it published none because the runner or CI was down); 2b each failed test
+    classified against completed runs on `main`'s recent heads and the merge base (`not caused by this change` when it
+    failed there too, else `unexplained`, which refuses); 2c the failed tests re-run alone on this head and green
+    (not for `infra`); 2d a smoke run: a local-ci record for the head's tree under `breakglass.smoke`, or a green
+    full Actions run on the head; 2e at least `breakglass.earlier_runs` green full runs on recent heads that are ancestors
+    of the head or of the base. A full run is one that ran the whole required check: of the workflow that produces it,
+    started by a `pull_request`, `push` or `schedule` (never a `workflow_dispatch`, whose `tests` input can empty or
+    narrow it), with a green job of each required check. A failure with no test ids is `infra` only when a job shows CI
+    down (cancelled, timed out, no steps); otherwise it is the change's own and refused."""
+    cfg, head, base = breakglass_settings(loop), pull["headRefOid"], pull["baseRefName"]
+    where, repo = f"PR #{pull['number']}", pull["baseRepository"]["nameWithOwner"].lower()
+    ids, why, lines = fields(proof.get("body", "")), [], []
+    now = utcnow()
+
+    def mine(run: dict[str, Any]) -> bool:
+        return all(
+            str((run.get(key) or {}).get("full_name")).lower() == repo
+            for key in ("repository", "head_repository")
+        )
+
+    def fresh(run: dict[str, Any]) -> bool:
+        when = parse_time(run.get("completed_at") or run.get("updated_at") or "")
+        return (
+            run.get("status") == "completed" and when is not None and now - when <= cfg["max_age"]
+        )
+
+    def read(key: str, role: str) -> dict[str, Any] | None:
+        raw = ids.get(key, "")
+        if not raw.isdigit():
+            why.append(f"{where}: the proof names no {role} run (`{key.capitalize()}:`)")
+            return None
+        run = run_info(int(raw))
+        if not mine(run):
+            why.append(f"{where}: run {raw} ({role}) is not this repository's")
+        elif not fresh(run):
+            why.append(
+                f"{where}: run {raw} ({role}) is older than breakglass.max_age or not complete"
+            )
+        else:
+            return run
+        return None
+
+    def near(sha: str, onto: str) -> bool:
+        """`sha` lies within `max_commits` of the head: the commits either side of it."""
+        found = compare(sha, onto)
+        return found["ahead_by"] + found["behind_by"] <= cfg["max_commits"]
+
+    def link(run: dict[str, Any]) -> str:
+        return run.get("html_url") or f"run {run['id']}"
+
+    def tests(run_id: int) -> dict[str, Any] | None:
+        return run_artifact(run_id, cfg["artifact"])
+
+    def full(run: dict[str, Any], flow: Any, required: set[str]) -> bool:
+        """The run ran the full selection of the required check: of the workflow that produces it, started by a
+        `pull_request`, `push` or `schedule` (never a `workflow_dispatch`, whose `tests` input narrows it to nothing or
+        to a few ids), with a green job of each required check."""
+        if run.get("workflow_id") != flow or run.get("event") not in FULL_EVENTS:
+            return False
+        return not required or required <= {
+            job["name"] for job in run_jobs(run["id"]) if job.get("conclusion") == "success"
+        }
+
+    try:
+        failed = read("failed-run", "failed")
+        if failed is None:
+            return Proved(why, lines)
+        flow = failed.get("workflow_id")
+        if failed.get("head_sha") != head or failed.get("conclusion") != "failure":
+            why.append(f"{where}: run {failed['id']} is not a failure on the head {head}")
+        required = required_checks(base) - OWN
+        if required and not required & {job["name"] for job in run_jobs(failed["id"])}:
+            why.append(
+                f"{where}: run {failed['id']} is of a workflow that produces none of the required checks"
+                f" ({', '.join(sorted(required))})"
+            )
+        got = tests(failed["id"])
+        broken = {"cancelled", "timed_out", "startup_failure"}
+        down = any(
+            job.get("conclusion") in broken or not job.get("steps")
+            for job in run_jobs(failed["id"])
+        )
+        if got is None and not down:
+            why.append(
+                f"{where}: run {failed['id']} published no `{cfg['artifact']}` artifact and no job shows CI down:"
+                " the failed tests are unknown"
+            )
+        want = set(got.get("failed", [])) if got else set()
+        infra = not want and down
+        if not want and not infra and got is not None:
+            why.append(
+                f"{where}: run {failed['id']} failed with no failed test ids and no job shows CI down:"
+                " a failure that is no test's is the change's own, so it is refused"
+            )
+        lines.append(
+            f"{where}: failing run {link(failed)}: "
+            + (
+                "infra (no failed test ids), so only the smoke run and earlier green runs apply"
+                if infra
+                else f"{len(want)} failed test(s)"
+            )
+        )
+        if not infra:
+            earlier: dict[str, list[str]] = {}
+            tip = merge_base(base, head)
+            seen: set[int] = set()
+            for run in workflow_runs(flow, branch=base) + workflow_runs(flow, head=tip):
+                if run["id"] in seen or run.get("head_sha") == head:
+                    continue
+                seen.add(run["id"])
+                if run.get("conclusion") != "failure" or not mine(run) or not fresh(run):
+                    continue
+                if not near(run["head_sha"], head):
+                    continue
+                for test in (tests(run["id"]) or {}).get("failed", []):
+                    earlier.setdefault(test, []).append(link(run))
+            for test in sorted(want):
+                if test in earlier:
+                    lines.append(
+                        f"`{test}`: not caused by this change; it also failed in {', '.join(earlier[test])}"
+                    )
+                else:
+                    lines.append(
+                        f"`{test}`: unexplained; it failed on no recent run of main or the merge base"
+                    )
+                    why.append(
+                        f"{where}: `{test}` is unexplained: only this change can explain it, so it is refused"
+                    )
+            rerun = read("rerun", "re-run")
+            if rerun is not None:
+                got_rerun = tests(rerun["id"])
+                if (
+                    rerun.get("head_sha") != head
+                    or rerun.get("conclusion") != "success"
+                    or rerun.get("workflow_id") != flow
+                ):
+                    why.append(
+                        f"{where}: run {rerun['id']} is not a green run of the workflow on the head {head}"
+                    )
+                elif not got_rerun or not want <= set(got_rerun.get("selected", [])):
+                    why.append(f"{where}: run {rerun['id']} did not re-run every failed test alone")
+                else:
+                    lines.append(
+                        f"{where}: the failed tests passed alone on the head: {link(rerun)}"
+                    )
+        smoke = ids.get("smoke")
+        if smoke:
+            run = read("smoke", "smoke")
+            if run is not None and (
+                run.get("head_sha") != head
+                or run.get("conclusion") != "success"
+                or not full(run, flow, required)
+            ):
+                why.append(
+                    f"{where}: run {smoke} is not a green full run of the required check on the head {head}"
+                    " (a `workflow_dispatch` run, or one of another workflow, is not one)"
+                )
+            elif run is not None:
+                lines.append(f"{where}: smoke run {link(run)}")
+        elif smoke_recorded(head, cfg["smoke"]):
+            lines.append(f"{where}: smoke: local-ci `{cfg['smoke']}` passed on the head's tree")
+        else:
+            why.append(
+                f"{where}: no smoke proof on the head: `local-ci` of `{cfg['smoke']}` for its tree, or a green Actions run"
+                " (`Smoke:`)"
+            )
+        good: set[int] = set()
+        for raw in ids.get("earlier-runs", "").replace(",", " ").split():
+            if not raw.isdigit() or int(raw) in good:
+                continue
+            run = run_info(int(raw))
+            if (
+                mine(run)
+                and fresh(run)
+                and run.get("conclusion") == "success"
+                and full(run, flow, required)
+                and run.get("head_sha") != head
+                and near(run["head_sha"], head)
+                and any(
+                    compare(run["head_sha"], onto)["status"] in ("ahead", "identical")
+                    for onto in (head, base)
+                )
+            ):
+                good.add(run["id"])
+                lines.append(f"{where}: earlier green run {link(run)}")
+        if len(good) < cfg["earlier_runs"]:
+            why.append(
+                f"{where}: {len(good)} earlier green run(s) of the required check in the window, not the"
+                f" {cfg['earlier_runs']} breakglass.earlier_runs asks"
+            )
+    except (subprocess.CalledProcessError, OSError, ValueError, KeyError) as exc:
+        return Proved(
+            [f"{where}: a run the proof names can't be read from GitHub: {stderr_of(exc)}"], lines
+        )
+    return Proved(why, lines, infra)
+
+
+class Covered(NamedTuple):
+    """breakglass_cover's answer: the lines that still hold the merge, and the lines to say beside them."""
+
+    lines: list[str]
+    said: list[str]
+
+
+# a line ci() writes for a required check that is red, or one the head lacks, which a break-glass may cover; a pending
+# one, or a head with more checks than one page, is nothing it covers
+CI_RED = re.compile(r": `([^`]+)` is (\w+) on the head commit$")
+CI_MISSING = re.compile(r": no `([^`]+)` on the head commit yet")
+
+
+def breakglass_cover(pull: dict[str, Any], loop: str | None, lines: list[str]) -> Covered:
+    """ci()'s lines for the head, as they stand with the owner's break-glass: with a current approval (standing) and
+    every line a required check red or missing, none, and a line saying so; with a record that is no approval, the
+    lines and what is wrong with it; with no record or status, or a pending check among the lines, the lines as they
+    were. Every other proof stays required: this replaces the green gate and nothing else."""
+    if not lines or no_ci(loop):
+        return Covered(lines, [])
+    names: dict[str, str] = {}
+    for line in lines:
+        if red := CI_RED.search(line):
+            if red[2].upper() not in RED:
+                return Covered(lines, [])
+            names[red[1]] = "red"
+        elif missing := CI_MISSING.search(line):
+            names[missing[1]] = "missing"
+        else:
+            return Covered(lines, [])
+    stand = standing(pull, loop)
+    if not stand.held:
+        return Covered(lines, [])
+    if stand.why:
+        return Covered(lines + stand.why, [])
+    proved = breakglass_verify(pull, loop, stand.proof or {})
+    if proved.why:
+        return Covered(lines + proved.why, [])
+    what = ", ".join(f"`{name}` {state}" for name, state in names.items())
+    return Covered(
+        [],
+        [
+            f"PR #{pull['number']}: required check {what}; break-glass approved by the owner on {pull['headRefOid']}",
+            *proved.lines,
+        ],
+    )
 
 
 def changed_lines(patch: str) -> list[tuple[list[str], list[str]]]:
@@ -4281,17 +4844,19 @@ PORTS = {
         "required_checks",  # (base) -> the checks the base requires, `queue` the merge method of a merge queue its
         # rules require (None, or no such attribute, without one)
         "default_branch",  # () -> the repository's default branch
-        "squash_message",  # () -> what a squash's body holds: COMMIT_MESSAGES, PR_BODY or BLANK
-        "pull_commits",  # (pr) -> the PR's commits, each with its message and author
         "viewer",  # () -> the account running this, or None when the forge won't say
         "writer",  # (login) -> whether the account can write to the repo
         "github_repo",  # (remote URL) -> the `owner/repo` it names on this forge, lowercased, or None
         "one_repo",  # () -> Refused when the checkout can't tell which repo its calls reach
         "ready",  # (pr, undo=False) -> marks a draft ready, or a ready PR a draft
-        "merge",  # (pr, method, body, head) -> merges pinned to head, `body` None for the forge's default
-        "edit_text",  # (method, path, body) -> replaces the body of a PR, comment or review at the forge's route
+        "merge",  # (pr, method, head) -> merges pinned to head, with the forge's default body
         "enqueue_pull",  # (pr, node, head, method) -> puts the PR in its base's merge queue pinned to head; its position, or None
         "dequeue_pull",  # (pr, node) -> takes the PR out of the merge queue
+        "run_info",  # (run) -> an Actions run: repository, workflow_id, head_sha, conclusion, completed times
+        "run_jobs",  # (run) -> its jobs, each with name, conclusion and steps
+        "workflow_runs",  # (workflow, branch=None, head=None) -> the newest completed runs of a workflow
+        "run_artifact",  # (run, name) -> the JSON in the run's artifact, or None
+        "compare",  # (base, head) -> {status, ahead_by, behind_by} of head against base
         "commit_checks",  # (ref) -> {name: {conclusion, url, id, title}} of the newest run of each check on the commit
         "job_log",  # (job) -> a check run's job log
         "commit_tree",  # (sha) -> the commit's tree SHA
@@ -4317,6 +4882,7 @@ def sibling(name: str) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.Refused, module.public, module.denied = Refused, public, denied
+    module.OWN_CHECKS = frozenset(OWN)
     return module
 
 
@@ -4394,12 +4960,14 @@ required_checks, default_branch = (
     through("forge", "required_checks"),
     through("forge", "default_branch"),
 )
-squash_message, pull_commits = through("forge", "squash_message"), through("forge", "pull_commits")
 viewer, writer = through("forge", "viewer"), through("forge", "writer")
 github_repo, one_repo = through("forge", "github_repo"), through("forge", "one_repo")
 open_heads, open_pull_files = through("forge", "open_heads"), through("forge", "open_pull_files")
 enqueue_pull, dequeue_pull = through("forge", "enqueue_pull"), through("forge", "dequeue_pull")
 commit_checks, job_log = through("forge", "commit_checks"), through("forge", "job_log")
+run_info, run_jobs = through("forge", "run_info"), through("forge", "run_jobs")
+workflow_runs, run_artifact = through("forge", "workflow_runs"), through("forge", "run_artifact")
+compare = through("forge", "compare")
 commit_tree = through("forge", "commit_tree")
 statuses, post_status = through("evidence", "statuses"), through("evidence", "post_status")
 post_review, minimize = through("evidence", "post_review"), through("evidence", "minimize")
@@ -4967,6 +5535,8 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
     """`check <point>`: with a PR, under the policy of the base it merges onto (policy_from), else the default
     branch's."""
     toplevel()  # outside a checkout, refused before GitHub is asked
+    if point == "stalled":
+        return stalled()
     if point == "build":
         full_check_line()
     if issue is not None:
@@ -5032,7 +5602,8 @@ def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
     found, issues = gated(point, pull, tracker, loop)
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
-    waiting = waits(pull, issues, loop) if point == "merge" else []
+    covered = breakglass_cover(pull, loop, ran(pull, loop)) if point == "merge" else Covered([], [])
+    waiting = waits(pull, issues, loop, checks=covered.lines) if point == "merge" else []
     rated = rating(pull, issues, loop) if point == "merge" else None
     if rated is not None:
         # on stderr, so the lines a workflow or a lead reads as the gate's answer stay what holds the merge
@@ -5041,11 +5612,11 @@ def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
         whose(pull, loop)
         if rated is not None and not found and not waiting and rated.merge != "gates"
         else []
-    )
+    ) + covered.said
     # advice, so it prints whatever else holds the merge and changes no exit code
     advice = (
         [f"PR #{pull['number']}: {said}"] if point == "merge" and (said := unforced(pull)) else []
-    ) + ([left] if point == "merge" and (left := stranded(pull)) else [])
+    )
     for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
         print(line)
     return 1 if found else WAITING if waiting else 0
@@ -6196,6 +6767,10 @@ def landable(
     if pull.get("waiting"):  # readied by this land: its CI has only just started
         return Verdict(pull["waiting"], issues=issues)
     if required and (lines := ci(where, pull, required)):
+        covered = breakglass_cover(pull, loop, lines)
+        if covered.said:  # the owner's own merge: land verifies it and leaves it
+            return breakglass_held(pull, covered, issues, named, loop)
+        lines = covered.lines
         for line in lines:
             print(line)
         red = {state for _, state in head_checks(pull, required)[0]} & RED
@@ -6213,6 +6788,119 @@ def landable(
         for line in whose(pull, loop):
             print(line)
     return Verdict(None, issues=issues)
+
+
+# the first line of the comment land leaves on a break-glass PR whose proof it verified, and of the one after the merge
+VERIFIED_COMMENT, BREAKGLASS_LAND = "Break-glass verified", "Break-glass land"
+
+
+def trailer(pull: dict[str, Any], check: str, proof_url: str) -> str:
+    """The squash commit's trailer for a break-glass land."""
+    return f"Break-glass: owner-approved, {check} red, proof {proof_url}"
+
+
+def breakglass_held(
+    pull: dict[str, Any],
+    covered: Covered,
+    issues: list[dict[str, Any]],
+    named: bool,
+    loop: str | None,
+) -> Verdict:
+    """What land does with a PR whose break-glass proof it verified (breakglass_cover): nothing is merged, since the
+    owner merges it in the GitHub UI with the ruleset's bypass. Neither `loop:queued` nor a `land` success stays on it
+    (a Mergify queue would merge it on that status: an error replaces it, and the label comes off first); one comment
+    carries the verified lines, the proof comment's link and the trailer to paste into the squash message; and the
+    owner is asked for the click (the `land` event `needs-owner`)."""
+    where, head = f"PR #{pull['number']}", pull["headRefOid"]
+    if QUEUED in names(pull):
+        label(pull["number"], QUEUED, add=False)
+        print(f"{where}: `{QUEUED}` removed: land never queues a break-glass PR")
+    try:
+        landed = [s for s in statuses(head) if s.get("context") == LAND]
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        landed = []
+    if landed and landed[0].get("state") != "error":
+        post_status(
+            head, LAND, "Not landed: the owner merges a break-glass PR in the GitHub UI", "error"
+        )
+    for line in covered.said:
+        print(line)
+    stand = standing(pull, loop)
+    proof_url = (stand.proof or {}).get("url") or pull.get("url", "")
+    heading = f"{VERIFIED_COMMENT}"
+    if not any(
+        machine(note["body"]).strip().splitlines()[:1] == [heading]
+        and fields(note["body"]).get("head", "").lower() == head.lower()
+        for note in notes(pull)
+    ):
+        comment(
+            pull["number"],
+            fold(
+                heading,
+                f"The proof for {head[:7]} holds, read from the runs. land does not merge it: the owner merges it"
+                ' in the GitHub UI with "Merge without waiting for requirements".',
+                "\n".join(
+                    [
+                        f"Head: {head}",
+                        f"Proof: {proof_url}",
+                        f"Record: {(next((n for n in notes(pull) if parsed(n['body'], BREAKGLASS)), {}) or {}).get('url', '')}",
+                        *covered.said[1:],
+                        f"Trailer: {trailer(pull, ', '.join(re.findall(r'`([^`]+)`', covered.said[0].split(';')[0])) or 'required', proof_url)}",
+                    ]
+                ),
+            ),
+        )
+    ask = [
+        f"{where}: the break-glass proof holds on {head}: the owner merges it in the GitHub UI (proof {proof_url})"
+    ]
+    asks_owner(pull, ask, named)
+    return Verdict((WAITING, False), issues=issues)
+
+
+def breakglass_landed(pull: dict[str, Any]) -> None:
+    """The `Break-glass land` comment after the owner's merge, from the first land that reads it merged: the head, the
+    merge commit, the required checks that were red or missing with their run links, the record and proof links and
+    that the owner merged it with the bypass. Nothing for a PR with no break-glass record on its head, or one already
+    commented."""
+    head = pull["headRefOid"]
+    if any(
+        machine(note["body"]).strip().splitlines()[:1] == [BREAKGLASS_LAND] for note in notes(pull)
+    ):
+        return
+    records_on = [
+        note
+        for note in notes(pull)
+        if (record := parsed(note["body"], BREAKGLASS))
+        and record.get("head", "").lower() == head.lower()
+    ]
+    if not records_on:
+        return
+    merged = merged_pull(pull["number"]) or {}
+    commit = merged.get("merge_commit_sha") or "unknown"
+    red = {name: run for name, run in commit_checks(head).items() if run["conclusion"] in RED}
+    required = required_checks(pull["baseRefName"]) - OWN
+    lacking = sorted(required - set(commit_checks(head)))
+    shown = [f"`{name}` red: {run_link(run['url'])}" for name, run in sorted(red.items())] + [
+        f"`{name}` missing" for name in lacking
+    ]
+    proof = (proofs_on(pull, head) or [{}])[-1].get("url") or pull.get("url", "")
+    comment(
+        pull["number"],
+        fold(
+            BREAKGLASS_LAND,
+            f"The owner merged {head[:7]} as {commit[:7]} with the ruleset's bypass; land did not merge it.",
+            "\n".join(
+                [
+                    f"Head: {head}",
+                    f"Merge: {commit}",
+                    f"Checks: {'; '.join(shown) or 'none red or missing now'}",
+                    f"Record: {records_on[-1].get('url') or ''}",
+                    f"Proof: {proof}",
+                    f"Trailer: {trailer(pull, ', '.join(sorted(red) + lacking) or 'required', proof)}",
+                ]
+            ),
+        ),
+    )
 
 
 def candidates_of(
@@ -7131,11 +7819,65 @@ def queued_here(head: str) -> bool:
     return bool(found) and found.get("state") == "success"
 
 
+def hand_over(number: int) -> None:
+    """The end of `approve merge` and `record verdict` under `land.queue: mergify`: when `check merge` passes on the PR's
+    head, land it (`land --only`, so the hand-over is mergify_step's, and a PR already queued at its head is left
+    alone); when something is still missing, print what it is (checked) and queue nothing. A draft, a closed PR and a
+    base with another queue are left to `land`, as before. The record is already written, so a refusal here changes
+    no exit code."""
+    pull = pull_request(number)
+    if pull["state"] != "OPEN" or pull["isDraft"]:
+        return
+    with policy_from(pull["baseRefName"]):
+        if not mergify(project()[1]):
+            return
+        if checked("merge", pull, None):
+            print(f"PR #{number} is not queued: what is missing is above")
+            return
+        if landing([number], only=True)[0]:
+            print(f"PR #{number} is not queued: what holds it is above")
+
+
+def stalled() -> int:
+    """`check stalled`: each open PR into a base whose policy names Mergify that `landable` finds a candidate (its go on
+    its head, every proof, a satisfied verdict) and that is neither queued at its head (QUEUED and a `land` success
+    there, queued_here) nor merged: a `land` that was stopped or died left it. One line each, and exit 1 when any
+    is listed, so a sweep can queue it (`land <n> --only`) or flag it; judged as `land` judges, and written nowhere."""
+    bases: dict[str, tuple[str | None, str | None, set[str]] | None] = {}
+    found = []
+    for listed in sorted(open_pulls(), key=lambda each: each["number"]):
+        if listed["isDraft"]:
+            continue
+        base = listed["baseRefName"]
+        if base not in bases:
+            with policy_from(base):
+                tracker, loop = project()
+                if mergify(loop):
+                    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+                    bases[base] = (tracker, loop, required_checks(base) - OWN)
+                else:
+                    bases[base] = None
+        if (known := bases[base]) is None:
+            continue
+        pull = pull_request(listed["number"])
+        with policy_from(base):
+            judge_with_base(base)
+            with contextlib.redirect_stdout(io.StringIO()):
+                judged = landable(pull, known[0], known[1], known[2])
+        head = pull["headRefOid"]
+        if judged.exit is None and not (QUEUED in names(pull) and queued_here(head)):
+            found.append(
+                f"PR #{pull['number']} has its go and a satisfied verdict at {head} and is not queued"
+            )
+    for line in found:
+        print(line)
+    return 1 if found else 0
+
+
 def mergify_step(pull: dict[str, Any]) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
-    (QUEUED and a `land` success there), left alone (exit 0); else queued, its session link lines dropped first
-    (unlink_pull): the `land` success on its head, which binds the hand-over to that one head, so a push leaves
+    (QUEUED and a `land` success there), left alone (exit 0); else queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
     `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). A DEQUEUED label on a head land never queued (a push since)
     is stale, and comes off."""
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
@@ -7150,7 +7892,6 @@ def mergify_step(pull: dict[str, Any]) -> int:
         if QUEUED in labels and ours:
             print(f"{where} is queued for Mergify at {head}")
             return 0
-        unlink_pull(pull)
         post_status(head, LAND, MERGIFY_QUEUED.format(head))
         if QUEUED not in labels:
             label(number, QUEUED, add=True)
@@ -7379,11 +8120,9 @@ def required_state(
 
 
 def enqueue(pull: dict[str, Any], method: str) -> tuple[int, bool]:
-    """Put the PR in the GitHub merge queue (merging with `method`) pinned to the head the proofs judged, its session
-    link lines dropped first (unlink_pull): exit 0 once it is in, 1 when GitHub refuses, or when its head moved
-    as it went in (the forge port's REST answer reads it again)."""
+    """Put the PR in the GitHub merge queue (merging with `method`) pinned to the head the proofs judged: exit 0 once
+    it is in, 1 when GitHub refuses, or when its head moved as it went in (the forge port's REST answer reads it again)."""
     where, head = f"PR #{pull['number']}", pull["headRefOid"]
-    unlink_pull(pull)
     # before the enqueue, so no PR the queue merges lacks it: the bare land's trail follows it (queue_trail)
     label(pull["number"], QUEUED, add=True)
     try:
@@ -7434,6 +8173,8 @@ def queue_landed(pull: dict[str, Any]) -> None:
     `merge_group` CI; and its worker sessions finished. Nothing for a PR it did not merge, or one already commented."""
     merged = [removal for removal in queue_events(pull) if removal.get("reason") == QUEUE_MERGED]
     queued = QUEUED in {each["name"] for each in pull["labels"]["nodes"]}
+    if pull["state"] == "MERGED":
+        breakglass_landed(pull)
     if not any(note["body"].startswith(f"{LANDED}\n") for note in notes(pull)):
         if merged:
             landed_comment(pull, merged[-1])
@@ -7494,173 +8235,6 @@ def mergify_landed(pull: dict[str, Any]) -> None:
     archive_workers(pull["number"])
 
 
-# a cloud session's link, which its harness adds to every commit message as a `Claude-Session:` line and to every PR
-# body as a bare link line, optionally in <...>, and to every body and comment its proxy writes as a `_Generated by
-# [Claude Code](<link>)_` footer; land drops each from the squash body, the PR body and the PR's comments
-SESSION_LINE = re.compile(
-    r"^(?:Claude-Session:.*|(?:<https://claude\.ai/code/session_[^\s<>]*>|https://claude\.ai/code/session_[^\s<>]*"
-    r"|_Generated by \[Claude Code\]\(https://claude\.ai/code/session_[^\s()]*\)_)[ \t\r]*)(?:\n|$)",
-    re.MULTILINE,
-)
-CO_AUTHOR = re.compile(r"^Co-authored-by:[ \t]*(.*?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
-
-
-def squash_body(commits: list[dict[str, Any]], author: str | None) -> str:
-    """The body GitHub's squash writes under the repo's commit-messages default, from the PR's commits as REST lists
-    them (oldest first) and the PR author's login, as 250 squashes on this repo's main show it. Its co-authors are, in
-    commit order, each commit's author other than the PR's (a merge commit's too), then each `Co-authored-by:` its
-    message names, one per email, the first seen keeping its name. The commits less merge commits: one is its message
-    after the subject with those trailer lines emptied, then the co-authors; several are each whole message as a `* `
-    item, then `---------` and the co-authors."""
-    named: dict[str, str] = {}
-    for commit in commits:
-        if (commit.get("author") or {}).get("login") != author:
-            who = commit["commit"]["author"]
-            named.setdefault(who["email"].casefold(), f"{who['name']} <{who['email']}>")
-        for line in CO_AUTHOR.findall(commit["commit"]["message"]):
-            email = re.search(r"<([^>]*)>", line)
-            named.setdefault((email[1] if email else line).casefold(), line)
-    footer = "\n".join(f"Co-authored-by: {who}" for who in named.values())
-    messages = [commit["commit"]["message"] for commit in commits if len(commit["parents"]) < 2]
-    if len(messages) == 1:
-        text = CO_AUTHOR.sub("", messages[0].partition("\n")[2]).strip()
-        return "\n\n".join(part for part in (text, footer) if part)
-    items = "\n\n".join(f"* {message}" for message in messages)
-    return f"{items}\n\n---------\n\n{footer}" if footer else items
-
-
-def unlinked(text: str) -> str:
-    """text less every session link line (SESSION_LINE), the blank lines around each removed one folded into one (none when
-    it sat between two text lines); blank lines elsewhere (a PR body's code block) stay as written."""
-    marked = "\n".join("\0" if SESSION_LINE.match(line) else line for line in text.split("\n"))
-
-    def fold(run: re.Match[str]) -> str:  # each removed line held one of the run's line breaks
-        return "\n\n" if run[0].count("\n") - run[0].count("\0") >= 2 else "\n"
-
-    return re.sub(r"\n*(?:\0(?:\n|$))+\n*", fold, marked).strip()
-
-
-def commit_msg(message: Path) -> int:
-    """The commit-msg hook: the message file less every session link line, as unlinked() folds them for land, so a
-    cloud session's branch commits carry no link either, since a public repo publishes them; a message with none is
-    left as written."""
-    text = message.read_text()
-    if SESSION_LINE.search(text):
-        message.write_text(unlinked(text) + "\n")
-    return 0
-
-
-def session_links(pull: dict[str, Any]) -> list[tuple[str, str, str, str, bool]]:
-    """Each text of pull that carries a session link line, as (what names it, the REST method and path that edit it,
-    its text, whether this account can edit it, by GitHub's `viewerCanUpdate`): the PR's body, each conversation
-    comment, each review's summary and each review thread's comment, since a public repo's PR page publishes them all.
-    A text read without that right (REST, when GraphQL is refused) counts as one it can't edit. ponytail: the newest
-    100 comments and reviews, and the first 50 comments of each of the first 100 threads."""
-    number, repo = pull["number"], "repos/{owner}/{repo}"
-
-    def named(word: str, found: dict[str, Any]) -> str:
-        if found.get("url"):
-            return f"the {word} {found['url']}"
-        if found.get("databaseId"):
-            return f"{word} {found['databaseId']} on PR #{number}"
-        return f"a {word} on PR #{number}"
-
-    texts = [
-        (
-            "its body",
-            "PATCH",
-            f"{repo}/pulls/{number}",
-            pull.get("body") or "",
-            pull.get("viewerCanUpdate"),
-        )
-    ]
-    texts += [
-        (
-            named("comment", note),
-            "PATCH",
-            f"{repo}/issues/comments/{note.get('databaseId')}",
-            note.get("body") or "",
-            note.get("viewerCanUpdate"),
-        )
-        for note in (pull.get("comments") or {}).get("nodes") or []
-    ]
-    texts += [
-        (
-            named("review", review),
-            "PUT",
-            f"{repo}/pulls/{number}/reviews/{review.get('databaseId')}",
-            review.get("body") or "",
-            review.get("viewerCanUpdate"),
-        )
-        for review in (pull.get("reviews") or {}).get("nodes") or []
-    ]
-    texts += [
-        (
-            named("comment", note),
-            "PATCH",
-            f"{repo}/pulls/comments/{note.get('databaseId')}",
-            note.get("body") or "",
-            note.get("viewerCanUpdate"),
-        )
-        for thread in (pull.get("reviewThreads") or {}).get("nodes") or []
-        for note in (thread.get("comments") or {}).get("nodes") or []
-    ]
-    return [
-        (what, method, path, text, bool(can))
-        for what, method, path, text, can in texts
-        if SESSION_LINE.search(text)
-    ]
-
-
-def unlink_pull(pull: dict[str, Any]) -> None:
-    """Before land merges pull: each text session_links() finds that this account can edit gets one edit holding it
-    less its session link lines, as unlinked() folds them, its other lines kept; a text with none gets no edit, and
-    one it can't edit is left to check merge, which names it. One line says what it edited."""
-    edited = []
-    for what, method, path, text, can in session_links(pull):
-        if can:
-            port("forge").edit_text(method, path, unlinked(text))
-            edited.append(what)
-    if edited:
-        print(f"PR #{pull['number']}: dropped the session link from {', '.join(edited)}")
-
-
-def stranded(pull: dict[str, Any]) -> str | None:
-    """The line check merge prints when a text of pull still carries a session link this account can't edit (a comment
-    by another account, say), so a person removes it before the PR lands; None when there is none."""
-    left = [what for what, *_, can in session_links(pull) if not can]
-    if not left:
-        return None
-    return (
-        f"PR #{pull['number']}: a session link stays in {', '.join(left)}, which this account can't edit: remove it"
-        " by hand before the PR lands, since its page is public"
-    )
-
-
-def land_body(pull: dict[str, Any]) -> str | None:
-    """The `--body` land passes to GitHub's squash of pull, whatever the repo's squash default would put a
-    session link line in, or None to leave GitHub's default. The repo's `squash_merge_commit_message` picks it:
-    COMMIT_MESSAGES, squash_body() less those lines; PR_BODY, the PR's body less them; BLANK, None, since GitHub
-    writes no body. ponytail: under PR_BODY GitHub's own co-author lines, if it adds any, are not added here, as no
-    squash on this repo shows that setting."""
-    setting = squash_message()
-    if setting == "BLANK":
-        return None
-    if setting == "PR_BODY":
-        text = pull.get("body") or ""
-    else:
-        number = pull["number"]
-        commits = pull_commits(number)
-        # ponytail: REST lists a PR's first 250 commits
-        text = squash_body(commits, (pull.get("author") or {}).get("login"))
-    # GitHub writes no body for this PR either, so there is nothing to override
-    if not text.strip():
-        return None
-    # ponytail: a body that was only `Claude-Session:` lines goes as an empty `--body`; whether GitHub then writes
-    # its default instead is unproven
-    return unlinked(text)
-
-
 def merged_anyway(number: int, head: str, exc: subprocess.CalledProcessError) -> str:
     """The merge commit of PR #number when `gh pr merge` failed with exc but GitHub merged it at head all the same,
     since a transport error (a response cut off mid-stream) can come after the merge. Anything else is Refused with
@@ -7674,6 +8248,17 @@ def merged_anyway(number: int, head: str, exc: subprocess.CalledProcessError) ->
     if found is None or (found.get("head") or {}).get("sha") != head:
         raise Refused(why) from exc
     return str(found.get("merge_commit_sha"))
+
+
+def refuse_red(pull: dict[str, Any], base: str) -> None:
+    """Refuse to merge a PR while a check `base` requires is red, pending or missing on its head, whether or not the owner
+    approved a break-glass: land's merge, signed squash included, is never the bypass (#1722)."""
+    required = required_checks(base) - OWN
+    if required and (lines := ci(f"PR #{pull['number']}", pull, required)):
+        raise Refused(
+            f"PR #{pull['number']}: refusing to merge while a required check is not green: {'; '.join(lines)}"
+            " (a break-glass PR is merged by the owner in the GitHub UI, never by land)"
+        )
 
 
 def merges(
@@ -7708,13 +8293,13 @@ def merges(
     for pull, tree, gated, how in landed:
         where, head, posted = f"PR #{pull['number']}", pull["headRefOid"], False
         try:
+            refuse_red(pull, base)
             ours = owned()
             nonce = (
                 git("log", "-1", "--format=%b", ours).rsplit("nonce ", 1)[-1].strip()
                 if ours
                 else ""
             )
-            unlink_pull(pull)
             method = merge_method(pull, loop)
             if local:
                 owned()
@@ -7724,13 +8309,12 @@ def merges(
             else:
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
-                body = land_body(pull) if method == "squash" else None
                 print(f"{where} lands as a {method}")
                 post_status(head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}")
                 posted = True
                 try:
                     owned()
-                    port("forge").merge(pull["number"], method, body, head)
+                    port("forge").merge(pull["number"], method, head)
                 except subprocess.CalledProcessError as exc:
                     merge = merged_anyway(pull["number"], head, exc)
                     print(
@@ -7998,7 +8582,22 @@ def accepted(lines: list[str], report: Path) -> list[tuple[str, str]]:
     """Each `Accepted on evidence: <line> — <proof log>` line of a report as (line, proof log), refused when one
     names no proof log, since an acceptance taken on evidence nobody can find is no acceptance."""
     found = []
+    fenced = False
     for line in lines:
+        if line.startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:  # a quoted report line is no acceptance
+            continue
+        # a `Manual:` line that takes itself on evidence inline: the high-risk refusal and the posted review would
+        # never see it; prose, a quote or a fenced block that only mentions the phrase is no acceptance
+        if not line.startswith(ACCEPTED) and re.search(
+            rf"Manual:.*{re.escape(ACCEPTED)}", re.sub(r"`[^`]*`|\*", "", line)
+        ):
+            raise Refused(
+                f"{report}: `{ACCEPTED}` inside `{line[:60]}`: write it as a line of its own, "
+                f"`{ACCEPTED} <line> — <proof log>`"
+            )
         if not line.startswith(ACCEPTED):
             continue
         said = re.fullmatch(r"(\S.*)[ \t]+[—–][ \t]+(\S.*)", line[len(ACCEPTED) :].strip())
@@ -8190,6 +8789,7 @@ def verdict(pr: int, report: Path) -> int:
         ),
     )
     post_review(pr, {"commit_id": head, "event": "COMMENT", "body": summary, "comments": comments})
+    hand_over(pr)
     return 0
 
 
@@ -10583,7 +11183,7 @@ def main(argv: list[str]) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser("check")
-    checking.add_argument("point", choices=("build", "merge", "queue", "ready", "setup"))
+    checking.add_argument("point", choices=("build", "merge", "queue", "ready", "setup", "stalled"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--head")
     checking.add_argument("--issue", type=int)
@@ -10596,7 +11196,7 @@ def main(argv: list[str]) -> int:
     # `record`: the evidence the gate reads, written: an approval, a verdict, a check pass
     records = commands.add_parser("record").add_subparsers(dest="kind", required=True)
     approving = records.add_parser("approval")
-    approving.add_argument("point", choices=(*POINTS, "merge"))
+    approving.add_argument("point", choices=(*POINTS, "merge", BREAKGLASS))
     approving.add_argument("number", type=int)
     # an agent never approves: a record is a person's word, and the owner's policy in loop.md covers the rest; a
     # merge's go may be the delegated approver's, under the owner's delegation
@@ -10604,6 +11204,16 @@ def main(argv: list[str]) -> int:
     # merge only: the head the approver was shown, and their go taken back
     approving.add_argument("--head")
     approving.add_argument("--withdraw", action="store_true")
+    # breakglass only: why, and when the approval lapses (ISO 8601; default two days on)
+    approving.add_argument("--reason")
+    approving.add_argument("--expires")
+    proving = commands.add_parser("breakglass-proof")
+    proving.add_argument("pr", type=int)
+    proving.add_argument("--head", required=True)
+    proving.add_argument("--failed-run", type=int, required=True)
+    proving.add_argument("--rerun", type=int)
+    proving.add_argument("--smoke", type=int)
+    proving.add_argument("--earlier", type=int, nargs="*", default=[])
     delegating = commands.add_parser("delegate")
     delegating.add_argument("pr", type=int)
     posting = records.add_parser("verdict")
@@ -10632,8 +11242,6 @@ def main(argv: list[str]) -> int:
     graduating = commands.add_parser("graduate")
     graduating.add_argument("epic", type=int)
     graduating.add_argument("--pr", type=int, required=True)
-    hooking = commands.add_parser("commit-msg")
-    hooking.add_argument("message", type=Path)
     # --base: the commit to select against (a PR's base SHA, a push's previous tip), over the merge base
     commands.add_parser("affected-tests").add_argument("--base", metavar="REV")
     wrapping = commands.add_parser("heavy")
@@ -10665,8 +11273,6 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             return 1
     if args.command == "report":  # reads a local file only, so no remote needs choosing
         return report_json(args.report) if args.json else report_check(args.report)
-    if args.command == "commit-msg":  # the same: git hands the hook its message file
-        return commit_msg(args.message)
     if args.command == "affected-tests":
         return affected_tests(args.base)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
@@ -10685,6 +11291,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused(
                 "check queue takes a PR number and --head <sha>, the head the queue would merge"
             )
+        if args.point == "stalled" and (args.pr is not None or args.issue is not None):
+            raise Refused("check stalled takes no PR: it lists every open PR")
         if args.point != "queue" and args.head is not None:
             raise Refused("--head goes with check queue only")
         if args.issue is not None and (args.point != "build" or args.pr is not None):
@@ -10695,6 +11303,22 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "batch":
         deprecated("batch")
         return batch(args.pr, args.merge, args.batch, args.exit, args.log)
+    if args.command == "breakglass-proof":
+        return breakglass_proof(
+            args.pr, args.head, args.failed_run, args.rerun, args.smoke, args.earlier
+        )
+    if args.command == "approve" and args.point == BREAKGLASS:
+        if args.by != "owner":
+            raise Refused(
+                "approve breakglass is the owner's alone: `--by owner`, and `loop.delegate: all` never covers it"
+            )
+        if not args.head:
+            raise Refused(
+                "approve breakglass needs --head <full-sha>: the head the owner was shown"
+            )
+        if not args.withdraw and not args.reason:
+            raise Refused("approve breakglass needs --reason <one line>")
+        return breakglass(args.number, args.head, args.reason or "", args.expires, args.withdraw)
     if args.command == "approve":
         if args.point != "merge" and (args.head or args.withdraw):
             raise Refused("--head and --withdraw belong to `approve merge`")
