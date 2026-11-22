@@ -157,7 +157,7 @@ its landing order.
   runs at most one child and only focused tests. Resume the leads one at a time once
   the host has room again, because sessions on an overloaded host time out and fail and lose
   their work.
-- **One writer per checkout.** A lead whose work rebases or checks out branches in a
+- **One writer per checkout.** A lead whose work merges or checks out branches in a
   checkout others use says so in its brief or relay, and every other lead works in its own
   worktree until that ends, because two writers in one checkout overwrite each other's
   tree.

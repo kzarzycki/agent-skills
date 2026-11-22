@@ -16,7 +16,11 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 import pytest
 
 # the gatekeeper's test harness, whose fixtures every package's tests run under, and the Omnigent driver's tests
-for package in ("gatekeeper", "omnigent", "loop"):  # a test imports the fixtures of another package's tests by module name
+for package in (
+    "gatekeeper",
+    "omnigent",
+    "loop",
+):  # a test imports the fixtures of another package's tests by module name
     sys.path.insert(0, str(Path(__file__).resolve().parent / package / "tests"))
 
 # The approvals.py fixtures, visible to every module here; _approvals_stubs turns them on.
@@ -28,6 +32,7 @@ from approvals_harness import (  # noqa: F401
     board_risks,
     graphql_answers,
     hub,
+    merging,
     others_open,
     pushed,
     refs,
@@ -186,10 +191,11 @@ def pytest_testnodedown(node: object, error: object) -> None:
 
 @pytest.fixture(autouse=True)
 def _fresh_viewer() -> None:
-    """The login `gh` runs as is read once per process (github_adapter.viewer); a test stubs it per test."""
+    """The login `gh` runs as is read once per process (github_adapter.viewer), and writer, required_checks and a
+    settled head's check runs are kept for a while (#1771); a test stubs them per test, so each starts with none."""
     from approvals_harness import approvals
 
-    approvals.github.viewer_login.clear()
+    approvals.github.forget()
 
 
 @pytest.fixture(autouse=True)
