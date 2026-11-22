@@ -4124,7 +4124,7 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
     argv = ["start", "claude-cloud", "t", "b.md", "r.md", "--top-level", "--host", "box"]
-    argv += ["--workspace", "/there/repo", "--pr", "7", "--confirm-seconds", "0"]
+    argv += ["--workspace", "/there/repo", "--pr", "o/r#7", "--confirm-seconds", "0"]
     assert omnigent_agent.main(argv) == 0
     assert og.top_level == [True] and og.workspaces == ["/there/repo"]
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
