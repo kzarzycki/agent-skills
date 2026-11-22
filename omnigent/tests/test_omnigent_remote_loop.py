@@ -44,6 +44,10 @@ class Server(omnigent_agent.Omnigent):
 
     def call(self, method: str, path: str, body: object = None) -> dict:
         self.calls.append((method, path))
+        if (
+            path == "/v1/hosts"
+        ):  # a session row's host is matched by any name its row carries (#1693)
+            return {"hosts": [{"host_id": h, "name": n} for h, n in self.hosts().items()]}
         if path.startswith(f"/v1/hosts/{OTHER}/filesystem/"):
             folder = ("/" + path.split("/filesystem/")[1].split("?")[0]).rstrip("/")
             if folder == self.broken:
