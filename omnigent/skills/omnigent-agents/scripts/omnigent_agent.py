@@ -2960,17 +2960,19 @@ def far_checkout_root(og: Omnigent, host_id: str, workspace: str, what: str) -> 
 
 
 def host_file(og: Omnigent, host_id: str, path: str) -> str | None:
-    """``path``'s text through the host's file route (``GET /v1/hosts/<id>/files/<path>``), which
-    needs no session on the host: a UTF-8 file up to 64 KiB. None on a 404 or 405, which a server
-    or host without the route answers (and a missing file, when it has it), so the caller reads
-    through a live session. Any other refusal (403 a credential file, 400 a folder or not UTF-8,
-    413 too large, 503 host offline) is a ``Fail`` carrying the server's message, with no
-    fallback."""
+    """``path``'s text through the host's file route (``GET /v1/hosts/<id>/files/<path>``, which
+    needs no session on the host): a UTF-8 file up to 64 KiB. None, so the caller reads through a
+    live session, on a 404 or 405 (a server or host without the route, or a missing file), a 400
+    (a folder, such as a main checkout's ``.git``, or not UTF-8: a session lists the one and
+    reads the other), a 403 for ``~/.claude.json`` (the folder-trust check must read it), and a
+    200 with no text. Any other refusal (403 a credential file, 413 too large, 503 host offline) is
+    a ``Fail`` carrying the server's message, with no fallback."""
     url = "/v1/hosts/" + host_id + "/files/" + quote(path.strip("/"), safe="/")
     try:
         content = og.call("GET", url).get("content")
     except Fail as e:
-        if isinstance(e.__cause__, HTTPError) and e.__cause__.code in (404, 405):
+        code = e.__cause__.code if isinstance(e.__cause__, HTTPError) else 0
+        if code in (400, 404, 405) or (code == 403 and path.endswith("/.claude.json")):
             return None
         raise
     return content if isinstance(content, str) else None
