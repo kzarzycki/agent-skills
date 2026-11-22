@@ -59,6 +59,9 @@ def _main(argv: list[str]) -> int:
 
 approvals.main = _main
 approvals.brief, approvals.release = loop_script.brief, loop_script.release
+# the loop's own helpers, which tests written against the gatekeeper's `brief` reach by these names
+for _name in ("previous_findings", "triage_replies", "brief_since"):
+    setattr(approvals, _name, getattr(loop_script, _name))
 
 
 def heavy_by_run(words: Any, env: Any = None, **popen: Any) -> tuple[int, Any]:
@@ -2458,7 +2461,7 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         "- Spec: #12",
         f"- Acceptance tests: uv run {os.path.relpath(SCRIPTS / 'acceptance.py')} 12",
         "- Report: tmp/loop/pr7-v3.md",
-        f"- Previous report: tmp/loop/pr7-v2.md, on {earlier}: review the diff since that head and rerun its repros",
+        f"- Previous pass: 2, on {earlier}: review the diff since that head and rerun its repros",
         f"- Proof log: {proof} (its first line is the head)",
         "",
         "PR title:",
@@ -2523,7 +2526,7 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
     assert approvals.main(["brief", "7"]) == 0
     out = capsys.readouterr().out.splitlines()
     assert "- Report: tmp/loop/pr7-v1.md" in out
-    assert not [line for line in out if line.startswith("- Previous report")]
+    assert not [line for line in out if line.startswith("- Previous pass")]
     # a policy in gatekeeper.md leaves the Verifier brief in loop.md, the loop's prose
     agents = tmp_path / "docs" / "agents"
     agents.mkdir(parents=True)
@@ -2566,10 +2569,7 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
             f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}"
         ),
         "- Report: /there/repo/tmp/loop/pr7-v2.md",
-        (
-            f"- Previous report: /there/repo/tmp/loop/pr7-v1.md, on {earlier}: review the diff since that head and"
-            " rerun its repros"
-        ),
+        f"- Previous pass: 1, on {earlier}: review the diff since that head and rerun its repros",
         "- Proof log: /there/repo/tmp/loop/gate.log (its first line is the head)",
         "",
         "PR title:",
@@ -2582,20 +2582,6 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
         "Closes #12.",
         "```",
     ]
-    # the previous pass saved its repros beside its report in the clone's tmp/loop/: named there by path
-    (tmp_path / "tmp" / "loop").mkdir(parents=True)
-    (tmp_path / "tmp/loop/pr7-v1.md").write_text(
-        "Repro: `uv run pytest tmp/loop/pr7-v1-repro.py`, again tmp/loop/pr7-v1-repro.py,"
-        " tmp/loop/pr7-v1.md and tmp/loop/pr7-v1-tree/x.py\n"
-    )
-    assert approvals.main(["brief", "7", "--far", "/there/repo"]) == 0
-    out = capsys.readouterr().out.splitlines()
-    assert [line for line in out if line.startswith("- Repro")] == [
-        "- Repro: /there/repo/tmp/loop/pr7-v1-repro.py"
-    ]
-    # a verifier here works where the lead copied its repros: the brief lists none
-    assert approvals.main(["brief", "7"]) == 0
-    assert not [line for line in capsys.readouterr().out.splitlines() if line.startswith("- Repro")]
     assert approvals.main(["brief", "7", "--far", "there/repo"]) == 1
     assert capsys.readouterr().out == "--far there/repo: an absolute path on the verifier's host\n"
 
@@ -2619,8 +2605,9 @@ def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
             f"{heading} on {HEAD[:7]}.",
             "VERDICT: 1 blocker, 0 major, 2 minor\nSATISFIED: no\nRisk: low — a test fixture",
             "## Criteria\n\n- A draft never merges on its skipped checks: Before merge line 1, its check.\n\n"
+            "<!-- finding: S1 -->\n"
             f"- **{heading} · S1** (minor): a file outside the diff, at `docs/old.md:3`, a file outside the diff\n\n"
-            "The doc.",
+            "The doc.\n<!-- /finding -->",
         ),
         "comments": [
             {

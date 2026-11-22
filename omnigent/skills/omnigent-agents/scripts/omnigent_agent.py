@@ -5,7 +5,7 @@
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--host NAME|ID (claude-cloud child)] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py claude-cloud-env <checkout>   # alias: cloud-env
-    python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>
+    python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--pr N] [--timeout S] -- <command...>
     python3 scripts/omnigent_agent.py ssh <host> --why <purpose> -- <command...>
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
@@ -191,6 +191,8 @@ the command's code from its report's ``EXIT:`` line; it refuses tracked changes 
 before any session exists, reuses ``<main checkout>/.worktrees/claude-cloud-run-<branch>`` as its launch dir,
 or, on a host that runs no cloud session, starts on the host and launch dir of the project's newest cloud
 session elsewhere (``cloud_placement``, read from the server), and exits ``CLOUD_RUN_FAILED`` (125) with the host fallback when the cloud route fails.
+With ``--pr N`` it keeps one session per PR, labelled as a ``--pr`` worker is (so ``reap --merged`` ends it), and sends each
+later run to that session while it is there (``send``, which revives it), else starts it: a PR's heads share one VM, clone and build.
 
 Cloud environments (``claude_environments.py`` beside this file, on the host's Claude Code login, whose token goes
 into a request header only, never an argument list, a log or the output). The project's loop.md line ``Cloud worker:
@@ -3862,13 +3864,21 @@ def cloud_run(
     timeout: float,
     launch: Callable[[list[str]], int],
     server: str = "",
+    pr: PrRef | None = None,
+    kept: Callable[[PrRef], str | None] = lambda pr: None,
 ) -> int:
     """Run ``command`` in a Claude cloud session on ``checkout``'s HEAD and return its exit code,
     else ``CLOUD_RUN_FAILED`` with the reason and the host fallback. ``launch`` runs the launcher's
-    own ``run`` (``command``'s argv), which writes the session's report to the report path."""
+    own ``run`` (``command``'s argv), which writes the session's report to the report path.
+    With ``pr`` the run belongs to that PR's one kept session: ``kept(pr)`` names the live session
+    labelled with it, which gets the run as a ``send`` (reviving it, with its clone and build),
+    else a ``run --pr`` starts one, labelled as a ``--pr`` worker is, so ``reap --merged`` ends it
+    once the PR lands or closes. Without ``pr`` each run is a new ``--no-keep`` session."""
     root, branch, remote, merge, head = run_head(checkout, command)
     try:
-        return cloud_run_route(root, branch, remote, merge, head, command, timeout, launch, server)
+        return cloud_run_route(
+            root, branch, remote, merge, head, command, timeout, launch, server, pr, kept
+        )
     except Interrupted:
         raise  # the caller stopped it: no route failure
     except Exception as e:  # any failure of the route is the route's, never the command's
@@ -4117,6 +4127,8 @@ def cloud_run_route(
     timeout: float,
     launch: Callable[[list[str]], int],
     server: str,
+    pr: PrRef | None = None,
+    kept: Callable[[PrRef], str | None] = lambda pr: None,
 ) -> int:
     """``cloud_run`` past its refusals: the placement, the brief, the ``run`` and the ``EXIT:`` line.
     On a host without the cloud harness the session starts on the host ``cloud_placement`` finds,
@@ -4134,26 +4146,48 @@ def cloud_run_route(
     brief.parent.mkdir(parents=True, exist_ok=True)
     brief.write_text(cloud_run_brief(command, merge, head))
     model = os.environ.get("OMNIGENT_MODEL_CLAUDE_CLOUD_RUN") or CLOUD_RUN_MODEL
-    argv = [
-        *(["--server", server] if server else []),
-        "run",
-        agent,
-        f"claude-cloud-run {branch} {head[:8]}",
-        str(brief),
-        str(report),
-        *(
-            ["--host", placed[0], "--workspace", placed[1]]
-            if placed
-            else ["--workspace", str(place)]
-        ),
-        "--no-keep",
-        "--model",
-        model,
-        "--permission-mode",
-        BYPASS,
-        "--timeout",
-        str(timeout),
-    ]
+    named = f"{pr.repo}#{int(pr)}" if pr is not None and getattr(pr, "repo", "") else str(pr)
+    try:  # a lookup that fails starts a session, as a PR with none does; an ambiguous one is refused
+        session = kept(pr) if pr is not None else None
+    except Fail as e:
+        if e.code == CLOUD_RUN_FAILED:
+            raise
+        session = None
+    except Exception:  # noqa: BLE001
+        session = None
+    if session:
+        argv = [
+            *(["--server", server] if server else []),
+            "send",
+            session,
+            str(brief),
+            str(report),
+            "--pr",
+            named,
+            "--timeout",
+            str(timeout),
+        ]
+    else:
+        argv = [
+            *(["--server", server] if server else []),
+            "run",
+            agent,
+            f"claude-cloud-run {branch} {head[:8]}",
+            str(brief),
+            str(report),
+            *(
+                ["--host", placed[0], "--workspace", placed[1]]
+                if placed
+                else ["--workspace", str(place)]
+            ),
+            *(["--pr", named] if pr is not None else ["--no-keep"]),
+            "--model",
+            model,
+            "--permission-mode",
+            BYPASS,
+            "--timeout",
+            str(timeout),
+        ]
     code = launch(argv)
     if code != 0:
         raise cloud_run_failed(
@@ -9914,6 +9948,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         default=Path("."),
         help="the checkout whose HEAD runs (default: this directory); its branch must be pushed",
     )
+    p.add_argument(
+        "--pr",
+        type=pr_ref,
+        help="keep one session for this PR (labelled as a --pr worker, so `reap --merged` ends it)"
+        " and send each later run to it while it is there, else start one: N or owner/repo#N",
+    )
     p.add_argument("run", nargs=argparse.REMAINDER, metavar="-- COMMAND")
     p = sub.add_parser(
         "claude-cloud-env",
@@ -10338,8 +10378,30 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 raise usage
             # one word is a shell command as written; several are joined as argv
             line = words[0] if len(words) == 1 else shlex.join(words)
+            ref = args.pr
+            if ref is not None and not getattr(ref, "repo", ""):
+                # a bare number names the checkout's repository, never another's worker of the same number
+                named = PrRef(int(ref))
+                named.repo = pr_repo(int(ref), args.checkout)
+                ref = named
+
+            def kept_worker(found: PrRef) -> str | None:
+                workers = pr_workers(Omnigent(args.server) if args.server else Omnigent(), found)
+                if len(workers) > 1:
+                    raise cloud_run_failed(
+                        f"claude-cloud-run: {len(workers)} live workers carry {found.repo}#{int(found)}"
+                        f" ({', '.join(workers)}): end the extras with `reap`, then run it again"
+                    )
+                return workers[0] if workers else None
+
             return cloud_run(
-                args.checkout, line, args.timeout, lambda argv: command(argv, {}), args.server
+                args.checkout,
+                line,
+                args.timeout,
+                lambda argv: command(argv, {}),
+                args.server,
+                ref,
+                kept_worker,
             )
         if args.cmd == "launch-dir":
             launch_dir(args.remote, args.branch, args.env, args.path, args.trust, clone=args.clone)

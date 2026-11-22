@@ -8172,6 +8172,7 @@ def merges(
                 print(exc)
     # after every publication above, which pushes the landed tree's record again when it is the heads' tree
     drop_records([pull["headRefOid"] for pull, *_ in done])
+    prune_evidence()
     numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
     for pull, tree, gated, how in done:
         comment(
@@ -8560,7 +8561,10 @@ def verdict(pr: int, report: Path) -> int:
     for name, severity, path, line, title, body in found:
         said = f"**{heading} · {name}** ({severity}): {title}"
         if not diff.get(path):
-            outside.append(f"- {said}, at `{path}:{line}`, a file outside the diff\n\n{body}")
+            # between markers, so a reader takes the whole finding, bullets and links in its body included
+            outside.append(
+                f"{FINDING_OPEN.format(name)}\n- {said}, at `{path}:{line}`, a file outside the diff\n\n{body}\n{FINDING_CLOSE}"
+            )
             continue
         last = int(line.rpartition("-")[2])  # a range anchors at its last line
         at = min(diff[path], key=lambda candidate: abs(candidate - last))
@@ -10401,6 +10405,275 @@ def drop_records(heads: list[str]) -> None:
             print(
                 f"the record branch {RECORD_BRANCH.format(name)} was not deleted: {' '.join((exc.stderr or '').split())}"
             )
+
+
+# A PR's verifier evidence: each finding's repro script and log, on an orphan branch of origin, one per PR (the engineering-loop skill's verifier.md,
+# Report). A cloud session's proxy pushes branches, as record branches show, so every verifier route can write it.
+# the boundary `verdict` writes around each finding in a review's body, which the loop's previous_findings splits on
+FINDING_OPEN = "<!-- finding: {} -->"
+FINDING_CLOSE = "<!-- /finding -->"
+FINDING_BLOCK = re.compile(r"<!-- finding: [^>]*-->\n(.*?)\n<!-- /finding -->", re.DOTALL)
+# the closing lines of a verifier's review body, which end the last finding in it
+VERDICT_END = re.compile(r"(?:Head|VERDICT|SATISFIED|Risk|Logic change|Scope):")
+EVIDENCE_BRANCH = "verify/pr-{}"
+EVIDENCE_TAG = "verify/pr-{}-evidence"
+# GitHub warns over 50 MB a file on a branch and refuses over 100 MB; a release asset holds 2 GB
+BRANCH_LIMIT = 50 * 1024 * 1024
+ASSET_LIMIT = 2 * 1024**3
+# how long the evidence of a merged or closed PR is kept: long enough for a follow-up issue to reopen its finding
+EVIDENCE_AGE = 90 * 24 * 60 * 60
+EVIDENCE_TRIES = 5
+EVIDENCE_PUSH = re.compile(
+    r"non-fast-forward|fetch first|\(.*(?:stale info|already exists).*\)|rejected"
+)
+
+
+def evidence_slug(title: str) -> str:
+    """A finding's short slug: its title's first words, lowercase, `a-z0-9` and dashes."""
+    return "-".join(re.findall(r"[a-z0-9]+", title.lower()))[:40].strip("-") or "finding"
+
+
+EVIDENCE_LINK = re.compile(r"blob/([0-9a-f]{7,40})/(pass-\d+/[\w.-]+/repro\.sh)")
+
+
+def rerun_command(pr: int, finding: str) -> str | None:
+    """The command that reruns a finding's repro: the script its text links at the evidence commit (`loop.py
+    evidence` prints the link: path at SHA, which never moves), fetched from the evidence branch and run from the
+    current directory, which is the reviewed source checkout, since a repro needs the source and tests the orphan branch
+    lacks. None when the finding links no evidence. Never a path looked up by the finding's title, since two findings
+    with one title have different scripts (the writer suffixes the second's slug)."""
+    if not (link := EVIDENCE_LINK.search(finding)):
+        return None
+    sha, path = link.groups()
+    # through a file, not a pipe: a blob that is missing makes `git show` fail, and bash on its empty input would exit 0
+    return (
+        f"f=$(mktemp) && trap 'rm -f \"$f\"' EXIT && git fetch -q origin refs/heads/{EVIDENCE_BRANCH.format(pr)}"
+        f' && git show {sha}:{path} > "$f" && bash "$f"'
+    )
+
+
+def stage_evidence(log: Path, work: Path) -> tuple[Path | None, bool, int]:
+    """The log as it will be stored, under `work`: as it is up to BRANCH_LIMIT, else gzipped (`log.txt.gz`), else
+    None with True (it goes up as a release asset, gzipped) and its stored size. A file over ASSET_LIMIT is refused."""
+    size = log.stat().st_size
+    if size <= BRANCH_LIMIT:
+        return log, False, size
+    import gzip
+
+    packed = work / "log.txt.gz"
+    with log.open("rb") as src, gzip.open(packed, "wb") as out:
+        shutil.copyfileobj(src, out)
+    after = packed.stat().st_size
+    if after <= BRANCH_LIMIT:
+        return packed, False, after
+    if after > ASSET_LIMIT:
+        raise Refused(
+            f"{log} is {size} bytes ({after} gzipped), over the {ASSET_LIMIT}-byte limit of a release asset"
+        )
+    return packed, True, after
+
+
+def evidence_asset(pr: int, file: Path) -> str:
+    """Upload `file` as an asset of the PR's draft release, tag EVIDENCE_TAG, making the release when there is none;
+    its download URL. Any refusal is a Refused with GitHub's reason: a session may not be allowed to make releases."""
+    tag = EVIDENCE_TAG.format(pr)
+    try:
+        found = github.gh(
+            "api",
+            "repos/{owner}/{repo}/releases?per_page=100",
+            "--jq",
+            f'[.[] | select(.tag_name == "{tag}")][0].upload_url // ""',
+        ).strip()
+        if not found:
+            found = github.gh(
+                "api",
+                "repos/{owner}/{repo}/releases",
+                "-f",
+                f"tag_name={tag}",
+                "-F",
+                "draft=true",
+                "-f",
+                f"name=Evidence of PR #{pr}",
+                "-f",
+                "body=Verifier logs too large for the evidence branch.",
+                "--jq",
+                ".upload_url",
+            ).strip()
+        url = found.split("{", 1)[0]
+        return github.gh(
+            "api",
+            "--method",
+            "POST",
+            f"{url}?name={file.name}",
+            "-H",
+            "Content-Type: application/gzip",
+            "--input",
+            str(file),
+            "--jq",
+            ".browser_download_url",
+        ).strip()
+    except (subprocess.CalledProcessError, OSError) as exc:
+        why = " ".join((getattr(exc, "stderr", None) or str(exc)).split())
+        raise Refused(f"the evidence release {tag} was not written: {why}") from exc
+
+
+def write_evidence(
+    pr: int, number: int, finding: str, repro: Path, log: Path
+) -> tuple[str, list[str], str | None]:
+    """Commit one finding's `pass-<number>/<slug>/repro.sh` and its log to origin's orphan branch `verify/pr-<pr>`
+    (a file over BRANCH_LIMIT gzipped, one still over it as an asset of the PR's draft release, one over ASSET_LIMIT
+    refused after the repro is stored, so the next pass can regenerate the log): the commit's SHA, the paths written
+    and the asset's URL. The slug is unique in the pass (`-2`, `-3`). A push the remote refuses as non-fast-forward is
+    fetched and applied again (two verifiers of one PR write other paths, so nothing conflicts), up to EVIDENCE_TRIES."""
+    branch = EVIDENCE_BRANCH.format(pr)
+    remote = git("remote", "get-url", "origin").strip()
+    env = {**os.environ, **RECORDER}
+    with tempfile.TemporaryDirectory(prefix="evidence-") as tmp:
+        work = Path(tmp)
+        staged = work / "staged"
+        staged.mkdir()
+        refused: Refused | None = None
+        kept, asset, _ = None, False, 0
+        try:
+            kept, asset, _ = stage_evidence(log, staged)
+        except Refused as exc:
+            refused = exc
+
+        def sh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", "-C", str(work / "repo"), *SIGNING, *args],
+                check=check,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        subprocess.run(["git", "init", "-q", str(work / "repo")], check=True, capture_output=True)
+        sh("remote", "add", "origin", remote)
+        for _ in range(EVIDENCE_TRIES):
+            fetched = sh(
+                "fetch",
+                "-q",
+                "--no-tags",
+                "origin",
+                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+                check=False,
+            )
+            if fetched.returncode == 0:
+                sh("checkout", "-q", "-B", "evidence", f"origin/{branch}")
+            else:
+                sh("symbolic-ref", "HEAD", "refs/heads/evidence")
+            slug, taken = evidence_slug(finding), set()
+            base = work / "repo" / f"pass-{number}"
+            taken = {d.name for d in base.iterdir()} if base.is_dir() else set()
+            name, n = slug, 1
+            while name in taken:
+                n += 1
+                name = f"{slug}-{n}"
+            folder = base / name
+            folder.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(repro, folder / "repro.sh")
+            written = [f"pass-{number}/{name}/repro.sh"]
+            if kept is not None and not asset:
+                target = "log.txt.gz" if kept.suffix == ".gz" else "log.txt"
+                shutil.copyfile(kept, folder / target)
+                written.append(f"pass-{number}/{name}/{target}")
+            sh("add", "-A")
+            sh("commit", "-q", "-m", f"Evidence of PR #{pr}, pass {number}: {name}")
+            pushed = sh(
+                "push", "-q", "--no-verify", "origin", f"HEAD:refs/heads/{branch}", check=False
+            )
+            if pushed.returncode == 0:
+                sha = sh("rev-parse", "HEAD").stdout.strip()
+                break
+            if not EVIDENCE_PUSH.search(pushed.stderr):
+                raise Refused(
+                    f"the evidence branch {branch} was not pushed: {' '.join(pushed.stderr.split())}"
+                )
+        else:
+            raise Refused(
+                f"the evidence branch {branch} was refused {EVIDENCE_TRIES} times as not fast-forward"
+            )
+        if refused:
+            raise Refused(
+                f"{refused}; {written[0]} is stored, so the next pass can regenerate the log"
+            )
+        url = None
+        if asset and kept:
+            # named by pass and finding: the PR's one draft release holds every pass's logs, and a repeated asset name is refused
+            named = kept.with_name(f"pass-{number}-{name}.log.gz")
+            kept.rename(named)
+            url = evidence_asset(pr, named)
+    return sha, written, url
+
+
+def evidence(pr: int, number: int, finding: str, repro: Path, log: Path) -> int:
+    """`loop.py evidence`: write one finding's evidence (write_evidence) and print one link line per file, each at
+    the evidence commit's SHA, which never moves, for the finding's thread (the engineering-loop skill's verifier.md, Report)."""
+    sha, written, asset = write_evidence(pr, number, finding, repro, log)
+    site = github.gh("api", "repos/{owner}/{repo}", "--jq", ".html_url").strip()
+    for path in written:
+        print(f"{path}: {site}/blob/{sha}/{path}")
+    if asset:
+        print(f"log (release asset): {asset}")
+    return 0
+
+
+def prune_evidence() -> None:
+    """Delete, from origin, the evidence release, its tag and the evidence branch of each PR that merged or closed more
+    than EVIDENCE_AGE ago, in that order: the branch is what names the PR to the next land, so a release or tag whose
+    deletion failed is retried then, not forgotten. PRs are found from the `verify/pr-*` branches. A host only, since a cloud session can't delete a ref; a refusal is said. A PR whose
+    state can't be read keeps its evidence."""
+    named: set[int] = set()
+    try:
+        listed = git("ls-remote", "--heads", "origin", "refs/heads/verify/pr-*")
+        named |= {
+            int(m[1]) for m in re.finditer(r"refs/heads/verify/pr-(\d+)$", listed, re.MULTILINE)
+        }
+    except (subprocess.CalledProcessError, OSError):
+        pass
+    for pr in sorted(named):
+        branch, tag = EVIDENCE_BRANCH.format(pr), EVIDENCE_TAG.format(pr)
+        try:
+            ended = github.gh(
+                "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}", "--jq", '.closed_at // ""'
+            ).strip()
+            if (
+                not ended
+                or time.time() - datetime.fromisoformat(ended.replace("Z", "+00:00")).timestamp()
+                < EVIDENCE_AGE
+            ):
+                continue
+        except (subprocess.CalledProcessError, OSError, ValueError):
+            continue
+        try:
+            for found in github.gh(
+                "api",
+                "repos/{owner}/{repo}/releases?per_page=100",
+                "--jq",
+                f'.[] | select(.tag_name == "{tag}") | .id',
+            ).split():
+                github.gh("api", "--method", "DELETE", f"repos/{{owner}}/{{repo}}/releases/{found}")
+            try:
+                github.gh(
+                    "api", "--method", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"
+                )
+            except subprocess.CalledProcessError as exc:
+                if not re.search(r"Not Found|does not exist|HTTP 404|HTTP 422", exc.stderr or ""):
+                    raise
+        except (subprocess.CalledProcessError, OSError) as exc:
+            why = " ".join((getattr(exc, "stderr", None) or str(exc)).split())
+            print(
+                f"the evidence release {tag} was not deleted, so its branch stays for the next land: {why}"
+            )
+            continue
+        try:
+            git("push", "-q", "--no-verify", "origin", f":refs/heads/{branch}")
+        except subprocess.CalledProcessError as exc:
+            if "remote ref does not exist" not in (exc.stderr or ""):
+                print(
+                    f"the evidence branch {branch} was not deleted: {' '.join((exc.stderr or '').split())}"
+                )
 
 
 def stated(
