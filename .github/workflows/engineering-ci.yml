@@ -4,8 +4,9 @@ on:
   # Every PR, since `qualify` is a required check: a skipped run never reports, so GitHub never merges it (#394).
   # Drafts too: the Mergify merge queue tests each batch as a draft PR from `mergify/merge-queue/<id>` into main, and
   # this trigger runs `qualify` on it, GATE_BASE its base. No `push` trigger on those branches, which would run it twice.
+  # The tests run once per tree, on that batch: a PR head runs only the cheap steps, and its `qualify` still reports.
   pull_request:
-  # A push to main runs the tests it touches, like a PR; the full suite runs nightly (mise check-fast, tools/affected_tests.py).
+  # A push to main runs the cheap checks: the batch that made its tree already ran the tests.
   push:
     branches:
       - main
@@ -38,19 +39,24 @@ jobs:
       - run: mise install
       - run: uv sync --frozen
       # The test map (tools/affected_tests.py): the newest the nightly saved. Missing, the selector falls back to the name match.
-      - if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+      - if: startsWith(github.head_ref, 'mergify/merge-queue/')
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .test-map
           key: test-map-restore
           restore-keys: test-map-
-      # A PR or a push runs lint and the tests it touches; the nightly schedule runs the full suite, with a context per test.
+      # A PR or a push runs the cheap checks: vendor check, lint, config and repo checks.
       - if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        run: mise run check-fast
+      # Only a Mergify batch's draft PR runs the tests, the ones the batch touches against main (#1821). A step-level
+      # `if`, never a job-level one: a PR head's `qualify` must still run and report success, or Mergify never queues it.
+      # The prefix is `.mergify.yml`'s `queue_branch_prefix`.
+      - if: startsWith(github.head_ref, 'mergify/merge-queue/')
         env:
-          GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          GATE_BASE: ${{ github.event.pull_request.base.sha }}
           # one file per run: a check that starts several pytest runs keeps the last one's
           PYTEST_ADDOPTS: --junitxml=.qualify/junit.xml
-        run: mise run check-fast
+        run: mise run test-batch
       - if: github.event_name == 'workflow_dispatch' && inputs.tests != ''
         env:
           TESTS: ${{ inputs.tests }}
