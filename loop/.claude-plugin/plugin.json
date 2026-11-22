@@ -1,0 +1,12 @@
+{
+  "name": "loop",
+  "version": "0.1.0",
+  "description": "The engineering loop: a lead, workers and an independent verifier take a change from intent through a spec, build, gates and proof to a landed PR.",
+  "author": {
+    "name": "Krzysztof Zarzycki"
+  },
+  "dependencies": [
+    "gatekeeper",
+    "github"
+  ]
+}

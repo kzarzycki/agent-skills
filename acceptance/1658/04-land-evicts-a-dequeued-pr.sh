@@ -1,0 +1,4 @@
+#!/bin/sh
+# #1658 Before merge line 4: a PR Mergify dequeued goes back to draft with land error, both labels off and an eviction comment.
+set -e
+exec uv run pytest -q -p no:cacheprovider "engineering/tests/test_approvals_mergify_queue.py::test_land_evicts_a_dequeued_pr"
