@@ -74,11 +74,16 @@ class InstalledFixture:
 
 
 def source_manifest() -> dict[str, str]:
-    """Every skill file an install deploys: engineering's and those of the packages it depends on."""
-    manifest: dict[str, str] = {}
+    """Every skill file an install deploys: engineering's and those of the packages it depends on. APM deploys
+    skills into one directory, so a folder name two packages hold is deployed from the last one only, whole."""
+    deployed: dict[str, dict[str, str]] = {}
     for package in (PACKAGE, *_dependencies()):
-        manifest |= file_manifest(package / "skills")
-    return manifest
+        skills = package / "skills"
+        for folder in sorted(path for path in skills.iterdir() if path.is_dir()):
+            deployed[folder.name] = {
+                f"{folder.name}/{path}": digest for path, digest in file_manifest(folder).items()
+            }
+    return {path: digest for files in deployed.values() for path, digest in files.items()}
 
 
 def _catalog_state(root: Path) -> dict[str, str]:

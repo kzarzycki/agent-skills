@@ -21,7 +21,6 @@ def land(
     """merges() of one PR on `branch`: the `gh pr merge` calls it makes."""
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(approvals.github, "gh", lambda *args, **_k: calls.append(args) or "")
-    monkeypatch.setattr(approvals, "land_body", lambda _pull: None)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
     monkeypatch.setattr(approvals, "git", lambda *args: TREE if args[0] == "rev-parse" else "")
     monkeypatch.setattr(approvals, "publish", lambda *_a, **_k: None)
