@@ -1,5 +1,5 @@
-"""`mise run check-fast`'s test step (#1609): a selector that fails or prints nothing fails the step, since pytest
-given no targets would run the whole suite and still pass."""
+"""`mise run test-batch`, the tests `qualify` runs on a Mergify batch (#1609, #1821): a selector that fails or prints
+nothing fails the step, since pytest given no targets would run the whole suite and still pass."""
 
 import os
 import subprocess
@@ -8,18 +8,15 @@ from pathlib import Path
 
 import pytest
 
-# ponytail: check-fast runs no tests until the suite runs whole in a few minutes (#1653); these pin the selection step
-# #1653 brings back, so they come back with it.
-pytestmark = pytest.mark.skip(reason="check-fast runs no tests until #1653")
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_step(tmp_path: Path, selector: str) -> subprocess.CompletedProcess[str]:
-    """check-fast's lines after the vendor check and before lint, run by sh with `uv` stubbed: `uv run python
-    tools/affected_tests.py` runs `selector` (a shell snippet), any other `uv run` logs its arguments."""
-    run = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]["check-fast"]["run"]
-    lines = [line for line in run.splitlines() if not line.startswith("mise run ")]
+    """test-batch's script, run by sh with `uv` stubbed: `uv run python tools/affected_tests.py` runs `selector` (a
+    shell snippet), any other `uv run` logs its arguments."""
+    lines = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]["test-batch"][
+        "run"
+    ].splitlines()
     stub = tmp_path / "bin"
     stub.mkdir()
     (stub / "uv").write_text(
@@ -55,4 +52,7 @@ def test_a_selection_runs_pytest_on_its_targets(tmp_path: Path) -> None:
     done = run_step(tmp_path, "echo tests/test_a.py; echo tests/test_b.py; exit 0")
     assert done.returncode == 0, done.stderr
     [line] = (tmp_path / "ran.log").read_text().splitlines()
-    assert line.endswith("pytest -q -m not live_agent tests/test_a.py tests/test_b.py")
+    assert line.endswith(
+        "pytest -q -m not live_agent and not slow -p tools.gate_workers -n auto --dist loadfile"
+        " tests/test_a.py tests/test_b.py"
+    )

@@ -2608,6 +2608,94 @@ def still_open(og: Omnigent, sid: str) -> str:
     return "; its question is still open (relay --answer answers it): " + "; ".join(asks)
 
 
+ISSUE_REF = re.compile(
+    r"(?:(?<![\w.-])([\w.-]+/[\w.-]+))?#(\d+)\b|github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)"
+)
+FAMILY_QUERY = (
+    """query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { %s } }"""
+)
+FAMILY_NODE = (
+    "n%d: issueOrPullRequest(number: %d) { __typename ... on Issue {"
+    " parent { number } subIssues(first: 100) { nodes { number } } } }"
+)
+
+
+def issue_refs(text: str, repo: str) -> set[int]:
+    """The issue and PR numbers ``text`` names in ``repo``: ``#N``, ``repo#N`` or a GitHub URL;
+    another repository's are left out."""
+    return {
+        int(m[2] or m[4])
+        for m in ISSUE_REF.finditer(text)
+        if not (m[1] or m[3]) or (m[1] or m[3]).lower() == repo.lower()
+    }
+
+
+def off_request(og: Omnigent, sid: str, text: str) -> str:
+    """A warning when ``text`` names an issue outside lead ``sid``'s request, else empty. The
+    request is the issues the lead's first message (its brief) names; a named issue is in it when
+    it is one of them, their epic (parent), one of their sub-issues, or a sub-issue of the same
+    epic. A PR, an issue in another repository, a session that is no lead, and anything that
+    cannot be read stay quiet, since a fix to a PR the lead owns is a normal message and a false
+    warning costs more than a missed one. One GraphQL read, only when ``text`` names a number the
+    brief does not."""
+    # ponytail: the brief's own refs are the request; an epic's grandchildren and a lead's later
+    # PRs are not traced, which errs on quiet. Read the lead's PRs (omni.pr, its report) if it misses.
+    try:
+        if (og.info(sid).get("labels") or {}).get("omni.role") != "lead":
+            return ""
+        brief = next((text_of(i) for i in og.first_items(sid, 5) if i.get("role") == "user"), "")
+        repo = workspace_repo(og, sid)
+        own = issue_refs(brief, repo) if repo else set()
+        named = issue_refs(text, repo) - own if own else set()
+        if not named:
+            return ""
+        owner, name = repo.split("/")
+        nodes = " ".join(FAMILY_NODE % (n, n) for n in sorted(own | named))
+        found = json.loads(
+            gh(
+                "api",
+                "graphql",
+                "-f",
+                f"query={FAMILY_QUERY % nodes}",
+                "-F",
+                f"owner={owner}",
+                "-F",
+                f"name={name}",
+            )
+        )["data"]["repository"]
+    except Exception:  # noqa: BLE001 - unread: say nothing
+        return ""
+
+    def parent(n: int) -> int | None:
+        return ((found.get(f"n{n}") or {}).get("parent") or {}).get("number")
+
+    epics = {e for o in own if (e := parent(o))}
+    family = (
+        own
+        | epics
+        | {
+            s["number"]
+            for o in own
+            for s in ((found.get(f"n{o}") or {}).get("subIssues") or {}).get("nodes") or []
+        }
+    )
+    stray = [
+        n
+        for n in sorted(named)
+        if (found.get(f"n{n}") or {}).get("__typename") == "Issue"
+        and n not in family
+        and parent(n) not in own | epics
+    ]
+    if not stray:
+        return ""
+    return (
+        f"warning: {', '.join(f'#{n}' for n in stray)} is outside lead {sid}'s request"
+        f" ({', '.join(f'#{n}' for n in sorted(own))}) and its epic; a lead takes one request or"
+        " epic, so an unrelated item goes to a fresh lead."
+        " Sent anyway."
+    )
+
+
 def relay(
     og: Omnigent,
     sid: str,
@@ -10826,6 +10914,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 return 0
             print(og.read_file(sid, args.path))
             return 0
+        if args.cmd in ("relay", "send") and (
+            warning := off_request(
+                og,
+                args.session,
+                text_or_file(args.message if args.cmd == "relay" else args.brief)[0],
+            )
+        ):
+            print(warning, file=sys.stderr, flush=True)
         if args.cmd == "relay":
             if not (args.answer or args.source) and asks_owner(text_or_file(args.message)[0]):
                 raise Fail(
