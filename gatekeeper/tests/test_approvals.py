@@ -6297,8 +6297,10 @@ def test_a_record_made_in_one_worktree_is_reused_from_another(
     assert approvals.reusable("c" * 40) is None
 
 
-def published_on_a(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
-    """Host A records and publishes a pass of `true` on a pushed head; the test then runs in host B, a clone made
+def published_on_a(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gate: tuple[str, ...] = ("true",)
+) -> str:
+    """Host A records and publishes a pass of `gate` (default `true`) on a pushed head; the test then runs in host B, a clone made
     before that head was pushed, with no record of it. Returns the head."""
     origin = tmp_path / "origin.git"
     git_in(tmp_path, "init", "-q", "--bare", str(origin))
@@ -6314,7 +6316,7 @@ def published_on_a(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": head})
     monkeypatch.chdir(a)
-    monkeypatch.setattr(approvals, "LOCAL_CI", ["true"])
+    monkeypatch.setattr(approvals, "LOCAL_CI", list(gate))
     assert approvals.main(["local-ci", "--record"]) == 0
     monkeypatch.chdir(b)
     return head
@@ -9370,11 +9372,13 @@ def pushed_from_a_cloud(
     return head, capsys.readouterr().out
 
 
-def published_on_a_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, post: Any) -> str:
+def published_on_a_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, post: Any, gate: tuple[str, ...] = ("true",)
+) -> str:
     real_refs(monkeypatch)
     hosted = approvals.post_status
     monkeypatch.setattr(approvals, "post_status", post)
-    head = published_on_a(tmp_path, monkeypatch)
+    head = published_on_a(tmp_path, monkeypatch, gate)
     monkeypatch.setattr(approvals, "post_status", hosted)
     git_in(tmp_path / "b", "fetch", "-q", "origin")
     return head
@@ -9429,6 +9433,44 @@ def test_a_pass_from_a_host_or_a_cloud_session_is_pushed_and_reused_by_another_c
     assert {(s["context"], s["state"], s["description"]) for s in hub[head]} == {
         ("gate", "success", line)
     }
+
+
+def test_gate_record_reuses_origins_record_only_for_the_same_tree_and_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1822: the verifier reads origin's record of the gate on the head's tree instead of running it again; a head
+    with another tree, or another command (another test list), has no record and is run. The gate sets a variable,
+    so the record matches only with the env line the command sets. Clone B's own record file never counts, since a
+    worker sharing the clone writes it."""
+    gate = "GATE_TIER=full true"
+    head = published_on_a_with(tmp_path, monkeypatch, no_status, ("GATE_TIER=full", "true"))
+    capsys.readouterr()
+    assert approvals.main(["gate-record", head]) == 0
+    assert f"as {branch_of(head, gate)} at 2026-" in capsys.readouterr().out
+    assert approvals.main(["gate-record", head, "--", "GATE_TIER=full", "true"]) == 0
+    assert f"as {branch_of(head, gate)} at 2026-" in capsys.readouterr().out
+    assert approvals.main(["gate-record", head, "--", "pytest", "tests/test_other.py"]) == 1
+    assert "no record of `pytest tests/test_other.py`" in capsys.readouterr().out
+    b = tmp_path / "b"
+    git_in(b, "checkout", "-q", head)
+    (b / "changed.txt").write_text("another tree\n")
+    git_in(b, "add", "changed.txt")
+    git_in(
+        b,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.com",
+        "commit",
+        "-q",
+        "-m",
+        "another tree",
+    )
+    other = git_in(b, "rev-parse", "HEAD").strip()
+    approvals.recorded(approvals.tree_of(other), gate).parent.mkdir(parents=True, exist_ok=True)
+    approvals.recorded(approvals.tree_of(other), gate).write_text('{"exit": 0}')
+    assert approvals.main(["gate-record", other]) == 1
+    assert f"no record of `{gate}` on tree {approvals.tree_of(other)}" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("risk", [(), ("risk:high",)], ids=["low", "high"])

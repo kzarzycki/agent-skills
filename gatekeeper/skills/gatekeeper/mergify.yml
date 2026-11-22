@@ -10,6 +10,9 @@
 # status, so the PR stops matching and leaves the queue. A PR Mergify drops gets `loop:dequeued`, which the next
 # `land` evicts back to draft.
 #
+# A cloud session's GitHub proxy refuses the status write: there `land` comments a `Queued for Mergify` record naming the
+# head, and the repo's `.github/workflows/land-status.yml` posts `land` on that head while it is still the PR's.
+#
 # No CI check is named here: Mergify reads the base's required checks from its rules (`branch_protection_injection_mode`,
 # default `queue`) and requires them on the PR to queue it and on the draft PR to merge it. So the file suits any repo
 # whose default branch is `main`, whose main requires its CI check and does not require `land` itself (`land` never
