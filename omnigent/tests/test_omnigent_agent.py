@@ -10702,12 +10702,12 @@ def test_report_head_keeps_little_of_a_long_report() -> None:
     assert omnigent_agent.wait_of(head) == "verifier"
 
 
-def test_the_cloud_preamble_forbids_a_question_tool_a_page_and_a_session_link() -> None:
-    """Each waits on a prompt nobody in the cloud sees, or leaks a session into a public repo."""
+def test_the_cloud_preamble_forbids_a_question_tool_and_a_page() -> None:
+    """Each waits on a prompt nobody in the cloud sees."""
     preamble = omnigent_agent.PR_PREAMBLE
     assert "never call an interactive question tool, since its prompt waits on someone" in preamble
     assert "Never publish a page or artifact, since it waits on a permission nobody" in preamble
-    assert "co-author line only, with no session link, since the commit reaches a" in preamble
+    assert "session link" not in preamble
 
 
 def test_the_cloud_preamble_reads_issues_and_prs_through_rest() -> None:
@@ -10881,7 +10881,7 @@ def test_every_brief_points_to_the_role_file_s_long_run_rule_and_carries_no_copy
     assert "the run is waited on within the same turn" in rule
     assert "stops at 10 minutes" in rule
     assert (
-        "Never end a turn saying you wait, since a background command's completion never wakes you"
+        "Never end a turn saying you wait on a detached run alone, since its end never wakes you"
         in rule
     )
 
@@ -11286,10 +11286,22 @@ def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Pat
     """The launcher the long-run rule names starts the command in its own session and returns at once."""
     rule = long_run_rule()
     assert f"`{omnigent_agent.DETACH} sh -c" in rule
-    assert "never short polls" in rule and "up to a total budget you state" in rule
     flat = " ".join(rule.split())  # the relocated clauses, each the only copy now
+    # one wake per run: one tracked wait as long as the run, never a poll loop (waste audit, finding 1)
+    assert (
+        "--budget <the run's expected length>` started as a background call your harness tracks"
+        in flat
+    )
+    assert "Never a short `wait-for`, an `until grep` or a `sleep` loop" in flat
+    assert (
+        "up to a total budget you state" not in flat
+        and "a sleep loop that checks the log" not in flat
+    )
     assert "starts detached (in its own session)" in flat
-    assert "Where that script is not at hand, each call blocks close to the tool's limit" in flat
+    assert (
+        "Where the harness tracks no background call, each foreground `wait-for` blocks close to the tool's limit"
+        in flat
+    )
     assert "a gate your role file says to run bare" in flat
     pid, log = tmp_path / "pid", tmp_path / "log"
     script = f'echo $$ > {pid}; sleep 1; (exit 3); echo "exit $?" > {log}'
@@ -13537,7 +13549,10 @@ def test_an_open_pr_a_lead_waits_on_costs_one_github_read_a_minute(
         ),
     )
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
-    assert len(calls) == 1
+    waits = [c for c in calls if c[:2] == ("pr", "view")]
+    # beside it, a lead quiet an hour costs one verdict-stall read per VERDICT_STALL_POLL (waste audit, finding 7)
+    stalls = [c for c in calls if c[:1] == ("api",)]
+    assert len(waits) == 1 and len(stalls) <= 1 and len(calls) == len(waits) + len(stalls)
 
 
 @pytest.mark.parametrize("labelled", [False, True])

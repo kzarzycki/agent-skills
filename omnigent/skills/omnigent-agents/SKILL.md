@@ -64,7 +64,7 @@ reaped (idle over an hour) is revived in place first (`retry_session`, operating
 skill), keeping its conversation. Exit 4 means the revive failed or the answer did not
 land: start a fresh run whose brief carries the question and the answer.
 
-**Follow-ups** (a fix pass, a rebase) are a fresh run whose brief points at the earlier
+**Follow-ups** (a fix pass, a merge of the base) are a fresh run whose brief points at the earlier
 report: after an idle hour the cache is cold, so the report is cheaper than the old
 transcript. A `run` may reuse the report path: a report already there counts only once
 rewritten after the launch. `start` refuses one, since the `wait` after it has no launch
@@ -221,9 +221,8 @@ with `wait <session> <report> --pr <n>`. The preamble also tells the
 worker that its checkout is the branch checked out in the workspace the session started from,
 not necessarily the PR's; that a foreground command there stops at 10 minutes, so a long one
 runs detached and is polled within the same turn, is the role file's long-run rule. It forbids an interactive
-question tool and a published page, since each waits on a prompt nobody in the cloud answers,
-and ends each commit message with the co-author line and no session link, since the commit
-reaches a public repository. A host without the cloud
+question tool and a published page, since each waits on a prompt nobody in the cloud answers.
+A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
 A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, not its path: the VM has none of this host's paths, and a target repo without the pack installed holds no copy, so a path would read nothing. The skill's other files that the role names may not be in the checkout either; the brief says so.
@@ -285,8 +284,9 @@ reported it, and `reasoning_effort`), since a Codex child's rollout sits under a
 `AGENT_SIGNATURE=` line `start` puts atop a brief names the model the server took for the session (its
 `model_override`, `?` for the harness default), never the id asked for.
 
-**Host steps over SSH.** Run a step on another host as `python3 scripts/omnigent_agent.py ssh <host> --why
-<purpose> -- <command...>`, never a bare `ssh`, since a host whose SSH layer asks the owner to approve each
+**Host steps over SSH.** Run a short read-only check or setup step on another host (a log, a status, a load
+check; never what orchestrating-agents' rule *Host work* lists) as `python3 scripts/omnigent_agent.py ssh <host>
+--why <purpose> -- <command...>`. Use this call, never a bare `ssh`, since a host whose SSH layer asks the owner to approve each
 connection (an SSH check) shows the owner a login link with no word of who asks or why. It runs `ssh -o
 BatchMode=yes <host> <command>` (one word after `--` is a shell command as written; several are joined as
 argv, quoted for the remote shell) and passes its output and exit code through. When ssh prints the check's
@@ -311,7 +311,8 @@ its starter, so the path rides in the brief.
 
 **Waiting on a run or a PR.** `python3 scripts/omnigent_agent.py wait-for --log <log> [--pid
 <n|file>]`, `--pid <n|file>` or `--pr N [--until checks|merged|closed|gate|verdict]` blocks up to `--budget`
-seconds (default 570, under a 10-minute tool call), printing nothing until it ends: on the log's
+seconds (default 570, under a 10-minute tool call; pass the run's expected length when the harness tracks the call
+in the background, so it wakes you once, never a loop of short calls), printing nothing until it ends: on the log's
 `exit <n>` line with that code, the line before it and, on red, the last 30 lines (with `--pid`,
 only an `exit` line after the `run <pid>` line naming that run, which the detached recipe writes
 first, since a reused log path still holds the previous run's line; a log alone is trusted as
@@ -739,6 +740,10 @@ The first head seen for a repo is only stored, so a start reports no old merge; 
 is kept in the state (`heads`), so a restart reports a landing made while it was down, and only
 that one. A workspace outside a checkout is not watched; a failed read is logged once and tried
 again. The event is for whoever owes the step after a landing (the chief of staff under `--console`), not for other leads: they read the new base on their next fetch, since a notice wakes each with its whole context. The lead's words play no part, so `route` and `lead.md` stay as they are.
+With `--console`, a followed lead quiet an hour whose PR (its `omni.pr` label or a PR its wait names) has a verdict on
+its current head over an hour old with no push since, and, for a satisfied one, no go (a green `owner` or `land` status,
+or `loop:queued`), gets one `news` line per PR and head naming the step it owes (`verdict_stall`), since nothing else
+picks up "verdict in, fix or go needed" overnight; each such PR is read at most once in 10 minutes.
 
 For the same repos it also runs `check stalled`, the landing checks' listing (from their copy installed beside this
 skill, so it judges by the base's code), at most once an hour per repo (`STALLED_SECONDS`), in the first of their leads' workspaces that is
@@ -820,6 +825,8 @@ offline while idle raises nothing.
 | `stalled`: a PR `check stalled` lists, once per head | rule | act: the chief of staff lands it (`land N --only`) or flags it |
 | `archived` | rule | its line and state entry dropped; no post |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
+| a `STILL WORKING` that hands back to its manager: a `Handback: #<n> <what>` line, else prose saying a PR is ready (`#12 READY`, `READY FOR VERIFY`) or a PR's step is the manager's (`#12 ... is yours`, `#12 ... over to you`) (#1753) | rule | act, to the session it notifies, with what it hands back; an exact repeat: recorded |
+| a `STILL WORKING` whose wait does not wake it (#1753): a wait word and a pid, a pid file or a log, output or pid path anywhere in it, naming no `--notify` or `LOOP_NOTIFY`, no child or CI; or, in a cloud session, a background subagent; no `Waits:` line either way | rule | the untracked-wait nudge (`LEAD_UNTRACKED`: wait on it in the turn, or restart it as a harness-tracked background task or detached with `LOOP_NOTIFY`); the same wait again after it: act |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
 | a quiet end again with no progress since the nudge | rule | act |
 | `deadline` | rule | a named wait: act, or with no live runner (nothing can end its wait) the revive, which acts only when it fails; unknown: the nudge, then act at the deadline after it; parked: none |
@@ -966,7 +973,7 @@ It archives the session, a sub-agent too: Omnigent leaves the runner it shares w
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
-each and `already archived` for one finished before, and prints which it kept. It keeps a `--pr` worker, `--force` included, until its PR is merged or closed, saying why: `start --pr`
+each and `already archived` for one finished before, and prints which it kept. It keeps an idle `--pr` worker, `--force` included, until its PR is merged or closed, saying why: `start --pr`
 labels the session `omni.pr=<owner>/<name>#<n>` (a start whose label fails archives the session and fails), and
 `reap` looks the PR up in that repository, never the caller's checkout; a PR it can't read keeps the worker. A verifier
 started with `--pr` carries the same label, so its spend groups by PR, but neither `reap` nor `reap --merged` holds or finds one
@@ -979,7 +986,9 @@ to come from a finished one, so a child whose `run` died is re-attached with `wa
 which finishes it on return, never reaped. Run `reap --children
 "$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` only once every child's report is in or the child is
 given up, as the last step before your own report. Never `DELETE` a session: it erases the
-transcript.
+transcript. `start` refuses a second worker or verifier of a PR while one with the same `omni.role` and `omni.pr` runs, naming it,
+since a twin repeats the first's whole run on the same head; `reap --force <that session>` stops and finishes the running
+one, its open PR included, and the start then goes on. An idle kept `--pr` worker is no twin: `start --pr` replaces it.
 
 **Permission prompts.** An agent's workspace is the directory it was started in, so its
 reads there, its children's checkouts included, never prompt, in any harness; its writes

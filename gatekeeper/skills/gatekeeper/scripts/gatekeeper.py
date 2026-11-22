@@ -27,7 +27,6 @@
     uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's gate on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; else `check`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
-    uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
     uv run scripts/approvals.py heavy --plan               # the host's gate slot count and the limit that set it
 
@@ -201,13 +200,7 @@ from origin's default branch (policy_ref), steps 3 and 4 make no worktree: the h
 --write-tree`), a recorded pass of every gate step on the batch's tree is reused, and with none `land` refuses naming
 the tree, as it refuses a `pre_land` it has no checkout to run in; it never runs the gate there.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
---match-head-commit`), with the body the repo's squash default would write less every session link line (a
-`Claude-Session:` line, or a line that is only a claude.ai session link), since a cloud session's harness adds its link
-to each commit, PR body and comment and the PR may be public, first dropping those lines from the PR's own body and
-comments on GitHub where it can edit them (`check merge` names any it can't): under the commit-messages default the
-body GitHub builds from the commits (one: its message after the subject, its co-author lines moved to the end;
-several: each message as a `* ` item, then `---------` and their co-authors), under the PR-description default the
-PR's body, and under the blank default none. A merge GitHub refuses, or leaves unmerged
+--match-head-commit`), with the body the repo's squash default writes. A merge GitHub refuses, or leaves unmerged
 (a merge queue the base's rules don't name, such as classic branch protection's, only queues it, to merge later on a
 tree no gate saw), stops there: that PR and those
 after it wait for the next land. Then it fetches and compares the base's tree with the gated tree. Equal: the pass is
@@ -268,8 +261,7 @@ a PR the queue merged (a `land <pr>` naming it, or a bare `land`, which reads ev
 queue` with the links of the runs on that commit (the queue's `merge_group` CI), and finishes its worker sessions as
 step 5 does, then takes the label off, so a trail that failed (said, never failing the land) is written by the next
 land. The queue merges with its own `merge_method` and writes the squash message from the repo's squash
-default, which `land` neither sets nor overrides: session link lines stay out of commits through the `commit-msg`
-hook, and the PR's body and comments lose theirs before it is enqueued, as in step 5. A head matching
+default, which `land` neither sets nor overrides, as in step 5. A head matching
 `land.merge_commit_heads` is refused unless the queue's method is `MERGE`, since the queue merges every entry one way;
 `land.signed_squash_to` is refused, since GitHub signs the queue's commit. A cloud session takes this path too, with
 no `land.signing_key_env`, since GitHub signs: REST answers every step (auto-merge off dequeues; the PR's queue state
@@ -281,7 +273,7 @@ With `land.queue: mergify` in the policy (gatekeeper.md's `land:` section), on a
 queue (they win), a Mergify queue that `.mergify.yml` configures merges instead, which needs a repo no organisation owns
 no GitHub queue for: `land` takes no lock, runs no gate and merges nothing. It judges the same candidates (step 2) with
 the base's code, and hands each to Mergify by posting the `land` status (success, `Queued for Mergify at <sha>`) on its
-head and adding `loop:queued`, its session link lines dropped first as in step 5; `.mergify.yml`'s queue conditions
+head and adding `loop:queued`; `.mergify.yml`'s queue conditions
 read both, and the status binds the hand-over to that head, so a push leaves them unmet. A PR already carrying the label
 with `land` green on its head is reported queued and left alone. Mergify tests each batch as a draft PR on top of the
 base in CI, retries a red one once itself and squash-merges on green; a PR it dequeues (red again, or conflicting) gets
@@ -751,6 +743,10 @@ QUEUE_POLL = 300
 RECHECK = 300
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
 LOW_POLL, LOW_QUOTA = 600, 0.1
+# the longest poll of a wait whose state stays the same round after round: QUEUE_POLL doubles up to it (#1771). With
+# POLL_JITTER it stays inside the twice-300 s window a `land` event is live in (events.md) and under WAITER_STALE, so a
+# quiet wait never reads as a dead one; a lock that moves is still seen at once, since the sleep checks it each POLL
+QUIET_POLL = 480
 POLL_JITTER = 60  # most seconds of random delay added to a land --wait poll
 # a wait that meets this many network failures in a row (NETWORK) fails with the last one
 MISSES = 3
@@ -1350,40 +1346,58 @@ def ineligible(
 
 
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
-    """Whether the PR needs no verifier review: a `bot.<name>` section of gatekeeper.md names it, and every file it changes
-    matches one of that section's `paths` (lock and manifest files). A section names a bot by its login, or, with
-    `branch`, a head-branch prefix (`renovate/`), for an updater that opens its PRs under a person's token; then the
-    head must be this repository's own branch, since a fork's PR may name any branch and only a writer pushes one
-    here. GitHub's GraphQL spells a bot's login without the `bot` REST and the setting write, so both compare
-    without it; a person can't hold a bot's login, so for a login the author's type is checked too. Every commit's
-    author must be the PR's author, and its committer the author or no account (GitHub's web-flow committer on a
-    bot's or an API's commits), since another person's push or rebase of its branch is a change no verifier saw. A
-    `Co-Authored-By:` trailer names no one here: it is text the committer wrote in the message, not another account's
-    push, and GitHub resolves it into the commit's `authors` list, so only the commit's own `author` is read. A
-    renamed or copied file refuses it, since GraphQL gives only the new path, which may hide code moved onto a lock
-    file's name, and so does the label `verify`, which asks for the review (a major update). No entry, or more files
-    or commits than the gate reads: no exemption."""
+    """Whether the PR needs no verifier review: a `bot.<name>` section of gatekeeper.md names it (exempting)."""
+    return exempting(pull, loop) is not None
+
+
+def exempting(pull: dict[str, Any], loop: str | None) -> dict[str, Any] | None:
+    """The `bot.<name>` section of gatekeeper.md that names the PR and covers every file it changes with one of its
+    `paths` (lock and manifest files), or None. A section names a bot by its login, or, with `branch`, a head-branch
+    prefix (`renovate/`), for an updater that opens its PRs under a person's token; then the head must be this
+    repository's own branch, since a fork's PR may name any branch and only a writer pushes one here. GitHub's GraphQL
+    spells a bot's login without the `bot` REST and the setting write, so both compare without it; a person can't
+    hold a bot's login, so for a login the author's type is checked too. Every commit's author must be the PR's
+    author, and its committer the author or no account (GitHub's web-flow committer on a bot's or an API's commits),
+    since another person's push or rebase of its branch is a change no verifier saw. Under a `branch` section an
+    author with no account counts as the PR's author too, as a committer does: a cloud worker commits as a git
+    identity GitHub ties to no one, and only a writer can push that branch here. A `Co-Authored-By:` trailer names
+    no one here: it is text the committer wrote in the message, not another account's push, and GitHub resolves it
+    into the commit's `authors` list, so only the commit's own `author` is read. A renamed or copied file refuses
+    it, since GraphQL gives only the new path, which may hide code moved onto a lock file's name, and so does the
+    label `verify`, which asks for the review (a major update). No entry, or more files or commits than the gate
+    reads: no exemption."""
     labels = {label["name"] for label in pull["labels"]["nodes"]}
     if moved_files(pull) != [] or "verify" in labels:
-        return False
+        return None
     author, files = pull.get("author") or {}, paths(pull)
     if not files:
-        return False
+        return None
     login = (author.get("login") or "").removesuffix("[bot]").lower()
     commits = pull.get("authored") or {}
     nodes = commits.get("nodes") or []
     if not login or not nodes or (commits.get("totalCount") or 0) > len(nodes):
-        return False
-    for node in nodes:
-        commit = node["commit"]
-        wrote = ((commit.get("author") or {}).get("user") or {}).get("login") or ""
-        committer = ((commit.get("committer") or {}).get("user") or {}).get("login")
-        if any(
-            name.removesuffix("[bot]").lower() != login
-            for name in (wrote, committer)
-            if name is not None
-        ):
-            return False
+        return None
+    # each commit's author and committer login; None for no GitHub account
+    accounts = [
+        tuple(
+            ((node["commit"].get(role) or {}).get("user") or {}).get("login") or None
+            for role in ("author", "committer")
+        )
+        for node in nodes
+    ]
+
+    def by(bot: dict[str, Any]) -> bool:
+        """Whether every commit is the PR author's; under a `branch` section an author with no account is too."""
+        for wrote, committer in accounts:
+            if wrote is None and "branch" not in bot:
+                return False
+            if any(
+                name.removesuffix("[bot]").lower() != login
+                for name in (wrote, committer)
+                if name is not None
+            ):
+                return False
+        return True
 
     def names(bot: dict[str, Any]) -> bool:
         if "branch" in bot:
@@ -1393,11 +1407,102 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
             and bot["login"].removesuffix("[bot]").lower() == login
         )
 
-    return any(
-        names(bot)
-        and all(any(fnmatch.fnmatch(path, glob) for glob in bot["paths"]) for path in files)
-        for bot in settings(loop).get("bot", [])
+    return next(
+        (
+            bot
+            for bot in settings(loop).get("bot", [])
+            if names(bot)
+            and by(bot)
+            and all(any(fnmatch.fnmatch(path, glob) for glob in bot["paths"]) for path in files)
+        ),
+        None,
     )
+
+
+# the package a pack bump moves: its `apm.yml` dependency names it, and a bump changes only its `ref:` line
+PACK = "kzarzycki/agent-skills/engineering"
+# a release the pack tagged: a version or a range of one (`^0.36.0`, `0.36.0`), or the tag (`engineering-v0.36.0`),
+# never a branch or a commit, which no release review saw
+RELEASE = r"(?:(?:\^|~|>=|=)?v?\d+\.\d+\.\d+|engineering-v\d+\.\d+\.\d+)"
+REF_LINE = re.compile(r"^[ \t]*(?:-[ \t]+)?ref:[ \t]*(['\"]?)" + RELEASE + r"\1[ \t]*(?:#.*)?$")
+ITEM_LINE = re.compile(r"^([ \t]*)-[ \t]+")
+GIT_LINE = re.compile(
+    r"^[ \t]*(?:-[ \t]+)?git:[ \t]*['\"]?" + re.escape(PACK) + r"(?:\.git)?['\"]?[ \t]*$"
+)
+
+
+def mechanical(pull: dict[str, Any], loop: str | None) -> str | None:
+    """Why the PR is no mechanical pack bump, whose spec then needs no approval, or None when it is one: a `branch`
+    section of `bot` exempts it (exempting); it changes the root `apm.yml`, so it moves the pack; and every `apm.yml`
+    it changes changes only the `ref:` line of its dependency on PACK (ref_only), so the rest of the diff is the lock
+    and generated files the section's `paths` cover. The release such a bump pins was reviewed and tagged already.
+    A PR that leaves `apm.yml` alone (an updater's lock-only PR, a hand edit of a generated file), any other
+    `apm.yml` change, a login section's PR, or a patch GitHub can't give keeps the spec gate."""
+    bot = exempting(pull, loop)
+    if bot is None or "branch" not in bot:
+        return "no `bot` section with a `branch` exempts it"
+    manifests = [path for path in paths(pull) or [] if path.rsplit("/", 1)[-1] == "apm.yml"]
+    if "apm.yml" not in manifests:
+        return f"it doesn't change `apm.yml`'s `{PACK}` `ref:` line, so it moves no pack"
+    changes = changed(pull)
+    if changes is None:
+        return "GitHub can't give its `apm.yml` patch"
+    patches = {change.get("filename"): change.get("patch") for change in changes}
+    for path in manifests:
+        if not ref_only(patches.get(path) or ""):
+            return f"`{path}` changes more than its `{PACK}` `ref:` line"
+    return None
+
+
+def ref_only(patch: str) -> bool:
+    """Whether a unified diff of `apm.yml` changes one line, the `ref:` line of the dependency on PACK, to another
+    release: one hunk, whose only edits are one REF_LINE removed and then one added, each naming a release (RELEASE)
+    and each in a list item with a GIT_LINE naming PACK on its own side of the hunk (pack_item). Any line that is no
+    hunk header, context, edit or `\\ No newline` marker fails it, and so does an item whose `git:` line is out of
+    the hunk's context."""
+    hunks: list[list[str]] = []
+    for line in patch.split("\n"):
+        if line.startswith("@@"):
+            hunks.append([])
+        elif hunks and line[:1] in (" ", "-", "+"):
+            hunks[-1].append(line)
+        elif hunks and line.startswith("\\"):  # \ No newline at end of file
+            continue
+        elif line:
+            return False
+    edited = [hunk for hunk in hunks if any(line[:1] in "-+" for line in hunk)]
+    if len(edited) != 1:
+        return False
+    hunk = edited[0]
+    edits = [line for line in hunk if line[:1] in "-+"]
+    if [line[:1] for line in edits] != ["-", "+"]:
+        return False
+    if not all(REF_LINE.match(line[1:]) for line in edits):
+        return False
+    return all(pack_item(hunk, edit, " " + edit[0]) for edit in edits)
+
+
+def pack_item(hunk: list[str], edit: str, side: str) -> bool:
+    """Whether the line `edit` of `hunk` sits in the list item of PACK on its side of the diff (`side`: the context
+    and the edits of that side, ` -` old or ` +` new): the item opens at the nearest `- ` line at or above it, runs
+    while lines are indented past that dash, and holds a GIT_LINE naming PACK."""
+    lines = [line for line in hunk if line[:1] in side]
+    text = [line[1:] for line in lines]
+    at = lines.index(edit)
+
+    def indent(line: str) -> int:
+        return len(line) - len(line.lstrip(" \t"))
+
+    start = at
+    while start >= 0 and not ITEM_LINE.match(text[start]):
+        start -= 1
+    if start < 0:
+        return False
+    depth = len(ITEM_LINE.match(text[start])[1])
+    end = start + 1
+    while end < len(text) and text[end].strip() and indent(text[end]) > depth:
+        end += 1
+    return at < end and any(GIT_LINE.match(line) for line in text[start:end])
 
 
 REST_FILE_CAP = 3000  # the most files GitHub's REST list of a PR holds
@@ -2260,7 +2365,9 @@ def scoped(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str
 def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
     """A line per issue whose spec `spec.auto: true` leaves to the owner (spec_hold), approved or not, so a gate run says
     why that spec needed them and its merge waits for no `approved:merge`; without it, per issue a kind `spec.auto`
-    names would cover but whose rating leaves to the owner (spec_owned)."""
+    names would cover but whose rating leaves to the owner (spec_owned). A mechanical pack bump holds none (mechanical)."""
+    if issues and loop is not None and "number" in pull and mechanical(pull, loop) is None:
+        return []
     if not spec_auto(loop):
         kinds = spec_kinds(loop)
         return [
@@ -2438,11 +2545,14 @@ def proofs(
     """One line per approval or proof the PR and its issues lack at `point` (build or merge); an exact revert of
     #`revert` names no issue and needs no verdict. Without a policy file (`loop` None) an issue needs only the
     `approved:spec` label; with it, the owner's record and the label, unless a kind `spec.auto` names covers it
-    (spec_policy), `spec.auto: true` does (spec_hold), or its `paths` term does an issue labelled SCOPED (scoped).
+    (spec_policy), `spec.auto: true` does (spec_hold), its `paths` term does an issue labelled SCOPED (scoped), or
+    the PR is a mechanical pack bump (mechanical).
     A plan needs them where the `plan` rule asks. What the merge
     waits for is waits()'s."""
     rule, found = settings(loop), []
     kinds, every = spec_kinds(loop), spec_auto(loop)
+    # a mechanical pack bump's spec needs no approval: the release it pins was reviewed and tagged (mechanical)
+    bump = loop is not None and "number" in pull and mechanical(pull, loop) is None
     for issue in issues:
         labels = names(issue)
         if point == "build" and (line := others(issue)):
@@ -2459,6 +2569,7 @@ def proofs(
             and spec_hold(pull, issue, loop) is None
             or spec_policy(issue, kinds)
             and spec_owned(pull, issue, loop) is None
+            or bump
         )
         if not covered and SCOPED in labels:
             why = scoped(pull, issue, loop)
@@ -4100,8 +4211,9 @@ def breakglass_proof(
     smoke: int | None,
     earlier: list[int],
 ) -> int:
-    """breakglass-proof: the proof comment for `head`, which any writer or agent posts. It names run ids only; the
-    owner's record pins its hash, and land reads every item from GitHub's runs, never from these words."""
+    """breakglass-proof: the proof comment for `head`, which any writer or agent posts. It names run ids, and under
+    them what verifying them found (each failed test's classification, with its run links), posted only when every item
+    holds. The owner's record pins its hash, and land reads every item from GitHub's runs again, never from these words."""
     pull = breakglass_post(number, head)
     head = pull["headRefOid"]
     lines = [f"Head: {head}", f"Failed-run: {failed}"]
@@ -4111,12 +4223,24 @@ def breakglass_proof(
         lines.append(f"Smoke: {smoke}")
     if earlier:
         lines.append(f"Earlier-runs: {', '.join(map(str, earlier))}")
+    heading = f"Run ids for the break-glass on {head[:7]}; land reads each from GitHub's runs."
+    # the proof as land will read it, so a refusal is said before the owner is asked to pin it
+    with policy_from(pull["baseRefName"]):
+        loop = project()[1]
+    proved = breakglass_verify(pull, loop, {"body": fold(PROOF, heading, "\n".join(lines))})
+    for line in proved.why:
+        print(line)
+    if proved.why:
+        print(f"PR #{number}: no proof posted: fix what is named, or name other runs")
+        return 1
     url = comment(
         number,
         fold(
             PROOF,
-            f"Run ids for the break-glass on {head[:7]}; land reads each from GitHub's runs.",
-            "\n".join(lines),
+            heading,
+            "\n".join(
+                lines + ["", "Found (land reads the runs again, not these lines):", *proved.lines]
+            ),
         ),
     )
     print(f"PR #{number}: proof posted for {head}: {url}")
@@ -4217,6 +4341,238 @@ def standing(pull: dict[str, Any], loop: str | None) -> Standing:
     return Standing(True, why, record, pinned[-1] if pinned else None)
 
 
+# the events whose run of `qualify` runs the whole check; a `workflow_dispatch` run runs only its `tests` input
+FULL_EVENTS = ("pull_request", "push", "schedule")
+
+
+class Proved(NamedTuple):
+    """breakglass_verify's answer: `why`, a line per refusal (none: every item holds); `lines`, what was found, one line per
+    fact (the classification of each failed test with its run links, each item's run); `infra`, a failure with no test ids."""
+
+    why: list[str]
+    lines: list[str]
+    infra: bool = False
+
+
+def smoke_recorded(head: str, command: str) -> bool:
+    """Whether a local-ci record for `head`'s tree holds `command` with exit 0 (the record `local-ci --status` reads)."""
+    try:
+        held = str(tree_of(head))
+        record = json.loads(recorded(held, command).read_text())
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return False
+    return isinstance(record, dict) and (
+        record.get("tree"),
+        record.get("command"),
+        record.get("exit"),
+    ) == (
+        held,
+        command,
+        0,
+    )
+
+
+def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, Any]) -> Proved:
+    """Section 2: every item of the proof read from GitHub's runs, never from the proof comment's words, which only name
+    the run ids. A run counts only in this repo, completed, within `breakglass.max_age` of its `completed_at`, and, but
+    for the failed run's own, of the workflow that produces the required check. 2a the failing run on the exact head and
+    the test ids it failed (`infra` when it published none because the runner or CI was down); 2b each failed test
+    classified against completed runs on `main`'s recent heads and the merge base (`not caused by this change` when it
+    failed there too, else `unexplained`, which refuses); 2c the failed tests re-run alone on this head and green
+    (not for `infra`); 2d a smoke run: a local-ci record for the head's tree under `breakglass.smoke`, or a green
+    full Actions run on the head; 2e at least `breakglass.earlier_runs` green full runs on recent heads that are ancestors
+    of the head or of the base. A full run is one that ran the whole required check: of the workflow that produces it,
+    started by a `pull_request`, `push` or `schedule` (never a `workflow_dispatch`, whose `tests` input can empty or
+    narrow it), with a green job of each required check. A failure with no test ids is `infra` only when a job shows CI
+    down (cancelled, timed out, no steps); otherwise it is the change's own and refused."""
+    cfg, head, base = breakglass_settings(loop), pull["headRefOid"], pull["baseRefName"]
+    where, repo = f"PR #{pull['number']}", pull["baseRepository"]["nameWithOwner"].lower()
+    ids, why, lines = fields(proof.get("body", "")), [], []
+    now = utcnow()
+
+    def mine(run: dict[str, Any]) -> bool:
+        return all(
+            str((run.get(key) or {}).get("full_name")).lower() == repo
+            for key in ("repository", "head_repository")
+        )
+
+    def fresh(run: dict[str, Any]) -> bool:
+        when = parse_time(run.get("completed_at") or run.get("updated_at") or "")
+        return (
+            run.get("status") == "completed" and when is not None and now - when <= cfg["max_age"]
+        )
+
+    def read(key: str, role: str) -> dict[str, Any] | None:
+        raw = ids.get(key, "")
+        if not raw.isdigit():
+            why.append(f"{where}: the proof names no {role} run (`{key.capitalize()}:`)")
+            return None
+        run = run_info(int(raw))
+        if not mine(run):
+            why.append(f"{where}: run {raw} ({role}) is not this repository's")
+        elif not fresh(run):
+            why.append(
+                f"{where}: run {raw} ({role}) is older than breakglass.max_age or not complete"
+            )
+        else:
+            return run
+        return None
+
+    def near(sha: str, onto: str) -> bool:
+        """`sha` lies within `max_commits` of the head: the commits either side of it."""
+        found = compare(sha, onto)
+        return found["ahead_by"] + found["behind_by"] <= cfg["max_commits"]
+
+    def link(run: dict[str, Any]) -> str:
+        return run.get("html_url") or f"run {run['id']}"
+
+    def tests(run_id: int) -> dict[str, Any] | None:
+        return run_artifact(run_id, cfg["artifact"])
+
+    def full(run: dict[str, Any], flow: Any, required: set[str]) -> bool:
+        """The run ran the full selection of the required check: of the workflow that produces it, started by a
+        `pull_request`, `push` or `schedule` (never a `workflow_dispatch`, whose `tests` input narrows it to nothing or
+        to a few ids), with a green job of each required check."""
+        if run.get("workflow_id") != flow or run.get("event") not in FULL_EVENTS:
+            return False
+        return not required or required <= {
+            job["name"] for job in run_jobs(run["id"]) if job.get("conclusion") == "success"
+        }
+
+    try:
+        failed = read("failed-run", "failed")
+        if failed is None:
+            return Proved(why, lines)
+        flow = failed.get("workflow_id")
+        if failed.get("head_sha") != head or failed.get("conclusion") != "failure":
+            why.append(f"{where}: run {failed['id']} is not a failure on the head {head}")
+        required = required_checks(base) - OWN
+        if required and not required & {job["name"] for job in run_jobs(failed["id"])}:
+            why.append(
+                f"{where}: run {failed['id']} is of a workflow that produces none of the required checks"
+                f" ({', '.join(sorted(required))})"
+            )
+        got = tests(failed["id"])
+        broken = {"cancelled", "timed_out", "startup_failure"}
+        down = any(
+            job.get("conclusion") in broken or not job.get("steps")
+            for job in run_jobs(failed["id"])
+        )
+        if got is None and not down:
+            why.append(
+                f"{where}: run {failed['id']} published no `{cfg['artifact']}` artifact and no job shows CI down:"
+                " the failed tests are unknown"
+            )
+        want = set(got.get("failed", [])) if got else set()
+        infra = not want and down
+        if not want and not infra and got is not None:
+            why.append(
+                f"{where}: run {failed['id']} failed with no failed test ids and no job shows CI down:"
+                " a failure that is no test's is the change's own, so it is refused"
+            )
+        lines.append(
+            f"{where}: failing run {link(failed)}: "
+            + (
+                "infra (no failed test ids), so only the smoke run and earlier green runs apply"
+                if infra
+                else f"{len(want)} failed test(s)"
+            )
+        )
+        if not infra:
+            earlier: dict[str, list[str]] = {}
+            tip = merge_base(base, head)
+            seen: set[int] = set()
+            for run in workflow_runs(flow, branch=base) + workflow_runs(flow, head=tip):
+                if run["id"] in seen or run.get("head_sha") == head:
+                    continue
+                seen.add(run["id"])
+                if run.get("conclusion") != "failure" or not mine(run) or not fresh(run):
+                    continue
+                if not near(run["head_sha"], head):
+                    continue
+                for test in (tests(run["id"]) or {}).get("failed", []):
+                    earlier.setdefault(test, []).append(link(run))
+            for test in sorted(want):
+                if test in earlier:
+                    lines.append(
+                        f"`{test}`: not caused by this change; it also failed in {', '.join(earlier[test])}"
+                    )
+                else:
+                    lines.append(
+                        f"`{test}`: unexplained; it failed on no recent run of main or the merge base"
+                    )
+                    why.append(
+                        f"{where}: `{test}` is unexplained: only this change can explain it, so it is refused"
+                    )
+            rerun = read("rerun", "re-run")
+            if rerun is not None:
+                got_rerun = tests(rerun["id"])
+                if (
+                    rerun.get("head_sha") != head
+                    or rerun.get("conclusion") != "success"
+                    or rerun.get("workflow_id") != flow
+                ):
+                    why.append(
+                        f"{where}: run {rerun['id']} is not a green run of the workflow on the head {head}"
+                    )
+                elif not got_rerun or not want <= set(got_rerun.get("selected", [])):
+                    why.append(f"{where}: run {rerun['id']} did not re-run every failed test alone")
+                else:
+                    lines.append(
+                        f"{where}: the failed tests passed alone on the head: {link(rerun)}"
+                    )
+        smoke = ids.get("smoke")
+        if smoke:
+            run = read("smoke", "smoke")
+            if run is not None and (
+                run.get("head_sha") != head
+                or run.get("conclusion") != "success"
+                or not full(run, flow, required)
+            ):
+                why.append(
+                    f"{where}: run {smoke} is not a green full run of the required check on the head {head}"
+                    " (a `workflow_dispatch` run, or one of another workflow, is not one)"
+                )
+            elif run is not None:
+                lines.append(f"{where}: smoke run {link(run)}")
+        elif smoke_recorded(head, cfg["smoke"]):
+            lines.append(f"{where}: smoke: local-ci `{cfg['smoke']}` passed on the head's tree")
+        else:
+            why.append(
+                f"{where}: no smoke proof on the head: `local-ci` of `{cfg['smoke']}` for its tree, or a green Actions run"
+                " (`Smoke:`)"
+            )
+        good: set[int] = set()
+        for raw in ids.get("earlier-runs", "").replace(",", " ").split():
+            if not raw.isdigit() or int(raw) in good:
+                continue
+            run = run_info(int(raw))
+            if (
+                mine(run)
+                and fresh(run)
+                and run.get("conclusion") == "success"
+                and full(run, flow, required)
+                and run.get("head_sha") != head
+                and near(run["head_sha"], head)
+                and any(
+                    compare(run["head_sha"], onto)["status"] in ("ahead", "identical")
+                    for onto in (head, base)
+                )
+            ):
+                good.add(run["id"])
+                lines.append(f"{where}: earlier green run {link(run)}")
+        if len(good) < cfg["earlier_runs"]:
+            why.append(
+                f"{where}: {len(good)} earlier green run(s) of the required check in the window, not the"
+                f" {cfg['earlier_runs']} breakglass.earlier_runs asks"
+            )
+    except (subprocess.CalledProcessError, OSError, ValueError, KeyError) as exc:
+        return Proved(
+            [f"{where}: a run the proof names can't be read from GitHub: {stderr_of(exc)}"], lines
+        )
+    return Proved(why, lines, infra)
+
+
 class Covered(NamedTuple):
     """breakglass_cover's answer: the lines that still hold the merge, and the lines to say beside them."""
 
@@ -4252,11 +4608,15 @@ def breakglass_cover(pull: dict[str, Any], loop: str | None, lines: list[str]) -
         return Covered(lines, [])
     if stand.why:
         return Covered(lines + stand.why, [])
+    proved = breakglass_verify(pull, loop, stand.proof or {})
+    if proved.why:
+        return Covered(lines + proved.why, [])
     what = ", ".join(f"`{name}` {state}" for name, state in names.items())
     return Covered(
         [],
         [
-            f"PR #{pull['number']}: required check {what}; break-glass approved by the owner on {pull['headRefOid']}"
+            f"PR #{pull['number']}: required check {what}; break-glass approved by the owner on {pull['headRefOid']}",
+            *proved.lines,
         ],
     )
 
@@ -4605,17 +4965,19 @@ PORTS = {
         "required_checks",  # (base) -> the checks the base requires, `queue` the merge method of a merge queue its
         # rules require (None, or no such attribute, without one)
         "default_branch",  # () -> the repository's default branch
-        "squash_message",  # () -> what a squash's body holds: COMMIT_MESSAGES, PR_BODY or BLANK
-        "pull_commits",  # (pr) -> the PR's commits, each with its message and author
         "viewer",  # () -> the account running this, or None when the forge won't say
         "writer",  # (login) -> whether the account can write to the repo
         "github_repo",  # (remote URL) -> the `owner/repo` it names on this forge, lowercased, or None
         "one_repo",  # () -> Refused when the checkout can't tell which repo its calls reach
         "ready",  # (pr, undo=False) -> marks a draft ready, or a ready PR a draft
-        "merge",  # (pr, method, body, head) -> merges pinned to head, `body` None for the forge's default
-        "edit_text",  # (method, path, body) -> replaces the body of a PR, comment or review at the forge's route
+        "merge",  # (pr, method, head) -> merges pinned to head, with the forge's default body
         "enqueue_pull",  # (pr, node, head, method) -> puts the PR in its base's merge queue pinned to head; its position, or None
         "dequeue_pull",  # (pr, node) -> takes the PR out of the merge queue
+        "run_info",  # (run) -> an Actions run: repository, workflow_id, head_sha, conclusion, completed times
+        "run_jobs",  # (run) -> its jobs, each with name, conclusion and steps
+        "workflow_runs",  # (workflow, branch=None, head=None) -> the newest completed runs of a workflow
+        "run_artifact",  # (run, name) -> the JSON in the run's artifact, or None
+        "compare",  # (base, head) -> {status, ahead_by, behind_by} of head against base
         "commit_checks",  # (ref) -> {name: {conclusion, url, id, title}} of the newest run of each check on the commit
         "job_log",  # (job) -> a check run's job log
         "commit_tree",  # (sha) -> the commit's tree SHA
@@ -4641,6 +5003,7 @@ def sibling(name: str) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.Refused, module.public, module.denied = Refused, public, denied
+    module.OWN_CHECKS = frozenset(OWN)
     return module
 
 
@@ -4718,12 +5081,14 @@ required_checks, default_branch = (
     through("forge", "required_checks"),
     through("forge", "default_branch"),
 )
-squash_message, pull_commits = through("forge", "squash_message"), through("forge", "pull_commits")
 viewer, writer = through("forge", "viewer"), through("forge", "writer")
 github_repo, one_repo = through("forge", "github_repo"), through("forge", "one_repo")
 open_heads, open_pull_files = through("forge", "open_heads"), through("forge", "open_pull_files")
 enqueue_pull, dequeue_pull = through("forge", "enqueue_pull"), through("forge", "dequeue_pull")
 commit_checks, job_log = through("forge", "commit_checks"), through("forge", "job_log")
+run_info, run_jobs = through("forge", "run_info"), through("forge", "run_jobs")
+workflow_runs, run_artifact = through("forge", "workflow_runs"), through("forge", "run_artifact")
+compare = through("forge", "compare")
 commit_tree = through("forge", "commit_tree")
 statuses, post_status = through("evidence", "statuses"), through("evidence", "post_status")
 post_review, minimize = through("evidence", "post_review"), through("evidence", "minimize")
@@ -5372,7 +5737,7 @@ def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
     # advice, so it prints whatever else holds the merge and changes no exit code
     advice = (
         [f"PR #{pull['number']}: {said}"] if point == "merge" and (said := unforced(pull)) else []
-    ) + ([left] if point == "merge" and (left := stranded(pull)) else [])
+    )
     for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
         print(line)
     return 1 if found else WAITING if waiting else 0
@@ -5537,6 +5902,9 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
             if handler is not None:
                 signal.signal(sig, handler)
         waiting = False
+        github.wait_until = (
+            None  # the wait is over: gh() no longer guards, nor waits out a rate limit (#1771)
+        )
         unwait(forget=True)
 
 
@@ -5549,6 +5917,8 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
         made.extend(earlier)  # execv runs no atexit: the next re-exec hands these on (caught_up)
         atexit.register(reap, earlier)
     said, spoke, heard = "", 0.0, ""
+    # rounds in a row whose state did not change: the poll backs off with each (poll_seconds)
+    quiet = 0
     github.wait_until = deadline  # a GitHub rate limit waits, inside the ceiling
     missed = 0  # network failures in a row, of landing() and of the lock poll
     while True:
@@ -5577,6 +5947,7 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
             # a background command's log: each state once, not every 30 seconds, a held lock's age being no new
             # state; again every SLOT_SAY_SECONDS, so wait-for's stall check never reads a long wait as a hang
             state = re.sub(r"\d+ minutes? ago", "", out.getvalue())
+            quiet = quiet + 1 if state == said else 0
             if state != said or time.monotonic() - spoke >= SLOT_SAY_SECONDS:
                 print(out.getvalue(), end="", flush=True)
                 spoke = time.monotonic()
@@ -5587,7 +5958,7 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
             if code:  # a wait that exits with its PR neither merged nor ended (main is red) must not leave `waiting`
                 land_event_of(pr, "failed", unless_ended=True)
             return code
-        nap = poll_seconds()
+        nap = poll_seconds(quiet)
         if time.monotonic() + nap > deadline:
             print(f"land --wait stopped after {CEILING // 3600} hours, still waiting")
             land_event_of(
@@ -5711,19 +6082,17 @@ def reap(worktrees: Sequence[Sequence[str]]) -> None:
         )
 
 
-def poll_seconds() -> float:
-    """QUEUE_POLL, or LOW_POLL while the REST quota left is under LOW_QUOTA, plus up to POLL_JITTER random seconds so
-    waiting lands do not poll in the same minute. `gh api rate_limit` is not counted against the quota; gh shows no
-    response headers, so nothing is read for free. A failed read keeps QUEUE_POLL."""
-    base = max(POLL, QUEUE_POLL)
-    try:
-        left, limit = github.gh(
-            "api", "rate_limit", "--jq", r'.resources.core|"\(.remaining) \(.limit)"'
-        ).split()
-        if int(left) < LOW_QUOTA * int(limit):
-            base = LOW_POLL
-    except (subprocess.CalledProcessError, ValueError):
-        pass
+def poll_seconds(quiet: int = 0) -> float:
+    """QUEUE_POLL, doubled for each of the `quiet` rounds in a row whose state did not change up to QUIET_POLL (#1771),
+    or LOW_POLL when that is longer and the REST quota left is under LOW_QUOTA, plus up to POLL_JITTER random seconds
+    so waiting lands do not poll in the same minute. The quota is the guard's reading (github.quota), from `gh api
+    rate_limit`, which is not counted against it; gh shows no response headers, so nothing is read for free. A failed
+    read keeps the quiet poll."""
+    first = max(POLL, QUEUE_POLL)
+    base = min(first * 2 ** min(quiet, 8), max(QUIET_POLL, first))
+    found = github.quota("core")
+    if found and found[0] < LOW_QUOTA * found[1]:
+        base = max(base, LOW_POLL)
     return base + github.random.randint(0, POLL_JITTER)
 
 
@@ -6526,6 +6895,10 @@ def landable(
     if pull.get("waiting"):  # readied by this land: its CI has only just started
         return Verdict(pull["waiting"], issues=issues)
     if required and (lines := ci(where, pull, required)):
+        covered = breakglass_cover(pull, loop, lines)
+        if covered.said:  # the owner's own merge: land verifies it and leaves it
+            return breakglass_held(pull, covered, issues, named, loop)
+        lines = covered.lines
         for line in lines:
             print(line)
         red = {state for _, state in head_checks(pull, required)[0]} & RED
@@ -6543,6 +6916,119 @@ def landable(
         for line in whose(pull, loop):
             print(line)
     return Verdict(None, issues=issues)
+
+
+# the first line of the comment land leaves on a break-glass PR whose proof it verified, and of the one after the merge
+VERIFIED_COMMENT, BREAKGLASS_LAND = "Break-glass verified", "Break-glass land"
+
+
+def trailer(pull: dict[str, Any], check: str, proof_url: str) -> str:
+    """The squash commit's trailer for a break-glass land."""
+    return f"Break-glass: owner-approved, {check} red, proof {proof_url}"
+
+
+def breakglass_held(
+    pull: dict[str, Any],
+    covered: Covered,
+    issues: list[dict[str, Any]],
+    named: bool,
+    loop: str | None,
+) -> Verdict:
+    """What land does with a PR whose break-glass proof it verified (breakglass_cover): nothing is merged, since the
+    owner merges it in the GitHub UI with the ruleset's bypass. Neither `loop:queued` nor a `land` success stays on it
+    (a Mergify queue would merge it on that status: an error replaces it, and the label comes off first); one comment
+    carries the verified lines, the proof comment's link and the trailer to paste into the squash message; and the
+    owner is asked for the click (the `land` event `needs-owner`)."""
+    where, head = f"PR #{pull['number']}", pull["headRefOid"]
+    if QUEUED in names(pull):
+        label(pull["number"], QUEUED, add=False)
+        print(f"{where}: `{QUEUED}` removed: land never queues a break-glass PR")
+    try:
+        landed = [s for s in statuses(head) if s.get("context") == LAND]
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        landed = []
+    if landed and landed[0].get("state") != "error":
+        post_status(
+            head, LAND, "Not landed: the owner merges a break-glass PR in the GitHub UI", "error"
+        )
+    for line in covered.said:
+        print(line)
+    stand = standing(pull, loop)
+    proof_url = (stand.proof or {}).get("url") or pull.get("url", "")
+    heading = f"{VERIFIED_COMMENT}"
+    if not any(
+        machine(note["body"]).strip().splitlines()[:1] == [heading]
+        and fields(note["body"]).get("head", "").lower() == head.lower()
+        for note in notes(pull)
+    ):
+        comment(
+            pull["number"],
+            fold(
+                heading,
+                f"The proof for {head[:7]} holds, read from the runs. land does not merge it: the owner merges it"
+                ' in the GitHub UI with "Merge without waiting for requirements".',
+                "\n".join(
+                    [
+                        f"Head: {head}",
+                        f"Proof: {proof_url}",
+                        f"Record: {(next((n for n in notes(pull) if parsed(n['body'], BREAKGLASS)), {}) or {}).get('url', '')}",
+                        *covered.said[1:],
+                        f"Trailer: {trailer(pull, ', '.join(re.findall(r'`([^`]+)`', covered.said[0].split(';')[0])) or 'required', proof_url)}",
+                    ]
+                ),
+            ),
+        )
+    ask = [
+        f"{where}: the break-glass proof holds on {head}: the owner merges it in the GitHub UI (proof {proof_url})"
+    ]
+    asks_owner(pull, ask, named)
+    return Verdict((WAITING, False), issues=issues)
+
+
+def breakglass_landed(pull: dict[str, Any]) -> None:
+    """The `Break-glass land` comment after the owner's merge, from the first land that reads it merged: the head, the
+    merge commit, the required checks that were red or missing with their run links, the record and proof links and
+    that the owner merged it with the bypass. Nothing for a PR with no break-glass record on its head, or one already
+    commented."""
+    head = pull["headRefOid"]
+    if any(
+        machine(note["body"]).strip().splitlines()[:1] == [BREAKGLASS_LAND] for note in notes(pull)
+    ):
+        return
+    records_on = [
+        note
+        for note in notes(pull)
+        if (record := parsed(note["body"], BREAKGLASS))
+        and record.get("head", "").lower() == head.lower()
+    ]
+    if not records_on:
+        return
+    merged = merged_pull(pull["number"]) or {}
+    commit = merged.get("merge_commit_sha") or "unknown"
+    red = {name: run for name, run in commit_checks(head).items() if run["conclusion"] in RED}
+    required = required_checks(pull["baseRefName"]) - OWN
+    lacking = sorted(required - set(commit_checks(head)))
+    shown = [f"`{name}` red: {run_link(run['url'])}" for name, run in sorted(red.items())] + [
+        f"`{name}` missing" for name in lacking
+    ]
+    proof = (proofs_on(pull, head) or [{}])[-1].get("url") or pull.get("url", "")
+    comment(
+        pull["number"],
+        fold(
+            BREAKGLASS_LAND,
+            f"The owner merged {head[:7]} as {commit[:7]} with the ruleset's bypass; land did not merge it.",
+            "\n".join(
+                [
+                    f"Head: {head}",
+                    f"Merge: {commit}",
+                    f"Checks: {'; '.join(shown) or 'none red or missing now'}",
+                    f"Record: {records_on[-1].get('url') or ''}",
+                    f"Proof: {proof}",
+                    f"Trailer: {trailer(pull, ', '.join(sorted(red) + lacking) or 'required', proof)}",
+                ]
+            ),
+        ),
+    )
 
 
 def candidates_of(
@@ -7614,8 +8100,7 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
 def mergify_step(pull: dict[str, Any]) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
-    (QUEUED and a `land` success there), left alone (exit 0); else queued, its session link lines dropped first
-    (unlink_pull): the `land` success on its head, which binds the hand-over to that one head, so a push leaves
+    (QUEUED and a `land` success there), left alone (exit 0); else queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
     `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). A DEQUEUED label on a head land never queued (a push since)
     is stale, and comes off."""
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
@@ -7630,7 +8115,6 @@ def mergify_step(pull: dict[str, Any]) -> int:
         if QUEUED in labels and ours:
             print(f"{where} is queued for Mergify at {head}")
             return 0
-        unlink_pull(pull)
         post_status(head, LAND, MERGIFY_QUEUED.format(head))
         if QUEUED not in labels:
             label(number, QUEUED, add=True)
@@ -7859,11 +8343,9 @@ def required_state(
 
 
 def enqueue(pull: dict[str, Any], method: str) -> tuple[int, bool]:
-    """Put the PR in the GitHub merge queue (merging with `method`) pinned to the head the proofs judged, its session
-    link lines dropped first (unlink_pull): exit 0 once it is in, 1 when GitHub refuses, or when its head moved
-    as it went in (the forge port's REST answer reads it again)."""
+    """Put the PR in the GitHub merge queue (merging with `method`) pinned to the head the proofs judged: exit 0 once
+    it is in, 1 when GitHub refuses, or when its head moved as it went in (the forge port's REST answer reads it again)."""
     where, head = f"PR #{pull['number']}", pull["headRefOid"]
-    unlink_pull(pull)
     # before the enqueue, so no PR the queue merges lacks it: the bare land's trail follows it (queue_trail)
     label(pull["number"], QUEUED, add=True)
     try:
@@ -7914,6 +8396,8 @@ def queue_landed(pull: dict[str, Any]) -> None:
     `merge_group` CI; and its worker sessions finished. Nothing for a PR it did not merge, or one already commented."""
     merged = [removal for removal in queue_events(pull) if removal.get("reason") == QUEUE_MERGED]
     queued = QUEUED in {each["name"] for each in pull["labels"]["nodes"]}
+    if pull["state"] == "MERGED":
+        breakglass_landed(pull)
     if not any(note["body"].startswith(f"{LANDED}\n") for note in notes(pull)):
         if merged:
             landed_comment(pull, merged[-1])
@@ -7974,173 +8458,6 @@ def mergify_landed(pull: dict[str, Any]) -> None:
     archive_workers(pull["number"])
 
 
-# a cloud session's link, which its harness adds to every commit message as a `Claude-Session:` line and to every PR
-# body as a bare link line, optionally in <...>, and to every body and comment its proxy writes as a `_Generated by
-# [Claude Code](<link>)_` footer; land drops each from the squash body, the PR body and the PR's comments
-SESSION_LINE = re.compile(
-    r"^(?:Claude-Session:.*|(?:<https://claude\.ai/code/session_[^\s<>]*>|https://claude\.ai/code/session_[^\s<>]*"
-    r"|_Generated by \[Claude Code\]\(https://claude\.ai/code/session_[^\s()]*\)_)[ \t\r]*)(?:\n|$)",
-    re.MULTILINE,
-)
-CO_AUTHOR = re.compile(r"^Co-authored-by:[ \t]*(.*?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
-
-
-def squash_body(commits: list[dict[str, Any]], author: str | None) -> str:
-    """The body GitHub's squash writes under the repo's commit-messages default, from the PR's commits as REST lists
-    them (oldest first) and the PR author's login, as 250 squashes on this repo's main show it. Its co-authors are, in
-    commit order, each commit's author other than the PR's (a merge commit's too), then each `Co-authored-by:` its
-    message names, one per email, the first seen keeping its name. The commits less merge commits: one is its message
-    after the subject with those trailer lines emptied, then the co-authors; several are each whole message as a `* `
-    item, then `---------` and the co-authors."""
-    named: dict[str, str] = {}
-    for commit in commits:
-        if (commit.get("author") or {}).get("login") != author:
-            who = commit["commit"]["author"]
-            named.setdefault(who["email"].casefold(), f"{who['name']} <{who['email']}>")
-        for line in CO_AUTHOR.findall(commit["commit"]["message"]):
-            email = re.search(r"<([^>]*)>", line)
-            named.setdefault((email[1] if email else line).casefold(), line)
-    footer = "\n".join(f"Co-authored-by: {who}" for who in named.values())
-    messages = [commit["commit"]["message"] for commit in commits if len(commit["parents"]) < 2]
-    if len(messages) == 1:
-        text = CO_AUTHOR.sub("", messages[0].partition("\n")[2]).strip()
-        return "\n\n".join(part for part in (text, footer) if part)
-    items = "\n\n".join(f"* {message}" for message in messages)
-    return f"{items}\n\n---------\n\n{footer}" if footer else items
-
-
-def unlinked(text: str) -> str:
-    """text less every session link line (SESSION_LINE), the blank lines around each removed one folded into one (none when
-    it sat between two text lines); blank lines elsewhere (a PR body's code block) stay as written."""
-    marked = "\n".join("\0" if SESSION_LINE.match(line) else line for line in text.split("\n"))
-
-    def fold(run: re.Match[str]) -> str:  # each removed line held one of the run's line breaks
-        return "\n\n" if run[0].count("\n") - run[0].count("\0") >= 2 else "\n"
-
-    return re.sub(r"\n*(?:\0(?:\n|$))+\n*", fold, marked).strip()
-
-
-def commit_msg(message: Path) -> int:
-    """The commit-msg hook: the message file less every session link line, as unlinked() folds them for land, so a
-    cloud session's branch commits carry no link either, since a public repo publishes them; a message with none is
-    left as written."""
-    text = message.read_text()
-    if SESSION_LINE.search(text):
-        message.write_text(unlinked(text) + "\n")
-    return 0
-
-
-def session_links(pull: dict[str, Any]) -> list[tuple[str, str, str, str, bool]]:
-    """Each text of pull that carries a session link line, as (what names it, the REST method and path that edit it,
-    its text, whether this account can edit it, by GitHub's `viewerCanUpdate`): the PR's body, each conversation
-    comment, each review's summary and each review thread's comment, since a public repo's PR page publishes them all.
-    A text read without that right (REST, when GraphQL is refused) counts as one it can't edit. ponytail: the newest
-    100 comments and reviews, and the first 50 comments of each of the first 100 threads."""
-    number, repo = pull["number"], "repos/{owner}/{repo}"
-
-    def named(word: str, found: dict[str, Any]) -> str:
-        if found.get("url"):
-            return f"the {word} {found['url']}"
-        if found.get("databaseId"):
-            return f"{word} {found['databaseId']} on PR #{number}"
-        return f"a {word} on PR #{number}"
-
-    texts = [
-        (
-            "its body",
-            "PATCH",
-            f"{repo}/pulls/{number}",
-            pull.get("body") or "",
-            pull.get("viewerCanUpdate"),
-        )
-    ]
-    texts += [
-        (
-            named("comment", note),
-            "PATCH",
-            f"{repo}/issues/comments/{note.get('databaseId')}",
-            note.get("body") or "",
-            note.get("viewerCanUpdate"),
-        )
-        for note in (pull.get("comments") or {}).get("nodes") or []
-    ]
-    texts += [
-        (
-            named("review", review),
-            "PUT",
-            f"{repo}/pulls/{number}/reviews/{review.get('databaseId')}",
-            review.get("body") or "",
-            review.get("viewerCanUpdate"),
-        )
-        for review in (pull.get("reviews") or {}).get("nodes") or []
-    ]
-    texts += [
-        (
-            named("comment", note),
-            "PATCH",
-            f"{repo}/pulls/comments/{note.get('databaseId')}",
-            note.get("body") or "",
-            note.get("viewerCanUpdate"),
-        )
-        for thread in (pull.get("reviewThreads") or {}).get("nodes") or []
-        for note in (thread.get("comments") or {}).get("nodes") or []
-    ]
-    return [
-        (what, method, path, text, bool(can))
-        for what, method, path, text, can in texts
-        if SESSION_LINE.search(text)
-    ]
-
-
-def unlink_pull(pull: dict[str, Any]) -> None:
-    """Before land merges pull: each text session_links() finds that this account can edit gets one edit holding it
-    less its session link lines, as unlinked() folds them, its other lines kept; a text with none gets no edit, and
-    one it can't edit is left to check merge, which names it. One line says what it edited."""
-    edited = []
-    for what, method, path, text, can in session_links(pull):
-        if can:
-            port("forge").edit_text(method, path, unlinked(text))
-            edited.append(what)
-    if edited:
-        print(f"PR #{pull['number']}: dropped the session link from {', '.join(edited)}")
-
-
-def stranded(pull: dict[str, Any]) -> str | None:
-    """The line check merge prints when a text of pull still carries a session link this account can't edit (a comment
-    by another account, say), so a person removes it before the PR lands; None when there is none."""
-    left = [what for what, *_, can in session_links(pull) if not can]
-    if not left:
-        return None
-    return (
-        f"PR #{pull['number']}: a session link stays in {', '.join(left)}, which this account can't edit: remove it"
-        " by hand before the PR lands, since its page is public"
-    )
-
-
-def land_body(pull: dict[str, Any]) -> str | None:
-    """The `--body` land passes to GitHub's squash of pull, whatever the repo's squash default would put a
-    session link line in, or None to leave GitHub's default. The repo's `squash_merge_commit_message` picks it:
-    COMMIT_MESSAGES, squash_body() less those lines; PR_BODY, the PR's body less them; BLANK, None, since GitHub
-    writes no body. ponytail: under PR_BODY GitHub's own co-author lines, if it adds any, are not added here, as no
-    squash on this repo shows that setting."""
-    setting = squash_message()
-    if setting == "BLANK":
-        return None
-    if setting == "PR_BODY":
-        text = pull.get("body") or ""
-    else:
-        number = pull["number"]
-        commits = pull_commits(number)
-        # ponytail: REST lists a PR's first 250 commits
-        text = squash_body(commits, (pull.get("author") or {}).get("login"))
-    # GitHub writes no body for this PR either, so there is nothing to override
-    if not text.strip():
-        return None
-    # ponytail: a body that was only `Claude-Session:` lines goes as an empty `--body`; whether GitHub then writes
-    # its default instead is unproven
-    return unlinked(text)
-
-
 def merged_anyway(number: int, head: str, exc: subprocess.CalledProcessError) -> str:
     """The merge commit of PR #number when `gh pr merge` failed with exc but GitHub merged it at head all the same,
     since a transport error (a response cut off mid-stream) can come after the merge. Anything else is Refused with
@@ -8154,6 +8471,17 @@ def merged_anyway(number: int, head: str, exc: subprocess.CalledProcessError) ->
     if found is None or (found.get("head") or {}).get("sha") != head:
         raise Refused(why) from exc
     return str(found.get("merge_commit_sha"))
+
+
+def refuse_red(pull: dict[str, Any], base: str) -> None:
+    """Refuse to merge a PR while a check `base` requires is red, pending or missing on its head, whether or not the owner
+    approved a break-glass: land's merge, signed squash included, is never the bypass (#1722)."""
+    required = required_checks(base) - OWN
+    if required and (lines := ci(f"PR #{pull['number']}", pull, required)):
+        raise Refused(
+            f"PR #{pull['number']}: refusing to merge while a required check is not green: {'; '.join(lines)}"
+            " (a break-glass PR is merged by the owner in the GitHub UI, never by land)"
+        )
 
 
 def merges(
@@ -8188,13 +8516,13 @@ def merges(
     for pull, tree, gated, how in landed:
         where, head, posted = f"PR #{pull['number']}", pull["headRefOid"], False
         try:
+            refuse_red(pull, base)
             ours = owned()
             nonce = (
                 git("log", "-1", "--format=%b", ours).rsplit("nonce ", 1)[-1].strip()
                 if ours
                 else ""
             )
-            unlink_pull(pull)
             method = merge_method(pull, loop)
             if local:
                 owned()
@@ -8204,13 +8532,12 @@ def merges(
             else:
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
-                body = land_body(pull) if method == "squash" else None
                 print(f"{where} lands as a {method}")
                 post_status(head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}")
                 posted = True
                 try:
                     owned()
-                    port("forge").merge(pull["number"], method, body, head)
+                    port("forge").merge(pull["number"], method, head)
                 except subprocess.CalledProcessError as exc:
                     merge = merged_anyway(pull["number"], head, exc)
                     print(
@@ -8478,7 +8805,22 @@ def accepted(lines: list[str], report: Path) -> list[tuple[str, str]]:
     """Each `Accepted on evidence: <line> — <proof log>` line of a report as (line, proof log), refused when one
     names no proof log, since an acceptance taken on evidence nobody can find is no acceptance."""
     found = []
+    fenced = False
     for line in lines:
+        if line.startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:  # a quoted report line is no acceptance
+            continue
+        # a `Manual:` line that takes itself on evidence inline: the high-risk refusal and the posted review would
+        # never see it; prose, a quote or a fenced block that only mentions the phrase is no acceptance
+        if not line.startswith(ACCEPTED) and re.search(
+            rf"Manual:.*{re.escape(ACCEPTED)}", re.sub(r"`[^`]*`|\*", "", line)
+        ):
+            raise Refused(
+                f"{report}: `{ACCEPTED}` inside `{line[:60]}`: write it as a line of its own, "
+                f"`{ACCEPTED} <line> — <proof log>`"
+            )
         if not line.startswith(ACCEPTED):
             continue
         said = re.fullmatch(r"(\S.*)[ \t]+[—–][ \t]+(\S.*)", line[len(ACCEPTED) :].strip())
@@ -11123,8 +11465,6 @@ def main(argv: list[str]) -> int:
     graduating = commands.add_parser("graduate")
     graduating.add_argument("epic", type=int)
     graduating.add_argument("--pr", type=int, required=True)
-    hooking = commands.add_parser("commit-msg")
-    hooking.add_argument("message", type=Path)
     # --base: the commit to select against (a PR's base SHA, a push's previous tip), over the merge base
     commands.add_parser("affected-tests").add_argument("--base", metavar="REV")
     wrapping = commands.add_parser("heavy")
@@ -11156,8 +11496,6 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             return 1
     if args.command == "report":  # reads a local file only, so no remote needs choosing
         return report_json(args.report) if args.json else report_check(args.report)
-    if args.command == "commit-msg":  # the same: git hands the hook its message file
-        return commit_msg(args.message)
     if args.command == "affected-tests":
         return affected_tests(args.base)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed

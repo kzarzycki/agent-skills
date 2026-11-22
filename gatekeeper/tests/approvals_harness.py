@@ -81,6 +81,7 @@ AUTOUSE = (
     "assigned",
     "board_risks",
     "graphql_answers",
+    "merging",
 )
 
 
@@ -179,6 +180,13 @@ def added(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, str, bool]]:
         approvals, "label", lambda number, name, add: calls.append((number, name, add))
     )
     return calls
+
+
+@pytest.fixture
+def merging(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The adapter's merge finds every required check green on the head, instead of reading them: its gh stub has no route
+    for them. test_approvals_no_bypass.py puts the real read back."""
+    monkeypatch.setattr(approvals.github, "red_checks", lambda _number, _head: [])
 
 
 @pytest.fixture
@@ -297,6 +305,7 @@ __all__ = [
     "lands",
     "loop_md",
     "merge",
+    "merging",
     "node",
     "note",
     "others_open",

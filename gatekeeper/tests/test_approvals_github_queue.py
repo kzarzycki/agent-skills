@@ -428,6 +428,7 @@ def test_required_checks_reports_the_merge_queue_and_its_method(
     found = approvals.required_checks("main")
     assert (found, found.queue) == ({"qualify", "lint"}, "SQUASH")
     answers["rules"] = "qualify\n"
+    approvals.github.forget()  # a new run: one run keeps the rules it read (#1771)
     assert approvals.required_checks("main").queue is None
 
 
@@ -506,12 +507,11 @@ LINK = "https://claude.ai/code/session_01AbCdEf"
 BODY = "## Summary\n\nFix it.\n\n## Evidence\n\nlog line"
 
 
-def test_a_pr_body_loses_its_session_link_before_it_is_enqueued(queue: dict[str, Any]) -> None:
+def test_a_pr_body_keeps_its_session_link_when_it_is_enqueued(queue: dict[str, Any]) -> None:
     head = queue["opened"](7, body=f"{BODY}\n\n{LINK}\n")
-    queue["pulls"][7]["viewerCanUpdate"] = True
     code, lines = queue["land"]("7")
     assert code == 0, lines
-    assert queue["edits"] == {"repos/{owner}/{repo}/pulls/7": BODY}
+    assert not queue.get("edits")
     assert queue["enqueued"] == [(7, head)]
 
 

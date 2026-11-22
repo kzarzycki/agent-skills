@@ -3,10 +3,11 @@
 You take the owner's request to merged PRs: one PR per story (an epic's sub-issue, or the
 request itself when it has none), each on its own branch in a worktree of your own
 (loop.md § Worktree), and stories nothing blocks run at the same time. You lead the
-design, wireframes included for a UI, and delegate the rest. Every heavy run, a worker's or
-your own (a suite to sort failures, a build, an e2e run), goes where SKILL.md, Where heavy
+design, wireframes included for a UI, and delegate the rest. You run no test suite: the worker's gate and the
+verifier's runs are the runs of record on a head, so read their logs to sort a failure, since a rerun of yours
+doubles the run. Every other heavy run, a worker's or your own (a build, an e2e run), goes where SKILL.md, Where heavy
 steps run says, which also gives your own run's recipe.
-Your own test or check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
+Your own check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
 refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
 `claude-cloud-run` could not make or one that needs this host.
 Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native subagent in the VM, never a session made with `sys_session_create`: a created child lands on the bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent, not a helper, and starts as `brief` describes.
@@ -243,7 +244,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    verifier's session across passes instead: `send` it the next pass's brief (`loop.py brief`, as above)
    rather than starting one, and close it once the PR lands. Start it as soon as the fixer reports the pushed head, which has had the narrow checks only. When
    the verifier is satisfied with a head, start the gate of record on that head (worker.md, Gates and push) and wait on it
-   yourself (`wait-for --log <log> --pid <pid>`): `land` needs a satisfied verdict and a green gate on the same head, so
+   yourself, with one wake (verifier.md, A long or locked run is detached): `land` needs a satisfied verdict and a green gate on the same head, so
    neither check weakens, and a red gate's failure goes to a worker as a fix round, whose new head gets a short
    re-verify of the delta, then a new gate. A finding that doesn't make the PR wrong or unmergeable, a note on a
    satisfied verdict included, waits for the merge and starts from main (SKILL.md, One
@@ -260,6 +261,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    waits for the landing rule (SKILL.md):
    - You land your own PRs and never merge `origin/main` into one, stacked or not, unless the gate forces it
      (the next point): a merge of main changes the head, which voids the verifier's verdict and costs another pass and gate.
+   - Update a PR branch by merging its base in (`git merge origin/<base>`, plain push); never rebase or force-push it, and never open a replacement PR.
    - Merge `origin/main` into the PR only when `land` comments that it conflicts with main
      (`Conflicts in the landing batch`): both merge queues test each head on top of main (the
      local one on the host, GitHub's in its `merge_group` CI), so a PR behind main lands
@@ -447,13 +449,17 @@ it ends its turn with its report in: by Omnigent's notice when the child is your
 subscribe to it, else by the command's `--notify` line, which also reports every other ending (a
 timeout, a failure) (orchestrating-agents' backends/omnigent.md, One wake per child). Don't poll or
 `watch` it for the other. Without `--notify`, expect Omnigent's notice and the command's exit both.
-Your own long runs (a gate, a land, a live check) start detached the same way (verifier.md, A long or locked run is detached)
+Your own long runs (a build, a test, a gate, a land, a live check) end in something that wakes you, since a harness
+re-invokes a session only for its own tracked background tasks and a detached pid is none
+(orchestrating-agents, A wait wakes you, or you stay in the turn): a harness-tracked background task, a
+detached run with `LOOP_NOTIFY` set, or one tracked background `wait-for --budget <its expected length>`; never a turn ended on "waiting on pid N",
+a log or, in a cloud session, a subagent of yours, which the supervisor nudges. Detached, they start the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, since Claude Code's low-memory reaper stops
 in-session background shells. Start each with `LOOP_NOTIFY` naming your session (omnigent-agents'
 SKILL.md, Waiting on a run or a PR), so its wrapper's `wait-for --notify` step tells you
-how it ended and you end your turn meanwhile; to block on one instead, the only way is
-`omnigent_agent.py wait-for --log <log> --pid <pid>`, or `wait-for --pr <n>` for a PR's checks,
-which blocks close to the tool limit and prints only the outcome. Start each with `exec`, or in its own process group under
+how it ended and you end your turn meanwhile; else wait on one with one wake, never a loop of short calls:
+`omnigent_agent.py wait-for --log <log> --pid <pid> --budget <its expected length>`, or `wait-for --pr <n>` for a PR's checks,
+as a background call your harness tracks. Start each with `exec`, or in its own process group under
 `trap 'kill 0' EXIT`, since stopping a wrapper shell leaves its command running, gating a target
 you have moved past; count runs with a pattern anchored at the interpreter
 (`pgrep -f '^python3 <script> run'`), since one the wrapper's own command line holds never drops.
@@ -512,6 +518,9 @@ the file's whole text, where a summary cuts a long one short. Once your branch h
 that and your parsed `Waits:` line and ignores a `CoS:` footer and prose waits; a `Waits:` line that does not parse
 gets one notice naming the accepted forms. A lead with no branch yet writes no event (its `needs-owner` is the issue's
 label), and a host whose push fails still prints the line: the event only reports the step.
+A step you hand back to your manager (a PR ready for it, a record only it can make) goes on its own line,
+`Handback: #<n> <what>` (`Handback: #12 READY FOR VERIFY abc1234`), which the supervisor reports to the session it
+notifies at once; prose alone in a `STILL WORKING` reads as you still working, and nobody acts on it.
 A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
 supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline

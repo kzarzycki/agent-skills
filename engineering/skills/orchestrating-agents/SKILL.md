@@ -23,7 +23,7 @@ Each file gives the backend's operations: **start** a child with its brief, **me
 it, **wait** for its report, **watch** children nothing waits on, **list** them and
 **close** them; Omnigent's also **approves** a child's pending approval prompt
 (`approve`), on whatever authority the project's instructions give, and **broadcasts** one
-message to many sessions at once (`broadcast`); a step on another host runs over SSH through `ssh --why`, which turns the host's SSH
+message to many sessions at once (`broadcast`); a short read-only check or setup step on another host runs over SSH through `ssh --why` (never what the rule *Host work* lists), which turns the host's SSH
 check into an owner card; a long-lived supervisor runs as a user
 service that restarts it and survives a reboot (`supervise --registry <file> --install --log <file>`). A `scripts/` path is relative to this skill's folder; run it with
 `python3` (standard library only).
@@ -43,6 +43,16 @@ service that restarts it and survives a reboot (`supervise --registry <file> --i
   writes its question to `<report>.question`, replies with that path and stops. Whoever
   started it answers from the brief, the spec and the owner's stated intent, asks the owner
   only when none of them settles it, and sends the answer to the same child.
+- **A wait wakes you, or you stay in the turn.** A harness wakes a session only for its own
+  background tasks (Claude Code's `run_in_background` or Monitor, Codex's equivalent), a child's
+  turn end through the backend, or a message, never for a process it does not track, and a cloud
+  session not even for a native subagent it started. So a long
+  build, test, gate or land runs as a harness-tracked background task, whose exit wakes you; or
+  detached with a wrapper that tells you when it ends (the `omnigent-agents` skill's `wait-for
+  --notify` with `LOOP_NOTIFY` set); or you wait on it in the same turn (`wait-for --log <log>
+  --pid <pid file>`, called again on `still running`, or a cloud subagent's result). Never end a
+  turn waiting on a bare pid, a log or, in a cloud session, a subagent, since nothing re-invokes
+  you when it ends; Omnigent's supervisor nudges a lead that does.
 - **Whoever starts a child collects it.** Keep a wait or a watch on each child you start,
   read its report before you report yourself, and close it once its report is in; never
   end your own work while one is still out, since its report then reaches nobody.
@@ -55,3 +65,4 @@ service that restarts it and survives a reboot (`supervise --registry <file> --i
   A run that ended failed, cancelled or errored counts as finished too; an `omnigent.keep` label holds
   nothing, since only an open card keeps a session; and archiving a parent finishes its children, bar one
   that is running, holds a card or is kept.
+- **Host work.** Builds, tests, gates, lands and `git push` for another host run in a session there or in a cloud session, never over `ssh`.

@@ -42,7 +42,7 @@ def test_a_lock_the_heartbeat_lost_mid_gate_refuses_with_no_merge(
 
 
 @pytest.mark.parametrize("signed", [False, True])
-@pytest.mark.parametrize("lost_at", ["entry", "unlink_pull", "post_status", "merged"])
+@pytest.mark.parametrize("lost_at", ["entry", "post_status", "merged"])
 def test_a_lock_the_heartbeat_lost_during_the_merges_stops_the_next_merge(
     lost_at: str, signed: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -76,8 +76,7 @@ def test_a_lock_the_heartbeat_lost_during_the_merges_stops_the_next_merge(
     monkeypatch.setattr(approvals, "port", lambda name: SimpleNamespace(merge=merge))
     monkeypatch.setattr(approvals, "pull_status", lambda number: {"state": "MERGED"})
     monkeypatch.setattr(approvals, "merge_method", lambda *a: "squash")
-    monkeypatch.setattr(approvals, "land_body", lambda pull: "")
-    stubbed = ("unlink_pull", "post_status", "publish", "landed_pass", "drop_records", "comment")
+    stubbed = ("post_status", "publish", "landed_pass", "drop_records", "comment")
     for name in (*stubbed, "archive_workers", "land_ended"):
         monkeypatch.setattr(approvals, name, step(name))
     failed: set[int] = set()
