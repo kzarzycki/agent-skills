@@ -56,6 +56,7 @@ def test_a_cloud_start_on_a_host_whose_row_says_2500_starts_at_1300_mb(
     og = base.far_host(
         monkeypatch, tmp_path, "cc-experiments", meminfo=base.mem(1300), loadavg="3.00 2 1"
     )
+    og.procs.setdefault("far", {})["/there/repo/.claude/settings.local.json"] = base.PINNED
     cloud = [*base.far_start("claude-cloud", "cc-experiments"), "--workspace", "/there/repo"]
     assert omnigent_agent.main(cloud) == 0 and og.sessions
     host = [*base.far_start("claude", "cc-experiments"), "--workspace", "/there/repo"]
