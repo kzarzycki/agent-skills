@@ -20,6 +20,12 @@ def test_a_docs_only_change_runs_only_the_repo_wide_checks() -> None:
     assert a.targets(["docs/agents/loop.md", "content/skills/x/SKILL.md"]) == a.CHEAP
 
 
+def test_a_loop_doc_change_runs_the_test_that_holds_its_old_path_copy() -> None:
+    assert a.targets(["loop/skills/engineering-loop/verifier.md"]) == sorted(
+        [*a.CHEAP, "tests/test_old_paths.py"]
+    )
+
+
 def test_a_script_change_runs_the_tests_that_name_it() -> None:
     picked = a.targets(["gatekeeper/skills/gatekeeper/scripts/gatekeeper.py"])
     assert "gatekeeper/tests/test_approvals.py" in picked
