@@ -8,7 +8,7 @@ from pathlib import Path
 
 SETUP = (
     Path(__file__).resolve().parents[1]
-    / "utilities/skills/github-project-board-setup/references/new-board-setup.md"
+    / "github/skills/github-project-board-setup/references/new-board-setup.md"
 ).read_text()
 
 

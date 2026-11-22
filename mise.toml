@@ -84,17 +84,21 @@ fi
 """
 
 [tasks.vendor-engineering]
-run = "uv run python -m tools.capability_pack.cli update engineering"
+env = { PYTHONPATH = "vendoring/skills/vendoring/scripts" }
+run = "uv run python -m capability_pack.cli update engineering"
 
 [tasks.vendor-engineering-regenerate]
 description = "Regenerate the engineering leaves from their overlays at the locked upstream commit, after an overlay edit."
-run = "uv run python -m tools.capability_pack.cli regenerate engineering"
+env = { PYTHONPATH = "vendoring/skills/vendoring/scripts" }
+run = "uv run python -m capability_pack.cli regenerate engineering"
 
 [tasks.vendor-engineering-check]
-run = "QUALIFY_TIMEOUT=${QUALIFY_TIMEOUT:-900} uv run python -m tools.capability_pack.cli check engineering"
+env = { PYTHONPATH = "vendoring/skills/vendoring/scripts" }
+run = "QUALIFY_TIMEOUT=${QUALIFY_TIMEOUT:-900} uv run python -m capability_pack.cli check engineering"
 
 [tasks.assert-engineering-codex-inventory]
-run = "uv run python -m tools.capability_pack.cli assert-codex-inventory ."
+env = { PYTHONPATH = "vendoring/skills/vendoring/scripts" }
+run = "uv run python -m capability_pack.cli assert-codex-inventory ."
 
 [tasks.probe-renovate-vendir]
 run = "uv run python tests/adoption/run_renovate_probe.py"
@@ -113,7 +117,7 @@ run = "OMNIGENT_E2E=1 uv run pytest -q -m live_agent chief-of-staff/tests/test_l
 # pytest holds a host gate slot (tools/gate_slot.py: approvals.take_slot, the one local-ci and land take), so gates on one host queue (#395, #1138).
 # It runs on pytest-xdist, one worker per free core (tools/gate_workers.py), a file per worker (#941); GATE_TEST_PARALLEL=0 runs serially.
 # The `slow` tests run in `test-slow` (and so in the release tag check), not here (#1610).
-run = """uv run python tools/gate_slot.py pytest -q -m 'not live_agent and not slow' $([ "${GATE_TEST_PARALLEL:-1}" != 0 ] && printf '%s' '-p tools.gate_workers -n auto --dist loadfile') && uv run ruff check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent"""
+run = """uv run python tools/gate_slot.py pytest -q -m 'not live_agent and not slow' $([ "${GATE_TEST_PARALLEL:-1}" != 0 ] && printf '%s' '-p tools.gate_workers -n auto --dist loadfile') && uv run ruff check tools vendoring tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools vendoring tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent"""
 
 [tasks.test-slow]
 description = "The tests marked slow: nested pytest runs, real installs, heartbeats on real time"
@@ -121,7 +125,7 @@ run = """uv run python tools/gate_slot.py pytest -q -m 'slow and not live_agent'
 
 [tasks.lint]
 description = "ruff check and format check over the repo's Python"
-run = """uv run ruff check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent"""
+run = """uv run ruff check tools vendoring tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools vendoring tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent"""
 
 [tasks.check-land]
 description = "The landing gate: vendor check and lint, nothing else, about a minute."

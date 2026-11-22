@@ -3,6 +3,8 @@ repository: https://github.com/mattpocock/skills.git
 tracked_ref: origin/main
 stable_tag_pattern: '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 removal_policy: block
+# The upstream folder whose every skill is imported; a new one there joins on update.
+skills_path: skills/engineering
 # Every imported skill is tuned, so its overlay replaces upstream text whole;
 # a substitution is for an untuned one.
 substitutions: []

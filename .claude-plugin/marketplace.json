@@ -7,18 +7,11 @@
   },
   "plugins": [
     {
-      "name": "playwright",
-      "description": "Microsoft's Playwright MCP server (browser automation + scriptable Playwright code execution) plus a skill teaching efficient agent-driven use. The MCP equivalent of playwright-cli.",
-      "source": "./playwright",
-      "category": "development",
-      "tags": ["playwright", "browser", "automation", "mcp", "scraping", "e2e", "scripting"]
-    },
-    {
       "name": "utilities",
-      "description": "Standalone utility skills independent of any one workflow: searching past Claude Code sessions by topic; running a GitHub Projects v2 board as the single home for a repo's milestones, epics and stories, with ticket templates.",
+      "description": "Standalone utility skills independent of any one workflow: searching past Claude Code sessions by topic.",
       "source": "./utilities",
       "category": "productivity",
-      "tags": ["utilities", "sessions", "search", "conversations", "github-projects", "issues", "tickets"]
+      "tags": ["utilities", "sessions", "search", "conversations"]
     },
     {
       "name": "research",
@@ -50,7 +43,7 @@
     },
     {
       "name": "github",
-      "description": "The GitHub tracker and forge conventions the loop and the gatekeeper run on: issue and label operations, the review trail, label sync and board moves.",
+      "description": "The GitHub tracker and forge conventions the loop and the gatekeeper run on: issue and label operations, the review trail, label sync, board moves and setting up a Projects board with its ticket templates.",
       "source": "./github",
       "category": "development",
       "tags": ["github", "issues", "labels", "project-board", "tracker"]
@@ -68,6 +61,13 @@
       "source": "./omnigent",
       "category": "workflow",
       "tags": ["omnigent", "runner", "agents", "sessions", "telemetry"]
+    },
+    {
+      "name": "vendoring",
+      "description": "Vendoring for a capability pack: pull skills from an upstream repo by a vendir lock, keep your own overlays, qualify the result and release it, plus a pre-install audit of a software update.",
+      "source": "./vendoring",
+      "category": "development",
+      "tags": ["vendoring", "vendir", "upstream", "overlays", "release"]
     },
     {
       "name": "content",

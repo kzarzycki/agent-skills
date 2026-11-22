@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tools.capability_pack.qualify import ConfigurationError, validate_release_candidate
+from capability_pack.qualify import ConfigurationError, validate_release_candidate
 
 
 def _git(repo: Path, *arguments: str) -> None:
@@ -133,7 +133,7 @@ def _runs(*runs: dict) -> Callable[[list[str]], str]:
 
 
 def test_release_check_refuses_without_a_smoke_run_for_the_release_head() -> None:
-    from tools.capability_pack.qualify import require_smoke_run
+    from capability_pack.qualify import require_smoke_run
 
     other = {"conclusion": "success", "displayTitle": f"smoke {'b' * 40}", "url": "u-other"}
     failed = {"conclusion": "failure", "displayTitle": f"smoke {HEAD}", "url": "u-failed"}
@@ -149,7 +149,7 @@ def test_release_check_refuses_without_a_smoke_run_for_the_release_head() -> Non
 def test_release_check_command_refuses_without_a_smoke_run_and_prints_a_skip(
     monkeypatch, capsys
 ) -> None:
-    from tools.capability_pack import cli
+    from capability_pack import cli
 
     monkeypatch.setattr(cli, "validate_release_candidate", lambda *_a: None)
     monkeypatch.setattr(cli, "_git_output", lambda *_a, **_k: HEAD)
@@ -163,7 +163,7 @@ def test_release_check_command_refuses_without_a_smoke_run_and_prints_a_skip(
 
 
 def test_release_check_asks_about_the_head_it_checked_out(monkeypatch, capsys) -> None:
-    from tools.capability_pack import cli
+    from capability_pack import cli
 
     asked: list[str] = []
     monkeypatch.setattr(cli, "validate_release_candidate", lambda *_a: None)
@@ -175,7 +175,7 @@ def test_release_check_asks_about_the_head_it_checked_out(monkeypatch, capsys) -
 
 
 def test_smoke_run_refuses_a_short_head() -> None:
-    from tools.capability_pack.qualify import require_smoke_run
+    from capability_pack.qualify import require_smoke_run
 
     with pytest.raises(ConfigurationError, match="full commit sha"):
         require_smoke_run(HEAD[:7], SMOKE, _runs())

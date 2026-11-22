@@ -53,7 +53,7 @@ jobs:
 ```
 
 Before the tag, on the commit that gets tagged (the squash commit on main, which is the smoke `ref`), run
-`uv run python -m tools.capability_pack.cli release-check engineering engineering-vX.Y.Z`.
+`PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli release-check engineering engineering-vX.Y.Z`.
 
 Then tag the merge commit and push the tag:
 `git tag -a engineering-vX.Y.Z -m engineering-vX.Y.Z <merge sha> && git push origin engineering-vX.Y.Z`.

@@ -11,10 +11,15 @@ components:
   content: the content plugin, writing-voice skills (content/)
   engineering: the engineering capability pack, its owned and imported skills (engineering/)
   research: the research plugin, multi-source research orchestration (research/)
-  playwright: the Playwright MCP plugin and its skill (playwright/)
   experimental: the experimental plugin, skills under iteration (experimental/)
   utilities: the utilities plugin, standalone skills (utilities/)
-  ci: CI workflows, rulesets, mise tasks, tools/ and the repo's own agent configuration
+  gatekeeper: the gatekeeper package, the merge gate and its policy reader (gatekeeper/)
+  loop: the loop package, the engineering loop's roles (loop/)
+  github: the github package, the GitHub tracker and board setup (github/)
+  chief-of-staff: the chief-of-staff package and its cos-console mod (chief-of-staff/)
+  omnigent: the omnigent package, the Omnigent runner, its operation and telemetry (omnigent/)
+  vendoring: the vendoring package, the capability-pack tool, its routine and the update audit (vendoring/)
+  ci: CI workflows, rulesets, mise tasks and the repo's own agent configuration
 
 board:
   Done: Closed

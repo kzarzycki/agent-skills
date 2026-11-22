@@ -6,9 +6,9 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from tools.capability_pack.consumer import assert_codex_inventory, prepare_consumer
-from tools.capability_pack.github import GitHubError, reconcile_draft_pr
-from tools.capability_pack.qualify import (
+from capability_pack.consumer import assert_codex_inventory, prepare_consumer
+from capability_pack.github import GitHubError, reconcile_draft_pr
+from capability_pack.qualify import (
     BreakingDriftError,
     ConfigurationError,
     PortRequiredError,

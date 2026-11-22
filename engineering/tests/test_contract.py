@@ -31,6 +31,7 @@ def test_inventory_is_derived_from_provenance_and_policy() -> None:
         "tracked_ref",
         "stable_tag_pattern",
         "removal_policy",
+        "skills_path",
         "substitutions",
         "exclusions",
         "aliases",
@@ -223,5 +224,5 @@ def test_the_board_setup_issue_template_holds_both_acceptance_lists() -> None:
     if stage_root is not None:
         assert Path(stage_root).resolve() == PACKAGE.resolve()
         pytest.skip("the board-setup template is outside the explicit package stage")
-    board = PACKAGE.parent / "utilities/skills/github-project-board-setup/references/templates.md"
+    board = PACKAGE.parent / "github/skills/github-project-board-setup/references/templates.md"
     assert _acceptance(board.read_text()) == ["### Before merge", "### After merge"]

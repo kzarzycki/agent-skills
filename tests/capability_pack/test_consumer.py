@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tools.capability_pack import consumer
-from tools.capability_pack.consumer import ConsumerSyncError, prepare_consumer
+from capability_pack import consumer
+from capability_pack.consumer import ConsumerSyncError, prepare_consumer
 
 
 def _repository(tmp_path: Path) -> Path:

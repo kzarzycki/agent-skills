@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from tools.capability_pack import cli, qualify
-from tools.capability_pack.model import QualificationResult
-from tools.capability_pack.qualify import (
+from capability_pack import cli, qualify
+from capability_pack.model import QualificationResult
+from capability_pack.qualify import (
     BreakingDriftError,
     PortRequiredError,
     QualificationError,

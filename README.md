@@ -15,6 +15,7 @@ optional adapters.
 | **github** | The GitHub tracker and forge conventions the loop and the gatekeeper run on, with label sync and board moves. Pulls in `gatekeeper`. |
 | **chief-of-staff** | One person's view over many leads and repos. Pulls in `loop` and `omnigent`. |
 | **omnigent** | Running agents through Omnigent: the backend, operating an install, and its telemetry. |
+| **vendoring** | Pulling skills from an upstream repo into a pack by a vendir lock, keeping your own overlays, and releasing it; plus a pre-install audit of a software update. |
 | **content** | Understanding and reproducing a person's writing voice for outreach, content, and proposals. |
 | **experimental** | Skills under active iteration. **Contract:** anything here may change, break, or be removed at any time — not held to the stability of the other plugins. |
 
