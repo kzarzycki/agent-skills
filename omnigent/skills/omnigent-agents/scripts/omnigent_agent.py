@@ -2599,7 +2599,9 @@ def still_open(og: Omnigent, sid: str) -> str:
 ISSUE_REF = re.compile(
     r"(?:(?<![\w.-])([\w.-]+/[\w.-]+))?#(\d+)\b|github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)"
 )
-FAMILY_QUERY = """query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { %s } }"""
+FAMILY_QUERY = (
+    """query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { %s } }"""
+)
 FAMILY_NODE = (
     "n%d: issueOrPullRequest(number: %d) { __typename ... on Issue {"
     " parent { number } subIssues(first: 100) { nodes { number } } } }"
@@ -2639,8 +2641,14 @@ def off_request(og: Omnigent, sid: str, text: str) -> str:
         nodes = " ".join(FAMILY_NODE % (n, n) for n in sorted(own | named))
         found = json.loads(
             gh(
-                "api", "graphql", "-f", f"query={FAMILY_QUERY % nodes}",
-                "-F", f"owner={owner}", "-F", f"name={name}",
+                "api",
+                "graphql",
+                "-f",
+                f"query={FAMILY_QUERY % nodes}",
+                "-F",
+                f"owner={owner}",
+                "-F",
+                f"name={name}",
             )
         )["data"]["repository"]
     except Exception:  # noqa: BLE001 - unread: say nothing
@@ -2650,11 +2658,15 @@ def off_request(og: Omnigent, sid: str, text: str) -> str:
         return ((found.get(f"n{n}") or {}).get("parent") or {}).get("number")
 
     epics = {e for o in own if (e := parent(o))}
-    family = own | epics | {
-        s["number"]
-        for o in own
-        for s in ((found.get(f"n{o}") or {}).get("subIssues") or {}).get("nodes") or []
-    }
+    family = (
+        own
+        | epics
+        | {
+            s["number"]
+            for o in own
+            for s in ((found.get(f"n{o}") or {}).get("subIssues") or {}).get("nodes") or []
+        }
+    )
     stray = [
         n
         for n in sorted(named)
@@ -2667,7 +2679,7 @@ def off_request(og: Omnigent, sid: str, text: str) -> str:
     return (
         f"warning: {', '.join(f'#{n}' for n in stray)} is outside lead {sid}'s request"
         f" ({', '.join(f'#{n}' for n in sorted(own))}) and its epic; a lead takes one request or"
-        " epic, so an unrelated item goes to a fresh lead (chief-of-staff, Starting a lead)."
+        " epic, so an unrelated item goes to a fresh lead."
         " Sent anyway."
     )
 
@@ -10745,9 +10757,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 return 0
             print(og.read_file(sid, args.path))
             return 0
-        if args.cmd in ("relay", "send") and (warning := off_request(
-            og, args.session, text_or_file(args.message if args.cmd == "relay" else args.brief)[0]
-        )):
+        if args.cmd in ("relay", "send") and (
+            warning := off_request(
+                og,
+                args.session,
+                text_or_file(args.message if args.cmd == "relay" else args.brief)[0],
+            )
+        ):
             print(warning, file=sys.stderr, flush=True)
         if args.cmd == "relay":
             if not (args.answer or args.source) and asks_owner(text_or_file(args.message)[0]):
