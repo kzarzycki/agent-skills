@@ -50,10 +50,6 @@ SPECCED = f"number state body createdAt lastEditedAt labels(first: 50) {{ nodes 
 ASSIGNEES = "assignees(first: 10) { nodes { login } }"
 
 
-# what land needs to edit a PR's comment, and check merge to name one it can't (gatekeeper.py's session_links)
-EDITABLE = "databaseId url viewerCanUpdate"
-
-
 # who added `approved:spec` (approver) and who was assigned when (release); ponytail: the newest 100 such events
 EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT]) { nodes { __typename
   ... on LabeledEvent { createdAt actor { __typename login } label { name } }
@@ -65,12 +61,12 @@ ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENT
 
 
 # a PR's review threads, which PULL reads and rest_threads() asks for alone where GitHub's REST has none
-THREADS = f"reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}"
+THREADS = "reviewThreads(first: 100) { totalCount nodes { isResolved comments(first: 50) { nodes { body } } } }"
 
 
-PULL = f"""id number url title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
+PULL = f"""id number url title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType additions deletions }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
-  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
+  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   {THREADS}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ author {{ user {{ login }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
@@ -426,9 +422,6 @@ def rest_notes(number: int) -> dict[str, Any]:
     nodes = [
         {
             "id": found["node_id"],
-            # what gatekeeper.py's session_links() names a comment by and edits it at; REST gives no right to edit it
-            "databaseId": found.get("id"),
-            "url": found.get("html_url"),
             "author": actor(found.get("user")),
             "body": found.get("body") or "",
             "createdAt": found["created_at"],
@@ -584,7 +577,7 @@ def rest_threads(number: int) -> dict[str, Any]:
     serves. GitHub's own REST has none and answers 404: there, as for a job token in a private organization repository,
     whose GraphQL withholds other fields of PULL but not these, the threads come from GraphQL alone. Where that fails
     too, the error raises: unresolved threads are never read as none. Each thread's comments, which the proxy's route
-    names by id alone, come from the PR's review comments, with no right to edit them (session_links())."""
+    names by id alone, come from the PR's review comments."""
     try:
         threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
     except subprocess.CalledProcessError as exc:
@@ -602,8 +595,6 @@ def rest_threads(number: int) -> dict[str, Any]:
                 "nodes": [
                     {
                         "body": found.get("body") or "",
-                        "databaseId": found["id"],
-                        "url": found.get("html_url"),
                     }
                     for found in (listed.get(each) for each in thread.get("comment_ids") or [])
                     if found is not None
@@ -629,8 +620,6 @@ def rest_pull(pr: int) -> dict[str, Any]:
             "state": review["state"],
             "body": review.get("body") or "",
             "commit": {"oid": review.get("commit_id") or ""},
-            "databaseId": review.get("id"),
-            "url": review.get("html_url"),
         }
         for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
     ]
@@ -1167,26 +1156,6 @@ def ready(number: int, undo: bool = False) -> None:
     )
 
 
-def squash_message() -> str:
-    """The repo's `squash_merge_commit_message` setting: COMMIT_MESSAGES, PR_BODY or BLANK."""
-    found: str = json.loads(gh("api", "repos/{owner}/{repo}"))["squash_merge_commit_message"]
-    return found
-
-
-def pull_commits(number: int) -> list[dict[str, Any]]:
-    """PR #number's commits as REST lists them, each with its message and author. ponytail: REST lists the first 250."""
-    return [
-        json.loads(line)
-        for line in gh(
-            "api",
-            "--paginate",
-            f"repos/{{owner}}/{{repo}}/pulls/{number}/commits?per_page=100",
-            "--jq",
-            ".[]",
-        ).splitlines()
-    ]
-
-
 # the statuses the loop posts itself, which a base's required checks never wait for: gatekeeper.py's OWN, set when it
 # loads this module, so the two never differ (empty until then, which only makes a required check of one of them count)
 OWN_CHECKS: frozenset[str] = frozenset()
@@ -1215,11 +1184,10 @@ def red_checks(number: int, head: str) -> list[str]:
     return found
 
 
-def merge(number: int, method: str, body: str | None, head: str) -> None:
-    """Merge PR #number by `method` (merge, squash or rebase), pinned to `head`, with `body` as the commit's body unless
-    it is None (GitHub's default). A base requiring a merge queue only queues it. Where GitHub refuses GraphQL, which
+def merge(number: int, method: str, head: str) -> None:
+    """Merge PR #number by `method` (merge, squash or rebase), pinned to `head`, with GitHub's default body. A base requiring a merge queue only queues it. Where GitHub refuses GraphQL, which
     `gh pr merge` goes over, a cloud session's proxy for one, the same merge goes over REST (`PUT pulls/N/merge`, whose
-    `sha` is the pin and whose `commit_message` is the body). Refused while a required check is not green on `head`,
+    `sha` is the pin). Refused while a required check is not green on `head`,
     whether or not the owner approved a break-glass: that PR is merged only by the owner in the GitHub UI (#1722)."""
     if held := red_checks(number, head):
         raise Refused(
@@ -1237,7 +1205,6 @@ def merge(number: int, method: str, body: str | None, head: str) -> None:
             f"merge_method={method}",
             "-f",
             f"sha={head}",
-            *(("-f", f"commit_message={body}") if body is not None else ()),
         )
 
     fast(
@@ -1246,7 +1213,6 @@ def merge(number: int, method: str, body: str | None, head: str) -> None:
             "merge",
             str(number),
             f"--{method}",
-            *(("--body", body) if body is not None else ()),
             "--match-head-commit",
             head,
         ),
@@ -1310,12 +1276,6 @@ def compare(base: str, head: str) -> dict[str, Any]:
         )
     )
     return found
-
-
-def edit_text(method: str, path: str, body: str) -> None:
-    """Replace the body of a PR, a comment or a review: `method` (PATCH, or PUT for a review) on the REST `path`
-    (`{owner}` and `{repo}` filled by gh), with `body` as the text."""
-    gh("api", "-X", method, path, "-f", f"body={body}")
 
 
 def open_heads() -> list[str]:
@@ -1496,15 +1456,12 @@ forge = Port(
     "open_heads",
     "required_checks",
     "default_branch",
-    "squash_message",
-    "pull_commits",
     "viewer",
     "writer",
     "github_repo",
     "one_repo",
     "ready",
     "merge",
-    "edit_text",
     "enqueue_pull",
     "dequeue_pull",
     "commit_checks",
