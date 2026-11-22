@@ -23,7 +23,7 @@ Each file gives the backend's operations: **start** a child with its brief, **me
 it, **wait** for its report, **watch** children nothing waits on, **list** them and
 **close** them; Omnigent's also **approves** a child's pending approval prompt
 (`approve`), on whatever authority the project's instructions give, and **broadcasts** one
-message to many sessions at once (`broadcast`); a step on another host runs over SSH through `ssh --why`, which turns the host's SSH
+message to many sessions at once (`broadcast`); a short read-only check or setup step on another host runs over SSH through `ssh --why` (never work the rule *Work for a host runs in a session on that host* lists), which turns the host's SSH
 check into an owner card; a long-lived supervisor runs as a user
 service that restarts it and survives a reboot (`supervise --registry <file> --install --log <file>`). A `scripts/` path is relative to this skill's folder; run it with
 `python3` (standard library only).
