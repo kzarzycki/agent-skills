@@ -143,3 +143,111 @@ def test_route_settles_a_stalled_event_with_the_chief_of_staff() -> None:
         "act",
         "an approved, verified PR its queue never took: land it or flag it",
     )
+
+
+def test_an_unjudged_pr_is_never_posted_and_keeps_what_was_listed_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#5 is listed, then skipped by a sweep that couldn't judge it, then listed again at the same head: said once;
+    the skip goes to the log, never to the notified session."""
+    og, registry = lead(tmp_path, monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "STALLED_SECONDS", 0)
+    skip = "PR #5 into main is not judged here: a refused read"
+    Sweeps(
+        monkeypatch,
+        (1, f"{line(5, A)}\n{line(7, A)}\n"),
+        (1, f"{skip}\n{line(7, A)}\n1 of 2 open PRs not judged here\n"),
+        (1, f"{line(5, A)}\n{line(7, A)}\n"),
+    )
+    base.supervised(og, registry, monkeypatch, 4, notify="cos")
+    assert [t for t in base.posted(og) if "not judged" in t] == []
+    assert told(og) == [
+        f"Supervisor: o/r: {line(5, A)}: land it (`land 5 --only`) or flag it",
+        f"Supervisor: o/r: {line(7, A)}: land it (`land 7 --only`) or flag it",
+    ]
+    assert "o/r: PR #5 is not judged here: a refused read" in capsys.readouterr().err
+
+
+def test_a_sweep_that_judged_no_pr_is_said_once_per_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkout whose gatekeeper differs from the base's judges nothing: its silence is not "nothing stalled"."""
+    og, registry = lead(tmp_path, monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "STALLED_SECONDS", 0)
+    drift = "gatekeeper.py differs from origin/main's: a PR's own copy would judge it"
+    blind = f"PR #5 into main is not judged here: {drift}\nPR #7 into main is not judged here: {drift}\n"
+    Sweeps(
+        monkeypatch,
+        (0, blind + "2 of 2 open PRs not judged here\n"),
+        (0, blind + "2 of 2 open PRs not judged here\n"),  # the same reason: said already
+        (0, ""),  # judged again: the next blind sweep is news
+        (0, blind + "2 of 2 open PRs not judged here\n"),
+        (0, f"PR #5 into main is not judged here: {drift}\n1 of 2 open PRs not judged here\n"),
+    )
+    base.supervised(og, registry, monkeypatch, 6, notify="cos")
+    said = f"Supervisor: o/r: check stalled judged none of its 2 open PRs: {drift}"
+    assert told(og) == [said, said]
+
+
+def test_no_sweep_starts_while_github_s_rate_limit_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og, registry = lead(tmp_path, monkeypatch)
+    sweeps = Sweeps(monkeypatch)
+
+    def limited(*args: str, timeout: float = 0) -> str:
+        raise omnigent_agent.RateLimited("API rate limit exceeded", 3600)
+
+    monkeypatch.setattr(omnigent_agent, "gh", limited)
+    base.supervised(og, registry, monkeypatch, 3, notify="cos")
+    assert sweeps.started == []
+
+
+@pytest.mark.parametrize("flags", ["\tdirect", ""], ids=["direct", "not followed"])
+def test_a_direct_or_unfollowed_lead_is_not_swept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: str
+) -> None:
+    og, registry = lead(tmp_path, monkeypatch)
+    text = registry.read_text()
+    registry.write_text(text.rstrip("\n") + flags + "\n" if flags else text.replace("\tfollow", ""))
+    sweeps = Sweeps(monkeypatch)
+    base.supervised(og, registry, monkeypatch, 3, notify="cos")
+    assert sweeps.started == []
+
+
+def test_the_real_sweep_runs_the_installed_check_detached_and_is_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``Sweep`` itself, on a stand-in gatekeeper.py: it runs in the workspace, its output is read once it ends,
+    and ``stop`` kills one that hangs."""
+    if not omnigent_agent.shutil.which("uv"):
+        pytest.skip("uv is not installed")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "gatekeeper.py").write_text(
+        "import os, sys, time\n"
+        "if os.path.exists('hang'):\n    time.sleep(60)\n"
+        f"print('{line(5, A)}', flush=True)\nprint(os.getcwd(), file=sys.stderr)\nsys.exit(1)\n"
+    )
+    monkeypatch.setattr(
+        omnigent_agent, "installed", lambda skill: scripts if skill == "gatekeeper" else None
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    sweep = omnigent_agent.Sweep(str(work))
+    sweep.proc.wait(timeout=60)
+    assert sweep.done() == 1
+    assert sweep.output().splitlines() == [line(5, A), str(work)]
+    (work / "hang").write_text("")
+    hung = omnigent_agent.Sweep(str(work))
+    assert hung.done() is None
+    hung.stop()
+    assert hung.done() is not None
+
+
+def test_a_sweep_without_the_installed_check_does_not_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "installed", lambda skill: None)
+    with pytest.raises(omnigent_agent.Fail, match="not installed"):
+        omnigent_agent.Sweep(".")

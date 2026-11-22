@@ -10,7 +10,7 @@
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run --python '>=3.11' scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
     uv run scripts/approvals.py check ready <pr>                # the author's step before the verifier: the PR body's `## Evidence` (and demo form) alone, the check merge runs; exit 0 or 1
-    uv run scripts/approvals.py check stalled              # every open PR land would take that its queue does not hold: one line each, exit 1; one not judged here: its line, no exit
+    uv run scripts/approvals.py check stalled              # every open PR land would take that its queue does not hold: one line each, exit 1; one not judged here: its line, which changes no exit
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
@@ -5889,13 +5889,15 @@ def landing_here(
 RUNNING = tuple(dict.fromkeys((__file__, str(Path(__file__).with_name("gatekeeper.py")))))
 
 
-def base_drift(base: str) -> list[str]:
+def base_drift(base: str, rules: bool = True) -> list[str]:
     """The running gatekeeper.py and github_adapter.py and the three policy files (tracker, loop.md, gatekeeper.md) whose text here differs from
     `origin/<base>`'s, as repo paths, since a PR's own edit of the code or rules that judge it must not judge it. Reads
     the ref as fetched (a land has just fetched it); a script inside the checkout that the base lacks (a PR adds or moves it) differs; only one
     installed outside the checkout, or a ref that is missing, has nothing to compare and counts as equal. A policy file
     is compared as this run reads it (policy_bytes): with no working tree, origin's default branch's, so a land into
-    the default branch finds no drift by construction, and one into another base still compares with that base's."""
+    the default branch finds no drift by construction, and one into another base still compares with that base's.
+    Without `rules`, the code alone: for a caller that reads every policy file from the base (project()) and writes
+    nothing, as `check stalled`, a working tree's edit of them judges nothing."""
     root = toplevel()
     ref = f"refs/remotes/origin/{base}"
     if subprocess.run(
@@ -5912,7 +5914,7 @@ def base_drift(base: str) -> list[str]:
         except ValueError:
             pass
     differ = []
-    for path in [*paths, TRACKER, LOOP, POLICY]:
+    for path in [*paths, *((TRACKER, LOOP, POLICY) if rules else ())]:
         theirs = shown_at(root, ref, path)
         if path in (TRACKER, LOOP, POLICY):
             ours = policy_bytes(root, path)
@@ -5926,9 +5928,10 @@ def base_drift(base: str) -> list[str]:
     return differ
 
 
-def judge_with_base(base: str, fetch: bool = False) -> None:
+def judge_with_base(base: str, fetch: bool = False, rules: bool = True) -> None:
     """Refuse, naming the files, when the code or policy running here is not `origin/<base>`'s, so the caller runs from
-    the base's code; under GITHUB_ACTIONS (a workflow that checks out the PR) also when HEAD is not the base's tip."""
+    the base's code; under GITHUB_ACTIONS (a workflow that checks out the PR) also when HEAD is not the base's tip.
+    Without `rules`, only the code is compared (base_drift)."""
     if fetch:  # a land has fetched it already
         fetched_base = subprocess.run(
             [
@@ -5974,7 +5977,7 @@ def judge_with_base(base: str, fetch: bool = False) -> None:
                 f"the checked-out commit is not origin/{base}'s tip ({tip[:12]}): a workflow that checks out the PR judges"
                 " it by its own rules; check out the base"
             )
-    if differ := base_drift(base):
+    if differ := base_drift(base, rules):
         raise Drifted(
             f"{', '.join(differ)} differ{'s' * (len(differ) == 1)} from origin/{base}'s: a PR's own copy would judge it;"
             f" run from the base's code (a checkout of origin/{base})",
@@ -7482,12 +7485,13 @@ def stalled() -> int:
     (QUEUED and a `land` success there, queued_here); where the base's rules require GitHub's merge queue, not in it;
     on a base `land` merges itself, still open, so not landed. A `land` that was stopped, died or never ran left it.
     One line each, and exit 1 when any is listed, so a sweep can land it (`land <n> --only`) or flag it; judged as
-    `land` judges (from the base's code and policy, judge_with_base), and written nowhere. A PR that can't be judged
-    from this checkout (its base's code or policy differs from what runs here, as a PR stacked on another's branch
-    has, or GitHub refused a read) gets one `not judged` line and is skipped; the rest are still judged, and a skip
-    alone changes no exit."""
+    `land` judges (by the base's policy, read from `origin/<base>`, and only where the gatekeeper code running here is
+    the base's: judge_with_base without its policy-file check, since a checkout's own edit of those files is never
+    read), and written nowhere. A PR that can't be judged from this checkout (its base's code differs from what runs
+    here, as a PR stacked on another's branch has, or GitHub refused a read) gets one `not judged` line and is skipped; the rest are still judged, a last line counts
+    the skipped (`<n> of <m> open PRs not judged here`), and a skip alone changes no exit."""
     bases: dict[str, tuple[str | None, str | None, set[str], str] | str] = {}
-    lines, found = [], False
+    lines, found, skipped, seen = [], False, 0, 0
     for listed in sorted(open_pulls(), key=lambda each: each["number"]):
         if listed["isDraft"]:
             continue
@@ -7499,7 +7503,9 @@ def stalled() -> int:
                 raise Refused(known)
             tracker, loop, required, held_by = known
             with policy_from(base):
-                judge_with_base(base)
+                # its policy is origin/<base>'s (project()) and it writes nothing: a lead's worktree that edits or lags
+                # the policy files still judges, and only the code running here must be the base's
+                judge_with_base(base, rules=False)
                 pull = pull_request(number)
                 with contextlib.redirect_stdout(io.StringIO()):
                     judged = landable(pull, tracker, loop, required)
@@ -7510,7 +7516,9 @@ def stalled() -> int:
                 )  # the base's code differs for every PR into it: said once per PR, not fetched again
             why = str(exc) if isinstance(exc, Refused) else stderr_of(exc)
             lines.append(f"PR #{number} into {base} is not judged here: {why}")
+            skipped += 1
             continue
+        seen += 1
         head = pull["headRefOid"]
         if judged.exit is not None or pull["state"] != "OPEN":
             continue
@@ -7526,6 +7534,8 @@ def stalled() -> int:
             left = "is not landed"
         found = True
         lines.append(f"PR #{number} has its go and a satisfied verdict at {head} and {left}")
+    if skipped:  # so a reader tells a listing that judged nothing from one that found nothing
+        lines.append(f"{skipped} of {skipped + seen} open PRs not judged here")
     for line in lines:
         print(line)
     return 1 if found else 0

@@ -80,14 +80,14 @@ def test_a_stacked_pr_is_skipped_with_a_line_and_the_prs_after_it_are_still_judg
     nine = direct["opened"](9)
     stub = approvals.judge_with_base  # the harness's: every base's code is what runs here
 
-    def judge(base: str, fetch: bool = False) -> None:
+    def judge(base: str, fetch: bool = False, rules: bool = True) -> None:
         if base == "pr-base":  # as judge_with_base words it, from base_drift's list
             raise approvals.Drifted(
                 "gatekeeper/skills/gatekeeper/scripts/gatekeeper.py differs from origin/pr-base's: a PR's own copy"
                 " would judge it; run from the base's code (a checkout of origin/pr-base)",
                 base,
             )
-        stub(base, fetch)
+        stub(base, fetch, rules)
 
     monkeypatch.setattr(approvals, "judge_with_base", judge)
     code, lines = stalled(capsys)
@@ -99,6 +99,7 @@ def test_a_stacked_pr_is_skipped_with_a_line_and_the_prs_after_it_are_still_judg
         ),
         f"PR #8 has its go and a satisfied verdict at {eight} and is not landed",
         f"PR #9 has its go and a satisfied verdict at {nine} and is not landed",
+        "1 of 3 open PRs not judged here",
     ]
 
 
@@ -110,9 +111,8 @@ def test_a_base_that_can_t_be_fetched_skips_its_prs_alone(
     direct["pulls"][7]["baseRefName"] = "gone"
     code, lines = stalled(capsys)
     assert code == 0
-    assert len(lines) == 1 and lines[0].startswith(
-        "PR #7 into gone is not judged here: could not fetch or read gone"
-    )
+    assert len(lines) == 2 and lines[1] == "1 of 1 open PRs not judged here"
+    assert lines[0].startswith("PR #7 into gone is not judged here: could not fetch or read gone")
 
 
 def test_a_refused_pr_read_skips_that_pr_alone(
@@ -134,5 +134,38 @@ def test_a_refused_pr_read_skips_that_pr_alone(
         [
             "PR #7 into main is not judged here: gh: timed out",
             f"PR #8 has its go and a satisfied verdict at {eight} and is not landed",
+            "1 of 2 open PRs not judged here",
+        ],
+    )
+
+
+def test_a_base_whose_policy_is_refused_skips_its_prs_alone(
+    direct: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`land.queue: mergify` with `land.signed_squash_to` is refused on its base: each PR into it gets the refusal,
+    and a PR into another base is still judged."""
+    git_in(direct["work"], "push", "-q", "origin", "origin/main:refs/heads/signed")
+    direct["opened"](7)
+    direct["pulls"][7]["baseRefName"] = "signed"
+    eight = direct["opened"](8)
+    real = approvals.mergify
+
+    def refused(loop: str | None) -> bool:
+        if approvals.POLICY_BASE.get() == "signed":
+            raise approvals.Refused(
+                "signed's `land.queue: mergify` and `land.signed_squash_to`: set one of them"
+            )
+        return real(loop)
+
+    monkeypatch.setattr(approvals, "mergify", refused)
+    assert stalled(capsys) == (
+        1,
+        [
+            (
+                "PR #7 into signed is not judged here: signed's `land.queue: mergify` and `land.signed_squash_to`:"
+                " set one of them"
+            ),
+            f"PR #8 has its go and a satisfied verdict at {eight} and is not landed",
+            "1 of 2 open PRs not judged here",
         ],
     )

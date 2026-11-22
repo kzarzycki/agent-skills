@@ -643,7 +643,8 @@ HEAD_SECONDS = 300.0
 STALLED_SECONDS = 3600.0
 STALLED_TIMEOUT = 900.0
 STALLED_LINE = re.compile(r"PR #(\d+) has its go and a satisfied verdict at ([0-9a-f]{40}) and .+")
-UNJUDGED_LINE = re.compile(r"PR #(\d+) into \S+ is not judged here: .+")
+UNJUDGED_LINE = re.compile(r"PR #(\d+) into \S+ is not judged here: (.+)")
+SKIPPED_LINE = re.compile(r"(\d+) of (\d+) open PRs not judged here")
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
@@ -7114,6 +7115,7 @@ def fresh_state() -> dict:
         "notify_label": {},
         "heads": {},
         "stalled": {},  # each repo's PRs `check stalled` listed last, by number: the head it named
+        "stalled_blind": {},  # each repo whose last sweep judged none of its PRs: the first reason
         "events": {},  # loop event refs: sha, stamp (when it last moved), state, beat, told
     }
 
@@ -8605,7 +8607,11 @@ def supervise_registry(
         runs detached: each poll looks whether it has ended, and stops it past ``STALLED_TIMEOUT``. Each PR it lists
         is said once per head as a ``stalled`` event on that lead (the repo's PRs listed last time are kept in the
         state's ``stalled``), so an hourly sweep reports a stuck PR once, and again only after it left the listing or
-        its head moved. A PR it could not judge, and a sweep that failed, are logged, once until they clear."""
+        its head moved; a PR it could not judge keeps what was listed for it, so a sweep that skips it says it
+        again only at a new head. A PR it could not judge, and a sweep that failed, are logged, once until they
+        clear; a sweep that judged none of the repo's open PRs (its last line, ``<n> of <n> open PRs not judged
+        here``) is said once, as a ``stalled`` event naming the first reason, since its silence would read as
+        nothing stalled (the state's ``stalled_blind``, cleared once a sweep judges again)."""
         known = state.setdefault("stalled", {})
         for repo, (sweep, began, sid) in list(sweeps.items()):
             if (code := sweep.done()) is None:
@@ -8625,11 +8631,27 @@ def supervise_registry(
                 continue
             log(("stalled", repo), None)
             listed = {m[1]: (m[2], line) for line in out if (m := STALLED_LINE.fullmatch(line))}
-            for line in out:
-                if m := UNJUDGED_LINE.fullmatch(line):
-                    log(("unjudged", repo, m[1]), f"{repo}: {line}")
+            unjudged = {m[1]: m[2] for line in out if (m := UNJUDGED_LINE.fullmatch(line))}
+            for number, why in unjudged.items():
+                log(("unjudged", repo, number), f"{repo}: PR #{number} is not judged here: {why}")
             before = known.get(repo) or {}
-            known[repo] = {number: head for number, (head, _) in listed.items()}
+            blind = state.setdefault("stalled_blind", {})
+            count = next((m for line in out if (m := SKIPPED_LINE.fullmatch(line))), None)
+            if count and count[1] == count[2] and unjudged:
+                why = next(iter(unjudged.values()))
+                if blind.get(repo) != why:
+                    blind[repo] = why
+                    say(
+                        f"{repo}: check stalled judged none of its {count[2]} open PRs: {why}",
+                        sid,
+                        f"stalled-blind:{repo}:{hashlib.sha1(why.encode()).hexdigest()[:12]}",
+                        "stalled",
+                    )
+            else:
+                blind.pop(repo, None)
+            known[repo] = {number: head for number, (head, _) in listed.items()} | {
+                number: before[number] for number in unjudged if number in before
+            }
             for number, (head, line) in listed.items():
                 if before.get(number) != head:
                     say(
