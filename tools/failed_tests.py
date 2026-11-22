@@ -1,5 +1,7 @@
 """The tests a CI run ran and failed, as JSON: `python3 tools/failed_tests.py <junit.xml>... <out.json>`.
 
+`--rerun <json>` prints the node ids of its `failed` tests, for a rerun of the job to run only those.
+
 `qualify` uploads the file as the `failed-tests` artifact, which the gatekeeper's break-glass proof reads (its
 breakglass.md): `{"failed": [test ids], "selected": [test ids]}`, each id `<classname>::<name>`. A run whose tests never
 started (no JUnit file, or none readable) writes both lists empty, which the proof reads as a failure with no test ids.
@@ -33,7 +35,34 @@ def collect(paths: list[Path]) -> dict[str, list[str]]:
     return {"failed": failed, "selected": selected}
 
 
+def node_id(test_id: str, root: Path) -> str | None:
+    """The pytest node id of a `<classname>::<name>` id: the longest dotted prefix of the classname that is a .py file
+    under `root`, the rest of the classname as `::Class` parts, then the test name. None when no file matches."""
+    classname, _, name = test_id.rpartition("::")
+    parts = classname.split(".")
+    for cut in range(len(parts), 0, -1):
+        file = root.joinpath(*parts[:cut]).with_suffix(".py")
+        if file.is_file():
+            return "::".join([file.relative_to(root).as_posix(), *parts[cut:], name])
+    return None
+
+
+def rerun_args(failed_json: Path, root: Path) -> list[str]:
+    """The pytest node ids of the tests a `failed-tests.json` says failed: `python3 tools/failed_tests.py --rerun <json>`
+    prints them, one per line, for a rerun of a failed `qualify` job to run alone. Empty when nothing failed, the file is
+    missing or unreadable, or an id maps to no file (then the rerun runs the usual check, never fewer tests)."""
+    try:
+        failed = json.loads(failed_json.read_text()).get("failed", [])
+    except OSError, ValueError, AttributeError:
+        return []
+    ids = [node_id(test, root) for test in failed]
+    return [] if None in ids else list(dict.fromkeys(ids))
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) == 2 and argv[0] == "--rerun":
+        print("\n".join(rerun_args(Path(argv[1]), Path.cwd())))
+        return 0
     if len(argv) < 2:
         print("usage: failed_tests.py <junit.xml>... <out.json>", file=sys.stderr)
         return 2

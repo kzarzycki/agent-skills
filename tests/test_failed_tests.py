@@ -39,3 +39,25 @@ def test_a_run_whose_tests_never_started_publishes_two_empty_lists(tmp_path: Pat
 
 def test_it_wants_an_input_and_an_output() -> None:
     assert failed_tests.main(["only-one"]) == 2
+
+
+def test_rerun_prints_node_ids_of_the_failed_tests(tmp_path, capsys):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("")
+    report = tmp_path / "failed-tests.json"
+    report.write_text(
+        '{"failed": ["tests.test_a::test_x", "tests.test_a.TestK::test_y", "tests.test_a::test_x"], "selected": []}'
+    )
+    assert failed_tests.rerun_args(report, tmp_path) == [
+        "tests/test_a.py::test_x",
+        "tests/test_a.py::TestK::test_y",
+    ]
+
+
+def test_rerun_is_empty_when_nothing_failed_or_an_id_maps_to_no_file(tmp_path):
+    report = tmp_path / "failed-tests.json"
+    assert failed_tests.rerun_args(report, tmp_path) == []  # missing
+    report.write_text('{"failed": [], "selected": []}')
+    assert failed_tests.rerun_args(report, tmp_path) == []
+    report.write_text('{"failed": ["nowhere.test_z::test_q"]}')
+    assert failed_tests.rerun_args(report, tmp_path) == []

@@ -44,8 +44,30 @@ jobs:
           path: .test-map
           key: test-map-restore
           restore-keys: test-map-
+      # A rerun of a failed job (run_attempt > 1) runs only the tests the earlier attempt failed (tools/failed_tests.py --rerun),
+      # not the whole job again; no earlier failure to read (tests off, or the run died) runs the usual check below.
+      - id: previous
+        if: github.run_attempt > 1 && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        continue-on-error: true
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: failed-tests
+          path: .qualify/previous
+          run-id: ${{ github.run_id }}
+          github-token: ${{ github.token }}
+      - id: rerun
+        if: steps.previous.outcome == 'success'
+        run: |
+          python3 tools/failed_tests.py --rerun .qualify/previous/failed-tests.json > .qualify/rerun.txt
+          echo "ids=$(tr '\n' ' ' < .qualify/rerun.txt)" >> "$GITHUB_OUTPUT"
+      - if: steps.rerun.outputs.ids != ''
+        env:
+          IDS: ${{ steps.rerun.outputs.ids }}
+        run: |
+          mise run vendor-engineering-check && mise run lint
+          uv run pytest -q $IDS --junitxml=.qualify/junit.xml
       # A PR or a push runs lint and the tests it touches; the nightly schedule runs the full suite, with a context per test.
-      - if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+      - if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && steps.rerun.outputs.ids == ''
         env:
           GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           # one file per run: a check that starts several pytest runs keeps the last one's
@@ -83,6 +105,7 @@ jobs:
         with:
           name: failed-tests
           path: .qualify/failed-tests.json
+          overwrite: true # a rerun's attempt publishes under the same name
       - name: Check changed-file whitespace
         if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         env:
