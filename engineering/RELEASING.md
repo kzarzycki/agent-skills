@@ -1,12 +1,40 @@
-# Releasing the engineering package
+# Releasing the packages
 
-A release is a PR that moves the entries in `changelog.d/` under a version heading in `CHANGELOG.md` (see
-[changelog.d/README.md](changelog.d/README.md)), then a tag. Whoever cuts it, a person or the routine in
-[ROUTINE.md](ROUTINE.md), follows this page.
+A release moves each package's entries in `changelog.d/` under a version heading in its `CHANGELOG.md` (see
+[changelog.d/README.md](changelog.d/README.md)), sets its version, and tags it. One release cuts every package
+with pending entries in one PR and one commit, and each package keeps its own tag, `<package>-vX.Y.Z`, since
+consumers pin each package separately (#1861).
+
+## Run the release
+
+`gh workflow run release.yml` (add `-f magnitude=minor` for a minor release; the default is patch) does all of it,
+with no agent:
+
+1. It runs `uv run python -m tools.capability_pack.cli cut-release --magnitude <patch|minor>`, which folds every
+   package's entries in issue order under `## X.Y.Z - <date>` (or extends that heading when it is already there),
+   deletes them, and sets X.Y.Z in `apm.yml`, `.claude-plugin/plugin.json` and the package's `ref: ^X.Y.Z` pins in
+   its README and `tests/consumer/apm.yml`. X.Y.Z is the package's last tag moved by the magnitude, or `apm.yml`'s
+   version when an update already moved it further. A package with no entries is left alone; no entries anywhere
+   ends the run with `nothing to release`.
+2. It commits that tree on a `release/<run id>` branch and opens the PR with `loop:queued` and the `land` status,
+   so the Mergify queue takes it. The PR's `qualify` runs `cli release-verify`, which reruns the fold on the PR's
+   branch point and fails unless the PR's tree is identical: a hand edit beyond the fold fails the gate. Since
+   nothing in it is a hand edit, a release PR is risk low and needs no verifier (`bot.release` in
+   `docs/agents/gatekeeper.md`).
+3. When the squash commit reaches main, it creates every released package's tag on that commit, runs
+   `release-check <package> <tag>` for each, and pushes them all in one push. `release-check` passes a commit that
+   releases several packages when every manifest the commit changes is tagged on it, and refuses one that changes
+   a manifest it doesn't tag. Each `engineering-v*` tag starts the tag check, which re-qualifies the release and
+   opens the consumer-sync PR.
+
+The workflow pushes with the `RELEASE_TOKEN` secret, a token that can push branches and tags and open PRs here: a
+PR or tag pushed with the workflow's own token starts no workflow, so neither the PR's `qualify` nor the tag check
+would run. A person can run the same fold by hand: `cli cut-release` (`--dry-run` prints the releases and writes
+nothing), commit its tree on a `release/` branch and open the PR.
 
 ## Check the gatekeeper against real github.com, before the tag
 
-This pre-tag smoke run is a required step. The in-repo job
+This pre-tag smoke run is a required step for an engineering release. The in-repo job
 `Gatekeeper on real GitHub` runs on every PR that changes the engineering-loop scripts. The one
 place a private organization repository's `github.token` shows (GraphQL `FORBIDDEN`) is the
 smoke run: run the `workflow_dispatch` workflow below in a private organization repository with
@@ -52,10 +80,13 @@ jobs:
           ! printf '%s\n' "$out" | grep -q '^gh: ' && printf '%s\n' "$out" | grep -q "^PR #$PR: risk: .*; merge: "
 ```
 
-Before the tag, on the commit that gets tagged (the squash commit on main, which is the smoke `ref`), run
-`uv run python -m tools.capability_pack.cli release-check engineering engineering-vX.Y.Z`.
+The release workflow runs this smoke run itself before it tags an engineering release, from four secrets the
+releaser sets: `RELEASE_SMOKE_REPOSITORY` and `RELEASE_SMOKE_WORKFLOW` as above, `RELEASE_SMOKE_PR` (the `pr`
+input) and `RELEASE_SMOKE_TOKEN` (a token that can dispatch and read that workflow). It dispatches the workflow with
+the squash commit as its `ref`, waits for it to pass, and tags nothing when it fails or a secret is missing.
 
-Then tag the merge commit and push the tag:
-`git tag -a engineering-vX.Y.Z -m engineering-vX.Y.Z <merge sha> && git push origin engineering-vX.Y.Z`.
-The tag check re-qualifies the release and opens the consumer-sync PR, which step 1
-of the next run merges.
+By hand, before the tag, on the commit that gets tagged (the squash commit on main, which is the smoke `ref`), run
+`uv run python -m tools.capability_pack.cli release-check engineering engineering-vX.Y.Z`.
+Then tag every package the commit releases and push the tags in one push, so each `release-check` finds the
+others: `git tag -a <package>-vX.Y.Z -m <package>-vX.Y.Z <merge sha>` for each, then
+`git push origin <tag> <tag> ...`.
