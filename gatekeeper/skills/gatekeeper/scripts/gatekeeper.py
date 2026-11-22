@@ -10368,9 +10368,9 @@ def gate_record(head: str, words: list[str]) -> int:
     (record_name), so another tree, another command or another test list in it is another record and never reused.
     Only origin counts, the branch `local-ci --record` pushes: never this clone's own record file, which a worker
     sharing the clone may have written, and never a worker's log or report."""
-    commit = git("rev-parse", "--verify", f"{head}^{{commit}}").strip()
-    if (held := tree_of(commit)) is None:
-        print(f"no tree for {commit}: run the tests")
+    # tree_of fetches a head this clone lacks from origin, as reusable() does
+    if (held := tree_of(head)) is None:
+        print(f"no tree for {head}: run the tests")
         return 1
     # ponytail: a step keyed by its inputs (inputs_key) is read by its tree here, so a pass on another tree with the
     # same inputs is not found and the verifier runs it; reading step_pass's inputs match would lift that
