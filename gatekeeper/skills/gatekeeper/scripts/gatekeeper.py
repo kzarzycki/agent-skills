@@ -875,7 +875,7 @@ LAND_WHERE.aliases = {
 STEP_PLACES = ("any", "host", "linux")
 # loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
 # A list holds strings; `bot.<login>` is a section per bot.
-STAGES = ("intent", "spec", "plan", "build", "review", "land")
+STAGES = ("intent", "spec", "split", "plan", "build", "review", "land")
 # the specs `spec.auto` may name: an issue that is a bug, a follow-up an agent raised, a sub-issue of an approved epic
 SPEC_KINDS = ("bug", "follow-up", "sub-issue")
 # the levels the risk rating gives a change, lowest first (gatekeeper.md's `levels`: what each asks of the spec and
