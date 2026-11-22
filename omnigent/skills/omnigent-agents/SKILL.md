@@ -751,7 +751,8 @@ again. The event is for whoever owes the step after a landing (the chief of staf
 It also watches every open, non-draft PR of those repos and of each `--stall-repo <owner/name>` (#1819): a PR
 that has not moved toward landing for `--stall-minutes` (default 60; 0 turns the watch off) raises one `pr-stall`
 event, which routes `act` to the notified session, the manager, who clears the blocker or cards the owner the fix it
-proposes. Moving is a push (a commit, a force-push, the PR marked ready), a verifier report (`SATISFIED:`), a go (a
+proposes. Moving is a push (a commit, a force-push, the PR marked ready; a plain push, which GitHub gives no time, is dated no
+earlier than the head's first status or check run, or the sweep that first saw the head), a verifier report (`SATISFIED:`), a go (a
 green `owner` or `land` status) or a merge-queue step (`loop:queued` or `loop:dequeued` added or removed, a queue
 status or check run). The line names each blocker it finds: a red required check (the base's ruleset; any red check
 when unread), a conflict, a verdict on the head without a go (or a fix round asked with no push since), a card waiting

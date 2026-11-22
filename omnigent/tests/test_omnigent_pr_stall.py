@@ -270,3 +270,36 @@ def test_stall_minutes_zero_turns_the_watch_off(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 1e9)
     supervised(og, registry, monkeypatch, 3, notify="cos", console=True, stall_after=0)
     assert not [c for c in calls if any("pulls" in a for a in c)]
+
+
+def test_an_old_commit_pushed_recently_is_dated_by_its_first_check_not_its_commit(
+    monkeypatch,
+) -> None:
+    """A worker commits, waits on its gate, then pushes: the commit's date is an hour old, the push is not."""
+    p = pr(12, pushed=90 * 60, checks=[{"name": "qualify", "started_at": iso(110)}])
+    assert stalls(monkeypatch, [p]) == {}
+
+
+def test_a_head_with_no_ci_is_dated_by_the_sweep_that_first_saw_it(monkeypatch) -> None:
+    """A head new since the last sweep, an old commit with no check run, was pushed after that sweep: no stall."""
+    memo: dict = {}
+    assert list(stalls(monkeypatch, [pr(12, pushed=3 * HOUR)], memo=memo)) == [12]
+    memo["swept"] = time.time() - 600  # the last sweep was 10 minutes ago
+    p = pr(12, pushed=3 * HOUR)
+    p["head"] = {"sha": sha(12), "ref": "claude/ready-12"}
+    memo["prs"]["12"]["head"] = sha(11)  # it saw another head then
+    assert stalls(monkeypatch, [p], memo=memo) == {}
+    entry = memo["prs"]["12"]
+    assert entry["seen_at"] == pytest.approx(time.time() - 600, abs=5)
+    assert entry["due"] == pytest.approx(
+        time.time() - 600 + HOUR, abs=5
+    )  # moving: due an hour after that sweep
+
+
+def test_a_verdict_on_an_earlier_head_is_no_verdict_blocker(monkeypatch) -> None:
+    old = verdict(12, "yes", 2 * HOUR)
+    old["body"] = report(sha(999), "yes")  # it names a head the PR has since moved past
+    p = pr(12)
+    p["timeline"].append(old)
+    found = stalls(monkeypatch, [p])
+    assert "blocker: none found on GitHub" in found[12] and "without a go" not in found[12]

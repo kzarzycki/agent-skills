@@ -5689,7 +5689,16 @@ def pr_stall(facts: dict, threshold: float, now: float) -> tuple[float, str | No
     runs), ``required`` (the base's required check names, None when unread: then any red check counts) and ``cards``
     (the needs-owner events' kinds)."""
     pr, head = facts["pr"], facts["pr"]["head"]["sha"].lower()
-    pushed = [stamp(pr["created_at"])]
+    # a plain push has no time of its own on GitHub (a ``committed`` event carries the commit's date, which a commit
+    # pushed an hour after it was made predates): the head is pushed no earlier than its first status or check run
+    # (CI starts on a push) or the sweep's first sight of it (``seen_at``)
+    shown = [stamp(s["created_at"]) for s in facts["statuses"] if s.get("created_at")]
+    shown += [stamp(c["started_at"]) for c in facts["checks"] if c.get("started_at")]
+    pushed = [
+        stamp(pr["created_at"]),
+        *([min(shown)] if shown else []),
+        facts.get("seen_at") or 0.0,
+    ]
     verdicts: list[tuple[float, str, str]] = []  # (when, word, url) of a report naming the head
     reported, questions, queued = [], [], []
     for e in facts["timeline"]:
@@ -5807,6 +5816,7 @@ def pr_facts(repo: str, pr: dict, bases: dict, refs: dict) -> dict:
         "checks": pages(f"commits/{head}/check-runs?per_page=100", ".check_runs[]"),
         "required": bases[base],
         "cards": refs.get(pr["head"]["ref"], []),
+        "seen_at": 0.0,
     }
 
 
@@ -5850,7 +5860,8 @@ def pr_stalls(
     landing for ``threshold`` seconds. ``memo`` is all it keeps between sweeps: per PR, its head and ``updated_at``
     when last read, when it is next due (its last move plus ``threshold``, so a PR that moved costs no read until
     then; one already reported is read again an hour on, or once its listing changes) and the stall it last reported,
-    so the same stall (the same newest move) wakes no one twice; and the event commits ``loop_cards`` read."""
+    so the same stall (the same newest move) wakes no one twice, and when it first saw its head (the sweep before,
+    since a plain push has no time on GitHub); when it last swept; and the event commits ``loop_cards`` read."""
     now = time.time() if now is None else now
     out = gh(
         "api",
@@ -5867,6 +5878,7 @@ def pr_stalls(
         del prs[gone]
     bases: dict = {}
     refs: dict | None = None
+    last = memo.get("swept", 0.0)  # the sweep before this one: a head new since was pushed after it
     said = []
     for row in sorted(listed, key=lambda p: p["number"]):
         if row.get("draft"):
@@ -5880,11 +5892,16 @@ def pr_stalls(
             continue
         if refs is None:
             refs = loop_cards(repo, memo.setdefault("events", {}))
-        moved, line = pr_stall(pr_facts(repo, row, bases, refs), threshold, now)
+        facts = pr_facts(repo, row, bases, refs)
+        # a head first seen now was pushed since the last sweep: it moved no earlier than that sweep
+        seen_at = seen.get("seen_at", 0.0) if seen.get("head") == row["head"]["sha"] else last
+        facts["seen_at"] = seen_at
+        moved, line = pr_stall(facts, threshold, now)
         entry = {
             "head": row["head"]["sha"],
             "updated": row.get("updated_at"),
             "said": seen.get("said"),
+            "seen_at": seen_at,
         }
         # moving: due a threshold after its last move; stalled and told: read again a threshold on, for its blocker
         entry["due"] = (now if line else moved) + threshold
@@ -5894,6 +5911,7 @@ def pr_stalls(
                 entry["said"] = stall
                 said.append((f"pr-stall:{repo}#{key}:{stall}", f"{repo}: {line}"))
         prs[key] = entry
+    memo["swept"] = now
     return said
 
 
