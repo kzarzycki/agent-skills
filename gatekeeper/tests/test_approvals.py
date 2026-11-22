@@ -9288,11 +9288,12 @@ def test_delegate_is_a_choice_of_all_or_feature() -> None:
         approvals.settings(add(BARE, "loop", "delegate: everything\n"))
 
 
-def test_a_spec_or_plan_is_never_the_delegates_to_approve(
+def test_a_spec_is_not_the_delegates_to_approve_without_delegate_all(
     github: list[tuple[Any, ...]], capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """The fixture project's policy sets no `loop.delegate: all` (test_approvals_delegate_spec.py has the rest)."""
     assert approvals.main(["approve", "spec", "1", "--by", "delegate"]) == 1
-    assert "approve spec is the owner's" in capsys.readouterr().out
+    assert "needs `loop.delegate: all`" in capsys.readouterr().out
     assert github == []
 
 
