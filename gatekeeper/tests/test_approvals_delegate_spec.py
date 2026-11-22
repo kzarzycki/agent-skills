@@ -42,7 +42,7 @@ def delegates(*labels: str, point: str = "spec") -> dict[str, Any]:
 
 
 def test_under_delegate_all_the_delegate_records_a_spec_approval_under_the_owners_delegation(
-    github: list[tuple[Any, ...]],  # noqa: F811
+    github: list[tuple[Any, ...]],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -60,7 +60,7 @@ def test_under_delegate_all_the_delegate_records_a_spec_approval_under_the_owner
 
 
 def test_the_delegate_records_a_plan_the_same_way(
-    github: list[tuple[Any, ...]],  # noqa: F811
+    github: list[tuple[Any, ...]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     on_main(monkeypatch, ALL)
@@ -72,7 +72,7 @@ def test_the_delegate_records_a_plan_the_same_way(
 
 
 def test_without_delegate_all_the_delegates_spec_approval_is_refused_and_posts_nothing(
-    github: list[tuple[Any, ...]],  # noqa: F811
+    github: list[tuple[Any, ...]],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -88,8 +88,10 @@ def test_the_gate_counts_the_delegates_record_only_under_delegate_all() -> None:
     assert approvals.proofs("build", pull(), [delegates()], ALL) == []
     assert not any("spec" in line for line in approvals.proofs("merge", pull(), [delegates()], ALL))
     assert approvals.proofs("build", pull(), [delegates()], BARE) == [
-        "#1: the delegate's `Approved: spec` record counts for nothing here, since loop.md sets no"
-        " `loop.delegate: all`: the owner approves it",
+        (
+            "#1: the delegate's `Approved: spec` record counts for nothing here, since loop.md sets no"
+            " `loop.delegate: all`: the owner approves it"
+        ),
         "#1 has no `Approved: spec` record by the owner",
     ]
 
@@ -108,7 +110,7 @@ def test_a_critical_path_keeps_the_spec_the_owners_whatever_the_delegate_recorde
 
 
 def test_breakglass_stays_the_owners_alone(
-    github: list[tuple[Any, ...]],  # noqa: F811
+    github: list[tuple[Any, ...]],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:

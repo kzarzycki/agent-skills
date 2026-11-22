@@ -11389,7 +11389,7 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return (
             go(args.number, args.head, args.by, args.withdraw)
             if args.point == "merge"
-            else approve(args.point, args.number, by=args.by)
+            else approve(args.point, args.number, None, args.by)
         )
     if args.command == "delegate":
         return delegate(args.pr)
