@@ -1,5 +1,5 @@
 lockfile_version: '1'
-generated_at: '2026-11-18T10:39:59.976493+00:00'
+generated_at: '2026-11-22T04:41:14.979415+00:00'
 apm_version: 0.30.0
 dependencies:
 - repo_url: kzarzycki/agent-skills
@@ -578,7 +578,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:ad50c1ad94326ed4628a13a0f3817dec8a7d13fa2f05b471ce1637657ec74b5d
+  content_hash: sha256:504aa415096c6cb56c80683ac7453f1f965710edf8ea90abd93d380e3c2c3605
 - kind: project-relative
   target: claude
   value: .claude/skills/agent-hygiene
@@ -3336,4 +3336,4 @@ deployments:
 local_deployed_files:
 - .claude/rules/project.md
 local_deployed_file_hashes:
-  .claude/rules/project.md: sha256:ad50c1ad94326ed4628a13a0f3817dec8a7d13fa2f05b471ce1637657ec74b5d
+  .claude/rules/project.md: sha256:504aa415096c6cb56c80683ac7453f1f965710edf8ea90abd93d380e3c2c3605
