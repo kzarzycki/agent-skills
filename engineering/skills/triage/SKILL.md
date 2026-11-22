@@ -28,7 +28,7 @@ States:
 - `ready-for-human`: needs a human to implement. For a PR, ready for a human to merge.
 - `wontfix`: will not be actioned.
 
-A triaged issue carries exactly one category and one state. These are canonical names; apply the repo's label mapping (the `engineering-loop` skill's `issues.md` where the project runs the loop), or these names when it has none. If state labels conflict, flag it and ask before doing anything else.
+A triaged issue carries exactly one category and one state. These are canonical names; apply the repo's label mapping (the one `docs/agents/issue-tracker.md` names, where the project has that file), or these names when it has none. If state labels conflict, flag it and ask before doing anything else.
 
 An unlabeled issue goes to `needs-triage`, and from there to `needs-info`, `ready-for-agent`, `ready-for-human` or `wontfix`; `needs-info` returns to `needs-triage` when the reporter replies. The maintainer can override any transition; flag one that looks unusual and ask before proceeding.
 

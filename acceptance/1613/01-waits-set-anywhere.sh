@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 uv run --quiet python - <<'PY'
 import importlib.util
-spec = importlib.util.spec_from_file_location("oa", "engineering/skills/orchestrating-agents/scripts/omnigent_agent.py")
+spec = importlib.util.spec_from_file_location("oa", "omnigent/skills/omnigent-agents/scripts/omnigent_agent.py")
 oa = importlib.util.module_from_spec(spec)
 import sys; sys.modules["oa"] = oa
 spec.loader.exec_module(oa)

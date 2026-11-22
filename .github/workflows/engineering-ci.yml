@@ -2,6 +2,8 @@ name: Engineering capability pack
 
 on:
   # Every PR, since `qualify` is a required check: a skipped run never reports, so GitHub never merges it (#394).
+  # Drafts too: the Mergify merge queue tests each batch as a draft PR from `mergify/merge-queue/<id>` into main, and
+  # this trigger runs `qualify` on it, GATE_BASE its base. No `push` trigger on those branches, which would run it twice.
   pull_request:
   # A push to main runs the tests it touches, like a PR; the full suite runs nightly (mise check-fast, tools/affected_tests.py).
   push:
@@ -46,6 +48,9 @@ jobs:
       - if: github.event_name == 'schedule'
         env:
           COVERAGE_FILE: .test-map/coverage
+          # the tests it skips, which leave no coverage context (tools/test_map_plugin.py)
+          TEST_MAP_SKIPPED: ${{ github.workspace }}/.test-map/skipped
+          GATE_TEST_PARALLEL: "0" # serial: under xdist --cov-context=test records no per-test contexts, so the map would name no test (#1610)
           PYTEST_ADDOPTS: --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
         run: mise run check
       # Only a green run: the map names the lines every test ran, which a failed run leaves incomplete.
