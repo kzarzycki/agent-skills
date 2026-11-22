@@ -163,11 +163,11 @@ def test_placement_is_stated_once_and_the_role_files_point_to_it() -> None:
 
 
 def test_a_lead_runs_no_test_suite() -> None:
-    """A lead and its verifier both ran the suite on the same two heads (waste audit, finding 9): the worker's gate
-    and the verifier's runs are the runs of record, so the lead reads their logs."""
+    """A lead and its verifier both ran the suite on the same two heads (waste audit, finding 9): the worker's
+    affected-test run and the verifier's e2e proof are the only runs on a head, so the lead reads their logs (#1872)."""
     lead = " ".join((LOOP / "lead.md").read_text().split())
     assert (
-        "You run no test suite: the worker's gate and the verifier's runs are the runs of record"
+        "You run no test suite: the worker's affected-test run and the verifier's e2e proof are the only runs on a head"
         in lead
     )
     assert "a suite to sort failures" not in lead and "Your own test or check run" not in lead
@@ -243,7 +243,7 @@ def test_the_verifier_runs_tests_through_the_project_s_test_task() -> None:
     verifier = " ".join((LOOP / "verifier.md").read_text().split())
     assert "only through the project's test task" in verifier
     assert "never a bare runner such as `pytest`" in verifier
+    assert "never the whole suite: never widen that selection into a whole-suite run" in verifier
     assert (
-        "A selection of more than half the suite runs as the whole suite through that task"
-        in verifier
-    )
+        "A selection of more than half the suite runs as the whole suite" not in verifier
+    )  # #1872
