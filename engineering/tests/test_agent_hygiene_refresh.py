@@ -261,3 +261,33 @@ def test_a_unit_naming_the_clone_through_home_or_linked_from_it_keeps_it_unpulle
         clone / "deploy/app.service"
     )  # what `systemctl --user link` makes
     assert "is a link into it" in (run.hygiene.serves(clone, (set(), [])) or ""), out
+
+
+def test_the_unit_scan_reads_linked_units_the_local_share_folder_and_the_real_path(
+    tmp_path, monkeypatch
+):
+    clone, _head, run, _calls, _git, _installs = managed(tmp_path, monkeypatch)
+    home, serves, idle = tmp_path.resolve(), run.hygiene.serves, (set(), [])
+    shared = home / ".local/share/systemd/user"
+    shared.mkdir(parents=True)
+    (shared / "app.service").write_text(f"[Service]\nWorkingDirectory={clone}\n")
+    assert "points at it" in (serves(clone, idle) or "")
+    (shared / "app.service").unlink()
+    dotfiles = home / "dotfiles"
+    dotfiles.mkdir()
+    (dotfiles / "app.service").write_text(
+        f"[Service]\nWorkingDirectory=%h/{clone.relative_to(home)}\n"
+    )
+    (shared / "app.service").symlink_to(
+        dotfiles / "app.service"
+    )  # linked from outside the clone: read its target
+    assert "points at it" in (serves(clone, idle) or "")
+    (shared / "app.service").unlink()
+    (home / "links").mkdir()
+    (home / "links/dev").symlink_to(
+        clone.parent
+    )  # the finding names the clone through a linked folder
+    (shared / "app.service").write_text(
+        f"[Service]\nWorkingDirectory={clone}\n"
+    )  # the unit names its real path
+    assert "points at it" in (serves(home / "links/dev" / clone.name, idle) or "")
