@@ -484,8 +484,8 @@ A spec or plan approval is a person's: a comment `approve --by owner` writes on 
 reads, plus the `approved:<point>` label for the board. No agent writes one, since an agent approving its own work
 is no approval. Where the policy on origin's default branch sets `loop.delegate: all`, the owner's standing
 delegation covers specs and plans too: `approve <spec|plan> <issue> --by delegate` writes the record with `By:
-delegate` under the line `Approved under the owner's delegation.`, adds the label and leaves `needs-owner`, as the
-delegate's merge go does; without the setting it is refused. The gate counts a delegate's current record in place of
+delegate` under the line `Approved under the owner's delegation.`, adds the label and removes the issue's
+`needs-owner`, the spec's hold; without the setting it is refused. The gate counts a delegate's current record in place of
 the owner's only while the policy it reads sets `delegate: all` and the PR touches no path `risk.critical_paths`
 names, which stays the owner's, and otherwise names why it doesn't count. `approve breakglass` stays the owner's
 alone. The owner's record:
@@ -8491,8 +8491,8 @@ def approve(point: str, number: int, seen: str | None = None, by: str = "owner")
     `needs-owner` removed. Every earlier record of the point is superseded and minimized. With `seen`, the version
     the owner's label was checked against (adopted), an edit since is refused: the label never covered it. With `by`
     `delegate`, the delegated approver's, under the owner's delegation: refused unless the policy on origin's default
-    branch sets `loop.delegate: all`, its record opening with VOICED's line so a reader tells it from the owner's, and
-    `needs-owner` left, as the delegate's merge go leaves it; the gate counts it as delegated() says."""
+    branch sets `loop.delegate: all`, its record opening with VOICED's line so a reader tells it from the owner's; the
+    gate counts it as delegated() says."""
     if by == DELEGATE and delegation(project()[1]) != "all":
         raise Refused(
             f"approve {point} --by delegate needs `loop.delegate: all` in the policy on origin's default branch:"
@@ -8534,10 +8534,11 @@ def approve(point: str, number: int, seen: str | None = None, by: str = "owner")
         if not note.get("isMinimized") and note.get("viewerCanMinimize"):
             minimize(note["id"])
     label(number, f"approved:{point}", add=True)
+    # the issue's `needs-owner` is its spec's or plan's hold, which problems() reads whatever the records say, so the
+    # delegate's approval lifts it too; a critical path still waits for the owner's record (delegated)
+    label(number, NEEDS_OWNER, add=False)
     if by == DELEGATE:
         print(f"#{number}: the delegate's approval of the {point} is recorded{DELEGATED}")
-        return 0
-    label(number, NEEDS_OWNER, add=False)
     return 0
 
 

@@ -52,7 +52,8 @@ def test_under_delegate_all_the_delegate_records_a_spec_approval_under_the_owner
     assert github == [
         ("comment", 1, f"{DELEGATED}Approved: spec\nBy: delegate\nSpec: {TEXTED}\n"),
         ("label", 1, "approved:spec", True),
-    ]  # `needs-owner` stays, as the delegate's merge go leaves it
+        ("label", 1, "needs-owner", False),
+    ]
     assert "under the owner's delegation" in capsys.readouterr().out
     # the record reads back as the delegate's, never the owner's
     body = github[0][2]
@@ -119,3 +120,15 @@ def test_breakglass_stays_the_owners_alone(
     assert approvals.main(argv) == 1
     assert "approve breakglass is the owner's alone" in capsys.readouterr().out
     assert github == []
+
+
+def test_a_delegated_spec_leaves_no_owner_hold_on_the_gate() -> None:
+    """The issue as the delegate's approve leaves it: its record, `approved:spec`, and no `needs-owner`, so neither
+    the proofs nor the label problems hold `check build` or `check merge` for the owner (#1808, D1)."""
+    approved = delegates()
+    assert (
+        approvals.problems([approved], None) + approvals.proofs("build", pull(), [approved], ALL)
+        == []
+    )
+    held = delegates("needs-owner")  # what the issue would be had the approve left the hold
+    assert approvals.problems([held], None) == ["#1 waits for the owner (needs-owner)"]
