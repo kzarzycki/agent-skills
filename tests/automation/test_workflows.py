@@ -37,7 +37,8 @@ def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
     full = next(st for st in _steps(workflow) if st.get("run") == "mise run check")
     # a `tests` dispatch (the break-glass proof's re-run alone) runs those tests instead
     assert (
-        fast["if"] == "github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'"
+        fast["if"]
+        == "github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && steps.rerun.outputs.ids == ''"
     )
     assert fast["env"]["GATE_BASE"] == whitespace["env"]["BASE_SHA"]
     assert full["if"] == "github.event_name == 'schedule'"

@@ -61,3 +61,10 @@ def test_rerun_is_empty_when_nothing_failed_or_an_id_maps_to_no_file(tmp_path):
     assert failed_tests.rerun_args(report, tmp_path) == []
     report.write_text('{"failed": ["nowhere.test_z::test_q"]}')
     assert failed_tests.rerun_args(report, tmp_path) == []
+
+
+def test_rerun_is_empty_when_an_id_has_whitespace(tmp_path):
+    (tmp_path / "test_a.py").write_text("")
+    report = tmp_path / "failed-tests.json"
+    report.write_text('{"failed": ["test_a::test_x[a b]"]}')
+    assert failed_tests.rerun_args(report, tmp_path) == []

@@ -10,6 +10,7 @@ started (no JUnit file, or none readable) writes both lists empty, which the pro
 from __future__ import annotations
 
 import json
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -56,7 +57,8 @@ def rerun_args(failed_json: Path, root: Path) -> list[str]:
     except OSError, ValueError, AttributeError:
         return []
     ids = [node_id(test, root) for test in failed]
-    return [] if None in ids else list(dict.fromkeys(ids))
+    # an id with whitespace would split into several pytest arguments in the workflow's shell
+    return [] if None in ids or any(re.search(r"\s", i) for i in ids) else list(dict.fromkeys(ids))
 
 
 def main(argv: list[str]) -> int:
