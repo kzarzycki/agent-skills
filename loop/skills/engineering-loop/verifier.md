@@ -238,6 +238,13 @@ gate reads):
   than leave a finding off the review.
 - The report is posted folded (github.md, Comment shape): `verdict` keeps the closing lines in view and puts the
   criteria under `<details>`, so write the closing lines as below, each alone on its line, and keep prose out of them.
+- A `Manual:` line taken on the worker's evidence (Manual lines) is one line, before the closing lines:
+  `Accepted on evidence: <the Manual line> — <proof log>`, with an em dash (`—`) and the worker's proof log
+  after it; `verdict` refuses one without the log, and one written inline in another line (`7. Manual: … **Accepted on
+  evidence:** …`), which the risk check and the posted review would not see.
+- `Not run:` names only a run the verdict relies on (it blocks `SATISFIED: yes`, as above). A step outside this pass's
+  scope, such as the gate or mutation patches the brief leaves to the lead, goes on an `Out of scope: <step>, <why>`
+  line, which blocks nothing.
 - End with `Head: <sha>`, the full commit you reviewed (`git rev-parse HEAD` in your
   worktree), then `VERDICT: <n> blocker, <n> major, <n> minor`, `SATISFIED: yes|no` and
   `Risk: low — <reason>` or `Risk: high — <reason>` (Steering, Judge the risk). The gate
