@@ -394,3 +394,19 @@ def test_start_and_run_from_a_launcher_without_the_cloud_harness_land_on_the_bri
         [cmd, "claude-cloud", "t", "b.md", f"{tmp_path}/r.md", "--confirm-seconds", "0", *rest]
     )
     assert (code, og.hosts_of, og.workspaces) == (0, {"s0": "far"}, [LAUNCH])
+
+
+def test_the_launch_dir_most_cloud_sessions_ran_in_wins_over_a_newer_one_off(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A verifier's per-PR worktree is newest while its review runs, then removed: a gate or worker
+    placed there would lose its launch dir mid-run, so the standing dir wins."""
+    one_off = "/home/a/dev/v1690-cloud"
+    og = bridge(
+        record("far", LAUNCH, at=1), record("far", LAUNCH, at=2), record("far", one_off, at=9)
+    )
+    og.files[f"{one_off}/.claude/settings.local.json"] = pinned()
+    del og.rows[1]["memory_available_mb"]  # a server that lists no memory
+    assert omnigent_agent.far_launch_dirs(og, "far") == [LAUNCH, one_off]
+    assert omnigent_agent.pick_cloud_host(og, Path(LOCAL)) == ("far", Path(LAUNCH))
+    assert f"at {LAUNCH} (memory not listed)" in capsys.readouterr().err  # never "0 MB"

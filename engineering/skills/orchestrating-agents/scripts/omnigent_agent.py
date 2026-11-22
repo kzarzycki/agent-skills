@@ -3992,11 +3992,9 @@ def pick_cloud_host(og: Omnigent, workspace: Path | None) -> tuple[str, Path] | 
                 why.append(f"host {name}: {e}")
                 print(f"host {name} skipped for a cloud child: {e}", file=sys.stderr)
                 continue
-            mb = float(row.get("memory_available_mb") or 0)
-            print(
-                f"cloud child placed on host {name} at {place} ({mb:.0f} MB available)",
-                file=sys.stderr,
-            )
+            mb = row.get("memory_available_mb")  # absent on a server that lists none
+            room = "memory not listed" if mb is None else f"{float(mb):.0f} MB available"
+            print(f"cloud child placed on host {name} at {place} ({room})", file=sys.stderr)
             return host, place
     if offered is False:
         raise Fail(
@@ -4048,8 +4046,9 @@ def offers_cloud(og: Omnigent, hosts: list[dict]) -> bool | None:
 
 def far_launch_dirs(og: Omnigent, host_id: str) -> list[str]:
     """The workspaces of the repository's project's cloud sessions (``GET
-    /v1/sessions?project=<name>``) on host ``host_id`` (by any of its ``host_aliases``), newest
-    first: its launch dirs there. The project is the one named for the repository
+    /v1/sessions?project=<name>``) on host ``host_id`` (by any of its ``host_aliases``), the dir
+    most of them ran in first, newest first among equals: its launch dirs there, the standing one
+    ahead of a one-off verifier worktree that is removed when its review ends. The project is the one named for the repository
     (``project_name``), never the caller's session's (``home``), which can file under another
     project. It reads only the server's records, so no host or path is configured: a project's
     cloud lead, started with ``start --top-level --host``, names both."""
@@ -4061,14 +4060,14 @@ def far_launch_dirs(og: Omnigent, host_id: str) -> list[str]:
         rows = og.call("GET", path).get("data", [])
     except Fail:
         return []
-    found: list[str] = []
+    runs: dict[str, tuple[int, float]] = {}  # each dir's session count and newest start
     named = host_aliases(og, host_id)
-    for row in sorted(rows, key=lambda r: float(r.get("created_at") or 0), reverse=True):
+    for row in rows:
         place = str(row.get("workspace") or "")
-        here = str(row.get("host_id") or "") in named and place and place not in found
-        if here and cloud_session(og, row):
-            found.append(place)
-    return found
+        if str(row.get("host_id") or "") in named and place and cloud_session(og, row):
+            count, newest = runs.get(place, (0, 0.0))
+            runs[place] = (count + 1, max(newest, float(row.get("created_at") or 0)))
+    return sorted(runs, key=lambda p: runs[p], reverse=True)
 
 
 def cloud_placement(og: Omnigent) -> tuple[str, str] | None:
