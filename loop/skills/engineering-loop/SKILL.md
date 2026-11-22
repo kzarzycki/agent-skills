@@ -708,8 +708,7 @@ or the owner's private network.
   taking builds off the host is the split's point; a worker's iterations compile only in the
   cloud.
 - **Nothing on GitHub names a host or a path**: not the report, the verdict, the evidence or
-  a brief's text quoted there, since a public repo publishes them. A session link or id may
-  stay, in commits, PR bodies and comments alike.
+  a brief's text quoted there, since a public repo publishes them.
 - **Verifier in the worker's VM.** With `Placement: same machine` (or the old `Cloud verifier: worker session`), the verifier of a
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host; the sharing a
