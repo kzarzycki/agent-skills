@@ -1808,8 +1808,9 @@ class Omnigent:
         """The project's ``docs/agents/loop.md`` on host ``host_id``, which a session started for
         ``workspace`` there will run on; empty when the checkout there has none, or when ``workspace``
         sits outside a checkout. Read once per host and workspace, through the host's file API.
-        That API lists a folder before any session exists but gives no file's text, so the checkout
-        and the file are found by listing, and the text is read through a live session on the host.
+        The host's folder listing works before any session exists, so the checkout and the file are
+        found by listing; the text is read through the host's file route (``read_on_host``), else
+        a live session on the host.
         A host or workspace that can't be read is a ``Fail`` naming the host and the path: a silent
         empty value is how a missing ``Lead autocompact:`` went unnoticed."""
         key = (host_id or "", workspace)
@@ -3012,10 +3013,32 @@ def far_checkout_root(og: Omnigent, host_id: str, workspace: str, what: str) -> 
     return root
 
 
+def host_file(og: Omnigent, host_id: str, path: str) -> str | None:
+    """``path``'s text through the host's file route (``GET /v1/hosts/<id>/files/<path>``, which
+    needs no session on the host): a UTF-8 file up to 64 KiB. None, so the caller reads through a
+    live session, on a 404 or 405 (a server or host without the route, or a missing file), a 400
+    (a folder, such as a main checkout's ``.git``, or not UTF-8: a session lists the one and
+    reads the other), a 403 for ``~/.claude.json`` (the folder-trust check must read it), and a
+    200 with no text. Any other refusal (403 a credential file, 413 too large, 503 host offline) is
+    a ``Fail`` carrying the server's message, with no fallback."""
+    url = "/v1/hosts/" + host_id + "/files/" + quote(path.strip("/"), safe="/")
+    try:
+        content = og.call("GET", url).get("content")
+    except Fail as e:
+        code = e.__cause__.code if isinstance(e.__cause__, HTTPError) else 0
+        if code in (400, 404, 405) or (code == 403 and path.endswith("/.claude.json")):
+            return None
+        raise
+    return content if isinstance(content, str) else None
+
+
 def read_on_host(og: Omnigent, host_id: str, path: str) -> str:
-    """``path`` (absolute, on host ``host_id``) read through a live session there, since the host's
-    own file API lists a folder but gives no file's text. ``Gone`` when a session answered 404
-    (naming it), else ``Fail``: no live session, or the read failed."""
+    """``path`` (absolute, on host ``host_id``) read through the host's file route, which needs no
+    session there (``host_file``); a server or host without it is read through a live session
+    instead. ``Gone`` when a session answered 404 (naming it), else ``Fail``: no live session, a
+    refused read, or the read failed."""
+    if (text := host_file(og, host_id, path)) is not None:
+        return text
     why: Exception = Fail("no live session there to read it through")
     for s in live_sessions(og, host_id)[:FAR_READS]:
         try:
@@ -3066,10 +3089,9 @@ def far_capacity(
     row names one, else per core over its ``/proc/stat``'s ``cpuN`` lines; ``cpu=False`` (a cloud
     start) reads and judges ``/proc/meminfo`` alone. None and why when it can't be read: no live
     session, every read failing, or no ``/proc`` (a Mac)."""
-    # ponytail: a host's load and memory read through one of its sessions, since the server reads
-    # no host-level file (GET /v1/hosts/<id>/filesystem/<file> answers 404 "path is not a
-    # directory") and GET /v1/hosts carries no load or memory. Upgrade: either one, which would
-    # also give a Mac's load.
+    # ponytail: a host's load and memory read through one of its sessions, since GET /v1/hosts
+    # carries neither and the host file route (``host_file``) is for regular UTF-8 files, not
+    # /proc, which is unchecked. Upgrade: either one, which would also give a Mac's load.
     sessions = sorted(
         live_sessions(og, host_id),
         key=lambda s: float(s.get("updated_at") or s.get("created_at") or 0),
