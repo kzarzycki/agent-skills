@@ -97,7 +97,11 @@ shown; `--withdraw` posts a newer failing status and a `Withdrawn: merge` record
 label. A status belongs to one commit, so no push carries the go to a head the owner didn't see. `--by delegate` is
 the delegated approver's go, pinned to one head the same way: the `owner` status described as the delegate's (`The
 delegate's go on <sha>, under the owner's delegation`) and the record `Approved under the owner's delegation.`, then
-`Approved: merge`, `By: delegate`, `Head: <sha>`, so the PR shows whose go it is. Into the default branch it is
+`Approved: merge`, `By: delegate`, `Head: <sha>`, so the PR shows whose go it is. Where GitHub refuses the status
+write with a 403, as a cloud session's proxy does (#1816), the record is posted with a `Status: refused` line and
+stands as the go alone on a head with no `owner` status: the newest such record, or `Withdrawn: merge` record, naming
+that head and written by the account running this or a writer decides, still pinned to its head; any status on the
+head decides over records, and a record without the line still needs its status. Into the default branch it is
 refused unless loop.md's `delegate: all` under `loop` (default `feature`) lets the delegate's go cover that branch
 too, and a delegate's status there counts only while it does, so removing the setting withdraws those goes on open
 PRs; into a feature branch it counts either way. `check merge` and `land` print whose go, the owner's or the
@@ -273,7 +277,11 @@ queue (they win), a Mergify queue that `.mergify.yml` configures merges instead,
 no GitHub queue for: `land` takes no lock, runs no gate and merges nothing. It judges the same candidates (step 2) with
 the base's code, and hands each to Mergify by posting the `land` status (success, `Queued for Mergify at <sha>`) on its
 head and adding `loop:queued`; `.mergify.yml`'s queue conditions
-read both, and the status binds the hand-over to that head, so a push leaves them unmet. A PR already carrying the label
+read both, and the status binds the hand-over to that head, so a push leaves them unmet. Where GitHub refuses the
+status write with a 403 (a cloud session's proxy), `land` adds the label and comments a `Queued for Mergify` record
+with `Head: <sha>`, once per head, and the repo's `.github/workflows/land-status.yml` posts the `land` success on that
+sha for a writer's record while it is the PR's head and the label is on; an eviction's `land` error refused there is
+said, and the label coming off leaves the queue. A PR already carrying the label
 with `land` green on its head is reported queued and left alone. Mergify tests each batch as a draft PR on top of the
 base in CI, retries a red one once itself and squash-merges on green; a PR it dequeues (red again, or conflicting) gets
 its `dequeued_label`, `loop:dequeued`, and the next land that reads it with `land` green on the head evicts it: `land`
@@ -3854,6 +3862,49 @@ def go_on(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
         ):
             return ""
         return by if current(pull, "merge", "head", head, by) else ""
+    return recorded_go(pull, head, loop)
+
+
+# the first line of the record `approve merge --withdraw` writes, beside `Approved: merge`
+WITHDRAWN = "Withdrawn: merge"
+# the line an `Approved: merge` record carries when GitHub refused its `owner` status (unwritten), which lets it stand
+# as the go alone (recorded_go); a record without it still needs its status
+UNSTATUSED = "Status: refused"
+
+
+def recorded_go(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
+    """go_on for a head with no `owner` status, as a cloud session leaves it when its proxy refuses the status write
+    (#1816): the newest `Approved: merge` record that says its status was refused (UNSTATUSED), or `Withdrawn: merge`
+    record, naming `head` and written by the account running this or a writer (a comment is anyone's to write in a
+    public repo, so its author is what counts), decides: whose go it is, '' for a withdrawal or a delegate's go the
+    delegation no longer covers, None with no such record. An `Approved: merge` record without the line, as a host
+    writes beside its status, is still no go alone."""
+    for note in reversed(notes(pull)):
+        lines = machine(note["body"]).strip().splitlines()
+        if lines and lines[0].strip() in VOICED.values():
+            lines = lines[1:]
+        if not lines or lines[0].strip() not in {"Approved: merge", WITHDRAWN}:
+            continue
+        found = fields("\n".join(lines))
+        login = (note.get("author") or {}).get("login")
+        if (
+            found.get("head", "").lower() != head.lower()
+            or found.get("by") not in VOICED
+            or lines[0].strip() != WITHDRAWN
+            and found.get("status") != UNSTATUSED.split(": ", 1)[1].lower()
+            or login is None
+            or not (login == viewer() or writer(login))
+        ):
+            continue
+        by = found["by"]
+        if (
+            lines[0].strip() == WITHDRAWN
+            or by == DELEGATE
+            and default(pull)
+            and delegation(base_policy(pull["baseRefName"], loop)) != "all"
+        ):
+            return ""
+        return by
     return None
 
 
@@ -3880,6 +3931,32 @@ def whose(pull: dict[str, Any], loop: str | None) -> list[str]:
             f" verifier's pass on it says `{LOGIC}: none`"
         )
     return [line]
+
+
+# what a cloud session's GitHub proxy answers a commit-status write it refuses (#1816): comments, labels and the
+# merge pass, `POST statuses/<sha>` alone does not
+STATUS_REFUSED = "HTTP 403"
+
+
+def status_refused(exc: BaseException) -> bool:
+    """Whether a status write failed because GitHub, or a proxy in front of it, refuses this token the path: a 403.
+    Any other failure (unreachable, a 422 on a bad sha) is no refusal, and stops as before."""
+    return isinstance(exc, subprocess.CalledProcessError) and STATUS_REFUSED in (exc.stderr or "")
+
+
+def unwritten(head: str, context: str, description: str, state: str = "success") -> str | None:
+    """post_status, and None; the refusal's text when the write is refused (status_refused), printed with what still
+    carries the step, so a cloud session goes on: the go's record (go_on reads it with no status there), or
+    `loop:queued` and the hand-over record (mergify_step). Any other failure raises."""
+    try:
+        post_status(head, context, description, state)
+    except subprocess.CalledProcessError as exc:
+        if not status_refused(exc):
+            raise
+        why = stderr_of(exc)
+        print(f"the `{context}` status on {head} was not written, GitHub refused it: {why}")
+        return why
+    return None
 
 
 def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int:
@@ -3916,13 +3993,11 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
     if withdraw:
         # the label off too, since into a feature branch it is a go of its own
         label(number, MERGE_LABEL, add=False)
-        post_status(
-            head, OWNER_GO, f"{who.capitalize()} withdrew their go on {head[:12]}", state="failure"
-        )
+        unwritten(head, OWNER_GO, f"{who.capitalize()} withdrew their go on {head[:12]}", "failure")
         comment(
             number,
             fold(
-                "Withdrawn: merge",
+                WITHDRAWN,
                 f"{who.capitalize()} withdrew their go on {head[:7]}.",
                 f"By: {by}\nHead: {head}",
             ),
@@ -3930,17 +4005,20 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
         print(f"PR #{number}: {who}'s go on {head} is withdrawn")
         return 0
     if by == DELEGATE:
-        post_status(head, OWNER_GO, f"The delegate's go on {head[:12]}{DELEGATED}")
+        refused = unwritten(head, OWNER_GO, f"The delegate's go on {head[:12]}{DELEGATED}")
     else:
-        post_status(head, OWNER_GO, f"The owner's go on {head[:12]}")
+        refused = unwritten(head, OWNER_GO, f"The owner's go on {head[:12]}")
     comment(
         number,
         fold(
             VOICED[by],
             f"Go to merge {head[:7]}.",
-            f"Approved: merge\nBy: {by}\nHead: {head}",
+            f"Approved: merge\nBy: {by}\nHead: {head}"
+            + (f"\n{UNSTATUSED}" if refused is not None else ""),
         ),
     )
+    if refused is not None:
+        print(f"PR #{number}: the record alone carries the go on {head}")
     print(f"PR #{number}: {who}'s go is on {head}{DELEGATED if by == DELEGATE else ''}")
     if by != DELEGATE and NEEDS_OWNER in names(pull):
         # the owner's go names this PR, so the hold it waited on is theirs to lift; the delegate's never is
@@ -7900,14 +7978,46 @@ def mergify_step(pull: dict[str, Any]) -> int:
         if QUEUED in labels and ours:
             print(f"{where} is queued for Mergify at {head}")
             return 0
-        post_status(head, LAND, MERGIFY_QUEUED.format(head))
+        refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
         if QUEUED not in labels:
             label(number, QUEUED, add=True)
+        if refused is not None:
+            handed_by_record(pull)
     except subprocess.CalledProcessError as exc:
         print(f"{where}: GitHub refused its hand-over to Mergify at {head}: {stderr_of(exc)}")
         return 1
     print(f"{where} queued for Mergify at {head}")
     return 0
+
+
+# the first line of the hand-over record a cloud land comments when the `land` status is refused (#1816); the
+# workflow `.github/workflows/land-status.yml` reads it and posts the `land` status on its `Head:`
+HANDED = "Queued for Mergify"
+
+
+def handed_by_record(pull: dict[str, Any]) -> None:
+    """The hand-over where the `land` status can't be written (unwritten): a HANDED record naming the head, once per
+    head, which the repo's land-status workflow turns into the `land` success on that sha while it is still the PR's
+    head and the PR carries QUEUED, so `.mergify.yml` reads the same status and a push still leaves the queue."""
+    where, head = f"PR #{pull['number']}", pull["headRefOid"]
+    if any(
+        machine(note["body"]).strip().splitlines()[:1] == [HANDED]
+        and fields(note["body"]).get("head", "").lower() == head.lower()
+        for note in notes(pull)
+    ):
+        print(f"{where}: its hand-over record for {head} is already on the PR")
+        return
+    comment(
+        pull["number"],
+        fold(
+            HANDED,
+            f"Queued for Mergify at {head[:7]}: the land-status workflow posts the `land` status on it.",
+            f"Head: {head}",
+        ),
+    )
+    print(
+        f"{where}: the hand-over record names {head}, for the land-status workflow to post `land` on"
+    )
 
 
 def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
@@ -7916,7 +8026,9 @@ def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
     reason where its check run on the head gives one (mergify_reason). Mergify already retried a red batch once
     (`max_checks_retries: 1`), so its dequeue is the second red and land keeps no count."""
     head, number = pull["headRefOid"], pull["number"]
-    post_status(head, LAND, "Evicted from the Mergify merge queue", "error")
+    # refused (unwritten), the label coming off is what leaves the queue, since the land-status workflow posts nothing
+    # without it
+    unwritten(head, LAND, "Evicted from the Mergify merge queue", "error")
     for name in (QUEUED, DEQUEUED):
         if name in labels:
             label(number, name, add=False)
