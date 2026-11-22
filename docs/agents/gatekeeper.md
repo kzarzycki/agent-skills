@@ -40,6 +40,17 @@ breakglass:
   earlier_runs: 2   # green runs of the required check the proof needs from before the red
   smoke: QUALIFY_TIMEOUT=900 mise run check-land   # the local-ci record, or Actions run, that shows the head builds
 
+bot:
+  # the Release workflow's PR (#1861, engineering/RELEASING.md): `qualify`'s `cli release-verify` fails it unless its tree is exactly `cli cut-release` rerun on its branch point, so no verifier reads it. Its commits carry an identity no GitHub account holds, which a `branch` section counts as the PR author's.
+  release:
+    branch: release/
+    paths:
+      - "*/CHANGELOG.md"
+      - "*/changelog.d/*.md"
+      - "*/apm.yml"
+      - "*/.claude-plugin/plugin.json"
+      - "*/README.md"
+
 risk:
   verifier: true
   paths:
