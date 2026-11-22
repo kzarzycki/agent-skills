@@ -9,7 +9,7 @@ spec:
   auto: true
 
 loop:
-  # the merge check `local-ci` runs (`land` runs no gate: with `land.queue: mergify` below the queue's batch check is the one run on the merged tree): vendor check and lint, about a minute, no tests, since the Mergify batch's `qualify` runs the tests its combined diff touches (test-batch) once per tree. The nightly run covers the full suite; a red nightly becomes an issue, a bisect over the day's merges, and a revert or fix PR through the loop.
+  # the merge check `local-ci` runs, and `land`'s batch gate where it lands without a queue (with `land.queue: mergify` below no landing runs it): vendor check and lint, about a minute, no tests, since the Mergify batch's `qualify` runs the tests its combined diff touches (test-batch) once per tree. The nightly run covers the full suite; a red nightly becomes an issue, a bisect over the day's merges, and a revert or fix PR through the loop.
   gate: QUALIFY_TIMEOUT=900 mise run check-land
   machine_exit: 78   # qualify exits 78 when a step stops on QUALIFY_TIMEOUT: the host's load, not the change
   owner: kzarzycki   # the login whose own records count as the owner's: break-glass approvals, and an approved:spec or approved:plan label added after the issue's last edit
