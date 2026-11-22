@@ -9431,6 +9431,40 @@ def test_a_pass_from_a_host_or_a_cloud_session_is_pushed_and_reused_by_another_c
     }
 
 
+def test_gate_record_reuses_origins_record_only_for_the_same_tree_and_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1822: the verifier reads origin's record of the gate on the head's tree instead of running it again; a head
+    with another tree, or another command (another test list), has no record and is run. Clone B's own record file
+    never counts, since a worker sharing the clone writes it."""
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    monkeypatch.chdir(tmp_path / "b")
+    assert approvals.main(["gate-record", head]) == 0
+    assert f"as {branch_of(head)} at 2026-" in capsys.readouterr().out
+    assert approvals.main(["gate-record", head, "--", "pytest", "tests/test_other.py"]) == 1
+    assert "no record of `pytest tests/test_other.py`" in capsys.readouterr().out
+    b = tmp_path / "b"
+    git_in(b, "checkout", "-q", head)
+    (b / "changed.txt").write_text("another tree\n")
+    git_in(b, "add", "changed.txt")
+    git_in(
+        b,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.com",
+        "commit",
+        "-q",
+        "-m",
+        "another tree",
+    )
+    other = git_in(b, "rev-parse", "HEAD").strip()
+    approvals.recorded(approvals.tree_of(other), "true").parent.mkdir(parents=True, exist_ok=True)
+    approvals.recorded(approvals.tree_of(other), "true").write_text('{"exit": 0}')
+    assert approvals.main(["gate-record", other]) == 1
+    assert f"no record of `true` on tree {approvals.tree_of(other)}" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("risk", [(), ("risk:high",)], ids=["low", "high"])
 def test_check_merge_and_land_reuse_a_record_branch_with_no_status_at_every_risk(
     hub: dict[str, list[dict[str, Any]]],
