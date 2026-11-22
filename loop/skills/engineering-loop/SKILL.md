@@ -654,7 +654,7 @@ With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead runs on
 the host and the workers run in the cloud, with the verifier in the worker's VM unless `Placement:` says otherwise (Where heavy steps run), as sessions of `<agent>`, a registered
 Omnigent agent whose tools run in a cloud VM, which the lead starts. Without the line the
 same holds with `claude-cloud` as the agent and the policy's `gate` as the gate, so a project
-needs no setup before its heavy runs leave the host. The cloud worker's gate is one rule, which overrides that default where loop.md has an `Affected tests:` line: `affected-tests` when loop.md has an `Affected tests:` line, else the `Cloud worker:` line's gate task, else the policy's `gate`. A line that opens `Cloud worker: none`,
+needs no setup before its heavy runs leave the host. The cloud worker's test run is one rule, which overrides that default where loop.md has an `Affected tests:` line: `affected-tests` when loop.md has an `Affected tests:` line, else the `Cloud worker:` line's gate task, else the policy's `gate`. A line that opens `Cloud worker: none`,
 with the project's reason after it, keeps workers on hosts: nothing in this section applies
 and every role file reads as written. A project that has the line keeps its meaning. `env <name>` on the
 line (`Cloud worker: <agent>, gate <task>, env <name>`) names the project's cloud environment, the one

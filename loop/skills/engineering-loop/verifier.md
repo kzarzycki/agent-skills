@@ -113,7 +113,7 @@ yourself, keeping standards and spec as separate axes.
 - **Run the checks yourself.** Run the acceptance command the brief's `Acceptance tests:` line
   names on the head (SKILL.md, Acceptance checks), and the e2e tests the worker wrote for this PR,
   which its report names and `git diff --name-only <base>...<head>` shows, each as a long run is
-  (above): they are the run that proves the change works. You never rely on the worker's gate
+  (above): they are the run that proves the change works. You never rely on the worker's test
   log, which is the worker's own file, and run no full suite and no gate (Gates and repros).
 - **Manual lines.** Probe a `Manual:` line by hand when you rate the change high or the line is
   risky in itself. Otherwise you may accept it on the worker's evidence, written `Accepted on
