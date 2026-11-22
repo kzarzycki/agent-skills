@@ -363,7 +363,8 @@ def test_run_host_is_refused_for_a_host_agent_without_top_level(
     )
     assert (
         code != 0
-        and "--host needs --top-level, or a run of a cloud agent" in capsys.readouterr().err
+        and "--host needs --top-level, or a cloud agent"
+        in capsys.readouterr().err  # #838's wording
     )
     assert og.sessions == {}
 

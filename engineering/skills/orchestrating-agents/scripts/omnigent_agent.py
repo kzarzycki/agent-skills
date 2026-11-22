@@ -10478,10 +10478,15 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             and args.agent not in AGENTS
             and og.harness(args.agent) == CLOUD_HARNESS
             and (args.workspace is None or args.workspace.is_absolute())
+            and (
+                (args.cmd == "start" and args.workspace is not None)
+                or offers_cloud(og, og.call("GET", "/v1/hosts")["hosts"]) is False
+            )
         ):
             # a cloud child's bridge holds memory on its host, so spread them (#838), and one this
-            # host can't run goes to a launch dir on a host that can (#1693); a lead stays where it
-            # is until the server can move it (omnigent#539, #489)
+            # host can't run goes to a launch dir on a host that can (#1693): `run`, or no
+            # --workspace, only then, so a launcher offering the harness keeps #838's behaviour; a
+            # lead stays where it is until the server can move it (omnigent#539, #489)
             picked = pick_cloud_host(og, args.workspace or Path.cwd())
             if picked and picked[0] != og.host_id:
                 args.host, args.workspace = picked

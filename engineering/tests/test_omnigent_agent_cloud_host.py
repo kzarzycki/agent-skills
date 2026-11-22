@@ -410,3 +410,38 @@ def test_the_launch_dir_most_cloud_sessions_ran_in_wins_over_a_newer_one_off(
     assert omnigent_agent.far_launch_dirs(og, "far") == [LAUNCH, one_off]
     assert omnigent_agent.pick_cloud_host(og, Path(LOCAL)) == ("far", Path(LAUNCH))
     assert f"at {LAUNCH} (memory not listed)" in capsys.readouterr().err  # never "0 MB"
+
+
+@pytest.mark.parametrize("cmd", ["run", "start"])
+def test_a_launcher_offering_the_cloud_harness_never_picks_for_run_or_a_start_without_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], cmd: str
+) -> None:
+    """As on main (#838): only `start --workspace <absolute>` picks from a launcher offering the
+    harness, so `run` and a start without --workspace read no far host and stay here."""
+    monkeypatch.setattr(base, "FakeOmnigent", Bridged)
+    rows = [row("h", 100, CLOUD), {**row("far", 9000, CLOUD), "id": FAR_ID}]
+    og = cloud_far(monkeypatch, tmp_path, rows, LAUNCH)
+    picks: list[object] = []
+    monkeypatch.setattr(omnigent_agent, "pick_cloud_host", lambda *a: picks.append(a))
+    monkeypatch.setattr(omnigent_agent, "wait", lambda *a, **k: "done")
+    extra = ["--timeout", "1"] if cmd == "run" else []
+    code = omnigent_agent.main(
+        [cmd, "claude-cloud", "t", "b.md", "r.md", "--confirm-seconds", "0", *extra]
+    )
+    assert (code, picks, og.hosts_of) == (0, [], {"s0": "h"})
+    assert "skipped" not in capsys.readouterr().err
+
+
+def test_an_auto_picked_host_takes_a_relative_report_as_a_path_here(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(base, "FakeOmnigent", Bridged)
+    rows = [row("h", 9000, "claude-native"), {**row("far", 500, CLOUD), "id": FAR_ID}]
+    og = cloud_far(monkeypatch, tmp_path, rows, LAUNCH)
+    og.others = [{"id": "x1", "host_id": FAR_ID, "status": "idle", "updated_at": 1}]
+    og.procs[FAR_ID] = og.procs["far"]
+    code = omnigent_agent.main(
+        ["start", "claude-cloud", "t", "b.md", "tmp/r.md", "--confirm-seconds", "0"]
+        + ["--workspace", LOCAL]
+    )
+    assert (code, og.hosts_of, og.workspaces) == (0, {"s0": "far"}, [LAUNCH])
