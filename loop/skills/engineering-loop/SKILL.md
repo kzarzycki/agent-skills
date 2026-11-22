@@ -389,7 +389,12 @@ gatekeeper.md's policy (Settings) holds:
   `bot.renovate` with `branch` `renovate/`, names an updater that opens its PRs under a
   person's token instead: the PR's head is this repository's branch starting with the
   prefix (a fork's PR may name any branch), and every commit is that person's, so the
-  updater commits as that person (Renovate's `gitAuthor`), not as its default author. A PR labelled
+  updater commits as that person (Renovate's `gitAuthor`), not as its default author, or as
+  a git identity with no GitHub account, as a cloud worker does. Such a PR whose `apm.yml`
+  changes only its pack dependency's `ref:` line, to a release, the rest being the lock and generated
+  files `paths` covers, is a pack bump: its issue's spec needs no approval, since the
+  release it pins was reviewed and tagged. Name the pack bump's section by the branch
+  `claude/ready-pack-bump-<tag>`, which a cloud session may push. A PR labelled
   `verify` (a major update) needs the review either way. Without the section, every PR needs
   one.
 - `signoff`, such as `labels` `area:ios` and `area:watch`: the owner signs off a

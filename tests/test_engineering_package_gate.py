@@ -30,8 +30,9 @@ def test_the_check_task_runs_the_gates_ci_runs_in_its_order() -> None:
     workflow = (REPOSITORY / ".github" / "workflows" / "engineering-ci.yml").read_text()
     ran = re.findall(r"^\s*run: (mise run \S+)$", workflow, re.MULTILINE)
 
-    # CI runs the landing gate on a PR or push and the full check on the nightly schedule
-    assert ran == ["mise run check-fast", "mise run check"]
+    # CI runs the cheap checks on a PR or push, the tests on a Mergify batch's draft PR (#1821) and the full check
+    # on the nightly schedule
+    assert ran == ["mise run check-fast", "mise run test-batch", "mise run check"]
     assert tasks["check"]["run"][0] == "mise run vendor-engineering-check"
 
 

@@ -1317,6 +1317,33 @@ def red_checks(number: int, head: str) -> list[str]:
     return found
 
 
+# the two ways a cloud session's proxy answers the REST merge with a 403, by the words of its body
+PROXY_PATH = "not permitted through this proxy"
+PROXY_UNATTACHED = "not enabled for this session"
+
+
+def merge_refusal(number: int, stderr: str | None) -> str | None:
+    """What to do when the proxy refused PR #number's REST merge, None for any other error (a 409 or 422 is a stale
+    head or a conflict). A path rule is per session or environment, so attaching the repo can't lift it: the land
+    runs from a host checkout. A repo the session has no access to is the one `add_repo` fixes. Whether a proxy will
+    refuse can't be told without a write, so this only maps the answer."""
+    text = " ".join((stderr or "").split())
+    if "HTTP 403" not in text:
+        return None
+    if PROXY_PATH in text:
+        return (
+            f"PR #{number}: this cloud session's proxy refuses the merge call for this repo ({text}); it is a path rule,"
+            " and attaching the repo does not lift it. Run `land` from a host checkout of the repo (a clone of it on"
+            " a machine whose own GitHub login merges), where the same PR lands at the same head"
+        )
+    if PROXY_UNATTACHED in text:
+        return (
+            f"PR #{number}: this cloud session has no access to the repo ({text}); attach it with push access"
+            ' (`add_repo`, `access: "push"`) and land again, or run `land` from a host checkout'
+        )
+    return None
+
+
 def merge(number: int, method: str, head: str) -> None:
     """Merge PR #number by `method` (merge, squash or rebase), pinned to `head`, with GitHub's default body. A base requiring a merge queue only queues it. Where GitHub refuses GraphQL, which
     `gh pr merge` goes over, a cloud session's proxy for one, the same merge goes over REST (`PUT pulls/N/merge`, whose
@@ -1329,16 +1356,21 @@ def merge(number: int, method: str, head: str) -> None:
         )
 
     def rest_merge() -> str:
-        return gh(
-            "api",
-            "-X",
-            "PUT",
-            f"repos/{{owner}}/{{repo}}/pulls/{number}/merge",
-            "-f",
-            f"merge_method={method}",
-            "-f",
-            f"sha={head}",
-        )
+        try:
+            return gh(
+                "api",
+                "-X",
+                "PUT",
+                f"repos/{{owner}}/{{repo}}/pulls/{number}/merge",
+                "-f",
+                f"merge_method={method}",
+                "-f",
+                f"sha={head}",
+            )
+        except subprocess.CalledProcessError as exc:
+            if (why := merge_refusal(number, exc.stderr)) is None:
+                raise
+            raise Refused(why) from exc
 
     fast(
         lambda: gh(
