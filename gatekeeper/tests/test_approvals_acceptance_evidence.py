@@ -131,14 +131,34 @@ def test_an_accepted_line_naming_no_proof_log_is_refused(
     assert posting == []
 
 
+@pytest.mark.parametrize("line", ["Not run: acceptance line 2", "Not run: nonesuch"])
 def test_a_satisfied_report_with_a_not_run_line_is_still_refused(
-    posting: list[tuple[int, dict[str, Any]]], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    posting: list[tuple[int, dict[str, Any]]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    line: str,
 ) -> None:
     report = tmp_path / "report.md"
-    report.write_text(report_text(extra="Not run: acceptance line 2\n"))
+    report.write_text(report_text(extra=f"{line}\n"))
     assert approvals.main(["verdict", "7", str(report)]) == 1
     assert "lists a `Not run:` line" in capsys.readouterr().out
     assert posting == []
+
+
+@pytest.mark.parametrize(
+    "line", ["Not run: none", "Not run: none.", "not run: None.", "Not run:  NONE  "]
+)
+def test_not_run_none_is_no_not_run_line(
+    posting: list[tuple[int, dict[str, Any]]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    line: str,
+) -> None:
+    report = tmp_path / "report.md"
+    report.write_text(report_text(extra=f"{line}\n"))
+    assert approvals.main(["verdict", "7", str(report)]) == 0
+    assert "lists a `Not run:` line" not in capsys.readouterr().out
+    assert len(posting) == 1
 
 
 def test_an_inline_accepted_phrase_is_refused_and_an_out_of_scope_line_blocks_nothing(
