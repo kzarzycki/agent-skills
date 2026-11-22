@@ -89,7 +89,7 @@ tool call it answered; exit 1 when none was pending (naming any pending question
 approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
 seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for`` is how a role
 waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
-call), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change; a live ``--pid`` run not on the lock whose ``--log`` has not grown for ``--stall`` seconds (default 300, 0 off) is hung: its process group gets SIGTERM, then SIGKILL after 5 s, unless the pid is not the run's, and the outcome is ``stalled: no output in <log> for <n>s; killed pid <pid>'s group`` and the log's last 30 lines, exit 1), and ends at the first of: the log's ``exit <n>`` line (the detached
+call; the run's expected length for one call the harness tracks in the background, so the wait wakes once), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change; a live ``--pid`` run not on the lock whose ``--log`` has not grown for ``--stall`` seconds (default 300, 0 off) is hung: its process group gets SIGTERM, then SIGKILL after 5 s, unless the pid is not the run's, and the outcome is ``stalled: no output in <log> for <n>s; killed pid <pid>'s group`` and the log's last 30 lines, exit 1), and ends at the first of: the log's ``exit <n>`` line (the detached
 recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
 exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
 which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
@@ -288,6 +288,10 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
+TWIN_ROLES = (
+    "worker",
+    "verifier",
+)  # one running per PR (#1806): a lead coordinates, and runs no PR's work itself
 # A Claude worker or verifier gets only the built-in tools its role calls and no user MCP servers,
 # whose schemas and listings it would otherwise re-read every turn; Omnigent's own and plugins'
 # servers stay. A project's `Worker tools:` or `Verifier tools:` line names more, or `full`.
@@ -363,8 +367,8 @@ NO_REPORT = "Your turn ended without the report."
 # What a cloud session's nudge says in place of "poll a run you started detached": that run died.
 CLOUD_RUN_NUDGE = (
     "A run you started in the background may not have outlived your turn (a cloud VM may not): check"
-    " whether it finished and posted its result, restart it only if it did not, and keep this turn"
-    " open, looping on `wait-for`, until it ends,"
+    " whether it finished and posted its result, restart it only if it did not, and wait on it with one"
+    " harness-tracked background `wait-for --budget <its expected length>` (engineering-loop's verifier.md, its long-run rule),"
 )
 NUDGE = NO_REPORT + " Poll any long run you started detached, then write the report to {report}."
 # A cloud worker's report: a comment on the PR its last message links (wait --pr).
@@ -411,9 +415,9 @@ LEAD_NUDGE = (
 LEAD_NUDGE_CLOUD = (
     "Supervisor: your turn ended with no ending and no named wait. If it ended on your own background"
     " run, that run may not outlive the turn (a cloud VM may not): check whether it finished and"
-    " posted its result, restart it only if it did not, and keep the turn open, looping on"
-    " `wait-for`, until it ends. Then end your turn with DONE, STILL WORKING naming what you wait on"
-    " (never your own background run), or USER NEEDED."
+    " posted its result, restart it only if it did not, and wait on it with one harness-tracked"
+    " background `wait-for --budget <its expected length>`. Then end your turn with DONE, STILL WORKING"
+    " naming what you wait on (that tracked wait's task id, never your detached run), or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
 )
 # A STILL WORKING whose wait nothing wakes the lead for (#1753): a harness re-invokes a session for
@@ -422,9 +426,9 @@ LEAD_NUDGE_CLOUD = (
 LEAD_UNTRACKED = (
     "Supervisor: your turn ended waiting on something that does not wake you when it ends (a pid,"
     " a log, or a background subagent in a cloud session). Check whether it has ended; if not, wait"
-    " on it in this turn (`omnigent_agent.py wait-for --log <log> --pid <pid file>`, called again on"
-    " `still running`, or the subagent's own result), or restart it as a harness-tracked background"
-    " task, or detached with LOOP_NOTIFY set. Then end your turn with DONE, STILL WORKING naming"
+    " on it with one harness-tracked background `omnigent_agent.py wait-for --log <log> --pid <pid file>"
+    " --budget <its expected length>` (or the subagent's own result), or restart it detached with"
+    " LOOP_NOTIFY set. Then end your turn with DONE, STILL WORKING naming"
     " what wakes you, or USER NEEDED."
 )
 UNTRACKED_WHY = "waits on what does not wake it"
@@ -577,6 +581,11 @@ FOLLOW_QUIET_SECONDS = 300.0
 # event, whatever its status reads; this much more once it was nudged.
 DEADLINE_SECONDS = 1200.0
 PR_POLL_SECONDS = 60.0  # a lead's named PR is read from GitHub at most this often
+# A followed lead's PR whose newest verdict, on its current head, is this old with no push or go since: the lead is
+# woken, since a verdict wants a fix round or a go and `land`, and nothing else picks that up overnight
+VERDICT_STALL_SECONDS = 3600.0
+VERDICT_STALL_POLL = 600.0  # each such PR is read from GitHub at most this often
+QUEUED_LABEL = "loop:queued"  # `land` hands a PR to the merge queue with it
 NUDGED_SECONDS = 600.0
 # What a lead's ``STILL WORKING`` message says it waits on, for its status and its deadline: the
 # wait word, a child's full session id (32 hex: a commit is 40 or a short 7-12) or a harness's
@@ -671,7 +680,8 @@ HEAD_SECONDS = 300.0
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
-# wait-for's default budget: under a 10-minute tool call with room for the call's own start and exit
+# wait-for's default budget, for a foreground call: under a 10-minute tool call with room for the call's own start
+# and exit. A wait the harness tracks in the background passes the run's expected length instead, so it wakes once.
 WAIT_FOR_BUDGET = 570.0
 WAIT_FOR_EVERY = 2.0  # a local read: a log or a pid
 WAIT_FOR_PR_EVERY = 120.0  # a poll is several GitHub calls, and several waiters run at once
@@ -729,12 +739,14 @@ DETACH_LINE = "A long run follows engineering-loop's verifier.md, A long or lock
 CLOUD_RUN_LINE = (
     "A run may not outlive the turn that started it, since a cloud VM may be replaced between turns,"
     " and a foreground call there is cut short: start it detached as engineering-loop's verifier.md's recipe says (its"
-    " log, pid and exit in files), then loop on `omnigent_agent.py wait-for --log <log> --pid <pid>"
-    " --budget 480` in the same turn, calling it again each time it prints `still running` (exit 6),"
-    " and end the turn only once the run has ended and its result is posted; never use a plain"
-    " `sleep`, which the harness blocks. The lead waits on the completion signal you post (the PR"
-    " comment or a status file), not on your turn, so a `STILL WORKING` that names only your own"
-    " background run is not a valid ending."
+    " log, pid and exit in files), then wait on it with one wake: one `omnigent_agent.py wait-for --log <log>"
+    " --pid <pid> --budget <the run's expected length>` started as a background call your harness tracks"
+    " (Claude Code: Bash `run_in_background`, which keeps running across turns and wakes you when it"
+    " exits), never a short `wait-for`, `until grep` or `sleep` loop, since each return re-reads your"
+    " whole context. Before the run has ended and its result is posted, end a turn only on that tracked"
+    " wait, naming its task id. The lead waits on the completion signal you post (the PR comment or a"
+    " status file), not on your turn, so a `STILL WORKING` that names only your own detached run is not"
+    " a valid ending."
 )
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
@@ -1784,8 +1796,9 @@ class Omnigent:
         """The project's ``docs/agents/loop.md`` on host ``host_id``, which a session started for
         ``workspace`` there will run on; empty when the checkout there has none, or when ``workspace``
         sits outside a checkout. Read once per host and workspace, through the host's file API.
-        That API lists a folder before any session exists but gives no file's text, so the checkout
-        and the file are found by listing, and the text is read through a live session on the host.
+        The host's folder listing works before any session exists, so the checkout and the file are
+        found by listing; the text is read through the host's file route (``read_on_host``), else
+        a live session on the host.
         A host or workspace that can't be read is a ``Fail`` naming the host and the path: a silent
         empty value is how a missing ``Lead autocompact:`` went unnoticed."""
         key = (host_id or "", workspace)
@@ -2583,6 +2596,94 @@ def still_open(og: Omnigent, sid: str) -> str:
     return "; its question is still open (relay --answer answers it): " + "; ".join(asks)
 
 
+ISSUE_REF = re.compile(
+    r"(?:(?<![\w.-])([\w.-]+/[\w.-]+))?#(\d+)\b|github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)"
+)
+FAMILY_QUERY = (
+    """query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { %s } }"""
+)
+FAMILY_NODE = (
+    "n%d: issueOrPullRequest(number: %d) { __typename ... on Issue {"
+    " parent { number } subIssues(first: 100) { nodes { number } } } }"
+)
+
+
+def issue_refs(text: str, repo: str) -> set[int]:
+    """The issue and PR numbers ``text`` names in ``repo``: ``#N``, ``repo#N`` or a GitHub URL;
+    another repository's are left out."""
+    return {
+        int(m[2] or m[4])
+        for m in ISSUE_REF.finditer(text)
+        if not (m[1] or m[3]) or (m[1] or m[3]).lower() == repo.lower()
+    }
+
+
+def off_request(og: Omnigent, sid: str, text: str) -> str:
+    """A warning when ``text`` names an issue outside lead ``sid``'s request, else empty. The
+    request is the issues the lead's first message (its brief) names; a named issue is in it when
+    it is one of them, their epic (parent), one of their sub-issues, or a sub-issue of the same
+    epic. A PR, an issue in another repository, a session that is no lead, and anything that
+    cannot be read stay quiet, since a fix to a PR the lead owns is a normal message and a false
+    warning costs more than a missed one. One GraphQL read, only when ``text`` names a number the
+    brief does not."""
+    # ponytail: the brief's own refs are the request; an epic's grandchildren and a lead's later
+    # PRs are not traced, which errs on quiet. Read the lead's PRs (omni.pr, its report) if it misses.
+    try:
+        if (og.info(sid).get("labels") or {}).get("omni.role") != "lead":
+            return ""
+        brief = next((text_of(i) for i in og.first_items(sid, 5) if i.get("role") == "user"), "")
+        repo = workspace_repo(og, sid)
+        own = issue_refs(brief, repo) if repo else set()
+        named = issue_refs(text, repo) - own if own else set()
+        if not named:
+            return ""
+        owner, name = repo.split("/")
+        nodes = " ".join(FAMILY_NODE % (n, n) for n in sorted(own | named))
+        found = json.loads(
+            gh(
+                "api",
+                "graphql",
+                "-f",
+                f"query={FAMILY_QUERY % nodes}",
+                "-F",
+                f"owner={owner}",
+                "-F",
+                f"name={name}",
+            )
+        )["data"]["repository"]
+    except Exception:  # noqa: BLE001 - unread: say nothing
+        return ""
+
+    def parent(n: int) -> int | None:
+        return ((found.get(f"n{n}") or {}).get("parent") or {}).get("number")
+
+    epics = {e for o in own if (e := parent(o))}
+    family = (
+        own
+        | epics
+        | {
+            s["number"]
+            for o in own
+            for s in ((found.get(f"n{o}") or {}).get("subIssues") or {}).get("nodes") or []
+        }
+    )
+    stray = [
+        n
+        for n in sorted(named)
+        if (found.get(f"n{n}") or {}).get("__typename") == "Issue"
+        and n not in family
+        and parent(n) not in own | epics
+    ]
+    if not stray:
+        return ""
+    return (
+        f"warning: {', '.join(f'#{n}' for n in stray)} is outside lead {sid}'s request"
+        f" ({', '.join(f'#{n}' for n in sorted(own))}) and its epic; a lead takes one request or"
+        " epic, so an unrelated item goes to a fresh lead."
+        " Sent anyway."
+    )
+
+
 def relay(
     og: Omnigent,
     sid: str,
@@ -2988,10 +3089,32 @@ def far_checkout_root(og: Omnigent, host_id: str, workspace: str, what: str) -> 
     return root
 
 
+def host_file(og: Omnigent, host_id: str, path: str) -> str | None:
+    """``path``'s text through the host's file route (``GET /v1/hosts/<id>/files/<path>``, which
+    needs no session on the host): a UTF-8 file up to 64 KiB. None, so the caller reads through a
+    live session, on a 404 or 405 (a server or host without the route, or a missing file), a 400
+    (a folder, such as a main checkout's ``.git``, or not UTF-8: a session lists the one and
+    reads the other), a 403 for ``~/.claude.json`` (the folder-trust check must read it), and a
+    200 with no text. Any other refusal (403 a credential file, 413 too large, 503 host offline) is
+    a ``Fail`` carrying the server's message, with no fallback."""
+    url = "/v1/hosts/" + host_id + "/files/" + quote(path.strip("/"), safe="/")
+    try:
+        content = og.call("GET", url).get("content")
+    except Fail as e:
+        code = e.__cause__.code if isinstance(e.__cause__, HTTPError) else 0
+        if code in (400, 404, 405) or (code == 403 and path.endswith("/.claude.json")):
+            return None
+        raise
+    return content if isinstance(content, str) else None
+
+
 def read_on_host(og: Omnigent, host_id: str, path: str) -> str:
-    """``path`` (absolute, on host ``host_id``) read through a live session there, since the host's
-    own file API lists a folder but gives no file's text. ``Gone`` when a session answered 404
-    (naming it), else ``Fail``: no live session, or the read failed."""
+    """``path`` (absolute, on host ``host_id``) read through the host's file route, which needs no
+    session there (``host_file``); a server or host without it is read through a live session
+    instead. ``Gone`` when a session answered 404 (naming it), else ``Fail``: no live session, a
+    refused read, or the read failed."""
+    if (text := host_file(og, host_id, path)) is not None:
+        return text
     why: Exception = Fail("no live session there to read it through")
     for s in live_sessions(og, host_id)[:FAR_READS]:
         try:
@@ -3042,10 +3165,9 @@ def far_capacity(
     row names one, else per core over its ``/proc/stat``'s ``cpuN`` lines; ``cpu=False`` (a cloud
     start) reads and judges ``/proc/meminfo`` alone. None and why when it can't be read: no live
     session, every read failing, or no ``/proc`` (a Mac)."""
-    # ponytail: a host's load and memory read through one of its sessions, since the server reads
-    # no host-level file (GET /v1/hosts/<id>/filesystem/<file> answers 404 "path is not a
-    # directory") and GET /v1/hosts carries no load or memory. Upgrade: either one, which would
-    # also give a Mac's load.
+    # ponytail: a host's load and memory read through one of its sessions, since GET /v1/hosts
+    # carries neither and the host file route (``host_file``) is for regular UTF-8 files, not
+    # /proc, which is unchecked. Upgrade: either one, which would also give a Mac's load.
     sessions = sorted(
         live_sessions(og, host_id),
         key=lambda s: float(s.get("updated_at") or s.get("created_at") or 0),
@@ -4617,6 +4739,15 @@ def start(
             )
         except Fail:
             label = f"#{int(about)}"
+    # one running session per PR and role (#1806): a second worker or verifier started while the first runs repeats its
+    # whole run on the same head, so the start waits until the first ends or is stopped
+    kind = Path(role).stem if role else ""
+    held = f"{slug}#{pr}" if slug else label
+    if kind in TWIN_ROLES and held and (twin := running_twin(og, held, kind)):
+        raise Fail(
+            f"PR {held} already has a running {kind}, {twin}: wait on it, or stop it with"
+            f" `reap --force {twin}`, then start again"
+        )
     # Omnigent refuses a sibling with a title an earlier child holds, archived or not, abandoned
     # here or left by an earlier run: each refusal and each abandon moves to the next <title>-r<n>.
     n = 0
@@ -5526,6 +5657,58 @@ def _verdict(pr: int, head: str, end: float, since: float | None) -> tuple[int, 
     return None
 
 
+def verdict_stall(pr: int, repo: str = "") -> tuple[str, str] | None:
+    """``(head, line)`` when PR ``pr`` is open and its newest verifier report naming its current head (a comment or
+    review with that ``Head:`` and a ``SATISFIED:`` line) is over ``VERDICT_STALL_SECONDS`` old with no go since: no
+    push, since a push moves the head the report names, and, for a satisfied one, no green ``owner`` status (the go) or
+    ``land`` status on the head and no ``loop:queued`` label (the hand-over to the queue). None otherwise, through
+    REST alone."""
+    slug = repo or "{owner}/{repo}"
+
+    def pages(path: str) -> list[dict]:
+        out = gh("api", "--paginate", f"repos/{slug}/{path}", "--jq", ".[]", timeout=HTTP_SECONDS)
+        return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+    view = json.loads(gh("api", f"repos/{slug}/pulls/{pr}", timeout=HTTP_SECONDS))
+    if view.get("state") != "open":
+        return None
+    head = view["head"]["sha"]
+    said = [(c["created_at"], c) for c in pages(f"issues/{pr}/comments?per_page=100")]
+    said += [
+        (r["submitted_at"], r)
+        for r in pages(f"pulls/{pr}/reviews?per_page=100")
+        if r.get("submitted_at")
+    ]
+    for when, item in sorted(said, key=lambda x: stamp(x[0]), reverse=True):
+        body = item.get("body") or ""
+        heads = {
+            l[len("Head:") :].strip().lower() for l in body.splitlines() if l.startswith("Head:")
+        }
+        if head.lower() in heads and (found := SATISFIED.search(body)):
+            word, url = found[1].lower(), item.get("html_url") or ""
+            break
+    else:
+        return None
+    age = time.time() - stamp(when)
+    if age < VERDICT_STALL_SECONDS:
+        return None
+    if word == "yes":
+        if QUEUED_LABEL in {str(l.get("name")) for l in view.get("labels") or []}:
+            return None
+        newest: dict[
+            str, str
+        ] = {}  # GitHub lists a head's statuses newest first: a later one supersedes
+        for status in pages(f"commits/{head}/statuses?per_page=100"):
+            newest.setdefault(str(status.get("context")), str(status.get("state")))
+        if "success" in (newest.get("owner"), newest.get("land")):
+            return None
+    step = "the go and `land`" if word == "yes" else "a fix round"
+    return head, (
+        f"PR #{pr}: the verdict on {head[:12]} (SATISFIED: {word}) is {age / 60:.0f}m old with no push or go"
+        f" since: it waits on {step} from you: {url}"
+    )
+
+
 def stamp(when: str) -> float:
     """A GitHub ISO time as seconds."""
     return datetime.fromisoformat(when.replace("Z", "+00:00")).timestamp()
@@ -5994,6 +6177,26 @@ def replaced(og: Omnigent, sid: str, info: dict) -> bool:
     )
 
 
+def running_twin(og: Omnigent, label: str, role: str) -> str:
+    """The id of a live session labelled ``PR_LABEL`` ``label`` and ``omni.role`` ``role`` whose turn is running, else
+    empty: ``start`` refuses a second one beside it (#1806). An idle kept ``--pr`` worker is no twin, since ``start --pr``
+    replaces it (``replaced``). Sessions that can't be listed are none known, so the start goes on."""
+    try:
+        page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
+    except Exception:  # noqa: BLE001 - unread: no twin known
+        return ""
+    for s in page.get("data", []):
+        labels = s.get("labels") or {}
+        if (
+            not s.get("archived")
+            and str(labels.get(PR_LABEL, "")) == label
+            and labels.get("omni.role") == role
+            and str(s.get("status")) in RUNNING
+        ):
+            return str(s.get("id"))
+    return ""
+
+
 # a line that is itself an owner question or a wait on the owner's card: the line's own words, never a quoted (``>``) or
 # bullet (``-``) line, and never a bare mention (``USER NEEDED`` takes its colon, as the others do)
 OWNER_ASK = re.compile(
@@ -6112,7 +6315,19 @@ def finish_delivered(
         return f"{name}: already archived", False
     if keep or (not named and (info.get("labels") or {}).get(KEEP_LABEL)):
         return f"{name}: kept (--keep)", False
-    if hold_pr and (label := held_by(info)) and not (force and replaced(og, sid, info)):
+    # a role session on a PR named to `reap --force`: what `start` names when it refuses a running twin (#1806)
+    twin_stop = (
+        force
+        and named
+        and str(info.get("status")) in RUNNING
+        and bool((info.get("labels") or {}).get(PR_LABEL))
+        and (info.get("labels") or {}).get("omni.role") in TWIN_ROLES
+    )
+    if (
+        hold_pr
+        and (label := held_by(info))
+        and not (force and (twin_stop or replaced(og, sid, info)))
+    ):
         found = pr_label(label)
         if found and found not in held:
             held[found] = pr_hold(*found)
@@ -6125,7 +6340,8 @@ def finish_delivered(
     # an open card is the owner's question: archiving ends its way back, --force too
     if cards := cards_of(info) or [_asks(e) for e in getattr(og, "cards", {}).get(sid) or []]:
         return f"{name}: kept (card open: {'; '.join(cards)})", False
-    if force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None:
+    stuck = force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None
+    if stuck or twin_stop:
         arm_quietly(registry, sid)
         try:
             og.interrupt(sid)
@@ -6134,7 +6350,7 @@ def finish_delivered(
             print(f"session {sid} was not finished: {e}", file=sys.stderr)
             return f"{name}: finish failed: {e}", True
         return (
-            f"{name}: archived (stuck); check git status in"
+            f"{name}: archived ({'stuck' if stuck else 'stopped'}); check git status in"
             f" {info.get('workspace') or '(workspace unknown)'}"
         ), False
     busy = (
@@ -6194,7 +6410,10 @@ def reap(
 
     ``force`` also finishes a stuck session (``stuck_minutes``): it stops the turn first, then
     archives it, and names the session's workspace, since a dead run can leave a patch applied
-    there. A running session that is not stuck stays kept, and the line says so.
+    there. A running worker or verifier on a PR (``omni.role`` and ``PR_LABEL``) named in ``sessions`` is stopped and
+    finished with ``force`` whether stuck or not, its open PR included (#1806): that is what ``start`` names when it
+    refuses a running twin. An idle one stays held by its open PR, and any other running session that is not stuck
+    stays kept, and the line says so.
 
     A ``--pr`` worker (labelled ``PR_LABEL`` ``owner/name#N``) is kept, ``force`` included, while its PR
     is open (or can't be read), since a fix round or the next verifier pass reaches it warm; it is
@@ -9061,6 +9280,43 @@ def supervise_registry(
                 )
                 say(line, sid, f"deadline:{sid}:{chain}{nudged}", "deadline")
 
+    stall_read: dict[
+        tuple[str, int], float
+    ] = {}  # each followed PR's last verdict_stall read (wall clock)
+
+    def stalled_verdicts(sid: str, lead: dict) -> None:
+        """Wake a followed lead whose own PR (its ``omni.pr`` label) or a PR its wait names has a verdict on its
+        current head ``VERDICT_STALL_SECONDS`` old with no push or go since (``verdict_stall``): one ``news`` event per
+        PR and head, which tells the lead itself. Only for a lead quiet that long, so a working lead costs no read; not
+        while its turn runs, nor for a lead the owner drives."""
+        if lead.get("direct") or lead["state"] in RUNNING:
+            return
+        if time.time() - lead["progress_at"] < VERDICT_STALL_SECONDS:
+            return
+        own = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
+        refs = {(own[0], own[1])} if own else set()
+        for r in [*(lead.get("refs") or []), *(lead.get("wait") or "").split(", ")]:
+            if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", r.strip()):
+                refs.add((wait_repo(sid, m[1] or ""), int(m[2])))
+        for repo, pr in sorted(refs):
+            if time.time() - stall_read.get((repo, pr), -VERDICT_STALL_POLL) < VERDICT_STALL_POLL:
+                continue
+            stall_read[(repo, pr)] = time.time()
+            try:
+                found = verdict_stall(pr, repo)
+            except Exception as e:  # noqa: BLE001 - read again at the next VERDICT_STALL_POLL
+                log(("stall", repo, pr), f"PR #{pr} verdict not read: {reason(e)}")
+                continue
+            log(("stall", repo, pr), None)
+            if found:
+                head, line = found
+                say(
+                    f"{sid} {lead['title']}".rstrip() + f": {line}",
+                    sid,
+                    f"stall:{sid}:{repo}#{pr}:{head}",
+                    "news",
+                )
+
     def has_event(sid: str) -> bool:  # an event settles what a prose wait would
         try:
             return lead_event_of(og, og.info(sid)) is not None
@@ -9392,6 +9648,7 @@ def supervise_registry(
                         if console:
                             wait_news(sid, lead)
                             overdue(sid, lead)
+                            stalled_verdicts(sid, lead)
                             due(sid, lead)
                         continue
                 else:
@@ -10080,7 +10337,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument(
         "--force",
         action="store_true",
-        help="also stop and finish a session that is running but stuck (no item past OMNIGENT_STUCK_SECONDS)",
+        help="also stop and finish a session that is running but stuck (no item past OMNIGENT_STUCK_SECONDS); a running worker or verifier on a PR named here is stopped and finished whether stuck or not, its open PR included",
     )
     p.add_argument(
         "--merged",
@@ -10209,7 +10466,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         "--budget",
         type=float,
         default=WAIT_FOR_BUDGET,
-        help=f"seconds before `still running`, exit {LIMIT} (default {WAIT_FOR_BUDGET:.0f})",
+        help=f"seconds before `still running`, exit {LIMIT}: the run's expected length for a background call, so it wakes once (default {WAIT_FOR_BUDGET:.0f}, a foreground call)",
     )
     p.add_argument(
         "--stall",
@@ -10500,6 +10757,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 return 0
             print(og.read_file(sid, args.path))
             return 0
+        if args.cmd in ("relay", "send") and (
+            warning := off_request(
+                og,
+                args.session,
+                text_or_file(args.message if args.cmd == "relay" else args.brief)[0],
+            )
+        ):
+            print(warning, file=sys.stderr, flush=True)
         if args.cmd == "relay":
             if not (args.answer or args.source) and asks_owner(text_or_file(args.message)[0]):
                 raise Fail(

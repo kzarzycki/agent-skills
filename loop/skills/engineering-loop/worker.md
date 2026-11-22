@@ -80,11 +80,10 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
    the worktree you are given, then the gate of step 2 (`affected-tests` with an `Affected tests:` line, else `mise run check`) and push the same way. A command that
    may outlast one tool call (a gate, a held lock, a queue) starts detached (verifier.md, A long or locked run is detached),
-   with its log, pid and exit code in files, and is waited on with omnigent-agents'
-   `scripts/omnigent_agent.py wait-for --log <log> --pid <pid>` (a PR's checks: `wait-for --pr
-   <n>`), which blocks close to the tool limit and prints only the outcome, since a foreground
-   call times out and Claude Code's low-memory reaper stops in-session background shells; never
-   end a turn saying you are waiting, since nothing wakes you and the lead reads silence as work. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged.
+   with its log, pid and exit code in files, and is waited on with one wake, as that section says: one
+   `wait-for --log <log> --pid <pid> --budget <the run's expected length>` (a PR's checks: `wait-for --pr <n>`) as a
+   background call your harness tracks, never a short `wait-for`, `until grep` or `sleep` loop, since each return
+   re-reads your whole context; never end a turn waiting on a detached run alone, since nothing wakes you and the lead reads silence as work. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged.
    Any other pending condition (a queued run, a free device, an unlocked screen) is waited on the
    same way, in the foreground, with `scripts/omnigent_agent.py wait-until
    --every <s> --limit <s> -- <check>`, each call under the tool timeout: the

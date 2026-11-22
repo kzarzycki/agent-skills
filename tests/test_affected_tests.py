@@ -276,3 +276,66 @@ def test_a_class_test_id_with_a_space_runs_as_its_method(tmp_path, monkeypatch) 
     monkeypatch.chdir(tmp_path)
     Path("t.py").write_text("class TestK:\n    def test_m(self): pass\n")
     assert a.node_files({"t.py::TestK::test_m[a b]"}) == {"t.py::TestK::test_m"}
+
+
+def suite(root, names: int, naming: int) -> None:
+    """A suite of `names` test files, the first `naming` of them naming `tool`."""
+    (root / "tests").mkdir(parents=True)
+    for n in range(names):
+        (root / "tests" / f"test_{n:02}.py").write_text(
+            "# uses tool\n" if n < naming else "# other\n"
+        )
+    (root / "tool.py").write_text("")
+
+
+def test_a_selection_of_over_half_the_test_files_runs_everything(monkeypatch, tmp_path) -> None:
+    """Waste audit, finding 2: a near-whole selection (~2,800 of ~4,000 tests) ran for 50 min where the whole suite
+    in parallel took 8; past half the files the gate runs the whole suite instead."""
+    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2 + 1)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "ALL", ["tests"])
+    monkeypatch.setattr(a, "CHEAP", [])
+    assert a.targets(["tool.py"]) == ["tests"]
+
+
+def test_a_selection_of_half_the_test_files_or_fewer_runs_only_them(monkeypatch, tmp_path) -> None:
+    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "ALL", ["tests"])
+    monkeypatch.setattr(a, "CHEAP", [])
+    assert a.targets(["tool.py"]) == [f"tests/test_{n:02}.py" for n in range(a.WHOLE_FROM // 2)]
+
+
+def test_a_small_suite_runs_its_selection_as_picked(monkeypatch, tmp_path) -> None:
+    suite(tmp_path, a.WHOLE_FROM - 1, a.WHOLE_FROM - 1)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "ALL", ["tests"])
+    monkeypatch.setattr(a, "CHEAP", [])
+    assert len(a.targets(["tool.py"])) == a.WHOLE_FROM - 1
+
+
+def test_map_node_ids_count_as_their_files(monkeypatch, tmp_path) -> None:
+    """Node ids the map picks fold to their files before the count: 3 ids in each of 11 files of a 20-file suite is
+    11 files, over half, so the whole suite runs."""
+    suite(tmp_path, a.WHOLE_FROM, 0)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "ALL", ["tests"])
+    monkeypatch.setattr(a, "CHEAP", [])
+    ids = {f"tests/test_{n:02}.py::t{k}" for n in range(11) for k in range(3)}
+    monkeypatch.setattr(a, "node_files", lambda ran: ids)
+    assert a.targets(["tool.py"]) == ["tests"]
+
+
+def test_the_cheap_checks_and_e2e_files_count_for_nothing(monkeypatch, tmp_path) -> None:
+    """Exactly half the suite named, plus a cheap check and a changed e2e test, both picked: neither counts, since
+    the gate runs the cheap checks always and never runs an e2e file as part of the suite."""
+    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2)
+    (tmp_path / "tests" / "test_skill_x.py").write_text("# uses tool\n")
+    (tmp_path / "tests" / "e2e").mkdir()
+    (tmp_path / "tests" / "e2e" / "test_live.py").write_text("# other\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "ALL", ["tests"])
+    monkeypatch.setattr(a, "CHEAP", ["tests/test_skill_x.py"])
+    picked = a.targets(["tool.py", "tests/e2e/test_live.py"])
+    named = [f"tests/test_{n:02}.py" for n in range(a.WHOLE_FROM // 2)]
+    assert picked == sorted([*named, "tests/test_skill_x.py", "tests/e2e/test_live.py"])
