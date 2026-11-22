@@ -314,21 +314,28 @@ def test_a_small_suite_runs_its_selection_as_picked(monkeypatch, tmp_path) -> No
     assert len(a.targets(["tool.py"])) == a.WHOLE_FROM - 1
 
 
-def test_the_over_half_count_leaves_out_the_cheap_checks_and_e2e_and_folds_node_ids(
-    monkeypatch, tmp_path
-) -> None:
-    """The rule counts the suite's own test files: a node id counts as its file, and the always-run cheap checks and
-    `/e2e/` files, which the gate never selects by name, count for nothing."""
-    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2)  # exactly half: no fallback on its own
+def test_map_node_ids_count_as_their_files(monkeypatch, tmp_path) -> None:
+    """Node ids the map picks fold to their files before the count: 3 ids in each of 11 files of a 20-file suite is
+    11 files, over half, so the whole suite runs."""
+    suite(tmp_path, a.WHOLE_FROM, 0)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "ALL", ["tests"])
+    monkeypatch.setattr(a, "CHEAP", [])
+    ids = {f"tests/test_{n:02}.py::t{k}" for n in range(11) for k in range(3)}
+    monkeypatch.setattr(a, "node_files", lambda ran: ids)
+    assert a.targets(["tool.py"]) == ["tests"]
+
+
+def test_the_cheap_checks_and_e2e_files_count_for_nothing(monkeypatch, tmp_path) -> None:
+    """Exactly half the suite named, plus a cheap check and a changed e2e test, both picked: neither counts, since
+    the gate runs the cheap checks always and never runs an e2e file as part of the suite."""
+    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2)
     (tmp_path / "tests" / "test_skill_x.py").write_text("# uses tool\n")
     (tmp_path / "tests" / "e2e").mkdir()
-    (tmp_path / "tests" / "e2e" / "test_live.py").write_text("# uses tool\n")
+    (tmp_path / "tests" / "e2e" / "test_live.py").write_text("# other\n")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(a, "ALL", ["tests"])
     monkeypatch.setattr(a, "CHEAP", ["tests/test_skill_x.py"])
-    # map node ids of an already-picked file fold into it
-    monkeypatch.setattr(
-        a, "node_files", lambda ran: {"tests/test_00.py::test_one", "tests/test_00.py::test_two"}
-    )
-    picked = a.targets(["tool.py"])
-    assert picked != ["tests"] and "tests/e2e/test_live.py" not in picked
+    picked = a.targets(["tool.py", "tests/e2e/test_live.py"])
+    named = [f"tests/test_{n:02}.py" for n in range(a.WHOLE_FROM // 2)]
+    assert picked == sorted([*named, "tests/test_skill_x.py", "tests/e2e/test_live.py"])
