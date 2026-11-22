@@ -40,7 +40,9 @@ def unlinked(source: str) -> list[tuple[int, str]]:
             parts = [k.value for k in node.keywords if k.arg == "reason"]
             if target.attr == "skip":
                 parts += node.args[:1]
-            reasons = [p.value for p in parts if isinstance(p, ast.Constant) and isinstance(p.value, str)]
+            reasons = [
+                p.value for p in parts if isinstance(p, ast.Constant) and isinstance(p.value, str)
+            ]
         if not any(LINK.search(reason) for reason in reasons):
             found.append((node.lineno, target.attr))
     return sorted(set(found))
@@ -77,7 +79,8 @@ def test_every_skip_and_xfail_in_the_repository_links_its_issue() -> None:
     tracked = [
         path
         for path in REPOSITORY.rglob("test_*.py")
-        if not {".venv", "apm_modules", ".claude", "node_modules", ".git"} & set(path.relative_to(REPOSITORY).parts)
+        if not {".venv", "apm_modules", ".claude", "node_modules", ".git"}
+        & set(path.relative_to(REPOSITORY).parts)
     ]
     bad = [
         f"{path.relative_to(REPOSITORY)}:{line}: pytest.mark.{mark} without an issue link"

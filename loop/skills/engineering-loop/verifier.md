@@ -56,7 +56,7 @@ yourself, keeping standards and spec as separate axes.
 - **A failure outside the diff is not a waiver.** A test red that the diff doesn't explain gets
   a skip marker that links a new issue (SKILL.md, Known-red tests), in the PR or a PR from
   main, and the verdict stands on the rest; never write the verdict as satisfied "apart from"
-  a red test, and never accept an expected-failures list in its place. A skip in the diff
+  a red test, and never accept an expected-failures list in its place. An unconditional skip in the diff
   without an issue link is a major.
 - **Out of scope:** an input the system never produces, an interleaving nobody can
   trigger, a value orders of magnitude outside what the data source emits. Style, naming,
