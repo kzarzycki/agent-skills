@@ -224,9 +224,11 @@ takes ``--host`` too (#838): the host must configure ``acp:claude-cloud`` and, s
 the account's default environment without it, hold ``remote.defaultEnvironmentId`` in the workspace's
 ``.claude/settings.local.json`` and Claude Code must trust the workspace there (found through the host's
 ``~/.claude.json`` when its home folder is known, else not checked); all refused before the create, as is what
-can't be read (start any session on the host so a file can be read through it). With no ``--host`` and an absolute
-``--workspace`` it goes to the online host configuring that harness with the most
-``memory_available_mb`` that holds the workspace (printed), else stays here; a lead never moves. A
+can't be read (start any session on the host so a file can be read through it). With no ``--host`` (``start`` or ``run``,
+``--workspace`` absolute or absent) it goes to the online host configuring that harness with the most
+``memory_available_mb`` that holds the workspace (printed), else stays here; a lead never moves. From a host configuring no
+``acp:claude-cloud`` (#1693) the workspace is mapped to a launch dir on that host when its own path is not there: one
+where the project's cloud sessions ran, pinned and trusted; with none, ``start`` refuses before the create, never a 412. A
 create that times out is looked up by title for a while and reused, never repeated. On a host other than this one ``--workspace`` and the
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
 its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report is the file ``wait --pr``
@@ -274,6 +276,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -3937,31 +3940,57 @@ def check_far_workspace(og: Omnigent, host_id: str, row: dict, workspace: Path) 
         raise Fail(f"{workspace} on host {host} is not trusted by Claude Code: trust it there")
 
 
-def pick_cloud_host(og: Omnigent, workspace: Path) -> str | None:
-    """The host a cloud child started with no ``--host`` goes to (#838): the online one configuring
-    ``CLOUD_HARNESS`` with the most ``memory_available_mb`` whose workspace passes
-    ``check_far_workspace``, since each bridge holds memory on its host. A host that fails or can't
-    be verified is skipped with the reason printed. None, so the start stays here, when none
-    qualifies or the hosts call fails. The choice is printed."""
+def cloud_places(og: Omnigent, host: str, workspace: Path | None, far: bool) -> Iterator[Path]:
+    """The workspaces a cloud child may take on ``host``: ``workspace``, then with ``far`` the
+    launch dirs ``far_launch_dirs`` finds there, read only once the workspace itself failed."""
+    if workspace:
+        yield workspace
+    if far:
+        yield from (Path(p) for p in far_launch_dirs(og, host) if Path(p) != workspace)
+
+
+def pick_cloud_host(og: Omnigent, workspace: Path | None) -> tuple[str, Path] | None:
+    """The host and workspace a cloud child started with no ``--host`` goes to (#838): the online
+    host configuring ``CLOUD_HARNESS`` with the most ``memory_available_mb`` whose workspace passes
+    ``check_far_workspace``, since each bridge holds memory on its host. When this host offers no
+    cloud harness or says nothing of it (#1693), a far host is tried with ``workspace`` and then with each launch dir
+    ``far_launch_dirs`` finds there, since the launcher's own path (``/Users/<me>/<repo>``, a gate's
+    temporary dir) is seldom on the bridge host. A host that fails or can't be verified is skipped
+    with the reason printed. None, so the start stays here, when none qualifies or the hosts call
+    fails, but a ``Fail`` naming each reason when this host is known to offer no cloud harness,
+    since a start here would only be the server's 412. The choice is printed."""
     try:
         rows = og.call("GET", "/v1/hosts")["hosts"]
     except (Fail, KeyError):
         return None
-    best: tuple[float, str, str] | None = None
-    for row in rows:
-        host, mb = str(row.get("host_id")), float(row.get("memory_available_mb") or 0)
-        if row.get("status") != "online" or not configures_cloud(row) or (best and mb <= best[0]):
+    offered, why = offers_cloud(og, rows), []
+    mapped = offered is not True
+    for row in sorted(rows, key=lambda r: float(r.get("memory_available_mb") or 0), reverse=True):
+        host, name = str(row.get("host_id")), str(row.get("name") or row.get("host_id"))
+        named = configures_cloud(row)  # None: an older server's row, which lists no harnesses
+        if row.get("status") != "online" or named is False or (named is None and not mapped):
             continue
-        try:
-            if host != og.host_id:
-                check_far_workspace(og, host, row, workspace)
-        except Fail as e:
-            print(f"host {row.get('name') or host} skipped for a cloud child: {e}", file=sys.stderr)
-            continue
-        best = (mb, host, str(row.get("name") or host))
-    if best:
-        print(f"cloud child placed on host {best[2]} ({best[0]:.0f} MB available)", file=sys.stderr)
-    return best[1] if best else None
+        for place in cloud_places(og, host, workspace, mapped and host != og.host_id):
+            try:
+                if host != og.host_id:
+                    check_far_workspace(og, host, row, place)
+            except Fail as e:
+                why.append(f"host {name}: {e}")
+                print(f"host {name} skipped for a cloud child: {e}", file=sys.stderr)
+                continue
+            mb = float(row.get("memory_available_mb") or 0)
+            print(
+                f"cloud child placed on host {name} at {place} ({mb:.0f} MB available)",
+                file=sys.stderr,
+            )
+            return host, place
+    if offered is False:
+        raise Fail(
+            f"this host configures no {CLOUD_HARNESS} and no other host can take the cloud session"
+            f" ({'; '.join(why) or 'no online host configures it'}): pass --host <name> --workspace"
+            " <its pinned launch dir>"
+        )
+    return None
 
 
 def refuse_unfit_cloud_host(og: Omnigent, host_id: str, workspace: Path) -> None:
@@ -3990,7 +4019,7 @@ def refuse_unfit_cloud_host(og: Omnigent, host_id: str, workspace: Path) -> None
 def offers_cloud(og: Omnigent, hosts: list[dict]) -> bool | None:
     """Whether this host offers ``acp:claude-cloud``, by its ``configured_harnesses`` (harness to readiness,
     ``True`` when ready): on its row in ``hosts`` (``GET /v1/hosts``), else on the record of the session
-    this runs in, which describes its host's. None when neither names it."""
+    this runs in, which describes its host's: False when that map lacks it. None when neither has a map."""
     rows = [h for h in hosts if h.get("host_id") == og.host_id]
     found = [r.get("configured_harnesses") for r in rows]
     if not any(isinstance(f, dict) for f in found) and (me := own_id() or parent_id()):
@@ -3998,44 +4027,42 @@ def offers_cloud(og: Omnigent, hosts: list[dict]) -> bool | None:
             found = [og.info(me).get("configured_harnesses")]
         except Fail:
             found = []
-    named = [f[CLOUD_HARNESS] for f in found if isinstance(f, dict) and CLOUD_HARNESS in f]
-    return (named[0] is True) if named else None
+    maps = [f for f in found if isinstance(f, dict)]
+    named = [f[CLOUD_HARNESS] for f in maps if CLOUD_HARNESS in f]
+    return (named[0] is True) if named else (False if maps else None)
+
+
+def far_launch_dirs(og: Omnigent, host_id: str) -> list[str]:
+    """The workspaces of this project's cloud sessions (``GET /v1/sessions?project=<name>``) on host
+    ``host_id``, newest first: the repository's launch dirs there. It reads only the server's
+    records, so no host or path is configured: a project's cloud lead, started with ``start
+    --top-level --host``, names both."""
+    try:
+        project = quote((og.home(project_name()) or {}).get("name", ""))
+        path = f"/v1/sessions?kind=default&project={project}&limit=100"
+        rows = og.call("GET", path).get("data", [])
+    except Fail:
+        return []
+    found: list[str] = []
+    for row in sorted(rows, key=lambda r: float(r.get("created_at") or 0), reverse=True):
+        place = str(row.get("workspace") or "")
+        here = str(row.get("host_id") or "") == host_id and place and place not in found
+        if here and cloud_session(og, row):
+            found.append(place)
+    return found
 
 
 def cloud_placement(og: Omnigent) -> tuple[str, str] | None:
-    """Where a ``claude-cloud`` session this host can't run goes: the host and the launch dir of the
-    newest cloud session in this project (``GET /v1/sessions?project=<name>``) on an online host other
-    than this one, whose workspace there holds ``.git`` and the pin (``.claude/settings.local.json``,
-    listed through the host's file API). None when this host offers the cloud harness
-    (``offers_cloud``), runs the project's newest cloud session, or none is found: the caller then starts
-    here, as before. It reads only the server's records, so no host or path is
-    configured: a project's cloud lead, started with ``start --top-level --host``, names both. Any
-    launch dir of the repository will do, since a cloud run's brief checks out its own head."""
-    hosts = og.call("GET", "/v1/hosts")["hosts"]
-    if offers_cloud(og, hosts):
+    """Where a ``claude-cloud`` session this host can't run goes: the host and launch dir
+    ``pick_cloud_host`` maps it to (#1693). None when this host offers the cloud harness
+    (``offers_cloud``), or says nothing of it and has run the project's cloud sessions or no host
+    is found: the caller then starts here, as before. Any launch dir of the repository will do,
+    since a cloud run's brief checks out its own head."""
+    offered = offers_cloud(og, og.call("GET", "/v1/hosts")["hosts"])
+    if offered or (offered is None and far_launch_dirs(og, og.host_id)):
         return None  # this host runs cloud sessions: the local launch dir, as before
-    project = quote((og.home(project_name()) or {}).get("name", ""))
-    rows = og.call("GET", f"/v1/sessions?kind=default&project={project}&limit=100").get("data", [])
-    online = {h["host_id"] for h in hosts if h.get("status") == "online"}
-    seen: set[tuple[str, str]] = set()
-    for row in sorted(rows, key=lambda r: float(r.get("created_at") or 0), reverse=True):
-        host, place = str(row.get("host_id") or ""), str(row.get("workspace") or "")
-        if not (host and place) or (host, place) in seen or not cloud_session(og, row):
-            continue
-        if host == og.host_id:
-            return None  # this host runs cloud sessions: the local launch dir, as before
-        seen.add((host, place))
-        if host not in online:
-            continue
-        try:
-            pinned = ".git" in host_listing(og, host, place, "launch dir") and SETTINGS.name in (
-                host_listing(og, host, str(Path(place) / SETTINGS.parent), "launch dir")
-            )
-        except (Gone, Fail):
-            continue
-        if pinned:
-            return host, place
-    return None
+    placed = pick_cloud_host(og, None)
+    return (placed[0], str(placed[1])) if placed and placed[0] != og.host_id else None
 
 
 def cloud_run_route(
@@ -10427,18 +10454,19 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     f"--host {args.host} is no verifier host loop.md lists: {', '.join(allowed)}"
                 )
         if (
-            args.cmd == "start"
+            args.cmd in ("run", "start")
             and not args.host
             and not args.top_level
             and args.agent not in AGENTS
             and og.harness(args.agent) == CLOUD_HARNESS
-            and args.workspace
-            and args.workspace.is_absolute()
+            and (args.workspace is None or args.workspace.is_absolute())
         ):
-            # a cloud child's bridge holds memory on its host, so spread them (#838); a lead stays
-            # where it is until the server can move it (omnigent#539, #489)
-            picked = pick_cloud_host(og, args.workspace)
-            args.host = picked if picked and picked != og.host_id else None
+            # a cloud child's bridge holds memory on its host, so spread them (#838), and one this
+            # host can't run goes to a launch dir on a host that can (#1693); a lead stays where it
+            # is until the server can move it (omnigent#539, #489)
+            picked = pick_cloud_host(og, args.workspace or Path.cwd())
+            if picked and picked[0] != og.host_id:
+                args.host, args.workspace = picked
         # a follow-up's paths are its session's host's, wherever that runs
         session = og.info(args.session) if args.cmd == "send" else {}
         host = og.host(args.host) if getattr(args, "host", None) else og.host_id

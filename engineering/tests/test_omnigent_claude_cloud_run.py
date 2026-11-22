@@ -105,9 +105,14 @@ def bridge(og: RunFake, workspace: str = "/srv/repo-cloud", pinned: bool = True)
             "created_at": 5,
         }
     )
+    og.others.append(
+        {"id": "lead", "host_id": "b", "status": "idle"}
+    )  # live: files read through it
     files = {f"{workspace}/.git/HEAD": "ref", "/proc/meminfo": "MemAvailable: 99999999 kB\n"}
     if pinned:
-        files[f"{workspace}/.claude/settings.local.json"] = "{}"
+        files[f"{workspace}/.claude/settings.local.json"] = (
+            '{"remote": {"defaultEnvironmentId": "env_1"}}'  # what the start's pin check reads (#838)
+        )
     og.procs["b"] = files
 
 
