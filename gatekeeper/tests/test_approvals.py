@@ -5317,6 +5317,46 @@ def test_a_cloud_rest_land_refuses_a_head_that_moved_and_leaves_main_alone(
     assert rest_land["main"]() == rest_land["base"]
 
 
+def refused_merge(
+    rest_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch, body: str
+) -> tuple[int, list[str]]:
+    """Land PR #7 where the proxy answers the REST merge with a 403 whose body is `body`."""
+    faked = approvals.github.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:3] == ("api", "-X", "PUT") and args[3].endswith("/merge"):
+            raise subprocess.CalledProcessError(1, "gh", stderr=f"{body} (HTTP 403)")
+        return faked(*args, data=data)
+
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    return rest_land["land"]("7")
+
+
+def test_a_proxy_path_403_on_the_rest_merge_names_the_host_land_not_add_repo(
+    rest_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code, lines = refused_merge(
+        rest_land,
+        monkeypatch,
+        "Write access to this GitHub API path is not permitted through this proxy",
+    )
+    text = " ".join(lines)
+    assert code == 1 and "from a host checkout" in text and "not permitted through" in text
+    assert "add_repo" not in text
+    assert rest_land["main"]() == rest_land["base"]
+
+
+def test_an_unattached_repo_403_on_the_rest_merge_names_add_repo(
+    rest_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code, lines = refused_merge(
+        rest_land, monkeypatch, "GitHub access to this repository is not enabled for this session"
+    )
+    text = " ".join(lines)
+    assert code == 1 and "add_repo" in text and '"push"' in text
+    assert rest_land["main"]() == rest_land["base"]
+
+
 def test_a_cloud_land_asking_a_signed_squash_without_ssh_keygen_refuses_naming_it(
     cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

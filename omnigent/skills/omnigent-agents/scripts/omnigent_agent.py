@@ -288,6 +288,10 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
+TWIN_ROLES = (
+    "worker",
+    "verifier",
+)  # one running per PR (#1806): a lead coordinates, and runs no PR's work itself
 # A Claude worker or verifier gets only the built-in tools its role calls and no user MCP servers,
 # whose schemas and listings it would otherwise re-read every turn; Omnigent's own and plugins'
 # servers stay. A project's `Worker tools:` or `Verifier tools:` line names more, or `full`.
@@ -577,6 +581,11 @@ FOLLOW_QUIET_SECONDS = 300.0
 # event, whatever its status reads; this much more once it was nudged.
 DEADLINE_SECONDS = 1200.0
 PR_POLL_SECONDS = 60.0  # a lead's named PR is read from GitHub at most this often
+# A followed lead's PR whose newest verdict, on its current head, is this old with no push or go since: the lead is
+# woken, since a verdict wants a fix round or a go and `land`, and nothing else picks that up overnight
+VERDICT_STALL_SECONDS = 3600.0
+VERDICT_STALL_POLL = 600.0  # each such PR is read from GitHub at most this often
+QUEUED_LABEL = "loop:queued"  # `land` hands a PR to the merge queue with it
 NUDGED_SECONDS = 600.0
 # What a lead's ``STILL WORKING`` message says it waits on, for its status and its deadline: the
 # wait word, a child's full session id (32 hex: a commit is 40 or a short 7-12) or a harness's
@@ -4620,6 +4629,15 @@ def start(
             )
         except Fail:
             label = f"#{int(about)}"
+    # one running session per PR and role (#1806): a second worker or verifier started while the first runs repeats its
+    # whole run on the same head, so the start waits until the first ends or is stopped
+    kind = Path(role).stem if role else ""
+    held = f"{slug}#{pr}" if slug else label
+    if kind in TWIN_ROLES and held and (twin := running_twin(og, held, kind)):
+        raise Fail(
+            f"PR {held} already has a running {kind}, {twin}: wait on it, or stop it with"
+            f" `reap --force {twin}`, then start again"
+        )
     # Omnigent refuses a sibling with a title an earlier child holds, archived or not, abandoned
     # here or left by an earlier run: each refusal and each abandon moves to the next <title>-r<n>.
     n = 0
@@ -5529,6 +5547,58 @@ def _verdict(pr: int, head: str, end: float, since: float | None) -> tuple[int, 
     return None
 
 
+def verdict_stall(pr: int, repo: str = "") -> tuple[str, str] | None:
+    """``(head, line)`` when PR ``pr`` is open and its newest verifier report naming its current head (a comment or
+    review with that ``Head:`` and a ``SATISFIED:`` line) is over ``VERDICT_STALL_SECONDS`` old with no go since: no
+    push, since a push moves the head the report names, and, for a satisfied one, no green ``owner`` status (the go) or
+    ``land`` status on the head and no ``loop:queued`` label (the hand-over to the queue). None otherwise, through
+    REST alone."""
+    slug = repo or "{owner}/{repo}"
+
+    def pages(path: str) -> list[dict]:
+        out = gh("api", "--paginate", f"repos/{slug}/{path}", "--jq", ".[]", timeout=HTTP_SECONDS)
+        return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+    view = json.loads(gh("api", f"repos/{slug}/pulls/{pr}", timeout=HTTP_SECONDS))
+    if view.get("state") != "open":
+        return None
+    head = view["head"]["sha"]
+    said = [(c["created_at"], c) for c in pages(f"issues/{pr}/comments?per_page=100")]
+    said += [
+        (r["submitted_at"], r)
+        for r in pages(f"pulls/{pr}/reviews?per_page=100")
+        if r.get("submitted_at")
+    ]
+    for when, item in sorted(said, key=lambda x: stamp(x[0]), reverse=True):
+        body = item.get("body") or ""
+        heads = {
+            l[len("Head:") :].strip().lower() for l in body.splitlines() if l.startswith("Head:")
+        }
+        if head.lower() in heads and (found := SATISFIED.search(body)):
+            word, url = found[1].lower(), item.get("html_url") or ""
+            break
+    else:
+        return None
+    age = time.time() - stamp(when)
+    if age < VERDICT_STALL_SECONDS:
+        return None
+    if word == "yes":
+        if QUEUED_LABEL in {str(l.get("name")) for l in view.get("labels") or []}:
+            return None
+        newest: dict[
+            str, str
+        ] = {}  # GitHub lists a head's statuses newest first: a later one supersedes
+        for status in pages(f"commits/{head}/statuses?per_page=100"):
+            newest.setdefault(str(status.get("context")), str(status.get("state")))
+        if "success" in (newest.get("owner"), newest.get("land")):
+            return None
+    step = "the go and `land`" if word == "yes" else "a fix round"
+    return head, (
+        f"PR #{pr}: the verdict on {head[:12]} (SATISFIED: {word}) is {age / 60:.0f}m old with no push or go"
+        f" since: it waits on {step} from you: {url}"
+    )
+
+
 def stamp(when: str) -> float:
     """A GitHub ISO time as seconds."""
     return datetime.fromisoformat(when.replace("Z", "+00:00")).timestamp()
@@ -5997,6 +6067,26 @@ def replaced(og: Omnigent, sid: str, info: dict) -> bool:
     )
 
 
+def running_twin(og: Omnigent, label: str, role: str) -> str:
+    """The id of a live session labelled ``PR_LABEL`` ``label`` and ``omni.role`` ``role`` whose turn is running, else
+    empty: ``start`` refuses a second one beside it (#1806). An idle kept ``--pr`` worker is no twin, since ``start --pr``
+    replaces it (``replaced``). Sessions that can't be listed are none known, so the start goes on."""
+    try:
+        page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
+    except Exception:  # noqa: BLE001 - unread: no twin known
+        return ""
+    for s in page.get("data", []):
+        labels = s.get("labels") or {}
+        if (
+            not s.get("archived")
+            and str(labels.get(PR_LABEL, "")) == label
+            and labels.get("omni.role") == role
+            and str(s.get("status")) in RUNNING
+        ):
+            return str(s.get("id"))
+    return ""
+
+
 # a line that is itself an owner question or a wait on the owner's card: the line's own words, never a quoted (``>``) or
 # bullet (``-``) line, and never a bare mention (``USER NEEDED`` takes its colon, as the others do)
 OWNER_ASK = re.compile(
@@ -6115,7 +6205,19 @@ def finish_delivered(
         return f"{name}: already archived", False
     if keep or (not named and (info.get("labels") or {}).get(KEEP_LABEL)):
         return f"{name}: kept (--keep)", False
-    if hold_pr and (label := held_by(info)) and not (force and replaced(og, sid, info)):
+    # a role session on a PR named to `reap --force`: what `start` names when it refuses a running twin (#1806)
+    twin_stop = (
+        force
+        and named
+        and str(info.get("status")) in RUNNING
+        and bool((info.get("labels") or {}).get(PR_LABEL))
+        and (info.get("labels") or {}).get("omni.role") in TWIN_ROLES
+    )
+    if (
+        hold_pr
+        and (label := held_by(info))
+        and not (force and (twin_stop or replaced(og, sid, info)))
+    ):
         found = pr_label(label)
         if found and found not in held:
             held[found] = pr_hold(*found)
@@ -6128,7 +6230,8 @@ def finish_delivered(
     # an open card is the owner's question: archiving ends its way back, --force too
     if cards := cards_of(info) or [_asks(e) for e in getattr(og, "cards", {}).get(sid) or []]:
         return f"{name}: kept (card open: {'; '.join(cards)})", False
-    if force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None:
+    stuck = force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None
+    if stuck or twin_stop:
         arm_quietly(registry, sid)
         try:
             og.interrupt(sid)
@@ -6137,7 +6240,7 @@ def finish_delivered(
             print(f"session {sid} was not finished: {e}", file=sys.stderr)
             return f"{name}: finish failed: {e}", True
         return (
-            f"{name}: archived (stuck); check git status in"
+            f"{name}: archived ({'stuck' if stuck else 'stopped'}); check git status in"
             f" {info.get('workspace') or '(workspace unknown)'}"
         ), False
     busy = (
@@ -6197,7 +6300,10 @@ def reap(
 
     ``force`` also finishes a stuck session (``stuck_minutes``): it stops the turn first, then
     archives it, and names the session's workspace, since a dead run can leave a patch applied
-    there. A running session that is not stuck stays kept, and the line says so.
+    there. A running worker or verifier on a PR (``omni.role`` and ``PR_LABEL``) named in ``sessions`` is stopped and
+    finished with ``force`` whether stuck or not, its open PR included (#1806): that is what ``start`` names when it
+    refuses a running twin. An idle one stays held by its open PR, and any other running session that is not stuck
+    stays kept, and the line says so.
 
     A ``--pr`` worker (labelled ``PR_LABEL`` ``owner/name#N``) is kept, ``force`` included, while its PR
     is open (or can't be read), since a fix round or the next verifier pass reaches it warm; it is
@@ -9064,6 +9170,43 @@ def supervise_registry(
                 )
                 say(line, sid, f"deadline:{sid}:{chain}{nudged}", "deadline")
 
+    stall_read: dict[
+        tuple[str, int], float
+    ] = {}  # each followed PR's last verdict_stall read (wall clock)
+
+    def stalled_verdicts(sid: str, lead: dict) -> None:
+        """Wake a followed lead whose own PR (its ``omni.pr`` label) or a PR its wait names has a verdict on its
+        current head ``VERDICT_STALL_SECONDS`` old with no push or go since (``verdict_stall``): one ``news`` event per
+        PR and head, which tells the lead itself. Only for a lead quiet that long, so a working lead costs no read; not
+        while its turn runs, nor for a lead the owner drives."""
+        if lead.get("direct") or lead["state"] in RUNNING:
+            return
+        if time.time() - lead["progress_at"] < VERDICT_STALL_SECONDS:
+            return
+        own = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
+        refs = {(own[0], own[1])} if own else set()
+        for r in [*(lead.get("refs") or []), *(lead.get("wait") or "").split(", ")]:
+            if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", r.strip()):
+                refs.add((wait_repo(sid, m[1] or ""), int(m[2])))
+        for repo, pr in sorted(refs):
+            if time.time() - stall_read.get((repo, pr), -VERDICT_STALL_POLL) < VERDICT_STALL_POLL:
+                continue
+            stall_read[(repo, pr)] = time.time()
+            try:
+                found = verdict_stall(pr, repo)
+            except Exception as e:  # noqa: BLE001 - read again at the next VERDICT_STALL_POLL
+                log(("stall", repo, pr), f"PR #{pr} verdict not read: {reason(e)}")
+                continue
+            log(("stall", repo, pr), None)
+            if found:
+                head, line = found
+                say(
+                    f"{sid} {lead['title']}".rstrip() + f": {line}",
+                    sid,
+                    f"stall:{sid}:{repo}#{pr}:{head}",
+                    "news",
+                )
+
     def has_event(sid: str) -> bool:  # an event settles what a prose wait would
         try:
             return lead_event_of(og, og.info(sid)) is not None
@@ -9395,6 +9538,7 @@ def supervise_registry(
                         if console:
                             wait_news(sid, lead)
                             overdue(sid, lead)
+                            stalled_verdicts(sid, lead)
                             due(sid, lead)
                         continue
                 else:
@@ -10083,7 +10227,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument(
         "--force",
         action="store_true",
-        help="also stop and finish a session that is running but stuck (no item past OMNIGENT_STUCK_SECONDS)",
+        help="also stop and finish a session that is running but stuck (no item past OMNIGENT_STUCK_SECONDS); a running worker or verifier on a PR named here is stopped and finished whether stuck or not, its open PR included",
     )
     p.add_argument(
         "--merged",

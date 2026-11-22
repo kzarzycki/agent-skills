@@ -156,10 +156,21 @@ def test_placement_is_stated_once_and_the_role_files_point_to_it() -> None:
     lead = " ".join((LOOP / "lead.md").read_text().split())
     assert "each heavy run that did not go to the cloud with where it went and why" in lead
     assert (
-        "Every heavy run, a worker's or your own (a suite to sort failures, a build, an e2e run),"
+        "Every other heavy run, a worker's or your own (a build, an e2e run),"
         " goes where SKILL.md, Where heavy steps run says, which also gives your own run's recipe"
         in lead
     )
+
+
+def test_a_lead_runs_no_test_suite() -> None:
+    """A lead and its verifier both ran the suite on the same two heads (waste audit, finding 9): the worker's gate
+    and the verifier's runs are the runs of record, so the lead reads their logs."""
+    lead = " ".join((LOOP / "lead.md").read_text().split())
+    assert (
+        "You run no test suite: the worker's gate and the verifier's runs are the runs of record"
+        in lead
+    )
+    assert "a suite to sort failures" not in lead and "Your own test or check run" not in lead
 
 
 def test_the_verifier_waits_with_one_wake_and_reruns_repros_together() -> None:
@@ -224,3 +235,15 @@ def test_the_verifier_keeps_real_data_out_of_the_report_it_posts() -> None:
     assert "The report is posted as the PR review, so it holds no real data" in verifier
     assert "local file next to the report (under `tmp/loop/`)" in verifier
     assert "cites that file by path and says what it shows, without the values" in verifier
+
+
+def test_the_verifier_runs_tests_through_the_project_s_test_task() -> None:
+    """A bare `pytest` skips the task's parallel workers: one verifier pass took 4,895 s bare against 223 s through
+    the task (waste audit, finding 2)."""
+    verifier = " ".join((LOOP / "verifier.md").read_text().split())
+    assert "only through the project's test task" in verifier
+    assert "never a bare runner such as `pytest`" in verifier
+    assert (
+        "A selection of more than half the suite runs as the whole suite through that task"
+        in verifier
+    )

@@ -3,10 +3,11 @@
 You take the owner's request to merged PRs: one PR per story (an epic's sub-issue, or the
 request itself when it has none), each on its own branch in a worktree of your own
 (loop.md § Worktree), and stories nothing blocks run at the same time. You lead the
-design, wireframes included for a UI, and delegate the rest. Every heavy run, a worker's or
-your own (a suite to sort failures, a build, an e2e run), goes where SKILL.md, Where heavy
+design, wireframes included for a UI, and delegate the rest. You run no test suite: the worker's gate and the
+verifier's runs are the runs of record on a head, so read their logs to sort a failure, since a rerun of yours
+doubles the run. Every other heavy run, a worker's or your own (a build, an e2e run), goes where SKILL.md, Where heavy
 steps run says, which also gives your own run's recipe.
-Your own test or check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
+Your own check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
 refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
 `claude-cloud-run` could not make or one that needs this host.
 Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native subagent in the VM, never a session made with `sys_session_create`: a created child lands on the bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent, not a helper, and starts as `brief` describes.
