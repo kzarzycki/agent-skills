@@ -748,10 +748,19 @@ The first head seen for a repo is only stored, so a start reports no old merge; 
 is kept in the state (`heads`), so a restart reports a landing made while it was down, and only
 that one. A workspace outside a checkout is not watched; a failed read is logged once and tried
 again. The event is for whoever owes the step after a landing (the chief of staff under `--console`), not for other leads: they read the new base on their next fetch, since a notice wakes each with its whole context. The lead's words play no part, so `route` and `lead.md` stay as they are.
-With `--console`, a followed lead quiet an hour whose PR (its `omni.pr` label or a PR its wait names) has a verdict on
-its current head over an hour old with no push since, and, for a satisfied one, no go (a green `owner` or `land` status,
-or `loop:queued`), gets one `news` line per PR and head naming the step it owes (`verdict_stall`), since nothing else
-picks up "verdict in, fix or go needed" overnight; each such PR is read at most once in 10 minutes.
+It also watches every open, non-draft PR of those repos and of each `--stall-repo <owner/name>` (#1819): a PR
+that has not moved toward landing for `--stall-minutes` (default 60; 0 turns the watch off) raises one `pr-stall`
+event, which routes `act` to the notified session, the manager, who clears the blocker or cards the owner the fix it
+proposes. Moving is a push (a commit, a force-push, the PR marked ready), a verifier report (`SATISFIED:`), a go (a
+green `owner` or `land` status) or a merge-queue step (`loop:queued` or `loop:dequeued` added or removed, a queue
+status or check run). The line names each blocker it finds: a red required check (the base's ruleset; any red check
+when unread), a conflict, a verdict on the head without a go (or a fix round asked with no push since), a card waiting
+(a loop event on the PR's branch at `needs-owner`, a verifier question newer than the push), else `none found on
+GitHub`: `o/r: PR #12 <title>: no push, verdict, go or queue step for 75m; blocker: a conflict with main: <url>`. It
+reads GitHub only (`pr_stalls`): the repo's open PRs at most once in 15 minutes, and a PR's timeline, statuses, check
+runs and pull only once it may have stalled (its last move plus the threshold), or again once its listing changed. It
+keeps only what stops a second wake for the same stall (each PR's newest move told, in the state's `pr_stalls`), so
+the same stall wakes no one twice and a new move starts a new one.
 
 **`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
 state file, an events log, status labels, a progress deadline, settled events kept across
@@ -816,6 +825,7 @@ offline while idle raises nothing.
 | Event | Settled by | What happens |
 |---|---|---|
 | a default branch of a repo the followed, non-direct leads work in moved with a PR a lead's wait names or owns | rule | tell that lead (act, to the supervisor, when the lead waits on it), naming the new sha and the PRs merged since; no other lead and not the chief of staff |
+| `pr-stall`: an open PR of a watched repo with no push, verdict, go or queue step for `--stall-minutes` (#1819) | rule | act, to the manager, naming its blocker; the same stall once |
 | a PR or session a lead's wait names settled, or a session it started reached a final state | rule | tell that lead within a minute, read from GitHub and the session; a set tells on its first failure or its last end |
 | `archived` | rule | its line and state entry dropped; no post |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |

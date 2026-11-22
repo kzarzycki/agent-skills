@@ -13552,7 +13552,7 @@ def test_an_open_pr_a_lead_waits_on_costs_one_github_read_a_minute(
     )
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
     waits = [c for c in calls if c[:2] == ("pr", "view")]
-    # beside it, a lead quiet an hour costs one verdict-stall read per VERDICT_STALL_POLL (waste audit, finding 7)
+    # beside it, a stall sweep of a followed lead's repo reads GitHub's REST api (pr_stalls, #1819)
     stalls = [c for c in calls if c[:1] == ("api",)]
     assert len(waits) == 1 and len(stalls) <= 1 and len(calls) == len(waits) + len(stalls)
 

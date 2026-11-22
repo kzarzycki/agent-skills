@@ -581,10 +581,15 @@ FOLLOW_QUIET_SECONDS = 300.0
 # event, whatever its status reads; this much more once it was nudged.
 DEADLINE_SECONDS = 1200.0
 PR_POLL_SECONDS = 60.0  # a lead's named PR is read from GitHub at most this often
-# A followed lead's PR whose newest verdict, on its current head, is this old with no push or go since: the lead is
-# woken, since a verdict wants a fix round or a go and `land`, and nothing else picks that up overnight
-VERDICT_STALL_SECONDS = 3600.0
-VERDICT_STALL_POLL = 600.0  # each such PR is read from GitHub at most this often
+# An open PR with no push, verdict, go or merge-queue step this long is stalled: the supervisor wakes the manager with
+# the blocker it finds (#1819), since nobody else notices a PR waiting behind a red check or a missing go overnight.
+# `supervise --stall-minutes` sets it per supervisor, 0 turns the watch off.
+PR_STALL_SECONDS = 3600.0
+PR_STALL_POLL = 900.0  # each watched repo's open PRs are listed at most this often
+# A check run's conclusion or a status's state that reads red
+RED = {"failure", "error", "timed_out", "cancelled", "action_required", "startup_failure"}
+# A status or check run of the merge queue (Mergify's `Queue: ...` and its batch checks): its moves are queue progress
+QUEUE_CHECK = re.compile(r"(?i)\bqueue\b|mergify")
 QUEUED_LABEL = "loop:queued"  # `land` hands a PR to the merge queue with it
 NUDGED_SECONDS = 600.0
 # What a lead's ``STILL WORKING`` message says it waits on, for its status and its deadline: the
@@ -5672,56 +5677,224 @@ def _verdict(pr: int, head: str, end: float, since: float | None) -> tuple[int, 
     return None
 
 
-def verdict_stall(pr: int, repo: str = "") -> tuple[str, str] | None:
-    """``(head, line)`` when PR ``pr`` is open and its newest verifier report naming its current head (a comment or
-    review with that ``Head:`` and a ``SATISFIED:`` line) is over ``VERDICT_STALL_SECONDS`` old with no go since: no
-    push, since a push moves the head the report names, and, for a satisfied one, no green ``owner`` status (the go) or
-    ``land`` status on the head and no ``loop:queued`` label (the hand-over to the queue). None otherwise, through
-    REST alone."""
-    slug = repo or "{owner}/{repo}"
+def pr_stall(facts: dict, threshold: float, now: float) -> tuple[float, str | None]:
+    """``(moved, line)``: when the open PR ``facts`` describes last moved toward landing, and a line when that is
+    ``threshold`` seconds or more ago (it is stalled), else None. Moving is a push (a commit, a force-push, a draft marked ready, the PR opened), a verifier report (a
+    comment or review with a ``SATISFIED:`` line), a go (a green ``owner`` or ``land`` status) or a merge-queue step
+    (``loop:queued``/``loop:dequeued`` added or removed, a queue status or check run). ``moved`` is the newest of these,
+    which names the stall; the line names the blockers found: a red required check, a conflict, a verdict without a go
+    (or a fix round asked with no push since), a card waiting (a loop event on the PR's branch at ``needs-owner``, a
+    verifier question newer than the last push). ``facts`` holds GitHub's own records: ``pr`` (the pull, with
+    ``mergeable``), ``timeline`` (the issue timeline), ``statuses`` (the head's, newest first), ``checks`` (its check
+    runs), ``required`` (the base's required check names, None when unread: then any red check counts) and ``cards``
+    (the needs-owner events' kinds)."""
+    pr, head = facts["pr"], facts["pr"]["head"]["sha"].lower()
+    pushed = [stamp(pr["created_at"])]
+    verdicts: list[tuple[float, str, str]] = []  # (when, word, url) of a report naming the head
+    reported, questions, queued = [], [], []
+    for e in facts["timeline"]:
+        kind = e.get("event")
+        if kind == "committed":
+            pushed.append(stamp((e.get("committer") or {}).get("date") or pr["created_at"]))
+        elif kind in ("head_ref_force_pushed", "ready_for_review", "reopened"):
+            pushed.append(stamp(e["created_at"]))
+        elif kind in ("labeled", "unlabeled"):
+            if str((e.get("label") or {}).get("name")) in (QUEUED_LABEL, "loop:dequeued"):
+                queued.append(stamp(e["created_at"]))
+        elif kind in ("commented", "reviewed"):
+            when = e.get("submitted_at") or e.get("created_at")
+            body = e.get("body") or ""
+            if not when:
+                continue
+            if QUESTION.match(body):
+                questions.append((stamp(when), e.get("html_url") or ""))
+            if found := SATISFIED.search(body):
+                reported.append(stamp(when))
+                heads = {
+                    l[len("Head:") :].strip().lower()
+                    for l in body.splitlines()
+                    if l.startswith("Head:")
+                }
+                if head in heads:
+                    verdicts.append((stamp(when), found[1].lower(), e.get("html_url") or ""))
+    newest: dict[
+        str, dict
+    ] = {}  # GitHub lists a head's statuses newest first: a later one supersedes
+    for status in facts["statuses"]:
+        newest.setdefault(str(status.get("context")), status)
+    goes = [
+        stamp(s["created_at"])
+        for s in facts["statuses"]
+        if s.get("context") in ("owner", "land") and s.get("state") == "success"
+    ]
+    for s in facts["statuses"]:
+        if QUEUE_CHECK.search(str(s.get("context"))):
+            queued.append(stamp(s["created_at"]))
+    for c in facts["checks"]:
+        if QUEUE_CHECK.search(str(c.get("name"))):
+            queued += [stamp(c[k]) for k in ("started_at", "completed_at") if c.get(k)]
+    moved = max([*pushed, *reported, *goes, *queued])
+    if now - moved < threshold:
+        return moved, None
+    last_push = max(pushed)
+    blockers = []
+    required = facts.get("required")
+    red = sorted(
+        {
+            name
+            for name, state in [
+                *((n, str(s.get("state"))) for n, s in newest.items()),
+                *((str(c.get("name")), str(c.get("conclusion"))) for c in facts["checks"]),
+            ]
+            if state in RED and (not required or name in required)
+        }
+    )
+    if red:
+        blockers.append(f"a red {'required ' * bool(required)}check: {', '.join(red)}")
+    if pr.get("mergeable") is False or pr.get("mergeable_state") == "dirty":
+        blockers.append(f"a conflict with {pr['base']['ref']}")
+    if verdicts:
+        when, word, url = max(verdicts)
+        labels = {str(l.get("name")) for l in pr.get("labels") or []}
+        go = any(str(newest.get(c, {}).get("state")) == "success" for c in ("owner", "land"))
+        if word == "yes" and not go and QUEUED_LABEL not in labels:
+            blockers.append(
+                f"a verdict without a go (SATISFIED: yes, {(now - when) / 60:.0f}m old): {url}"
+            )
+        elif word != "yes" and when > last_push:
+            blockers.append(
+                f"a verdict asking a fix round (SATISFIED: {word}) with no push since: {url}"
+            )
+    cards = [f"a `{k}` loop event at needs-owner" for k in facts.get("cards") or []]
+    cards += [f"a verifier question: {url}" for when, url in questions if when > last_push]
+    if cards:
+        blockers.append(f"a card waiting: {'; '.join(cards)}")
+    what = "; ".join(blockers) or "none found on GitHub"
+    title = f" {pr.get('title') or ''}".rstrip()
+    return moved, (
+        f"PR #{pr['number']}{title}: no push, verdict, go or queue step for {(now - moved) / 60:.0f}m;"
+        f" blocker: {what}: {pr.get('html_url') or ''}"
+    ).rstrip(": ")
 
-    def pages(path: str) -> list[dict]:
-        out = gh("api", "--paginate", f"repos/{slug}/{path}", "--jq", ".[]", timeout=HTTP_SECONDS)
+
+def pr_facts(repo: str, pr: dict, bases: dict, refs: dict) -> dict:
+    """What ``pr_stall`` judges open PR ``pr`` (a row of the repo's pulls listing) by, read from GitHub: its pull (for
+    ``mergeable``), timeline, head statuses and check runs, its base's required checks (read once per sweep into
+    ``bases``) and the loop events on its branch at ``needs-owner``, from ``refs`` (``loop_cards``)."""
+
+    def pages(path: str, jq: str = ".[]") -> list[dict]:
+        out = gh("api", "--paginate", f"repos/{repo}/{path}", "--jq", jq, timeout=HTTP_SECONDS)
         return [json.loads(line) for line in out.splitlines() if line.strip()]
 
-    view = json.loads(gh("api", f"repos/{slug}/pulls/{pr}", timeout=HTTP_SECONDS))
-    if view.get("state") != "open":
-        return None
-    head = view["head"]["sha"]
-    said = [(c["created_at"], c) for c in pages(f"issues/{pr}/comments?per_page=100")]
-    said += [
-        (r["submitted_at"], r)
-        for r in pages(f"pulls/{pr}/reviews?per_page=100")
-        if r.get("submitted_at")
-    ]
-    for when, item in sorted(said, key=lambda x: stamp(x[0]), reverse=True):
-        body = item.get("body") or ""
-        heads = {
-            l[len("Head:") :].strip().lower() for l in body.splitlines() if l.startswith("Head:")
-        }
-        if head.lower() in heads and (found := SATISFIED.search(body)):
-            word, url = found[1].lower(), item.get("html_url") or ""
-            break
-    else:
-        return None
-    age = time.time() - stamp(when)
-    if age < VERDICT_STALL_SECONDS:
-        return None
-    if word == "yes":
-        if QUEUED_LABEL in {str(l.get("name")) for l in view.get("labels") or []}:
-            return None
-        newest: dict[
-            str, str
-        ] = {}  # GitHub lists a head's statuses newest first: a later one supersedes
-        for status in pages(f"commits/{head}/statuses?per_page=100"):
-            newest.setdefault(str(status.get("context")), str(status.get("state")))
-        if "success" in (newest.get("owner"), newest.get("land")):
-            return None
-    step = "the go and `land`" if word == "yes" else "a fix round"
-    return head, (
-        f"PR #{pr}: the verdict on {head[:12]} (SATISFIED: {word}) is {age / 60:.0f}m old with no push or go"
-        f" since: it waits on {step} from you: {url}"
+    n, head, base = pr["number"], pr["head"]["sha"], pr["base"]["ref"]
+    if base not in bases:
+        try:
+            rules = pages(f"rules/branches/{base}")
+            bases[base] = {
+                str(c.get("context"))
+                for r in rules
+                if r.get("type") == "required_status_checks"
+                for c in (r.get("parameters") or {}).get("required_status_checks") or []
+            } or None
+        except RateLimited:
+            raise
+        except Fail:  # unread: any red check counts
+            bases[base] = None
+    return {
+        "pr": json.loads(gh("api", f"repos/{repo}/pulls/{n}", timeout=HTTP_SECONDS)),
+        "timeline": pages(f"issues/{n}/timeline?per_page=100"),
+        "statuses": pages(f"commits/{head}/statuses?per_page=100"),
+        "checks": pages(f"commits/{head}/check-runs?per_page=100", ".check_runs[]"),
+        "required": bases[base],
+        "cards": refs.get(pr["head"]["ref"], []),
+    }
+
+
+def loop_cards(repo: str, seen: dict) -> dict[str, list[str]]:
+    """The kinds of loop event (``refs/loop/<kind>/<branch>``, events.py's) at ``needs-owner`` on GitHub repo ``repo``,
+    by branch: one listing of the refs, and each event commit's subject (``loop event <kind> <branch>: <state>``) read
+    once, kept in ``seen`` by sha, since a commit never changes."""
+    out = gh(
+        "api",
+        "--paginate",
+        f"repos/{repo}/git/matching-refs/loop/",
+        "--jq",
+        ".[]",
+        timeout=HTTP_SECONDS,
     )
+    found: dict[str, list[str]] = {}
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        ref = json.loads(line)
+        kind, _, branch = str(ref.get("ref")).removeprefix("refs/loop/").partition("/")
+        sha = str((ref.get("object") or {}).get("sha"))
+        if not branch or kind in ("records", "landing"):
+            continue
+        if sha not in seen:
+            message = json.loads(
+                gh("api", f"repos/{repo}/git/commits/{sha}", timeout=HTTP_SECONDS)
+            )["message"]
+            seen[sha] = (
+                message.splitlines()[0].rpartition(": ")[2].split()[0] if ": " in message else ""
+            )
+        if seen[sha] == "needs-owner":
+            found.setdefault(branch, []).append(kind)
+    return found
+
+
+def pr_stalls(
+    repo: str, threshold: float, memo: dict, now: float | None = None
+) -> list[tuple[str, str]]:
+    """``(id, line)`` for each open, non-draft PR of GitHub repo ``repo`` newly stalled (``pr_stall``): no move toward
+    landing for ``threshold`` seconds. ``memo`` is all it keeps between sweeps: per PR, its head and ``updated_at``
+    when last read, when it is next due (its last move plus ``threshold``, so a PR that moved costs no read until
+    then; one already reported is read again an hour on, or once its listing changes) and the stall it last reported,
+    so the same stall (the same newest move) wakes no one twice; and the event commits ``loop_cards`` read."""
+    now = time.time() if now is None else now
+    out = gh(
+        "api",
+        "--paginate",
+        f"repos/{repo}/pulls?state=open&per_page=100",
+        "--jq",
+        ".[]",
+        timeout=HTTP_SECONDS,
+    )
+    listed = [json.loads(line) for line in out.splitlines() if line.strip()]
+    prs = memo.setdefault("prs", {})
+    open_ = {str(p["number"]) for p in listed}
+    for gone in [k for k in prs if k not in open_]:
+        del prs[gone]
+    bases: dict = {}
+    refs: dict | None = None
+    said = []
+    for row in sorted(listed, key=lambda p: p["number"]):
+        if row.get("draft"):
+            continue  # its lead is still building it: the lead's own deadline watches that
+        key = str(row["number"])
+        seen = prs.get(key) or {}
+        same = seen.get("head") == row["head"]["sha"] and seen.get("updated") == row.get(
+            "updated_at"
+        )
+        if same and now < seen.get("due", 0):
+            continue
+        if refs is None:
+            refs = loop_cards(repo, memo.setdefault("events", {}))
+        moved, line = pr_stall(pr_facts(repo, row, bases, refs), threshold, now)
+        entry = {
+            "head": row["head"]["sha"],
+            "updated": row.get("updated_at"),
+            "said": seen.get("said"),
+        }
+        # moving: due a threshold after its last move; stalled and told: read again a threshold on, for its blocker
+        entry["due"] = (now if line else moved) + threshold
+        if line:
+            stall = f"{moved:.0f}"
+            if seen.get("said") != stall:
+                entry["said"] = stall
+                said.append((f"pr-stall:{repo}#{key}:{stall}", f"{repo}: {line}"))
+        prs[key] = entry
+    return said
 
 
 def stamp(when: str) -> float:
@@ -7371,6 +7544,7 @@ def fresh_state() -> dict:
         "notify_label": {},
         "heads": {},
         "events": {},  # loop event refs: sha, stamp (when it last moved), state, beat, told
+        "pr_stalls": {},  # per watched repo, what ``pr_stalls`` keeps between sweeps
     }
 
 
@@ -7803,6 +7977,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         kind = "ended"
     if kind == "landed":  # read from the repo, never from the lead's words
         return "rule", "act", "its default branch moved: a step owed after a landing"
+    if kind == "pr-stall":  # read from GitHub, never from a lead's words
+        return "rule", "act", "a PR stalled: clear its blocker, or card the owner the fix"
     if kind == "archived":
         return "rule", "absorb", "archived: drop its row"
     error = event.get("line", "").partition("\n")[0]  # the status line, not the lead's own words
@@ -8051,6 +8227,8 @@ def supervise_registry(
     fyi: str = "skip",
     decisions: Path | None = None,
     script: Path | None = None,
+    stall_after: float = PR_STALL_SECONDS,
+    stall_repos: tuple[str, ...] = (),
 ) -> NoReturn:
     """Run until stopped, checking each session ``registry`` lists as ``supervise`` does, re-read
     each poll. When ``script``, this file, is replaced on disk (``reloadable``: a skills sync
@@ -8077,6 +8255,11 @@ def supervise_registry(
     staff or the owner reaches ``notify``, combined into at most one post per ``POST_SECONDS``
     (``deliver``); with ``fyi`` ``post`` every line is posted as without it too. The standing
     decisions the small model weighs are ``decisions``' (``standing``).
+
+    Each open, non-draft PR of the repos it watches (``stall_repos``, and each repo a followed lead not marked
+    ``direct`` has its workspace in) that has not moved toward landing for ``stall_after`` seconds raises one
+    ``pr-stall`` event naming its blocker (``pr_stalls``), which wakes the notified session, the manager; ``stall_after``
+    0 turns the watch off.
     """
     og = Uncarded(og)
     rec = Recorded(og) if console else og
@@ -8853,6 +9036,37 @@ def supervise_registry(
                     )
             heads[repo] = sha
 
+    swept: dict[str, float] = {}  # when each watched repo's open PRs were last listed
+
+    def stalls() -> None:
+        """Sweep each watched repo's open PRs for a stall (``pr_stalls``) at most once per ``PR_STALL_POLL``: each new
+        one is a ``pr-stall`` event for the manager, raised on the repo's first followed lead (or none)."""
+        if not stall_after:
+            return
+        first: dict[str, str] = {r: "" for r in stall_repos}
+        for sid, owes in owed.items():
+            if owes[3] and not owes[5] and repos.get(sid) and not first.get(repos[sid]):
+                first[repos[sid]] = sid
+        for repo, sid in sorted(first.items()):
+            if time.monotonic() - swept.get(repo, -PR_STALL_POLL) < PR_STALL_POLL:
+                continue
+            if time.monotonic() < limited[0]:  # GitHub's limit is account-wide
+                continue
+            swept[repo] = time.monotonic()
+            try:
+                found = pr_stalls(repo, stall_after, state["pr_stalls"].setdefault(repo, {}))
+            except RateLimited as e:
+                limited[0] = time.monotonic() + e.wait
+                swept.pop(repo, None)
+                log(("pr-stall", repo), f"GitHub rate limit: open PRs not read for {e.wait:.0f}s")
+                continue
+            except Exception as e:  # noqa: BLE001 - read again at the next PR_STALL_POLL
+                log(("pr-stall", repo), f"{repo}: open PRs not read: {reason(e)}")
+                continue
+            log(("pr-stall", repo), None)
+            for eid, line in found:
+                say(line, sid, eid, "pr-stall")
+
     def alive(other: str, info: dict) -> bool:
         """Whether session ``other`` (its ``info``) shows life: not archived or failed, no
         question or permission waiting on it, and a running turn, a declared background job
@@ -9295,43 +9509,6 @@ def supervise_registry(
                 )
                 say(line, sid, f"deadline:{sid}:{chain}{nudged}", "deadline")
 
-    stall_read: dict[
-        tuple[str, int], float
-    ] = {}  # each followed PR's last verdict_stall read (wall clock)
-
-    def stalled_verdicts(sid: str, lead: dict) -> None:
-        """Wake a followed lead whose own PR (its ``omni.pr`` label) or a PR its wait names has a verdict on its
-        current head ``VERDICT_STALL_SECONDS`` old with no push or go since (``verdict_stall``): one ``news`` event per
-        PR and head, which tells the lead itself. Only for a lead quiet that long, so a working lead costs no read; not
-        while its turn runs, nor for a lead the owner drives."""
-        if lead.get("direct") or lead["state"] in RUNNING:
-            return
-        if time.time() - lead["progress_at"] < VERDICT_STALL_SECONDS:
-            return
-        own = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
-        refs = {(own[0], own[1])} if own else set()
-        for r in [*(lead.get("refs") or []), *(lead.get("wait") or "").split(", ")]:
-            if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", r.strip()):
-                refs.add((wait_repo(sid, m[1] or ""), int(m[2])))
-        for repo, pr in sorted(refs):
-            if time.time() - stall_read.get((repo, pr), -VERDICT_STALL_POLL) < VERDICT_STALL_POLL:
-                continue
-            stall_read[(repo, pr)] = time.time()
-            try:
-                found = verdict_stall(pr, repo)
-            except Exception as e:  # noqa: BLE001 - read again at the next VERDICT_STALL_POLL
-                log(("stall", repo, pr), f"PR #{pr} verdict not read: {reason(e)}")
-                continue
-            log(("stall", repo, pr), None)
-            if found:
-                head, line = found
-                say(
-                    f"{sid} {lead['title']}".rstrip() + f": {line}",
-                    sid,
-                    f"stall:{sid}:{repo}#{pr}:{head}",
-                    "news",
-                )
-
     def has_event(sid: str) -> bool:  # an event settles what a prose wait would
         try:
             return lead_event_of(og, og.info(sid)) is not None
@@ -9663,7 +9840,6 @@ def supervise_registry(
                         if console:
                             wait_news(sid, lead)
                             overdue(sid, lead)
-                            stalled_verdicts(sid, lead)
                             due(sid, lead)
                         continue
                 else:
@@ -9692,6 +9868,7 @@ def supervise_registry(
             except Exception as e:  # noqa: BLE001 - never fatal; told again next poll
                 log("events-news", f"loop events not told: {reason(e)}")
         landings()
+        stalls()
         if console:
             if read:  # a session gone from the registry leaves the state with it
                 for part in ("leads", "settled"):
@@ -10397,6 +10574,20 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         default=1800.0,
         help="no history item for this long: one resume line, then given up (default 1800)",
     )
+    p.add_argument(
+        "--stall-minutes",
+        type=float,
+        default=PR_STALL_SECONDS / 60,
+        help="with --registry, an open PR with no push, verdict, go or queue step this long wakes the notified"
+        " session with its blocker (default 60; 0 turns the watch off)",
+    )
+    p.add_argument(
+        "--stall-repo",
+        action="append",
+        default=[],
+        metavar="OWNER/NAME",
+        help="with --registry, also watch this repo's open PRs for a stall, beside each followed lead's",
+    )
     service = p.add_mutually_exclusive_group()
     service.add_argument(
         "--install",
@@ -10862,6 +11053,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     args.console,
                     args.fyi or "skip",
                     args.decisions,
+                    stall_after=args.stall_minutes * 60,
+                    stall_repos=tuple(args.stall_repo),
                 )
             supervise(og, owed, args.silent_seconds, args.timeout)  # it prints each line
             return 0
