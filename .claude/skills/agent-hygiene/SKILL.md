@@ -112,7 +112,8 @@ Leave to the owner, since only they know whether it is wanted: ignored files tha
 rebuild (a `.env`, a hand-written skill), a locked worktree, a worktree some process still
 uses, simulator devices whose runtime is gone (`xcrun simctl delete unavailable` deletes
 their app data too), staged ChatGPT updates (App Management blocks deleting them from a
-shell), a stale pack and drift.
+shell). A stale pack and drift are manager work: the message addresses the manager it goes to,
+who settles it and asks the owner only what only they can decide.
 
 ## What it tells the chief of staff
 
@@ -123,7 +124,7 @@ chief of staff when none is live, and so does a drift finding whose path is insi
 `~/.omnigent/config.yaml`, else `RUNNER_SERVER_URL`, else the CLI's default. Another logged-in server may be another
 account's, so a configured server with no chief of staff, or one that can't be reached, fails the run (exit 1, one
 log line naming the server) instead. It
-posts in four cases, each question or finding once (`~/.local/state/agent-hygiene/asked`),
+posts in five cases, each question or finding once (`~/.local/state/agent-hygiene/asked`),
 at most 30 per message:
 
 - **Questions:** what it kept but may not be wanted (above). Nothing is deleted on a
@@ -135,10 +136,24 @@ at most 30 per message:
   not fast-forwarded (Self-update).
 - **Drift:** each finding of the checkout's `dotagents doctor`. A dotagents without the
   `doctor` command (exit 2) is itself a finding. A doctor that times out, exits other than
-  0, 1 or 2, or exits 1 with no finding makes the run exit 1. A finding inside a checkout on its
-  default branch with no changes, no local commits and `origin` ahead is first tried by
-  a fast-forward to origin's default branch (`git merge --ff-only`, not `git pull`, which follows the branch's own upstream) and a second doctor run: one that clears is logged, not told; a dirty,
-  diverged or other-branch checkout is never touched.
+  0, 1 or 2, or exits 1 with no finding makes the run exit 1. A checkout a finding names is first
+  brought up to date, then the doctor runs again: a finding that clears is logged, not told.
+  With a clean tree it is installed from its committed lock (its `agent-sync` or `agent:sync`
+  mise task with `--frozen` when its `mise.toml` has one, else `apm install --frozen`), after a
+  fast-forward to origin's default branch (`git merge --ff-only`, not `git pull`, which follows the
+  branch's own upstream) when it is on that branch with no local commits. A checkout that runs
+  services (a process has it open or names it, or a systemd or launchd unit names its path, also
+  through `%h` or `~`, or is a link to a file in it) is
+  never pulled, only installed. A dirty, diverged or other-branch checkout is never touched, and
+  its finding goes to the manager. Every install puts the lock back as it was, since a rewritten
+  `generated_at` would dirty the tree and block the next pull, and puts back any committed agent
+  file it changed (`.claude`, `.agents`, `.codex`, `AGENTS.md`, `CLAUDE.md`, `.apm`), since
+  committed copies change only in a bump PR: that change is itself a finding, as is a failed
+  install and a checkout with neither the task's `mise` nor `apm` on `PATH`.
+- **Forwarders without their target:** a forwarder script in the home skill install
+  (`~/.agents/skills`, `~/.claude/skills`; one that says it "only forwards to another skill's
+  script") whose target skill is not installed beside it exits naming that skill. The run then
+  runs `dotagents install --no-pull` once; a target still missing is a drift finding.
 
 ## Self-update
 
@@ -148,10 +163,12 @@ The script comes from the engineering pack that the account's dotagents checkout
 that is not a dry run fetches that checkout's `origin/main`. When it is ahead, the checkout
 is on `main` and has no changes to tracked files (untracked files don't block it; git itself
 refuses one that main would overwrite), it runs `git merge --ff-only origin/main`, then
-`bin/dotagents install --no-pull`; a failed install logs `FAIL dotagents install`, the
+`bin/dotagents install --no-pull`, then puts the committed `apm.lock.yaml` back (an install that
+rewrote it would leave the tree dirty, and block the next fast-forward); a failed install logs `FAIL dotagents install`, the
 run exits 1, and every later run installs again until one succeeds
 (`~/.local/state/agent-hygiene/install-failed` holds the last failure). When the release moved the pin (`apm.lock.yaml`), the run starts over as the
-newly installed script. When the pin differs from `origin/main`'s and no fast-forward
+newly installed script. A lock an earlier install left with only its `generated_at` changed is put back first. The pin
+compared is the committed lock, never the file. When the pin differs from `origin/main`'s and no fast-forward
 happened (tracked changes, another branch, diverged, a dry run), it says to pull and install
 again, once per pair of locks.
 
