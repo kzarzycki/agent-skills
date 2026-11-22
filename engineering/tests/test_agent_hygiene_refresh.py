@@ -26,6 +26,7 @@ def managed(tmp_path, monkeypatch, files=None):
     home, clone = tmp_path.resolve(), clones["acme/managed"]
     other = home / "other-managed"
     for name, text in {"apm.yml": "name: x\n", "apm.lock.yaml": LOCK, **(files or {})}.items():
+        (other / name).parent.mkdir(parents=True, exist_ok=True)
         (other / name).write_text(text)
     git(other, "add", ".")
     git(other, "commit", "-q", "-m", "pin")
@@ -208,3 +209,33 @@ def test_the_self_install_after_a_fast_forward_leaves_the_lock_committed(tmp_pat
         ).returncode
         == 0
     )
+
+
+def test_a_checkout_without_its_install_tool_says_what_is_missing(tmp_path, monkeypatch):
+    import shutil
+
+    clone, _head, run, calls, _git, installs = managed(tmp_path, monkeypatch)
+    real = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: None if name in ("apm", "mise") else real(name, *a, **k),
+    )
+    out = run()
+    assert installs() == [] and f"pulled {clone}" in out, out
+    assert "apm is not on PATH" in calls[0][1] and calls[0][0] == "acme/managed", calls
+
+
+def test_an_install_that_changes_committed_copies_is_put_back_and_told(tmp_path, monkeypatch):
+    clone, _head, run, calls, git, _installs = managed(
+        tmp_path, monkeypatch, {".claude/skills/x/SKILL.md": "pinned\n"}
+    )
+    tool(
+        tmp_path.resolve(),
+        "apm",
+        "echo unreleased > .claude/skills/x/SKILL.md\nmkdir -p .agents && touch .agents/new",
+    )
+    out = run()
+    assert (clone / ".claude/skills/x/SKILL.md").read_text() == "pinned\n", out
+    assert git(clone, "status", "--porcelain") == "", out
+    assert "changed its committed" in calls[0][1] and "bump PR" in calls[0][1], calls

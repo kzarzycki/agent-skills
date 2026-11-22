@@ -145,7 +145,10 @@ at most 30 per message:
   services (a process has it open or names it, or a systemd or launchd unit names its path) is
   never pulled, only installed. A dirty, diverged or other-branch checkout is never touched, and
   its finding goes to the manager. Every install puts the lock back as it was, since a rewritten
-  `generated_at` would dirty the tree and block the next pull; a failed install is itself a finding.
+  `generated_at` would dirty the tree and block the next pull, and puts back any committed agent
+  file it changed (`.claude`, `.agents`, `.codex`, `AGENTS.md`, `CLAUDE.md`, `.apm`), since
+  committed copies change only in a bump PR: that change is itself a finding, as is a failed
+  install and a checkout with neither the task's `mise` nor `apm` on `PATH`.
 - **Forwarders without their target:** a forwarder script in the home skill install
   (`~/.agents/skills`, `~/.claude/skills`; one that says it "only forwards to another skill's
   script") whose target skill is not installed beside it exits naming that skill. The run then

@@ -836,15 +836,41 @@ def serves(root, procs):
 
 
 def installer(root):
-    """The command that installs a checkout's agent skills from its committed lock: its sync task when its mise.toml
-    has one (frozen: the task then also checks nothing it owns changed), else `apm install --frozen`; None when it has
-    no APM lock or the tool is missing."""
+    """(command, what is missing) for installing a checkout's agent skills from its committed lock: its sync task when
+    its mise.toml has one (frozen: the task also checks nothing it owns changed), else `apm install --frozen`. Both
+    None when it has no APM lock; command None with a reason when the tool it needs is not on PATH."""
     if not (root / 'apm.yml').is_file() or not (root / LOCK).is_file():
-        return None
+        return None, None
     mise = head(root / 'mise.toml').decode(errors='replace')
-    if (task := re.search(r'^\[tasks\.["\']?(agent[-:]sync)["\']?\]', mise, re.M)) and shutil.which('mise'):
-        return ['mise', 'run', task.group(1), '--frozen']
-    return ['apm', 'install', '--frozen'] if shutil.which('apm') else None
+    if task := re.search(r'^\[tasks\.["\']?(agent[-:]sync)["\']?\]', mise, re.M):
+        if shutil.which('mise'):
+            return ['mise', 'run', task.group(1), '--frozen'], None
+        return None, f'its `{task.group(1)}` task needs mise, which is not on PATH'
+    if shutil.which('apm'):
+        return ['apm', 'install', '--frozen'], None
+    return None, 'it has no agent-sync mise task, and apm is not on PATH'
+
+
+# What an install may write in a checkout, as the agent-sync task's own frozen check lists it
+AGENT_PATHS = ['apm.yml', LOCK, '.apm', 'AGENTS.md', 'CLAUDE.md', ':(glob)**/AGENTS.md', ':(glob)**/CLAUDE.md',
+               '.agents', '.claude', '.codex', '.github/instructions']
+
+
+def revert_agent_files(run, root):
+    """Undo what an install changed in a checkout's tracked agent files (it started clean, so every such change is the
+    install's): the committed copies are the repo's, and change only in a bump PR. Returns the paths it put back."""
+    lines = (git(root, 'status', '--porcelain', '-z', '--', *AGENT_PATHS) or '').split('\0')
+    entries = [l for l in lines if len(l) > 3 and l[2] == ' ']  # -z puts a rename's source after it, unprefixed
+    tracked = [l[3:] for l in entries if not l.startswith('?? ')]
+    new = [l[3:] for l in entries if l.startswith('?? ')]
+    changed = tracked + new
+    if tracked:
+        git(root, 'checkout', 'HEAD', '--', *tracked)
+    if new:
+        git(root, 'clean', '-fdq', '--', *new)  # untracked, never ignored: installed copies a repo ignores stay
+    if changed:
+        run.say(f'put back {root}: the install changed its committed {", ".join(changed)}')
+    return changed
 
 
 def guarded_install(run, root, args, lock=None):
@@ -894,12 +920,19 @@ def refresh(run, root, procs, problems):
                 return False
             run.say(f'pulled {root}: {before} -> {(git(root, "rev-parse", "--short", "HEAD") or "").strip()}')
             moved = True
-    if not (args := installer(root)):
+    args, missing = installer(root)
+    if not args:
+        if missing:
+            problems.append(f'{root} installs nothing from its committed lock: {missing}')
         return moved
     if run.dry:
         run.say(f'would run {" ".join(args)} in {root}')
         return moved
-    if problem := guarded_install(run, root, args):
+    problem = guarded_install(run, root, args)
+    if changed := revert_agent_files(run, root):
+        problems.append(f'`{" ".join(args)}` in {root} changed its committed {", ".join(changed)}, so its committed '
+                        'copies differ from its lock: put back, for a bump PR to settle')
+    if problem:
         run.say(f'FAIL {" ".join(args)} in {root}: {problem}')
         problems.append(f'`{" ".join(args)}` failed in {root} ({problem}); its lock is as committed')
         return moved
