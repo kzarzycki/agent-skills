@@ -108,9 +108,12 @@ def test_a_pr_without_loop_queued_gets_no_status(tmp_path: Path) -> None:
 def test_another_comment_or_a_short_sha_gets_no_status(tmp_path: Path) -> None:
     for body in (
         record(first="Queued for Mergify, maybe"),
-        record(head=HEAD[:12]),
         "Queued for Mergify\n\nHead: $(touch pwned)\n",
     ):
         code, out, posted = run(tmp_path, body)
         assert (code, posted) == (0, []), out
     assert not (tmp_path / "pwned").exists()
+    # a short sha gets nothing even where the PR's head reads as that same short sha
+    code, out, posted = run(tmp_path, record(head=HEAD[:12]), current=HEAD[:12])
+    assert (code, posted) == (0, []), out
+    assert "names no full head sha" in out

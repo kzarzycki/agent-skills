@@ -120,7 +120,11 @@ def test_land_hands_over_by_record_when_the_status_is_refused(
     assert approvals.fields(record)["head"] == head
     code, lines = refused["land"]("7")
     assert code == 0, lines
-    assert f"PR #7: its hand-over record for {head} is already on the PR" in lines
+    assert any(
+        line.startswith(f"PR #7: its hand-over record for {head} is already on the PR")
+        and "land-status workflow" in line
+        for line in lines
+    ), lines
     assert len(handed(refused, 7)) == 1
 
 
@@ -147,28 +151,84 @@ def test_a_record_go_on_a_stale_head_is_refused(
     assert delegate(7, old) == 1
 
 
+def record_note(head: str, login: str, marked: bool = True) -> dict[str, Any]:
+    """The delegate's merge record on `head` as a comment by `login`, with the `Status: refused` line when `marked`."""
+    lines = f"Approved: merge\nBy: delegate\nHead: {head}" + (
+        f"\n{approvals.UNSTATUSED}" if marked else ""
+    )
+    return {
+        "id": f"IC_{login}_{marked}",
+        "author": {"login": login},
+        "body": approvals.fold(approvals.VOICED["delegate"], f"Go to merge {head[:7]}.", lines),
+        "createdAt": "2026-10-01T09:00:00Z",
+        "lastEditedAt": None,
+        "isMinimized": False,
+        "viewerCanMinimize": False,
+    }
+
+
 def test_a_record_by_a_stranger_is_no_go(
     refused: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A comment is anyone's to write on a public repo: a merge record by an account that can't write is no go."""
-    monkeypatch.setattr(approvals, "writer", lambda login: login == "loop")
+    """A comment is anyone's to write on a public repo: a marked merge record by an account that can't write is no
+    go, and the same record by a writer is."""
+    monkeypatch.setattr(approvals, "writer", lambda login: login in {"loop", "colleague"})
     head = risky(refused, 7)
-    note = approvals.fold(
-        approvals.VOICED["delegate"],
-        f"Go to merge {head[:7]}.",
-        f"Approved: merge\nBy: delegate\nHead: {head}",
-    )
-    refused["pulls"][7]["comments"]["nodes"].append(
+    nodes = refused["pulls"][7]["comments"]["nodes"]
+    nodes.append(record_note(head, "stranger"))
+    capsys.readouterr()
+    assert approvals.main(["check", "merge", "7"]) == 3
+    assert "waits for the owner's go on its head" in capsys.readouterr().out
+    nodes.append(record_note(head, "colleague"))
+    assert approvals.main(["check", "merge", "7"]) == 0
+    assert f"PR #7: the go on {head} is the delegate's" in capsys.readouterr().out
+
+
+def test_a_record_without_the_refused_line_is_no_go_alone(
+    refused: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A record as a host writes it beside its status, by the account running the check, is no go with no status."""
+    head = risky(refused, 7)
+    refused["pulls"][7]["comments"]["nodes"].append(record_note(head, "loop", marked=False))
+    capsys.readouterr()
+    assert approvals.main(["check", "merge", "7"]) == 3
+    assert "waits for the owner's go on its head" in capsys.readouterr().out
+
+
+def test_a_record_only_delegate_go_ends_with_the_delegation(
+    refused: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Into the default branch the delegate's record-only go counts only while `loop.delegate: all` holds, as its
+    status would."""
+    head = risky(refused, 7)
+    assert delegate(7, head) == 0
+    assert approvals.main(["check", "merge", "7"]) == 0
+    monkeypatch.setattr(approvals, "delegation", lambda _policy: "feature")
+    capsys.readouterr()
+    assert approvals.main(["check", "merge", "7"]) == 3
+    assert "waits for the owner's go on its head" in capsys.readouterr().out
+
+
+def test_a_refused_withdrawal_takes_back_a_go_its_status_gave(
+    refused: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A go given where statuses could be written (its `owner` success on the head), withdrawn from a cloud session
+    whose status write is refused: the `Withdrawn: merge` record, newer than the status, takes the go back."""
+    head = risky(refused, 7)
+    assert delegate(7, head) == 0
+    hub[head] = [
         {
-            "id": "IC_stranger",
-            "author": {"login": "stranger"},
-            "body": note,
-            "createdAt": "2026-01-01T00:00:00Z",
-            "lastEditedAt": None,
-            "isMinimized": False,
-            "viewerCanMinimize": False,
+            "context": "owner",
+            "state": "success",
+            "description": f"The delegate's go on {head[:12]}{approvals.DELEGATED}",
+            "creator": {"login": "loop"},
+            "created_at": "2026-09-30T09:00:00Z",  # before the fake's comments
         }
-    )
+    ]
+    assert approvals.main(["check", "merge", "7"]) == 0
+    assert delegate(7, head, "--withdraw") == 0
     capsys.readouterr()
     assert approvals.main(["check", "merge", "7"]) == 3
     assert "waits for the owner's go on its head" in capsys.readouterr().out
@@ -193,8 +253,8 @@ def test_a_status_on_the_head_still_decides_alone(
     hub: dict[str, list[dict[str, Any]]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """An `owner` status written where statuses could be (a host) decides over any record: a failing one withdraws
-    the go the record gave."""
+    """An `owner` status written where statuses could be (a host) decides over every record older than it: a failing
+    one withdraws the go the record gave."""
     head = risky(refused, 7)
     assert delegate(7, head) == 0
     hub[head] = [
@@ -203,11 +263,39 @@ def test_a_status_on_the_head_still_decides_alone(
             "state": "failure",
             "description": f"The delegate withdrew their go on {head[:12]}",
             "creator": {"login": "loop"},
+            "created_at": "2026-10-02T09:00:00Z",  # after the fake's comments
         }
     ]
     capsys.readouterr()
     assert approvals.main(["check", "merge", "7"]) == 3
     assert "waits for the owner's go on its head" in capsys.readouterr().out
+
+
+def test_an_eviction_with_the_status_refused_still_leaves_the_queue(
+    refused: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Mergify dequeued a PR the workflow had posted `land` on: the `land` error is refused, and the eviction still
+    takes both labels off and turns the PR back to draft, so it leaves the queue and the workflow posts nothing more."""
+    head = refused["opened"](7)
+    assert refused["land"]("7")[0] == 0
+    # the land-status workflow posted `land` from the record
+    hub[head] = [
+        {
+            "context": "land",
+            "state": "success",
+            "description": f"Queued for Mergify at {head}",
+            "creator": {"login": "github-actions[bot]"},
+        }
+    ]
+    refused["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    code, lines = refused["land"]("7")
+    assert code == 1, lines
+    assert f"PR #7 was dequeued by Mergify at {head}: evicted" in lines
+    assert f"the `land` status on {head} was not written, GitHub refused it: {PROXY_403}" in lines
+    assert labels_of(refused, 7) & {"loop:queued", "loop:dequeued"} == set()
+    assert refused["pulls"][7]["isDraft"] is True
 
 
 def test_another_status_failure_still_stops(

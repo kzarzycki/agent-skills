@@ -100,8 +100,9 @@ delegate's go on <sha>, under the owner's delegation`) and the record `Approved 
 `Approved: merge`, `By: delegate`, `Head: <sha>`, so the PR shows whose go it is. Where GitHub refuses the status
 write with a 403, as a cloud session's proxy does (#1816), the record is posted with a `Status: refused` line and
 stands as the go alone on a head with no `owner` status: the newest such record, or `Withdrawn: merge` record, naming
-that head and written by the account running this or a writer decides, still pinned to its head; any status on the
-head decides over records, and a record without the line still needs its status. Into the default branch it is
+that head and written by the account running this or a writer decides, still pinned to its head; over a status on
+the head only such a record written after it decides (so a withdrawal recorded from the cloud takes back a host's
+go), and a record without the line still needs its status. Into the default branch it is
 refused unless loop.md's `delegate: all` under `loop` (default `feature`) lets the delegate's go cover that branch
 too, and a delegate's status there counts only while it does, so removing the setting withdraws those goes on open
 PRs; into a feature branch it counts either way. `check merge` and `land` print whose go, the owner's or the
@@ -3835,7 +3836,8 @@ def unchanged(pull: dict[str, Any], old: str) -> str | None:
 def go_on(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
     """Whose go (go) is on `head`, `owner` or `delegate`; '' when a status there is no go; None with no status there:
     the newest `owner` status there by the account running this or a writer (a status is the repo's to write) is green,
-    so a later one withdrawing it wins, and the PR holds the record by the same approver naming that head. The
+    so a later one withdrawing it wins, and the PR holds the record by the same approver naming that head. A record
+    recorded_go counts, written after that status, decides over it; with no status, those records decide alone. The
     delegate's (its description says so) counts into the default branch only while the default branch's `delegate` is `all`, so
     removing the setting withdraws it. A status once turned from the label (LABELLED) is no go. GitHub unreachable: no
     go."""
@@ -3851,6 +3853,12 @@ def go_on(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
             or not (login == viewer() or writer(login))
         ):
             continue
+        # a record written after this status, where a later status write was refused (a cloud withdrawal or go,
+        # #1816), decides over it, so a withdrawal that could only be recorded still takes the go back
+        if (at := status.get("created_at")) and (
+            later := recorded_go(pull, head, loop, at)
+        ) is not None:
+            return later
         description = status.get("description") or ""
         by = DELEGATE if description.endswith(DELEGATED) else "owner"
         if (
@@ -3872,14 +3880,19 @@ WITHDRAWN = "Withdrawn: merge"
 UNSTATUSED = "Status: refused"
 
 
-def recorded_go(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
+def recorded_go(
+    pull: dict[str, Any], head: str, loop: str | None, after: str | None = None
+) -> str | None:
     """go_on for a head with no `owner` status, as a cloud session leaves it when its proxy refuses the status write
     (#1816): the newest `Approved: merge` record that says its status was refused (UNSTATUSED), or `Withdrawn: merge`
     record, naming `head` and written by the account running this or a writer (a comment is anyone's to write in a
     public repo, so its author is what counts), decides: whose go it is, '' for a withdrawal or a delegate's go the
     delegation no longer covers, None with no such record. An `Approved: merge` record without the line, as a host
-    writes beside its status, is still no go alone."""
+    writes beside its status, is still no go alone. With `after` (an ISO 8601 UTC time, a status's), only records
+    written after it count."""
     for note in reversed(notes(pull)):
+        if after is not None and not (note.get("createdAt") or "") > after:
+            continue
         lines = machine(note["body"]).strip().splitlines()
         if lines and lines[0].strip() in VOICED.values():
             lines = lines[1:]
@@ -8005,7 +8018,10 @@ def handed_by_record(pull: dict[str, Any]) -> None:
         and fields(note["body"]).get("head", "").lower() == head.lower()
         for note in notes(pull)
     ):
-        print(f"{where}: its hand-over record for {head} is already on the PR")
+        print(
+            f"{where}: its hand-over record for {head} is already on the PR; with no `land` status on {head} yet,"
+            " re-run the land-status workflow's run for that comment, or `land` from a host"
+        )
         return
     comment(
         pull["number"],
