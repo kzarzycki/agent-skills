@@ -11,10 +11,18 @@ from pathlib import Path
 import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-SCRIPT = Path("skills") / "engineering-loop" / "scripts" / "approvals.py"
+# The shipped gatekeeper is its own package's; a release before the package split installed it in engineering-loop.
 COPIES = {
-    "shipped": REPOSITORY / "engineering" / SCRIPT,
-    "installed": REPOSITORY / ".claude" / SCRIPT,
+    copy: next(
+        path
+        for folder in ("gatekeeper", "engineering-loop")
+        for name in ("gatekeeper.py", "approvals.py")
+        if (path := root / "skills" / folder / "scripts" / name).exists()
+    )
+    for copy, root in (
+        ("shipped", REPOSITORY / "gatekeeper"),
+        ("installed", REPOSITORY / ".claude"),
+    )
 }
 
 

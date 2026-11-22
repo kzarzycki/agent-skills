@@ -1,111 +1,47 @@
-#!/usr/bin/env python3
-"""Recall from and retain into the project's Hindsight bank, when Hindsight is configured.
+#!/usr/bin/env -S uv run -q --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["PyYAML==6.0.3"]
+# ///
+"""chief-of-staff/scripts/memory.py: the chief of staff memory script's former path, which the `chief-of-staff` skill's scripts/memory.py is now.
+Kept for one release line, so a project pinned to engineering keeps its commands, in a checkout of this repo as in
+an install: it runs that script with the same arguments, input and exit code, after one deprecation line on stderr.
+It goes away with the release that drops engineering's dependencies on the packages split out of it."""
 
-    memory.py recall <query>     print what the bank holds on <query>, one memory per line
-    memory.py retain <text>      store <text> (an owner's preference or decision, verbatim)
-
-The server and bank come from the Hindsight coding-agents config the hooks use
-(``$HINDSIGHT_CONFIG``, else ``~/.hindsight/coding-agent.json``): ``apiUrl``, ``apiToken``,
-``disabled`` and ``bankIdTemplate`` (``{gitProject}`` is the repo's name), so this script and
-the hooks share one bank per repo. ``HINDSIGHT_API_URL`` overrides ``apiUrl``.
-
-With no server configured, or ``disabled``, both commands print ``memory: not configured`` and
-exit 0: the caller then works as it would without memory. A recall from a project with no bank yet
-prints nothing. An unreachable server is a warning on
-stderr and exit 0 for ``recall``, exit 1 for ``retain``, so a decision that was not stored is
-not lost silently.
-"""
-
-from __future__ import annotations
-
-import json
-import os
-import re
-import subprocess
+import runpy
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
-from urllib.parse import quote
 
-TIMEOUT = 30  # seconds; a recall runs an LLM-free search, a retain only enqueues
-
-
-def config() -> dict:
-    path = Path(os.environ.get("HINDSIGHT_CONFIG") or Path.home() / ".hindsight/coding-agent.json")
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        data = {}
-    data = data if isinstance(data, dict) else {}
-    if os.environ.get("HINDSIGHT_API_URL"):
-        data["apiUrl"] = os.environ["HINDSIGHT_API_URL"]
-    return data
+# a forwarder, never a module: an import that found it took the wrong folder
+if __name__ != "__main__":
+    raise ImportError(f"{__file__} only forwards to another skill's script: import that script")
 
 
-def repo_name() -> str:
-    """The repo's name from its origin remote, else the current directory's name."""
-    try:
-        url = subprocess.run(
-            ["git", "remote", "get-url", "origin"], capture_output=True, text=True, check=True
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
-        return Path.cwd().name
-    return re.sub(r"\.git$", "", re.split(r"[/:]", url.rstrip("/"))[-1]) or Path.cwd().name
+def installed(skill: str) -> Path:
+    """The scripts folder of `skill`, which another package ships, found by the host's install layout: a sibling
+    skill folder (APM's one skills directory), a sibling plugin's (this repo, or a marketplace Claude Code loads in
+    place), else the newest version of a plugin in Claude Code's cache (`<marketplace>/<plugin>/<version>/`) that
+    no update has orphaned. Exits naming the skill to install when none holds it."""
+    # ponytail: three layouts, the ones APM and Claude Code use; a host with another adds its glob here.
+    own = Path(__file__).resolve().parents[1]
+    plugin = own.parent.parent
+    cached = plugin.parent.parent.glob(f"[!.]*/[!.]*/skills/{skill}")
+    for folder in [
+        own.parent / skill,
+        *sorted(plugin.parent.glob(f"[!.]*/skills/{skill}")),
+        *sorted(cached, key=lambda path: path.stat().st_mtime, reverse=True),
+    ]:
+        if (folder / "SKILL.md").is_file() and not (folder.parents[1] / ".orphaned_at").exists():
+            return folder / "scripts"
+    sys.exit(f"{Path(__file__).name} needs the `{skill}` skill: install the package that ships it")
 
 
-def bank(cfg: dict) -> str:
-    return str(cfg.get("bankIdTemplate") or "coding-agent-{gitProject}").replace(
-        "{gitProject}", repo_name()
-    )
-
-
-def call(cfg: dict, path: str, body: dict) -> dict:
-    headers = {"Content-Type": "application/json"}
-    if cfg.get("apiToken"):
-        headers["Authorization"] = f"Bearer {cfg['apiToken']}"
-    request = urllib.request.Request(
-        str(cfg["apiUrl"]).rstrip("/") + path,
-        data=json.dumps(body).encode(),
-        headers=headers,
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-        return json.loads(response.read() or b"{}")
-
-
-def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[0] not in ("recall", "retain"):
-        print("usage: memory.py recall|retain <text>", file=sys.stderr)
-        return 2
-    command, text = argv[0], " ".join(argv[1:])
-    cfg = config()
-    if not cfg.get("apiUrl") or cfg.get("disabled"):
-        print("memory: not configured")
-        return 0
-    base = f"/v1/default/banks/{quote(bank(cfg), safe='')}/memories"
-    try:
-        if command == "recall":
-            found = call(cfg, base + "/recall", {"query": text, "max_tokens": 2048})
-            for item in found.get("results", []):
-                print(" ".join(str(item.get("text", "")).split()))
-        else:
-            call(
-                cfg,
-                base,
-                {"items": [{"content": text, "context": "chief of staff"}], "async": True},
-            )
-            print(f"memory: retained in {bank(cfg)}")
-    except urllib.error.HTTPError as e:
-        if command == "recall" and e.code == 404:  # a project's first recall: no bank yet
-            return 0
-        print(f"memory: unavailable ({e})", file=sys.stderr)
-        return 1 if command == "retain" else 0
-    except (OSError, ValueError) as e:
-        print(f"memory: unavailable ({e})", file=sys.stderr)
-        return 0 if command == "recall" else 1
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+skill = "chief-of-staff"
+target = installed(skill) / "memory.py"
+print(
+    f"chief-of-staff/scripts/memory.py is deprecated: run the `{skill}` skill's scripts/{target.name}",
+    file=sys.stderr,
+)
+# as if the target ran itself, so no forwarder beside this one is importable
+sys.path[0] = str(target.parent)
+runpy.run_path(str(target), run_name="__main__")

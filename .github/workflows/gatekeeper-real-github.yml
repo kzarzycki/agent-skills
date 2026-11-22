@@ -7,7 +7,7 @@ name: Gatekeeper on real GitHub
 on:
   pull_request:
     paths:
-      - engineering/skills/engineering-loop/scripts/**
+      - gatekeeper/skills/gatekeeper/scripts/**
 
 permissions:
   contents: read
@@ -46,7 +46,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set +e
-          out=$(uv run "$RUNNER_TEMP/head/engineering/skills/engineering-loop/scripts/approvals.py" check merge "$PR" 2>&1)
+          out=$(uv run "$RUNNER_TEMP/head/gatekeeper/skills/gatekeeper/scripts/approvals.py" check merge "$PR" 2>&1)
           echo "check merge exit $?"
           printf '%s\n' "$out"
           if printf '%s\n' "$out" | grep -q '^gh: '; then

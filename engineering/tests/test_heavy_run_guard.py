@@ -52,7 +52,7 @@ HEAVY = [
     "./gradlew build",
     "mvn test",
     "./mvnw verify",
-    "uv run engineering/skills/engineering-loop/scripts/approvals.py local-ci --run",
+    "uv run gatekeeper/skills/gatekeeper/scripts/approvals.py local-ci --run",
     "python3 approvals.py local-ci 12 --record",
     "uv run approvals.py affected-tests",
     # every segment of a chain, after its leading words
