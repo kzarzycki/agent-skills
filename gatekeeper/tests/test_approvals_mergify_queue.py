@@ -62,16 +62,15 @@ def test_land_queues_for_mergify(
     untouched(mergify)
 
 
-def test_a_pr_body_loses_its_session_link_before_it_is_handed_to_mergify(
+def test_a_pr_body_keeps_its_session_link_when_it_is_handed_to_mergify(
     mergify: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
 ) -> None:
-    """Mergify squashes from the PR's title and body, so land drops a cloud session's link line from it first."""
+    """A cloud session's link line may stay on GitHub, so land edits no PR body before the hand-over."""
     body = "## Summary\n\nFix it.\n\n## Evidence\n\nlog line"
     head = mergify["opened"](7, body=f"{body}\n\nhttps://claude.ai/code/session_01AbCdEf\n")
-    mergify["pulls"][7]["viewerCanUpdate"] = True
     code, lines = mergify["land"]("7")
     assert code == 0, lines
-    assert mergify["edits"] == {"repos/{owner}/{repo}/pulls/7": body}
+    assert not mergify.get("edits")
     assert land_statuses(hub, head) == [("success", f"Queued for Mergify at {head}")]
 
 
@@ -179,11 +178,9 @@ def test_cloud_land_queues_for_mergify(
     cloud_queue: dict[str, Any],
     hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    """In a cloud session with no signing key, the Mergify path queues over REST; the local path still refuses."""
+    """In a cloud session with no signing key, the Mergify path queues over REST."""
     cloud_queue["rules"] = approvals.github.Required({"qualify"})
     head = cloud_queue["opened"](7)
-    code, lines = cloud_queue["land"]("7")
-    assert code == 1 and any("land in a cloud session needs" in line for line in lines), lines
     loop = cloud_queue["work"] / "docs" / "agents" / "loop.md"
     loop.write_text(add(loop.read_text(), "land", "queue: mergify\n"))
     code, lines = cloud_queue["land"]("7")

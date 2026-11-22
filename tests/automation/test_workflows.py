@@ -35,7 +35,10 @@ def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
     assert "HEAD^" not in whitespace["run"]
     fast = next(st for st in _steps(workflow) if st.get("run") == "mise run check-fast")
     full = next(st for st in _steps(workflow) if st.get("run") == "mise run check")
-    assert fast["if"] == "github.event_name != 'schedule'"
+    # a `tests` dispatch (the break-glass proof's re-run alone) runs those tests instead
+    assert (
+        fast["if"] == "github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'"
+    )
     assert fast["env"]["GATE_BASE"] == whitespace["env"]["BASE_SHA"]
     assert full["if"] == "github.event_name == 'schedule'"
     for command in (

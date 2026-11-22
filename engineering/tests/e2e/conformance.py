@@ -74,17 +74,16 @@ class InstalledFixture:
 
 
 def source_manifest() -> dict[str, str]:
-    """Every skill file an install deploys: engineering's and those of the packages it depends on."""
-    manifest: dict[str, str] = {}
+    """Every skill file an install deploys: engineering's and those of the packages it depends on. APM deploys
+    skills into one directory, so a folder name two packages hold is deployed from the last one only, whole."""
+    deployed: dict[str, dict[str, str]] = {}
     for package in (PACKAGE, *_dependencies()):
-        # a folder without a SKILL.md is no skill, so an install deploys none of it (engineering keeps the old
-        # engineering-loop folder's scripts and docs for one release line, which the loop package's skill replaces)
-        for skill in sorted((package / "skills").glob("*/SKILL.md")):
-            manifest |= {
-                f"{skill.parent.name}/{name}": digest
-                for name, digest in file_manifest(skill.parent).items()
+        skills = package / "skills"
+        for folder in sorted(path for path in skills.iterdir() if path.is_dir()):
+            deployed[folder.name] = {
+                f"{folder.name}/{path}": digest for path, digest in file_manifest(folder).items()
             }
-    return manifest
+    return {path: digest for files in deployed.values() for path, digest in files.items()}
 
 
 def _catalog_state(root: Path) -> dict[str, str]:

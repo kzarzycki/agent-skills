@@ -16,7 +16,11 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 import pytest
 
 # the gatekeeper's test harness, whose fixtures every package's tests run under, and the Omnigent driver's tests
-for package in ("gatekeeper", "omnigent", "loop"):  # a test imports the fixtures of another package's tests by module name
+for package in (
+    "gatekeeper",
+    "omnigent",
+    "loop",
+):  # a test imports the fixtures of another package's tests by module name
     sys.path.insert(0, str(Path(__file__).resolve().parent / package / "tests"))
 
 # The approvals.py fixtures, visible to every module here; _approvals_stubs turns them on.
@@ -28,6 +32,7 @@ from approvals_harness import (  # noqa: F401
     board_risks,
     graphql_answers,
     hub,
+    merging,
     others_open,
     pushed,
     refs,

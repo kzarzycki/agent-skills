@@ -22,6 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 
 def installed(skill: str) -> Path:
@@ -68,6 +69,33 @@ def release(number: int) -> int:
     return 0
 
 
+def fenced(text: str) -> list[str]:
+    """`text` verbatim in a code fence one backtick longer than the longest run inside it (three at least), so
+    a fence in the text never closes this one."""
+    ticks = "`" * max(3, max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
+    return [ticks, text.rstrip("\n"), ticks]
+
+
+def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
+    """The findings pass `number` posted on the PR, each as its comment's text (`verdict` heads it `**Verifier (<family>),
+    pass <n> · <id>** (<severity>): <title>`), the ones on a file outside the diff from the review's body, as their
+    first line. Read from GitHub, so a verifier on any host gets them the way a host one does."""
+    mine = re.compile(rf"\**Verifier \([^)]*\), pass {number} · ")
+    found = [
+        note["body"].strip()
+        for thread in (pull.get("reviewThreads") or {}).get("nodes") or []
+        for note in (thread.get("comments") or {}).get("nodes") or []
+        if mine.match(note.get("body") or "")
+    ]
+    for review in (pull.get("reviews") or {}).get("nodes") or []:
+        found += [
+            line.strip()[2:]
+            for line in (review.get("body") or "").splitlines()
+            if line.startswith("- ") and mine.match(line[2:].strip())
+        ]
+    return found
+
+
 def brief(
     pr: int,
     priorities: Path | None,
@@ -77,7 +105,8 @@ def brief(
 ) -> int:
     """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
     verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
-    newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
+    newest verdict review's) and its report path, from pass 2 the previous report and its head, then the PR's labels, its title and body verbatim (fenced, so a verifier with no GitHub access reads them),
+    then the priorities
     file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. For each spec it
     prints `- Acceptance tests: <command> <issue>`, the command loop.md's `Acceptance tests:` line names, else the
     fallback `uv run <this folder>/acceptance.py`, so the verifier runs the one the worker ran. A proof log whose first line isn't the head is refused, since the
@@ -152,6 +181,12 @@ def brief(
             f"- Previous report: {loop_dir / f'pr{pr}-v{number - 1}.md'}, on {newest}: review the diff since that head"
             " and rerun its repros"
         )
+        # the findings themselves, since the previous report stays on the lead's host and a cloud verifier can't read it
+        if prior := previous_findings(pull, number - 1):
+            lines += [
+                f"- Previous findings, pass {number - 1}:",
+                *(f"  {n}. " + f.replace("\n", "\n     ") for n, f in enumerate(prior, 1)),
+            ]
         # a far verifier works in its worktree, but the last one saved its repros beside its report, in the clone's
         # tmp/loop/: each by its path there, from the copy wait brought home
         if far and (home := Path("tmp/loop") / f"pr{pr}-v{number - 1}.md").is_file():
@@ -167,6 +202,17 @@ def brief(
     ]
     if line := gatekeeper.unforced(pull):
         lines.append(f"- Note: {line}")
+    if labels := [label["name"] for label in pull["labels"]["nodes"]]:
+        lines.append(f"- Labels: {', '.join(labels)}")
+    # the PR's own text, verbatim, so a verifier with no GitHub access can check a criterion about it
+    lines += [
+        "",
+        "PR title:",
+        *fenced(pull["title"] or ""),
+        "",
+        "PR body:",
+        *fenced(pull["body"] or ""),
+    ]
     if priorities is not None:
         lines += ["", "Priorities:", priorities.read_text().rstrip()]
     # as written, but for the blank lines around it: indentation may be a snippet's

@@ -5,6 +5,12 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.0 - 2026-11-22
+
+- engineering: the package splits into `gatekeeper`, `loop`, `github`, `chief-of-staff` and `omnigent`, each a plugin of its own in the marketplace and an APM package of its own. `engineering` keeps the craft skills, `orchestrating-agents` with its native and herdr-link backends (its Omnigent backend is the `omnigent-agents` skill now) and a new `browsing` skill holding `browse.py`. For this release line `engineering` depends on the five new packages, by `dependencies` in `plugin.json` and in `apm.yml` (`git: kzarzycki/agent-skills/<package>`, `ref: ^0.1.0`, so each package's own `<package>-v0.1.0` tag must be on the forge before this release is tagged), so a project pinned to it that installs the whole package still installs every skill it had (one whose `apm.yml` names a `skills:` subset must drop the moved skill names from it, since they arrive through the dependencies: see the 0.35.1 notes); the next minor release drops them, and `loop` and `omnigent` then depend on `engineering`, since both at once is a cycle (#615).
+- orchestrating-agents: `scripts/omnigent_agent.py` keeps working for this release line: it runs the `omnigent-agents` skill's omnigent_agent.py with the same arguments, stdin and exit code, after one deprecation line on stderr naming the new path. It goes away with the release that drops `engineering`'s dependencies on the packages split out of it (#615).
+- engineering-loop: the gate of record runs once, on the head the verifier is satisfied with, and again on any later head; review heads get only the narrow checks (tests and lint for what changed). A gate failure now shows after the verifier, so its fix needs a short re-verify of the delta, and a fix round runs the narrow checks only, with no gate on a review head (#1715).
+
 ## 0.34.1 - 2026-11-22
 
 - A claude-cloud `start` or `run` (a verifier, the cloud gate, `claude-cloud-run`) from a host configuring no `acp:claude-cloud` goes to a bridge host that does, with the launcher's local path mapped to the repository's pinned launch dir there, found from the project's cloud sessions; with none it refuses before the create instead of the server's 412 (#1693).
