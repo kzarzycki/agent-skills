@@ -1419,7 +1419,10 @@ def exempting(pull: dict[str, Any], loop: str | None) -> dict[str, Any] | None:
 
 # the package a pack bump moves: its `apm.yml` dependency names it, and a bump changes only its `ref:` line
 PACK = "kzarzycki/agent-skills/engineering"
-REF_LINE = re.compile(r"^[ \t]*(?:-[ \t]+)?ref:[ \t]*\S.*$")
+# a release the pack tagged: a version or a range of one (`^0.36.0`, `0.36.0`), or the tag (`engineering-v0.36.0`),
+# never a branch or a commit, which no release review saw
+RELEASE = r"(?:(?:\^|~|>=|=)?v?\d+\.\d+\.\d+|engineering-v\d+\.\d+\.\d+)"
+REF_LINE = re.compile(r"^[ \t]*(?:-[ \t]+)?ref:[ \t]*(['\"]?)" + RELEASE + r"\1[ \t]*(?:#.*)?$")
 ITEM_LINE = re.compile(r"^([ \t]*)-[ \t]+")
 GIT_LINE = re.compile(
     r"^[ \t]*(?:-[ \t]+)?git:[ \t]*['\"]?" + re.escape(PACK) + r"(?:\.git)?['\"]?[ \t]*$"
@@ -1451,9 +1454,10 @@ def mechanical(pull: dict[str, Any], loop: str | None) -> str | None:
 
 def ref_only(patch: str) -> bool:
     """Whether a unified diff of `apm.yml` changes one line, the `ref:` line of the dependency on PACK, to another
-    `ref:` line: one hunk, whose only edits are one REF_LINE removed and then one added, each in a list item with a
-    GIT_LINE naming PACK on its own side of the hunk (pack_item). Any line that is no hunk header, context, edit or
-    `\\ No newline` marker fails it, and so does an item whose `git:` line is out of the hunk's context."""
+    release: one hunk, whose only edits are one REF_LINE removed and then one added, each naming a release (RELEASE)
+    and each in a list item with a GIT_LINE naming PACK on its own side of the hunk (pack_item). Any line that is no
+    hunk header, context, edit or `\\ No newline` marker fails it, and so does an item whose `git:` line is out of
+    the hunk's context."""
     hunks: list[list[str]] = []
     for line in patch.split("\n"):
         if line.startswith("@@"):

@@ -96,6 +96,14 @@ def test_a_mechanical_pack_bump_skips_the_spec_gate() -> None:
     assert gate(cloud_bump(*FILES), loop=LOOP) == SPEC + UNREVIEWED  # no section: no bump
     no_newline = REF_BUMP + "\n\\ No newline at end of file"
     assert gate(cloud_bump(*FILES, patch=no_newline)) == []
+    for release in (
+        "0.36.0",
+        "'^0.36.0'",
+        '"~0.36.0"',
+        "engineering-v0.36.0",
+        "^0.36.0  # pinned by the bump",
+    ):
+        assert gate(cloud_bump(*FILES, patch=REF_BUMP.replace("^0.36.0", release))) == [], release
 
 
 @pytest.mark.parametrize(
@@ -148,6 +156,19 @@ def test_a_mechanical_pack_bump_skips_the_spec_gate() -> None:
             ),
         ),
         ("a second hunk with its own edit", REF_BUMP + "\n@@ -20,1 +20,2 @@\n x: 1\n+y: 2"),
+        ("the pack moved to a branch", REF_BUMP.replace("+    ref: ^0.36.0", "+    ref: main")),
+        (
+            "the pack moved to a worker's branch",
+            REF_BUMP.replace("+    ref: ^0.36.0", "+    ref: claude/ready-some-feature"),
+        ),
+        (
+            "the pack moved to a commit",
+            REF_BUMP.replace("+    ref: ^0.36.0", "+    ref: " + "0123abcd" * 5),
+        ),
+        (
+            "a release with a suffix",
+            REF_BUMP.replace("+    ref: ^0.36.0", "+    ref: ^0.36.0-evil"),
+        ),
         ("a line that is no part of a diff", REF_BUMP + "\nextra: 1"),
         (
             "no list item in the hunk's context",
