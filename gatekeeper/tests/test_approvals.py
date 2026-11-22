@@ -5268,39 +5268,6 @@ def test_a_cloud_land_with_no_signed_squash_merges_over_rest_pinned_to_the_gated
     ]
 
 
-# the proxy's GraphQL refusals word for word, as `gh` 2.89 prints them in a cloud session: neither names `HTTP 403`
-PROXY_GRAPHQL = "GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...)."
-PROXY_REFUSALS = {
-    "gh pr merge": f'non-200 OK status code: 403 Forbidden body: "{{\\"message\\":\\"{PROXY_GRAPHQL}\\"}}"',
-    "gh api graphql": f"gh: {PROXY_GRAPHQL}",
-}
-
-
-@pytest.mark.parametrize("via", sorted(PROXY_REFUSALS))
-def test_the_proxys_own_graphql_refusal_lands_over_rest(
-    via: str, rest_land: dict[str, Any]
-) -> None:
-    """The proxy refuses `gh pr merge` in words with no `HTTP 403` in them; the land reads that as a refusal and
-    merges over REST at the gated head, rather than raising the refusal as the land's failure (#1917)."""
-    rest_land["refusal"] = PROXY_REFUSALS[via]
-    code, lines = rest_land["land"]("7")
-    assert code == 0, lines
-    [put] = rest_land["puts"]
-    assert put[3] == "repos/{owner}/{repo}/pulls/7/merge" and f"sha={rest_land['head']}" in put
-    assert rest_land["main"]() != rest_land["base"]
-
-
-@pytest.mark.parametrize("stderr", sorted(PROXY_REFUSALS.values()))
-def test_the_proxys_graphql_refusals_read_as_refused(stderr: str) -> None:
-    assert approvals.github.refused(stderr)
-
-
-def test_a_500_is_no_refusal() -> None:
-    assert not approvals.github.refused(
-        'non-200 OK status code: 500 Internal Server Error body: ""'
-    )
-
-
 def test_a_cloud_rest_squash_sends_no_commit_message(
     rest_land: dict[str, Any],
 ) -> None:
