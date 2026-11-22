@@ -2958,10 +2958,27 @@ def far_checkout_root(og: Omnigent, host_id: str, workspace: str, what: str) -> 
     return root
 
 
+def host_file(og: Omnigent, host_id: str, path: str) -> str | None:
+    """``path``'s text through the host's own file API, which needs no session on the host; None
+    when the host does not give it (an older server answers 404 "path is not a directory" for a
+    file, or a listing with no ``content``), so the caller reads it through a live session."""
+    url = "/v1/hosts/" + host_id + "/filesystem/" + quote(path.strip("/"), safe="/")
+    try:
+        content = og.call("GET", url).get("content")
+    except Fail as e:
+        if isinstance(e.__cause__, HTTPError) and e.__cause__.code in (404, 405):
+            return None
+        raise Fail(f"read failed: {e}") from e
+    return content if isinstance(content, str) else None
+
+
 def read_on_host(og: Omnigent, host_id: str, path: str) -> str:
-    """``path`` (absolute, on host ``host_id``) read through a live session there, since the host's
-    own file API lists a folder but gives no file's text. ``Gone`` when a session answered 404
-    (naming it), else ``Fail``: no live session, or the read failed."""
+    """``path`` (absolute, on host ``host_id``) read through the host's file API, which needs no
+    session there (``host_file``); an older server that gives no file's text there is read through
+    a live session instead. ``Gone`` when a session answered 404 (naming it), else ``Fail``: no
+    live session, or the read failed."""
+    if (text := host_file(og, host_id, path)) is not None:
+        return text
     why: Exception = Fail("no live session there to read it through")
     for s in live_sessions(og, host_id)[:FAR_READS]:
         try:

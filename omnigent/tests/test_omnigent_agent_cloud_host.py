@@ -30,6 +30,7 @@ class Hosts(omnigent_agent.Omnigent):
     def __init__(self, rows: list[dict], files: dict[str, str] | None = None) -> None:
         self.base, self.host_id, self._token, self.loops = "http://x", "here", "t", {}
         self.rows, self.files, self.gone = rows, files or {}, set()
+        self.serves_files = False  # whether the host file API gives a file's text, as a newer one
         self.records: list[dict] = []  # the project's sessions, as the server lists them
 
     def call(self, method: str, path: str, body: object = None, **_: object) -> dict:
@@ -41,6 +42,8 @@ class Hosts(omnigent_agent.Omnigent):
             return {"data": self.records}
         if path.startswith("/v1/hosts/"):
             folder = "/" + path.split("?")[0].split("/filesystem/")[1].strip("/") + "/"
+            if self.serves_files and folder.rstrip("/") in self.files:
+                return {"content": self.files[folder.rstrip("/")]}
             names = {f[len(folder) :].split("/")[0] for f in self.files if f.startswith(folder)}
             if not names:
                 raise omnigent_agent.Fail("GET") from HTTPError(path, 404, "", Message(), None)
@@ -145,6 +148,21 @@ def test_a_pin_that_cannot_be_read_refuses_an_explicit_host_and_says_how_to_go_o
     og.gone.add(SETTINGS)  # a session answered 404
     with pytest.raises(omnigent_agent.Fail, match="can't be read.*start any session"):
         omnigent_agent.refuse_unfit_cloud_host(og, "there", Path(WORK))
+
+
+def test_the_pin_is_read_through_the_host_api_with_no_live_session(live: list[str]) -> None:
+    live.append("there")  # no live session on the host
+    og = Hosts([row("there", 900, CLOUD)], {SETTINGS: pinned()})
+    og.serves_files = True
+    omnigent_agent.refuse_unfit_cloud_host(og, "there", Path(WORK))
+    for files, why in (
+        ({f"{WORK}/x": ""}, "missing"),  # no settings file
+        ({SETTINGS: json.dumps({})}, "no remote.defaultEnvi"),  # a file with no pin
+    ):
+        og = Hosts([row("there", 900, CLOUD)], files)
+        og.serves_files = True
+        with pytest.raises(omnigent_agent.Fail, match=why):
+            omnigent_agent.refuse_unfit_cloud_host(og, "there", Path(WORK))
 
 
 def test_a_pin_file_that_is_not_json_is_refused() -> None:
