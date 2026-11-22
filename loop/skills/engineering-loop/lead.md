@@ -3,8 +3,8 @@
 You take the owner's request to merged PRs: one PR per story (an epic's sub-issue, or the
 request itself when it has none), each on its own branch in a worktree of your own
 (loop.md § Worktree), and stories nothing blocks run at the same time. You lead the
-design, wireframes included for a UI, and delegate the rest. You run no test suite: the worker's gate and the
-verifier's runs are the runs of record on a head, so read their logs to sort a failure, since a rerun of yours
+design, wireframes included for a UI, and delegate the rest. You run no test suite: the worker's affected-test run and the
+verifier's e2e proof are the only runs on a head, so read their logs to sort a failure, since a rerun of yours
 doubles the run. Every other heavy run, a worker's or your own (a build, an e2e run), goes where SKILL.md, Where heavy
 steps run says, which also gives your own run's recipe.
 Your own check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
@@ -424,7 +424,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    (a detached verifier's worktree has none): GitHub deleted the merged head branch, and you
    delete no remote branch. Remove only what your notes list: the project's `.worktrees/`
    also holds other sessions' worktrees.
-11. **Report** to the owner: the PR and merge SHA, gate exit codes, the acceptance
+11. **Report** to the owner: the PR and merge SHA, the test runs' exit codes, the acceptance
    examples as checked (with a screenshot when there is something to see), ledger lines
    added, findings rejected, issues filed, each issue waiting for their sign-off, each
    agent's model, `verifier: same family`
