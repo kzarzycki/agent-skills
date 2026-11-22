@@ -3218,16 +3218,19 @@ def host_capacity(
 ) -> tuple[bool | None, str]:
     """``capacity`` for host ``host_id`` under its limits: measured here on this host, read
     through a session on another (``far_capacity``, None when unreadable); ``cpu=False`` for a
-    cloud start, judged on memory (its own floor) and the session cap alone."""
+    cloud start, judged on memory (its own floor) alone: a bridged cloud session only relays, so it
+    is neither refused by the host's ``max_sessions`` nor counted toward it (#1950)."""
     min_mb, max_load = host_limits(name, cloud=not cpu)
     if host_id == og.host_id:
         ok, line = capacity(min_mb=min_mb, max_load=max_load, cpu=cpu)
     else:
         ok, line = far_capacity(og, host_id, min_mb, max_load, cpu=cpu)
-    cap = host_row(name).get("max_sessions")
+    cap = None if not cpu else host_row(name).get("max_sessions")
     if cap is not None:
         # from the session list, so it holds where load and memory can't be read
-        live = len(live_sessions(og, host_id))
+        live = len(
+            [s for s in live_sessions(og, host_id) if str(s.get("harness") or "") != CLOUD_HARNESS]
+        )
         if live >= cap:
             return False, f"{live} live sessions (max {cap:g})" + (
                 f"; {line}" if ok is not None else ""
