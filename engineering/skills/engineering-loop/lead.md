@@ -9,9 +9,10 @@ steps run says, which also gives your own run's recipe.
 Your own test or check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
 refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
 `claude-cloud-run` could not make or one that needs this host.
+Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native subagent in the VM, never a session made with `sys_session_create`: a created child lands on the bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent, not a helper, and starts as `brief` describes.
 
 Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
-edits and commits go to a Sonnet worker: your context is re-read on every call (about 150k
+edits and commits of a size M or larger change go to a Sonnet worker (an XS or S change stays with you, step 4): your context is re-read on every call (about 150k
 tokens), a worker's is short. A piece too small to justify a hand-off stays with you, since
 a hand-off costs about $0.30 in wakes: a one-line check, or reading a failing gate to
 decide what to do, which needs your judgement. Starting a worker and then doing its work
@@ -41,7 +42,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    `--by owner` records their word and removes the label. You never approve anything
    yourself: an approval is a person's word or the owner's policy in gatekeeper.md. An issue
    assigned to anyone but its approver is theirs: leave it (issues.md, Assignee). Whenever
-   you park an issue (`needs-owner`) or drop it, run `uv run <this skill's folder>/scripts/approvals.py release
+   you park an issue (`needs-owner`) or drop it, run `uv run <this skill's folder>/scripts/loop.py release
    <issue>`, which removes only an assignee the loop added. Each state change here and below also moves the ticket on
    the board (github.md, Board); a failed move is reported, never blocking, because the
    labels are the state.
@@ -93,7 +94,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    (github.md, Review trail; board: `Build`). Its body carries your guess at the run's spend,
    `Token estimate: ~<N> (<basis>)`, e.g. `~2M, mostly two verifier passes`: the lead, its
    workers and verifiers together, cache reads included. It is for the owner's information and
-   nothing reads it, so a rough number beats a careful one. Then run `uv run <this skill's folder>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
+   nothing reads it, so a rough number beats a careful one. Then run `uv run <gatekeeper>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
    that exit it assigns the issue's approver where no one is assigned, and the PR its
    issue's assignee (github.md, Assignee). Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model and session id of each agent, and every worktree and
@@ -107,17 +108,19 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    own repo's `docs/agents/` files, and the notes say which repo each PR is in. Read each
    repo's `AGENTS.md` or `CLAUDE.md` and `docs/agents/` yourself, since a harness loads
    only those of the directory it started in.
-4. **Build.** Start every item nothing blocks. Hand an item to a worker when it can run in
-   parallel or would flood your context. Build it yourself only when the cause is read
-   and the fix and its test are a few lines in one area, following `worker.md` and saying
-   so in the PR body. A fix to the process itself goes to a separate worker and PR from
+4. **Build.** Start every item nothing blocks. Build an XS or S change yourself, with no worker, through the
+   PR body and READY, following `worker.md` and saying so in the PR body: a worker hand-off costs more than the
+   change. Workers are for size M and up, or for work that splits: hand such an item to one when it can run in
+   parallel or would flood your context. A fix to the process itself goes to a separate worker and PR from
    main, unless it is a blocker or major that makes this PR wrong: that one goes on this
    PR's branch (SKILL.md, One concern per PR). Cut
    each worker's branch from the PR branch with loop.md § Worktree, run from your own
-   worktree so the worker's sits inside it (../orchestrating-agents/backends/omnigent.md, Permission prompts),
+   worktree so the worker's sits inside it (omnigent-agents, Permission prompts),
    and start it
    with one message: the spec, the item, the PR, worktree, branch, notes path, gates, and "Your
-   role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
+   role: `worker.md` in the `engineering-loop` skill". Start every child through orchestrating-agents'
+   launcher for the project's backend, never a raw session create with a permission mode of your own,
+   since the launcher picks the mode and reports the one the session got. Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
    both are yours (worker.md, Gates and push). Its model: SKILL.md, Models.
    Before starting a worker, run `approvals.py overlap --files <the files the story names>`: another open PR that
@@ -125,12 +128,15 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    function cost the second a merge round and a pass.
    Before the first worker starts, write the verifier's priority checks once, from the spec and
    its comments (a later comment can narrow the spec), into `tmp/loop/priorities-<pr>.md`, the
-   file `approvals.py brief <pr> --priorities <file>` takes at step 7. Paste its lines into each
+   file `loop.py brief <pr> --priorities <file>` takes at step 7. Paste its lines into each
    worker's brief under "the verifier will check" (text, not a path, so a worker on another
    machine needs no file), so the worker runs them on its own head
    before reporting: a finding the worker could have checked costs a fix round, a full gate and
    another pass. The worker gets those checks only, never a verdict, review text or the
    verifier's report, so the verifier stays independent and runs the same checks itself.
+   The brief also names how the worker iterates (worker.md, Gates and push): the narrowest check that covers the
+   change first, and the gate once per head as proof, since a full gate spent finding a compile error costs minutes a
+   build would have saved.
    Unless loop.md's `Cloud worker:` line says `none`, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; placement is SKILL.md, Where heavy steps run):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch (a branch it names anyway is ignored: the worker pushes to its own `claude/…` branch and reports it).
@@ -175,7 +181,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    `tmp/loop/pr<pr>-v<n>.md` the brief names) and its repros, since a read outside its
    workspace is prompted. Give it the path of `verifier.md`, the base, the reviewed head, the
    spec number, the priorities (that copy, extended with any a later finding adds), and a report path under `tmp/loop/` in that
-   worktree, which the project gitignores. `uv run <this skill's folder>/scripts/approvals.py brief
+   worktree, which the project gitignores. `uv run <this skill's folder>/scripts/loop.py brief
    <pr> --priorities <file> --proof <log>…`, run from that worktree through that worktree's
    own copy of the skill, since the role path it prints follows the script's copy and only
    that one stays inside the verifier's workspace, prints that brief with every fact but the
@@ -198,7 +204,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    `## Answer to your question` heading (put it in the `--priorities` file), which is how
    the verifier script knows a question was answered: a later question without a
    `New in the answer:` line is refused (exit 1), so the verifier asks once. Post each finished report with
-   `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
+   `uv run <gatekeeper>/scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
    `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. A mixed PR's second
@@ -206,7 +212,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    may instead run on another host loop.md's `Placement: hosts:` line lists (SKILL.md, Where heavy steps run), so its tests and
    mutation runs load that host: a top-level session there (orchestrating-agents' Omnigent
    backend, Verifiers on another host) whose `--workspace` holds a clone of the repo, briefed by
-   `approvals.py brief <pr> --far <that clone>`, which tells it to fetch the head and make its own
+   `loop.py brief <pr> --far <that clone>`, which tells it to fetch the head and make its own
    worktree; the proof logs and the previous report go there with `start --file`, you make no
    worktree for it, `wait --verdict` copies its report to your `tmp/loop/`, and a check that
    host can't run comes back as a proof-run question as above.
@@ -233,7 +239,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    `INVALID`, with the one-line why; then push. Each later pass gets a fresh verifier, started the same way in a
    worktree at the new head, plus the previous report's copy and head; reviving the old one re-reads its whole earlier
    review every turn. With loop.md's `Verifier session: reuse` (SKILL.md, What the project states), keep the
-   verifier's session across passes instead: `send` it the next pass's brief (`approvals.py brief`, as above)
+   verifier's session across passes instead: `send` it the next pass's brief (`loop.py brief`, as above)
    rather than starting one, and close it once the PR lands. Start it as soon as the fixer reports the pushed head, with the fix's gate
    still running, and wait on that gate yourself (`wait-for --log <log> --pid <pid>`): `land`
    needs a satisfied verdict and a green gate on the same head, so neither check weakens, and a
@@ -284,14 +290,15 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      feature branch the label is a go too, and the delegated approver loop.md names may add it
      with `approvals.py delegate <pr>`. `land` adds `risk:high` to the PR when it infers the risk, and a failure
      to add it is reported, not fatal.
+   - Once the body is written, run `uv run <gatekeeper>/scripts/approvals.py check ready <pr>` before you start the verifier: it checks the body's `## Evidence` section with the same code `check merge` runs, so a missing proof is yours to fix now, not after a pass spent on a PR `land` would refuse.
    - End the PR body with `Impl: <signature>` of the agent that did most of the work, instead of the harness's
-     "Generated with" footer: the worker's from its report, or yours, what orchestrating-agents'
+     "Generated with" footer: the worker's from its report, or yours, what omnigent-agents'
      `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
      (`?` for any part you can't know).
    - A project's own batching merge queue (`check queue`, `batch`) is deprecated: where the
      project's instructions still name one, enqueue there as they say until it adopts `land`.
-   - Run `uv run <this skill's folder>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
-     with `--wait`) once no local objection is left: the gate of record passed on the head (the worker's `affected-tests`, or `mise run check` where loop.md has no `Affected tests:` line or has `Gate: full`; with `ci: false`, the worker's `local-ci --record`, a narrowed pass where loop.md has the line; `land`'s batch gate runs the `Affected tests:` command against the base tip it merges onto where loop.md has the line, else the project's `loop.gate`: SKILL.md, Adopting the loop), the PR's required check is green (it runs CI's selection of the affected tests, so where `ci` is not `false` and no `gate_steps` step runs on the host, the host runs no gate of its own before the go: no `check-fast`, no full suite), the
+   - Run `uv run <gatekeeper>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
+     with `--wait`) once no local objection is left: the gate of record passed on the head (the worker's `affected-tests`, or `mise run check` where loop.md has no `Affected tests:` line or has `Gate: full`; with `ci: false`, the worker's `local-ci --record`, a narrowed pass where loop.md has the line; `land`'s batch gate runs the `Affected tests:` command against the base tip it merges onto where loop.md has the line and either `ci` is `false` or the base requires no check, else the project's `loop.gate`: SKILL.md, Adopting the loop), the PR's required check is green (`land --wait` enforces it while it waits, and a draft's CI may start only once `land` marks it ready, so don't wait for it before starting `land`; it runs CI's selection of the affected tests, so where `ci` is not `false` and no `gate_steps` step runs on the host, the host runs no gate of its own before the go: no `check-fast`, no full suite, and no cloud session per head for a record, except where SKILL.md, Where heavy steps run, lists one as needed), the
      newest verifier review, satisfied with no core finding open (or at the cap, majors only under a `Cap:` line), covers it, and every review
      thread is resolved (SKILL.md, Review trail on the PR). Start it as a background
      command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work
@@ -440,8 +447,8 @@ timeout, a failure) (orchestrating-agents' backends/omnigent.md, One wake per ch
 `watch` it for the other. Without `--notify`, expect Omnigent's notice and the command's exit both.
 Your own long runs (a gate, a land, a live check) start detached the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, since Claude Code's low-memory reaper stops
-in-session background shells. Start each with `LOOP_NOTIFY` naming your session (orchestrating-agents'
-backends/omnigent.md, Waiting on a run or a PR), so its wrapper's `wait-for --notify` step tells you
+in-session background shells. Start each with `LOOP_NOTIFY` naming your session (omnigent-agents'
+SKILL.md, Waiting on a run or a PR), so its wrapper's `wait-for --notify` step tells you
 how it ended and you end your turn meanwhile; to block on one instead, the only way is
 `omnigent_agent.py wait-for --log <log> --pid <pid>`, or `wait-for --pr <n>` for a PR's checks,
 which blocks close to the tool limit and prints only the outcome. Start each with `exec`, or in its own process group under
@@ -495,7 +502,7 @@ of another harness or a cloud run that answers in its report does, which counts 
 any other only when it came after your own turn) reaches you as news within a minute of its end, named or not, and a PR your
 wait names that merged, closed or finished its checks the same, read from GitHub; an intermediate `STILL WORKING` turn of a
 child is no end, so the line only has to name what you wait on.
-`wait-on` also writes your state as the `lead` event on your branch (events.md): `waiting`. End `DONE` and `USER NEEDED` the
+`wait-on` also writes your state as the `lead` event on your branch (the `gatekeeper` skill's events.md): `waiting`. End `DONE` and `USER NEEDED` the
 same way, pasting the line printed: `omnigent_agent.py end-on done <result> --report <path>` (event `ok`) and
 `end-on needs-owner --question <file> --report <path>` (event `needs-owner`, with the whole question in `question.md`
 and its first line in the printed line). Write the question to a file, never into the line: the supervisor sends the owner

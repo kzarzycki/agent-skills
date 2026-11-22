@@ -10,9 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-SCRIPT = (
-    Path(__file__).resolve().parents[1] / "skills" / "engineering-loop" / "scripts" / "browse.py"
-)
+SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "browsing" / "scripts" / "browse.py"
 ORIGIN = "https://omnigent.example:6767"
 
 

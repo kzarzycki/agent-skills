@@ -23,7 +23,11 @@ rendered with VHS, a `.webm` or `.mov` is converted to H.264 MP4 with ffmpeg, an
 is posted as it is, and a `.png` or `.jpg` screenshot is posted as it is. All of them go into one `## Demo` comment naming the head commit, each
 attached with `gh pr comment --attach` (gh 2.99.0 or later), so it plays inline. Your
 earlier `## Demo` comments are minimized as outdated, so only the current one is open;
-other people's are left alone. The PR defaults to the current branch's, and without
+other people's are left alone. Where GitHub's GraphQL is refused (a claude-cloud session's proxy
+allows REST only) the script posts over REST instead, with `--pr` required: each recording becomes a
+GIF (a PNG or JPG stays as it is) pushed to the media-only branch `claude/ready-demo-<pr>`, and the
+comment links it `?raw=true` so it renders inline; an earlier demo is edited to say it is outdated,
+since REST can't minimize. The host deletes that branch once the PR is closed (`omnigent_agent.py reap`). The PR defaults to the current branch's, and without
 `--caption` the comment names the recordings. Then name the demo in the PR body's Evidence.
 
 Pick the form by the change. A screenshot when the change is a still result (a card that

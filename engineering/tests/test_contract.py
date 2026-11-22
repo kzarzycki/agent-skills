@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 PACKAGE = Path(__file__).resolve().parents[1]
+LOOP = PACKAGE.parent / "loop" / "skills" / "engineering-loop"  # the loop package ships the roles
 
 
 def _data() -> tuple[dict, dict, dict]:
@@ -76,7 +77,7 @@ def test_lock_provenance_and_mappings_share_one_source_identity() -> None:
 
 
 def _flat(name: str) -> str:
-    return " ".join((PACKAGE / "skills" / "engineering-loop" / name).read_text().split())
+    return " ".join((LOOP / name).read_text().split())
 
 
 def _step(name: str, number: int) -> str:
@@ -151,7 +152,7 @@ def test_no_skill_sends_the_user_to_a_setup_skill() -> None:
 
 def _lead_steps() -> dict[int, str]:
     """lead.md's numbered steps, by number, each up to the next step or paragraph heading."""
-    text = (PACKAGE / "skills" / "engineering-loop" / "lead.md").read_text()
+    text = (LOOP / "lead.md").read_text()
     parts = re.split(r"^(\d+)\. \*\*", text, flags=re.MULTILINE)
     return {
         int(number): " ".join(body.split("\n\n")[0].split())
@@ -176,7 +177,7 @@ def test_lead_splits_acceptance_into_before_and_after_merge_lists() -> None:
 
 
 def test_no_loop_file_names_the_owners_instance() -> None:
-    loop = PACKAGE / "skills" / "engineering-loop"
+    loop = LOOP
     assert [
         path.relative_to(loop).as_posix()
         for path in loop.rglob("*.md")
@@ -185,7 +186,7 @@ def test_no_loop_file_names_the_owners_instance() -> None:
 
 
 def test_the_verifier_counts_only_before_merge_lines() -> None:
-    text = " ".join((PACKAGE / "skills" / "engineering-loop" / "verifier.md").read_text().split())
+    text = " ".join((LOOP / "verifier.md").read_text().split())
     assert "mark each Before merge line run" in text
     assert "run the spec's Before merge list on it" in text
     assert "List each After merge line under an `After merge:` line in the report" in text
@@ -193,7 +194,7 @@ def test_the_verifier_counts_only_before_merge_lines() -> None:
 
 
 def test_the_loop_tables_name_both_acceptance_lists() -> None:
-    lines = (PACKAGE / "skills" / "engineering-loop" / "SKILL.md").read_text().splitlines()
+    lines = (LOOP / "SKILL.md").read_text().splitlines()
     proof = next(line for line in lines if line.startswith("| **Proof.**"))
     spec = next(line for line in lines if line.startswith("| Spec |"))
     for row in (proof, spec):
