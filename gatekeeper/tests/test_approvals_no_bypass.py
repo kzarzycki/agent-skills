@@ -193,7 +193,7 @@ def test_the_merge_wrapper_refuses_a_red_or_missing_required_check_on_either_pat
         with pytest.raises(
             approvals.Refused, match=r"refusing to merge while a required check is not green"
         ):
-            GITHUB.merge(7, "squash", None, HEAD)
+            GITHUB.merge(7, "squash", HEAD)
     assert forge["ran"] == []  # neither gh pr merge nor the REST call was made
 
 
@@ -203,9 +203,9 @@ def test_the_merge_wrapper_refuses_a_required_status_that_is_not_success(
     forge["runs"] = {}
     forge["statuses"] = [{"context": "qualify", "state": "failure"}]
     with pytest.raises(approvals.Refused, match="`qualify` is FAILURE"):
-        GITHUB.merge(7, "squash", None, HEAD)
+        GITHUB.merge(7, "squash", HEAD)
     forge["statuses"] = [{"context": "qualify", "state": "success"}]  # a green status is the check
-    GITHUB.merge(7, "squash", None, HEAD)
+    GITHUB.merge(7, "squash", HEAD)
     assert forge["ran"][-1][:3] == ("pr", "merge", "7")
 
 
@@ -215,7 +215,7 @@ def test_a_green_head_merges_by_the_path_the_proxy_allows(
 ) -> None:
     forge["graphql_refused"] = graphql_refused
     forge["runs"] = conclusion("SUCCESS")
-    GITHUB.merge(7, "squash", None, HEAD)
+    GITHUB.merge(7, "squash", HEAD)
     assert forge["ran"][-1][:2] == (("api", "-X") if graphql_refused else ("pr", "merge"))
     assert not any(FLAG in arg for call in forge["ran"] for arg in call)
 

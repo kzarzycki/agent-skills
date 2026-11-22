@@ -221,9 +221,8 @@ with `wait <session> <report> --pr <n>`. The preamble also tells the
 worker that its checkout is the branch checked out in the workspace the session started from,
 not necessarily the PR's; that a foreground command there stops at 10 minutes, so a long one
 runs detached and is polled within the same turn, is the role file's long-run rule. It forbids an interactive
-question tool and a published page, since each waits on a prompt nobody in the cloud answers,
-and ends each commit message with the co-author line and no session link, since the commit
-reaches a public repository. A host without the cloud
+question tool and a published page, since each waits on a prompt nobody in the cloud answers.
+A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
 A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, not its path: the VM has none of this host's paths, and a target repo without the pack installed holds no copy, so a path would read nothing. The skill's other files that the role names may not be in the checkout either; the brief says so.

@@ -26,7 +26,6 @@
     uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's gate on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; else `check`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
-    uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop session link lines from it
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
     uv run scripts/approvals.py heavy --plan               # the host's gate slot count and the limit that set it
 
@@ -200,13 +199,7 @@ from origin's default branch (policy_ref), steps 3 and 4 make no worktree: the h
 --write-tree`), a recorded pass of every gate step on the batch's tree is reused, and with none `land` refuses naming
 the tree, as it refuses a `pre_land` it has no checkout to run in; it never runs the gate there.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
---match-head-commit`), with the body the repo's squash default would write less every session link line (a
-`Claude-Session:` line, or a line that is only a claude.ai session link), since a cloud session's harness adds its link
-to each commit, PR body and comment and the PR may be public, first dropping those lines from the PR's own body and
-comments on GitHub where it can edit them (`check merge` names any it can't): under the commit-messages default the
-body GitHub builds from the commits (one: its message after the subject, its co-author lines moved to the end;
-several: each message as a `* ` item, then `---------` and their co-authors), under the PR-description default the
-PR's body, and under the blank default none. A merge GitHub refuses, or leaves unmerged
+--match-head-commit`), with the body the repo's squash default writes. A merge GitHub refuses, or leaves unmerged
 (a merge queue the base's rules don't name, such as classic branch protection's, only queues it, to merge later on a
 tree no gate saw), stops there: that PR and those
 after it wait for the next land. Then it fetches and compares the base's tree with the gated tree. Equal: the pass is
@@ -267,8 +260,7 @@ a PR the queue merged (a `land <pr>` naming it, or a bare `land`, which reads ev
 queue` with the links of the runs on that commit (the queue's `merge_group` CI), and finishes its worker sessions as
 step 5 does, then takes the label off, so a trail that failed (said, never failing the land) is written by the next
 land. The queue merges with its own `merge_method` and writes the squash message from the repo's squash
-default, which `land` neither sets nor overrides: session link lines stay out of commits through the `commit-msg`
-hook, and the PR's body and comments lose theirs before it is enqueued, as in step 5. A head matching
+default, which `land` neither sets nor overrides, as in step 5. A head matching
 `land.merge_commit_heads` is refused unless the queue's method is `MERGE`, since the queue merges every entry one way;
 `land.signed_squash_to` is refused, since GitHub signs the queue's commit. A cloud session takes this path too, with
 no `land.signing_key_env`, since GitHub signs: REST answers every step (auto-merge off dequeues; the PR's queue state
@@ -280,7 +272,7 @@ With `land.queue: mergify` in the policy (gatekeeper.md's `land:` section), on a
 queue (they win), a Mergify queue that `.mergify.yml` configures merges instead, which needs a repo no organisation owns
 no GitHub queue for: `land` takes no lock, runs no gate and merges nothing. It judges the same candidates (step 2) with
 the base's code, and hands each to Mergify by posting the `land` status (success, `Queued for Mergify at <sha>`) on its
-head and adding `loop:queued`, its session link lines dropped first as in step 5; `.mergify.yml`'s queue conditions
+head and adding `loop:queued`; `.mergify.yml`'s queue conditions
 read both, and the status binds the hand-over to that head, so a push leaves them unmet. A PR already carrying the label
 with `land` green on its head is reported queued and left alone. Mergify tests each batch as a draft PR on top of the
 base in CI, retries a red one once itself and squash-merges on green; a PR it dequeues (red again, or conflicting) gets
@@ -4852,15 +4844,12 @@ PORTS = {
         "required_checks",  # (base) -> the checks the base requires, `queue` the merge method of a merge queue its
         # rules require (None, or no such attribute, without one)
         "default_branch",  # () -> the repository's default branch
-        "squash_message",  # () -> what a squash's body holds: COMMIT_MESSAGES, PR_BODY or BLANK
-        "pull_commits",  # (pr) -> the PR's commits, each with its message and author
         "viewer",  # () -> the account running this, or None when the forge won't say
         "writer",  # (login) -> whether the account can write to the repo
         "github_repo",  # (remote URL) -> the `owner/repo` it names on this forge, lowercased, or None
         "one_repo",  # () -> Refused when the checkout can't tell which repo its calls reach
         "ready",  # (pr, undo=False) -> marks a draft ready, or a ready PR a draft
-        "merge",  # (pr, method, body, head) -> merges pinned to head, `body` None for the forge's default
-        "edit_text",  # (method, path, body) -> replaces the body of a PR, comment or review at the forge's route
+        "merge",  # (pr, method, head) -> merges pinned to head, with the forge's default body
         "enqueue_pull",  # (pr, node, head, method) -> puts the PR in its base's merge queue pinned to head; its position, or None
         "dequeue_pull",  # (pr, node) -> takes the PR out of the merge queue
         "run_info",  # (run) -> an Actions run: repository, workflow_id, head_sha, conclusion, completed times
@@ -4971,7 +4960,6 @@ required_checks, default_branch = (
     through("forge", "required_checks"),
     through("forge", "default_branch"),
 )
-squash_message, pull_commits = through("forge", "squash_message"), through("forge", "pull_commits")
 viewer, writer = through("forge", "viewer"), through("forge", "writer")
 github_repo, one_repo = through("forge", "github_repo"), through("forge", "one_repo")
 open_heads, open_pull_files = through("forge", "open_heads"), through("forge", "open_pull_files")
@@ -5628,7 +5616,7 @@ def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
     # advice, so it prints whatever else holds the merge and changes no exit code
     advice = (
         [f"PR #{pull['number']}: {said}"] if point == "merge" and (said := unforced(pull)) else []
-    ) + ([left] if point == "merge" and (left := stranded(pull)) else [])
+    )
     for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
         print(line)
     return 1 if found else WAITING if waiting else 0
@@ -7889,8 +7877,7 @@ def stalled() -> int:
 def mergify_step(pull: dict[str, Any]) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
-    (QUEUED and a `land` success there), left alone (exit 0); else queued, its session link lines dropped first
-    (unlink_pull): the `land` success on its head, which binds the hand-over to that one head, so a push leaves
+    (QUEUED and a `land` success there), left alone (exit 0); else queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
     `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). A DEQUEUED label on a head land never queued (a push since)
     is stale, and comes off."""
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
@@ -7905,7 +7892,6 @@ def mergify_step(pull: dict[str, Any]) -> int:
         if QUEUED in labels and ours:
             print(f"{where} is queued for Mergify at {head}")
             return 0
-        unlink_pull(pull)
         post_status(head, LAND, MERGIFY_QUEUED.format(head))
         if QUEUED not in labels:
             label(number, QUEUED, add=True)
@@ -8134,11 +8120,9 @@ def required_state(
 
 
 def enqueue(pull: dict[str, Any], method: str) -> tuple[int, bool]:
-    """Put the PR in the GitHub merge queue (merging with `method`) pinned to the head the proofs judged, its session
-    link lines dropped first (unlink_pull): exit 0 once it is in, 1 when GitHub refuses, or when its head moved
-    as it went in (the forge port's REST answer reads it again)."""
+    """Put the PR in the GitHub merge queue (merging with `method`) pinned to the head the proofs judged: exit 0 once
+    it is in, 1 when GitHub refuses, or when its head moved as it went in (the forge port's REST answer reads it again)."""
     where, head = f"PR #{pull['number']}", pull["headRefOid"]
-    unlink_pull(pull)
     # before the enqueue, so no PR the queue merges lacks it: the bare land's trail follows it (queue_trail)
     label(pull["number"], QUEUED, add=True)
     try:
@@ -8251,173 +8235,6 @@ def mergify_landed(pull: dict[str, Any]) -> None:
     archive_workers(pull["number"])
 
 
-# a cloud session's link, which its harness adds to every commit message as a `Claude-Session:` line and to every PR
-# body as a bare link line, optionally in <...>, and to every body and comment its proxy writes as a `_Generated by
-# [Claude Code](<link>)_` footer; land drops each from the squash body, the PR body and the PR's comments
-SESSION_LINE = re.compile(
-    r"^(?:Claude-Session:.*|(?:<https://claude\.ai/code/session_[^\s<>]*>|https://claude\.ai/code/session_[^\s<>]*"
-    r"|_Generated by \[Claude Code\]\(https://claude\.ai/code/session_[^\s()]*\)_)[ \t\r]*)(?:\n|$)",
-    re.MULTILINE,
-)
-CO_AUTHOR = re.compile(r"^Co-authored-by:[ \t]*(.*?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
-
-
-def squash_body(commits: list[dict[str, Any]], author: str | None) -> str:
-    """The body GitHub's squash writes under the repo's commit-messages default, from the PR's commits as REST lists
-    them (oldest first) and the PR author's login, as 250 squashes on this repo's main show it. Its co-authors are, in
-    commit order, each commit's author other than the PR's (a merge commit's too), then each `Co-authored-by:` its
-    message names, one per email, the first seen keeping its name. The commits less merge commits: one is its message
-    after the subject with those trailer lines emptied, then the co-authors; several are each whole message as a `* `
-    item, then `---------` and the co-authors."""
-    named: dict[str, str] = {}
-    for commit in commits:
-        if (commit.get("author") or {}).get("login") != author:
-            who = commit["commit"]["author"]
-            named.setdefault(who["email"].casefold(), f"{who['name']} <{who['email']}>")
-        for line in CO_AUTHOR.findall(commit["commit"]["message"]):
-            email = re.search(r"<([^>]*)>", line)
-            named.setdefault((email[1] if email else line).casefold(), line)
-    footer = "\n".join(f"Co-authored-by: {who}" for who in named.values())
-    messages = [commit["commit"]["message"] for commit in commits if len(commit["parents"]) < 2]
-    if len(messages) == 1:
-        text = CO_AUTHOR.sub("", messages[0].partition("\n")[2]).strip()
-        return "\n\n".join(part for part in (text, footer) if part)
-    items = "\n\n".join(f"* {message}" for message in messages)
-    return f"{items}\n\n---------\n\n{footer}" if footer else items
-
-
-def unlinked(text: str) -> str:
-    """text less every session link line (SESSION_LINE), the blank lines around each removed one folded into one (none when
-    it sat between two text lines); blank lines elsewhere (a PR body's code block) stay as written."""
-    marked = "\n".join("\0" if SESSION_LINE.match(line) else line for line in text.split("\n"))
-
-    def fold(run: re.Match[str]) -> str:  # each removed line held one of the run's line breaks
-        return "\n\n" if run[0].count("\n") - run[0].count("\0") >= 2 else "\n"
-
-    return re.sub(r"\n*(?:\0(?:\n|$))+\n*", fold, marked).strip()
-
-
-def commit_msg(message: Path) -> int:
-    """The commit-msg hook: the message file less every session link line, as unlinked() folds them for land, so a
-    cloud session's branch commits carry no link either, since a public repo publishes them; a message with none is
-    left as written."""
-    text = message.read_text()
-    if SESSION_LINE.search(text):
-        message.write_text(unlinked(text) + "\n")
-    return 0
-
-
-def session_links(pull: dict[str, Any]) -> list[tuple[str, str, str, str, bool]]:
-    """Each text of pull that carries a session link line, as (what names it, the REST method and path that edit it,
-    its text, whether this account can edit it, by GitHub's `viewerCanUpdate`): the PR's body, each conversation
-    comment, each review's summary and each review thread's comment, since a public repo's PR page publishes them all.
-    A text read without that right (REST, when GraphQL is refused) counts as one it can't edit. ponytail: the newest
-    100 comments and reviews, and the first 50 comments of each of the first 100 threads."""
-    number, repo = pull["number"], "repos/{owner}/{repo}"
-
-    def named(word: str, found: dict[str, Any]) -> str:
-        if found.get("url"):
-            return f"the {word} {found['url']}"
-        if found.get("databaseId"):
-            return f"{word} {found['databaseId']} on PR #{number}"
-        return f"a {word} on PR #{number}"
-
-    texts = [
-        (
-            "its body",
-            "PATCH",
-            f"{repo}/pulls/{number}",
-            pull.get("body") or "",
-            pull.get("viewerCanUpdate"),
-        )
-    ]
-    texts += [
-        (
-            named("comment", note),
-            "PATCH",
-            f"{repo}/issues/comments/{note.get('databaseId')}",
-            note.get("body") or "",
-            note.get("viewerCanUpdate"),
-        )
-        for note in (pull.get("comments") or {}).get("nodes") or []
-    ]
-    texts += [
-        (
-            named("review", review),
-            "PUT",
-            f"{repo}/pulls/{number}/reviews/{review.get('databaseId')}",
-            review.get("body") or "",
-            review.get("viewerCanUpdate"),
-        )
-        for review in (pull.get("reviews") or {}).get("nodes") or []
-    ]
-    texts += [
-        (
-            named("comment", note),
-            "PATCH",
-            f"{repo}/pulls/comments/{note.get('databaseId')}",
-            note.get("body") or "",
-            note.get("viewerCanUpdate"),
-        )
-        for thread in (pull.get("reviewThreads") or {}).get("nodes") or []
-        for note in (thread.get("comments") or {}).get("nodes") or []
-    ]
-    return [
-        (what, method, path, text, bool(can))
-        for what, method, path, text, can in texts
-        if SESSION_LINE.search(text)
-    ]
-
-
-def unlink_pull(pull: dict[str, Any]) -> None:
-    """Before land merges pull: each text session_links() finds that this account can edit gets one edit holding it
-    less its session link lines, as unlinked() folds them, its other lines kept; a text with none gets no edit, and
-    one it can't edit is left to check merge, which names it. One line says what it edited."""
-    edited = []
-    for what, method, path, text, can in session_links(pull):
-        if can:
-            port("forge").edit_text(method, path, unlinked(text))
-            edited.append(what)
-    if edited:
-        print(f"PR #{pull['number']}: dropped the session link from {', '.join(edited)}")
-
-
-def stranded(pull: dict[str, Any]) -> str | None:
-    """The line check merge prints when a text of pull still carries a session link this account can't edit (a comment
-    by another account, say), so a person removes it before the PR lands; None when there is none."""
-    left = [what for what, *_, can in session_links(pull) if not can]
-    if not left:
-        return None
-    return (
-        f"PR #{pull['number']}: a session link stays in {', '.join(left)}, which this account can't edit: remove it"
-        " by hand before the PR lands, since its page is public"
-    )
-
-
-def land_body(pull: dict[str, Any]) -> str | None:
-    """The `--body` land passes to GitHub's squash of pull, whatever the repo's squash default would put a
-    session link line in, or None to leave GitHub's default. The repo's `squash_merge_commit_message` picks it:
-    COMMIT_MESSAGES, squash_body() less those lines; PR_BODY, the PR's body less them; BLANK, None, since GitHub
-    writes no body. ponytail: under PR_BODY GitHub's own co-author lines, if it adds any, are not added here, as no
-    squash on this repo shows that setting."""
-    setting = squash_message()
-    if setting == "BLANK":
-        return None
-    if setting == "PR_BODY":
-        text = pull.get("body") or ""
-    else:
-        number = pull["number"]
-        commits = pull_commits(number)
-        # ponytail: REST lists a PR's first 250 commits
-        text = squash_body(commits, (pull.get("author") or {}).get("login"))
-    # GitHub writes no body for this PR either, so there is nothing to override
-    if not text.strip():
-        return None
-    # ponytail: a body that was only `Claude-Session:` lines goes as an empty `--body`; whether GitHub then writes
-    # its default instead is unproven
-    return unlinked(text)
-
-
 def merged_anyway(number: int, head: str, exc: subprocess.CalledProcessError) -> str:
     """The merge commit of PR #number when `gh pr merge` failed with exc but GitHub merged it at head all the same,
     since a transport error (a response cut off mid-stream) can come after the merge. Anything else is Refused with
@@ -8483,7 +8300,6 @@ def merges(
                 if ours
                 else ""
             )
-            unlink_pull(pull)
             method = merge_method(pull, loop)
             if local:
                 owned()
@@ -8493,13 +8309,12 @@ def merges(
             else:
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
-                body = land_body(pull) if method == "squash" else None
                 print(f"{where} lands as a {method}")
                 post_status(head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}")
                 posted = True
                 try:
                     owned()
-                    port("forge").merge(pull["number"], method, body, head)
+                    port("forge").merge(pull["number"], method, head)
                 except subprocess.CalledProcessError as exc:
                     merge = merged_anyway(pull["number"], head, exc)
                     print(
@@ -11427,8 +11242,6 @@ def main(argv: list[str]) -> int:
     graduating = commands.add_parser("graduate")
     graduating.add_argument("epic", type=int)
     graduating.add_argument("--pr", type=int, required=True)
-    hooking = commands.add_parser("commit-msg")
-    hooking.add_argument("message", type=Path)
     # --base: the commit to select against (a PR's base SHA, a push's previous tip), over the merge base
     commands.add_parser("affected-tests").add_argument("--base", metavar="REV")
     wrapping = commands.add_parser("heavy")
@@ -11460,8 +11273,6 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             return 1
     if args.command == "report":  # reads a local file only, so no remote needs choosing
         return report_json(args.report) if args.json else report_check(args.report)
-    if args.command == "commit-msg":  # the same: git hands the hook its message file
-        return commit_msg(args.message)
     if args.command == "affected-tests":
         return affected_tests(args.base)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
