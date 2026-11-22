@@ -230,7 +230,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    its family as no tier, and refuses only a `mid` or `small` Codex tier on a high-risk change. agy on another host takes the brief
    as a file there (backends/omnigent.md, Antigravity). Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), naming the last green head (the newest head whose
-   gate passed) for the fix round's gate (worker.md, Gates and push). A correctness finding's fix
+   gate passed) for the gate of record's delta form (worker.md, Gates and push); the fix round itself runs the narrow checks only. A correctness finding's fix
    covers its class: each sibling the verifier lists under it (verifier.md, Siblings), triaged like
    a finding, that the same change fixes in files the PR already touches; a sibling past that cap
    is filed as its own issue (SKILL.md, Triage), since one case a pass costs a round per case and
@@ -241,10 +241,11 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    worktree at the new head, plus the previous report's copy and head; reviving the old one re-reads its whole earlier
    review every turn. With loop.md's `Verifier session: reuse` (SKILL.md, What the project states), keep the
    verifier's session across passes instead: `send` it the next pass's brief (`loop.py brief`, as above)
-   rather than starting one, and close it once the PR lands. Start it as soon as the fixer reports the pushed head, with the fix's gate
-   still running, and wait on that gate yourself (`wait-for --log <log> --pid <pid>`): `land`
-   needs a satisfied verdict and a green gate on the same head, so neither check weakens, and a
-   red gate's failure joins that verdict's findings in the next fix round. A finding that doesn't make the PR wrong or unmergeable, a note on a
+   rather than starting one, and close it once the PR lands. Start it as soon as the fixer reports the pushed head, which has had the narrow checks only. When
+   the verifier is satisfied with a head, start the gate of record on that head (worker.md, Gates and push) and wait on it
+   yourself (`wait-for --log <log> --pid <pid>`): `land` needs a satisfied verdict and a green gate on the same head, so
+   neither check weakens, and a red gate's failure goes to a worker as a fix round, whose new head gets a short
+   re-verify of the delta, then a new gate. A finding that doesn't make the PR wrong or unmergeable, a note on a
    satisfied verdict included, waits for the merge and starts from main (SKILL.md, One
    concern per PR). Every fix after a verdict needs a verdict on its head, because `land`
    (step 8) merges only a head the newest verifier review covers. A fix that changes nothing an
