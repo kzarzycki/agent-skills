@@ -47,6 +47,8 @@ script's docstring is the manual: every proof each verb checks and every record 
   states, the batching queue, carry-over of a merge of main, the opt-out, and
   issue-tracker.md's settings block. Read it when writing or changing a project's policy, or
   when a refusal names a key.
+- [breakglass.md](breakglass.md): the owner's break-glass land of a head with a red required check, its proof and
+  the owner-side bypass setup. Read it when a required check blocks a PR the owner wants landed anyway.
 - `scripts/approvals.py`: the gatekeeper's former name, kept for one release line. It runs
   `gatekeeper.py` with today's verbs (`approve`, `verdict`, `local-ci`), so a project's
   `approvals.py` command keeps working.
