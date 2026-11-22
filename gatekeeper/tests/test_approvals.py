@@ -2395,6 +2395,27 @@ def test_a_qualifier_naming_another_pass_never_changes_the_pass(
     assert said == qualifier.lstrip(": ")
 
 
+def test_brief_embeds_the_prs_text_labels_and_a_body_fence_stays_inside_its_own(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A verifier with no GitHub access reads the title, body and labels from the brief; a body holding a fence is
+    wrapped in a longer one, so it cannot close the brief's fence early."""
+    monkeypatch.chdir(tmp_path)
+    body = "Closes #12.\n\n```sh\nrm -rf x\n```\n\n````\nnested\n````\n"
+    pr = pull(body=body)
+    pr["title"] = "fix: a `quoted` title"
+    pr["labels"] = {"nodes": [{"name": "kind:bug"}, {"name": "risk:low"}]}
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    monkeypatch.setattr(approvals, "merge_base", lambda base, head: BASE)
+    monkeypatch.setattr(approvals, "project", lambda: (None, LOOP))
+    assert approvals.main(["brief", "7"]) == 0
+    out = capsys.readouterr().out
+    assert "- Spec: #12\n" in out
+    assert "- Labels: kind:bug, risk:low\n" in out
+    assert "PR title:\n```\nfix: a `quoted` title\n```\n" in out
+    assert f"PR body:\n`````\n{body.rstrip()}\n`````" in out
+
+
 def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2439,6 +2460,20 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         "- Report: tmp/loop/pr7-v3.md",
         f"- Previous report: tmp/loop/pr7-v2.md, on {earlier}: review the diff since that head and rerun its repros",
         f"- Proof log: {proof} (its first line is the head)",
+        "",
+        "PR title:",
+        "```",
+        pr["title"],
+        "```",
+        "",
+        "PR body:",
+        "```",
+        "Closes #12.",
+        "",
+        "## Evidence",
+        "",
+        "log",
+        "```",
         "",
         "Priorities:",
         "- the revert path",
@@ -2511,6 +2546,16 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
             " rerun its repros"
         ),
         "- Proof log: /there/repo/tmp/loop/gate.log (its first line is the head)",
+        "",
+        "PR title:",
+        "```",
+        "Feature",
+        "```",
+        "",
+        "PR body:",
+        "```",
+        "Closes #12.",
+        "```",
     ]
     # the previous pass saved its repros beside its report in the clone's tmp/loop/: named there by path
     (tmp_path / "tmp" / "loop").mkdir(parents=True)
