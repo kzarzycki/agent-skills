@@ -90,6 +90,22 @@ def test_release_candidate_rejects_other_package_manifest_change(
         validate_release_candidate(repo / "engineering", "engineering-v0.2.0")
 
 
+def test_release_candidate_accepts_other_manifest_tagged_on_the_commit(tmp_path: Path) -> None:
+    """One release commit may cut several packages, each with its own tag on it (#1861)."""
+    repo = _repository(tmp_path)
+    manifest = repo / "research" / ".claude-plugin" / "plugin.json"
+    manifest.write_text(json.dumps({"name": "research", "version": "1.0.1"}))
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "two-package release")
+    _git(repo, "tag", "research-v1.0.0")  # a wrong version's tag still refuses
+
+    with pytest.raises(ConfigurationError, match="research-v1.0.1 is not tagged"):
+        validate_release_candidate(repo / "engineering", "engineering-v0.2.0")
+
+    _git(repo, "tag", "research-v1.0.1")
+    validate_release_candidate(repo / "engineering", "engineering-v0.2.0")
+
+
 @pytest.mark.parametrize(
     "tag",
     [
