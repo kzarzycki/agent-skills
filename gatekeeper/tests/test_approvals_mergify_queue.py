@@ -68,8 +68,8 @@ def test_land_queues_a_head_whose_qualify_ran_only_cheap_checks(
     """A PR head's `qualify` runs no tests: the batch's draft PR runs them (#1821). land reads only the base's required
     checks on the head, so a script change whose head holds nothing but that green run, no local gate pass and no
     test record, is queued, and land runs no tests of its own: the tests' result is the batch's, which Mergify reads."""
+    # its one check: `qualify`, green
     head = mergify["opened"](7, {"scripts/tool.py": "print('changed')\n"})
-    mergify["checks"][head] = [run("qualify", "success", 560)]
     code, lines = mergify["land"]("7")
     assert code == 0, lines
     assert land_statuses(hub, head) == [("success", f"Queued for Mergify at {head}")]

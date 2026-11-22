@@ -125,8 +125,8 @@ run = """uv run ruff check tools tests engineering/tests engineering/skills/brow
 
 [tasks.check-land]
 description = "The landing gate: vendor check and lint, nothing else, about a minute."
-# ponytail: a landing runs no tests, so a break reaches main until the PR's `qualify` check (check-fast) or the nightly full
-# suite catches it; fix it forward. Interim until the approvals tests run in seconds; then check-fast is the gate again.
+# ponytail: a landing runs no tests, so a break reaches main until the Mergify batch's tests (test-batch) or the nightly
+# full suite catch it; fix it forward. Interim until the approvals tests run in seconds; then check-fast is the gate again.
 run = """mise run vendor-engineering-check
 mise run lint"""
 
