@@ -64,7 +64,7 @@ reaped (idle over an hour) is revived in place first (`retry_session`, operating
 skill), keeping its conversation. Exit 4 means the revive failed or the answer did not
 land: start a fresh run whose brief carries the question and the answer.
 
-**Follow-ups** (a fix pass, a rebase) are a fresh run whose brief points at the earlier
+**Follow-ups** (a fix pass, a merge of the base) are a fresh run whose brief points at the earlier
 report: after an idle hour the cache is cold, so the report is cheaper than the old
 transcript. A `run` may reuse the report path: a report already there counts only once
 rewritten after the launch. `start` refuses one, since the `wait` after it has no launch

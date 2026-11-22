@@ -884,7 +884,7 @@ or the owner's private network.
   the PR.
 - **Land small and soon.** Every PR branches off a freshly fetched `origin/main` and merges
   as soon as its gates pass, because a branch that lives as long as the work behind it goes
-  stale against main, and a pile of them cascades on every rebase and breaks main when they
+  stale against main, and a pile of them cascades on every merge of the base and breaks main when they
   land. An epic lands as one PR per sub-issue, each off main, with no epic or integration
   branch. A sub-issue whose work isn't usable yet lands unexposed, so main stays
   releasable while the epic is half done: wired into no entry point, or behind a flag the
