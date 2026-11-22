@@ -8432,6 +8432,17 @@ def merged_anyway(number: int, head: str, exc: subprocess.CalledProcessError) ->
     return str(found.get("merge_commit_sha"))
 
 
+def refuse_red(pull: dict[str, Any], base: str) -> None:
+    """Refuse to merge a PR while a check `base` requires is red, pending or missing on its head, whether or not the owner
+    approved a break-glass: land's merge, signed squash included, is never the bypass (#1722)."""
+    required = required_checks(base) - OWN
+    if required and (lines := ci(f"PR #{pull['number']}", pull, required)):
+        raise Refused(
+            f"PR #{pull['number']}: refusing to merge while a required check is not green: {'; '.join(lines)}"
+            " (a break-glass PR is merged by the owner in the GitHub UI, never by land)"
+        )
+
+
 def merges(
     landed: list[tuple[dict[str, Any], str, str, str]],
     base: str,
@@ -8464,6 +8475,7 @@ def merges(
     for pull, tree, gated, how in landed:
         where, head, posted = f"PR #{pull['number']}", pull["headRefOid"], False
         try:
+            refuse_red(pull, base)
             ours = owned()
             nonce = (
                 git("log", "-1", "--format=%b", ours).rsplit("nonce ", 1)[-1].strip()
