@@ -759,7 +759,10 @@ QUEUE_POLL = 300
 # Nothing else a round reads can end such a wait, so the round runs again only after FULL seconds otherwise
 FULL = 900
 # what the last landing() round waited on, for that probe: the base, the named PRs and the base's required checks
-watched: dict[str, Any] = {"base": "", "pulls": [], "required": set()}
+# and whether the round left the free lock to another land (locked: an older waiter, or lands that kept taking it),
+# so the probe also watches the lock only then: a CI wait on the local queue frees the lock each round, and lands that
+# all watched it would wake each other
+watched: dict[str, Any] = {"base": "", "pulls": [], "required": set(), "deferred": False}
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
 LOW_POLL, LOW_QUOTA = 600, 0.1
 # the longest poll of a wait whose state stays the same round after round: QUEUE_POLL doubles up to it (#1771). With
@@ -6025,7 +6028,9 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
     missed = 0  # network failures in a row, of landing() and of the lock poll
     while True:
         held_tip = None
-        watched.update(base="", pulls=[], required=set())  # this round's, never an earlier one's
+        watched.update(
+            base="", pulls=[], required=set(), deferred=False
+        )  # this round's, never an earlier one's
         out, drifted = io.StringIO(), None
         try:
             with contextlib.redirect_stdout(out):
@@ -6140,6 +6145,7 @@ class Probe:
             (p["baseRefOid"] for p in self.pulls if p.get("baseRefOid")), None
         )
         self.lock_tip: str | None = None
+        self.deferred = bool(watched["deferred"])
         self.checks: dict[str, tuple[tuple[str, str], ...]] = {}
         self.idle = not self.lock and not self.heads
         self.stirred = False
@@ -6189,7 +6195,8 @@ class Probe:
     def ci_moved(self) -> bool:
         branch, lock = f"refs/heads/{self.base}", LOCK.format(self.base)
         listed: dict[str, str] = {}
-        for line in git("ls-remote", "origin", branch, lock, *self.heads).splitlines():
+        watch = [branch, *([lock] if self.deferred else []), *self.heads]
+        for line in git("ls-remote", "origin", *watch).splitlines():
             sha, _, name = line.partition("\t")
             listed[name.strip()] = sha.strip()
         base = listed.get(branch)
@@ -6197,7 +6204,8 @@ class Probe:
             self.base_tip = base
         elif base != self.base_tip:
             return True
-        # the base's lock freed: a land this one deferred to (waiter_ahead) is done with it, so this round may take it
+        # the base's lock freed, where the round left it to another land: that land is done with it, so this one may
+        # take it
         tip = listed.get(lock)
         if tip and self.lock_tip is not None and tip != self.lock_tip and lock_free(lock, tip):
             return True
@@ -6352,7 +6360,7 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     and its policy read to place the land (placed: where it may run and the key it signs with) and to ready drafts,
     then read again after the fetch under the lock for the batch (landing_here)."""
     ended.clear()
-    watched.update(base="", pulls=[], required=set())
+    watched.update(base="", pulls=[], required=set(), deferred=False)
     named, base, worst = land_base(pr)
     if named is None:
         return worst, False
@@ -6908,6 +6916,7 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
                         " stale"
                     )
         if waiting and (first := waiter_ahead(base)):
+            watched["deferred"] = True
             print(
                 f"{first} began waiting for the landing lock {name} before this land, so it takes it first"
             )
@@ -6922,6 +6931,7 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
     print(
         f"other lands kept taking the landing lock {name} as this one tried to: land --wait waits for it"
     )
+    watched["deferred"] = True
     return False
 
 

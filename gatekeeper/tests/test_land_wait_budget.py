@@ -103,7 +103,9 @@ def wait(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             "headRefOid": origin.head,
             "baseRefOid": origin.base,
         }
-        approvals.watched.update(base="main", pulls=[pull], required={"check"})
+        approvals.watched.update(
+            base="main", pulls=[pull], required={"check"}, deferred=state.get("deferred", False)
+        )
         if state["held"]:
             approvals.held_tip = (LOCK, origin.lock)
         return approvals.WAITING, True
@@ -236,7 +238,7 @@ def test_a_required_check_that_turns_red_before_the_first_poll_runs_the_round(
 
 def test_a_lock_freed_while_waiting_on_ci_runs_the_round(wait: dict[str, Any]) -> None:
     """A land that deferred to an older waiter watches the lock too, and runs its round once that waiter frees it."""
-    wait["held"] = False
+    wait["held"], wait["deferred"] = False, True
     wait["ticks"].append((60, wait["origin"].stamp))  # the older waiter takes it: still held
     wait["ticks"].append((150, lambda: wait["origin"].stamp(approvals.FREE)))
     approvals.land(7, wait=True)
@@ -287,3 +289,36 @@ def test_the_real_round_records_what_the_probe_watches(monkeypatch: pytest.Monke
     monkeypatch.setattr(approvals, "land_event", lambda *a, **k: None)
     assert approvals.landing(7) == (approvals.WAITING, True)
     assert seen == {"base": "main", "pulls": [pull], "required": {"check"}}
+
+
+def test_another_ci_waiters_idle_round_does_not_wake_this_ci_wait(wait: dict[str, Any]) -> None:
+    """On the local queue each CI waiter's round takes the free lock and frees it again: a wait that did not defer to
+    another land ignores the lock, so such lands never wake each other's rounds (#1915 review)."""
+    wait["held"] = False
+    for at in range(60, 900, 120):
+        wait["ticks"].append((at, wait["origin"].stamp))
+        wait["ticks"].append((at + 30, lambda: wait["origin"].stamp(approvals.FREE)))
+    approvals.land(7, wait=True)
+    assert wait["rounds"][:2] == [0.0, float(approvals.FULL)]
+    assert all(approvals.LOCK.format("main") not in call for call in wait["origin"].ls)
+
+
+def test_a_deferred_wait_is_not_woken_by_the_lock_changing_hands(wait: dict[str, Any]) -> None:
+    """A move of the lock that leaves it held (a beat, a take) is no release."""
+    wait["held"], wait["deferred"] = False, True
+    for at in range(60, 900, 120):
+        wait["ticks"].append((at, wait["origin"].stamp))
+    approvals.land(7, wait=True)
+    assert wait["rounds"][:2] == [0.0, float(approvals.FULL)]
+
+
+def test_locked_records_a_round_that_left_the_lock_to_an_older_waiter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(approvals, "waiting", True)
+    monkeypatch.setattr(approvals, "stamp_wait", lambda base, pr: None)
+    monkeypatch.setattr(approvals, "git", lambda *args: "")  # origin has no lock yet
+    monkeypatch.setattr(approvals, "waiter_ahead", lambda base: "PR #3")
+    monkeypatch.setitem(approvals.watched, "deferred", False)
+    assert approvals.locked("main", [], 7) is False
+    assert approvals.watched["deferred"] is True
