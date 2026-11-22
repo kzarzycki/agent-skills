@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.34.1 - 2026-11-22
+
+- A claude-cloud `start` or `run` (a verifier, the cloud gate, `claude-cloud-run`) from a host configuring no `acp:claude-cloud` goes to a bridge host that does, with the launcher's local path mapped to the repository's pinned launch dir there, found from the project's cloud sessions; with none it refuses before the create instead of the server's 412 (#1693).
+
 ## 0.34.0 - 2026-11-21
 
 - `omnigent_agent.py start --host` places a claude-cloud child on a bridge host: it refuses a host without `acp:claude-cloud`, a workspace without the environment pin or Claude Code's folder trust there, and what it cannot verify; picks the roomiest verified host when none is named; and reuses a session whose create timed out instead of making a second (#838).
