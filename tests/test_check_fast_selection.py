@@ -1,12 +1,10 @@
-"""`mise run test-batch`, the tests `qualify` runs on a Mergify batch (#1609, #1821): a selector that fails or prints
-nothing fails the step, since pytest given no targets would run the whole suite and still pass."""
+"""`mise run test-batch`, the tests `qualify` runs on a Mergify batch (#1609, #1821, #1872): a selector that fails
+fails the step, and one that prints nothing runs no pytest, since pytest given no targets would run the whole suite."""
 
 import os
 import subprocess
 import tomllib
 from pathlib import Path
-
-import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,15 +34,17 @@ def run_step(tmp_path: Path, selector: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-@pytest.mark.parametrize(
-    "selector, error",
-    [("exit 2", "tools/affected_tests.py failed"), ("exit 0", "selected nothing")],
-)
-def test_a_failed_or_empty_selection_fails_without_running_pytest(
-    tmp_path: Path, selector: str, error: str
-) -> None:
-    done = run_step(tmp_path, selector)
-    assert done.returncode != 0 and error in done.stderr
+def test_a_failed_selection_fails_without_running_pytest(tmp_path: Path) -> None:
+    done = run_step(tmp_path, "exit 2")
+    assert done.returncode != 0 and "tools/affected_tests.py failed" in done.stderr
+    assert not (tmp_path / "ran.log").exists()
+
+
+def test_an_empty_selection_runs_nothing_says_so_and_passes(tmp_path: Path) -> None:
+    """#1872: a selector that can't tell runs nothing, never the whole suite."""
+    done = run_step(tmp_path, "exit 0")
+    assert done.returncode == 0, done.stderr
+    assert "selected nothing, so no tests run" in done.stderr
     assert not (tmp_path / "ran.log").exists()
 
 
