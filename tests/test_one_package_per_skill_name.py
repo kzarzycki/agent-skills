@@ -36,7 +36,9 @@ def test_a_second_folder_of_one_name_holds_only_forwarders() -> None:
         for folder in folders:
             if (folder / "SKILL.md").exists():
                 continue
-            for path in sorted(p for p in folder.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
+            for path in sorted(
+                p for p in folder.rglob("*") if p.is_file() and "__pycache__" not in p.parts
+            ):
                 if path.suffix == ".md":
                     continue  # a role doc kept identical to the moved file, held by test_old_paths
                 if FORWARDER_MARK not in path.read_text():
