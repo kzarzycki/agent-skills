@@ -24,9 +24,7 @@ SCRIPTS = {
     "engineering-loop/scripts/browse.py": 0,
     "engineering-loop/scripts/cloud_verifier.py": 0,
     "engineering-loop/scripts/events.py": 0,
-    "engineering-loop/scripts/folding.py": 0,
     "engineering-loop/scripts/gatekeeper.py": 0,
-    "engineering-loop/scripts/github_adapter.py": 0,
     "engineering-loop/scripts/labels.py": 0,
     "engineering-loop/scripts/mutate.py": 0,
     "engineering-loop/scripts/nightly.py": 0,
@@ -46,8 +44,6 @@ DOCS = {
     "engineering-loop/proof-run.md": "loop/skills/engineering-loop/proof-run.md",
     "engineering-loop/coding-standards.md": "loop/skills/engineering-loop/coding-standards.md",
     "engineering-loop/issues.md": "loop/skills/engineering-loop/issues.md",
-    "engineering-loop/events.md": "gatekeeper/skills/gatekeeper/events.md",
-    "engineering-loop/github.md": "github/skills/github-tracker/github.md",
 }
 
 

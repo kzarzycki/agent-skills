@@ -64,7 +64,7 @@ reaped (idle over an hour) is revived in place first (`retry_session`, operating
 skill), keeping its conversation. Exit 4 means the revive failed or the answer did not
 land: start a fresh run whose brief carries the question and the answer.
 
-**Follow-ups** (a fix pass, a rebase) are a fresh run whose brief points at the earlier
+**Follow-ups** (a fix pass, a merge of the base) are a fresh run whose brief points at the earlier
 report: after an idle hour the cache is cold, so the report is cheaper than the old
 transcript. A `run` may reuse the report path: a report already there counts only once
 rewritten after the launch. `start` refuses one, since the `wait` after it has no launch
@@ -221,9 +221,8 @@ with `wait <session> <report> --pr <n>`. The preamble also tells the
 worker that its checkout is the branch checked out in the workspace the session started from,
 not necessarily the PR's; that a foreground command there stops at 10 minutes, so a long one
 runs detached and is polled within the same turn, is the role file's long-run rule. It forbids an interactive
-question tool and a published page, since each waits on a prompt nobody in the cloud answers,
-and ends each commit message with the co-author line and no session link, since the commit
-reaches a public repository. A host without the cloud
+question tool and a published page, since each waits on a prompt nobody in the cloud answers.
+A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
 A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, not its path: the VM has none of this host's paths, and a target repo without the pack installed holds no copy, so a path would read nothing. The skill's other files that the role names may not be in the checkout either; the brief says so.
@@ -285,8 +284,9 @@ reported it, and `reasoning_effort`), since a Codex child's rollout sits under a
 `AGENT_SIGNATURE=` line `start` puts atop a brief names the model the server took for the session (its
 `model_override`, `?` for the harness default), never the id asked for.
 
-**Host steps over SSH.** Run a step on another host as `python3 scripts/omnigent_agent.py ssh <host> --why
-<purpose> -- <command...>`, never a bare `ssh`, since a host whose SSH layer asks the owner to approve each
+**Host steps over SSH.** Run a short read-only check or setup step on another host (a log, a status, a load
+check; never what orchestrating-agents' rule *Host work* lists) as `python3 scripts/omnigent_agent.py ssh <host>
+--why <purpose> -- <command...>`. Use this call, never a bare `ssh`, since a host whose SSH layer asks the owner to approve each
 connection (an SSH check) shows the owner a login link with no word of who asks or why. It runs `ssh -o
 BatchMode=yes <host> <command>` (one word after `--` is a shell command as written; several are joined as
 argv, quoted for the remote shell) and passes its output and exit code through. When ssh prints the check's
@@ -311,7 +311,8 @@ its starter, so the path rides in the brief.
 
 **Waiting on a run or a PR.** `python3 scripts/omnigent_agent.py wait-for --log <log> [--pid
 <n|file>]`, `--pid <n|file>` or `--pr N [--until checks|merged|closed|gate|verdict]` blocks up to `--budget`
-seconds (default 570, under a 10-minute tool call), printing nothing until it ends: on the log's
+seconds (default 570, under a 10-minute tool call; pass the run's expected length when the harness tracks the call
+in the background, so it wakes you once, never a loop of short calls), printing nothing until it ends: on the log's
 `loop-exit <pid> <n>` line (a bare `exit <n>` line counts only once the pid is gone and it is the log's last line, as the old recipe wrote it, so a command's own `exit 0` output ends nothing) with that code, the line before it and, on red, the last 30 lines (with `--pid`,
 only a `loop-exit` line naming that pid, after the `run <pid>` line naming that run, which the detached recipe writes
 first, since a reused log path still holds the previous run's line; a log alone is trusted as
@@ -806,6 +807,8 @@ offline while idle raises nothing.
 | a PR or session a lead's wait names settled, or a session it started reached a final state | rule | tell that lead within a minute, read from GitHub and the session; a set tells on its first failure or its last end |
 | `archived` | rule | its line and state entry dropped; no post |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
+| a `STILL WORKING` that hands back to its manager: a `Handback: #<n> <what>` line, else prose saying a PR is ready (`#12 READY`, `READY FOR VERIFY`) or a PR's step is the manager's (`#12 ... is yours`, `#12 ... over to you`) (#1753) | rule | act, to the session it notifies, with what it hands back; an exact repeat: recorded |
+| a `STILL WORKING` whose wait does not wake it (#1753): a wait word and a pid, a pid file or a log, output or pid path anywhere in it, naming no `--notify` or `LOOP_NOTIFY`, no child or CI; or, in a cloud session, a background subagent; no `Waits:` line either way | rule | the untracked-wait nudge (`LEAD_UNTRACKED`: wait on it in the turn, or restart it as a harness-tracked background task or detached with `LOOP_NOTIFY`); the same wait again after it: act |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
 | a quiet end again with no progress since the nudge | rule | act |
 | `deadline` | rule | a named wait: act, or with no live runner (nothing can end its wait) the revive, which acts only when it fails; unknown: the nudge, then act at the deadline after it; parked: none |

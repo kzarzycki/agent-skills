@@ -11,6 +11,14 @@ on:
       - main
   schedule:
     - cron: "17 2 * * *"
+  # The owner's break-glass proof (gatekeeper's breakglass.md) runs the tests a red `qualify` failed alone on the head: `gh workflow run`
+  # with `tests` set to their ids, whose run publishes them as `selected` in the `failed-tests` artifact.
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: "Test ids to run alone, space-separated; empty runs the usual check"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -30,17 +38,23 @@ jobs:
       - run: mise install
       - run: uv sync --frozen
       # The test map (tools/affected_tests.py): the newest the nightly saved. Missing, the selector falls back to the name match.
-      - if: github.event_name != 'schedule'
+      - if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .test-map
           key: test-map-restore
           restore-keys: test-map-
       # A PR or a push runs lint and the tests it touches; the nightly schedule runs the full suite, with a context per test.
-      - if: github.event_name != 'schedule'
+      - if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         env:
           GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # one file per run: a check that starts several pytest runs keeps the last one's
+          PYTEST_ADDOPTS: --junitxml=.qualify/junit.xml
         run: mise run check-fast
+      - if: github.event_name == 'workflow_dispatch' && inputs.tests != ''
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: uv run pytest -q $TESTS --junitxml=.qualify/junit.xml
       - if: github.event_name == 'schedule'
         run: |
           mkdir -p .test-map
@@ -59,8 +73,18 @@ jobs:
         with:
           path: .test-map
           key: test-map-${{ github.sha }}
+      # The tests this run ran and failed, as JSON (tools/failed_tests.py), whatever happened before: the owner's
+      # break-glass proof reads them (gatekeeper's breakglass.md). No JUnit file (tests are off, or the run died)
+      # writes two empty lists, which the proof reads as a failure with no test ids.
+      - if: always()
+        run: python3 tools/failed_tests.py .qualify/junit.xml .qualify/failed-tests.json
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: failed-tests
+          path: .qualify/failed-tests.json
       - name: Check changed-file whitespace
-        if: github.event_name != 'schedule'
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |

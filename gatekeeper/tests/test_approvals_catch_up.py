@@ -78,6 +78,19 @@ def test_a_clean_merge_of_main_carries(repo: Repo) -> None:
     assert proof and "--remerge-diff" in proof
 
 
+def test_two_merges_of_main_carry(repo: Repo) -> None:
+    """A PR branch updated twice by merging its base in, as the loop updates one, keeps the old head's verdict."""
+    old = feature(repo)
+    moved(repo)
+    repo("switch", "-q", "feature")
+    repo("merge", "-q", "--no-ff", "-m", "take main in", "main")
+    tip = moved(repo, "third.txt", "main moved again\n")
+    repo("switch", "-q", "feature")
+    repo("merge", "-q", "--no-ff", "-m", "take main in again", "main")
+    proof = approvals.catch_up(pr(repo, repo("rev-parse", "HEAD"), tip), old)
+    assert proof and "--remerge-diff" in proof
+
+
 def test_a_merge_with_a_hand_resolved_conflict_carries_nothing(repo: Repo) -> None:
     old = feature(repo)
     tip = moved(repo, "app.py", BODY.replace("line 10\n", "line 10, main\n"))
