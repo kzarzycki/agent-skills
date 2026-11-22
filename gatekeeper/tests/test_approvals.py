@@ -3048,7 +3048,7 @@ def authored(login: str | None, committer: str | None = None) -> dict[str, Any]:
     `committer` (None: no account, as GitHub's web-flow committer on a bot's own commits)."""
     return {
         "commit": {
-            "authors": {"nodes": [{"user": {"login": login} if login else None}]},
+            "author": {"user": {"login": login} if login else None},
             "committer": {"user": {"login": committer} if committer else None},
         }
     }
@@ -3097,12 +3097,6 @@ def test_an_allow_listed_bots_lock_or_manifest_only_pr_needs_no_verifier_review(
     long = made(commits=("dependabot[bot]",) * 100)
     long["authored"]["totalCount"] = 101  # past the one page of commits the gate reads
     assert gate(long) == UNREVIEWED
-    shared = made()
-    shared["authored"]["nodes"][0]["commit"]["authors"] = {
-        "totalCount": 6,  # a sixth co-author past the five the gate reads
-        "nodes": [{"user": {"login": "dependabot[bot]"}}] * 5,
-    }
-    assert gate(shared) == UNREVIEWED
     rebased = made()
     rebased["authored"]["nodes"] = [authored("dependabot[bot]", committer="worker")]
     assert gate(rebased) == UNREVIEWED  # a person's rebase keeps the bot as author
@@ -3112,6 +3106,36 @@ def test_an_allow_listed_bots_lock_or_manifest_only_pr_needs_no_verifier_review(
     assert (
         approvals.settings(BOTS)["risk"] == approvals.settings(LOOP)["risk"]
     )  # a bot entry is no risk rule
+
+
+def test_a_co_author_trailer_does_not_refuse_the_bot_exemption_but_another_commit_account_does() -> (
+    None
+):
+    """GraphQL's `authors` lists a trailer's account beside the commit's author; only the commit's own `author` and
+    committer count, since a trailer is text the committer wrote, not another account's push."""
+    pr = {**pull(files=("uv.lock",)), "author": {"__typename": "Bot", "login": "dependabot[bot]"}}
+    pr["authored"] = {"nodes": [authored("dependabot[bot]")]}
+    pr["authored"]["nodes"][0]["commit"]["authors"] = {
+        "totalCount": 2,
+        "nodes": [{"user": {"login": "dependabot[bot]"}}, {"user": {"login": "claude"}}],
+    }
+    assert approvals.exempt(pr, BOTS)
+    pr["authored"]["nodes"][0]["commit"]["author"] = {"user": {"login": "claude"}}
+    assert not approvals.exempt(pr, BOTS)
+    pr["authored"]["nodes"] = [authored("dependabot[bot]", committer="claude")]
+    assert not approvals.exempt(pr, BOTS)
+    for trailer in (
+        False,
+        True,
+    ):  # an author GitHub ties to no account, with and without a trailer's account
+        pr["authored"]["nodes"] = [authored(None)]
+        if trailer:
+            pr["authored"]["nodes"][0]["commit"]["authors"] = {
+                "totalCount": 2,
+                "nodes": [{"user": None}, {"user": {"login": "dependabot[bot]"}}],
+            }
+        assert pr["authored"]["nodes"][0]["commit"]["author"] == {"user": None}
+        assert not approvals.exempt(pr, BOTS)
 
 
 RENOVATE = add(LOOP, "bot", "renovate:\n  branch: renovate/\n  paths:\n    - uv.lock\n")
@@ -10593,8 +10617,11 @@ def test_rest_reads_a_pr_in_graphqls_shape(cloud: Cloud) -> None:
     )
 
 
-def test_a_co_author_rest_cannot_name_leaves_no_bot_exemption(cloud: Cloud) -> None:
-    """GraphQL names a commit's co-authors; REST does not, so a `Co-authored-by` trailer exempts nothing."""
+def test_a_co_author_trailer_in_rest_leaves_the_bot_exemption_but_another_account_refuses_it(
+    cloud: Cloud,
+) -> None:
+    """A `Co-authored-by` trailer is text the committer wrote, not another account's push: REST exempts the PR with
+    it, and still refuses a commit authored or committed by another account."""
     loop = add(BARE, "bot", "renovate:\n  paths:\n    - app.py\n")
     pages = cloud.routes
     pages["repos/{owner}/{repo}/pulls/7"]["user"] = user("renovate[bot]", "Bot")
@@ -10603,6 +10630,14 @@ def test_a_co_author_rest_cannot_name_leaves_no_bot_exemption(cloud: Cloud) -> N
     assert approvals.exempt(approvals.pull_request(7), loop)
     approvals.github._rest_only = False
     commit["commit"]["message"] = "bump\n\nCo-authored-by: Mallory <m@example.com>"
+    assert approvals.exempt(approvals.pull_request(7), loop)
+    commit["author"] = user("mallory")
+    assert not approvals.exempt(approvals.pull_request(7), loop)
+    commit["author"] = user("renovate[bot]", "Bot")
+    commit["committer"] = user("mallory")
+    assert not approvals.exempt(approvals.pull_request(7), loop)
+    commit["committer"] = None
+    commit["author"] = None  # an author GitHub ties to no account
     assert not approvals.exempt(approvals.pull_request(7), loop)
 
 
