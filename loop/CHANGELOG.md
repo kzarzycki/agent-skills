@@ -5,6 +5,13 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.1 - 2026-11-22
+
+- loop: `brief` prints the findings the previous verifier pass posted, read from the PR, so a cloud verifier needs no host report file (#1591).
+- engineering-loop: lead.md says a lead's own long run (a build, a test, a gate, a land) ends in something that wakes it, a harness-tracked background task, a detached run with `LOOP_NOTIFY` or a `wait-for` in the same turn, never a turn ended on a bare pid, a log or a cloud subagent; a step handed back to the manager goes on a `Handback: #<n> <what>` line (#1753).
+- engineering-loop: the public-repo rule bans host names and paths on GitHub but no longer session links or ids, which may stay in commits, PR bodies and comments (#1764).
+- engineering-loop: update a PR branch by merging its base in (`git merge origin/<base>`, plain push), never by rebasing or force-pushing it, and never with a replacement PR (#1768).
+
 ## 0.1.0 - 2026-11-22
 
 - loop: the first release, split out of `engineering`. It holds the `engineering-loop` skill, under its old name, with its lead, worker and verifier roles, and `scripts/loop.py`, which takes over `brief` (a verifier pass's brief) and `release` (removes the assignee the loop added) from the gatekeeper. It depends on `gatekeeper` and `github`; it gains `engineering` when `engineering` drops its dependency on `loop` (#615).
