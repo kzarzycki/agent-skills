@@ -36,18 +36,17 @@ def test_no_base_cant_tell_and_runs_nothing(capsys) -> None:
     assert "affected-tests: nothing: no diff against origin/main" in capsys.readouterr().err
 
 
-def test_test_setup_alone_runs_only_the_repo_wide_checks(capsys) -> None:
-    """#1872: the map can't judge test setup, so it adds nothing, never the whole suite."""
-    assert a.targets(["pyproject.toml"]) == a.CHEAP
-    assert a.targets(["engineering/tests/conftest.py"]) == a.CHEAP
-    assert "engineering/tests/conftest.py: nothing, it is test setup" in capsys.readouterr().err
+def test_test_setup_runs_the_tests_that_name_it_never_the_suite(capsys) -> None:
+    """#1872: the map can't judge test setup, so it runs what names it, as any other file, never the whole suite."""
+    picked = a.targets(["mise.toml"])
+    assert "tests/test_check_fast_selection.py" in picked and "tests" not in picked
+    assert "mise.toml: test setup, which the map cannot judge" in capsys.readouterr().err
+    assert a.targets(["engineering/tests/conftest.py"]) != a.ALL
 
 
-def test_test_setup_beside_a_script_runs_what_the_script_selects() -> None:
-    assert a.targets(["pyproject.toml", "tools/failed_tests.py"]) == a.targets(
-        ["tools/failed_tests.py"]
-    )
-    assert "tests/test_failed_tests.py" in a.targets(["tools/failed_tests.py"])
+def test_a_test_named_plugin_outside_the_suites_runs_the_tests_that_name_it() -> None:
+    """`tools/test_map_plugin.py` holds no tests: its own tests are found by the name match."""
+    assert "tests/test_test_map_plugin.py" in a.targets(["tools/test_map_plugin.py"])
 
 
 def test_a_non_python_file_runs_the_tests_that_name_its_file_name(tmp_path, monkeypatch) -> None:
@@ -240,7 +239,7 @@ def test_stderr_names_the_rule_behind_each_target(mapped, capsys) -> None:
     assert "affected-tests: pkg/mod.py: 2 tests from the map" in said
     assert "affected-tests: tests/test_one.py: a changed test" in said
     a.targets(["pyproject.toml"])
-    assert "affected-tests: pyproject.toml: nothing, it is test setup" in capsys.readouterr().err
+    assert "affected-tests: pyproject.toml: test setup" in capsys.readouterr().err
 
 
 def test_a_new_function_beside_a_def_line_selects_only_the_tests_around_it(mapped) -> None:
