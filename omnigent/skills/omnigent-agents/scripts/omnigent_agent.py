@@ -6082,7 +6082,7 @@ def finish_delivered(
         return f"{name}: already archived", False
     if keep or (not named and (info.get("labels") or {}).get(KEEP_LABEL)):
         return f"{name}: kept (--keep)", False
-    if hold_pr and (label := held_by(info)):
+    if hold_pr and (label := held_by(info)) and not (force and replaced(og, sid, info)):
         found = pr_label(label)
         if found and found not in held:
             held[found] = pr_hold(*found)
