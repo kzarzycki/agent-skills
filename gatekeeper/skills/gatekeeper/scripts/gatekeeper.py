@@ -1428,16 +1428,17 @@ GIT_LINE = re.compile(
 
 def mechanical(pull: dict[str, Any], loop: str | None) -> str | None:
     """Why the PR is no mechanical pack bump, whose spec then needs no approval, or None when it is one: a `branch`
-    section of `bot` exempts it (exempting), and every `apm.yml` it changes changes only the `ref:` line of its
-    dependency on PACK (ref_only), so the rest of the diff is the lock and generated files the section's `paths`
-    cover. The release such a bump pins was reviewed and tagged already. Any other `apm.yml` change, a login
-    section's PR, or a patch GitHub can't give keeps the spec gate."""
+    section of `bot` exempts it (exempting); it changes the root `apm.yml`, so it moves the pack; and every `apm.yml`
+    it changes changes only the `ref:` line of its dependency on PACK (ref_only), so the rest of the diff is the lock
+    and generated files the section's `paths` cover. The release such a bump pins was reviewed and tagged already.
+    A PR that leaves `apm.yml` alone (an updater's lock-only PR, a hand edit of a generated file), any other
+    `apm.yml` change, a login section's PR, or a patch GitHub can't give keeps the spec gate."""
     bot = exempting(pull, loop)
     if bot is None or "branch" not in bot:
         return "no `bot` section with a `branch` exempts it"
     manifests = [path for path in paths(pull) or [] if path.rsplit("/", 1)[-1] == "apm.yml"]
-    if not manifests:
-        return None
+    if "apm.yml" not in manifests:
+        return f"it doesn't change `apm.yml`'s `{PACK}` `ref:` line, so it moves no pack"
     changes = changed(pull)
     if changes is None:
         return "GitHub can't give its `apm.yml` patch"
@@ -1450,8 +1451,9 @@ def mechanical(pull: dict[str, Any], loop: str | None) -> str | None:
 
 def ref_only(patch: str) -> bool:
     """Whether a unified diff of `apm.yml` changes one line, the `ref:` line of the dependency on PACK, to another
-    `ref:` line: one line removed and one added, both REF_LINE, in the same list item as a GIT_LINE naming PACK. The
-    item is read from the hunk's context, so an item whose `git:` line is out of the context fails it."""
+    `ref:` line: one hunk, whose only edits are one REF_LINE removed and then one added, each in a list item with a
+    GIT_LINE naming PACK on its own side of the hunk (pack_item). Any line that is no hunk header, context, edit or
+    `\\ No newline` marker fails it, and so does an item whose `git:` line is out of the hunk's context."""
     hunks: list[list[str]] = []
     for line in patch.split("\n"):
         if line.startswith("@@"):
@@ -1462,36 +1464,39 @@ def ref_only(patch: str) -> bool:
             continue
         elif line:
             return False
-    edits = [
-        (i, j) for i, hunk in enumerate(hunks) for j, line in enumerate(hunk) if line[:1] in "-+"
-    ]
-    if len(edits) != 2 or edits[0][0] != edits[1][0]:
+    edited = [hunk for hunk in hunks if any(line[:1] in "-+" for line in hunk)]
+    if len(edited) != 1:
         return False
-    hunk = hunks[edits[0][0]]
-    gone, came = (hunk[j] for _, j in edits)
-    if not (gone[:1] == "-" and came[:1] == "+"):
+    hunk = edited[0]
+    edits = [line for line in hunk if line[:1] in "-+"]
+    if [line[:1] for line in edits] != ["-", "+"]:
         return False
-    if not (REF_LINE.match(gone[1:]) and REF_LINE.match(came[1:])):
+    if not all(REF_LINE.match(line[1:]) for line in edits):
         return False
-    # the new side of the hunk, and where the ref line sits in it
-    after = [line[1:] for line in hunk if line[:1] in (" ", "+")]
-    at = [line for line in hunk if line[:1] in (" ", "+")].index(came)
+    return all(pack_item(hunk, edit, " " + edit[0]) for edit in edits)
+
+
+def pack_item(hunk: list[str], edit: str, side: str) -> bool:
+    """Whether the line `edit` of `hunk` sits in the list item of PACK on its side of the diff (`side`: the context
+    and the edits of that side, ` -` old or ` +` new): the item opens at the nearest `- ` line at or above it, runs
+    while lines are indented past that dash, and holds a GIT_LINE naming PACK."""
+    lines = [line for line in hunk if line[:1] in side]
+    text = [line[1:] for line in lines]
+    at = lines.index(edit)
 
     def indent(line: str) -> int:
         return len(line) - len(line.lstrip(" \t"))
 
     start = at
-    while start >= 0 and not ITEM_LINE.match(after[start]):
+    while start >= 0 and not ITEM_LINE.match(text[start]):
         start -= 1
     if start < 0:
         return False
-    depth = len(ITEM_LINE.match(after[start])[1])
+    depth = len(ITEM_LINE.match(text[start])[1])
     end = start + 1
-    while end < len(after) and after[end].strip() and indent(after[end]) > depth:
+    while end < len(text) and text[end].strip() and indent(text[end]) > depth:
         end += 1
-    if at >= end:
-        return False
-    return any(GIT_LINE.match(line) for line in after[start:end])
+    return at < end and any(GIT_LINE.match(line) for line in text[start:end])
 
 
 REST_FILE_CAP = 3000  # the most files GitHub's REST list of a PR holds
