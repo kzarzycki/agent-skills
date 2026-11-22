@@ -239,3 +239,25 @@ def test_an_install_that_changes_committed_copies_is_put_back_and_told(tmp_path,
     assert (clone / ".claude/skills/x/SKILL.md").read_text() == "pinned\n", out
     assert git(clone, "status", "--porcelain") == "", out
     assert "changed its committed" in calls[0][1] and "bump PR" in calls[0][1], calls
+
+
+def test_a_unit_naming_the_clone_through_home_or_linked_from_it_keeps_it_unpulled(
+    tmp_path, monkeypatch
+):
+    clone, _head, run, _calls, git, _installs = managed(tmp_path, monkeypatch)
+    home = tmp_path.resolve()
+    units = home / ".config/systemd/user"
+    units.mkdir(parents=True)
+    before = git(clone, "rev-parse", "HEAD")
+    (units / "app.service").write_text(
+        f"[Service]\nWorkingDirectory=%h/{clone.relative_to(home)}\n"
+    )
+    out = run()
+    assert git(clone, "rev-parse", "HEAD") == before and "app.service points at it" in out, out
+    (units / "app.service").unlink()
+    (clone / "deploy").mkdir()
+    (clone / "deploy/app.service").write_text("[Service]\nExecStart=./run\n")
+    (units / "app.service").symlink_to(
+        clone / "deploy/app.service"
+    )  # what `systemctl --user link` makes
+    assert "is a link into it" in (run.hygiene.serves(clone, (set(), [])) or ""), out

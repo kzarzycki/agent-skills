@@ -811,8 +811,8 @@ def checkout_of(line):
 
 
 # Where service units live (systemd, launchd): a checkout one of them names runs a service, so it is never pulled.
-SERVICE_UNITS = [HOME / '.config/systemd/user', Path('/etc/systemd/system'), HOME / 'Library/LaunchAgents',
-                 Path('/Library/LaunchAgents'), Path('/Library/LaunchDaemons')]
+SERVICE_UNITS = [HOME / '.config/systemd/user', HOME / '.local/share/systemd/user', Path('/etc/systemd/system'),
+                 HOME / 'Library/LaunchAgents', Path('/Library/LaunchAgents'), Path('/Library/LaunchDaemons')]
 INSTALL_TIMEOUT = 900
 
 
@@ -823,14 +823,24 @@ def serves(root, procs):
         return 'no process scan'
     if why := in_use(root, procs):
         return why
-    within = re.compile(re.escape(str(root)) + r'(?=$|[/\s"\'<:;])', re.M)
+    names = {str(root), str(root.resolve())}  # as a finding names it, and with its links followed
+    within = re.compile('(' + '|'.join(map(re.escape, sorted(names))) + r')(?=$|[/\s"\'<:;])', re.M)
     for folder in SERVICE_UNITS:
         try:
             units = sorted(p for p in folder.iterdir() if p.suffix in ('.service', '.plist', '.socket', '.timer'))
         except OSError:
             continue
         for unit in units:
-            if within.search(head(unit, 1 << 20).decode(errors='replace')):
+            try:  # `systemctl --user link` and a linked plist: the unit is a symlink, often to a file in the checkout
+                real = unit.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if real.is_relative_to(root.resolve()):
+                return f'the service unit {unit} is a link into it'
+            # systemd's %h and a shell's ~ (or $HOME) name the home folder
+            text = re.sub(r'(%h|~|\$HOME|\$\{HOME\})(?=/)', lambda _: str(HOME),
+                          head(real, 1 << 20).decode(errors='replace'))
+            if within.search(text):
                 return f'the service unit {unit} points at it'
     return None
 

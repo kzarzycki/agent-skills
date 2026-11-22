@@ -142,7 +142,8 @@ at most 30 per message:
   mise task with `--frozen` when its `mise.toml` has one, else `apm install --frozen`), after a
   fast-forward to origin's default branch (`git merge --ff-only`, not `git pull`, which follows the
   branch's own upstream) when it is on that branch with no local commits. A checkout that runs
-  services (a process has it open or names it, or a systemd or launchd unit names its path) is
+  services (a process has it open or names it, or a systemd or launchd unit names its path, also
+  through `%h` or `~`, or is a link to a file in it) is
   never pulled, only installed. A dirty, diverged or other-branch checkout is never touched, and
   its finding goes to the manager. Every install puts the lock back as it was, since a rewritten
   `generated_at` would dirty the tree and block the next pull, and puts back any committed agent
