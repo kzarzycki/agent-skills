@@ -740,6 +740,10 @@ The first head seen for a repo is only stored, so a start reports no old merge; 
 is kept in the state (`heads`), so a restart reports a landing made while it was down, and only
 that one. A workspace outside a checkout is not watched; a failed read is logged once and tried
 again. The event is for whoever owes the step after a landing (the chief of staff under `--console`), not for other leads: they read the new base on their next fetch, since a notice wakes each with its whole context. The lead's words play no part, so `route` and `lead.md` stay as they are.
+With `--console`, a followed lead quiet an hour whose PR (its `omni.pr` label or a PR its wait names) has a verdict on
+its current head over an hour old with no push since, and, for a satisfied one, no go (a green `owner` or `land` status,
+or `loop:queued`), gets one `news` line per PR and head naming the step it owes (`verdict_stall`), since nothing else
+picks up "verdict in, fix or go needed" overnight; each such PR is read at most once in 10 minutes.
 
 **`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
 state file, an events log, status labels, a progress deadline, settled events kept across
