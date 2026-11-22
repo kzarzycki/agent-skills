@@ -13,7 +13,7 @@
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
-    uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
+    uv run scripts/approvals.py approve <spec|plan> <issue> --by <owner|delegate>   # on the owner's word, or the delegate's under `loop.delegate: all`
     uv run scripts/approvals.py approve merge <pr> --head <sha> --by <owner|delegate> [--withdraw]  # a go on that head
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
@@ -492,7 +492,13 @@ A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof o
 
 A spec or plan approval is a person's: a comment `approve --by owner` writes on the owner's word, which the gate
 reads, plus the `approved:<point>` label for the board. No agent writes one, since an agent approving its own work
-is no approval:
+is no approval. Where the policy on origin's default branch sets `loop.delegate: all`, the owner's standing
+delegation covers specs and plans too: `approve <spec|plan> <issue> --by delegate` writes the record with `By:
+delegate` under the line `Approved under the owner's delegation.`, adds the label and removes the issue's
+`needs-owner`, the spec's hold; without the setting it is refused. The gate counts a delegate's current record in place of
+the owner's only while the policy it reads sets `delegate: all` and the PR touches no path `risk.critical_paths`
+names, which stays the owner's, and otherwise names why it doesn't count. `approve breakglass` stays the owner's
+alone. The owner's record:
 
     Approved: spec
     By: owner
@@ -2261,11 +2267,37 @@ def current(node: dict[str, Any], point: str, key: str, value: str | set[str], b
     )
 
 
-def approvals(where: str, node: dict[str, Any], point: str, holder: dict[str, Any]) -> list[str]:
-    """One line per approval `point` lacks on `node`: the owner's record of this spec or plan (versions), and the
-    label. A record of its last edit where the edit time can't be read (REST) says how to renew it."""
-    found = []
-    if not current(node, point, point, versions(holder), "owner"):
+def delegated(pull: dict[str, Any], loop: str | None) -> str | None:
+    """Why a delegate's spec or plan record (approve `--by delegate`) can't stand in for the owner's on this PR, or
+    None where it does: it counts only while `loop` sets `loop.delegate: all` and the PR touches no path
+    `risk.critical_paths` names (critical), which stays the owner's, as for a merge's go (go)."""
+    if delegation(loop) != "all":
+        return f"{source(loop)} sets no `loop.delegate: all`"
+    return critical(pull, loop)
+
+
+def approvals(
+    where: str,
+    node: dict[str, Any],
+    point: str,
+    holder: dict[str, Any],
+    pull: dict[str, Any] | None = None,
+    loop: str | None = None,
+) -> list[str]:
+    """One line per approval `point` lacks on `node`: the owner's record of this spec or plan (versions), or the
+    delegate's where delegated() lets it count for `pull`, and the label. A record of its last edit where the edit
+    time can't be read (REST) says how to renew it; a delegate's current record that doesn't count says why."""
+    found, held = [], versions(holder)
+    owned = current(node, point, point, held, "owner")
+    if not owned and pull is not None and current(node, point, point, held, DELEGATE):
+        why = delegated(pull, loop)
+        owned = why is None
+        if why:
+            found.append(
+                f"{where}: the delegate's `Approved: {point}` record counts for nothing here, since {why}:"
+                " the owner approves it"
+            )
+    if not owned:
         owners = [record for record in records(node, point) if record.get("by") == "owner"]
         edited = "lastEditedAt" not in holder and any(
             str(record.get(point, "")).startswith(("as edited ", "as written "))
@@ -2589,11 +2621,11 @@ def proofs(
                     f"{where}: its spec is the owner's to approve, though it carries `{SCOPED}`, since {why}"
                 )
         if not covered:
-            found += approvals(where, issue, "spec", spec_holder(issue))
+            found += approvals(where, issue, "spec", spec_holder(issue), pull, loop)
         plan = headed(issue, "## Plan")
         if plan is not None:
             if matches(rule.get("plan", {}), labels, None):
-                found += approvals(where, issue, "plan", plan)
+                found += approvals(where, issue, "plan", plan, pull, loop)
         elif "plan" in rule.get("practice", {}):
             found.append(f"{where} has no `## Plan` comment, and one is due")
     if (
@@ -8724,10 +8756,18 @@ def archive_workers(number: int) -> None:
     print(f"PR #{number}: finishing its worker sessions in the background, log {log.name}")
 
 
-def approve(point: str, number: int, seen: str | None = None) -> int:
+def approve(point: str, number: int, seen: str | None = None, by: str = "owner") -> int:
     """Record the owner's approval of the issue's current spec or plan, on their word: the record, the label, and
     `needs-owner` removed. Every earlier record of the point is superseded and minimized. With `seen`, the version
-    the owner's label was checked against (adopted), an edit since is refused: the label never covered it."""
+    the owner's label was checked against (adopted), an edit since is refused: the label never covered it. With `by`
+    `delegate`, the delegated approver's, under the owner's delegation: refused unless the policy on origin's default
+    branch sets `loop.delegate: all`, its record opening with VOICED's line so a reader tells it from the owner's; the
+    gate counts it as delegated() says."""
+    if by == DELEGATE and delegation(project()[1]) != "all":
+        raise Refused(
+            f"approve {point} --by delegate needs `loop.delegate: all` in the policy on origin's default branch:"
+            f" without it the {point} is the owner's (`--by owner`)"
+        )
     issue = issue_node(number)
     holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
     if holder is None:
@@ -8746,15 +8786,29 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
         for _, found in earlier
     ):
         record += CHANGED[point]
-    comment(
-        number,
-        fold(f"Approved: {point}", f"The owner approved the {point}.", f"By: owner\n{record}"),
-    )
+    if by == DELEGATE:
+        comment(
+            number,
+            fold(
+                VOICED[DELEGATE],
+                f"The delegate approved the {point}.",
+                f"Approved: {point}\nBy: {DELEGATE}\n{record}",
+            ),
+        )
+    else:
+        comment(
+            number,
+            fold(f"Approved: {point}", f"The owner approved the {point}.", f"By: owner\n{record}"),
+        )
     for note, _ in earlier:
         if not note.get("isMinimized") and note.get("viewerCanMinimize"):
             minimize(note["id"])
     label(number, f"approved:{point}", add=True)
+    # the issue's `needs-owner` is its spec's or plan's hold, which problems() reads whatever the records say, so the
+    # delegate's approval lifts it too; a critical path still waits for the owner's record (delegated)
     label(number, NEEDS_OWNER, add=False)
+    if by == DELEGATE:
+        print(f"#{number}: the delegate's approval of the {point} is recorded{DELEGATED}")
     return 0
 
 
@@ -11510,7 +11564,8 @@ def main(argv: list[str]) -> int:
     approving.add_argument("point", choices=(*POINTS, "merge", BREAKGLASS))
     approving.add_argument("number", type=int)
     # an agent never approves: a record is a person's word, and the owner's policy in loop.md covers the rest; a
-    # merge's go may be the delegated approver's, under the owner's delegation
+    # merge's go, and with `loop.delegate: all` a spec or plan, may be the delegated approver's, under the owner's
+    # delegation (approve, delegated)
     approving.add_argument("--by", choices=("owner", DELEGATE), required=True)
     # merge only: the head the approver was shown, and their go taken back
     approving.add_argument("--head")
@@ -11638,14 +11693,10 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused("--head and --withdraw belong to `approve merge`")
         if args.point == "merge" and not args.head:
             raise Refused("approve merge needs --head <sha>: the head the approver was shown")
-        if args.point != "merge" and args.by != "owner":
-            raise Refused(
-                f"approve {args.point} is the owner's: only a merge's go may be the delegate's"
-            )
         return (
             go(args.number, args.head, args.by, args.withdraw)
             if args.point == "merge"
-            else approve(args.point, args.number)
+            else approve(args.point, args.number, None, args.by)
         )
     if args.command == "delegate":
         return delegate(args.pr)

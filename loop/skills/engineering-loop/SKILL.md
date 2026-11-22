@@ -291,7 +291,10 @@ was asked, the authority is the owner's standing policy in gatekeeper.md, which
 `approvals.py` evaluates from the evidence on GitHub. A spec or plan approval is a comment
 `uv run <gatekeeper>/scripts/approvals.py approve <spec|plan> <issue> --by owner` writes on the
 owner's word, tied to the spec's or plan's text by its sha256, so any change to the text
-needs approving again, plus the `approved:<point>` label. A re-approval says
+needs approving again, plus the `approved:<point>` label. With `loop.delegate: all` on the
+default branch's policy, `--by delegate` records the delegated approver's, under the owner's
+delegation, which the gate counts in its place unless the PR touches `risk.critical_paths`
+(gatekeeper.py's docstring). A re-approval says
 what changed and minimizes the records it supersedes as outdated. The verifier only gives
 the verdict, which `uv run <gatekeeper>/scripts/approvals.py verdict <pr> <report>` posts as a PR
 review on the commit it reviewed.
