@@ -5339,18 +5339,131 @@ def test_a_cloud_land_with_where_unset_lands_like_both(
     cloud_land["out"](capsys, (code, lines))
 
 
-def test_a_cloud_land_without_the_land_section_names_it(
-    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+@pytest.fixture
+def rest_land(cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """`cloud_land` with a land section that names no signed squash and no key, and GitHub's GraphQL (`gh pr merge`)
+    refused as a cloud session's proxy does; `puts` keeps each REST merge call, `PUT pulls/N/merge`, made as GitHub
+    does: a `sha` that is not the PR's head is a 409, else it squashes the head onto main."""
+    cloud_land["loop"].write_text(
+        GITHUB_RULE.replace("```yaml\n", "```yaml\nland:\n  where: cloud\n")
+    )
+    monkeypatch.delenv("LAND_KEY")
+    puts: list[tuple[str, ...]] = []
+    faked = approvals.github.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("pr", "merge"):
+            raise subprocess.CalledProcessError(1, "gh", stderr=REFUSED_GRAPHQL)
+        if args[:3] == ("api", "-X", "PUT") and args[3].endswith("/merge"):
+            puts.append(args)
+            fields = dict(arg.split("=", 1) for arg in args[4:] if arg != "-f")
+            number = int(args[3].split("/")[-2])
+            if fields["sha"] != cloud_land["pulls"][number]["headRefOid"]:
+                raise subprocess.CalledProcessError(
+                    1,
+                    "gh",
+                    stderr="Head branch was modified. Review and try the merge again. (HTTP 409)",
+                )
+            body = ("--body", fields["commit_message"]) if "commit_message" in fields else ()
+            return faked(
+                "pr", "merge", str(number), f"--{fields['merge_method']}", *body,
+                "--match-head-commit", fields["sha"],
+            )  # fmt: skip
+        return faked(*args, data=data)
+
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    monkeypatch.setattr(approvals.github, "_rest_only", False)
+    cloud_land["puts"] = puts
+    return cloud_land
+
+
+def test_a_cloud_land_with_no_signed_squash_merges_over_rest_pinned_to_the_gated_head(
+    rest_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    cloud_land["loop"].write_text(GITHUB_RULE)
-    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
-        (
-            "land in a cloud session needs a base that requires GitHub's merge queue, or loop.md's"
-            " `land.signed_squash_to`: otherwise GitHub merges, over GraphQL, which the session's proxy refuses, and"
-            " signs with GitHub's key"
-        )
+    """No queue, no `signed_squash_to`, no key: the PR lands through `PUT pulls/N/merge` as a squash whose `sha` is the
+    head the gates checked, which GitHub signs."""
+    code, lines = rest_land["land"]("7")
+    assert code == 0, lines
+    assert "PR #7 lands as a squash" in lines
+    assert [args[3] for args in rest_land["puts"]] == ["repos/{owner}/{repo}/pulls/7/merge"]
+    put = rest_land["puts"][0]
+    assert "merge_method=squash" in put and f"sha={rest_land['head']}" in put
+    assert rest_land["main"]() != rest_land["base"]
+    assert [args[:2] for args in rest_land["calls"] if args[:2] == ("pr", "merge")] == [
+        ("pr", "merge")
     ]
+
+
+def test_a_cloud_rest_squash_sends_the_land_body_without_the_session_line(
+    rest_land: dict[str, Any],
+) -> None:
+    """The PUT's `commit_message` is `land_body`: the commits' text with the session line dropped, so a session link
+    never reaches the base's public history."""
+    git_in(rest_land["work"], "config", "commit.gpgsign", "false")  # the VM's signer fails
+    link = "Claude-Session: https://claude.ai/code/session_01AbCdEf"
+    head = rest_land["open"](8, {"8.txt": "8\n"}, (f"PR 8\n\nWhat it does.\n\n{link}",))
+    code, lines = rest_land["land"]("8")
+    assert code == 0, lines
+    [put] = [args for args in rest_land["puts"] if args[3].endswith("/pulls/8/merge")]
+    sent = next(arg for arg in put if arg.startswith("commit_message="))
+    assert f"sha={head}" in put and "merge_method=squash" in put
+    assert sent == f"commit_message={approvals.land_body(rest_land['pulls'][8])}"
+    assert "What it does." in sent and "Claude-Session" not in sent and "claude.ai" not in sent
+
+
+def test_a_cloud_rest_land_of_a_merge_commit_head_sends_merge_with_no_body(
+    rest_land: dict[str, Any],
+) -> None:
+    """A PR whose head matches `land.merge_commit_heads` lands as a merge commit: `merge_method=merge`, and no
+    `commit_message`, which only a squash carries."""
+    rest_land["loop"].write_text(
+        GITHUB_RULE.replace(
+            "```yaml\n", "```yaml\nland:\n  where: cloud\n  merge_commit_heads: [sync/*]\n"
+        )
+    )
+    git_in(rest_land["work"], "config", "commit.gpgsign", "false")  # the VM's signer fails
+    head = rest_land["open"](9, {"9.txt": "9\n"})
+    rest_land["pulls"][9]["headRefName"] = "sync/up"
+    code, lines = rest_land["land"]("9")
+    assert code == 0, lines
+    assert "PR #9 lands as a merge" in lines
+    [put] = [args for args in rest_land["puts"] if args[3].endswith("/pulls/9/merge")]
+    assert "merge_method=merge" in put and f"sha={head}" in put
+    assert not any(arg.startswith("commit_message=") for arg in put)
+
+
+def test_a_cloud_rest_land_refuses_a_head_that_moved_and_leaves_main_alone(
+    rest_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub answers a `sha` that is no longer the PR's head with a 409: the PR is not merged and land says so."""
+    sent = approvals.github.merge
+
+    def moved(number: int, method: str, body: str | None, head: str) -> None:
+        sent(number, method, body, "0" * 40)
+
+    monkeypatch.setattr(approvals.github, "merge", moved)
+    code, lines = rest_land["land"]("7")
+    assert code == 1
+    assert any("the merge was refused" in line and "HTTP 409" in line for line in lines), lines
+    assert rest_land["main"]() == rest_land["base"]
+
+
+def test_a_cloud_land_asking_a_signed_squash_without_ssh_keygen_refuses_naming_it(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    code, lines = cloud_land["land"]("7")
+    assert (code, cloud_land["out"](capsys, (code, lines))) == (1, [approvals.NO_KEYGEN])
+    assert "`ssh-keygen`" in approvals.NO_KEYGEN
     unmoved(cloud_land)
+
+
+def test_a_signed_squash_without_ssh_keygen_is_refused_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(approvals.Refused, match="needs `ssh-keygen`"):
+        approvals.signed_squash({"number": 7}, Path("signers"))
 
 
 def test_the_cloud_key_folder_is_removed_when_the_land_fails_after_taking_it(
