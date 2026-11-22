@@ -22,8 +22,8 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 
-# gatekeeper.py sets these three once it has loaded this module (sibling): the refusal that exits 1, the masking of a
-# home or temp path in a posted text, and the deny list's refusal of a text naming a listed term
+# gatekeeper.py sets these four once it has loaded this module (sibling): the refusal that exits 1, the masking of a
+# home or temp path in a posted text, the deny list's refusal of a text naming a listed term, and OWN_CHECKS
 class Refused(Exception):
     """A reason to stop with exit 1, printed as is: gatekeeper.py's own, once it loads this module."""
 
@@ -212,7 +212,76 @@ def texts(data: str) -> list[str]:
     return strings
 
 
+# The flag that makes `gh pr merge` go past the base's rules. It is the owner's, in the GitHub UI, never a helper's: agents
+# act as the same Admin account, so this check is the only thing that keeps the bypass the owner's (#1722). Written in two
+# parts so that no script of the pack holds it whole, which a test asserts.
+BYPASS_FLAG = "-" * 2 + "ad" + "min"
+# the one REST route that merges, and the only fields a helper may send it; the route may end in slashes
+MERGE_ROUTE = re.compile(r"/pulls/\d+/merge/*(?:\?|$)")
+MERGE_FIELDS = frozenset({"merge_method", "sha", "commit_title", "commit_message"})
+# `gh api`'s field flags, in every spelling it accepts: `-f k=v`, `-fk=v`, `--field k=v`, `--field=k=v`, and the same
+# for -F and --raw-field. A short flag may sit in a cluster (`-if k=v`), and these short flags take a value
+FIELD_FLAGS = frozenset({"-f", "-F", "--field", "--raw-field"})
+VALUE_SHORT = frozenset("HqtXpfF")
+
+
+def api_fields(words: list[str]) -> tuple[list[str], bool]:
+    """The field names a `gh api` call sends, and whether it reads its body from `--input` (either spelling)."""
+    sent, body, i = [], False, 0
+    while i < len(words):
+        word, i = words[i], i + 1
+        value: str | None = None
+        if word == "--input" or word.startswith("--input="):
+            body = True
+        elif word in FIELD_FLAGS:
+            value, i = (words[i] if i < len(words) else ""), i + 1
+        elif word.startswith(("--field=", "--raw-field=")):
+            value = word.split("=", 1)[1]
+        elif word.startswith("-") and not word.startswith("--") and len(word) > 1:
+            for at, char in enumerate(word[1:], 1):
+                if char not in VALUE_SHORT:
+                    continue
+                rest = word[at + 1 :]
+                if char in "fF":
+                    value = rest.removeprefix("=") if rest else (words[i] if i < len(words) else "")
+                if not rest:
+                    i += 1
+                break
+        if value is not None:
+            sent.append(value.split("=", 1)[0])
+    return sent, body
+
+
+def refuse_bypass(args: tuple[str, ...]) -> None:
+    """Refuse a gh call that asks to merge past the base's rules: `gh pr merge` with the bypass flag, a call to the REST
+    merge route (`PUT pulls/N/merge`) that sends any field but MERGE_FIELDS or its body as `--input`, or a GraphQL
+    `mergePullRequest`, since any of them could carry a bypass the pack cannot read. Every gh call of the pack goes
+    through gh(), so no helper of it merges that way."""
+    words = [str(arg) for arg in args]
+    if any(word == BYPASS_FLAG or word.startswith(f"{BYPASS_FLAG}=") for word in words):
+        raise Refused(
+            "refused: a merge past the base's rules is the owner's, in the GitHub UI; no helper of the pack passes the"
+            " bypass flag"
+        )
+    if words[:1] != ["api"]:
+        return
+    sent, body = api_fields(words)
+    if any(MERGE_ROUTE.search(word) for word in words):
+        if body or (extra := sorted(set(sent) - MERGE_FIELDS)):
+            raise Refused(
+                "refused: a REST merge sends merge_method, sha, commit_title and commit_message only"
+                + (f", not {', '.join(extra)}" if not body else ", not a body read from --input")
+                + ": a merge past the base's rules is the owner's, in the GitHub UI"
+            )
+    elif "graphql" in words and any("mergepullrequest" in word.lower() for word in words):
+        raise Refused(
+            "refused: a GraphQL mergePullRequest is a merge the pack does not make: a merge past the base's rules is the"
+            " owner's, in the GitHub UI"
+        )
+
+
 def gh(*args: str, data: str | None = None) -> str:
+    refuse_bypass(args)
     if data is not None:  # every comment and review approvals.py posts goes as `data`
         for text in texts(data):
             denied(text)
@@ -1118,11 +1187,45 @@ def pull_commits(number: int) -> list[dict[str, Any]]:
     ]
 
 
+# the statuses the loop posts itself, which a base's required checks never wait for: gatekeeper.py's OWN, set when it
+# loads this module, so the two never differ (empty until then, which only makes a required check of one of them count)
+OWN_CHECKS: frozenset[str] = frozenset()
+GREEN_CHECKS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
+
+
+def red_checks(number: int, head: str) -> list[str]:
+    """A line per check PR #number's base requires that is not green on `head`, red, pending or missing: empty when every
+    one is. A check run answers by its conclusion, a commit status (the newest of its context) by its state."""
+    required = required_checks(pull_status(number)["baseRefName"]) - OWN_CHECKS
+    runs = commit_checks(head)
+    marks: dict[str, str] = {}
+    for mark in statuses(head):  # newest first
+        marks.setdefault(mark["context"], mark["state"])
+    found = []
+    for name in sorted(required):
+        if name in runs:
+            state = runs[name]["conclusion"] or "PENDING"
+            green = state in GREEN_CHECKS
+        elif name in marks:
+            state, green = marks[name].upper(), marks[name] == "success"
+        else:
+            state, green = "missing", False
+        if not green:
+            found.append(f"`{name}` is {state}")
+    return found
+
+
 def merge(number: int, method: str, body: str | None, head: str) -> None:
     """Merge PR #number by `method` (merge, squash or rebase), pinned to `head`, with `body` as the commit's body unless
     it is None (GitHub's default). A base requiring a merge queue only queues it. Where GitHub refuses GraphQL, which
     `gh pr merge` goes over, a cloud session's proxy for one, the same merge goes over REST (`PUT pulls/N/merge`, whose
-    `sha` is the pin and whose `commit_message` is the body)."""
+    `sha` is the pin and whose `commit_message` is the body). Refused while a required check is not green on `head`,
+    whether or not the owner approved a break-glass: that PR is merged only by the owner in the GitHub UI (#1722)."""
+    if held := red_checks(number, head):
+        raise Refused(
+            f"PR #{number}: refusing to merge while a required check is not green on {head}: {'; '.join(held)}"
+            " (a break-glass PR is merged by the owner in the GitHub UI, never by a helper)"
+        )
 
     def rest_merge() -> str:
         return gh(
