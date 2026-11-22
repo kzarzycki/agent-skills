@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=https://docs.mergify.com/mergify-configuration-schema.json
+#
+# The Mergify merge queue `land` hands PRs to when the policy sets `land.queue: mergify` (gatekeeper's policy.md). The
+# pack ships this file as gatekeeper/skills/gatekeeper/mergify.yml; a repo copies it to `.mergify.yml` unchanged.
+#
+# `land` judges each PR (its proofs, the owner's go where high risk, the base's required checks green on its head),
+# then posts the `land` status on that head and adds `loop:queued`. Mergify takes a PR in only with both, tests each
+# batch as a draft PR on top of main in CI, retries a red batch once, splits a batch still red until it finds the PR
+# that breaks it and dequeues only that one, and squash-merges the rest on green. A push makes a head with no `land`
+# status, so the PR stops matching and leaves the queue. A PR Mergify drops gets `loop:dequeued`, which the next
+# `land` evicts back to draft.
+#
+# No CI check is named here: Mergify reads the base's required checks from its rules (`branch_protection_injection_mode`,
+# default `queue`) and requires them on the PR to queue it and on the draft PR to merge it. So the file suits any repo
+# whose default branch is `main`, whose main requires its CI check and does not require `land` itself (`land` never
+# reaches the draft PR), and whose required check runs on Mergify's draft PRs: a `pull_request` trigger that filters
+# out neither drafts nor `mergify/merge-queue/*` head branches, else no batch ever merges.
+#
+# One test run per tree: the required check's job runs on every PR, and its test step runs only when the head branch
+# starts with `queue_branch_prefix`, as a step-level `if`, so on a PR head the job runs its cheap steps (lint, config
+# and repo checks) and still reports success. A job-level `if` would skip the job, and a skipped required check never
+# reports, so Mergify would never queue the PR.
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    batch_size: 3
+    batch_max_wait_time: 5 minutes
+    # the branch every batch's draft PR is pushed from, the prefix the CI's test step matches: named here, not left to
+    # the default, so the two can't drift apart
+    queue_branch_prefix: mergify/merge-queue/
+    # one retry of a red batch, so a dequeue is the second red. It also keeps every batch on a draft PR: with 0 retries
+    # Mergify may test a batch of one in place on the PR's own branch, where the test step doesn't run
+    max_checks_retries: 1
+    # a red batch is split, each part tested on top of the ones before it, until the failing PR is found, however
+    # many rounds that takes; only it leaves the queue. A number would dequeue a part still holding several PRs once
+    # it ran out
+    batch_max_failure_resolution_attempts: null
+    # a batch whose checks never report leaves the queue instead of holding it
+    checks_timeout: 1 hour
+    queue_conditions:
+      - base = main
+      - -draft
+      - label = loop:queued
+      - check-success = land
+
+pull_request_rules:
+  - name: queue what land handed over
+    conditions:
+      - base = main
+      - -draft
+      - label = loop:queued
+      - check-success = land
+    actions:
+      queue:
+        name: default
+
+merge_queue:
+  dequeued_label: loop:dequeued
