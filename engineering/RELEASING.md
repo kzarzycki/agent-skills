@@ -47,7 +47,7 @@ jobs:
       - env: {GH_TOKEN: "${{ github.token }}", GATEKEEPER_REST_ONLY: "${{ matrix.rest_only }}", PR: "${{ inputs.pr }}"}
         run: |
           set +e  # a verdict that is not go exits 1 or 3; a gh error or no verdict line fails
-          out=$(uv run "$RUNNER_TEMP/gatekeeper/engineering/skills/engineering-loop/scripts/approvals.py" check merge "$PR" 2>&1)
+          out=$(uv run "$RUNNER_TEMP/gatekeeper/gatekeeper/skills/gatekeeper/scripts/approvals.py" check merge "$PR" 2>&1)
           printf '%s\n' "$out"
           ! printf '%s\n' "$out" | grep -q '^gh: ' && printf '%s\n' "$out" | grep -q "^PR #$PR: risk: .*; merge: "
 ```

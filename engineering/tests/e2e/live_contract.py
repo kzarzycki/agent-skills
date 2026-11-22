@@ -17,7 +17,7 @@ from engineering.tests.e2e.conformance import install_fixture
 
 AgentName = Literal["claude", "codex"]
 PROMPTS = Path(__file__).parent / "prompts"
-FAKE_GH = Path(__file__).parents[1] / "fixtures" / "fake-gh"
+FAKE_GH = Path(__file__).parents[3] / "gatekeeper" / "tests" / "fixtures" / "fake-gh"
 EVIDENCE_PATHS = ("README.md", "src/domain.py", "tests/test_domain.py")
 WAYFINDER_FACTS = (
     "paused subscriptions",

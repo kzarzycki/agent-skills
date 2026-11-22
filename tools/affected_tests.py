@@ -27,7 +27,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-ALL = ["tests", "engineering/tests"]
+ALL = [
+    "tests",
+    "engineering/tests",
+    "gatekeeper/tests",
+    "loop/tests",
+    "github/tests",
+    "chief-of-staff/tests",
+    "omnigent/tests",
+]
 EVERYTHING = ("pyproject.toml", "uv.lock", "mise.toml", "tools/", "conftest.py")
 MAP = Path(os.environ.get("TEST_MAP", ".test-map"))
 SKIPS = re.compile(r"needs_tool|skipif|pytest\.skip|importorskip")

@@ -21,8 +21,8 @@ def test_a_docs_only_change_runs_only_the_repo_wide_checks() -> None:
 
 
 def test_a_script_change_runs_the_tests_that_name_it() -> None:
-    picked = a.targets(["engineering/skills/engineering-loop/scripts/gatekeeper.py"])
-    assert "engineering/tests/test_approvals.py" in picked
+    picked = a.targets(["gatekeeper/skills/gatekeeper/scripts/gatekeeper.py"])
+    assert "gatekeeper/tests/test_approvals.py" in picked
     assert set(a.CHEAP) <= set(picked)
 
 

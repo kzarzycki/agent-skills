@@ -14,7 +14,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "engineering/tests"]
+testpaths = ["tests", "engineering/tests", "gatekeeper/tests", "github/tests", "loop/tests", "chief-of-staff/tests", "omnigent/tests"]
 pythonpath = ["."]
 # tools/test_map_plugin.py: a nested pytest never inherits this run's PYTEST_ADDOPTS, and a subprocess runs under its test's context
 addopts = "-p tools.test_map_plugin"
@@ -40,11 +40,11 @@ patch = ["subprocess"]
 target-version = "py314"
 line-length = 100
 # Shipped scripts run on a consumer's own `python3`; macOS ships 3.9.
-per-file-target-version = { "engineering/skills/*/scripts/*.py" = "py39", "engineering/hooks/*.py" = "py39" }
+per-file-target-version = { "*/skills/*/scripts/*.py" = "py39", "engineering/hooks/*.py" = "py39" }
 
 [tool.ruff.lint.per-file-ignores]
 # A module of approvals tests imports a non-autouse fixture it takes from the harness by name (with
-# `noqa: F401`), and a test that takes it as a parameter redefines it (engineering/tests/approvals_harness.py).
-"engineering/tests/test_approvals_*.py" = ["F811"]
+# `noqa: F401`), and a test that takes it as a parameter redefines it (gatekeeper/tests/approvals_harness.py).
+"gatekeeper/tests/test_approvals_*.py" = ["F811"]
 # likewise a module that takes test_mutate.py's `repo` fixture by name
-"engineering/tests/test_mutate_*.py" = ["F811"]
+"loop/tests/test_mutate_*.py" = ["F811"]

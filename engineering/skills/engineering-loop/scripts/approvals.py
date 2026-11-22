@@ -3,31 +3,46 @@
 # requires-python = ">=3.9"
 # dependencies = ["PyYAML==6.0.3"]
 # ///
-"""approvals.py: the gatekeeper's former name, kept for one release line. gatekeeper.py beside it holds the CLI and
-the policy; its docstring is the manual. Today's verbs run under the same arguments, output and exit codes, the
-gatekeeper maps each onto its own (its ALIASES): `approve` is `record approval`, `verdict` is `record
-verdict`, `local-ci` is `record checks`, and every other verb is the gatekeeper's own of that name.
+"""engineering-loop/scripts/approvals.py: the gatekeeper's former path, which the `gatekeeper` skill's scripts/gatekeeper.py is now. `brief` and `release` are the `engineering-loop` skill's scripts/loop.py.
+Kept for one release line, so a project pinned to engineering keeps its commands, in a checkout of this repo as in
+an install: it runs that script with the same arguments, input and exit code, after one deprecation line on stderr.
+It goes away with the release that drops engineering's dependencies on the packages split out of it."""
 
-This module runs gatekeeper.py's source in its own namespace, so it is the gatekeeper: a name read from it is the
-gatekeeper's, and a name set on it (a test's stub) is the one the gatekeeper's code looks up, whether the script
-imports it or loads it by path and keeps it out of sys.modules.
-"""
-
+import runpy
 import sys
-import types
 from pathlib import Path
 
-# board.py, which the gatekeeper loads, imports approvals: it reads this module, so it never loads a second copy
-_GATEKEEPER = Path(__file__).resolve().with_name("gatekeeper.py")
-exec(compile(_GATEKEEPER.read_text(), str(_GATEKEEPER), "exec"), globals())  # noqa: S102 -- the shim is the gatekeeper's own file
-# loaded by path: board.py's `import approvals` reads this namespace, not a copy
-if sys.modules.get(__name__) is None:
-    IMPORTER = types.ModuleType("approvals")
+# a forwarder, never a module: an import that found it took the wrong folder
+if __name__ != "__main__":
+    raise ImportError(f"{__file__} only forwards to another skill's script: import that script")
 
-    def _read(name: str) -> object:
-        try:
-            return globals()[name]
-        except KeyError:
-            raise AttributeError(name) from None
 
-    IMPORTER.__getattr__ = _read
+def installed(skill: str) -> Path:
+    """The scripts folder of `skill`, which another package ships, found by the host's install layout: a sibling
+    skill folder (APM's one skills directory), a sibling plugin's (this repo, or a marketplace Claude Code loads in
+    place), else the newest version of a plugin in Claude Code's cache (`<marketplace>/<plugin>/<version>/`) that
+    no update has orphaned. Exits naming the skill to install when none holds it."""
+    # ponytail: three layouts, the ones APM and Claude Code use; a host with another adds its glob here.
+    own = Path(__file__).resolve().parents[1]
+    plugin = own.parent.parent
+    cached = plugin.parent.parent.glob(f"[!.]*/[!.]*/skills/{skill}")
+    for folder in [
+        own.parent / skill,
+        *sorted(plugin.parent.glob(f"[!.]*/skills/{skill}")),
+        *sorted(cached, key=lambda path: path.stat().st_mtime, reverse=True),
+    ]:
+        if (folder / "SKILL.md").is_file() and not (folder.parents[1] / ".orphaned_at").exists():
+            return folder / "scripts"
+    sys.exit(f"{Path(__file__).name} needs the `{skill}` skill: install the package that ships it")
+
+
+# `brief` and `release` decide nothing, so they left the gatekeeper for the loop's own script
+skill = "engineering-loop" if sys.argv[1:2] in (["brief"], ["release"]) else "gatekeeper"
+target = installed(skill) / ("loop.py" if skill == "engineering-loop" else "gatekeeper.py")
+print(
+    f"engineering-loop/scripts/approvals.py is deprecated: run the `{skill}` skill's scripts/{target.name}",
+    file=sys.stderr,
+)
+# as if the target ran itself, so no forwarder beside this one is importable
+sys.path[0] = str(target.parent)
+runpy.run_path(str(target), run_name="__main__")
