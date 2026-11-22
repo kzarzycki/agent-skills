@@ -852,16 +852,10 @@ ORIGIN_URL = re.compile(r'\[remote "origin"\][^\[]*?^\s*url\s*=\s*(\S+)', re.MUL
 GITHUB_REPO = re.compile(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 
 
-def far_policy_texts(
-    og: Omnigent, workspace: str, host_id: str, gk: Any
-) -> tuple[str | None, str | None] | None:
-    """The default branch's ``docs/agents/loop.md`` and gatekeeper.md texts (None for one it lacks, as ``base_policy``
-    reads the base) of the checkout at ``workspace`` on host ``host_id``, which has no git to ask: its git config
-    (through a worktree's gitdir and commondir, as ``workspace_head`` resolves them) is read through the host's file API for the ``origin`` repo, and the files come from GitHub's default branch
-    through ``gh``. None when ``workspace`` is no checkout; a ``Fail`` when the origin or a file can't be read."""
-    root = far_checkout_root(og, host_id, workspace, str(gk.POLICY))
-    if root is None:
-        return None
+def far_origin_slug(og: Omnigent, host_id: str, root: Path, what: str) -> str:
+    """``owner/name`` of the GitHub ``origin`` of the checkout at ``root`` on host ``host_id``, which has no git to
+    ask: its git config (through a worktree's gitdir and commondir, as ``workspace_head`` resolves them) is read
+    through the host's file API. A ``Fail`` naming ``what`` when the config can't be read or has no GitHub origin."""
     try:
         top = read_on_host(og, host_id, f"{root}/.git")
     except (Gone, Fail):
@@ -878,8 +872,21 @@ def far_policy_texts(
     except Gone as e:
         raise Fail(f"{config}: not found on the host") from e
     if not (found and (repo := GITHUB_REPO.search(found.group(1)))):
-        raise Fail(f"{config}: no GitHub `origin` url to read the base policy from")
-    slug = f"{repo.group(1)}/{repo.group(2)}"
+        raise Fail(f"{config}: no GitHub `origin` url {what}")
+    return f"{repo.group(1)}/{repo.group(2)}"
+
+
+def far_policy_texts(
+    og: Omnigent, workspace: str, host_id: str, gk: Any
+) -> tuple[str | None, str | None] | None:
+    """The default branch's ``docs/agents/loop.md`` and gatekeeper.md texts (None for one it lacks, as ``base_policy``
+    reads the base) of the checkout at ``workspace`` on host ``host_id``, which has no git to ask: its git config
+    (through a worktree's gitdir and commondir, as ``workspace_head`` resolves them) is read through the host's file API for the ``origin`` repo, and the files come from GitHub's default branch
+    through ``gh``. None when ``workspace`` is no checkout; a ``Fail`` when the origin or a file can't be read."""
+    root = far_checkout_root(og, host_id, workspace, str(gk.POLICY))
+    if root is None:
+        return None
+    slug = far_origin_slug(og, host_id, root, "to read the base policy from")
     branch = json.loads(gh("api", f"repos/{slug}"))["default_branch"]
 
     def read(file: Path) -> str | None:
@@ -1147,18 +1154,41 @@ def pr_ref(text: str) -> PrRef:
     return ref
 
 
-def pr_repo(pr: int, workspace: str | Path | None, local: bool = True) -> str:
+def pr_repo(
+    pr: int,
+    workspace: str | Path | None,
+    local: bool = True,
+    far: tuple[Any, str] | None = None,
+) -> str:
     """The repository of PR ``pr``: the slug it was named with, else that of ``workspace`` when it is a
-    local checkout on this host (``local``), else of the current directory. Refused, naming ``--pr owner/repo#N``, when none resolves."""
+    local checkout on this host (``local``), else, for a workspace on another host, its ``origin`` read through
+    that host's file API (``far``: the server and the host id). Never the current directory's repository for a
+    workspace on another host. Refused, naming ``--pr owner/repo#N``, when none resolves."""
     if repo := getattr(pr, "repo", ""):
         return repo
-    here = Path(workspace) if local and workspace and (Path(workspace) / ".git").exists() else None
     try:
+        if not local:
+            if not (far and workspace):
+                raise Fail("the workspace is on another host")
+            og, host_id = far
+            root = far_checkout_root(og, host_id, str(workspace), "the PR's repository")
+            if root is None:
+                raise Fail(f"{workspace} is no checkout on that host")
+            return far_origin_slug(og, host_id, root, "to name the PR's repository")
+        here = Path(workspace) if workspace and (Path(workspace) / ".git").exists() else None
         return repo_slug(here) if here else repo_slug()
     except Fail as e:
         raise Fail(
             f"--pr {pr}: no repository to read it from ({e}); name it as --pr owner/repo#{pr}"
         ) from e
+
+
+def pr_where(
+    og: Omnigent, pr: int, workspace: str | Path | None, host_id: str | None
+) -> tuple[int, str | Path | None, bool, tuple[Omnigent, str] | None]:
+    """``pr_repo``'s arguments for a start on ``host_id``: whether its workspace is on this host, and else where."""
+    local = not host_id or host_id == og.host_id
+    return pr, workspace, local, None if local else (og, str(host_id))
 
 
 def pr_slug(pr: int) -> str:
@@ -4739,19 +4769,13 @@ def start(
         return Fail(reason + left)
 
     # the PR's repository, before any session exists: a failure here leaves nothing to abandon (#1167)
-    slug = (
-        pr_repo(pr, workspace, not host_id or host_id == og.host_id)
-        if pr and not reviews(role)
-        else ""
-    )
+    slug = pr_repo(*pr_where(og, pr, workspace, host_id)) if pr and not reviews(role) else ""
     # a verifier's PR label, set at create: a repository that doesn't resolve leaves the bare number,
     # since on a verifier the label is telemetry only (reap holds no verifier) and never stops a start
     label = ""
     if about and reviews(role):
         try:
-            label = (
-                f"{pr_repo(about, workspace, not host_id or host_id == og.host_id)}#{int(about)}"
-            )
+            label = f"{pr_repo(*pr_where(og, about, workspace, host_id))}#{int(about)}"
         except Fail:
             label = f"#{int(about)}"
     # one running session per PR and role (#1806): a second worker or verifier started while the first runs repeats its
