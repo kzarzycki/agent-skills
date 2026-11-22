@@ -18,7 +18,7 @@ import subprocess
 import sys
 import time
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
 
 
@@ -283,6 +283,7 @@ def gh(*args: str, data: str | None = None) -> str:
             denied(text)
     backoff = 60
     while True:
+        guard(args)
         try:
             return subprocess.run(
                 ["gh", *args], input=data, check=True, capture_output=True, text=True
@@ -312,6 +313,81 @@ def gh(*args: str, data: str | None = None) -> str:
 wait_until: float | None = None
 JITTER = 60  # most seconds of random delay added to a rate-limit wait
 SLICE = 60  # seconds between the lines a rate-limit wait prints
+
+# answers a run keeps (#1771): (bucket, key) -> (time.monotonic when read, answer); writer, required_checks and a
+# settled head's check runs (rest_runs). KEPT bounds their age, so a wait of hours still sees a rule, a permission or a
+# rerun change within it; forget() drops them all, as a test does between cases
+kept: dict[tuple[str, str], tuple[float, Any]] = {}
+KEPT = 900
+# the quota guard (guard): while land --wait runs (wait_until set), each gh call first reads the bucket it spends from
+# `gh api rate_limit` (free; at most once per QUOTA_EVERY seconds), and one under QUOTA_FLOOR calls left waits for its
+# reset inside the ceiling, else stops naming it; quota_left holds the last reading for poll_seconds
+QUOTA_EVERY, QUOTA_FLOOR = 60, 50
+# bucket -> (time.monotonic when read, remaining, limit, reset epoch)
+quota_left: dict[str, tuple[float, int, int, int]] = {}
+
+
+def forget() -> None:
+    """Drop every answer this run kept: viewer's login, `kept` and the guard's last quota readings."""
+    viewer_login.clear()
+    kept.clear()
+    quota_left.clear()
+
+
+def bucket_of(args: Sequence[str]) -> str:
+    """The rate-limit bucket a gh call spends: GraphQL's for `gh api graphql` and for any other gh command (gh pr,
+    gh issue), which GitHub serves through GraphQL; REST's (`core`) for every other `gh api`."""
+    return "core" if args[:1] == ("api",) and args[1:2] != ("graphql",) else "graphql"
+
+
+def quota(bucket: str) -> tuple[int, int, int] | None:
+    """(remaining, limit, reset epoch) of `bucket` from `gh api rate_limit`, which costs no quota, read at most once per
+    QUOTA_EVERY seconds; None when it can't be read, which the guard and the poll take as no news."""
+    if (seen := quota_left.get(bucket)) and time.monotonic() - seen[0] < QUOTA_EVERY:
+        return seen[1:]
+    try:
+        remaining, limit, reset = map(
+            int,
+            gh(
+                "api",
+                "rate_limit",
+                "--jq",
+                f'.resources.{bucket} | "\\(.remaining) \\(.limit) \\(.reset)"',
+            ).split(),
+        )
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+    quota_left[bucket] = (time.monotonic(), remaining, limit, reset)
+    return remaining, limit, reset
+
+
+def guard(args: Sequence[str]) -> None:
+    """While land --wait runs (wait_until set), a gh call whose bucket has under QUOTA_FLOOR calls left first waits for
+    the bucket's reset, in SLICE steps that each print, when the reset falls inside the wait's ceiling, and otherwise
+    stops with an error naming the reset, rather than spend the last calls and be refused mid-land. Outside a wait it
+    does nothing, so a one-shot command is never held; the rate_limit read itself is never guarded."""
+    if wait_until is None or tuple(args[:2]) == ("api", "rate_limit"):
+        return
+    bucket = bucket_of(tuple(args))
+    found = quota(bucket)
+    if found is None or found[0] >= QUOTA_FLOOR:
+        return
+    remaining, _, reset = found
+    pause = max(reset - int(time.time()), 0) + 1 + random.randint(0, JITTER)
+    at = time.strftime("%H:%M UTC", time.gmtime(time.time() + pause))
+    if time.monotonic() + pause > wait_until:
+        raise subprocess.CalledProcessError(
+            1,
+            ["gh", *args],
+            "",
+            f"GitHub {bucket} quota nearly spent ({remaining} calls left), resets at {at}: land --wait stops"
+            " before its ceiling would pass; land again after the reset",
+        )
+    said = f"GitHub {bucket} quota nearly spent ({remaining} calls left), waiting until {at}"
+    for left in range(pause, 0, -SLICE):
+        print(said, file=sys.stderr, flush=True)
+        time.sleep(min(left, SLICE))
+    quota_left.pop(bucket, None)  # the reset passed: read the bucket afresh
 
 
 def rate_limited(stderr: str, backoff: int, graphql: bool = False) -> int | None:
@@ -529,16 +605,47 @@ def rest_latest(reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def rest_checks(head: str) -> dict[str, Any]:
     """The head's checks as `statusCheckRollup` reads them, from REST: every check run (each rerun too), named by its
-    workflow, and each status context's newest state."""
+    workflow, and each status context's newest state. The check runs come from rest_runs, kept for a head whose runs
+    all finished (#1771); the status contexts are read each time, since anyone can post one at any moment."""
+    nodes = list(rest_runs(head))
+    combined = rest(f"repos/{{owner}}/{{repo}}/commits/{head}/status?per_page=100")
+    for status in combined.get("statuses") or []:
+        nodes.append(
+            {
+                "__typename": "StatusContext",
+                "context": status["context"],
+                "state": status["state"].upper(),
+                "createdAt": status.get("created_at"),
+                "targetUrl": status.get("target_url"),
+            }
+        )
+    total = len(nodes) - len(combined.get("statuses") or []) + combined.get("total_count", 0)
+    return {"contexts": {"totalCount": total, "nodes": nodes}}
+
+
+def rest_runs(head: str) -> list[dict[str, Any]]:
+    """The head's check runs as rest_checks reads them: three paged reads, kept (`kept`) once they are settled
+    (read_runs), since a finished head's runs change only by a rerun, which the age bound (KEPT) still sees. An
+    unsettled head (a run queued or in progress, or none yet) is read again each time; a new head is a new key."""
+    runs: list[dict[str, Any]] | None = fresh(("runs", head))
+    if runs is None:
+        runs, settled = read_runs(head)
+        if settled:
+            kept[("runs", head)] = (time.monotonic(), runs)
+    return [dict(run) for run in runs]
+
+
+def read_runs(head: str) -> tuple[list[dict[str, Any]], bool]:
+    """The head's check runs, and whether they are settled: at least one, and every check run and workflow run on
+    the head finished, so a workflow queued before its first job exists keeps the head unsettled. Suites are not
+    asked, since GitHub leaves an app's suite with no runs queued for good."""
     runs = rest_pages(f"commits/{head}/check-runs?filter=all&per_page=100", ".check_runs[]")
     suites = {
         suite["id"]: suite
         for suite in rest_pages(f"commits/{head}/check-suites?per_page=100", ".check_suites[]")
     }
-    flows = {
-        run["check_suite_id"]: run["name"]
-        for run in rest_pages(f"actions/runs?head_sha={head}&per_page=100", ".workflow_runs[]")
-    }
+    flows_seen = rest_pages(f"actions/runs?head_sha={head}&per_page=100", ".workflow_runs[]")
+    flows = {run["check_suite_id"]: run["name"] for run in flows_seen}
     nodes: list[dict[str, Any]] = []
     for run in runs:
         suite = (run.get("check_suite") or {}).get("id")
@@ -557,19 +664,9 @@ def rest_checks(head: str) -> dict[str, Any]:
                 },
             }
         )
-    combined = rest(f"repos/{{owner}}/{{repo}}/commits/{head}/status?per_page=100")
-    for status in combined.get("statuses") or []:
-        nodes.append(
-            {
-                "__typename": "StatusContext",
-                "context": status["context"],
-                "state": status["state"].upper(),
-                "createdAt": status.get("created_at"),
-                "targetUrl": status.get("target_url"),
-            }
-        )
-    total = len(nodes) - len(combined.get("statuses") or []) + combined.get("total_count", 0)
-    return {"contexts": {"totalCount": total, "nodes": nodes}}
+    return nodes, bool(runs) and all(
+        each.get("status") == "completed" for each in (*runs, *flows_seen)
+    )
 
 
 def rest_threads(number: int) -> dict[str, Any]:
@@ -823,10 +920,29 @@ class Required(set):
     queue: str | None = None
 
 
+def fresh(key: tuple[str, str]) -> Any | None:
+    """The answer `kept` holds for `key` while it is younger than KEPT, else None."""
+    if (found := kept.get(key)) and time.monotonic() - found[0] < KEPT:
+        return found[1]
+    return None
+
+
 def required_checks(base: str) -> Required:
     """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's, with the
     merge method of a `merge_queue` rule as `queue`, which picks land's GitHub merge queue. A private repo on GitHub's
-    free plan has no rulesets: that 403 reads as none, and any other error raises."""
+    free plan has no rulesets: that 403 reads as none, and any other error raises. Read once per base and KEPT
+    seconds (#1771): a pass of land asks it many times, and a rule changes far less often; a copy goes out, so a
+    caller's edit never reaches the kept one."""
+    found: Required | None = fresh(("required", base))
+    if found is None:
+        found = read_required(base)
+        kept[("required", base)] = (time.monotonic(), found)
+    copy = Required(found)
+    copy.queue = found.queue
+    return copy
+
+
+def read_required(base: str) -> Required:
     try:
         rulesets = gh(
             "api",
@@ -979,7 +1095,19 @@ def viewer() -> str | None:
 def writer(login: str) -> bool:
     """Whether `login` can write to the repo, by GitHub's collaborator permission; an account GitHub refuses to look
     up can't. ponytail: a bot's GraphQL login lacks the `bot` REST needs, so a bot author fails closed; add the
-    suffix when a project's bot opens sub-issues."""
+    suffix when a project's bot opens sub-issues. GitHub's answer is kept KEPT seconds (#1771), since a pass of land
+    asks it for every login it trusts; a failure that is no answer (a network error) is not kept."""
+    found: bool | None = fresh(("writer", login))
+    if found is None:
+        found, answered = read_writer(login)
+        if answered:
+            kept[("writer", login)] = (time.monotonic(), found)
+    return found
+
+
+def read_writer(login: str) -> tuple[bool, bool]:
+    """writer's answer, and whether GitHub gave it: a permission read, a lookup GitHub says has no such account (404),
+    or, where the lookup is refused, the repo's own permissions for the account running this."""
     try:
         permission = gh(
             "api",
@@ -990,14 +1118,16 @@ def writer(login: str) -> bool:
     except subprocess.CalledProcessError as exc:
         # a cloud session's proxy refuses this path; the repo's own permissions answer it for the account running this
         # alone, and anyone else still can't, so a stranger never counts as a writer
-        if not refused(exc.stderr) or login != viewer():
-            return False
+        if not refused(exc.stderr):
+            return False, "HTTP 404" in (exc.stderr or "")
+        if (me := viewer()) != login:
+            return False, me is not None  # viewer() failing is no answer about `login`
         try:
             mine = rest("repos/{owner}/{repo}").get("permissions") or {}
         except subprocess.CalledProcessError:
-            return False
-        return bool(mine.get("push") or mine.get("maintain") or mine.get("admin"))
-    return permission.strip() in WRITE
+            return False, False
+        return bool(mine.get("push") or mine.get("maintain") or mine.get("admin")), True
+    return permission.strip() in WRITE, True
 
 
 def current_pr() -> int | None:
