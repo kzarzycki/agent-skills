@@ -77,7 +77,13 @@ def source_manifest() -> dict[str, str]:
     """Every skill file an install deploys: engineering's and those of the packages it depends on."""
     manifest: dict[str, str] = {}
     for package in (PACKAGE, *_dependencies()):
-        manifest |= file_manifest(package / "skills")
+        # a folder without a SKILL.md is no skill, so an install deploys none of it (engineering keeps the old
+        # engineering-loop folder's scripts and docs for one release line, which the loop package's skill replaces)
+        for skill in sorted((package / "skills").glob("*/SKILL.md")):
+            manifest |= {
+                f"{skill.parent.name}/{name}": digest
+                for name, digest in file_manifest(skill.parent).items()
+            }
     return manifest
 
 
