@@ -158,7 +158,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    prints the ones to rerun. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
    instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
    brief and the priorities file already in that checkout (copied there like the logs). Where else it runs is SKILL.md, Where heavy steps run.
-   For a cloud PR, start no separate verifier: SKILL.md, Cloud worker, Starting a PR's cloud worker.
+   For a cloud PR, start no separate verifier session; the route is the worker's `cloud_verifier.py verify`, else a Codex Cloud thread: SKILL.md, Cloud worker, Starting a PR's cloud worker.
    A verifier on a host starts on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in

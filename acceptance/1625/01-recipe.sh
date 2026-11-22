@@ -29,11 +29,11 @@ else:
         "wait form": r"wait <session> <report> --pr <n>",
         "host note": r"~/\.agents/host\.md",
         "placement": r"`Placement:`",
-        "verify route": r"cloud_verifier\.py verify --pr <n>",
-        "thread route": r"cloud_verifier\.py thread",
+        "verify route": r"cloud_verifier\.py verify --pr <n> --brief <file>",
+        "thread route": r"cloud_verifier\.py thread --pr <n> --brief <file>",
         "worker-VM pointer": r"Verifier in the worker's VM",
         "thread pointer": r"Verifier on a Codex Cloud thread",
-        "brief": r"approvals\.py brief <pr>",
+        "brief": r"brief `approvals\.py brief <pr>` writes",
         "codex refusal": r"start codex … --pr` is refused by design, since Codex has no cloud bridge",
     }
     for name, pat in need.items():
@@ -45,10 +45,11 @@ else:
     for flag in re.findall(r"--workspace (\S+)", b):
         if not flag.startswith("<"):
             fails.append(f"--workspace names {flag}, not a placeholder")
-    if re.search(r"(?<![\w.<>~])/[\w.-]+/", b):
-        fails.append("recipe bullet holds an absolute path")
-    if re.search(r"\b[\w-]+\.(?:local|lan|internal|com|org|net|io)\b", b):
-        fails.append("recipe bullet holds a hostname")
+    for word in re.findall(r"(?<![^\s`\"(])/\S*", b):
+        fails.append(f"recipe bullet holds an absolute path: {word}")
+    for host in re.findall(r"\b[\w-]+(?:\.[\w-]+)+\b", b):
+        if host.rsplit(".", 1)[1] not in ("py", "md", "sh", "yml", "json"):
+            fails.append(f"recipe bullet holds a hostname: {host}")
 ref = "Starting a PR's cloud worker"
 s4 = lead[lead.index("\n4. **Build.**"):lead.index("\n5. **After each merge")]
 s7 = lead[lead.index("\n7. **Verify**"):lead.index("\n8. **Land**")]
