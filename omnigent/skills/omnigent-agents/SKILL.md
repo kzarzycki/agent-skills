@@ -746,8 +746,11 @@ a checkout on this host, detached so the poll goes on, and stopped past 15 minut
 lists (an approved, verified PR no `land` took) is said once per head, `<owner>/<name>: PR #N has its go and a
 satisfied verdict at <sha> and is not landed: land it (`land N --only`) or flag it`, a `stalled` event on that lead;
 the repo's last listing is kept (`stalled` in the state with `--console`), so the next hour's sweep says nothing new
-for it, and a PR is said again only once its head moved or it left the listing and came back. A PR the sweep could not
-judge, a failed sweep and a lead on another host are logged, never posted.
+for it, and a PR is said again only once its head moved or it left the listing and came back; a PR a sweep could not
+judge keeps what was listed for it. A PR the sweep could not judge, a failed sweep and a lead on another host are logged,
+never posted, except a sweep that judged none of the repo's PRs (its last line, `<n> of <n> open PRs not judged here`):
+that is said once per reason, `<owner>/<name>: check stalled judged none of its <n> open PRs: <why>`, since its silence
+would read as nothing stalled.
 
 **`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
 state file, an events log, status labels, a progress deadline, settled events kept across
