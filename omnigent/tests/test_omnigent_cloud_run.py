@@ -29,13 +29,13 @@ def test_a_cloud_brief_carries_the_in_turn_rule_and_not_the_detach_line(
         og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, top_level=top_level, pr=pr
     )
     brief = omnigent_agent.text_of(og.sessions[sid][1])
-    assert IN_TURN in brief and "end the turn only once the run has ended" in brief
+    assert IN_TURN in brief and "end a turn only on that tracked wait, naming its task id" in brief
     # one wake per run (finding 1 of the waste audit): one tracked wait as long as the run, no poll loop
     assert "--pid <pid> --budget <the run's expected length>` started as a background call" in brief
     assert "run_in_background" in brief and "never a short `wait-for`" in brief
     assert "--budget 480" not in brief and "calling it again" not in brief
     assert "Monitor" not in brief and "in the foreground" not in brief
-    assert "`STILL WORKING` that names only your own background run is not a valid ending" in brief
+    assert "`STILL WORKING` that names only your own detached run is not a valid ending" in brief
     assert DETACH_LINE not in brief
 
 
@@ -119,3 +119,30 @@ def test_wait_for_prints_the_last_log_lines_with_still_running(tmp_path, capsys)
     finally:
         run.kill()
         run.wait()
+
+
+def test_no_nudge_or_help_teaches_a_loop_of_short_waits() -> None:
+    """Every text the tool sends or prints names one tracked wait as long as the run (waste audit, finding 1)."""
+    from pathlib import Path
+
+    texts = {
+        name: getattr(omnigent_agent, name)
+        for name in ("CLOUD_RUN_NUDGE", "LEAD_NUDGE_CLOUD", "LEAD_UNTRACKED", "CLOUD_RUN_LINE")
+    }
+    for name, text in texts.items():
+        assert "looping on" not in text and "called again" not in text, name
+        assert (
+            "--budget <its expected length>" in text
+            or "--budget <the run's expected length>" in text
+        ), name
+    usage = subprocess.run(
+        ["python3", omnigent_agent.__file__, "wait-for", "--help"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "the run's expected length for a background call" in " ".join(usage.split())
+    skill = " ".join((Path(omnigent_agent.__file__).parents[1] / "SKILL.md").read_text().split())
+    assert (
+        "pass the run's expected length when the harness tracks the call in the background" in skill
+    )

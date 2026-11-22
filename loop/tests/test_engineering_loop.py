@@ -179,6 +179,10 @@ def test_the_verifier_waits_with_one_wake_and_reruns_repros_together() -> None:
         "--budget <the run's expected length>`" in worker and "never a short `wait-for`" in worker
     )
     assert "blocks close to the tool limit and prints only the outcome" not in worker
+    assert "Use a `--beat` of at least half your longest wait" in verifier
+    lead = " ".join((LOOP / "lead.md").read_text().split())
+    assert "--budget <its expected length>`" in lead
+    assert "which blocks close to the tool limit and prints only the outcome" not in lead
     assert "waited on as a detached run is" in verifier  # the bare gate too
     assert "Rerun all of its repros from one script" in verifier
     assert "the diff since its head and the files it touches" in verifier

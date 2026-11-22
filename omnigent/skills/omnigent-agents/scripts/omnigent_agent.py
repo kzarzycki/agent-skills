@@ -363,8 +363,8 @@ NO_REPORT = "Your turn ended without the report."
 # What a cloud session's nudge says in place of "poll a run you started detached": that run died.
 CLOUD_RUN_NUDGE = (
     "A run you started in the background may not have outlived your turn (a cloud VM may not): check"
-    " whether it finished and posted its result, restart it only if it did not, and keep this turn"
-    " open, looping on `wait-for`, until it ends,"
+    " whether it finished and posted its result, restart it only if it did not, and wait on it with one"
+    " harness-tracked background `wait-for --budget <its expected length>` (engineering-loop's verifier.md, its long-run rule),"
 )
 NUDGE = NO_REPORT + " Poll any long run you started detached, then write the report to {report}."
 # A cloud worker's report: a comment on the PR its last message links (wait --pr).
@@ -411,9 +411,9 @@ LEAD_NUDGE = (
 LEAD_NUDGE_CLOUD = (
     "Supervisor: your turn ended with no ending and no named wait. If it ended on your own background"
     " run, that run may not outlive the turn (a cloud VM may not): check whether it finished and"
-    " posted its result, restart it only if it did not, and keep the turn open, looping on"
-    " `wait-for`, until it ends. Then end your turn with DONE, STILL WORKING naming what you wait on"
-    " (never your own background run), or USER NEEDED."
+    " posted its result, restart it only if it did not, and wait on it with one harness-tracked"
+    " background `wait-for --budget <its expected length>`. Then end your turn with DONE, STILL WORKING"
+    " naming what you wait on (that tracked wait's task id, never your detached run), or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
 )
 # A STILL WORKING whose wait nothing wakes the lead for (#1753): a harness re-invokes a session for
@@ -422,9 +422,9 @@ LEAD_NUDGE_CLOUD = (
 LEAD_UNTRACKED = (
     "Supervisor: your turn ended waiting on something that does not wake you when it ends (a pid,"
     " a log, or a background subagent in a cloud session). Check whether it has ended; if not, wait"
-    " on it in this turn (`omnigent_agent.py wait-for --log <log> --pid <pid file>`, called again on"
-    " `still running`, or the subagent's own result), or restart it as a harness-tracked background"
-    " task, or detached with LOOP_NOTIFY set. Then end your turn with DONE, STILL WORKING naming"
+    " on it with one harness-tracked background `omnigent_agent.py wait-for --log <log> --pid <pid file>"
+    " --budget <its expected length>` (or the subagent's own result), or restart it detached with"
+    " LOOP_NOTIFY set. Then end your turn with DONE, STILL WORKING naming"
     " what wakes you, or USER NEEDED."
 )
 UNTRACKED_WHY = "waits on what does not wake it"
@@ -732,11 +732,12 @@ CLOUD_RUN_LINE = (
     " and a foreground call there is cut short: start it detached as engineering-loop's verifier.md's recipe says (its"
     " log, pid and exit in files), then wait on it with one wake: one `omnigent_agent.py wait-for --log <log>"
     " --pid <pid> --budget <the run's expected length>` started as a background call your harness tracks"
-    " (Claude Code: Bash `run_in_background`, which wakes you when it exits), never a short `wait-for`,"
-    " `until grep` or `sleep` loop, since each return re-reads your whole context; end the turn only once"
-    " the run has ended and its result is posted. The lead waits on the completion signal you post (the PR"
-    " comment or a status file), not on your turn, so a `STILL WORKING` that names only your own"
-    " background run is not a valid ending."
+    " (Claude Code: Bash `run_in_background`, which keeps running across turns and wakes you when it"
+    " exits), never a short `wait-for`, `until grep` or `sleep` loop, since each return re-reads your"
+    " whole context. Before the run has ended and its result is posted, end a turn only on that tracked"
+    " wait, naming its task id. The lead waits on the completion signal you post (the PR comment or a"
+    " status file), not on your turn, so a `STILL WORKING` that names only your own detached run is not"
+    " a valid ending."
 )
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
