@@ -309,9 +309,11 @@ matches with `gh pr merge --merge --match-head-commit`, a merge commit that keep
 PR needs it), instead of the squash above; every other PR lands as before. `land` prints each PR's method, and a
 match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form.
 `where: host | cloud | both` (default `both`) says where `land` runs: it refuses elsewhere, exit 1, before reading any
-PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`; its checkout signs with the session's own
-key, shared across that service's users, so there `land` refuses without `signed_squash_to` unless the base requires GitHub's merge queue (GitHub's merge is GraphQL, which
-the session's proxy refuses, and signs with GitHub's key), when it names no `signing_key_env`, and when that variable
+PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`. There, without `signed_squash_to`, `land`
+merges each PR over REST (`PUT pulls/N/merge`, squash, `sha` the gated head), since GitHub's GraphQL merge is refused by
+the session's proxy; GitHub signs that commit as it does a host's, and no signing key is needed. With `signed_squash_to`
+its checkout signs with the session's own key, shared across that service's users, so `land` refuses without
+`ssh-keygen` installed, when it names no `signing_key_env`, and when that variable
 is unset, empty, no unencrypted SSH private key, or a key whose public half is no line of the allowed signers file, each
 refusal naming which and never the key. Else it writes the key to a mode-0600 file in a fresh temporary directory,
 removed however the land ends, and every git command of the land runs with it (`-c gpg.format=ssh -c
@@ -605,7 +607,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 from pathlib import Path
 from types import ModuleType
@@ -956,6 +958,15 @@ SCHEMA: dict[str, dict[str, Any]] = {
         ),
     ),
     "carry_over_main": Table({"except": list}),
+    # the break-glass land's proof windows (breakglass_settings); every key is optional
+    "breakglass": Table(
+        max_age=str,
+        max_commits=int,
+        smoke=str,
+        earlier_runs=int,
+        artifact=str,
+        optional=("max_age", "max_commits", "smoke", "earlier_runs", "artifact"),
+    ),
     # each port's adapter by name (ADAPTERS), `github` for a port not named
     "adapters": Table(
         tracker=str, forge=str, evidence=str, optional=("tracker", "forge", "evidence")
@@ -2929,9 +2940,11 @@ def waits(
     issues: list[dict[str, Any]],
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
+    checks: list[str] | None = None,
 ) -> list[str]:
-    """One line per thing the merge waits for: ran()'s checks, and the owner's go (owner_waits)."""
-    return ran(pull, loop) + owner_waits(pull, issues, loop, pushed)
+    """One line per thing the merge waits for: ran()'s checks (`checks`, when the caller read them), and the owner's go
+    (owner_waits)."""
+    return (ran(pull, loop) if checks is None else checks) + owner_waits(pull, issues, loop, pushed)
 
 
 def batch_queue(loop: str | None) -> bool:
@@ -2953,6 +2966,10 @@ CLOUD = "CLAUDE_CODE_REMOTE"
 # the config every git command takes during a cloud land (placed): sign and verify a squash with the landing key, through
 # ssh-keygen itself rather than the VM's signing program, which signs with the session's key
 SIGNING: list[str] = []
+
+
+# a signed land runs ssh-keygen to read the key and to sign and verify each squash
+NO_KEYGEN = "land with `land.signed_squash_to` needs `ssh-keygen` (the OpenSSH client), which is not installed: install it"
 
 
 def in_cloud() -> bool:
@@ -2989,10 +3006,10 @@ def armoured(value: str) -> str:
 @contextlib.contextmanager
 def placed(loop: str | None, queue: bool = False) -> Any:
     """Refuse a land where loop.md's `land.where` (default `both`) excludes the place it runs, before any PR is read.
-    In a cloud session (CLOUD) also refuse one on a base without GitHub's merge queue (`queue`, which merges and signs
-    each PR itself) and without `land.signed_squash_to`, since otherwise GitHub's own merge is GraphQL there and signs
-    with GitHub's key. On a base without the queue refuse there too one whose `signing_key_env` variable is unset, empty or holds a key the allowed
-    signers lack; else hold that key (armoured(), if a one-line variable stripped its armour) in a mode-0600 file in
+    A cloud session (CLOUD) on a base without GitHub's merge queue (`queue`, which merges and signs each PR itself) and
+    without `land.signed_squash_to` holds no key: GitHub's merge, over REST there, signs with GitHub's key. With
+    `land.signed_squash_to` refuse a land with no `ssh-keygen` installed, and one whose `signing_key_env` variable is
+    unset, empty or holds a key the allowed signers lack; else hold that key (armoured(), if a one-line variable stripped its armour) in a mode-0600 file in
     a fresh temporary directory, removed whatever happens, and sign each squash with it (SIGNING). The key and the variable's value are never printed."""
     global SIGNING
     land, cloud = settings(loop).get("land"), in_cloud()
@@ -3001,15 +3018,12 @@ def placed(loop: str | None, queue: bool = False) -> Any:
     where = LAND_WHERE.aliases.get(where, where)
     if where not in ("both", "cloud" if cloud else "host"):
         raise Refused(f"loop.md's `land.where` is `{where}`, so land does not run in {place}")
-    if cloud and not queue and not (land or {}).get("signed_squash_to"):
-        raise Refused(
-            "land in a cloud session needs a base that requires GitHub's merge queue, or loop.md's"
-            " `land.signed_squash_to`: otherwise GitHub merges, over GraphQL, which the session's proxy refuses, and"
-            " signs with GitHub's key"
-        )
-    if not cloud or queue:
+    # a cloud land without `signed_squash_to` merges over REST, which GitHub signs: no key is held
+    if not cloud or queue or not (land or {}).get("signed_squash_to"):
         yield
         return
+    if not shutil.which("ssh-keygen"):
+        raise Refused(NO_KEYGEN)
     name = land.get("signing_key_env")
     if not name:
         raise Refused(
@@ -3135,6 +3149,8 @@ def signed_squash(pull: dict[str, Any], signers: Path, onto: tuple[str, str] | N
     base. The head must be the one the gates checked and contain the base's tip, so the squash undoes nothing; with
     `onto` (a commit and a tree, from land's batch), the base's tip must be that commit and the squash holds that
     tree, the merge of the head the batch gated."""
+    if not shutil.which("ssh-keygen"):
+        raise Refused(NO_KEYGEN)
     pr, base, branch, head = (
         pull["number"],
         pull["baseRefName"],
@@ -3936,7 +3952,313 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
         # the owner's go names this PR, so the hold it waited on is theirs to lift; the delegate's never is
         label(number, NEEDS_OWNER, add=False)
         print(f"PR #{number}: `{NEEDS_OWNER}` removed, since the owner's go names it")
+    hand_over(number)
     return 0
+
+
+# The break-glass land (#1722): the owner approves one exact head with a red or missing required check, and land
+# verifies the proof from run data and leaves the merge to the owner's own bypass in the GitHub UI. The status context
+# and the `Approved:` record's point are one name.
+BREAKGLASS = "breakglass"
+# the first line of the proof comment (breakglass_proof): run ids and, once verified, how each failed test was classified
+PROOF = "Break-glass proof"
+# hours an approval lasts when the owner names no `--expires`
+BREAKGLASS_HOURS = 48
+# the proof's windows when the policy sets none: runs and heads older than 7 days or 20 commits count for nothing, and at
+# least 2 earlier green runs show the suite was healthy
+BREAKGLASS_AGE, BREAKGLASS_COMMITS, BREAKGLASS_EARLIER = "7d", 20, 2
+# the Actions artifact `qualify` publishes (JSON `{"failed": [test ids], "selected": [test ids]}`) that the proof reads
+BREAKGLASS_ARTIFACT = "failed-tests"
+ISO = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def parse_time(text: str) -> datetime | None:
+    """An ISO 8601 time as an aware datetime (UTC where it names no zone), None when it is none."""
+    try:
+        found = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return found if found.tzinfo else found.replace(tzinfo=timezone.utc)
+
+
+def breakglass_settings(loop: str | None) -> dict[str, Any]:
+    """The policy's `breakglass` section with its defaults: `max_age` as a timedelta, `max_commits`, `smoke` (the gate
+    command, else `check-land`), `earlier_runs`, and the `artifact` name."""
+    found = settings(loop)
+    given = found.get(BREAKGLASS, {})
+    age = str(given.get("max_age", BREAKGLASS_AGE)).strip()
+    if not (unit := re.fullmatch(r"(\d+)([dh])", age)):
+        raise Refused(
+            f"{source(loop)}'s `breakglass.max_age` is {age!r}: write it as `7d` or `12h`"
+        )
+    span = timedelta(**{"days" if unit[2] == "d" else "hours": int(unit[1])})
+    return {
+        "max_age": span,
+        "max_commits": given.get("max_commits", BREAKGLASS_COMMITS),
+        "smoke": given.get("smoke") or found.get("gate") or "check-land",
+        "earlier_runs": given.get("earlier_runs", BREAKGLASS_EARLIER),
+        "artifact": given.get("artifact", BREAKGLASS_ARTIFACT),
+    }
+
+
+def fields(body: str) -> dict[str, str]:
+    """The lower-cased `Key: value` lines under a comment's first line, as a parser reads it (machine)."""
+    return {
+        key.strip().lower(): value.strip()
+        for key, _, value in (
+            line.partition(":") for line in machine(body).strip().splitlines()[1:]
+        )
+    }
+
+
+def proofs_on(pull: dict[str, Any], head: str) -> list[dict[str, Any]]:
+    """The proof comments (breakglass_proof) that name `head`, oldest first."""
+    return [
+        note
+        for note in notes(pull)
+        if (machine(note["body"]).strip().splitlines() or [""])[0].strip() == PROOF
+        and fields(note["body"]).get("head", "").lower() == head.lower()
+    ]
+
+
+def proof_hash(note: dict[str, Any]) -> str:
+    """The sha256 of a proof comment's text as a parser reads it (machine), which an edit changes."""
+    return hashlib.sha256(machine(note["body"]).strip().encode()).hexdigest()
+
+
+def breakglass_post(number: int, head: str) -> dict[str, Any]:
+    """PR #number as the break-glass verbs may act on it: open, at `head`, which is then the full SHA."""
+    pull = pull_request(number)
+    if pull["state"] != "OPEN":
+        raise Refused(f"PR #{number} is {pull['state'].lower()}: nothing to approve")
+    if pull["headRefOid"].lower() != head.lower():
+        raise Refused(
+            f"PR #{number}'s head is {pull['headRefOid']}, not {head}: ask about the head it has now"
+        )
+    return pull
+
+
+def breakglass(
+    number: int, head: str, reason: str, expires: str | None = None, withdraw: bool = False
+) -> int:
+    """approve breakglass: the owner's word that this exact head may land with a red or missing required check, once
+    land verifies the proof (breakglass_verify): the status BREAKGLASS on the commit and a record naming the head, the
+    hash of the newest proof comment on it and when it lapses. Owner only: the caller refuses `--by delegate`, and a
+    record counts only when the status and the comment are the owner's login's (standing). `withdraw` posts a newer
+    failing status and a `Withdrawn: breakglass` record. A head that moved is refused; a push voids the approval."""
+    pull = breakglass_post(number, head)
+    head = pull["headRefOid"]
+    if withdraw:
+        post_status(
+            head, BREAKGLASS, f"The owner withdrew their break-glass on {head[:12]}", "failure"
+        )
+        comment(
+            number,
+            fold(
+                f"Withdrawn: {BREAKGLASS}",
+                f"The owner withdrew their break-glass on {head[:7]}.",
+                f"By: owner\nHead: {head}",
+            ),
+        )
+        print(f"PR #{number}: the owner's break-glass on {head} is withdrawn")
+        return 0
+    if not re.fullmatch(r"[0-9a-f]{40}", head.lower()) or head.lower() != head:
+        raise Refused(f"PR #{number}: break-glass pins the full 40-character head, got {head}")
+    if "\n" in reason or not reason.strip():
+        raise Refused("approve breakglass --reason is one line")
+    if not (found := proofs_on(pull, head)):
+        raise Refused(
+            f"PR #{number} has no `{PROOF}` comment on {head}: post one first"
+            " (approvals.py breakglass-proof), since the owner's record pins its hash"
+        )
+    until = parse_time(expires) if expires else utcnow() + timedelta(hours=BREAKGLASS_HOURS)
+    if until is None or until <= utcnow():
+        raise Refused(f"--expires {expires!r} is no future ISO 8601 time")
+    post_status(head, BREAKGLASS, f"The owner's break-glass on {head[:12]}")
+    comment(
+        number,
+        fold(
+            VOICED["owner"],
+            f"Break-glass for {head[:7]}.",
+            f"Approved: {BREAKGLASS}\nBy: owner\nHead: {head}\nProof: {proof_hash(found[-1])}\n"
+            f"Expires: {until.astimezone(timezone.utc).strftime(ISO)}\nReason: {reason.strip()}",
+        ),
+    )
+    print(f"PR #{number}: the owner's break-glass is on {head}, until {until.strftime(ISO)}")
+    return 0
+
+
+def breakglass_proof(
+    number: int,
+    head: str,
+    failed: int,
+    rerun: int | None,
+    smoke: int | None,
+    earlier: list[int],
+) -> int:
+    """breakglass-proof: the proof comment for `head`, which any writer or agent posts. It names run ids only; the
+    owner's record pins its hash, and land reads every item from GitHub's runs, never from these words."""
+    pull = breakglass_post(number, head)
+    head = pull["headRefOid"]
+    lines = [f"Head: {head}", f"Failed-run: {failed}"]
+    if rerun is not None:
+        lines.append(f"Rerun: {rerun}")
+    if smoke is not None:
+        lines.append(f"Smoke: {smoke}")
+    if earlier:
+        lines.append(f"Earlier-runs: {', '.join(map(str, earlier))}")
+    url = comment(
+        number,
+        fold(
+            PROOF,
+            f"Run ids for the break-glass on {head[:7]}; land reads each from GitHub's runs.",
+            "\n".join(lines),
+        ),
+    )
+    print(f"PR #{number}: proof posted for {head}: {url}")
+    return 0
+
+
+class Standing(NamedTuple):
+    """What the PR holds of the owner's break-glass on its head: `held`, whether anyone wrote a record or status (else the
+    PR is judged as it was before break-glass); `why`, a line per gap, none when the approval is current; the owner's
+    `record` and the `proof` comment it pins."""
+
+    held: bool
+    why: list[str]
+    record: dict[str, str] | None = None
+    proof: dict[str, Any] | None = None
+
+
+def standing(pull: dict[str, Any], loop: str | None) -> Standing:
+    """The owner's break-glass on the PR's head (section 1 and the refusals of section 5 that need no run): the newest
+    `breakglass` status by the owner's login (loop.owner) is green, the record names the head with `By: owner` in the
+    owner's own comment, it has not lapsed, and the proof comment still hashes to what it pins. Any other login's
+    status, record or `--by` counts for nothing and is named."""
+    head, where = pull["headRefOid"], f"PR #{pull['number']}"
+    found = [
+        (note, record)
+        for note in notes(pull)
+        if (record := parsed(note["body"], BREAKGLASS)) is not None
+    ]
+    try:
+        marks = [s for s in statuses(head) if s.get("context") == BREAKGLASS]
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        return Standing(bool(found), [f"{where}: GitHub's statuses on {head} can't be read"])
+    if not found and not marks:
+        return Standing(False, [])
+    owner = str(settings(loop).get("owner") or "").lower()
+    if not owner:
+        return Standing(
+            True,
+            [f"{where}: the policy sets no `loop.owner`, so no login is the owner's break-glass"],
+        )
+    why = []
+    theirs = [s for s in marks if str((s.get("creator") or {}).get("login")).lower() == owner]
+    if not theirs:
+        by = (marks[0].get("creator") or {}).get("login") if marks else None
+        why.append(
+            f"{where}: no `{BREAKGLASS}` status on {head} by the owner {owner}"
+            + (f" (the one there is {by}'s)" if by else "")
+        )
+    elif theirs[0].get("state") != "success":
+        why.append(f"{where}: the owner's break-glass on {head} is withdrawn")
+    on_head = [
+        (note, record) for note, record in found if record.get("head", "").lower() == head.lower()
+    ]
+    owned = [
+        (note, record)
+        for note, record in on_head
+        if record.get("by") == "owner"
+        and str((note.get("author") or {}).get("login")).lower() == owner
+    ]
+    if not owned:
+        if on_head:
+            by = ", ".join(
+                sorted(
+                    {
+                        f"By: {r.get('by')}, comment by {(n.get('author') or {}).get('login')}"
+                        for n, r in on_head
+                    }
+                )
+            )
+            why.append(
+                f"{where}: the `Approved: {BREAKGLASS}` record on {head} is not the owner's ({by})"
+            )
+        elif found:
+            why.append(
+                f"{where}: the owner's break-glass names {found[-1][1].get('head', 'no head')}, not the head {head}:"
+                " a push voids it"
+            )
+        else:
+            why.append(f"{where}: no `Approved: {BREAKGLASS}` record names {head}")
+        return Standing(True, why)
+    record = owned[-1][1]
+    until = parse_time(record.get("expires", ""))
+    if until is None or until <= utcnow():
+        why.append(
+            f"{where}: the owner's break-glass on {head} lapsed at {record.get('expires') or 'no time'}"
+        )
+    pinned = [note for note in proofs_on(pull, head) if proof_hash(note) == record.get("proof")]
+    if not pinned:
+        edited = bool(proofs_on(pull, head))
+        why.append(
+            f"{where}: the proof comment on {head} "
+            + (
+                "was edited after the owner approved it (its hash no longer matches their record)"
+                if edited
+                else "is missing"
+            )
+        )
+    return Standing(True, why, record, pinned[-1] if pinned else None)
+
+
+class Covered(NamedTuple):
+    """breakglass_cover's answer: the lines that still hold the merge, and the lines to say beside them."""
+
+    lines: list[str]
+    said: list[str]
+
+
+# a line ci() writes for a required check that is red, or one the head lacks, which a break-glass may cover; a pending
+# one, or a head with more checks than one page, is nothing it covers
+CI_RED = re.compile(r": `([^`]+)` is (\w+) on the head commit$")
+CI_MISSING = re.compile(r": no `([^`]+)` on the head commit yet")
+
+
+def breakglass_cover(pull: dict[str, Any], loop: str | None, lines: list[str]) -> Covered:
+    """ci()'s lines for the head, as they stand with the owner's break-glass: with a current approval (standing) and
+    every line a required check red or missing, none, and a line saying so; with a record that is no approval, the
+    lines and what is wrong with it; with no record or status, or a pending check among the lines, the lines as they
+    were. Every other proof stays required: this replaces the green gate and nothing else."""
+    if not lines or no_ci(loop):
+        return Covered(lines, [])
+    names: dict[str, str] = {}
+    for line in lines:
+        if red := CI_RED.search(line):
+            if red[2].upper() not in RED:
+                return Covered(lines, [])
+            names[red[1]] = "red"
+        elif missing := CI_MISSING.search(line):
+            names[missing[1]] = "missing"
+        else:
+            return Covered(lines, [])
+    stand = standing(pull, loop)
+    if not stand.held:
+        return Covered(lines, [])
+    if stand.why:
+        return Covered(lines + stand.why, [])
+    what = ", ".join(f"`{name}` {state}" for name, state in names.items())
+    return Covered(
+        [],
+        [
+            f"PR #{pull['number']}: required check {what}; break-glass approved by the owner on {pull['headRefOid']}"
+        ],
+    )
 
 
 def changed_lines(patch: str) -> list[tuple[list[str], list[str]]]:
@@ -4969,6 +5291,8 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
     """`check <point>`: with a PR, under the policy of the base it merges onto (policy_from), else the default
     branch's."""
     toplevel()  # outside a checkout, refused before GitHub is asked
+    if point == "stalled":
+        return stalled()
     if point == "build":
         full_check_line()
     if issue is not None:
@@ -5034,7 +5358,8 @@ def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
     found, issues = gated(point, pull, tracker, loop)
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
-    waiting = waits(pull, issues, loop) if point == "merge" else []
+    covered = breakglass_cover(pull, loop, ran(pull, loop)) if point == "merge" else Covered([], [])
+    waiting = waits(pull, issues, loop, checks=covered.lines) if point == "merge" else []
     rated = rating(pull, issues, loop) if point == "merge" else None
     if rated is not None:
         # on stderr, so the lines a workflow or a lead reads as the gate's answer stay what holds the merge
@@ -5043,7 +5368,7 @@ def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
         whose(pull, loop)
         if rated is not None and not found and not waiting and rated.merge != "gates"
         else []
-    )
+    ) + covered.said
     # advice, so it prints whatever else holds the merge and changes no exit code
     advice = (
         [f"PR #{pull['number']}: {said}"] if point == "merge" and (said := unforced(pull)) else []
@@ -7156,6 +7481,61 @@ def queued_here(head: str) -> bool:
     return bool(found) and found.get("state") == "success"
 
 
+def hand_over(number: int) -> None:
+    """The end of `approve merge` and `record verdict` under `land.queue: mergify`: when `check merge` passes on the PR's
+    head, land it (`land --only`, so the hand-over is mergify_step's, and a PR already queued at its head is left
+    alone); when something is still missing, print what it is (checked) and queue nothing. A draft, a closed PR and a
+    base with another queue are left to `land`, as before. The record is already written, so a refusal here changes
+    no exit code."""
+    pull = pull_request(number)
+    if pull["state"] != "OPEN" or pull["isDraft"]:
+        return
+    with policy_from(pull["baseRefName"]):
+        if not mergify(project()[1]):
+            return
+        if checked("merge", pull, None):
+            print(f"PR #{number} is not queued: what is missing is above")
+            return
+        if landing([number], only=True)[0]:
+            print(f"PR #{number} is not queued: what holds it is above")
+
+
+def stalled() -> int:
+    """`check stalled`: each open PR into a base whose policy names Mergify that `landable` finds a candidate (its go on
+    its head, every proof, a satisfied verdict) and that is neither queued at its head (QUEUED and a `land` success
+    there, queued_here) nor merged: a `land` that was stopped or died left it. One line each, and exit 1 when any
+    is listed, so a sweep can queue it (`land <n> --only`) or flag it; judged as `land` judges, and written nowhere."""
+    bases: dict[str, tuple[str | None, str | None, set[str]] | None] = {}
+    found = []
+    for listed in sorted(open_pulls(), key=lambda each: each["number"]):
+        if listed["isDraft"]:
+            continue
+        base = listed["baseRefName"]
+        if base not in bases:
+            with policy_from(base):
+                tracker, loop = project()
+                if mergify(loop):
+                    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+                    bases[base] = (tracker, loop, required_checks(base) - OWN)
+                else:
+                    bases[base] = None
+        if (known := bases[base]) is None:
+            continue
+        pull = pull_request(listed["number"])
+        with policy_from(base):
+            judge_with_base(base)
+            with contextlib.redirect_stdout(io.StringIO()):
+                judged = landable(pull, known[0], known[1], known[2])
+        head = pull["headRefOid"]
+        if judged.exit is None and not (QUEUED in names(pull) and queued_here(head)):
+            found.append(
+                f"PR #{pull['number']} has its go and a satisfied verdict at {head} and is not queued"
+            )
+    for line in found:
+        print(line)
+    return 1 if found else 0
+
+
 def mergify_step(pull: dict[str, Any]) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
@@ -8216,6 +8596,7 @@ def verdict(pr: int, report: Path) -> int:
         ),
     )
     post_review(pr, {"commit_id": head, "event": "COMMENT", "body": summary, "comments": comments})
+    hand_over(pr)
     return 0
 
 
@@ -10609,7 +10990,7 @@ def main(argv: list[str]) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser("check")
-    checking.add_argument("point", choices=("build", "merge", "queue", "ready", "setup"))
+    checking.add_argument("point", choices=("build", "merge", "queue", "ready", "setup", "stalled"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--head")
     checking.add_argument("--issue", type=int)
@@ -10622,7 +11003,7 @@ def main(argv: list[str]) -> int:
     # `record`: the evidence the gate reads, written: an approval, a verdict, a check pass
     records = commands.add_parser("record").add_subparsers(dest="kind", required=True)
     approving = records.add_parser("approval")
-    approving.add_argument("point", choices=(*POINTS, "merge"))
+    approving.add_argument("point", choices=(*POINTS, "merge", BREAKGLASS))
     approving.add_argument("number", type=int)
     # an agent never approves: a record is a person's word, and the owner's policy in loop.md covers the rest; a
     # merge's go may be the delegated approver's, under the owner's delegation
@@ -10630,6 +11011,16 @@ def main(argv: list[str]) -> int:
     # merge only: the head the approver was shown, and their go taken back
     approving.add_argument("--head")
     approving.add_argument("--withdraw", action="store_true")
+    # breakglass only: why, and when the approval lapses (ISO 8601; default two days on)
+    approving.add_argument("--reason")
+    approving.add_argument("--expires")
+    proving = commands.add_parser("breakglass-proof")
+    proving.add_argument("pr", type=int)
+    proving.add_argument("--head", required=True)
+    proving.add_argument("--failed-run", type=int, required=True)
+    proving.add_argument("--rerun", type=int)
+    proving.add_argument("--smoke", type=int)
+    proving.add_argument("--earlier", type=int, nargs="*", default=[])
     delegating = commands.add_parser("delegate")
     delegating.add_argument("pr", type=int)
     posting = records.add_parser("verdict")
@@ -10711,6 +11102,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused(
                 "check queue takes a PR number and --head <sha>, the head the queue would merge"
             )
+        if args.point == "stalled" and (args.pr is not None or args.issue is not None):
+            raise Refused("check stalled takes no PR: it lists every open PR")
         if args.point != "queue" and args.head is not None:
             raise Refused("--head goes with check queue only")
         if args.issue is not None and (args.point != "build" or args.pr is not None):
@@ -10721,6 +11114,22 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "batch":
         deprecated("batch")
         return batch(args.pr, args.merge, args.batch, args.exit, args.log)
+    if args.command == "breakglass-proof":
+        return breakglass_proof(
+            args.pr, args.head, args.failed_run, args.rerun, args.smoke, args.earlier
+        )
+    if args.command == "approve" and args.point == BREAKGLASS:
+        if args.by != "owner":
+            raise Refused(
+                "approve breakglass is the owner's alone: `--by owner`, and `loop.delegate: all` never covers it"
+            )
+        if not args.head:
+            raise Refused(
+                "approve breakglass needs --head <full-sha>: the head the owner was shown"
+            )
+        if not args.withdraw and not args.reason:
+            raise Refused("approve breakglass needs --reason <one line>")
+        return breakglass(args.number, args.head, args.reason or "", args.expires, args.withdraw)
     if args.command == "approve":
         if args.point != "merge" and (args.head or args.withdraw):
             raise Refused("--head and --withdraw belong to `approve merge`")

@@ -306,7 +306,7 @@ class FakeOmnigent:
         self.interrupted.append(sid)
 
     def children(self, sid: str) -> list[str]:
-        return list(self.kids)
+        return [] if sid in self.kids else list(self.kids)  # a sub-agent has none of its own
 
     def label(self, sid: str, labels: dict[str, str]) -> None:
         self.labels.setdefault(sid, {}).update(labels)
@@ -5175,7 +5175,7 @@ def test_reap_finishes_done_children_and_keeps_the_busy_ones() -> None:
     }
     og = FakeOmnigent()
     og.info = lambda s: dict(states[s], title=f"t-{s}")  # type: ignore[method-assign]
-    og.children = lambda p: list(states)  # type: ignore[attr-defined]
+    og.children = lambda p: list(states) if p == "p" else []  # type: ignore[attr-defined]
     lines, failed = omnigent_agent.reap(og, [], parent="p")
     assert not failed
     assert og.archived == ["idle", "failed"]
@@ -5630,6 +5630,7 @@ class Fleet:
         self.offline: set[str] = set()
         self.refuse = 0
         self.labels: list[tuple[str, dict]] = []  # each label write
+        self.archived: list[str] = []  # each session finished once its result was told
         self.unlabelled = 0  # the next label writes that fail
         self.files: dict[str, str] = {}  # what read_file finds, by path
         self.written: dict[str, float | Exception] = {}  # what modified finds (or raises), by path
@@ -5678,6 +5679,12 @@ class Fleet:
 
     def hosts(self) -> dict[str, str]:
         return {"h": "here"}
+
+    def archive(self, sid: str) -> None:
+        self.archived.append(sid)
+
+    def children(self, sid: str) -> list[str]:
+        return []
 
     def label(self, sid: str, labels: dict[str, str]) -> None:
         if self.unlabelled:
@@ -5773,7 +5780,7 @@ def test_a_session_added_to_the_registry_between_polls_is_supervised_from_the_ne
     og = Fleet(a=[told("brief", 60)], b=[told("brief", 60)])
     with_b = lambda poll: registry.write_text(registry.read_text() + f"b={report}\n")
     supervised(og, registry, monkeypatch, 2, with_b)
-    assert og.reads == ["a", "a", "b"]
+    assert og.reads == ["a", "a", "b", "b"]  # the last one the finish of b, whose report is told
     assert re.fullmatch(f"{STAMP}b t-b: report written: {report}\n", capsys.readouterr().out)
 
 
