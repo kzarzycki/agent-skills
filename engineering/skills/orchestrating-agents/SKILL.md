@@ -23,7 +23,7 @@ Each file gives the backend's operations: **start** a child with its brief, **me
 it, **wait** for its report, **watch** children nothing waits on, **list** them and
 **close** them; Omnigent's also **approves** a child's pending approval prompt
 (`approve`), on whatever authority the project's instructions give, and **broadcasts** one
-message to many sessions at once (`broadcast`); a read-only step on another host (a log, a status) runs over SSH through `ssh --why`, which turns the host's SSH
+message to many sessions at once (`broadcast`); a step on another host runs over SSH through `ssh --why`, which turns the host's SSH
 check into an owner card; a long-lived supervisor runs as a user
 service that restarts it and survives a reboot (`supervise --registry <file> --install --log <file>`). A `scripts/` path is relative to this skill's folder; run it with
 `python3` (standard library only).
@@ -55,14 +55,4 @@ service that restarts it and survives a reboot (`supervise --registry <file> --i
   A run that ended failed, cancelled or errored counts as finished too; an `omnigent.keep` label holds
   nothing, since only an open card keeps a session; and archiving a parent finishes its children, bar one
   that is running, holds a card or is kept.
-- **Work for a host runs in a session on that host.** A build, a test run, a gate, a land or a
-  `git push` for another machine runs in an agent session started there (the backend's start, on
-  Omnigent `start --host <host>`), or in a Claude cloud session when no particular machine is
-  needed (`claude-cloud-run`), never as `ssh <host> <command>` from a session elsewhere: the
-  session stays visible, resumable and on the owner's board, while an ssh run is tracked by
-  nothing and its output lives only in the caller's context. A merge queue's `land` (Mergify's)
-  and `record verdict` only call the forge's API, so they run in your own session, wherever it is.
-  Reading a host's state over ssh stays allowed (a log's `cat` or `tail`, `git log`, `git status`,
-  `git rev-parse`, `/proc/loadavg`, `ps`), since it ends at once and leaves no run to track. The
-  engineering pack's PreToolUse hook (`hooks/remote_run_guard.py`) refuses the rest in Claude Code,
-  in a host session and a cloud one alike, with no bypass, since the replacement always exists.
+- **Work for a host runs in a session on that host.** A build, test run, gate, land or `git push` for another machine runs in an agent session on that host or in a Claude cloud session, never over `ssh` from another session, so it stays visible, resumable and on the owner's board; a Mergify `land` and `record verdict` only call the GitHub API, so they run in your own session, wherever it is.

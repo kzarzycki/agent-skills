@@ -8,11 +8,6 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/heavy_run_guard.py\"",
             "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/remote_run_guard.py\"",
-            "timeout": 10
           }
         ]
       }

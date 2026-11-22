@@ -285,11 +285,8 @@ reported it, and `reasoning_effort`), since a Codex child's rollout sits under a
 `AGENT_SIGNATURE=` line `start` puts atop a brief names the model the server took for the session (its
 `model_override`, `?` for the harness default), never the id asked for.
 
-**Host steps over SSH.** Run a read-only step on another host (a log, a status, a load check) as `python3
-scripts/omnigent_agent.py ssh <host> --why <purpose> -- <command...>`, never a bare `ssh`; a build, test, gate,
-land or `git push` there is a session started on that host (`start --host <host>`) or a `claude-cloud-run`,
-never this call, since orchestrating-agents' rule *Work for a host runs in a session on that host* keeps it on
-the owner's board, and the engineering pack's `hooks/remote_run_guard.py` refuses it. Use this call, not a bare `ssh`, since a host whose SSH layer asks the owner to approve each
+**Host steps over SSH.** Run a step on another host as `python3 scripts/omnigent_agent.py ssh <host> --why
+<purpose> -- <command...>`, never a bare `ssh`, since a host whose SSH layer asks the owner to approve each
 connection (an SSH check) shows the owner a login link with no word of who asks or why. It runs `ssh -o
 BatchMode=yes <host> <command>` (one word after `--` is a shell command as written; several are joined as
 argv, quoted for the remote shell) and passes its output and exit code through. When ssh prints the check's
