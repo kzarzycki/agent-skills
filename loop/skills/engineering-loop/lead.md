@@ -447,7 +447,11 @@ it ends its turn with its report in: by Omnigent's notice when the child is your
 subscribe to it, else by the command's `--notify` line, which also reports every other ending (a
 timeout, a failure) (orchestrating-agents' backends/omnigent.md, One wake per child). Don't poll or
 `watch` it for the other. Without `--notify`, expect Omnigent's notice and the command's exit both.
-Your own long runs (a gate, a land, a live check) start detached the same way (verifier.md, A long or locked run is detached)
+Your own long runs (a build, a test, a gate, a land, a live check) end in something that wakes you, since a harness
+re-invokes a session only for its own tracked background tasks and a detached pid is none
+(orchestrating-agents, A wait wakes you, or you stay in the turn): a harness-tracked background task, a
+detached run with `LOOP_NOTIFY` set, or a `wait-for` in the same turn; never a turn ended on "waiting on pid N"
+or a log, which the supervisor nudges. Detached, they start the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, since Claude Code's low-memory reaper stops
 in-session background shells. Start each with `LOOP_NOTIFY` naming your session (omnigent-agents'
 SKILL.md, Waiting on a run or a PR), so its wrapper's `wait-for --notify` step tells you

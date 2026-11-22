@@ -416,6 +416,24 @@ LEAD_NUDGE_CLOUD = (
     " (never your own background run), or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
 )
+# A STILL WORKING whose wait is a process the harness does not track (#1753): only the harness's
+# own background tasks wake a session when they exit, so a detached pid or its log never does.
+LEAD_UNTRACKED = (
+    "Supervisor: your turn ended waiting on a process the harness does not track (a pid or a log),"
+    " so its exit wakes nobody. Check whether it has ended; if not, wait on it in this turn with"
+    " `omnigent_agent.py wait-for --log <log> --pid <pid file>`, calling it again on `still running`,"
+    " or restart it as a harness-tracked background task, or detached with LOOP_NOTIFY set. Then"
+    " end your turn with DONE, STILL WORKING naming what wakes you, or USER NEEDED."
+)
+UNTRACKED_WHY = "waits on an untracked process"
+# Its wait, said right after "waiting on": a pid (``pid 4242``, a pid file) or a log or pid path;
+# a run that notifies is tracked.
+UNTRACKED = re.compile(
+    r"\bwait(?:s|ing)?\s+(?:on|for)\b[^.;\n]{0,40}?"
+    r"(?:\bpids?\b\s*[:#]?\s*`?\d+|\bpid[ -]file\b|[\w./~-]+\.(?:log|pid)\b)",
+    re.IGNORECASE,
+)
+NOTIFIES = re.compile(r"--notify\b|\bLOOP_NOTIFY\b")
 # A timed wait's time passed with no progress since: nothing else wakes an idle lead at its time.
 LEAD_WAKE = (
     "Supervisor: the time your STILL WORKING named, {time}, has passed. Check what you wait on and"
@@ -7473,6 +7491,20 @@ def waits_on(text: str, lead: dict, notify: str | None, event: bool = False) -> 
     return start >= 0 and bool(SUPERVISOR_WAIT.search(text[start:]) or COS_LINE.search(text))
 
 
+def untracked_wait(text: str) -> bool:
+    """Whether a lead's ``STILL WORKING`` waits on a process the harness does not track: its text
+    from ``STILL WORKING`` on says it waits on a pid or a log or pid file, names no ``--notify`` or
+    ``LOOP_NOTIFY`` (a wrapper that tells the session), and names no wait that wakes it by itself:
+    no ``Waits:`` trailer, which names the wait exactly, and no child session, verifier, worker,
+    lead or CI (#1753)."""
+    if (start := text.find("STILL WORKING")) < 0 or trailer_of(text) or WAIT.search(text):
+        return False
+    if named_of(text):
+        return False
+    wait = FENCE.sub("", text[start:])
+    return bool(UNTRACKED.search(wait)) and not NOTIFIES.search(wait)
+
+
 def waits(wait: str) -> str:
     """A named wait as words: ``waits until <time>`` or ``waits on <wait>``."""
     return f"waits {wait}" if wait.startswith("until ") else f"waits on {wait}"
@@ -7578,6 +7610,10 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if ending == "DONE":
             return "rule", "done", "done, driven by the owner: told only to the leads waiting on it"
         return "rule", "record", "the owner drives it directly: they read its turn there"
+    if untracked_wait(text):  # before ``repeat``: the same words after its nudge escalate
+        if event.get("nudged"):
+            return "rule", "act", f"{UNTRACKED_WHY} again after its nudge"
+        return "rule", "nudge", f"{UNTRACKED_WHY}: nothing wakes it when that ends"
     if event.get("nudged") and not ending and wait == "unknown":  # its last words, unchanged
         return "rule", "act", "quiet again after its nudge"
     if event.get("repeat"):
@@ -8071,6 +8107,8 @@ def supervise_registry(
             lead.update(nudges=lead.get("nudges", 0) + 1, nudged_at=lead.get("progress_at"))
             text = LEAD_WAKE.format(time=lead["wait"].removeprefix("until "))
             nudge = LEAD_NUDGE_CLOUD if cloud_session(og, info) else LEAD_NUDGE
+            if why.startswith(UNTRACKED_WHY):
+                nudge = LEAD_UNTRACKED
             act_on(eid, [(sid, action, nudge if action == "nudge" else text)])
         elif action == "revive":
             if kind == "failed":  # its one revive after a failure; a lost runner is no failure
