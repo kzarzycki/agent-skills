@@ -9,6 +9,7 @@ session's proxy does. Reads return GitHub's GraphQL node shapes (ISSUE, PULL), w
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import random
@@ -16,6 +17,7 @@ import re
 import subprocess
 import sys
 import time
+import zipfile
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -39,7 +41,7 @@ def denied(text: str) -> None:
 WRITE = {"admin", "maintain", "write"}
 
 
-NOTE = "id author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
+NOTE = "id url author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
 
 
 SPECCED = f"number state body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
@@ -1149,6 +1151,64 @@ def merge(number: int, method: str, body: str | None, head: str) -> None:
     )
 
 
+def run_info(run: int) -> dict[str, Any]:
+    """Actions run `run` as GitHub's REST API reads it: its repository, workflow, head commit, conclusion and times."""
+    found: dict[str, Any] = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/actions/runs/{run}"))
+    return found
+
+
+def run_jobs(run: int) -> list[dict[str, Any]]:
+    """The jobs of Actions run `run`, each with its name, conclusion and steps."""
+    return rest_pages(f"actions/runs/{run}/jobs?per_page=100", ".jobs[]")
+
+
+def workflow_runs(
+    workflow: int, branch: str | None = None, head: str | None = None
+) -> list[dict[str, Any]]:
+    """The newest 100 completed runs of workflow `workflow`, on `branch` or on the commit `head`, newest first."""
+    query = "status=completed&per_page=100" + (f"&branch={branch}" if branch else "")
+    query += f"&head_sha={head}" if head else ""
+    found: list[dict[str, Any]] = json.loads(
+        gh("api", f"repos/{{owner}}/{{repo}}/actions/workflows/{workflow}/runs?{query}")
+    )["workflow_runs"]
+    return found
+
+
+def run_artifact(run: int, name: str) -> dict[str, Any] | None:
+    """The JSON file inside run `run`'s artifact `name` (its first `.json` member), None when the run has no such
+    artifact or it holds no JSON. ponytail: the newest 100 artifacts of the run, one zip downloaded."""
+    listed = json.loads(
+        gh("api", f"repos/{{owner}}/{{repo}}/actions/runs/{run}/artifacts?per_page=100")
+    )
+    wanted = [a for a in listed["artifacts"] if a["name"] == name and not a.get("expired")]
+    if not wanted:
+        return None
+    done = subprocess.run(
+        ["gh", "api", f"repos/{{owner}}/{{repo}}/actions/artifacts/{wanted[0]['id']}/zip"],
+        check=True,
+        capture_output=True,
+    )
+    with zipfile.ZipFile(io.BytesIO(done.stdout)) as archive:
+        for member in archive.namelist():
+            if member.endswith(".json"):
+                found = json.loads(archive.read(member))
+                return found if isinstance(found, dict) else None
+    return None
+
+
+def compare(base: str, head: str) -> dict[str, Any]:
+    """How `head` stands against `base`: `status` (`ahead`, `behind`, `identical`, `diverged`), `ahead_by`, `behind_by`."""
+    found: dict[str, Any] = json.loads(
+        gh(
+            "api",
+            f"repos/{{owner}}/{{repo}}/compare/{base}...{head}?per_page=1",
+            "--jq",
+            "{status, ahead_by, behind_by}",
+        )
+    )
+    return found
+
+
 def edit_text(method: str, path: str, body: str) -> None:
     """Replace the body of a PR, a comment or a review: `method` (PATCH, or PUT for a review) on the REST `path`
     (`{owner}` and `{repo}` filled by gh), with `body` as the text."""
@@ -1345,6 +1405,11 @@ forge = Port(
     "enqueue_pull",
     "dequeue_pull",
     "commit_checks",
+    "run_info",
+    "run_jobs",
+    "workflow_runs",
+    "run_artifact",
+    "compare",
     "job_log",
     "commit_tree",
     "repo_tags",

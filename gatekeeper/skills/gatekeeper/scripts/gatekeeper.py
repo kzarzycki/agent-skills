@@ -4098,8 +4098,9 @@ def breakglass_proof(
     smoke: int | None,
     earlier: list[int],
 ) -> int:
-    """breakglass-proof: the proof comment for `head`, which any writer or agent posts. It names run ids only; the
-    owner's record pins its hash, and land reads every item from GitHub's runs, never from these words."""
+    """breakglass-proof: the proof comment for `head`, which any writer or agent posts. It names run ids, and under
+    them what verifying them found (each failed test's classification, with its run links), posted only when every item
+    holds. The owner's record pins its hash, and land reads every item from GitHub's runs again, never from these words."""
     pull = breakglass_post(number, head)
     head = pull["headRefOid"]
     lines = [f"Head: {head}", f"Failed-run: {failed}"]
@@ -4109,12 +4110,24 @@ def breakglass_proof(
         lines.append(f"Smoke: {smoke}")
     if earlier:
         lines.append(f"Earlier-runs: {', '.join(map(str, earlier))}")
+    heading = f"Run ids for the break-glass on {head[:7]}; land reads each from GitHub's runs."
+    # the proof as land will read it, so a refusal is said before the owner is asked to pin it
+    with policy_from(pull["baseRefName"]):
+        loop = project()[1]
+    proved = breakglass_verify(pull, loop, {"body": fold(PROOF, heading, "\n".join(lines))})
+    for line in proved.why:
+        print(line)
+    if proved.why:
+        print(f"PR #{number}: no proof posted: fix what is named, or name other runs")
+        return 1
     url = comment(
         number,
         fold(
             PROOF,
-            f"Run ids for the break-glass on {head[:7]}; land reads each from GitHub's runs.",
-            "\n".join(lines),
+            heading,
+            "\n".join(
+                lines + ["", "Found (land reads the runs again, not these lines):", *proved.lines]
+            ),
         ),
     )
     print(f"PR #{number}: proof posted for {head}: {url}")
@@ -4215,6 +4228,238 @@ def standing(pull: dict[str, Any], loop: str | None) -> Standing:
     return Standing(True, why, record, pinned[-1] if pinned else None)
 
 
+# the events whose run of `qualify` runs the whole check; a `workflow_dispatch` run runs only its `tests` input
+FULL_EVENTS = ("pull_request", "push", "schedule")
+
+
+class Proved(NamedTuple):
+    """breakglass_verify's answer: `why`, a line per refusal (none: every item holds); `lines`, what was found, one line per
+    fact (the classification of each failed test with its run links, each item's run); `infra`, a failure with no test ids."""
+
+    why: list[str]
+    lines: list[str]
+    infra: bool = False
+
+
+def smoke_recorded(head: str, command: str) -> bool:
+    """Whether a local-ci record for `head`'s tree holds `command` with exit 0 (the record `local-ci --status` reads)."""
+    try:
+        held = str(tree_of(head))
+        record = json.loads(recorded(held, command).read_text())
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return False
+    return isinstance(record, dict) and (
+        record.get("tree"),
+        record.get("command"),
+        record.get("exit"),
+    ) == (
+        held,
+        command,
+        0,
+    )
+
+
+def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, Any]) -> Proved:
+    """Section 2: every item of the proof read from GitHub's runs, never from the proof comment's words, which only name
+    the run ids. A run counts only in this repo, completed, within `breakglass.max_age` of its `completed_at`, and, but
+    for the failed run's own, of the workflow that produces the required check. 2a the failing run on the exact head and
+    the test ids it failed (`infra` when it published none because the runner or CI was down); 2b each failed test
+    classified against completed runs on `main`'s recent heads and the merge base (`not caused by this change` when it
+    failed there too, else `unexplained`, which refuses); 2c the failed tests re-run alone on this head and green
+    (not for `infra`); 2d a smoke run: a local-ci record for the head's tree under `breakglass.smoke`, or a green
+    full Actions run on the head; 2e at least `breakglass.earlier_runs` green full runs on recent heads that are ancestors
+    of the head or of the base. A full run is one that ran the whole required check: of the workflow that produces it,
+    started by a `pull_request`, `push` or `schedule` (never a `workflow_dispatch`, whose `tests` input can empty or
+    narrow it), with a green job of each required check. A failure with no test ids is `infra` only when a job shows CI
+    down (cancelled, timed out, no steps); otherwise it is the change's own and refused."""
+    cfg, head, base = breakglass_settings(loop), pull["headRefOid"], pull["baseRefName"]
+    where, repo = f"PR #{pull['number']}", pull["baseRepository"]["nameWithOwner"].lower()
+    ids, why, lines = fields(proof.get("body", "")), [], []
+    now = utcnow()
+
+    def mine(run: dict[str, Any]) -> bool:
+        return all(
+            str((run.get(key) or {}).get("full_name")).lower() == repo
+            for key in ("repository", "head_repository")
+        )
+
+    def fresh(run: dict[str, Any]) -> bool:
+        when = parse_time(run.get("completed_at") or run.get("updated_at") or "")
+        return (
+            run.get("status") == "completed" and when is not None and now - when <= cfg["max_age"]
+        )
+
+    def read(key: str, role: str) -> dict[str, Any] | None:
+        raw = ids.get(key, "")
+        if not raw.isdigit():
+            why.append(f"{where}: the proof names no {role} run (`{key.capitalize()}:`)")
+            return None
+        run = run_info(int(raw))
+        if not mine(run):
+            why.append(f"{where}: run {raw} ({role}) is not this repository's")
+        elif not fresh(run):
+            why.append(
+                f"{where}: run {raw} ({role}) is older than breakglass.max_age or not complete"
+            )
+        else:
+            return run
+        return None
+
+    def near(sha: str, onto: str) -> bool:
+        """`sha` lies within `max_commits` of the head: the commits either side of it."""
+        found = compare(sha, onto)
+        return found["ahead_by"] + found["behind_by"] <= cfg["max_commits"]
+
+    def link(run: dict[str, Any]) -> str:
+        return run.get("html_url") or f"run {run['id']}"
+
+    def tests(run_id: int) -> dict[str, Any] | None:
+        return run_artifact(run_id, cfg["artifact"])
+
+    def full(run: dict[str, Any], flow: Any, required: set[str]) -> bool:
+        """The run ran the full selection of the required check: of the workflow that produces it, started by a
+        `pull_request`, `push` or `schedule` (never a `workflow_dispatch`, whose `tests` input narrows it to nothing or
+        to a few ids), with a green job of each required check."""
+        if run.get("workflow_id") != flow or run.get("event") not in FULL_EVENTS:
+            return False
+        return not required or required <= {
+            job["name"] for job in run_jobs(run["id"]) if job.get("conclusion") == "success"
+        }
+
+    try:
+        failed = read("failed-run", "failed")
+        if failed is None:
+            return Proved(why, lines)
+        flow = failed.get("workflow_id")
+        if failed.get("head_sha") != head or failed.get("conclusion") != "failure":
+            why.append(f"{where}: run {failed['id']} is not a failure on the head {head}")
+        required = required_checks(base) - OWN
+        if required and not required & {job["name"] for job in run_jobs(failed["id"])}:
+            why.append(
+                f"{where}: run {failed['id']} is of a workflow that produces none of the required checks"
+                f" ({', '.join(sorted(required))})"
+            )
+        got = tests(failed["id"])
+        broken = {"cancelled", "timed_out", "startup_failure"}
+        down = any(
+            job.get("conclusion") in broken or not job.get("steps")
+            for job in run_jobs(failed["id"])
+        )
+        if got is None and not down:
+            why.append(
+                f"{where}: run {failed['id']} published no `{cfg['artifact']}` artifact and no job shows CI down:"
+                " the failed tests are unknown"
+            )
+        want = set(got.get("failed", [])) if got else set()
+        infra = not want and down
+        if not want and not infra and got is not None:
+            why.append(
+                f"{where}: run {failed['id']} failed with no failed test ids and no job shows CI down:"
+                " a failure that is no test's is the change's own, so it is refused"
+            )
+        lines.append(
+            f"{where}: failing run {link(failed)}: "
+            + (
+                "infra (no failed test ids), so only the smoke run and earlier green runs apply"
+                if infra
+                else f"{len(want)} failed test(s)"
+            )
+        )
+        if not infra:
+            earlier: dict[str, list[str]] = {}
+            tip = merge_base(base, head)
+            seen: set[int] = set()
+            for run in workflow_runs(flow, branch=base) + workflow_runs(flow, head=tip):
+                if run["id"] in seen or run.get("head_sha") == head:
+                    continue
+                seen.add(run["id"])
+                if run.get("conclusion") != "failure" or not mine(run) or not fresh(run):
+                    continue
+                if not near(run["head_sha"], head):
+                    continue
+                for test in (tests(run["id"]) or {}).get("failed", []):
+                    earlier.setdefault(test, []).append(link(run))
+            for test in sorted(want):
+                if test in earlier:
+                    lines.append(
+                        f"`{test}`: not caused by this change; it also failed in {', '.join(earlier[test])}"
+                    )
+                else:
+                    lines.append(
+                        f"`{test}`: unexplained; it failed on no recent run of main or the merge base"
+                    )
+                    why.append(
+                        f"{where}: `{test}` is unexplained: only this change can explain it, so it is refused"
+                    )
+            rerun = read("rerun", "re-run")
+            if rerun is not None:
+                got_rerun = tests(rerun["id"])
+                if (
+                    rerun.get("head_sha") != head
+                    or rerun.get("conclusion") != "success"
+                    or rerun.get("workflow_id") != flow
+                ):
+                    why.append(
+                        f"{where}: run {rerun['id']} is not a green run of the workflow on the head {head}"
+                    )
+                elif not got_rerun or not want <= set(got_rerun.get("selected", [])):
+                    why.append(f"{where}: run {rerun['id']} did not re-run every failed test alone")
+                else:
+                    lines.append(
+                        f"{where}: the failed tests passed alone on the head: {link(rerun)}"
+                    )
+        smoke = ids.get("smoke")
+        if smoke:
+            run = read("smoke", "smoke")
+            if run is not None and (
+                run.get("head_sha") != head
+                or run.get("conclusion") != "success"
+                or not full(run, flow, required)
+            ):
+                why.append(
+                    f"{where}: run {smoke} is not a green full run of the required check on the head {head}"
+                    " (a `workflow_dispatch` run, or one of another workflow, is not one)"
+                )
+            elif run is not None:
+                lines.append(f"{where}: smoke run {link(run)}")
+        elif smoke_recorded(head, cfg["smoke"]):
+            lines.append(f"{where}: smoke: local-ci `{cfg['smoke']}` passed on the head's tree")
+        else:
+            why.append(
+                f"{where}: no smoke proof on the head: `local-ci` of `{cfg['smoke']}` for its tree, or a green Actions run"
+                " (`Smoke:`)"
+            )
+        good: set[int] = set()
+        for raw in ids.get("earlier-runs", "").replace(",", " ").split():
+            if not raw.isdigit() or int(raw) in good:
+                continue
+            run = run_info(int(raw))
+            if (
+                mine(run)
+                and fresh(run)
+                and run.get("conclusion") == "success"
+                and full(run, flow, required)
+                and run.get("head_sha") != head
+                and near(run["head_sha"], head)
+                and any(
+                    compare(run["head_sha"], onto)["status"] in ("ahead", "identical")
+                    for onto in (head, base)
+                )
+            ):
+                good.add(run["id"])
+                lines.append(f"{where}: earlier green run {link(run)}")
+        if len(good) < cfg["earlier_runs"]:
+            why.append(
+                f"{where}: {len(good)} earlier green run(s) of the required check in the window, not the"
+                f" {cfg['earlier_runs']} breakglass.earlier_runs asks"
+            )
+    except (subprocess.CalledProcessError, OSError, ValueError, KeyError) as exc:
+        return Proved(
+            [f"{where}: a run the proof names can't be read from GitHub: {stderr_of(exc)}"], lines
+        )
+    return Proved(why, lines, infra)
+
+
 class Covered(NamedTuple):
     """breakglass_cover's answer: the lines that still hold the merge, and the lines to say beside them."""
 
@@ -4250,11 +4495,15 @@ def breakglass_cover(pull: dict[str, Any], loop: str | None, lines: list[str]) -
         return Covered(lines, [])
     if stand.why:
         return Covered(lines + stand.why, [])
+    proved = breakglass_verify(pull, loop, stand.proof or {})
+    if proved.why:
+        return Covered(lines + proved.why, [])
     what = ", ".join(f"`{name}` {state}" for name, state in names.items())
     return Covered(
         [],
         [
-            f"PR #{pull['number']}: required check {what}; break-glass approved by the owner on {pull['headRefOid']}"
+            f"PR #{pull['number']}: required check {what}; break-glass approved by the owner on {pull['headRefOid']}",
+            *proved.lines,
         ],
     )
 
@@ -4614,6 +4863,11 @@ PORTS = {
         "edit_text",  # (method, path, body) -> replaces the body of a PR, comment or review at the forge's route
         "enqueue_pull",  # (pr, node, head, method) -> puts the PR in its base's merge queue pinned to head; its position, or None
         "dequeue_pull",  # (pr, node) -> takes the PR out of the merge queue
+        "run_info",  # (run) -> an Actions run: repository, workflow_id, head_sha, conclusion, completed times
+        "run_jobs",  # (run) -> its jobs, each with name, conclusion and steps
+        "workflow_runs",  # (workflow, branch=None, head=None) -> the newest completed runs of a workflow
+        "run_artifact",  # (run, name) -> the JSON in the run's artifact, or None
+        "compare",  # (base, head) -> {status, ahead_by, behind_by} of head against base
         "commit_checks",  # (ref) -> {name: {conclusion, url, id, title}} of the newest run of each check on the commit
         "job_log",  # (job) -> a check run's job log
         "commit_tree",  # (sha) -> the commit's tree SHA
@@ -4722,6 +4976,9 @@ github_repo, one_repo = through("forge", "github_repo"), through("forge", "one_r
 open_heads, open_pull_files = through("forge", "open_heads"), through("forge", "open_pull_files")
 enqueue_pull, dequeue_pull = through("forge", "enqueue_pull"), through("forge", "dequeue_pull")
 commit_checks, job_log = through("forge", "commit_checks"), through("forge", "job_log")
+run_info, run_jobs = through("forge", "run_info"), through("forge", "run_jobs")
+workflow_runs, run_artifact = through("forge", "workflow_runs"), through("forge", "run_artifact")
+compare = through("forge", "compare")
 commit_tree = through("forge", "commit_tree")
 statuses, post_status = through("evidence", "statuses"), through("evidence", "post_status")
 post_review, minimize = through("evidence", "post_review"), through("evidence", "minimize")
@@ -6521,6 +6778,10 @@ def landable(
     if pull.get("waiting"):  # readied by this land: its CI has only just started
         return Verdict(pull["waiting"], issues=issues)
     if required and (lines := ci(where, pull, required)):
+        covered = breakglass_cover(pull, loop, lines)
+        if covered.said:  # the owner's own merge: land verifies it and leaves it
+            return breakglass_held(pull, covered, issues, named, loop)
+        lines = covered.lines
         for line in lines:
             print(line)
         red = {state for _, state in head_checks(pull, required)[0]} & RED
@@ -6538,6 +6799,119 @@ def landable(
         for line in whose(pull, loop):
             print(line)
     return Verdict(None, issues=issues)
+
+
+# the first line of the comment land leaves on a break-glass PR whose proof it verified, and of the one after the merge
+VERIFIED_COMMENT, BREAKGLASS_LAND = "Break-glass verified", "Break-glass land"
+
+
+def trailer(pull: dict[str, Any], check: str, proof_url: str) -> str:
+    """The squash commit's trailer for a break-glass land."""
+    return f"Break-glass: owner-approved, {check} red, proof {proof_url}"
+
+
+def breakglass_held(
+    pull: dict[str, Any],
+    covered: Covered,
+    issues: list[dict[str, Any]],
+    named: bool,
+    loop: str | None,
+) -> Verdict:
+    """What land does with a PR whose break-glass proof it verified (breakglass_cover): nothing is merged, since the
+    owner merges it in the GitHub UI with the ruleset's bypass. Neither `loop:queued` nor a `land` success stays on it
+    (a Mergify queue would merge it on that status: an error replaces it, and the label comes off first); one comment
+    carries the verified lines, the proof comment's link and the trailer to paste into the squash message; and the
+    owner is asked for the click (the `land` event `needs-owner`)."""
+    where, head = f"PR #{pull['number']}", pull["headRefOid"]
+    if QUEUED in names(pull):
+        label(pull["number"], QUEUED, add=False)
+        print(f"{where}: `{QUEUED}` removed: land never queues a break-glass PR")
+    try:
+        landed = [s for s in statuses(head) if s.get("context") == LAND]
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        landed = []
+    if landed and landed[0].get("state") != "error":
+        post_status(
+            head, LAND, "Not landed: the owner merges a break-glass PR in the GitHub UI", "error"
+        )
+    for line in covered.said:
+        print(line)
+    stand = standing(pull, loop)
+    proof_url = (stand.proof or {}).get("url") or pull.get("url", "")
+    heading = f"{VERIFIED_COMMENT}"
+    if not any(
+        machine(note["body"]).strip().splitlines()[:1] == [heading]
+        and fields(note["body"]).get("head", "").lower() == head.lower()
+        for note in notes(pull)
+    ):
+        comment(
+            pull["number"],
+            fold(
+                heading,
+                f"The proof for {head[:7]} holds, read from the runs. land does not merge it: the owner merges it"
+                ' in the GitHub UI with "Merge without waiting for requirements".',
+                "\n".join(
+                    [
+                        f"Head: {head}",
+                        f"Proof: {proof_url}",
+                        f"Record: {(next((n for n in notes(pull) if parsed(n['body'], BREAKGLASS)), {}) or {}).get('url', '')}",
+                        *covered.said[1:],
+                        f"Trailer: {trailer(pull, ', '.join(re.findall(r'`([^`]+)`', covered.said[0].split(';')[0])) or 'required', proof_url)}",
+                    ]
+                ),
+            ),
+        )
+    ask = [
+        f"{where}: the break-glass proof holds on {head}: the owner merges it in the GitHub UI (proof {proof_url})"
+    ]
+    asks_owner(pull, ask, named)
+    return Verdict((WAITING, False), issues=issues)
+
+
+def breakglass_landed(pull: dict[str, Any]) -> None:
+    """The `Break-glass land` comment after the owner's merge, from the first land that reads it merged: the head, the
+    merge commit, the required checks that were red or missing with their run links, the record and proof links and
+    that the owner merged it with the bypass. Nothing for a PR with no break-glass record on its head, or one already
+    commented."""
+    head = pull["headRefOid"]
+    if any(
+        machine(note["body"]).strip().splitlines()[:1] == [BREAKGLASS_LAND] for note in notes(pull)
+    ):
+        return
+    records_on = [
+        note
+        for note in notes(pull)
+        if (record := parsed(note["body"], BREAKGLASS))
+        and record.get("head", "").lower() == head.lower()
+    ]
+    if not records_on:
+        return
+    merged = merged_pull(pull["number"]) or {}
+    commit = merged.get("merge_commit_sha") or "unknown"
+    red = {name: run for name, run in commit_checks(head).items() if run["conclusion"] in RED}
+    required = required_checks(pull["baseRefName"]) - OWN
+    lacking = sorted(required - set(commit_checks(head)))
+    shown = [f"`{name}` red: {run_link(run['url'])}" for name, run in sorted(red.items())] + [
+        f"`{name}` missing" for name in lacking
+    ]
+    proof = (proofs_on(pull, head) or [{}])[-1].get("url") or pull.get("url", "")
+    comment(
+        pull["number"],
+        fold(
+            BREAKGLASS_LAND,
+            f"The owner merged {head[:7]} as {commit[:7]} with the ruleset's bypass; land did not merge it.",
+            "\n".join(
+                [
+                    f"Head: {head}",
+                    f"Merge: {commit}",
+                    f"Checks: {'; '.join(shown) or 'none red or missing now'}",
+                    f"Record: {records_on[-1].get('url') or ''}",
+                    f"Proof: {proof}",
+                    f"Trailer: {trailer(pull, ', '.join(sorted(red) + lacking) or 'required', proof)}",
+                ]
+            ),
+        ),
+    )
 
 
 def candidates_of(
@@ -7814,6 +8188,8 @@ def queue_landed(pull: dict[str, Any]) -> None:
     `merge_group` CI; and its worker sessions finished. Nothing for a PR it did not merge, or one already commented."""
     merged = [removal for removal in queue_events(pull) if removal.get("reason") == QUEUE_MERGED]
     queued = QUEUED in {each["name"] for each in pull["labels"]["nodes"]}
+    if pull["state"] == "MERGED":
+        breakglass_landed(pull)
     if not any(note["body"].startswith(f"{LANDED}\n") for note in notes(pull)):
         if merged:
             landed_comment(pull, merged[-1])
