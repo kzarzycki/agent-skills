@@ -955,7 +955,7 @@ It archives the session, a sub-agent too: Omnigent leaves the runner it shares w
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
-each and `already archived` for one finished before, and prints which it kept. It keeps a `--pr` worker, `--force` included, until its PR is merged or closed, saying why: `start --pr`
+each and `already archived` for one finished before, and prints which it kept. It keeps an idle `--pr` worker, `--force` included, until its PR is merged or closed, saying why: `start --pr`
 labels the session `omni.pr=<owner>/<name>#<n>` (a start whose label fails archives the session and fails), and
 `reap` looks the PR up in that repository, never the caller's checkout; a PR it can't read keeps the worker. A verifier
 started with `--pr` carries the same label, so its spend groups by PR, but neither `reap` nor `reap --merged` holds or finds one
@@ -968,7 +968,9 @@ to come from a finished one, so a child whose `run` died is re-attached with `wa
 which finishes it on return, never reaped. Run `reap --children
 "$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` only once every child's report is in or the child is
 given up, as the last step before your own report. Never `DELETE` a session: it erases the
-transcript.
+transcript. `start` refuses a second worker or verifier of a PR while one with the same `omni.role` and `omni.pr` runs, naming it,
+since a twin repeats the first's whole run on the same head; `reap --force <that session>` stops and finishes the running
+one, its open PR included, and the start then goes on. An idle kept `--pr` worker is no twin: `start --pr` replaces it.
 
 **Permission prompts.** An agent's workspace is the directory it was started in, so its
 reads there, its children's checkouts included, never prompt, in any harness; its writes
