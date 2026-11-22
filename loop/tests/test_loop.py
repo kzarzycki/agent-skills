@@ -59,7 +59,8 @@ def test_the_gatekeeper_is_found_in_its_sibling_package() -> None:
 
 def test_a_missing_skill_is_named(tmp_path: Path) -> None:
     """Copied alone, loop.py says which skill to install instead of a traceback."""
-    folder = tmp_path / "skills" / "engineering-loop" / "scripts"
+    # deep enough that the resolver's search of a plugin cache two levels up stays inside this test's folder
+    folder = tmp_path / "cache" / "pkg" / "skills" / "engineering-loop" / "scripts"
     folder.mkdir(parents=True)
     script = folder / "loop.py"
     script.write_text(loop.Path(loop.__file__).read_text())
