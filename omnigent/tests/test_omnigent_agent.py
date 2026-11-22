@@ -108,6 +108,8 @@ class FakeOmnigent:
         if path == "/v1/hosts":  # hosts as an older server lists them: no harnesses, no memory
             rows = [{"host_id": i, "name": n, "status": "online"} for i, n in self.hosts().items()]
             return {"hosts": self.host_rows or rows}
+        if path.startswith("/v1/hosts/") and "/files/" in path:  # no file route on this server
+            raise omnigent_agent.Fail("GET file") from HTTPError(path, 404, "", Message(), None)
         if path.startswith("/v1/hosts/"):  # a host's folder listing: the names under it in procs
             host, folder = path.split("?")[0].removeprefix("/v1/hosts/").split("/filesystem/")
             under = "/" + unquote(folder).strip("/") + "/"

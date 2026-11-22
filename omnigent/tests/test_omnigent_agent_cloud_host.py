@@ -30,7 +30,9 @@ class Hosts(omnigent_agent.Omnigent):
     def __init__(self, rows: list[dict], files: dict[str, str] | None = None) -> None:
         self.base, self.host_id, self._token, self.loops = "http://x", "here", "t", {}
         self.rows, self.files, self.gone = rows, files or {}, set()
-        self.serves_files = False  # whether the host file API gives a file's text, as a newer one
+        self.serves_files = False  # whether the host has the file route, as a newer server
+        self.file_status = 0  # a status the file route answers instead of the text
+        self.file_reads: list[str] = []
         self.records: list[dict] = []  # the project's sessions, as the server lists them
 
     def call(self, method: str, path: str, body: object = None, **_: object) -> dict:
@@ -41,9 +43,17 @@ class Hosts(omnigent_agent.Omnigent):
         if path.startswith("/v1/sessions?kind=default&project=repo"):
             return {"data": self.records}
         if path.startswith("/v1/hosts/"):
+            if "/files/" in path:
+                file = "/" + path.split("/files/")[1].strip("/")
+                self.file_reads.append(file)
+                if self.file_status:
+                    raise omnigent_agent.Fail(f"GET {path}: HTTP {self.file_status} no") from (
+                        HTTPError(path, self.file_status, "no", Message(), None)
+                    )
+                if self.serves_files and file in self.files:
+                    return {"object": "file", "path": file, "content": self.files[file]}
+                raise omnigent_agent.Fail("GET") from HTTPError(path, 404, "", Message(), None)
             folder = "/" + path.split("?")[0].split("/filesystem/")[1].strip("/") + "/"
-            if self.serves_files and folder.rstrip("/") in self.files:
-                return {"content": self.files[folder.rstrip("/")]}
             names = {f[len(folder) :].split("/")[0] for f in self.files if f.startswith(folder)}
             if not names:
                 raise omnigent_agent.Fail("GET") from HTTPError(path, 404, "", Message(), None)
@@ -163,6 +173,22 @@ def test_the_pin_is_read_through_the_host_api_with_no_live_session(live: list[st
         og.serves_files = True
         with pytest.raises(omnigent_agent.Fail, match=why):
             omnigent_agent.refuse_unfit_cloud_host(og, "there", Path(WORK))
+
+
+@pytest.mark.parametrize("status", [400, 403, 413, 503])
+def test_a_refused_file_read_is_a_failure_with_no_session_fallback(status: int) -> None:
+    og = Hosts([row("there", 900, CLOUD)], {SETTINGS: pinned()})
+    og.file_status = status  # a live session could read it, but the route said no
+    with pytest.raises(omnigent_agent.Fail, match=rf"can't be read.*HTTP {status}"):
+        omnigent_agent.refuse_unfit_cloud_host(og, "there", Path(WORK))
+
+
+@pytest.mark.parametrize("status", [404, 405])
+def test_a_host_without_the_file_route_is_read_through_a_session(status: int) -> None:
+    og = Hosts([row("there", 900, CLOUD)], {SETTINGS: pinned()})
+    og.file_status = status
+    omnigent_agent.refuse_unfit_cloud_host(og, "there", Path(WORK))
+    assert og.file_reads == [SETTINGS]
 
 
 def test_a_pin_file_that_is_not_json_is_refused() -> None:
