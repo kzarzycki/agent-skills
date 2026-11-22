@@ -15,7 +15,8 @@
    },
    "head_repository": {
     "full_name": "kzarzycki/scratch-gate-revert"
-   }
+   },
+   "event": "pull_request"
   },
   {
    "id": 12,
@@ -31,7 +32,8 @@
    },
    "head_repository": {
     "full_name": "kzarzycki/scratch-gate-revert"
-   }
+   },
+   "event": "workflow_dispatch"
   },
   {
    "id": 21,
@@ -47,7 +49,8 @@
    },
    "head_repository": {
     "full_name": "kzarzycki/scratch-gate-revert"
-   }
+   },
+   "event": "push"
   },
   {
    "id": 22,
@@ -63,7 +66,8 @@
    },
    "head_repository": {
     "full_name": "kzarzycki/scratch-gate-revert"
-   }
+   },
+   "event": "pull_request"
   },
   {
    "id": 31,
@@ -79,7 +83,8 @@
    },
    "head_repository": {
     "full_name": "kzarzycki/scratch-gate-revert"
-   }
+   },
+   "event": "push"
   },
   {
    "id": 32,
@@ -95,7 +100,8 @@
    },
    "head_repository": {
     "full_name": "kzarzycki/scratch-gate-revert"
-   }
+   },
+   "event": "push"
   },
   {
    "id": 41,
@@ -111,7 +117,8 @@
    },
    "head_repository": {
     "full_name": "kzarzycki/scratch-gate-revert"
-   }
+   },
+   "event": "push"
   },
   {
    "id": 51,
@@ -127,7 +134,8 @@
    },
    "head_repository": {
     "full_name": "someone/else"
-   }
+   },
+   "event": "push"
   },
   {
    "id": 52,
@@ -143,11 +151,12 @@
    },
    "head_repository": {
     "full_name": "kzarzycki/scratch-gate-revert"
-   }
+   },
+   "event": "push"
   },
   {
    "id": 61,
-   "workflow_id": 9,
+   "workflow_id": 5,
    "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
    "status": "completed",
    "conclusion": "success",
@@ -159,7 +168,8 @@
    },
    "head_repository": {
     "full_name": "kzarzycki/scratch-gate-revert"
-   }
+   },
+   "event": "pull_request"
   }
  ],
  "artifacts": {
@@ -219,6 +229,42 @@
     "name": "qualify",
     "conclusion": "cancelled",
     "steps": []
+   }
+  ],
+  "21": [
+   {
+    "name": "qualify",
+    "conclusion": "success",
+    "steps": [
+     {
+      "name": "tests",
+      "conclusion": "success"
+     }
+    ]
+   }
+  ],
+  "22": [
+   {
+    "name": "qualify",
+    "conclusion": "success",
+    "steps": [
+     {
+      "name": "tests",
+      "conclusion": "success"
+     }
+    ]
+   }
+  ],
+  "61": [
+   {
+    "name": "qualify",
+    "conclusion": "success",
+    "steps": [
+     {
+      "name": "tests",
+      "conclusion": "success"
+     }
+    ]
    }
   ]
  }

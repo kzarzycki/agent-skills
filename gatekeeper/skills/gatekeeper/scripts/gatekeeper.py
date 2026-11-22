@@ -4227,6 +4227,10 @@ def standing(pull: dict[str, Any], loop: str | None) -> Standing:
     return Standing(True, why, record, pinned[-1] if pinned else None)
 
 
+# the events whose run of `qualify` runs the whole check; a `workflow_dispatch` run runs only its `tests` input
+FULL_EVENTS = ("pull_request", "push", "schedule")
+
+
 class Proved(NamedTuple):
     """breakglass_verify's answer: `why`, a line per refusal (none: every item holds); `lines`, what was found, one line per
     fact (the classification of each failed test with its run links, each item's run); `infra`, a failure with no test ids."""
@@ -4262,8 +4266,11 @@ def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, A
     classified against completed runs on `main`'s recent heads and the merge base (`not caused by this change` when it
     failed there too, else `unexplained`, which refuses); 2c the failed tests re-run alone on this head and green
     (not for `infra`); 2d a smoke run: a local-ci record for the head's tree under `breakglass.smoke`, or a green
-    Actions run of it on the head; 2e at least `breakglass.earlier_runs` green runs on recent heads that are ancestors
-    of the head or of the base."""
+    full Actions run on the head; 2e at least `breakglass.earlier_runs` green full runs on recent heads that are ancestors
+    of the head or of the base. A full run is one that ran the whole required check: of the workflow that produces it,
+    started by a `pull_request`, `push` or `schedule` (never a `workflow_dispatch`, whose `tests` input can empty or
+    narrow it), with a green job of each required check. A failure with no test ids is `infra` only when a job shows CI
+    down (cancelled, timed out, no steps); otherwise it is the change's own and refused."""
     cfg, head, base = breakglass_settings(loop), pull["headRefOid"], pull["baseRefName"]
     where, repo = f"PR #{pull['number']}", pull["baseRepository"]["nameWithOwner"].lower()
     ids, why, lines = fields(proof.get("body", "")), [], []
@@ -4308,6 +4315,16 @@ def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, A
     def tests(run_id: int) -> dict[str, Any] | None:
         return run_artifact(run_id, cfg["artifact"])
 
+    def full(run: dict[str, Any], flow: Any, required: set[str]) -> bool:
+        """The run ran the full selection of the required check: of the workflow that produces it, started by a
+        `pull_request`, `push` or `schedule` (never a `workflow_dispatch`, whose `tests` input narrows it to nothing or
+        to a few ids), with a green job of each required check."""
+        if run.get("workflow_id") != flow or run.get("event") not in FULL_EVENTS:
+            return False
+        return not required or required <= {
+            job["name"] for job in run_jobs(run["id"]) if job.get("conclusion") == "success"
+        }
+
     try:
         failed = read("failed-run", "failed")
         if failed is None:
@@ -4333,7 +4350,12 @@ def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, A
                 " the failed tests are unknown"
             )
         want = set(got.get("failed", [])) if got else set()
-        infra = not want
+        infra = not want and down
+        if not want and not infra and got is not None:
+            why.append(
+                f"{where}: run {failed['id']} failed with no failed test ids and no job shows CI down:"
+                " a failure that is no test's is the change's own, so it is refused"
+            )
         lines.append(
             f"{where}: failing run {link(failed)}: "
             + (
@@ -4389,9 +4411,14 @@ def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, A
         if smoke:
             run = read("smoke", "smoke")
             if run is not None and (
-                run.get("head_sha") != head or run.get("conclusion") != "success"
+                run.get("head_sha") != head
+                or run.get("conclusion") != "success"
+                or not full(run, flow, required)
             ):
-                why.append(f"{where}: run {smoke} is not a green smoke run on the head {head}")
+                why.append(
+                    f"{where}: run {smoke} is not a green full run of the required check on the head {head}"
+                    " (a `workflow_dispatch` run, or one of another workflow, is not one)"
+                )
             elif run is not None:
                 lines.append(f"{where}: smoke run {link(run)}")
         elif smoke_recorded(head, cfg["smoke"]):
@@ -4410,7 +4437,7 @@ def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, A
                 mine(run)
                 and fresh(run)
                 and run.get("conclusion") == "success"
-                and run.get("workflow_id") == flow
+                and full(run, flow, required)
                 and run.get("head_sha") != head
                 and near(run["head_sha"], head)
                 and any(
@@ -6826,7 +6853,7 @@ def breakglass_held(
                         f"Proof: {proof_url}",
                         f"Record: {(next((n for n in notes(pull) if parsed(n['body'], BREAKGLASS)), {}) or {}).get('url', '')}",
                         *covered.said[1:],
-                        f"Trailer: {trailer(pull, 'required', proof_url)}",
+                        f"Trailer: {trailer(pull, ', '.join(re.findall(r'`([^`]+)`', covered.said[0].split(';')[0])) or 'required', proof_url)}",
                     ]
                 ),
             ),

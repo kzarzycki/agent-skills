@@ -29,16 +29,18 @@ its `completed_at`; all but the failing run's own must be of the workflow that p
 
 - **The failure on this head**: the failing run on the exact head and the test ids it failed, from its `failed-tests`
   artifact (`{"failed": [...], "selected": [...]}`; `tools/failed_tests.py` makes it from pytest's JUnit file, and this
-  repo's `qualify` uploads it). A failure with no test ids (the runner lost, CI down) is `infra`: only the smoke run and the
-  earlier runs apply, and the owner is shown it.
+  repo's `qualify` uploads it). A failure with no test ids and a job that shows CI down (the runner lost, cancelled, timed out) is `infra`: only the smoke run and the
+  earlier runs apply, and the owner is shown it. With no test ids and no job down, the failure is the change's own and is refused.
 - **Classification**: each failed test against completed runs of the workflow on `main`'s recent heads and the PR's merge
   base, within `max_commits` of the head. It is `not caused by this change` when it also failed there, else `unexplained`,
   which refuses: only the change can explain it. The classification and the run links go in the proof comment.
 - **Re-run alone**: a green run on the exact head whose `selected` list holds every failed test (`gh workflow run` with
   `tests` set, on the workflow that has that input). Not asked for `infra`.
-- **Smoke**: a local-ci record for the head's tree whose command is `breakglass.smoke`, exit 0; or a green Actions run of it
-  on the head (`--smoke <run id>`).
-- **Earlier green runs**: `breakglass.earlier_runs` green runs of the workflow on recent heads that are ancestors of the head
+- **Smoke**: a local-ci record for the head's tree whose command is `breakglass.smoke`, exit 0; or a green full Actions run on the head (`--smoke <run id>`).
+- **Full run**: a smoke or earlier run counts only if it ran the whole required check: of the workflow that produces it,
+  started by a `pull_request`, `push` or `schedule`, never a `workflow_dispatch` (its `tests` input can empty or narrow it),
+  with a green job of each required check. Only the re-run alone is a dispatch.
+- **Earlier green runs**: `breakglass.earlier_runs` green full runs of the workflow on recent heads that are ancestors of the head
   or of the base.
 
 `breakglass-proof` runs this check before it posts, so a gap is said before the owner is asked; `check merge` and `land`

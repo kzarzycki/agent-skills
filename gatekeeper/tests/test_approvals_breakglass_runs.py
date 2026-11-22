@@ -2,7 +2,7 @@
 of its section 5 that a run decides. The runs are recorded in fixtures/breakglass_runs.json, shaped as GitHub's REST
 API returns them: the failing `qualify` run (11) on the head with two failed tests, a green re-run of both alone (12),
 two earlier green runs (21, 22), main's failures of both tests (31) and the merge base's of one (32), a run too old
-(41), one of another repository (51), one of another workflow (52) and a smoke run (61)."""
+(41), one of another repository (51), one of another workflow (52) and a smoke run (61, of the same workflow; a run counts only if it is a `pull_request`, `push` or `schedule` run with a green `qualify` job)."""
 
 from __future__ import annotations
 
@@ -113,6 +113,18 @@ def test_2a_a_failure_with_no_test_ids_is_infra_and_skips_the_rerun(forge: dict[
     assert "infra (no failed test ids)" in got.lines[0]
 
 
+def test_2a_a_failure_with_empty_test_lists_and_no_job_down_is_the_changes_own_and_refused(
+    forge: dict[str, Any],
+) -> None:
+    forge["data"]["artifacts"]["11"] = {"failed": [], "selected": []}  # a lint or build failure
+    forge["smoke"] = True
+    got = verify(proof(rerun=""))
+    assert got.infra is False
+    assert "failed with no failed test ids and no job shows CI down" in got.why[0]
+    forge["data"]["jobs"]["11"] = forge["data"]["jobs"]["13"]
+    assert verify(proof(rerun="")).infra is True
+
+
 def test_2a_a_failed_run_with_no_artifact_and_no_lost_job_is_refused(forge: dict[str, Any]) -> None:
     forge["data"]["artifacts"].pop("11")
     assert "published no `failed-tests` artifact" in verify(proof()).why[0]
@@ -202,9 +214,34 @@ def test_2d_a_green_actions_run_of_the_smoke_job_on_the_head_counts(forge: dict[
 
 
 def test_2d_a_smoke_run_on_another_head_or_red_is_refused(forge: dict[str, Any]) -> None:
-    assert "is not a green smoke run on the head" in verify(proof(smoke="61")).why[0]
+    assert (
+        "is not a green full run of the required check on the head"
+        in verify(proof(smoke="61")).why[0]
+    )
     forge["runs"][61].update(head_sha=HEAD, conclusion="failure")
-    assert "is not a green smoke run on the head" in verify(proof(smoke="61")).why[0]
+    assert (
+        "is not a green full run of the required check on the head"
+        in verify(proof(smoke="61")).why[0]
+    )
+
+
+@pytest.mark.parametrize("tests", [[], ["tests/test_c.py::test_ok"]])
+def test_2d_a_dispatch_run_on_the_head_is_no_smoke_run_empty_or_narrowed(
+    forge: dict[str, Any], tests: list[str]
+) -> None:
+    forge["runs"][61].update(head_sha=HEAD, event="workflow_dispatch")
+    forge["data"]["artifacts"]["61"] = {"failed": [], "selected": tests}
+    assert "is not a green full run" in verify(proof(smoke="61")).why[0]
+
+
+def test_2d_a_green_run_of_another_workflow_or_without_the_required_job_is_no_smoke_run(
+    forge: dict[str, Any],
+) -> None:
+    forge["runs"][61].update(head_sha=HEAD, workflow_id=6)
+    assert "is not a green full run" in verify(proof(smoke="61")).why[0]
+    forge["runs"][61].update(workflow_id=5)
+    forge["data"]["jobs"]["61"][0]["conclusion"] = "skipped"
+    assert "is not a green full run" in verify(proof(smoke="61")).why[0]
 
 
 def test_2d_the_smoke_record_is_read_for_the_policys_command(
@@ -263,6 +300,27 @@ def test_2e_a_run_further_than_max_commits_or_not_an_ancestor_does_not_count(
         approvals, "compare", lambda *_a: {"status": "diverged", "ahead_by": 1, "behind_by": 1}
     )
     assert "0 earlier green run(s)" in verify(proof(**{"earlier-runs": "21, 22"})).why[-1]
+
+
+@pytest.mark.parametrize("tests", [[], ["tests/test_c.py::test_ok"]])
+def test_2e_dispatch_runs_do_not_count_empty_or_narrowed(
+    forge: dict[str, Any], tests: list[str]
+) -> None:
+    forge["smoke"] = True
+    for run in (21, 22):
+        forge["runs"][run]["event"] = "workflow_dispatch"
+        forge["data"]["artifacts"][str(run)] = {"failed": [], "selected": tests}
+    assert "0 earlier green run(s)" in verify(proof()).why[-1]
+    forge["runs"][21]["event"] = "push"
+    assert "1 earlier green run(s)" in verify(proof()).why[-1]
+
+
+def test_2e_a_run_without_the_required_jobs_green_does_not_count(forge: dict[str, Any]) -> None:
+    forge["smoke"] = True
+    forge["data"]["jobs"]["21"][0]["conclusion"] = "skipped"
+    assert "1 earlier green run(s)" in verify(proof()).why[-1]
+    forge["data"]["jobs"]["21"] = []
+    assert "1 earlier green run(s)" in verify(proof()).why[-1]
 
 
 def test_2e_the_policy_sets_how_many_earlier_runs_it_needs(forge: dict[str, Any]) -> None:
@@ -345,6 +403,7 @@ def test_land_leaves_a_verified_break_glass_pr_unmerged_unqueued_and_not_landed(
     [comment] = [d for d in done if d[0] == "comment"]
     assert comment[2].startswith("Break-glass verified\n")
     assert "Proof: https://example.test/7#proof" in comment[2]
+    assert "Trailer: Break-glass: owner-approved, qualify red, proof " in comment[2]
     [ask] = [d for d in done if d[0] == "ask"]
     assert "the owner merges it in the GitHub UI" in ask[2][0]
     assert "break-glass approved by the owner" in capsys.readouterr().out
