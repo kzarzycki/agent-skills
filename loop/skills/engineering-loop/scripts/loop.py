@@ -68,6 +68,13 @@ def release(number: int) -> int:
     return 0
 
 
+def fenced(text: str) -> list[str]:
+    """`text` verbatim in a code fence one backtick longer than the longest run inside it (three at least), so
+    a fence in the text never closes this one."""
+    ticks = "`" * max(3, max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
+    return [ticks, text.rstrip("\n"), ticks]
+
+
 def brief(
     pr: int,
     priorities: Path | None,
@@ -77,7 +84,8 @@ def brief(
 ) -> int:
     """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
     verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
-    newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
+    newest verdict review's) and its report path, from pass 2 the previous report and its head, then the PR's labels, its title and body verbatim (fenced, so a verifier with no GitHub access reads them),
+    then the priorities
     file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. For each spec it
     prints `- Acceptance tests: <command> <issue>`, the command loop.md's `Acceptance tests:` line names, else the
     fallback `uv run <this folder>/acceptance.py`, so the verifier runs the one the worker ran. A proof log whose first line isn't the head is refused, since the
@@ -167,6 +175,17 @@ def brief(
     ]
     if line := gatekeeper.unforced(pull):
         lines.append(f"- Note: {line}")
+    if labels := [label["name"] for label in pull["labels"]["nodes"]]:
+        lines.append(f"- Labels: {', '.join(labels)}")
+    # the PR's own text, verbatim, so a verifier with no GitHub access can check a criterion about it
+    lines += [
+        "",
+        "PR title:",
+        *fenced(pull["title"] or ""),
+        "",
+        "PR body:",
+        *fenced(pull["body"] or ""),
+    ]
     if priorities is not None:
         lines += ["", "Priorities:", priorities.read_text().rstrip()]
     # as written, but for the blank lines around it: indentation may be a snippet's
