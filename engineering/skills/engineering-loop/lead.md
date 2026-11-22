@@ -9,6 +9,7 @@ steps run says, which also gives your own run's recipe.
 Your own test or check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
 refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
 `claude-cloud-run` could not make or one that needs this host.
+A lead that runs as a `claude-cloud` session reads *Cloud lead* below first: it replaces the host rules here.
 Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native subagent in the VM, never a session made with `sys_session_create`: a created child lands on the bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent, not a helper, and starts as `brief` describes.
 
 Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
@@ -430,6 +431,66 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    (SKILL.md, Where heavy steps run), and the main instance's link. When your brief names a report path, write
    this report there once, at the end: whoever started you takes that file as your final
    report, so keep progress notes in another file.
+
+## Cloud lead
+
+1. **Who you are.** You are a cloud lead when `sys_session_get_info` on your own session
+   names agent `claude-cloud`, or `/root/.ccr/README.md` exists. The host rules in this file
+   (`claude-cloud-run`, `LOOP_HOST_RUN`, `supervise`, `watch`, `--notify`, detached host
+   runs, `ssh`) don't apply to you: the VM can't reach the Omnigent server over HTTP, and
+   nothing it starts outlives the VM.
+2. **Starting a worker.** Pass the body that `omnigent_agent.py brief <brief> <report>
+   --cloud --pr <n>` prints as `sys_session_create`'s `message`. Leave out `--role` and name
+   the role file by its repo path in the brief, since the child's clone has it: `--role`
+   inlines the file, which goes over the 8,000-character limit on a sibling's first message
+   (worker.md alone is about 18,900), until `brief` names repo files by path (#1604). Set `agent_id`
+   to the `claude-cloud` id from your own `sys_session_get_info`, since `sys_agent_list`
+   doesn't show it under `builtins`. Set `placement: same_host`, which makes a sibling in your
+   family. Set `permission_mode: auto`: the server refuses an approval-skipping mode for a
+   session another session creates, and `auto` runs edits and Bash with no prompt. Set
+   `model` to the worker tier. The child gets the agent's default cloud environment, since no
+   MCP call pins one. Give each child a title unique to its PR and role, and record it in
+   `## Lead state` (5). Finish a child with `sys_session_update(archived: true)`, since
+   `sys_session_close` refuses a sibling. The worker pushes to its own session branch, never
+   one you name, so take the branch and head from its report and open or retarget the PR from
+   there.
+3. **Starting the verifier.** It runs in the kept worker's VM (SKILL.md, *Verifier in the
+   worker's VM*): send the worker the `approvals.py brief` text with `sys_session_message`,
+   asking it to run `cloud_verifier.py verify` detached and end with the comment URL. `seed`
+   and the Codex Cloud thread route are host-only. With no usable Codex login in the VM
+   (exit 2) the pass runs as `verify --harness claude`, and the verdict says it is
+   same-family, so the owner can weigh it.
+4. **Waiting.** After you start or send to a child, end the turn with `STILL WORKING` and a
+   `Waits: session <id>` or `Waits: #<pr>` line. Resume on the supervisor's news of the
+   session or PR that line names, or a sub-agent's `finished` notice: a sibling's end posts no
+   `finished` notice into you, and nothing in the VM can watch it. Don't poll, since each check re-reads your whole
+   context. A wait that has to block inside a turn uses `omnigent_agent.py wait-for --pr <n>
+   --until gate|verdict`, which reads only REST, so it runs in the VM. This replaces
+   *Waiting* below for you.
+5. **State lives on GitHub, not in the VM.** A later turn may get a fresh VM with a fresh
+   clone. Approvals (statuses, reviews, labels) and `local-ci` record branches are already on
+   GitHub. Your own notes go in one PR comment headed `## Lead state`, which you edit in
+   place: each child by its session title (such as `<issue> worker`), with what the host
+   registry line would hold (its role, report and briefs), the pass count, and the head of the
+   last verdict. Never write a session id there: nothing on GitHub names a session, and a
+   public repo publishes it. Find a child's id again with `sys_session_list` by its title and
+   `created_by_session_id`. At every turn's start, read the comment and `git fetch` before you
+   act. `.git/approvals` (the land lock's local copy, `cloud-gate.json`, caches) is rebuilt by
+   the scripts and is never a record.
+6. **Gate and landing.** Where the project's CI has a required check, that check green on the
+   head is the per-head gate (#1597), so you start no `local-ci --record` session for it.
+   `approvals.py approve merge … --by delegate` and `land` run in the VM, since both read
+   REST, on a base that requires the merge queue or has no `land` section (`where: both`, the
+   default). A project with `land.where: host`, or a signed squash without `signing_key_env`,
+   can't land from a cloud lead: report the head SHA and the reason, ending `USER NEEDED`.
+7. **The record, and telling the parent.** Your report never reaches a host disk, so a
+   supervisor that follows a report path misses it. Whenever a turn ends with a question for
+   the parent, a head SHA for the go, `USER NEEDED` or `DONE`, also send that same text to the
+   parent session. Its id is in your brief, else the `created_by_session_id` in your own
+   `sys_session_get_info`. Use `sys_session_send` for a parent you are a sub-agent of, else
+   `sys_session_message`, since `sys_session_send` reaches only your own children. The parent
+   learns of the result from that message. The PR's comments (worker report, verdict,
+   `## Lead state`, `Landed`) stay the durable copy.
 
 **Waiting.** Results come to you: a subagent's result or a backend's reply arrives as a
 new prompt. While a PR waits for CI, move other ready items forward (another PR's step, a
