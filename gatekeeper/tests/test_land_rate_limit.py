@@ -25,7 +25,7 @@ def refuse(stderr: str) -> subprocess.CalledProcessError:
 @pytest.fixture(autouse=True)
 def poll_unstretched(monkeypatch: pytest.MonkeyPatch) -> None:
     """The quota read is a `gh` call: tests of the wait loop poll at POLL without it."""
-    monkeypatch.setattr(approvals, "poll_seconds", lambda: approvals.POLL)
+    monkeypatch.setattr(approvals, "poll_seconds", lambda *_: approvals.POLL)
 
 
 @pytest.fixture
@@ -221,7 +221,7 @@ def test_a_rate_limit_wait_adds_bounded_jitter(
     assert sum(calls["sleeps"]) == 30 + github.JITTER
 
 
-@pytest.mark.parametrize(("answer", "poll"), [("400 5000", 600), ("500 5000", 300), ("x", 300)])
+@pytest.mark.parametrize(("answer", "poll"), [("400 5000 0", 600), ("500 5000 0", 300), ("x", 300)])
 def test_a_low_quota_stretches_the_poll(
     monkeypatch: pytest.MonkeyPatch, answer: str, poll: int
 ) -> None:
@@ -232,7 +232,7 @@ def test_a_low_quota_stretches_the_poll(
 
 def test_the_poll_adds_bounded_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[tuple[int, int]] = []
-    monkeypatch.setattr(github, "gh", lambda *args: "5000 5000")
+    monkeypatch.setattr(github, "gh", lambda *args: "5000 5000 0")
     monkeypatch.setattr(
         github.random, "randint", lambda low, high: seen.append((low, high)) or high
     )
@@ -266,7 +266,7 @@ def test_a_low_quota_poll_still_says_the_wait_each_minute_and_asks_github_each_p
 ) -> None:
     now, ran = [0.0], []
     monkeypatch.setattr(github, "wait_until", None)
-    monkeypatch.setattr(approvals, "poll_seconds", lambda: approvals.LOW_POLL)
+    monkeypatch.setattr(approvals, "poll_seconds", lambda *_: approvals.LOW_POLL)
     monkeypatch.setattr(approvals.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(
         approvals.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)

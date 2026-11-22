@@ -191,10 +191,11 @@ def pytest_testnodedown(node: object, error: object) -> None:
 
 @pytest.fixture(autouse=True)
 def _fresh_viewer() -> None:
-    """The login `gh` runs as is read once per process (github_adapter.viewer); a test stubs it per test."""
+    """The login `gh` runs as is read once per process (github_adapter.viewer), and writer, required_checks and a
+    settled head's check runs are kept for a while (#1771); a test stubs them per test, so each starts with none."""
     from approvals_harness import approvals
 
-    approvals.github.viewer_login.clear()
+    approvals.github.forget()
 
 
 @pytest.fixture(autouse=True)

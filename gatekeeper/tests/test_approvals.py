@@ -3514,7 +3514,7 @@ def lands(
                 }
             )
         if args[:2] == ("api", "rate_limit"):  # land --wait's poll_seconds: plenty of quota
-            return "5000 5000"
+            return "5000 5000 0"
         raise AssertionError(args)
 
     def comment(number: int, body: str) -> None:
@@ -10660,6 +10660,7 @@ def test_the_account_running_this_is_a_writer_by_its_own_permissions_where_the_p
     assert approvals.writer("loop")
     assert not approvals.writer("drive-by")  # anyone else still can't be looked up, so isn't one
     cloud.routes["repos/{owner}/{repo}"] = {"permissions": {"pull": True}}
+    approvals.github.forget()  # a new run: one run keeps the permission it read (#1771)
     assert not approvals.writer("loop")
 
 
