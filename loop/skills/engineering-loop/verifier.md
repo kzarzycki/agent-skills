@@ -72,9 +72,9 @@ yourself, keeping standards and spec as separate axes.
   Any other pass emits with the same helper, from the repo's clone, `uv run <gatekeeper>/scripts/events.py
   emit verifier <branch> <state>`:
   - at the start, `waiting --beat 900`, and the same command again before 15 minutes pass while the review runs. A
-    wait reads a `waiting` ref silent after twice its `beat_s`, and a `wait-for` call blocks close to 10 minutes, so
-    the 5-minute default would read a long mutation or acceptance run as dead. Use a `--beat` at least as long as
-    your longest blocking call (900 s covers one), and beat between calls.
+    wait reads a `waiting` ref silent after twice its `beat_s`, and one `wait-for` spans a whole run, so
+    the 5-minute default would read a long mutation or acceptance run as dead. Use a `--beat` of at least half
+    your longest wait (900 s covers a 30-minute run), and beat between waits.
   - at the end, once the report is written (the lead posts the review, not you): `ok` for `SATISFIED: yes`, `failed`
     for `SATISFIED: no` or no report, `needs-owner --question <file>` when you write `<report>.question`, each with
     `--url <the report path>`.
@@ -89,18 +89,17 @@ yourself, keeping standards and spec as separate axes.
   Perl's `setsid`, since macOS has no `setsid` command; the `run <pid>` line marks where this
   run's log starts, so `wait-for --pid` never takes a previous run's `exit` line from a reused
   log path; `lock` and `locked` bracket the wait on the lock, so `wait-for` reads a run still queued behind another's gate as waiting, not as out of budget: its own budget starts at `locked`, and past 2 hours of waiting it ends "gave up waiting on the gate lock", which is no verdict on the change, so report the check as not yet run; the last step tells the session in `$LOOP_NOTIFY`, when set, how it ended),
-  and is waited on up to a total budget you state, in as few calls as you can: each call is
-  `omnigent_agent.py wait-for --log <log> --pid <pid>`, which blocks close to a 10-minute tool
-  call (`--budget` for another limit) and prints only the outcome, never short polls or a sleep
-  loop of your own, since every call re-reads the whole context. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged. Where that script is not at hand,
-  each call blocks close to the tool's limit (the longest yield the harness allows on a running
-  command, or a sleep loop that checks the log for its exit line), never short polls. Where a
-  foreground command stops at 10 minutes (a session in a hosted VM), the run is waited on within
-  the same turn, since that is less than a cold gate can take. A blocker that is only your own call timing out
+  and is waited on with one wake: one `omnigent_agent.py wait-for --log <log> --pid <pid> --budget <the run's
+  expected length>` started as a background call your harness tracks (Claude Code: Bash `run_in_background`, which
+  wakes you when it exits), while you do other work or end the turn. Never a short `wait-for`, an `until grep` or a
+  `sleep` loop, since each return re-reads your whole context. Where the harness tracks no background call, each
+  foreground `wait-for` blocks close to the tool's limit. Where a foreground command stops at 10 minutes (a session in
+  a hosted VM), the run is waited on within the same turn, since that is less than a cold gate can take. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged.
+  A blocker that is only your own call timing out
   spends the pass on nothing, a held lock can outlast a foreground call, and Claude Code's low-memory reaper stops in-session
-  background shells. Never end a turn saying you wait, since a background command's completion
+  background shells. Never end a turn saying you wait on a detached run alone, since its end
   never wakes you, unless it is a `run`, `send` or `wait` started with `--notify` and `LOOP_NOTIFY`
-  set (or your harness's own background-run support), which tells you when it ends. A gate the machine allows
+  set, or the tracked `wait-for` above. A gate the machine allows
   by rule (a gate your role file says to run bare) is the exception: run it as the bare command
   (Gates and repros), since an allow rule matches only a plain command. A queued run or
   any other pending condition is waited on the same way, in the foreground (orchestrating-agents'
@@ -200,7 +199,7 @@ yourself, keeping standards and spec as separate axes.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is
   the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
-- **Gates and repros:** don't rerun the gate: read the gate of record and run the PR's own tests and acceptance checks. On a review head, the worker's report (its narrow-check command and exit code) is the check the worker ran, and no gate of record exists yet: it runs on the head you are satisfied with. The `gate` status and the `loop-gate/` record are a ready head's. Run a repro or test as the bare command, with no wrapper, redirect or detach around it, and keep it running with
+- **Gates and repros:** don't rerun the gate: read the gate of record and run the PR's own tests and acceptance checks. On a review head, the worker's report (its narrow-check command and exit code) is the check the worker ran, and no gate of record exists yet: it runs on the head you are satisfied with. The `gate` status and the `loop-gate/` record are a ready head's. Run the suite, or more than a few test files, only through the project's test task (its `mise run` task, which carries the suite's parallel workers), never a bare runner such as `pytest`, which runs serially: one bare pass took 20 times the task's time. A selection of more than half the suite runs as the whole suite through that task. Run a repro or that task as the bare command, with no wrapper, redirect or detach around it, and keep it running with
   your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain
   command, so a wrapped one asks for approval, and on a reviewed sandbox each ask is a paid
   model call. Then write its proof log from what it printed: the head's SHA, the command, its
