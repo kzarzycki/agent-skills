@@ -3903,6 +3903,61 @@ def test_without_pre_land_no_check_runs(lands: dict[str, Any]) -> None:
     assert not runs.exists()
 
 
+def test_check_merge_reports_what_the_pre_land_check_refuses(
+    lands: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#2063: check merge runs land's `pre_land` (pre_land_run) once nothing else holds the merge, so it never calls
+    clear a PR land leaves out; a refusal is a wait, as land keeps the PR ready, and it posts no comment."""
+    runs = pre_land(lands)
+    base = lands["main"]()
+    fine = lands["open"](7, {"7.txt": "7\n"})
+    old = lands["open"](8, {"old.txt": "old\n"})
+    command = shlex.join(["STALE=old.txt", sys.executable, "check.py", str(runs)])
+    assert approvals.main(["check", "merge", "7"]) == 0
+    capsys.readouterr()
+    assert approvals.main(["check", "merge", "8"]) == approvals.WAITING
+    lines = capsys.readouterr().out.splitlines()
+    at = lines.index(
+        f"PR #8: `{command}` refuses it against main at {base}, exiting 1: land leaves it out"
+    )
+    assert lines[at + 1] == "  forked before the restructuring: old.txt is back"
+    assert runs.read_text().splitlines() == [f"{fine} {base}", f"{old} {base}"]
+    assert not [body for _, body in lands["comments"] if body.startswith(approvals.PRE_LAND)]
+    # land agrees: it leaves out the PR check merge held
+    assert lands["land"]()[0] == 1
+    assert lands["merged"]() == ["7"]
+
+
+def test_check_merge_says_pre_land_has_not_run_while_something_else_holds(
+    lands: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs = pre_land(lands)
+    lands["open"](8, {"old.txt": "old\n"})
+    lands["pulls"][8]["reviews"]["nodes"] = []  # no verdict: a proof is missing
+    command = shlex.join(["STALE=old.txt", sys.executable, "check.py", str(runs)])
+    assert approvals.main(["check", "merge", "8"]) == 1
+    lines = capsys.readouterr().out.splitlines()
+    assert (
+        f"PR #8: pre_land not run: `{command}` (land runs it once nothing else holds the merge)"
+        in lines
+    )
+    assert not runs.exists()
+
+
+def test_check_merge_without_a_working_tree_says_pre_land_is_not_run(
+    lands: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = pre_land(lands)
+    lands["open"](8, {"old.txt": "old\n"})
+    monkeypatch.setattr(approvals, "policy_ref", lambda _root: "refs/remotes/origin/main")
+    assert approvals.main(["check", "merge", "8"]) == approvals.WAITING
+    lines = capsys.readouterr().out.splitlines()
+    assert any(
+        line.startswith("PR #8: pre_land not run:") and "no working tree" in line for line in lines
+    ), lines
+    assert not runs.exists()
+
+
 def configure_pre_land(lands: dict[str, Any], command: list[str]) -> None:
     (lands["work"] / "docs" / "agents" / "loop.md").write_text(
         add(GITHUB_RULE, "loop", f"pre_land: {shlex.join(command)}\n")
