@@ -308,3 +308,14 @@ def test_a_status_only_read_asks_pull_status_not_the_whole_pull(site: str) -> No
     }
     assert "pull_status" in calls
     assert "pull_request" not in calls
+
+
+def test_a_reset_inside_a_tight_ceiling_waits_with_the_jitter_cut_to_fit(
+    calls: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the bucket resets in 120 s and the ceiling has 50 s beyond it: the most jitter (JITTER) would pass the ceiling
+    monkeypatch.setattr(github.random, "randint", lambda low, high: high)
+    monkeypatch.setattr(github, "wait_until", time.monotonic() + 121 + 50)
+    calls["replies"] = [refuse("gh: API rate limit exceeded (HTTP 403)"), "ok"]
+    assert github.gh("api", "x") == "ok"  # it waits, never stops on the jitter alone
+    assert 121 <= sum(calls["sleeps"]) <= 121 + 50
