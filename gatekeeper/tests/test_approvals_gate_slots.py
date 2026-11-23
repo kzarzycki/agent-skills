@@ -227,35 +227,6 @@ def test_a_land_takes_a_free_slot_at_once_on_several_slots(monkeypatch: pytest.M
     assert got == [approvals.slot_path(1)] and not waited
 
 
-def test_a_lands_batch_gate_runs_its_steps_as_a_land(
-    steps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Only the land's own gate steps take a slot ahead of PR gates: gate_batch hands run_steps `land`, and run_steps
-    hands it to each step it runs."""
-    seen: list[bool] = []
-    real = approvals.run_steps
-
-    def run_steps(*_args: Any, land: bool = False, **_kw: Any) -> dict[str, Any]:
-        seen.append(land)
-        return {"code": 0, "left": [], "ran": [], "records": [], "step": None}
-
-    monkeypatch.setattr(approvals, "run_steps", run_steps)
-    assert approvals.gate_batch(steps["repo"], []) == (steps["tree"], "reused")
-    assert seen == [True]
-
-    lands: list[bool] = []
-
-    def ran_step(_step: Any, _cwd: Any, _out: Any, _load: Any, land: bool) -> tuple[int, int, int]:
-        lands.append(land)
-        return 0, 0, 0
-
-    monkeypatch.setattr(approvals, "run_steps", real)
-    monkeypatch.setattr(approvals, "ran_step", ran_step)
-    monkeypatch.setattr(approvals, "step_pass", lambda *_a, **_k: None)
-    approvals.run_steps(steps["head"], steps["tree"], lambda: "", steps["repo"], land=True)
-    assert lands and all(lands)
-
-
 def test_a_waiting_land_on_one_slot_beats_a_blocking_flock_that_started_later(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

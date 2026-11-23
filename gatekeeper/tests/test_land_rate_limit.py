@@ -119,8 +119,9 @@ def test_a_held_lock_at_an_unchanged_tip_is_polled_without_gh(
     monkeypatch.setattr(approvals, "landing", landing)
     monkeypatch.setattr(approvals, "git", git)
     assert approvals.land(1, wait=True) == approvals.WAITING
-    # one landing() per RECHECK, and POLL / RECHECK lock reads (which cost no API call) between two of them
-    assert abs(len(ran) - approvals.CEILING // approvals.RECHECK) <= 1
+    # a lock that never moves runs landing() again only once its land may be dead (STALE), and POLL lock reads (which
+    # cost no API call) go between two of them (#1915)
+    assert abs(len(ran) - approvals.CEILING // approvals.STALE) <= 1
     assert len(listed) > len(ran) * 3
 
 
@@ -152,7 +153,7 @@ def test_a_graphql_limit_waits_for_the_graphql_reset(calls: dict[str, Any], mess
     ] in calls["gh"]
 
 
-def test_a_held_lock_is_asked_of_github_again_after_recheck_and_said_each_minute(
+def test_a_held_lock_is_asked_of_github_again_once_stale_and_said_each_minute(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     now, ran = [0.0], []
@@ -171,7 +172,7 @@ def test_a_held_lock_is_asked_of_github_again_after_recheck_and_said_each_minute
     monkeypatch.setattr(approvals, "landing", landing)
     monkeypatch.setattr(approvals, "git", lambda *a: "abc\trefs/heads/loop-landing/main\n")
     assert approvals.land(1, wait=True) == approvals.WAITING
-    assert all(b - a == approvals.RECHECK for a, b in itertools.pairwise(ran))
+    assert all(b - a == approvals.STALE for a, b in itertools.pairwise(ran))
     assert len(ran) > 2
     # the log is never silent for wait-for's 300 s: the held state is said again every SLOT_SAY_SECONDS
     assert capsys.readouterr().out.count("another land holds") >= approvals.CEILING // 120
@@ -183,7 +184,7 @@ def test_a_round_that_does_not_hold_the_lock_polls_no_stale_tip(
     rounds, listed = [], []
     monkeypatch.setattr(github, "wait_until", None)
     monkeypatch.setattr(approvals, "POLL", 0.01)
-    monkeypatch.setattr(approvals, "RECHECK", 0.05)
+    monkeypatch.setattr(approvals, "STALE", 0.05)
     monkeypatch.setattr(approvals, "QUEUE_POLL", 0.03)
 
     def landing(pr: Any, only: bool = False) -> tuple[int, bool]:
@@ -294,7 +295,7 @@ def test_a_failed_quota_read_keeps_the_poll(monkeypatch: pytest.MonkeyPatch) -> 
     assert real_poll_seconds() == max(approvals.POLL, approvals.QUEUE_POLL)
 
 
-@pytest.mark.parametrize("site", ["batch", "merges", "base_branch", "settled_head"])
+@pytest.mark.parametrize("site", ["merges", "base_branch", "settled_head"])
 def test_a_status_only_read_asks_pull_status_not_the_whole_pull(site: str) -> None:
     """The conftest fake answers pull_status from pull_request, so no behaviour test tells the two apart; the
     function's own calls do (#1271)."""
@@ -307,3 +308,14 @@ def test_a_status_only_read_asks_pull_status_not_the_whole_pull(site: str) -> No
     }
     assert "pull_status" in calls
     assert "pull_request" not in calls
+
+
+def test_a_reset_inside_a_tight_ceiling_waits_with_the_jitter_cut_to_fit(
+    calls: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the bucket resets in 120 s and the ceiling has 50 s beyond it: the most jitter (JITTER) would pass the ceiling
+    monkeypatch.setattr(github.random, "randint", lambda low, high: high)
+    monkeypatch.setattr(github, "wait_until", time.monotonic() + 121 + 50)
+    calls["replies"] = [refuse("gh: API rate limit exceeded (HTTP 403)"), "ok"]
+    assert github.gh("api", "x") == "ok"  # it waits, never stops on the jitter alone
+    assert 121 <= sum(calls["sleeps"]) <= 121 + 50

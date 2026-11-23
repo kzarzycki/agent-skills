@@ -8,7 +8,8 @@
 # batch as a draft PR on top of main in CI, retries a red batch once, splits a batch still red until it finds the PR
 # that breaks it and dequeues only that one, and squash-merges the rest on green. A push makes a head with no `land`
 # status, so the PR stops matching and leaves the queue. A PR Mergify drops gets `loop:dequeued`, which the next
-# `land` evicts back to draft.
+# `land` evicts back to draft. Mergify takes a PR it dropped back at the same head only on `@mergifyio queue`, not
+# through the `queue` action below, so the re-land after an eviction also comments that command, once.
 #
 # A cloud session's GitHub proxy refuses the status write: there `land` comments a `Queued for Mergify` record naming the
 # head, and the repo's `.github/workflows/land-status.yml` posts `land` on that head while it is still the PR's.

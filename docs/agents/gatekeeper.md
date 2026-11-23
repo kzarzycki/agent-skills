@@ -20,6 +20,25 @@ incubating:
   append_paths:
     - docs/layers.md
 
+bot:
+  pack-bump:   # the engineering pack's bump, which a cloud worker pushes to claude/ready-pack-bump-<tag>
+    branch: claude/ready-pack-bump-
+    paths:
+      - apm.yml
+      - apm.lock.yaml
+      - ".agents/**"
+      - ".claude/**"
+      - ".codex/**"
+  # the Release workflow's PR (#1861, engineering/RELEASING.md): `qualify`'s `cli release-verify` fails it unless its tree is exactly `cli cut-release` rerun on its branch point, so no verifier reads it. Its commits carry an identity no GitHub account holds, which a `branch` section counts as the PR author's.
+  release:
+    branch: release/
+    paths:
+      - "*/CHANGELOG.md"
+      - "*/changelog.d/*.md"
+      - "*/apm.yml"
+      - "*/.claude-plugin/plugin.json"
+      - "*/README.md"
+
 land:
   # PRs into main merge through the Mergify merge queue `.mergify.yml` configures: land posts `land` and adds `loop:queued` on each landable PR, and Mergify tests each batch as a draft PR in CI and squash-merges it, so no host runs a landing gate (#1658). GitHub's own queue needs an organisation-owned repo.
   queue: mergify

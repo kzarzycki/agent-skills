@@ -66,7 +66,7 @@ THREADS = "reviewThreads(first: 100) { totalCount nodes { isResolved comments(fi
 
 PULL = f"""id number url title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType additions deletions }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
-  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
+  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body submittedAt commit {{ oid }} }} }}
   {THREADS}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ author {{ user {{ login }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
@@ -276,7 +276,55 @@ def refuse_bypass(args: tuple[str, ...]) -> None:
         )
 
 
+# the reads this run made (#2016): one `approve merge` or `record verdict` read the same PR, its timeline, reviews,
+# files, comments and checks three or four times, about 40 REST calls; a repeat of the same `gh api` read within READ_TTL
+# seconds is answered from here, and any other call (a write, or any gh command but a plain `gh api` read) empties it,
+# so nothing is read back stale past this run's own write; each wait calls read_afresh() after its sleep, which
+# empties it, so its next read is GitHub's however short the wait.
+reads: dict[tuple[str, ...], tuple[float, str]] = {}
+READ_TTL = 20.0
+WRITE_FLAGS = {"-f", "-F", "--field", "--raw-field", "--input"}
+
+
+def plain_read(args: Sequence[str]) -> bool:
+    """Whether `gh *args` is a `gh api` GET that may be answered from `reads`: no method but GET, no field or body
+    (which make gh POST), no `-i` (rest_if_changed's ETag read, which wants the headers), and not `rate_limit`."""
+    if args[:1] != ("api",) or "-i" in args or any("rate_limit" in arg for arg in args):
+        return False
+    if any(
+        arg in WRITE_FLAGS or arg.startswith(("--field=", "--raw-field=", "--input="))
+        for arg in args
+    ):
+        return False
+    for flag, value in zip(args, args[1:]):
+        if flag in ("-X", "--method") and value.upper() != "GET":
+            return False
+    return not any(arg.startswith("--method=") and arg[9:].upper() != "GET" for arg in args)
+
+
+def read_afresh() -> None:
+    """After a wait that reads again to see someone else's change (a push GitHub shows late, a PR that turns landable):
+    empty `reads`, so the next read is GitHub's however short the wait was; a wait never answers itself. The wait sleeps
+    on its own clock, which a test may fake."""
+    reads.clear()
+
+
 def gh(*args: str, data: str | None = None) -> str:
+    key = tuple(args)
+    # the quota guard's free read: neither kept nor a reason to forget
+    if key[:2] == ("api", "rate_limit"):
+        return _gh(*args, data=data)
+    if data is None and plain_read(key):
+        if (seen := reads.get(key)) and time.monotonic() - seen[0] < READ_TTL:
+            return seen[1]
+        out = _gh(*args)
+        reads[key] = (time.monotonic(), out)
+        return out
+    reads.clear()  # a write, or a call this cache doesn't read: nothing read before it is trusted after it
+    return _gh(*args, data=data)
+
+
+def _gh(*args: str, data: str | None = None) -> str:
     refuse_bypass(args)
     if data is not None:  # every comment and review approvals.py posts goes as `data`
         for text in texts(data):
@@ -294,7 +342,7 @@ def gh(*args: str, data: str | None = None) -> str:
             ) is None:
                 raise
             # jitter, so lands that waited on one reset do not all resume in the same second
-            pause += random.randint(0, JITTER)
+            pause = jittered(pause)
             until = time.time() + pause
             if wait_until is None or time.monotonic() + pause > wait_until:
                 exc.stderr = f"{exc.stderr}\nGitHub rate limit, resets at {time.strftime('%H:%M UTC', time.gmtime(until))}"
@@ -311,7 +359,7 @@ def gh(*args: str, data: str | None = None) -> str:
 
 # land --wait sets this (time.monotonic) to the end of its ceiling: a rate limit then waits, else gh() fails with the reset time
 wait_until: float | None = None
-JITTER = 60  # most seconds of random delay added to a rate-limit wait
+JITTER = 180  # most seconds of random delay added to a rate-limit wait: every waiter on one reset resumes over 3 min, not in its first second
 SLICE = 60  # seconds between the lines a rate-limit wait prints
 
 # answers a run keeps (#1771): (bucket, key) -> (time.monotonic when read, answer); writer, required_checks and a
@@ -328,13 +376,15 @@ quota_left: dict[str, tuple[float, int, int, int]] = {}
 
 
 def forget() -> None:
-    """Drop every answer this run kept: viewer's login, `kept` and the guard's last quota readings; and end any wait
+    """Drop every answer this run kept: viewer's login, `kept`, `reads` and the guard's last quota readings; and end any wait
     (wait_until), so no guard runs."""
     global wait_until
     wait_until = None
     viewer_login.clear()
     kept.clear()
+    etags.clear()
     quota_left.clear()
+    reads.clear()
 
 
 def bucket_of(args: Sequence[str]) -> str:
@@ -376,7 +426,7 @@ def guard(args: Sequence[str]) -> None:
     if found is None or found[0] >= QUOTA_FLOOR:
         return
     remaining, _, reset = found
-    pause = max(reset - int(time.time()), 0) + 1 + random.randint(0, JITTER)
+    pause = jittered(max(reset - int(time.time()), 0) + 1)
     at = time.strftime("%H:%M UTC", time.gmtime(time.time() + pause))
     if time.monotonic() + pause > wait_until:
         raise subprocess.CalledProcessError(
@@ -391,6 +441,14 @@ def guard(args: Sequence[str]) -> None:
         print(said, file=sys.stderr, flush=True)
         time.sleep(min(left, SLICE))
     quota_left.pop(bucket, None)  # the reset passed: read the bucket afresh
+
+
+def jittered(pause: int) -> int:
+    """`pause` plus up to JITTER random seconds, so the lands that waited on one reset resume over minutes, not in its
+    first second; within a wait (wait_until set) never past the ceiling's room, so the jitter alone never stops a land
+    whose reset falls inside it."""
+    room = JITTER if wait_until is None else min(JITTER, int(wait_until - time.monotonic()) - pause)
+    return pause + random.randint(0, max(room, 0))
 
 
 def rate_limited(stderr: str, backoff: int, graphql: bool = False) -> int | None:
@@ -445,8 +503,9 @@ def _repository(fields: str) -> str:
 
 
 # how GitHub, or a cloud session's proxy in front of it, refuses GraphQL: `gh` ends its error with a 403, or, for a job
-# token a private organization repository withholds fields from, prints GraphQL's FORBIDDEN message
-REFUSALS = ("HTTP 403", "Resource not accessible by integration")
+# token a private organization repository withholds fields from, prints GraphQL's FORBIDDEN message. `gh pr merge`
+# names no `HTTP 403` where the proxy refuses it: it prints `non-200 OK status code: 403 Forbidden body: ...` (#1917)
+REFUSALS = ("HTTP 403", "Resource not accessible by integration", "status code: 403 Forbidden")
 
 
 def refused(stderr: str | None) -> bool:
@@ -479,6 +538,38 @@ def fast(graphql: Callable[[], Answer], rest: Callable[[], Answer]) -> Answer:
 
 def rest(path: str) -> Any:
     return json.loads(gh("api", path))
+
+
+# rest_if_changed's last answer for each path: (its ETag, the parsed body)
+etags: dict[str, tuple[str, Any]] = {}
+# a 304 as gh reports it: the status line `gh api -i` prints, or its error `gh: HTTP 304` where it exits 1 on one
+NOT_MODIFIED = re.compile(r"\bHTTP(?:/[\d.]+)? 304\b")
+
+
+def rest_if_changed(path: str) -> tuple[bool, Any]:
+    """REST `repos/{owner}/{repo}/<path>` read with the ETag of its last read (`If-None-Match`): (False, the kept answer)
+    on GitHub's 304, which costs no quota, else (True, the answer), keeping its ETag (#1915). The first read of a path
+    is a plain one."""
+    known = etags.get(path)
+    args = [
+        "api",
+        "-i",
+        *(["-H", f"If-None-Match: {known[0]}"] if known else []),
+        f"repos/{{owner}}/{{repo}}/{path}",
+    ]
+    try:
+        out = gh(*args)
+    except subprocess.CalledProcessError as exc:
+        if known and NOT_MODIFIED.search(f"{exc.stdout or ''}\n{exc.stderr or ''}"):
+            return False, known[1]
+        raise
+    head, _, body = out.replace("\r\n", "\n").partition("\n\n")
+    if known and NOT_MODIFIED.search(head.split("\n", 1)[0]):
+        return False, known[1]
+    found = json.loads(body or "{}")
+    if tag := re.search(r"(?im)^etag:[ \t]*(\S[^\n]*?)[ \t]*$", head):
+        etags[path] = (tag[1], found)
+    return True, found
 
 
 def rest_pages(path: str, items: str = ".[]") -> list[Any]:
@@ -719,6 +810,7 @@ def rest_pull(pr: int) -> dict[str, Any]:
             "author": actor(review.get("user")),
             "state": review["state"],
             "body": review.get("body") or "",
+            "submittedAt": review.get("submitted_at"),
             "commit": {"oid": review.get("commit_id") or ""},
         }
         for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
