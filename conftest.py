@@ -15,6 +15,8 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 import pytest
 
+from tools.gh_trap import install_trap, without_trap
+
 # the gatekeeper's test harness, whose fixtures every package's tests run under, and the Omnigent driver's tests
 for package in (
     "gatekeeper",
@@ -39,6 +41,30 @@ from approvals_harness import (  # noqa: F401
     repo_template,
     required,
 )
+
+# No test reaches GitHub through the real `gh` (tools/gh_trap.py, #2035); the trap folder this process made is removed
+# when its run ends, and an xdist worker reuses its controller's (inherited through GH_NO_GITHUB_TRAP)
+_made_trap: list[Path] = []
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if made := install_trap(os.environ):
+        _made_trap.append(made)
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    for made in _made_trap:
+        shutil.rmtree(made, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _real_gh_for_live_agents(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `live_agent` test drives a real harness against the real forge: it gets PATH without the trap."""
+    trap = os.environ.get("GH_NO_GITHUB_TRAP")
+    if trap and request.node.get_closest_marker("live_agent"):
+        monkeypatch.setenv("PATH", without_trap(os.environ["PATH"], trap))
 
 
 @pytest.fixture
