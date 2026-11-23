@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
-    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep|--no-keep] [--notify]
-    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--host NAME|ID (claude-cloud child)] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE|lead|worker|verifier] [--pr N] [--keep|--no-keep] [--notify]
+    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE|lead|worker|verifier] [--effort LEVEL] [--pr N] [--host NAME|ID (claude-cloud child)] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py claude-cloud-env <checkout>   # alias: cloud-env
     python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>
@@ -174,7 +174,7 @@ return the report or a question; ``reap`` drops the line of each session it fini
 finishing it, so the supervisor posts no ``archived`` for a finish its notified session ran.
 ``run``, ``wait``, ``reap`` and the supervisor (a child's relayed ``DONE`` report or failure; a followed lead's ``DONE`` once a lead waiting on it (``--after``) is told; a lead a followed lead started is reaped by its starter) all finish a session through
 ``finish_delivered``, the one place a taken result archives it: never one that asked a
-question, nor one given ``--keep`` (``run`` or ``start``, which labels it ``omni.keep``, so the supervisor leaves it open too), nor one with an open question card, a pending prompt or background work, nor a worker given ``--pr`` unless ``--no-keep`` (``--keep`` stays accepted):
+question, nor one given ``--keep`` (``run`` or ``start``, which labels it ``omni.keep``, so the supervisor leaves it open too), nor one with an open question card, a pending prompt or background work (a cloud worker, verifier or gate child's taken result ends its VM's background work with it, #2052), nor a worker given ``--pr`` unless ``--no-keep`` (``--keep`` stays accepted):
 a fix round or the next verifier pass reaches a kept worker with ``send``, warm, where a fresh one repeats its setup.
 ``start --pr`` labels the worker ``omni.pr=<owner/name>#<n>``, and fails, archiving the session, when it can't. A verifier for ``--pr`` carries the same label, so its spend groups by PR beside the worker's, but ``reap`` never holds a verifier on it. ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
 the rest, exiting 1 when a finish failed; it keeps a ``--pr`` worker, ``--force`` included, until its PR (looked up in the
@@ -232,8 +232,8 @@ can't be read (start any session on the host so a file can be read through it). 
 where the project's cloud sessions ran, pinned and trusted; with none, ``start`` refuses before the create, never a 412. A
 create that times out is looked up by title for a while and reused, never repeated. On a host other than this one ``--workspace`` and the
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
-its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report is the file ``wait --pr``
-writes here. A verifier (a ``--role`` whose file is engineering-loop's verifier.md) takes ``--pr`` as the PR it
+its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report ``wait --pr``
+writes here, under ``tmp/loop/`` by its name. A verifier (a ``--role`` whose file is engineering-loop's verifier.md) takes ``--pr`` as the PR it
 reviews, not a report channel, starts on another host's clone however many sessions hold it (it
 works in a worktree of its own), and runs on another host only when the project's loop.md has no
 ``Placement: hosts: <name>, <name>`` line (or the old ``Verifier hosts:`` one) or that line lists the host; ``--file`` writes a local
@@ -1058,6 +1058,24 @@ CLOUD_NUDGE = (
 )
 # A lead's cloud report opens with the ending line LEAD_PREAMBLE names.
 CLOUD_LEAD_ENDING = re.compile(r"[\s*_#>-]*(DONE|USER NEEDED|STILL WORKING|PARKED):")
+
+
+def resolve_role(role: str) -> str:
+    """``--role`` as a file path: a path that is a file stays; a bare role name (``worker``, ``verifier``,
+    ``lead``) names engineering-loop's role file, read from this checkout (a cloud child gets its text, so
+    its launch dir needs no copy). The pack sits beside this skill, or under ``loop/`` in the marketplace."""
+    if Path(role).is_file() or role not in ROLES:
+        return role
+    here = Path(__file__).resolve()
+    up = here.parents
+    pack = [up[4] / "loop" / "skills"] if len(up) > 4 else []
+    for skills in (up[2], *pack, Path.cwd() / ".claude" / "skills"):
+        found = skills / "engineering-loop" / f"{role}.md"
+        if found.is_file():
+            return str(found)
+    raise Fail(
+        f"--role {role}: engineering-loop's {role}.md is not beside this skill; pass its path"
+    )
 
 
 def role_line(role: str | None, cloud: bool) -> str:
@@ -6645,6 +6663,16 @@ FAILED_STATUSES = {"failed", "cancelled", "canceled", "errored", "error"}
 KEEP_LABEL = "omni.keep"  # set by ``start --keep``: the session stays open once its result is taken
 
 
+def cloud_child(og: Omnigent, info: dict) -> bool:
+    """Whether ``info`` is a cloud child whose VM ends with its result (#2052): an ``acp:claude-cloud`` worker or
+    verifier (``omni.role``), or a child session with no role (a ``claude-cloud-run`` gate). A lead, a manager (any
+    other role) and a top-level session with no role are none: they live past one result."""
+    role = str((info.get("labels") or {}).get("omni.role") or "")
+    if role not in ("", *LEAN_ROLES) or not (role or info.get("parent_session_id")):
+        return False
+    return cloud_session(og, info)
+
+
 def finish_delivered(
     og: Omnigent,
     sid: str,
@@ -6669,7 +6697,8 @@ def finish_delivered(
     Kept, not archived: ``keep`` (the caller's ``--keep``) or a session labelled ``KEEP_LABEL``
     (``start --keep``); an open question card, whose answer needs the session; a worker whose PR
     is open or unreadable (``hold_pr``; a caller that decided with ``--no-keep`` passes False);
-    a pending approval prompt; background work still running. ``settled`` says the result was taken from
+    a pending approval prompt; background work still running, unless the session is a cloud child
+    (``cloud_child``) and ``settled``, since that work is what its VM keeps spending quota on. ``settled`` says the result was taken from
     the session itself (a report or verdict read, a ``DONE`` relayed), so a status still ``running``
     for a moment after it is no hold; ``reap``, which reads sessions it knows nothing of, passes
     False and keeps any running one or one with input pending. ``force`` stops a stuck running
@@ -6731,11 +6760,13 @@ def finish_delivered(
             f"{name}: archived ({'stuck' if stuck else 'stopped'}); check git status in"
             f" {info.get('workspace') or '(workspace unknown)'}"
         ), False
+    # a taken cloud child's background tasks are what its VM keeps spending quota on: they end with it
+    ended = live_tasks(info) if settled and live_tasks(info) and cloud_child(og, info) else []
     busy = (
         "blocked on a prompt"
         if prompts_of(info)
         else "background work"
-        if live_tasks(info)
+        if live_tasks(info) and not ended
         else status
         if not settled and status in RUNNING
         else "input pending"
@@ -6753,7 +6784,8 @@ def finish_delivered(
     except Fail as e:  # one refused finish leaves the rest to reap
         print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
         return f"{name}: finish failed: {e}", True
-    lines, bad = [f"{name}: archived ({status})"], False
+    gone = f"; {len(ended)} background task(s) ended with its VM" if ended else ""
+    lines, bad = [f"{name}: archived ({status}{gone})"], False
     try:
         kids = [k for k in og.children(sid) if k not in seen]
     except Fail:  # the children stay for a reap
@@ -10602,7 +10634,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument("title")
         p.add_argument("brief", help="the task specifics: a file, or the text itself")
         p.add_argument("report", type=Path)
-        p.add_argument("--role", help="worker/verifier role file the child reads first")
+        p.add_argument(
+            "--role",
+            help="worker/verifier role file the child reads first, or lead|worker|verifier for the pack's own",
+        )
         p.add_argument("--confirm-seconds", type=float, default=START_CONFIRM_SECONDS)
         p.add_argument(
             "--model",
@@ -11232,6 +11267,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             print(line)
             return 0 if ok else 1
         if args.cmd in ("run", "start", "brief") and args.role is not None:
+            args.role = resolve_role(args.role)
             role_file = Path(args.role)
             if not (role_file.is_file() and os.access(role_file, os.R_OK)):
                 raise Fail(f"--role {args.role}: not a readable file; the child reads it first")
@@ -11239,7 +11275,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # the body only: start adds its signature, lock and title lines once a session exists
             pr = report_pr(args.role, args.cloud, args.pr)
             # as start's: a path on another host is neither resolved nor checked here
-            report = args.report.resolve() if not args.remote or pr else args.report
+            report = args.report if args.remote else args.report.resolve()
             # ponytail: a lead's delegation line is read from this checkout, never another host's (start reads that
             # through the server, which brief does not reach)
             delegation = lead_delegation(None, None) if args.top_level and not pr else ""
@@ -11405,6 +11441,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # a path on the session's host, which this one neither resolves nor reads (as start's)
             far = not args.pr and elsewhere(og, og.info(args.session))
             report = args.report if far else args.report.resolve()
+            if args.pr and args.report.is_absolute() and elsewhere(og, og.info(args.session)):
+                # the comment's body comes here, where bring_home puts a path on that host's
+                report = (Path("tmp/loop") / args.report.name).resolve()
             try:
                 # --pr reads a comment, not a file
                 since = (
@@ -11499,7 +11538,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         host = og.host(args.host) if getattr(args, "host", None) else og.host_id
         # paths on another host: neither resolved nor checked here
         remote = elsewhere(og, session) or host != og.host_id
-        here = not remote or bool(args.pr)  # with --pr the report is the file wait writes here
+        here = not remote  # on another host the report is a path there, with --pr or without
         # a cloud agent's run on another host: no parent, so placed where --host says, and its
         # report comes home, since the caller reads it (claude-cloud-run from any host)
         placed = (
@@ -11511,6 +11550,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         )
         here = here or placed
         report = args.report.resolve() if here else args.report
+        if args.cmd == "send" and remote and args.pr and report.is_absolute():
+            report = (Path("tmp/loop") / report.name).resolve()  # where wait --pr wrote it
         if args.cmd != "send" and args.host and not args.top_level and not placed:
             raise Fail(
                 "--host needs --top-level, or a cloud agent: Omnigent runs a child on its"

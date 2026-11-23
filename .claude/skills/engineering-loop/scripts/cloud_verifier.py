@@ -55,7 +55,7 @@ report's own folder pass: a fresh clone ignores `tmp/loop/` only where the proje
 out the PR's head detached, so nothing the verifier does moves the worker's branch, runs `codex exec` on the brief with Codex's own sandbox
 off (the VM is the sandbox, and the verifier needs Docker and the network), under an `AGENT_SIGNATURE=` line
 naming the model and effort it was given, and posts the report as one comment on
-the PR through REST, with a footer of four lines, `Seconds: start|setup|review|post <n|unknown>`, and prints one
+the PR through REST, its closing `Head:`/`VERDICT:`/`SATISFIED:`/`Risk:` lines in view and the whole report folded under them (folding.py), with a folded footer of four lines, `Seconds: start|setup|review|post <n|unknown>`, and prints one
 JSON line, `{"pass_seconds": {...}, "pr": N, "head": "..."}` (`null` for an unknown phase), then the comment's URL as
 its last line. The phases, in whole seconds: `start`, from `--requested` (the unix time the carrier's lead asked for
 the pass; without it `unknown`) to `verify`'s own start; `setup`, from there to the CLI's start (install, fetch,
@@ -114,6 +114,32 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
+
+# importing the gatekeeper skill's folding.py would cache its bytecode in the installed skill folder, an untracked change there
+sys.dont_write_bytecode = True
+
+
+def installed(skill: str) -> Path:
+    """The scripts folder of `skill`, which another package ships, found by the host's install layout: a sibling
+    skill folder (APM's one skills directory), a sibling plugin's (this repo, or a marketplace Claude Code loads in
+    place), else the newest version of a plugin in Claude Code's cache (`<marketplace>/<plugin>/<version>/`) that
+    no update has orphaned. Exits naming the skill to install when none holds it."""
+    # ponytail: three layouts, the ones APM and Claude Code use; a host with another adds its glob here.
+    own = Path(__file__).resolve().parents[1]
+    plugin = own.parent.parent
+    cached = plugin.parent.parent.glob(f"[!.]*/[!.]*/skills/{skill}")
+    for folder in [
+        own.parent / skill,
+        *sorted(plugin.parent.glob(f"[!.]*/skills/{skill}")),
+        *sorted(cached, key=lambda path: path.stat().st_mtime, reverse=True),
+    ]:
+        if (folder / "SKILL.md").is_file() and not (folder.parents[1] / ".orphaned_at").exists():
+            return folder / "scripts"
+    sys.exit(f"{Path(__file__).name} needs the `{skill}` skill: install the package that ships it")
+
+
+sys.path.insert(0, str(installed("gatekeeper")))
+from folding import fold
 
 VAR = "CODEX_AUTH_JSON"
 HOSTS = ["chatgpt.com", "*.chatgpt.com", "auth.openai.com", "api.openai.com"]
@@ -286,16 +312,11 @@ def refreshed(
 
 
 def environments_client():
-    """orchestrating-agents' claude.ai environment client (`claude_environments.py`), the one client of that API,
+    """the omnigent-agents skill's claude.ai environment client (`claude_environments.py`), the one client of that API,
     loaded by path from the skill beside this one, which the loop's package installs with it."""
-    path = (
-        Path(__file__).resolve().parents[2]
-        / "orchestrating-agents"
-        / "scripts"
-        / "claude_environments.py"
-    )
+    path = installed("omnigent-agents") / "claude_environments.py"
     if not path.is_file():
-        raise Refused(f"{path} is missing: install the orchestrating-agents skill beside this one")
+        raise Refused(f"{path} is missing: install the omnigent-agents skill beside this one")
     spec = importlib.util.spec_from_file_location(f"{__name__}_claude_environments", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -678,7 +699,7 @@ def seconds(requested, began, started, ended) -> dict[str, int | None]:
     }
 
 
-def publish(pr: int, body: str, phases: dict[str, int | None]) -> None:
+def publish(pr: int, body: str, phases: dict[str, int | None]) -> str:
     """Post the body with a `Seconds:` footer (post unknown, since it is known only afterwards), put the post time
     into that one comment, then print the pass's JSON line and the comment's URL, the last line. A failed edit is a
     warning: the comment is posted, so the pass stands."""
@@ -689,8 +710,13 @@ def publish(pr: int, body: str, phases: dict[str, int | None]) -> None:
         )
 
     plain = body.rstrip("\n") + "\n\n"
+
+    def timed(times: dict[str, int | None]) -> str:
+        # folded, so the visible part stays the report's summary; each `Seconds:` line still starts its own line
+        return f"{plain}<details><summary>Timing</summary>\n\n{footer(times)}\n\n</details>\n"
+
     began = time.time()
-    url, ident = post(pr, f"{plain}{footer(phases)}\n")
+    url, ident = post(pr, timed(phases))
     took = round(time.time() - began)
     try:
         if ident:
@@ -702,13 +728,14 @@ def publish(pr: int, body: str, phases: dict[str, int | None]) -> None:
                 f"repos/{{owner}}/{{repo}}/issues/comments/{ident}",
                 "-F",
                 "body=@-",
-                input=f"{plain}{footer({**phases, 'post': took})}\n",
+                input=timed({**phases, "post": took}),
             )
             phases = {**phases, "post": took}  # the JSON line says what the comment says
     except (Refused, OSError, ValueError) as e:
         print(f"cloud_verifier: the post time was not added to the comment: {e}", file=sys.stderr)
     print(pass_line(pr, phases))
     print(url)
+    return url
 
 
 HEAD = [""]  # the head the running pass reviews, for its JSON line
@@ -718,6 +745,65 @@ def pass_line(pr: int, phases: dict[str, int | None]) -> str:
     return json.dumps({"pass_seconds": phases, "pr": pr, "head": HEAD[0]})
 
 
+def _load_events():
+    """events.py, the sibling that writes a step's state as a git ref, or None when this file runs without it: an
+    event reports the pass and is never part of it."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "loop_events", installed("gatekeeper") / "events.py"
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001 - absent or broken: the pass runs and writes no event
+        return None
+
+
+EVENTS = _load_events()
+
+
+class PassEvent:
+    """The `verifier` event (gatekeeper's events.md) of one pass, on the branch of the PR it reviews: `waiting` from the head's
+    fetch, beaten every `beat` seconds while the review runs, then the end the pass set (`ok` for `SATISFIED: yes`,
+    `failed` for anything else, `needs-owner` for a question). A write that fails never changes the pass."""
+
+    def __init__(self) -> None:
+        self.branch, self.state, self.url, self.question = "", "failed", "", None
+        self.stop = threading.Event()
+        self.beater: threading.Thread | None = None
+        self.beat = float(EVENTS.BEATS["verifier"]) if EVENTS else 300.0
+
+    def write(self, state: str, url: str = "", question: str | None = None) -> None:
+        if EVENTS and self.branch:
+            try:
+                EVENTS.emit("verifier", self.branch, state, url=url, question=question)
+            except Exception as e:  # noqa: BLE001
+                print(f"cloud_verifier: verifier event not written: {e}", file=sys.stderr)
+
+    def start(self, branch: str) -> None:
+        self.branch = branch
+        self.write("waiting")
+
+        def beating() -> None:
+            while not self.stop.wait(self.beat):
+                self.write("waiting")
+
+        self.beater = threading.Thread(target=beating, daemon=True)
+        self.beater.start()
+
+    def ended(self, body: str) -> None:
+        """Set the end from the report's last `SATISFIED:` line: `ok` for yes, else `failed`."""
+        said = re.findall(r"^SATISFIED:[ \t*_]*(\w+)", body, re.MULTILINE | re.IGNORECASE)
+        self.state = "ok" if said and said[-1].lower() == "yes" else "failed"
+
+    def finish(self) -> None:
+        self.stop.set()
+        if self.beater:  # a beat in flight lands before the end, never after it
+            self.beater.join()
+        self.write(self.state, self.url, self.question)
+
+
 def verify(
     pr: int,
     brief_file: Path,
@@ -725,6 +811,23 @@ def verify(
     effort: str | None,
     harness: str = "codex",
     requested: float | None = None,
+) -> int:
+    """One pass (`review`) that writes its `verifier` event: an exception leaves the event `failed`, the default."""
+    event = PassEvent()
+    try:
+        return review(pr, brief_file, model, effort, harness, requested, event)
+    finally:
+        event.finish()
+
+
+def review(
+    pr: int,
+    brief_file: Path,
+    model: str | None,
+    effort: str | None,
+    harness: str,
+    requested: float | None,
+    event: PassEvent,
 ) -> int:
     began = time.time()
     if harness == "claude" and effort:
@@ -745,6 +848,7 @@ def verify(
     pull = json.loads(run("gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}").stdout)
     head, ref = pull["head"]["sha"], pull["head"]["ref"]
     HEAD[0] = head
+    event.start(ref)
     was = (
         run("git", "symbolic-ref", "-q", "--short", "HEAD", check=False).stdout.strip()
         or run("git", "rev-parse", "HEAD").stdout.strip()
@@ -822,7 +926,10 @@ def verify(
             return 4 if stuck else 1
         if not code and ask.strip():
             # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
-            publish(pr, f"## Verifier question\n\n{ask}", phases)
+            event.url = publish(
+                pr, fold("## Verifier question", ask.strip().splitlines()[0], ask), phases
+            )
+            event.state, event.question = "needs-owner", ask
             return 4 if stuck else 3
         if code or not re.search(r"^SATISFIED:", body, re.MULTILINE):
             print(
@@ -830,12 +937,26 @@ def verify(
             )
             print(pass_line(pr, phases))
             return 4 if stuck else 1
-        publish(pr, body, phases)
+        event.url = publish(pr, folded_report(body), phases)
+        event.ended(body)
     except (Refused, OSError, ValueError) as e:  # not posted, so a failed pass
         print(f"cloud_verifier: {e}", file=sys.stderr)
         print(pass_line(pr, phases))  # a failed pass's time counts too
         return 4 if stuck else 1
     return 4 if stuck else 0
+
+
+# the lines a reader of the comment needs in view: the verdict, as omnigent_agent.py's verdict_outcome reads them
+VERDICT_LINES = re.compile(r"^(?:Head|VERDICT|SATISFIED|Risk|Logic change):.*$", re.MULTILINE)
+
+
+def folded_report(body: str) -> str:
+    """The report as one comment: its closing `Head:`/`VERDICT:`/`SATISFIED:`/`Risk:` lines in view, the whole report
+    folded below them (folding.py). A `## Verifier question` stays unfolded and first, as the lead's wait reads it."""
+    last = {m.group(0).split(":")[0]: m.group(0).strip() for m in VERDICT_LINES.finditer(body)}
+    if not last:
+        return body
+    return fold("## Verifier report", "\n".join(last.values()), body.strip())
 
 
 def post(pr: int, body: str) -> tuple[str, str | None]:
@@ -1092,6 +1213,24 @@ def thread_verify(
     env: str,
     pending_head: str | None = None,
 ) -> int:
+    """One thread pass (`thread_review`) that writes its `verifier` event: an exit without a report ends it `failed`."""
+    event = PassEvent()
+    try:
+        return thread_review(pr, brief_file, model, effort, thread, env, pending_head, event)
+    finally:
+        event.finish()
+
+
+def thread_review(
+    pr: int,
+    brief_file: Path,
+    model: str | None,
+    effort: str | None,
+    thread: str | None,
+    env: str,
+    pending_head: str | None,
+    event: PassEvent,
+) -> int:
     """One pass on a Codex Cloud thread: clone the PR head (a later pass reuses the thread's checkout), run the brief,
     read the report back from the thread's checkout, else take its final message, and write it at the brief's path."""
     brief = brief_file.read_text()
@@ -1108,11 +1247,12 @@ def thread_verify(
         "view",
         str(pr),
         "--json",
-        "headRefOid,headRepository,headRepositoryOwner",
+        "headRefOid,headRepository,headRepositoryOwner,headRefName",
         "--jq",
-        '.headRefOid+" "+.headRepositoryOwner.login+"/"+.headRepository.name',
+        '.headRefOid+" "+.headRepositoryOwner.login+"/"+.headRepository.name+" "+.headRefName',
     ).stdout.split()
     head[0] = pending_head or head[0]
+    event.start(head[2])
     code, said = thread_exec(
         rpc,
         thread,
@@ -1160,6 +1300,7 @@ def thread_verify(
             question = out.with_name(out.name + ".question")
             question.write_text(asked)
             print(question)
+            event.state, event.url, event.question = "needs-owner", str(question), asked
             return 3
     if "SATISFIED:" not in body:
         # the final message may end on a link to a report written elsewhere in the checkout (never outside it)
@@ -1192,6 +1333,8 @@ def thread_verify(
         f"Verifier: {signature(model, effort)}, pass {nth[1] if nth else 1}\n\n{body.strip()}\n"
     )
     print(target)
+    event.url = str(target)
+    event.ended(body)
     return 0
 
 

@@ -28,7 +28,10 @@ Never touched: agent state (~/.claude, ~/.codex, ~/.omnigent), user files, simul
 VM or container images. What may be wanted is asked about instead, once, in the chief of staff's
 session: a merged worktree kept for uncommitted work, an unpushed HEAD or ignored files that may
 not rebuild; simulator devices whose runtime is gone; staged ChatGPT updates; the dotagents checkout pinning another
-pack than its origin/main (a missed release); what `dotagents doctor` reports (drift).
+pack than its origin/main (a missed release); what `dotagents doctor` reports (drift), and a forwarder script in the home
+skill install whose target skill is missing. A checkout with drift is first pulled (clean, on its default branch, a
+fast-forward, no service running from it) and installed from its committed lock (its sync task, else `apm install
+--frozen`); an install never leaves its lock rewritten.
 The chief of staff is the session labelled omni.role=cos on the one server the CLI uses (config.yaml's `server:`, else
 RUNNER_SERVER_URL, else the CLI default); no other logged-in server is tried, and a server with none, or unreachable, fails the run.
 Log: ~/.local/state/agent-hygiene/<UTC time>.log. Exit 0 done, 2 under the floor (the chief of staff
@@ -113,7 +116,7 @@ def processes():
 
 
 # An Omnigent terminal wrapper: python, its flags, then the script as the first argument (a tmux server only names it later).
-WRAPPER = re.compile(r'^\S*python[\d.]*\s+(-\S+\s+)*\S*omnigent/terminals/program_status\.py\s')
+WRAPPER = re.compile(r'^\S*python[\d.]*\s+(-\S+\s+)*\S*omnigent/terminals/program_status\.py\s', re.I)
 # A plain, unescaped bridge dir ending .../claude-native/<id>; any other spelling (a space, a quote, a JSON escape) cannot be
 # read unambiguously from a flattened command line, so it does not parse and the wrapper is kept.
 BRIDGE_DIR = re.compile(r'--bridge-dir[\s"\',=]+((?:/[\w.-]+)+/(?:claude|codex)-native/[0-9a-f]+)(?=["\',\s\]}]|$)')
@@ -807,45 +810,193 @@ def checkout_of(line):
     return None
 
 
-def catch_up(run, root):
-    """A fast-forward to origin's default branch (just fetched; not `git pull`, which follows the branch's own upstream) in a checkout that is on its default branch, clean, with no local commits and origin strictly
-    ahead; true when it moved. A dirty, diverged or other-branch checkout is never touched: a person owns its state."""
+# Where service units live (systemd, launchd): a checkout one of them names runs a service, so it is never pulled.
+SERVICE_UNITS = [HOME / '.config/systemd/user', HOME / '.local/share/systemd/user', Path('/etc/systemd/system'),
+                 HOME / 'Library/LaunchAgents', Path('/Library/LaunchAgents'), Path('/Library/LaunchDaemons')]
+INSTALL_TIMEOUT = 900
+
+
+def serves(root, procs):
+    """Why a checkout runs services (a process has it open or names it, a service unit points at it), else None.
+    Without a process scan every checkout may: it is never pulled then."""
+    if procs is None:
+        return 'no process scan'
+    if why := in_use(root, procs):
+        return why
+    names = {str(root), str(root.resolve())}  # as a finding names it, and with its links followed
+    within = re.compile('(' + '|'.join(map(re.escape, sorted(names))) + r')(?=$|[/\s"\'<:;])', re.M)
+    for folder in SERVICE_UNITS:
+        try:
+            units = sorted(p for p in folder.iterdir() if p.suffix in ('.service', '.plist', '.socket', '.timer'))
+        except OSError:
+            continue
+        for unit in units:
+            try:  # `systemctl --user link` and a linked plist: the unit is a symlink, often to a file in the checkout
+                real = unit.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if real.is_relative_to(root.resolve()):
+                return f'the service unit {unit} is a link into it'
+            # systemd's %h and a shell's ~ (or $HOME) name the home folder
+            text = re.sub(r'(%h|~|\$HOME|\$\{HOME\})(?=/)', lambda _: str(HOME),
+                          head(real, 1 << 20).decode(errors='replace'))
+            if within.search(text):
+                return f'the service unit {unit} points at it'
+    return None
+
+
+def installer(root):
+    """(command, what is missing) for installing a checkout's agent skills from its committed lock: its sync task when
+    its mise.toml has one (frozen: the task also checks nothing it owns changed), else `apm install --frozen`. Both
+    None when it has no APM lock; command None with a reason when the tool it needs is not on PATH."""
+    if not (root / 'apm.yml').is_file() or not (root / LOCK).is_file():
+        return None, None
+    mise = head(root / 'mise.toml').decode(errors='replace')
+    if task := re.search(r'^\[tasks\.["\']?(agent[-:]sync)["\']?\]', mise, re.M):
+        if shutil.which('mise'):
+            return ['mise', 'run', task.group(1), '--frozen'], None
+        return None, f'its `{task.group(1)}` task needs mise, which is not on PATH'
+    if shutil.which('apm'):
+        return ['apm', 'install', '--frozen'], None
+    return None, 'it has no agent-sync mise task, and apm is not on PATH'
+
+
+# What an install may write in a checkout, as the agent-sync task's own frozen check lists it
+AGENT_PATHS = ['apm.yml', LOCK, '.apm', 'AGENTS.md', 'CLAUDE.md', ':(glob)**/AGENTS.md', ':(glob)**/CLAUDE.md',
+               '.agents', '.claude', '.codex', '.github/instructions']
+
+
+def revert_agent_files(run, root):
+    """Undo what an install changed in a checkout's tracked agent files (it started clean, so every such change is the
+    install's): the committed copies are the repo's, and change only in a bump PR. Returns the paths it put back."""
+    lines = (git(root, 'status', '--porcelain', '-z', '--', *AGENT_PATHS) or '').split('\0')
+    entries = [l for l in lines if len(l) > 3 and l[2] == ' ']  # -z puts a rename's source after it, unprefixed
+    tracked = [l[3:] for l in entries if not l.startswith('?? ')]
+    new = [l[3:] for l in entries if l.startswith('?? ')]
+    changed = tracked + new
+    if tracked:
+        git(root, 'checkout', 'HEAD', '--', *tracked)
+    if new:
+        git(root, 'clean', '-fdq', '--', *new)  # untracked, never ignored: installed copies a repo ignores stay
+    if changed:
+        run.say(f'put back {root}: the install changed its committed {", ".join(changed)}')
+    return changed
+
+
+def guarded_install(run, root, args, lock=None):
+    """Run an install in root and put its lock back as it was, since a rewritten lock (a new generated_at) dirties
+    the tree, blocks the next pull and makes the next comparison wrong. lock is the content to restore, by default
+    the file before the install. Returns None when it worked, else what failed (logged)."""
+    path = root / LOCK
+    if lock is None:
+        lock = path.read_bytes() if path.is_file() else None
+    try:
+        done = subprocess.run(args, cwd=root, text=True, capture_output=True, timeout=INSTALL_TIMEOUT,
+                              stdin=subprocess.DEVNULL)
+        problem = done.returncode and f'exit {done.returncode}: {(done.stdout + done.stderr).strip()[-300:]}'
+    except (OSError, subprocess.TimeoutExpired) as error:
+        problem = str(error)
+    if lock is not None and (not path.is_file() or path.read_bytes() != lock):
+        path.write_bytes(lock)
+        run.say(f'restored {path}, which `{" ".join(map(str, args))}` rewrote')
+    return problem or None
+
+
+def refresh(run, root, procs, problems):
+    """Bring a drifting checkout up to its origin and install its skills from the committed lock, when that is safe; true
+    when it changed something. Safe means a clean tree; a pull also needs the default branch, no local commits and no
+    service running from it (one that does only gets the install). Anything else is left to its manager: a person owns
+    its state. A failed install is added to problems."""
+    if git(root, 'status', '--porcelain') != '':
+        return False
     default = (git(root, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD') or '').strip()
-    if not default or git(root, 'fetch', '--quiet', 'origin', timeout=180) is None:
+    branch = default.split('/', 1)[-1]
+    moved, serving = False, serves(root, procs)
+    if serving:
+        run.say(f'not pulling {root}: {serving}; installing from its committed lock only')
+    elif not default or git(root, 'fetch', '--quiet', 'origin', timeout=180) is None:
         return False
-    if ((git(root, 'branch', '--show-current') or '').strip() != default.split('/', 1)[-1]
-            or git(root, 'status', '--porcelain') != ''
-            or git(root, 'rev-list', '--count', f'{default}..HEAD') != '0\n'
-            or (git(root, 'rev-list', '--count', f'HEAD..{default}') or '0\n') == '0\n'):
-        return False
+    elif ((git(root, 'branch', '--show-current') or '').strip() != branch
+          or git(root, 'rev-list', '--count', f'{default}..HEAD') != '0\n'):
+        return False  # another branch, or diverged: no fast-forward a person didn't choose
+    elif (git(root, 'rev-list', '--count', f'HEAD..{default}') or '0\n') != '0\n':
+        if run.dry:
+            run.say(f'would pull {root} (clean, on {branch}, behind {default})')
+        else:
+            before = (git(root, 'rev-parse', '--short', 'HEAD') or '').strip()
+            # not `git pull`, which follows the branch's own upstream
+            if git(root, 'merge', '--ff-only', '--quiet', default, timeout=180) is None:
+                run.say(f'FAIL git merge --ff-only in {root}')
+                return False
+            run.say(f'pulled {root}: {before} -> {(git(root, "rev-parse", "--short", "HEAD") or "").strip()}')
+            moved = True
+    args, missing = installer(root)
+    if not args:
+        if missing:
+            problems.append(f'{root} installs nothing from its committed lock: {missing}')
+        return moved
     if run.dry:
-        run.say(f'would pull {root} (clean, on {default.split("/", 1)[-1]}, behind {default})')
-        return False
-    before = (git(root, 'rev-parse', '--short', 'HEAD') or '').strip()
-    if git(root, 'merge', '--ff-only', '--quiet', default, timeout=180) is None:
-        run.say(f'FAIL git merge --ff-only in {root}')
-        return False
-    run.say(f'pulled {root}: {before} -> {(git(root, "rev-parse", "--short", "HEAD") or "").strip()}')
+        run.say(f'would run {" ".join(args)} in {root}')
+        return moved
+    problem = guarded_install(run, root, args)
+    if changed := revert_agent_files(run, root):
+        problems.append(f'`{" ".join(args)}` in {root} changed its committed {", ".join(changed)}, so its committed '
+                        'copies differ from its lock: put back, for a bump PR to settle')
+    if problem:
+        run.say(f'FAIL {" ".join(args)} in {root}: {problem}')
+        problems.append(f'`{" ".join(args)}` failed in {root} ({problem}); its lock is as committed')
+        return moved
+    run.say(f'installed {root}: {" ".join(args)}')
     return True
+
+
+FORWARDER = "only forwards to another skill's script"  # what a forwarder script says of itself
+HOME_SKILLS = [HOME / '.agents/skills', HOME / '.claude/skills']  # the home skill install dotagents sets up
+
+
+def forwarders():
+    """A finding for each forwarder script in the home skill install whose target skill is not installed beside it."""
+    found = []
+    for skills in HOME_SKILLS:
+        for script in sorted(skills.glob('*/scripts/*.py')):
+            text = head(script, 1 << 16).decode(errors='replace')
+            if FORWARDER in text and (target := re.search(r'^skill = ["\']([\w.-]+)["\']', text, re.M)) \
+                    and not (skills / target.group(1) / 'SKILL.md').is_file():
+                found.append(f'forwarder {script} needs the `{target.group(1)}` skill, which {skills} lacks: '
+                             'install the package that ships it there')
+    return found
 
 
 DRIFT_ROUTES = {}  # a doctor finding inside a repo -> that repo (owner/name), whose manager is told
 
 
-def drift(run):
-    """dotagents doctor's findings, each logged: a tool a skill needs that is missing or too old, a stale skill copy.
-    A finding inside a checkout that is only behind its origin is tried by a pull first, and logged, not returned, when
-    it clears."""
+def drift(run, procs=None):
+    """dotagents doctor's findings and forwarders without their target, each logged: a tool a skill needs that is
+    missing or too old, a stale skill copy. A checkout a finding names is pulled and installed first when that is safe
+    (refresh), a missing forwarder target installed by `dotagents install`; a finding that then clears is logged, not
+    returned."""
     found = doctor(run)
     if found is None:
         return []
+    problems = []
     roots = {line: checkout_of(line) for line in found}
-    if any([catch_up(run, root) for root in dict.fromkeys(r for r in roots.values() if r)]):
+    if any([refresh(run, root, procs, problems) for root in dict.fromkeys(r for r in roots.values() if r)]):
         if (again := doctor(run)) is not None:
             for line in found:
                 if line not in again:
                     run.say(f'CLEARED: {line}')
             found = again
+    if (missing := forwarders()) and not run.dry and DOTAGENTS.is_file():
+        if problem := guarded_install(run, REPO, [str(DOTAGENTS), 'install', '--no-pull'],
+                                      committed_lock(REPO)):
+            run.say(f'FAIL dotagents install for the forwarders\' targets: {problem}')
+            problems.append(f'`dotagents install` for the forwarders\' targets failed: {problem}')
+        left = forwarders()
+        for line in missing:
+            if line not in left:
+                run.say(f'CLEARED: {line}')
+        missing = left
+    found = [*found, *missing, *problems]
     for line in found:
         run.say(f'DRIFT: {line}')
         if (root := roots.get(line) or checkout_of(line)) and (repo := github(root)):
@@ -859,24 +1010,38 @@ def relaunch():
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
+def committed_lock(root):
+    """The lock as HEAD has it (bytes), or None when HEAD has none."""
+    try:
+        done = subprocess.run(['git', '-C', str(root), 'show', f'HEAD:{LOCK}'], capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def restore_regenerated_lock(run, root):
+    """Put back a lock whose only change from HEAD is its generated_at line: what an earlier install left, which would
+    block every later pull. A lock changed in any other way is a person's, and stays."""
+    diff = git(root, 'diff', '--no-color', '-U0', 'HEAD', '--', LOCK)
+    changed = [l for l in (diff or '').splitlines() if l[:1] in '+-' and not l.startswith(('+++', '---'))]
+    if changed and all(re.match(r'^[+-]\s*generated_at:', l) for l in changed) and (lock := committed_lock(root)):
+        (root / LOCK).write_bytes(lock)
+        run.say(f'restored {root / LOCK}: an earlier install had only rewritten its generated_at')
+
+
 def fast_forward(run, retry=False):
     """Move a clean checkout on main to origin/main, then install it; false when nothing moved (up to date, or a person
     must handle it: tracked changes, other branch, diverged) and no earlier install failed. Untracked files don't block:
     `merge --ff-only` itself refuses one that main would overwrite."""
+    restore_regenerated_lock(run, REPO)
     before = git(REPO, 'rev-parse', 'HEAD')
     if not (git(REPO, 'status', '--porcelain', '--untracked-files=no') == '' and git(REPO, 'branch', '--show-current') == 'main\n'
             and git(REPO, 'merge', '--ff-only', '--quiet', 'origin/main') is not None
             and (retry or git(REPO, 'rev-parse', 'HEAD') != before)):
         return False
     if DOTAGENTS.is_file():  # a release may change the links or generated settings install makes
-        try:
-            done = subprocess.run([str(DOTAGENTS), 'install', '--no-pull'], text=True, capture_output=True, timeout=900)
-        except (OSError, subprocess.TimeoutExpired) as error:
-            done = None
-            problem = str(error)
-        if done and done.returncode:
-            problem = f'exit {done.returncode}: {(done.stdout + done.stderr).strip()[-300:]}'
-        if not done or done.returncode:
+        # the install may rewrite the lock (a new generated_at): it goes back to the committed one, failed or not
+        if problem := guarded_install(run, REPO, [str(DOTAGENTS), 'install', '--no-pull'], committed_lock(REPO)):
             run.failed = True
             run.say(f'FAIL dotagents install after a fast-forward: {problem}')
             os.environ['AGENT_HYGIENE_FAILED'] = problem  # the relaunched copy starts a new Run: it reports this and exits 1
@@ -892,7 +1057,8 @@ def stale(run, dry_run=False):
     over as the newly installed script when the release moved the pin."""
     if not (REPO / '.git').exists() or git(REPO, 'fetch', '--quiet', 'origin', 'main', timeout=180) is None:
         return None  # a cached origin/main may be older than this checkout: no claim
-    main, mine = git(REPO, 'show', f'origin/main:{LOCK}'), (REPO / LOCK).read_bytes() if (REPO / LOCK).is_file() else b''
+    # the committed pin, not the file: an install that rewrote the file (a new generated_at) pins nothing new
+    main, mine = git(REPO, 'show', f'origin/main:{LOCK}'), committed_lock(REPO) or b''
     differs = main is not None and main.encode() != mine
     retry = INSTALL_FAILED.is_file()  # the pack may still be the old one, and so may this script
     moved = not dry_run and not os.environ.get('AGENT_HYGIENE_RELAUNCHED') and fast_forward(run, retry)
@@ -942,7 +1108,7 @@ def main():
         run.say(f'FAIL dotagents install after a fast-forward: {carried}')
         if not args.dry_run:
             INSTALL_FAILED.write_text(carried + '\n')
-    asks = []  # what may be wanted: the owner decides
+    asks = []  # what may be wanted: the manager it goes to settles it, asking the owner only what is theirs
     if old := stale(run, args.dry_run):  # first: a fast-forward starts this run over as the new copy
         run.say(f'STALE: {old}')
     procs = processes()
@@ -955,7 +1121,7 @@ def main():
             found = checkouts(args.dev.resolve())
             worktrees(run, found, args.dev.resolve(), procs, asks)
             environments(run, found, args.idle_days, procs)
-    drifted = drift(run)
+    drifted = drift(run, procs)
     # Caches last: a pnpm node_modules is an APFS clone of the store, so removing one frees its
     # blocks only once `pnpm store prune` drops the store's copy.
     if procs is not None:
@@ -997,7 +1163,7 @@ def main():
             by_repo.setdefault(repo, []).append(line)
     pending = [line for line in pending if line not in DRIFT_ROUTES]
     for repo, lines in by_repo.items():
-        body = (f'agent-hygiene on {who}, for the owner to decide (log {run.log} on that account):\n\n'
+        body = (f'agent-hygiene on {who}, for you to settle as this repo\'s manager (log {run.log} on that account):\n\n'
                 'dotagents doctor, in a checkout of this repo (dotagents README, Skill requirements and doctor):\n'
                 + '\n'.join(f'- {line}' for line in lines[:ASK_MAX]))
         if args.dry_run:
@@ -1032,7 +1198,7 @@ def main():
         if sent:
             asked_file.write_text(json.dumps(sorted(asked | sent)))
         return code
-    header = f'agent-hygiene on {who}, for the owner to decide (log {run.log} on that account):\n\n'
+    header = f'agent-hygiene on {who}, for you to settle as its manager (log {run.log} on that account):\n\n'
     text = header + '\n\n'.join(parts)
     if args.dry_run:
         for repo, lines in routed.items():

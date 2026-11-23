@@ -30,8 +30,8 @@ leaves no mutation in the tree. The test command runs with PYTHONDONTWRITEBYTECO
 same second as its source would hide the next same-sized patch of that file.
 
 Each test run takes a host gate slot (SKILL.md, One heavy gate per host slot): the heavy slot, an exclusive flock on
-`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock` (the first free one of the host's `GATE_SLOTS`, as a project's gate takes), or the short lane,
-`gate.short.lock` beside it, which waits only for another short job. Before any patch, the test command runs once on
+`${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock` (the first free one of the host's slots, approvals.py's `heavy --plan`, as a project's gate takes), or the short lane,
+`gate.short.lock` beside it, which waits only for another short job; under `GATE_SLOTS=off` neither, and no lock. Before any patch, the test command runs once on
 the unmutated head in the short lane, timed: when it passes within the policy's `short_seconds` (default 120), every
 patch runs in the short lane too, and otherwise, or when it fails, each takes the heavy slot. `short_seconds: 0` runs
 no head run, and neither does a run already under a holder of the heavy slot: every patch takes the heavy slot. A run
@@ -40,7 +40,7 @@ and a short-lane
 patch run past `short_seconds` adds an `overrun` line; the slot is held per run, so a gate can take it between two.
 The test command gets `LOOP_GATE_SLOT_HELD=<lock path>`: a wrapper that takes the same lock runs its command without
 taking it again, since it would otherwise wait on its own parent. A run already started under that variable naming
-the slot takes no lock. There is no option to skip the slot.
+the slot takes no lock. No option skips the slot; only the host's `GATE_SLOTS=off`, which turns every lock off.
 
 The log: line 1 is `git rev-parse HEAD`, line 2 this command line, line 3 the lane and why (`short: head run 6.5 s ≤
 120 s`, `heavy: head run 412.0 s > 120 s`, `heavy: head run failed (exit 1)`, `heavy: short_seconds is 0`, `heavy:
@@ -50,7 +50,7 @@ run, so a stopped run keeps what it finished. Each log line is also printed to s
 `wait-for --stall` watches) advances with it. Exit 0 when every patch was killed, 1 when one survived (the log names it),
 else 3 when one was inconclusive, 2 when it refuses, a patch doesn't apply, or the tree can't be restored (stderr names the paths). The log goes outside the
 checkout or to an ignored path, never a tracked file or a patch, since writing it would destroy that file. Standard
-library and git, and approvals.py, beside it, to read the policy and run each test command under the host's heavy wrapper (so PyYAML).
+library and git, and the gatekeeper skill's approvals.py, to read the policy and run each test command under the host's heavy wrapper (so PyYAML).
 """
 
 from __future__ import annotations
@@ -128,9 +128,29 @@ def slot_path(name: str = SHORT) -> str:
     return approvals().slot_file(name)
 
 
+def installed(skill: str) -> Path:
+    """The scripts folder of `skill`, which another package ships, found by the host's install layout: a sibling
+    skill folder (APM's one skills directory), a sibling plugin's (this repo, or a marketplace Claude Code loads in
+    place), else the newest version of a plugin in Claude Code's cache (`<marketplace>/<plugin>/<version>/`) that
+    no update has orphaned. Exits naming the skill to install when none holds it."""
+    # ponytail: three layouts, the ones APM and Claude Code use; a host with another adds its glob here.
+    own = Path(__file__).resolve().parents[1]
+    plugin = own.parent.parent
+    cached = plugin.parent.parent.glob(f"[!.]*/[!.]*/skills/{skill}")
+    for folder in [
+        own.parent / skill,
+        *sorted(plugin.parent.glob(f"[!.]*/skills/{skill}")),
+        *sorted(cached, key=lambda path: path.stat().st_mtime, reverse=True),
+    ]:
+        if (folder / "SKILL.md").is_file() and not (folder.parents[1] / ".orphaned_at").exists():
+            return folder / "scripts"
+    sys.exit(f"{Path(__file__).name} needs the `{skill}` skill: install the package that ships it")
+
+
 def approvals() -> Any:
-    """approvals.py beside this script, which holds the policy's reader and the heavy-step runner."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    """The gatekeeper skill's approvals.py, found by the host's install layout, which holds the policy's reader and the
+    heavy-step runner."""
+    sys.path.insert(0, str(installed("gatekeeper")))
     import approvals as loaded
 
     return loaded
@@ -186,9 +206,9 @@ def digest(paths: list[str], head: bool = False) -> str:
 
 def take_short(path: str, waiting: Callable[[], None]) -> int | None:
     """Hold the short lane's exclusive flock and return its fd (closing it frees the lock, as does the process dying);
-    None when this run already runs under a holder of that same path. `waiting` is called when the wait begins and
-    again every approvals.SLOT_SAY_SECONDS."""
-    if os.environ.get(SLOT_HELD) == path:
+    None when this run already runs under a holder of that same path, or under `GATE_SLOTS=off`, which takes no lock.
+    `waiting` is called when the wait begins and again every approvals.SLOT_SAY_SECONDS."""
+    if os.environ.get(SLOT_HELD) == path or approvals().slots_off():
         return None
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)

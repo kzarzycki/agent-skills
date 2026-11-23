@@ -1,11 +1,12 @@
 # Issues and the board
 
 The loop's issue conventions, the same in every project and on every tracker. How each
-is done on a tracker is its realization file, read in place: [github.md](github.md) for
+is done on a tracker is its realization file, read in place: the `github-tracker` skill's github.md for
 GitHub, with the issue-batch protocol `to-tickets` and `wayfinder` publish through. The
 project's `docs/agents/issue-tracker.md` names that file in one line,
-`Tracker: GitHub (engineering-loop's github.md)`, and adds only its own facts: its settings block
-(SKILL.md, Settings: components, extra categories and labels, renames, board columns) and Never on GitHub.
+`Tracker: GitHub (github-tracker's github.md)`, and adds only its own facts: its settings block
+(the `gatekeeper` skill's policy.md, Tracker settings: components, extra categories and labels,
+renames, board columns) and Never on GitHub.
 
 ## States
 
@@ -21,7 +22,8 @@ that acts on the state it finds.
 - **`approved:spec`:** ready: the spec is written into that same issue and approved
   (SKILL.md, Approvals and proof). Where a tool owns an issue's body, the spec is a comment
   headed `## Spec`. The spec step sets the size label; who approves, the owner or their
-  policy in gatekeeper.md, and how, is SKILL.md, Approvals and proof.
+  policy in gatekeeper.md, and how, is SKILL.md, Approvals and proof; which specs the policy
+  covers is the `gatekeeper` skill's policy.md, Rules.
 
 The `triage` skill's categories map as bug = `kind:bug` and enhancement = `kind:enhancement`,
 and its roles as needs-triage = no state label, needs-info =
@@ -66,7 +68,7 @@ component or size: it resolves a decision, not a change.
 
 Label names are the loop's fixed set here plus the project's `docs/agents/issue-tracker.md`
 (its settings' `components`, `categories`, `labels`); the scripts read them from these two places only
-(`scripts/approvals.py`, `label_names`). The tracker file names a component or category
+(the `gatekeeper` skill's `scripts/gatekeeper.py`, `label_names`). The tracker file names a component or category
 bare (`billing`) or in full (`area:billing`); both mean the label. gatekeeper.md's policy name
 a label in full, as GitHub shows it.
 
@@ -111,6 +113,9 @@ filing a new one. Its stories are filed before its approval is asked for (lead.m
 Spec). An epic lands as its sub-issues' PRs, one per sub-issue, each off
 main, with no epic or integration branch; a sub-issue whose work isn't usable yet lands
 unexposed, and the sub-issue that exposes it comes last (SKILL.md, Land small and soon).
+A slice's PR says `Closes #<its sub-issue>`: GitHub shows a PR in an issue's Development panel only for a closing
+keyword, so `Part of #<epic>` alone leaves the epic and the PR unlinked, and `check build` refuses a PR with no
+`Closes` of an open issue. The epic shows progress through its sub-issues and closes when the last one does. One issue is one PR: the merge closes the issue, and `check build` already refuses a second open PR for it, so more work gets its own sub-issue. A PR may close several issues, but one is the norm.
 Two levels only: a sub-issue never has sub-issues of its own, since the
 board's Parent issue field names only the direct parent and a grandchild would not show
 under its epic.
@@ -119,7 +124,7 @@ under its epic.
 
 The board shows every ticket in its loop stage with its assignee, and every epic with its progress; the
 realization file says how a ticket moves. A project whose board has other names, or one column for
-several of these, maps them in `docs/agents/issue-tracker.md`'s `board` settings ([github.md](github.md), Board). The labels stay the state: when a move fails,
+several of these, maps them in `docs/agents/issue-tracker.md`'s `board` settings (github.md, Board). The labels stay the state: when a move fails,
 report it and carry on.
 
 | Column | The ticket is here when | Moved by |
@@ -138,7 +143,7 @@ Where gatekeeper.md has a `signoff` rule and it, or the spec's `Sign-off: owner`
 it, a person
 checks the merged change in the running product before its issue counts as done, since
 gates and the verifier prove the code, not how it feels in use. The PR links the issue with
-`Implements #<n>` (SKILL.md, Approvals and proof), so the merge leaves it open; the
+`Implements #<n>` (the `gatekeeper` skill's policy.md, Rules, `signoff`), so the merge leaves it open; the
 lead moves it to `Sign-off` with a comment naming the merge and the spec's
 acceptance examples to try. Without a `signoff` section nothing waits for a sign-off, and
 `Implements` is a link like `Part of`. The owner signs off by closing it (`Done`). What they find
