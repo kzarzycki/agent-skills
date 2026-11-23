@@ -10259,19 +10259,34 @@ def gate_record(head: str, words: list[str]) -> int:
     `gate_steps` (gate_plan), or of `<command>`, on `head`'s tree, so the verifier reads it instead of running the
     same tests again. Exit 0 names each record branch; exit 1 names each command with
     no record and why, which the verifier then runs. A record is keyed by the tree and the command's digest
-    (record_name), so another tree, another command or another test list in it is another record and never reused.
-    Only origin counts, the branch `local-ci --record` pushes: never this clone's own record file, which a worker
+    (record_name), so another tree, another command or another test list in it is another record and never reused;
+    a step whose `paths` key it by its inputs (inputs_key) is found by that key on any tree instead, naming the tree
+    and key it was found by (origin_input_pass). Only origin counts, the branch `local-ci --record` pushes: never this clone's own record file, which a worker
     sharing the clone may have written, and never a worker's log or report."""
     # tree_of fetches a head this clone lacks from origin, as reusable() does
     if (held := tree_of(head)) is None:
         print(f"no tree for {head}: run the tests")
         return 1
-    # ponytail: a step keyed by its inputs (inputs_key) is read by its tree here, so a pass on another tree with the
-    # same inputs is not found and the verifier runs it; reading step_pass's inputs match would lift that
-    commands = [shlex.join(words)] if words else [step["command"] for step in gate_plan()]
+    # a command the gate's steps (gate_plan) name is read as that step, so one keyed by its inputs (inputs_key) is
+    # found by that key on any tree (origin_input_pass); any other command is keyed by the tree alone
+    steps = {step["command"]: step for step in gate_plan()}
+    commands = [shlex.join(words)] if words else list(steps)
     missing = 0
     for command in commands:
         why: list[str] = []
+        step = steps.get(command)
+        if step is not None and (key := inputs_key(held, step)) is not None:
+            record = origin_input_pass(key, step, why)
+            if record is None:
+                missing += 1
+                reason = "; ".join(why) or f"origin holds no record branch of it with the inputs key {key}"
+                print(f"no record of `{command}` with inputs {key} on tree {held}: run it ({reason})")
+            else:
+                print(
+                    f"recorded by inputs: {described(record['tree'], record['head'], command)}, as {record['ref']}"
+                    f" at {record['time']}, reused on tree {held}, inputs key {key}"
+                )
+            continue
         record = record_ref(held, command, command_line(command, "gate")[2], why)
         if record is None:
             missing += 1
@@ -10439,11 +10454,22 @@ def input_pass(
                 found.append(record)
     if found:
         return max(found, key=lambda record: record["time"])
+    record = origin_input_pass(key, step, why)
+    if record is not None and show:
+        shown(head, record)
+    return record
+
+
+def origin_input_pass(
+    key: str, step: dict[str, Any], why: list[str] | None = None
+) -> dict[str, Any] | None:
+    """input_pass's read of origin alone: the record branch of gate step `step`'s command, on a tree whose `Inputs:`
+    line says `key` (input_candidates) and whose own tree today's `paths` give that key, sound as record_ref reads
+    one, or None. With `why` as record_ref's."""
+    command, env = step["command"], step["sets"]
     for tree in input_candidates(command, key, why):
         record = record_ref(tree, command, env, why)
         if record is not None and inputs_key(tree, step) == key:
-            if show:
-                shown(head, record)
             return record | step_field(step)
     return None
 

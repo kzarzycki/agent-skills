@@ -384,3 +384,39 @@ def test_the_real_host_load_answers_on_this_host() -> None:
     assert set(load) == {"load_1m", "swap_used_mb"}
     if hasattr(os, "getloadavg"):
         assert isinstance(load["load_1m"], float)
+
+
+def test_gate_record_finds_a_step_by_its_inputs_on_another_tree(
+    inputs: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gate-record reads a step keyed by its inputs as step_pass does: tree A's pushed pass of `lint` and `apple` is
+    their pass on tree B, which changes only docs, naming A's tree and the key; `unit`, keyed by the tree, is read on
+    B's tree alone. Only origin counts: this clone's own records of B never do. A change to app.py is new inputs."""
+    assert approvals.main(["local-ci", "--record"]) == 0
+    head_a = inputs["head"]()
+    inputs["commit"]({"docs/readme.md": "# app, a comment-only fix\n"})
+    head_b = inputs["head"]()
+    capsys.readouterr()
+    # `unit` reads the whole tree, so B, with no pass of its own, still lacks one
+    assert approvals.main(["gate-record", head_b]) == 1
+    out = capsys.readouterr().out
+    assert f"no record of `{inputs['commands']['unit']}` on tree {inputs['tree']()}" in out
+    for name in ("lint", "apple"):
+        key = approvals.inputs_key(inputs["tree"](), step(name))
+        assert f"Tree {inputs['first']} on {head_a[:12]}: " in out
+        assert f"reused on tree {inputs['tree']()}, inputs key {key}" in out
+    # a pass of `unit` on B, kept only in this clone, never counts; pushed to origin, B's gate is whole
+    approvals.recorded(inputs["tree"](), inputs["commands"]["unit"]).write_text('{"exit": 0}')
+    assert approvals.main(["gate-record", head_b]) == 1
+    assert approvals.main(["gate-record", head_b, "--", *inputs["commands"]["lint"].split()]) == 0
+    assert approvals.main(["local-ci", "--record"]) == 0
+    capsys.readouterr()
+    assert approvals.main(["gate-record", head_b]) == 0
+    # app.py changes `lint`'s inputs: origin holds no pass with the new key
+    inputs["commit"]({"app.py": "value = 2\n"})
+    lint = inputs["commands"]["lint"]
+    key = approvals.inputs_key(inputs["tree"](), step("lint"))
+    capsys.readouterr()
+    assert approvals.main(["gate-record", inputs["head"](), "--", *lint.split()]) == 1
+    assert f"no record of `{lint}` with inputs {key} on tree {inputs['tree']()}" in capsys.readouterr().out
+    assert approvals.main(["gate-record", inputs["head"]()]) == 1
