@@ -382,3 +382,72 @@ def test_a_rerun_of_a_check_is_no_push_and_its_latest_run_decides_red(monkeypatc
         "a verdict asking a fix round (SATISFIED: no)" in found[12]
     )  # the verdict is newer than the push
     assert "red" not in found[13]  # its re-run passed
+
+
+def test_a_pr_held_by_the_queue_is_no_stall(monkeypatch) -> None:
+    """omnigent #542's case (#2100): `loop:queued` on and Mergify's queue check running for over an hour is a PR
+    waiting in the queue; once the check ended and Mergify let go of it, the label alone holds nothing."""
+    queue = "Mergify Merge Queue"
+    embarked = {
+        "name": queue,
+        "status": "in_progress",
+        "conclusion": None,
+        "started_at": iso(2 * HOUR),
+    }
+    earlier = {
+        "name": queue,
+        "status": "completed",
+        "conclusion": "neutral",
+        "started_at": iso(2 * HOUR + 60),
+    }
+    held = pr(12, labels=[{"name": "loop:queued"}], checks=[earlier, embarked])
+    ended = {
+        **embarked,
+        "status": "completed",
+        "conclusion": "failure",
+        "completed_at": iso(2 * HOUR),
+    }
+    left = pr(13, labels=[{"name": "loop:queued"}], checks=[earlier, ended])
+    unlabelled = pr(14, checks=[earlier, embarked])
+    pending = {"context": queue, "state": "pending", "created_at": iso(2 * HOUR)}
+    by_status = pr(
+        15, labels=[{"name": "loop:queued"}], statuses=[pending]
+    )  # a queue that reports by status
+    assert list(stalls(monkeypatch, [held, left, unlabelled, by_status])) == [13, 14]
+
+
+QUEUED = {"labels": [{"name": "loop:queued"}]}
+RUN = {"name": "Mergify Merge Queue", "status": "in_progress", "conclusion": None}
+DONE = {**RUN, "status": "completed", "conclusion": "failure"}
+
+
+@pytest.mark.parametrize(
+    "checks, statuses, holds",
+    [
+        ([], [{"context": "Mergify Merge Queue", "state": "pending"}], True),
+        (
+            [],
+            [
+                {"context": "Mergify Merge Queue", "state": "success"},
+                {"context": "Mergify Merge Queue", "state": "pending"},
+            ],
+            False,
+        ),
+        ([], [{"context": "ci/test", "state": "pending"}], False),
+        ([{**RUN, "started_at": "1"}, {**DONE, "started_at": "2"}], [], False),
+        ([{**DONE, "started_at": "1"}, {**RUN, "started_at": "2"}], [], True),
+    ],
+    ids=[
+        "a pending queue status",
+        "its newest status ended",
+        "a pending status of no queue",
+        "a stale running run under a newer ended one",
+        "a running run over an older ended one",
+    ],
+)
+def test_the_queue_holds_by_its_newest_check_run_or_status(
+    checks: list[dict], statuses: list[dict], holds: bool
+) -> None:
+    """A queue that reports through a commit status holds a PR as one with a check run does; each check or
+    status context is read at its newest run (statuses come newest first), so an older one never decides."""
+    assert omnigent_agent.queue_holds(QUEUED, checks, statuses) is holds
