@@ -46,11 +46,13 @@ fi
 	grand=${parent%%[!0-9 ]*}
 	# a token in the parent command is masked before the cut, so a cut never leaves part of one
 	mask() { sed -E 's/([Tt][Oo][Kk][Ee][Nn]=)[^ ]+/\1***/g; s/[0-9a-f]{40}/***/g'; }
-	parent=$(printf '%s' "${parent#"$grand"}" | mask | cut -c1-200)
+	# and each path cut to its file name first, so a long interpreter path never cuts off the script's name
+	short() { sed -E 's#(^| )[^ ]*/([^ /]+)#\1\2#g'; }
+	parent=$(printf '%s' "${parent#"$grand"}" | mask | short | cut -c1-200)
 	# a shell running gh says little: name the command that ran the shell too
 	case $parent in
 	sh\ * | bash\ * | zsh\ * | dash\ * | */sh\ * | */bash\ * | */zsh\ * | -*)
-		above=$(ps -o args= -p $grand 2>/dev/null | mask | cut -c1-120)
+		above=$(ps -o args= -p $grand 2>/dev/null | mask | short | cut -c1-120)
 		[ -n "$above" ] && parent="$above > $parent"
 		;;
 	esac

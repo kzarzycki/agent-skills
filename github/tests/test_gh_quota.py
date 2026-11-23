@@ -424,3 +424,17 @@ def test_the_grandparent_is_masked_too(setup: tuple[dict[str, str], Path]) -> No
     subprocess.run(["python3", "-c", script], env=env, check=False, capture_output=True)
     parent = log.read_text().splitlines()[-1].split("\t")[4]
     assert " > sh -c" in parent and "grand-s3cr3t" not in parent and hexed not in parent
+
+
+def test_a_long_interpreter_path_keeps_the_script_name(
+    setup: tuple[dict[str, str], Path], tmp_path: Path
+) -> None:
+    env, log = setup
+    deep = tmp_path.joinpath(*["d" * 30] * 6)
+    deep.mkdir(parents=True)
+    script = deep / "approvals.py"
+    script.write_text("import subprocess, sys; subprocess.run(['gh', 'x'])\n")
+    subprocess.run(
+        ["python3", str(script), "land", "--wait"], env=env, check=False, capture_output=True
+    )
+    assert log.read_text().splitlines()[-1].split("\t")[4] == "python3 approvals.py land --wait"
