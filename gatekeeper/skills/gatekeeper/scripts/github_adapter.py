@@ -156,7 +156,7 @@ def open_pull_files(limit: int) -> list[dict[str, Any]]:
 
     def every_file(number: int) -> list[str]:
         # objects, not `.[].filename`: `gh --jq` prints a string raw, which rest_pages can't read as JSON
-        return [file["filename"] for file in rest_pages(f"pulls/{number}/files?per_page=100")]
+        return [file["filename"] for file in pr_changes(number)]
 
     return fast(  # type: ignore[no-any-return]
         lambda: [
@@ -285,7 +285,7 @@ reads: dict[tuple[str, ...], tuple[float, str]] = {}
 READ_TTL = 20.0
 # each PR's REST file list, read once per run (pr_changes): `loop.py brief` on the REST path read it 30 to 60 times, since
 # every `gh pr list` or GraphQL call empties `reads` and each of rest_pull, paths() and overlaps() asked again. Kept by
-# PR number for READ_TTL seconds; only a write to GitHub (a body, a mutation, a non-GET) or read_afresh() forgets it,
+# PR number for the whole run, however long it takes; only a write to GitHub (a body, a mutation, a non-GET) or read_afresh() forgets it,
 # since only a push changes a PR's files and a wait calls read_afresh() after its sleep.
 files_read: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 WRITE_FLAGS = {"-f", "-F", "--field", "--raw-field", "--input"}
@@ -1001,7 +1001,7 @@ def pull_request(pr: int) -> dict[str, Any]:
 def pr_changes(number: int) -> list[dict[str, Any]]:
     """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000. Read once per run
     (`files_read`), then answered from memory."""
-    if (seen := files_read.get(number)) and time.monotonic() - seen[0] < READ_TTL:
+    if (seen := files_read.get(number)) is not None:
         return seen[1]
     out = gh(
         "api",

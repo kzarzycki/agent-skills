@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -46,12 +47,13 @@ class Hub:
 
 
 @pytest.fixture
-def hub(monkeypatch: pytest.MonkeyPatch) -> Hub:
+def hub(monkeypatch: pytest.MonkeyPatch) -> Iterator[Hub]:
     fake = Hub()
     monkeypatch.setattr(github.subprocess, "run", fake)
     monkeypatch.setattr(github, "wait_until", None)
     github.read_afresh()
-    return fake
+    yield fake
+    github.read_afresh()  # the module's reads outlive a test; the next test must not see this one's PR
 
 
 def test_many_callers_in_one_run_read_a_prs_files_once(hub: Hub) -> None:
@@ -76,3 +78,32 @@ def test_a_write_or_a_wait_makes_the_next_read_github_s(hub: Hub) -> None:
     github.read_afresh()
     github.pr_changes(7)
     assert hub.files() == 3
+
+
+def test_a_long_run_still_reads_a_prs_files_once(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
+    github.pr_changes(7)
+    later = github.time.monotonic() + 10 * github.READ_TTL
+    monkeypatch.setattr(github.time, "monotonic", lambda: later)
+    github.pr_changes(7)
+    assert hub.files() == 1, hub.calls
+
+
+def test_open_pull_files_reads_a_big_prs_files_through_the_run_s_one_read(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    big = [{"path": f"f{i}"} for i in range(100)]
+    listing = json.dumps(
+        [{"number": 7, "baseRefName": "main", "headRefOid": "a" * 40, "files": big}]
+    )
+    inner = hub.__call__
+
+    def run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[1:3] == ["pr", "list"]:
+            hub.calls.append(tuple(cmd[1:]))
+            return subprocess.CompletedProcess(cmd, 0, listing, "")
+        return inner(cmd, **kw)
+
+    monkeypatch.setattr(github.subprocess, "run", run)
+    for _ in range(3):
+        github.open_pull_files(10)
+    assert hub.files() == 1, hub.calls
