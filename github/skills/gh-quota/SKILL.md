@@ -46,7 +46,10 @@ The shim makes each machine keep its own count, and the report names the caller.
 ## Naming a burn
 
 1. Install the shim on every machine that runs gh as the account, and in each cloud session
-   (`gh_quota.py install`, with its folder ahead of the real gh).
+   (`gh_quota.py install`, with its folder ahead of the real gh). A cloud environment can do it
+   in its setup script, so its sessions need no step: fetch the two files at a pinned commit,
+   check their sums, keep them in `~/.local/share/gh-quota` and run `install` there, as this
+   repo's `.claude/cloud-setup.sh` does.
 2. Let it log while the burn runs, at least 10 minutes.
 3. Run `gh_quota.py report --minutes 10` on each machine; from a cloud session, post
    `gh_quota.py counts --minutes 10` where the machine that ranks them can read it, and rank
