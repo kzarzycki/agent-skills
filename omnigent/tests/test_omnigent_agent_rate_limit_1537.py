@@ -53,7 +53,7 @@ def test_unchanged_pr_hour_is_bounded(monkeypatch):
     pr = {"head": {"sha": "a" * 40}, "updated_at": "t0"}
 
     def fake_gh(*args, **kw):
-        path = args[1] if args[1] != "--paginate" else args[2]
+        path = next(a for a in args if a.startswith("repos/"))
         asked.append(path)
         if path.endswith("pulls/5"):
             return json.dumps(pr)

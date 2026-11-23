@@ -500,3 +500,14 @@ def test_a_removal_read_while_github_works_out_mergeability_waits_as_on_a_host(
     cloud_queue["pulls"][7]["mergeable"] = "MERGEABLE"  # GitHub decided: no conflict
     assert cloud_queue["land"]("7")[0] == 0
     assert cloud_queue["enqueued"] == [(7, head), (7, head)]
+
+
+def test_rest_pull_carries_each_review_s_submitted_time(cloud: Cloud) -> None:
+    """`check stalled` measures a verified PR's idle hours from its newest verdict's time, which a cloud session reads
+    over REST (#1746)."""
+    reviews = cloud.routes["repos/{owner}/{repo}/pulls/7/reviews?per_page=100"]
+    reviews[0]["submitted_at"] = "2026-10-03T00:00:00Z"
+    pull = approvals.github.rest_pull(7)
+    assert [review["submittedAt"] for review in pull["reviews"]["nodes"]] == [
+        "2026-10-03T00:00:00Z"
+    ]
