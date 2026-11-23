@@ -45,7 +45,7 @@ def test_a_required_land_does_not_hold_the_ci_wait(
     lands["open"](7, {"7.txt": "7\n"})
     # CI is on for this project; its head has no check of any name `land` could satisfy
     monkeypatch.setattr(approvals, "head_checks", lambda _pull, required: ([], None, set()))
-    waits = approvals.ran(lands["pulls"][7], None)
+    waits = approvals.ran(lands["pulls"][7])
     assert not any("`land`" in line for line in waits), waits
 
 

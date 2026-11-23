@@ -96,31 +96,14 @@ def test_the_base_comparison_reads_the_policy_as_the_run_does(
     assert approvals.base_drift("release") == [LOOP]
 
 
-def test_land_with_no_pass_on_the_batch_tree_refuses_naming_it_and_checks_out_nothing(
+def test_land_with_no_pass_on_the_batch_tree_merges_runs_no_gate_and_checks_out_nothing(
     launch: dict[str, Any],
 ) -> None:
-    head = launch["open"](7, {"7.txt": "7\n"})
-    tree = git_in(launch["origin"], "merge-tree", "--write-tree", "main", head).split()[0]
-    code, lines = launch["land"]("7")
-    assert code == 1, lines
-    assert any(f"Tree {tree}" in line and "no recorded pass" in line for line in lines), lines
-    assert launch["merged"]() == [] and launch["runs"]() == 0
-    untouched(launch["here"])
-
-
-def test_land_reuses_a_recorded_pass_on_the_batch_tree_and_runs_no_gate(
-    launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    head = launch["open"](7, {"7.txt": "7\n"})
-    monkeypatch.chdir(launch["work"])  # a session with the files checked out passes the head
-    git_in(launch["work"], "switch", "-q", "--detach", head)
-    assert approvals.main(["local-ci", "--record"]) == 0
-    runs = launch["runs"]()
-    monkeypatch.chdir(launch["here"])
+    """#1872: the batch tree needs no recorded pass; the verifier's record on the head is the proof."""
+    launch["open"](7, {"7.txt": "7\n"})
     code, lines = launch["land"]("7")
     assert code == 0, lines
-    assert launch["merged"]() == ["7"]
-    assert launch["runs"]() == runs  # reused, never run here
+    assert launch["merged"]() == ["7"] and launch["runs"]() == 0
     untouched(launch["here"])
 
 
@@ -152,7 +135,7 @@ def test_a_head_that_conflicts_with_the_batch_is_skipped_and_the_rest_lands(
     untouched(launch["here"])
 
 
-def test_a_batch_github_merges_only_in_part_names_the_tree_left_ungated(
+def test_a_batch_github_merges_only_in_part_gates_nothing(
     launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     launch["open"](7, {"7.txt": "7\n"})
@@ -169,9 +152,7 @@ def test_a_batch_github_merges_only_in_part_names_the_tree_left_ungated(
     runs = launch["runs"]()
     code, lines = launch["land"]()
     assert code == 1, lines  # PR #8 was refused
-    tree = git_in(launch["origin"], "rev-parse", "main^{tree}").strip()
     assert launch["merged"]() == ["7"], lines
-    assert any(f"Tree {tree}: no recorded pass" in line for line in lines), lines
     assert launch["runs"]() == runs
     untouched(launch["here"])
 
@@ -238,42 +219,6 @@ def test_a_failed_fetch_is_refused_not_read_as_the_last_fetched_ref(
     approvals.policy_ref.cache_clear()
     with pytest.raises(approvals.Refused, match="could not be fetched"):
         approvals.project()
-
-
-def test_a_partial_land_publishes_a_pass_recorded_on_the_tree_and_runs_no_gate(
-    launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    launch["open"](7, {"7.txt": "7\n"})
-    launch["open"](8, {"8.txt": "8\n"})
-    passed(launch, monkeypatch, {"7.txt": "7\n", "8.txt": "8\n"})
-    fake = approvals.github.gh
-
-    def refuses_8(*args: str, **kwargs: Any) -> str:
-        if args[:3] == ("pr", "merge", "8"):
-            raise approvals.subprocess.CalledProcessError(1, "gh", stderr="refused")
-        return fake(*args, **kwargs)
-
-    monkeypatch.setattr(approvals.github, "gh", refuses_8)
-    # a pass on the tree main is left with after #7 alone, recorded where the files are
-    work = launch["work"]
-    monkeypatch.chdir(work)
-    git_in(work, "switch", "-q", "--detach", "origin/main")
-    (work / "7.txt").write_text("7\n")
-    git_in(work, "add", "7.txt")
-    git_in(work, "commit", "-qm", "main after #7")
-    assert approvals.main(["local-ci", "--record"]) == 0
-    monkeypatch.chdir(launch["here"])
-    published: list[str] = []
-    real_publish = approvals.publish
-    monkeypatch.setattr(
-        approvals, "publish", lambda *a, **k: published.append(a[0]) or real_publish(*a, **k)
-    )
-    runs = launch["runs"]()
-    code, lines = launch["land"]()
-    assert code == 1, lines
-    assert launch["merged"]() == ["7"] and launch["runs"]() == runs
-    assert any("reused" in line for line in lines), lines
-    assert published, lines
 
 
 def test_the_default_branch_is_asked_of_origin_where_the_clone_recorded_none(

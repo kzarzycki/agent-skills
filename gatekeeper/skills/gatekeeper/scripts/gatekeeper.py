@@ -11,8 +11,6 @@
     uv run --python '>=3.11' scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
     uv run scripts/approvals.py check ready <pr>                # the author's step before the verifier: the PR body's `## Evidence` (and demo form) alone, the check merge runs; exit 0 or 1
     uv run scripts/approvals.py check stalled              # every open PR land would take that its queue does not hold, or verified and idle past loop.stalled_after_hours with no go or record: one line each, exit 1; one not judged here: its line, which changes no exit
-    uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
-    uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
     uv run scripts/approvals.py approve <spec|plan> <issue> --by <owner|delegate>   # on the owner's word, or the delegate's under `loop.delegate: all`
     uv run scripts/approvals.py approve merge <pr> --head <sha> --by <owner|delegate> [--withdraw]  # a go on that head
@@ -87,10 +85,9 @@ only for a change it rates low (a fallback verifier's family, `agy`, `gemini` or
 that only bumps the pack's pin, the pin target's tier rule judges that pass instead (pin_target); no unresolved
 review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
 author posted one, that embeds its videos and screenshots as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
-status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
-of the aggregate `check` when it requires none (with
-`ci: false` in loop.md, a `local-ci` pass on the head's tree under today's gate command, read as `local-ci` reads
-it below, instead; its comment is the trace, never the proof), and, while the change's level asks a go of its merge
+status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head,
+since GitHub merges nothing without them (a base that requires none waits for no check, and `ci: false` asks no
+`local-ci` pass: the verifier's record is the merge's proof, and no gate runs after it), and, while the change's level asks a go of its merge
 (below), for the owner's go on that head: the newest commit status `owner` on the head commit by the account running this or a writer is
 green, and the PR holds the owner's record (`Approved by the owner.`, then `Approved: merge`, `By: owner`,
 `Head: <sha>`) naming that head. `approve merge <pr> --head <sha> --by owner` posts both on the owner's word, the
@@ -142,11 +139,11 @@ unchanged. A spec a policy covers is no trail, since under `spec.auto: true` eve
 `land [<pr>... [--only]]` is the one way an agent merges. It lands every landable PR into one base, the first named PR's or else the
 repository's default branch, through one of three merge queues, picked by the base's rules (`required_checks`) and the
 policy: the GitHub merge queue where the rules carry a `merge_queue` rule, else the Mergify queue where the policy's
-`land.queue` is `mergify` (below), else the local merge queue, the path for a project without a queue. Both take the same candidates (step 2) and
-differ in where the gate runs (GitHub's `merge_group` CI, or this host), when they run (continuously on GitHub, or within
-one `land` call) and how a red group is isolated (GitHub's per-entry groups, or the local one-at-a-time fallback, step
-6). One `land` runs one of them, never a mix, since one `land` gates its candidates in one place, so a PR never merges
-on a tree another path gated. The local merge queue lands its candidates as one batch:
+`land.queue` is `mergify` (below), else the local merge queue, the path for a project without a queue. All take the
+same candidates (step 2). A queue gates each group it merges in CI (GitHub's `merge_group` run, Mergify's batch
+check); the local merge queue runs no gate at all: a PR merges on the verifier's record on its head, with the checks
+the base requires green there, and nothing reruns at land (#1872). One `land` runs one of them, never a mix. The local
+merge queue lands its candidates as one batch:
 1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
 pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
 tip says the state: each lock commit holds the empty tree, its title says `landing lock: held` or `landing lock: free`
@@ -154,7 +151,7 @@ with `[skip ci]` (so a project whose workflows run on every branch push starts n
 it lands (`land <pr>`'s, none for a bare `land`) and a random value (so two lands in the same second never make the same
 commit), and its commit date is its age. A land pushes a `held` child of a `free` tip (or the first lock commit, with no
 parent, where the branch is missing), leased on that tip with `--force-with-lease`, so of two lands from one tip one
-wins. Once its batch is gated, before its first merge, it moves the lock to a `held` child of its own naming the
+wins. Once its batch is merged locally, before its first merge on GitHub, it moves the lock to a `held` child of its own naming the
 batch's last PR, leased on its own, so a lock taken by another land meanwhile stops it, merging nothing (exit 1). A
 `held` tip is another land's: exit 3, naming its holder and age. One naming a PR that GitHub reports merged, with its
 merge commit in origin's base, is released, left by a land that died after its merges: it is broken and taken in the
@@ -169,8 +166,7 @@ over and left in place. The base is fetched once the lock is taken, so the batch
 2. The candidates, oldest PR first, are every open PR into the base from this repository, not a draft, that holds every
 proof of `check merge` but its CI wait, is not outside the loop (`opt_out`, below), has the owner's go where it is high
 risk, and has the checks the base requires on GitHub (`required_checks`, but `loop:approvals`, which is check merge's
-own output) green on its head. Under `ci: false` the head needs no `local-ci` pass of its own: the gate on the batch is
-the proof. With loop.md's `head_proof`, the head also carries its head proof (below), else it is no candidate and `land`
+own output) green on its head. Under `ci: false` the head needs no `local-ci` pass. With loop.md's `head_proof`, the head also carries its head proof (below), else it is no candidate and `land`
 names the command that records it. `land <pr>` on a draft marks it ready, never on a missing proof, since ready starts CI, and does so before it
 waits for the lock, so the holder's next batch includes it; while the checks that starts are required, it waits (exit 3).
 `land` takes several PRs: each named draft is marked ready the same way, and the named PRs land in one batch with the other
@@ -185,8 +181,8 @@ would never come.
 3. With loop.md's `land: batch_wait_seconds` set (a whole number, default 0: no wait), and before the worktree below,
 it waits up to that long while another open PR into the same base is held by nothing but its required checks still
 running (its proofs and any owner go already hold: a red check, a draft, a proof gap or an owner wait never counts),
-polling every QUEUE_POLL seconds; each such PR that turns landable joins the batch and shares its one gate. It stops
-when none is pending or the time is up, so a lone PR gates at once; with PRs named by `--only` it never reads or waits
+polling every QUEUE_POLL seconds; each such PR that turns landable joins the batch. It stops
+when none is pending or the time is up, so a lone PR lands at once; with PRs named by `--only` it never reads or waits
 on other PRs. It prints the wait and who joined, and the `Landed` comment's `Batch:` line adds `(waited N s, joined:
 ...)`. The key is optional in `land`, which asks for signing keys only where `signed_squash_to` is set.
    In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
@@ -195,38 +191,24 @@ on other PRs. It prints the wait and who joined, and the `Landed` comment's `Bat
 it. A non-zero exit leaves that PR out of this batch, printing the check's last lines on every land, with a comment,
 once per head, holding its output; it is not red, so it is neither evicted nor turned back to draft. Then it merges each candidate's head
 (`git merge --no-ff`). A PR that conflicts is skipped, with a comment, once per head, saying it conflicts with the base
-plus the PRs merged before it, so it needs the base merged in.
-4. It gates the result's tree. A pass is reused when the gate command passed on that tree before (reusable, below):
-this clone's record, or a record branch in origin for a candidate's head with that same tree, so one PR already up to
-date with the base runs no gate. GitHub's required checks never stand in for it, since the pass is then published as the gate
-command's. Otherwise it runs the gate there as `local-ci` does (below), its log under the git common dir, and records
-the pass by tree; a gate that leaves the worktree changed is red, since it no longer ran on the batch as merged.
+plus the PRs merged before it, so it needs the base merged in. No gate runs on the result: no `gate` or
+`gate_steps` command, no reuse of a recorded pass, no re-run of a red one.
 From a clone with no working tree (no index: a `--no-checkout` launch dir), where every command reads the policy files
-from origin's default branch (policy_ref), steps 3 and 4 make no worktree: the heads merge in objects (`git merge-tree
---write-tree`), a recorded pass of every gate step on the batch's tree is reused, and with none `land` refuses naming
-the tree, as it refuses a `pre_land` it has no checkout to run in; it never runs the gate there.
-5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
+from origin's default branch (policy_ref), step 3 makes no worktree: the heads merge in objects (`git merge-tree
+--write-tree`), and `land` refuses a `pre_land` it has no checkout to run in.
+4. It merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
 --match-head-commit`), with the body the repo's squash default writes. A merge GitHub refuses, or leaves unmerged
 (a merge queue the base's rules don't name, such as classic branch protection's, only queues it, to merge later on a
-tree no gate saw), stops there: that PR and those
-after it wait for the next land. Then it fetches and compares the base's tree with the gated tree. Equal: the pass is
-published (below) on the new tip. It then deletes the record branches no head needs: those of the trees it landed, and
-those over a day old whose tree is no open PR's head (a head replaced or never landed; the day spares a record pushed
-before its PR opened). A refused delete is said and never fails the landing.
-Different, because a refusal left only part of the batch on the base or someone merged by hand meanwhile: it says
-which, gates the tip, and publishes only a pass. Each PR landed gets one comment, `Landed`, then `Base:` the new tip,
-`Tree:` the tree it landed (the base with it and the PRs before it merged), `Gate:` the command, `run` or `reused`,
-and the tree it passed on, and `Batch:` the PRs landed together. Each PR it merged then has its kept `--pr` worker sessions finished by a detached
+tree no land saw), stops there: that PR and those after it wait for the next land. Then it deletes the record
+branches no head needs: those of the heads it landed, and those over a day old whose tree is no open PR's head (a head
+replaced or never landed; the day spares a record pushed before its PR opened). A refused delete is said and never
+fails the landing. No gate runs on the base's new tip either: the nightly's full run is what catches a break the
+merged trees make. Each PR landed gets one comment, `Landed`, then `Base:` the new tip, `Tree:` the tree it landed
+(the base with it and the PRs before it merged), `Gate: none at land, on the verifier's record of the head`, and
+`Batch:` the PRs landed together. Each PR it merged then has its kept `--pr` worker sessions finished by a detached
 (the omnigent-agents skill's `omnigent_agent.py reap --merged --pr <n>`), whose outcome goes to its own log, never the land's.
-6. Red: it lands one PR at a time instead, each merged onto the last green commit and gated alone (a one-PR batch's red run counts as its first run alone). A PR red alone is
-gated once more (green then is a flake, and it lands), then evicted: back to draft, so later batches leave it out until
-`land <pr>` marks it ready again, and a comment holding its log's last 30 lines. When the first PR alone is red twice,
-the bare base is gated: red, the run stops (exit 1) and evicts nobody, since every PR would fail on that base.
-With loop.md's `machine_exit` (78, say), a gate run in steps 4 and 6 exiting with it is the machine's fault, not the
-tree's: it runs once more on the same tree, and a second such exit stops the run (exit 1), landing nothing, evicting
-nobody and posting nothing, and prints the log's last 30 lines: fix the machine, then land again.
 Exit 0 when the named PR merged (on a GitHub-queue base, also once it is enqueued or queued), or with no PR named when nothing landable failed; 1 for a refusal, a conflict, an
-eviction, a merge GitHub refused or a red base; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
+eviction (a queue's) or a merge GitHub refused; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
 `land --wait` runs it again while it waits on the lock or on CI, printing each new state once, for up to 2 hours,
 then exits 3; a wait for the owner ends it at once, since only the owner clears it. Between two runs it reads every 30
 seconds only what it waits on, at no API quota: a held lock with one `git ls-remote` (running again once the lock moves
@@ -258,7 +240,7 @@ nothing, and the queue's own run on that commit went green) makes it the base's 
 nothing counts yet (exit 3, `<base>'s checks on <sha> are still running`). Of the removals that count, the head's first
 gets a `Red in the merge queue` comment naming the check that failed on the queue's commit, its run and
 its failed job log's last 30 lines, and is enqueued again; its second turns the PR back to draft with the same, as
-step 6 evicts (`Evicted from the merge queue`, exit 1). Any other removal (`checks_timed_out`, `manual`) counts for
+Mergify's queue evicts (`Evicted from the merge queue`, exit 1). Any other removal (`checks_timed_out`, `manual`) counts for
 nothing, and the PR is enqueued again. The count lives in GitHub's timeline, so any land applies it and `land` keeps no
 state. A PR enqueued or already queued exits 0, naming its queue position and head, and `land` ends: it never polls the
 queue (GitHub tracks it; a poll only spends the account's GraphQL quota), so `--wait` never waits on the queue (it only waits for the PR's own running checks or an owner's go, before enqueuing), and a
@@ -316,7 +298,7 @@ PR needs it), instead of the squash above; every other PR lands as before. `land
 match with `signed_squash_to` set is refused, since a signed squash has no merge-commit form.
 `where: host | cloud | both` (default `both`) says where `land` runs: it refuses elsewhere, exit 1, before reading any
 PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`. There, without `signed_squash_to`, `land`
-merges each PR over REST (`PUT pulls/N/merge`, squash, `sha` the gated head), since GitHub's GraphQL merge is refused by
+merges each PR over REST (`PUT pulls/N/merge`, squash, `sha` the judged head), since GitHub's GraphQL merge is refused by
 the session's proxy; GitHub signs that commit as it does a host's, and no signing key is needed. With `signed_squash_to`
 its checkout signs with the session's own key, shared across that service's users, so `land` refuses without
 `ssh-keygen` installed, when it names no `signing_key_env`, and when that variable
@@ -324,15 +306,16 @@ is unset, empty, no unencrypted SSH private key, or a key whose public half is n
 refusal naming which and never the key. Else it writes the key to a mode-0600 file in a fresh temporary directory,
 removed however the land ends, and every git command of the land runs with it (`-c gpg.format=ssh -c
 user.signingkey=<file> -c gpg.ssh.program=ssh-keygen`, over the session's key and signing program), so each squash is
-signed and verified with it. The batch's pass is published as below: GitHub refusing the status
-there, it goes to origin as a ref. There REST alone answers, and it says neither whether a PR is in a merge queue nor
+signed and verified with it. There REST alone answers, and it says neither whether a PR is in a merge queue nor
 whether classic branch protection requires one, so a PR is a candidate there only with `merge_queue: false` in the
 section, the project's word that its base requires none (a ruleset that does picks the GitHub merge queue, above);
 a draft is marked ready and an evicted PR turned back to draft through the proxy's draft routes
 (`ccr/ready_for_review`, `ccr/convert_to_draft`). Off a cloud session only `where` is new.
 `land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip. `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its 2-hour ceiling; any other checkout is left alone and the land runs again from a fresh detached worktree of `origin/<base>`, removed when it ends; the refusal stands only when nothing newer exists to run from (the checkout is the base's tip, or the base lacks the running script).
-`check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
-printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
+loop.md's `carry_over_main` and `ci` work as below for one more release, each printing one `deprecated:` line on
+stderr. The keys that drove a gate at land, `batch_queue` under `loop` and `land`'s `gate_on`,
+`cloud_gate_timeout_seconds` and `host_gate`, do nothing (#1872): a policy that still sets one parses, with one
+`ignored:` line on stderr naming it, and the `check queue` and `batch` verbs are gone.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 In a shallow clone (a cloud session's), before the gate it fetches the base (the PR's, else the default branch) into
 `refs/remotes/origin/<base>` and deepens (`git fetch --deepen 50`, up to three times, then `--unshallow`) until `git
@@ -361,8 +344,8 @@ origin's record branches of that command, and the step's line says `<step>: reus
 found record counts only when today's `paths` give its own tree the same key, so one whose tree holds other inputs
 counts for nothing. A step without `paths`, with an empty list, or whose paths match no file in the tree is keyed by
 the tree, as above; a change to `gate_steps` changes every keyed step's key. A cloud session runs no `host` step: `local-ci --record` there runs the rest, says
-which step it left and exits 0, with no head proof and no pass on the whole gate, which `local-ci <pr>` and `land` need
-and refuse there. Each step that runs, or the one gate, holds the host gate slot (an exclusive flock on
+which step it left and exits 0, with no head proof and no pass on the whole gate, which `local-ci <pr>` needs
+and refuses there. Each step that runs, or the one gate, holds the host gate slot (an exclusive flock on
 `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, n up to the host's slot count) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
 path so a wrapper in it takes no lock of its own, and none when this process already runs under it. The count is `GATE_SLOTS`
 when it is a whole number from 1; else, where loop.md has the line `Gate cost: <cores> cores, <GB> GB` (optional
@@ -387,9 +370,8 @@ A run that gates a branch also writes its `gate` event (events.md, `refs/loop/ga
 `url` the record (with `gate_steps`, the records' directory); `failed` with `url` the detached run's log when there is one,
 else empty (a failed step records nothing, and a refusal has no log either). The detaching `local-ci` writes `waiting`
 first, before it starts the run, so a wait that follows it never reads the previous head's end, and ends the event itself when the run wrote none (`failed` with the log on a nonzero exit, `ok` with no url on exit 0, as a record on a changed tree); a step left for a host keeps `waiting`. Writing an event never
-changes the exit code. The `gate` commit status stays, on the PR head and on main commits: `land` writes the latter
-(`publish(tip, landed_pass(...))`), `wait-for --until gate` reads the former and the PR page shows both, and no event
-reader replaces them yet.
+changes the exit code. The `gate` commit status stays on the PR head: `wait-for --until gate` reads it and the PR
+page shows it, and no event reader replaces it yet. `land` publishes none on main, since it runs no gate.
 Every pass this clone holds, run or reused, is published one way from every session, host or cloud: pushed to origin
 as the branch `loop-gate/<tree>-<command's key>` (a branch, since a cloud session's proxy pushes nothing else), on a
 commit holding the tree, the commit the pass ran on as its parent, and as its message the line `Tree <tree> on
@@ -403,15 +385,14 @@ tree's record branch under today's command whose commit says that tree, command 
 its write access, so one on a PR's fork never counts, and it counts at every risk. A clone that reuses a record writes
 the `gate` status it holds on the head, so the PR shows the pass. So any clone reuses a pass from any other, and
 adding a name to `local_ci_env` keeps every pass. `local-ci <pr>` reads the PR's head through REST
-where GraphQL answers 403, so it runs in a cloud session too. `local-ci <pr>`, `local-ci --record`, `land`, `check
-queue`, `batch` and `check merge` read it the same way; the posted comment then says it was reused by tree from the
-pass recorded on that commit, and when, instead of running the check again. A refusal for a missing pass names each
-other command the tree passed under, from this clone's records and the tree's record branches, and today's. The host stays
+where GraphQL answers 403, so it runs in a cloud session too. `local-ci <pr>` and `local-ci --record` read it the
+same way; the posted comment then says it was reused by tree from the pass recorded on that commit, and when, instead
+of running the check again. The host stays
 in the record: nothing `approvals.py` posts names it, and posted text writes the home directory `~` (public), since a
 public board would show both. The posted comment names the gate's command and the variables it sets (`Env: A=1`, or
 `Env: default`).
 With loop.md's `head_proof` under `loop` (`status: <context>`, `env: [<names>]`), each head proves itself under env values
-the lead picks (the PR's acceptance test classes), which the batch gate's fixed env doesn't. `local-ci --record --head-proof` runs the gate as `--record`
+the lead picks (the PR's acceptance test classes), which the gate's fixed env doesn't. `local-ci --record --head-proof` runs the gate as `--record`
 does, but takes each `env` name the caller's environment sets from it instead of clearing it, over the gate line's own
 assignment of that name, so the command it records names the value (`GATE_UI_TESTS=LoginAcceptanceTest mise run check:all`). It
 publishes the pass as the commit status `<context>` instead of `gate`, described `Tree <tree> on <commit's first 12>:
@@ -423,49 +404,20 @@ Narrowed mode: loop.md's line `Affected tests: <command>` without the line `Gate
 command is the whole narrowed check: the project's selector plus its cheap whole-repo lint and type checks, reading the
 base from the variable `Gate base:` names, else `GATE_BASE`. `affected-tests` runs it against `--base <rev>` (a PR's
 base SHA, a push's previous tip), else the merge base with the branch's base; a `<rev>` git can't resolve (all zeros,
-a new branch) runs `mise run check`, said in one line, as do the opt-out and a loop.md without the line. In narrowed
-mode under `ci: false`, or where the base requires no check, `land`'s batch gate runs that command with the variable set
-to the base tip the batch merges onto, so it selects over the batch's combined diff, in place of the gate; where the base
-requires a check, which already ran each head's tests on that head, the batch gate is the `gate` line (batch_narrows),
-so it runs what that line runs (whole-tree checks such as a vendor check and lint, say). The narrowed batch gate runs under the same slot, `machine_exit`, records and cloud gate (whose
-`local-ci --record` it passes `--base <tip>`). Under `ci: false`, `local-ci --record` runs it against `--base`, else the
-merge base, as the ready head's gate of record, and `check merge` takes that pass on the head's tree, against the merge
-base of the head and the PR's base, in place of a full one; `local-ci <pr>` posts it. A narrowed pass's command is the
-variable's assignment, the command, then ` (narrowed)`, which no gate command can hold, so its record and key never
-equal a full pass's, and nothing that wants a full pass (`ci: false` without narrowed mode, a batch proof's head pass)
-takes it. Its `gate` status and record branch say `narrowed vs <base>`, and `local-ci --status` says `narrowed against <base>`. A project with
+a new branch) runs `mise run check`, said in one line, as do the opt-out and a loop.md without the line. Under
+`ci: false`, `local-ci --record` runs it against `--base`, else the merge base, and `local-ci <pr>` posts that pass on
+the head's tree, against the merge base of the head and the PR's base; `check merge` reads no local-ci pass (#1872). A
+narrowed pass's command is the variable's assignment, the command, then ` (narrowed)`, which no gate command can hold,
+so its record and key never equal a full pass's, and nothing that wants a full pass takes it. Its `gate` status and record branch say `narrowed vs <base>`, and `local-ci --status` says `narrowed against <base>`. A project with
 `gate_steps` keeps its steps everywhere, since each narrows by its `paths`. Without the `Affected tests:` line, `check
 build` says in one line that every gate runs the full check (not with the opt-out, which chose it).
-Deprecated: a project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
-full gate once on the result, push the batch) instead of one `land` per PR, opting in with `batch_queue: true` under
-gatekeeper.md's `loop`; without it `check queue` refuses and no batch proof counts, so a project that never set one up gets
-no second way to satisfy the CI wait. `check queue <pr> --head <sha>` exits 0
-when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
-gate on the batch replaces, the head has its own `local-ci --record` pass under the current env, or loop.md's
-`head_proof` status green for its tree, such as a light gate's pass (either is what `batch` needs) and,
-with CI, the checks `check merge` waits for passed, and a high-risk change has the owner's go on that head
-(owner_waits, as `check merge` and `land` read it), which the queue checks again before it merges it. After its gate the queue posts `batch` on
-each PR it merged: a comment `Merge queue batch` naming the head, the PR's merge commit, the batch commit, the gate's
-exit, the env and time of the head's own `local-ci --record` pass, or for a head with none an `Admitted:` line naming
-the head proof status and tree it entered on, and the log and its last lines; `batch` refuses a head with neither.
-`check merge` takes that comment in place of the CI wait (either kind) once it holds: the exit is 0, the head has its
-own green `local-ci --record` pass under the current env and the env the comment names, or the head proof status
-green for its tree that the `Admitted:` line names, since a batch gate never stands in for a head's own pass or its
-head proof, the merge commit's second parent is the head
-(the head landed unchanged), its tree is what
-`git merge-tree` makes of its parents (the queue resolved no conflict and added nothing), and the batch commit
-contains it; a commit the checkout lacks is fetched from `origin` first. Only a comment by the account running this
-or a writer counts, since anyone can comment on a public repo. A red, unproven or missing batch leaves the wait
-exactly as it was: it adds no line of its own, so a PR evicted through another PR's red batch lands or re-queues at
-the same head like any other. The proof is the verifier's
-verdict and gate on the PR's own head plus the full gate on the batch that merged it.
 Deprecated: with loop.md's `carry_over_main` section (`except: <globs>`), merges of the base into a PR head H keep H's proofs:
 each commit from the head H' down its first-parent line to H is a merge whose second parent is on the base (an
 ancestor of its tip), whose tree is what `git merge-tree --write-tree` makes of its parents (no conflict resolved,
 nothing added), and where the base's changes since the merge base touch no file the PR's side changes and no path an
 `except` glob matches (fnmatch, as a rule's `paths`: the project's merge-check configuration, such as lint, type,
 test and gate config and lockfiles). So a PR commit after H, new, edited or rebased, carries nothing. Then H's newest
-verdict covers H' (`check merge`, `check queue` and `land`, the verifier's `Risk:` line included). It never carries
+verdict covers H' (`check merge` and `land`, the verifier's `Risk:` line included). It never carries
 a `local-ci` record: H' runs its own gate, as CI would run on it. `check merge` and `land` print one line per merge
 naming it, its first parent and the predicate, or why the head carries nothing. A git error, a second merge base or
 any failed condition carries nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
@@ -489,8 +441,8 @@ removes what #n added and adds what #n removed (files, and each run of lines in 
 differ), and every path either touches has at the PR's merge base the mode it had after #n and at its head the mode
 it had before #n, absence included. A file GitHub shows no diff of (binary, too large, only renamed or moded) is never
 exact. Its code returns to a state already specced and reviewed, so `check build` passes it and `check merge` asks
-only for Evidence (what went wrong), no unresolved thread or review requesting changes, a green `check` and the
-label where the change is high risk, which for a revert also means `risk:high` on an issue it names or on #n, or #n's
+only for Evidence (what went wrong), no unresolved thread or review requesting changes, the base's required checks
+green and the label where the change is high risk, which for a revert also means `risk:high` on an issue it names or on #n, or #n's
 last verdict judging it high, since undoing a high-risk change changes as much as making it.
 A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
 
@@ -533,7 +485,7 @@ running this counts as a writer, by its own permissions on the repo.
 
 The policy block (policy.md beside SKILL.md has every key), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
-the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue`, `owner`, `machine_exit`,
+the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `owner`, `machine_exit`,
 `short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`; `levels` holds `low`,
 `high` and `critical`, each with `spec` and `merge` (above).
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
@@ -564,7 +516,7 @@ label names matched exactly on the PR and its issues; `paths`, globs matched on 
 `verifier: true`. `risk.critical_paths` (deprecated name `merge_paths`, read with a `deprecated:` line; both set is
 refused), globs matched on the PR's files as `paths` are, is no term of the rule: a PR touching one rates `critical`
 whatever its labels, `spec.auto` and the verifier's `Risk:` line say, and by default only the owner's go
-on its head lets it merge, into any branch, so `check merge`, `check queue` and `land` wait for it, `approve merge
+on its head lets it merge, into any branch, so `check merge` and `land` wait for it, `approve merge
 --by delegate` and `delegate` refuse it, and the label is no go; files it can't read hold. A list holds strings. The gate reads the keys, never the words of a rule, so a path or
 label can never read as a term. A glob matches every path the PR touches on either side of the change: a
 deleted file's, and a renamed or copied file's old name as well as its new one. Paths it can't judge, past the one
@@ -729,8 +681,6 @@ RECORDER = {"GIT_AUTHOR_NAME": "loop", "GIT_AUTHOR_EMAIL": "loop@invalid"} | {
     "GIT_COMMITTER_EMAIL": "loop@invalid",
 }
 PASSED = re.compile(r"Tree ([0-9a-f]{40,64}) on ([0-9a-f]{7,64}): (.+)")
-# the first line of a merge queue's batch proof (batch), which queued() reads, and how much of the gate's log it shows
-BATCHED = "Merge queue batch"
 LOG_TAIL = 30
 CHANGED = {
     "spec": "The spec changed after the last approval, so it was checked again.\n",
@@ -929,7 +879,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
             unique=("name", "command"),
             optional=("paths",),
         ),
-        "batch_queue": bool,
         "owner": str,
         "machine_exit": int,
         "short_seconds": int,
@@ -965,9 +914,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
         merge_queue=bool,
         merge_commit_heads=list,
         batch_wait_seconds=int,
-        gate_on=Choice(("host", "cloud")),
-        cloud_gate_timeout_seconds=int,
-        host_gate=bool,
         queue=Choice(("mergify",)),
         together=("signed_squash_to", "allowed_signers"),
         optional=(
@@ -978,9 +924,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "merge_queue",
             "merge_commit_heads",
             "batch_wait_seconds",
-            "gate_on",
-            "cloud_gate_timeout_seconds",
-            "host_gate",
             "queue",
         ),
     ),
@@ -1171,15 +1114,15 @@ def settings(loop: str | None) -> dict[str, Any]:
                     {"login": login, **typed(bot, SCHEMA["bot"], where, file)}
                 )
         elif name == "loop":
-            data.update(typed(section, SCHEMA["loop"], name, file))
-            for key in ("batch_queue", "ci"):
-                if key in section:
-                    deprecated(key)
+            data.update(typed(ignored(section, name, file), SCHEMA["loop"], name, file))
+            if "ci" in section:
+                deprecated("ci")
         elif name in SCHEMA:
-            data[name] = typed(section, SCHEMA[name], name, file)
-            for key in ("batch_wait_seconds", "cloud_gate_timeout_seconds"):
-                if data[name].get(key, 0) < 0:
-                    raise Refused(f"{file}'s `land.{key}` must be a whole number, 0 or more")
+            data[name] = typed(ignored(section, name, file), SCHEMA[name], name, file)
+            if data[name].get("batch_wait_seconds", 0) < 0:
+                raise Refused(
+                    f"{file}'s `land.batch_wait_seconds` must be a whole number, 0 or more"
+                )
             if name == "carry_over_main":
                 deprecated(name)
             if name == "risk" and "merge_paths" in section:
@@ -1199,6 +1142,26 @@ def settings(loop: str | None) -> dict[str, Any]:
 
 
 DEPRECATED: set[str] = set()
+
+
+# keys a policy may still set that no longer do anything, since land runs no gate (#1872): each is said once on
+# stderr and dropped, so a consumer's older policy file still parses
+IGNORED = {
+    "loop": ("batch_queue",),
+    "land": ("gate_on", "cloud_gate_timeout_seconds", "host_gate"),
+}
+
+
+def ignored(section: dict[str, Any], name: str, file: str) -> dict[str, Any]:
+    """`section` without the keys IGNORED lists for it, each said in one line on stderr, once per run, never fatal."""
+    for key in IGNORED.get(name, ()):
+        if key in section and (said := f"{name}.{key}") not in DEPRECATED:
+            DEPRECATED.add(said)
+            print(
+                f"ignored: {file}'s `{said}` does nothing, since land runs no gate (#1872): remove it",
+                file=sys.stderr,
+            )
+    return {key: value for key, value in section.items() if key not in IGNORED.get(name, ())}
 
 
 def deprecated(name: str, instead: str = "land batches every landable PR (#650)") -> None:
@@ -3112,13 +3075,7 @@ def waits(
 ) -> list[str]:
     """One line per thing the merge waits for: ran()'s checks (`checks`, when the caller read them), and the owner's go
     (owner_waits)."""
-    return (ran(pull, loop) if checks is None else checks) + owner_waits(pull, issues, loop, pushed)
-
-
-def batch_queue(loop: str | None) -> bool:
-    """Whether gatekeeper.md opts into a batching merge queue (`batch_queue: true` under `loop`), without which no batch
-    proof stands in for the CI wait: a project that never set one up gets no second way to satisfy it."""
-    return settings(loop).get("batch_queue") is True
+    return (ran(pull) if checks is None else checks) + owner_waits(pull, issues, loop, pushed)
 
 
 def no_ci(loop: str | None) -> bool:
@@ -3314,9 +3271,9 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
 def signed_squash(pull: dict[str, Any], signers: Path, onto: tuple[str, str] | None = None) -> str:
     """Squash the PR's head onto its base here, signed with this checkout's key and checked against `signers`, then
     push it to the PR's branch and fast-forward the base to it: GitHub marks a PR merged once its head is in the
-    base. The head must be the one the gates checked and contain the base's tip, so the squash undoes nothing; with
+    base. The head must be the one the proofs judged and contain the base's tip, so the squash undoes nothing; with
     `onto` (a commit and a tree, from land's batch), the base's tip must be that commit and the squash holds that
-    tree, the merge of the head the batch gated."""
+    tree, the head merged into the batch."""
     if not shutil.which("ssh-keygen"):
         raise Refused(NO_KEYGEN)
     pr, base, branch, head = (
@@ -3406,33 +3363,14 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
     )
 
 
-def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
-    """One line per check the merge waits for on the head: ci()'s `required` (None: the base branch's required checks but
-    `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass on the head's
-    tree under today's gate command (reusable), or in narrowed mode a narrowed pass (narrowed_pass)."""
-    where = f"PR #{pull['number']}"
-    if batch_queue(loop) and queued(pull, loop) is None:
-        return []
-    if no_ci(loop):
-        # the proof is the pass itself (reusable), never the `Local check passed` comment, which anyone who can
-        # comment may write and which says nothing about today's gate command
-        passed = tier(pull, loop)
-        found = (
-            []
-            if reusable(pull["headRefOid"], passed) or narrowed_pass(pull, passed)
-            else [
-                (
-                    f"{where}: the project has no CI ({source(loop)} `ci: false`), and no local check passed on the head"
-                    f" (approvals.py local-ci){elsewhere(pull['headRefOid'])}"
-                )
-            ]
-        )
-    else:
-        if required is None:
-            # the approvals status is check merge's own output: waiting for it never ends
-            required = required_checks(pull["baseRefName"]) - OWN or None
-        found = ci(where, pull, required)
-    return found
+def ran(pull: dict[str, Any]) -> list[str]:
+    """One line per check the merge waits for on the head: ci()'s lines for the checks the base branch requires but the
+    loop's own statuses (OWN), since GitHub merges nothing without them. A base that requires none waits for nothing:
+    no aggregate `check`, and under `ci: false` no local-ci pass, since the verifier's record is the merge's proof and
+    no gate runs between it and the merge (#1872)."""
+    # the approvals status is check merge's own output: waiting for it never ends
+    required = required_checks(pull["baseRefName"]) - OWN
+    return ci(f"PR #{pull['number']}", pull, required) if required else []
 
 
 def merge_base_of(base: str, head: str) -> str | None:
@@ -3444,45 +3382,6 @@ def merge_base_of(base: str, head: str) -> str | None:
     return None
 
 
-def narrowed_pass(pull: dict[str, Any], passed: list[str]) -> dict[str, Any] | None:
-    """In narrowed mode (narrowing, narrowed_gate), a narrowed pass on the PR head's tree against the merge base of the
-    head and the PR's base (merge_base_of), as `local-ci --record` makes one under `ci: false`; else None. It stands
-    in for a full pass only where `check merge` reads the `ci: false` gate of record, never for one a decision needs in
-    full."""
-    if (
-        narrowing() is None
-        or (base := merge_base_of(pull["baseRefName"], pull["headRefOid"])) is None
-    ):
-        return None
-    with narrowed_to(base):
-        if narrowed_gate(passed) is None:
-            return None
-        return reusable(pull["headRefOid"], passed)
-
-
-def queued(pull: dict[str, Any], loop: str | None = None) -> list[str] | None:
-    """None when a merge queue's batch proof (batch) on the head, by the account running this or a writer, holds
-    (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
-    ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
-    where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
-    for note in notes(pull):
-        lines = machine(note["body"]).strip().splitlines()
-        if not lines or lines[0].strip() != BATCHED:
-            continue
-        header = itertools.takewhile(
-            str.strip, lines[1:]
-        )  # the log's tail after the blank line names no field
-        fields = {
-            key.strip(): value.strip() for key, _, value in (line.partition(":") for line in header)
-        }
-        if fields.get("Head", "").lower() != head or not trusted(pull, note, author=False):
-            continue
-        if (why := unproven(head, fields, loop)) is None:
-            return None
-        found.append(f"{where}: {why}")
-    return found
-
-
 def trusted(pull: dict[str, Any], note: dict[str, Any], author: bool = True) -> bool:
     """Whether a proof comment's author counts: the account running this, a writer (writer), and with `author` the
     PR's author, as passes() reads verifier reviews, since anyone can comment on a public repo."""
@@ -3492,48 +3391,6 @@ def trusted(pull: dict[str, Any], note: dict[str, Any], author: bool = True) -> 
     if author and login == (pull.get("author") or {}).get("login"):
         return True
     return login == viewer() or writer(login)
-
-
-def unproven(head: str, fields: dict[str, str], loop: str | None = None) -> str | None:
-    """Why a batch proof's fields prove nothing about `head`, or None: its gate exited 0, the head has its own green
-    local-ci pass under the gate command, the env the proof names, or entered the queue on its head proof (admitted),
-    the stand-in the proof names, since a batch gate never stands in for the head's own pass, its merge commit's second
-    parent is the head, so the head landed unchanged, its tree is the clean merge of its parents, so the queue resolved
-    no conflict and added nothing, and the batch commit contains it."""
-    merge, batch, code = (fields.get(key, "").lower() for key in ("Merge", "Batch", "Exit"))
-    if code != "0":
-        return f"the merge queue's gate on batch {batch} exited {code or 'with no exit code'}"
-    # the proof's own line says which it entered on, so a record made later doesn't void an `Admitted:` proof
-    if "Admitted" in fields:
-        if (entry := admitted(head, loop)) is None:
-            return (
-                f"batch {batch} names the stand-in `{fields['Admitted']}`, but the head {head} has no green loop.md"
-                f" `head_proof` status for its tree"
-            )
-        if fields["Admitted"] != entry:
-            return f"batch {batch} names the head's stand-in `{fields['Admitted']}`, its head proof `{entry}`"
-    elif (record := reusable(head)) is None:
-        return (
-            f"the head {head} has no green `local-ci --record` pass of its own under the gate command, which a batch"
-            f" never stands in for{elsewhere(head)}"
-        )
-    # the comment names the env as posted, its home written `~` (public)
-    elif (env := public(env_line(record["env"])[len("Env: ") :].strip())) != fields.get("Env"):
-        return (
-            f"batch {batch} names the head's gate env `{fields.get('Env', '')}`, its record `{env}`"
-        )
-    for kind, sha in (("merge", merge), ("batch", batch)):
-        if not fetched(sha):
-            return f"{kind} {sha} is not a commit origin has"
-    parents = git("rev-list", "--parents", "-n", "1", merge).split()[1:]
-    if len(parents) != 2 or parents[1] != head:
-        return f"merge {merge} does not merge the head {head} as its second parent"
-    clean = merged(*parents)
-    if isinstance(clean, str) or clean[0] != git("rev-parse", f"{merge}^{{tree}}").strip():
-        return f"merge {merge} is not the clean merge of its parents: the queue resolved or added something"
-    if subprocess.run(["git", "merge-base", "--is-ancestor", merge, batch], check=False).returncode:
-        return f"batch {batch} does not contain merge {merge}"
-    return None
 
 
 def merged(
@@ -3787,81 +3644,6 @@ def fetched(sha: str) -> bool:
         return True
     subprocess.run(["git", "fetch", "--quiet", "origin"], capture_output=True, check=False)
     return subprocess.run(have, capture_output=True, check=False).returncode == 0
-
-
-def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | None) -> int:
-    """check queue: exit 0 when `head` may enter a batching merge queue, else one line per reason and exit 1."""
-    where, found = f"PR #{pull['number']}", []
-    if not batch_queue(loop):
-        print(
-            f"{where}: {source(loop)} doesn't opt into a batching merge queue (`batch_queue: true` under `loop`), so it lands"
-            " through `land`"
-        )
-        return 1
-    if pull["state"] != "OPEN":
-        found.append(f"{where} is {pull['state'].lower()}: nothing to queue")
-    if pull["headRefOid"].lower() != head.lower():
-        found.append(
-            f"{where}'s head is {pull['headRefOid']}, not {head}: queue the head the verifier reviewed"
-        )
-    if why := outside(pull, loop):
-        found.append(why)
-    missing, issues = gated("merge", pull, tracker, loop)
-    found += missing
-    if not no_ci(loop):
-        found += ran(pull, loop)
-    # with CI too: batch refuses a head with neither, so it may not enter
-    if reusable(head) is None and admitted(head, loop) is None:
-        found.append(
-            f"{where}: no `local-ci --record` pass on {head} under the gate command (approvals.py local-ci --record)"
-            f"{nor_head_proof(loop)}{elsewhere(head)}"
-        )
-    # the queue re-runs this before it merges the head, and check merge reads the owner's go on the landed head again
-    found += owner_waits(pull, issues, loop)
-    for line in found:
-        print(line)
-    if found:
-        return 1
-    print(f"{where} may enter a merge queue at {head}")
-    return 0
-
-
-def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
-    """Post a merge queue's batch proof on PR `pr`, which queued() reads: the head (the merge's second parent), the
-    merge, the batch, the gate's exit, the head's own local-ci pass and its env, the log, and the log's last LOG_TAIL
-    lines. A head with no such pass that entered the queue on its head proof (admitted) gets an `Admitted:` line naming
-    that status and its tree in place of the env and time. Refused for a head with neither."""
-    if not fetched(merge.lower()):
-        raise Refused(f"merge {merge} is not a commit here or on origin")
-    head = git("rev-parse", f"{merge}^2").strip()
-    # the head proof of the base the PR merges onto, not the default branch's
-    with policy_from(str(pull_status(pr)["baseRefName"])):
-        loop = project()[1]
-    record, entry = reusable(head), None
-    if record is None and (entry := admitted(head, loop)) is None:
-        raise Refused(
-            f"the head {head} has no green `local-ci --record` pass of its own under the gate command"
-            f"{nor_head_proof(loop)}: no batch proof without it{elsewhere(head)}"
-        )
-    try:
-        tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
-    except OSError:
-        tail = []
-    body = fold(
-        BATCHED,
-        f"The merge queue's batch {'passed' if code == 0 else 'failed'} the gate with {head[:7]} in it (exit {code}).",
-        f"Head: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n"
-        + (
-            f"{env_line(record['env'])}Gated: {record['time']}\n"
-            if record
-            else f"Admitted: {entry}\n"
-        )
-        + f"Log: {log}",
-    )
-    if tail:
-        body += "\n" + folded("The gate's last lines", tail)
-    comment(pr, body)
-    return 0
 
 
 def owner_waits(
@@ -4910,12 +4692,11 @@ def reverts(pull: dict[str, Any]) -> tuple[int | None, list[str]]:
 
 
 def head_checks(
-    pull: dict[str, Any], required: set[str] | None
+    pull: dict[str, Any], required: set[str]
 ) -> tuple[list[tuple[str, str]], int | None, set[str]]:
-    """The state of the newest run of each check on the head the merge reads, as (name, state): `required` (None:
-    the aggregate `check`, the one check `check merge` reads on a base that requires none, since every other check is
-    advisory; empty: every check); how many checks GitHub returned when it holds more than that one page, else None; and the
-    names whose only run is a draft's skip, which the ready PR's CI has not reached yet."""
+    """The state of the newest run of each check on the head the merge reads, as (name, state): `required` (empty:
+    every check); how many checks GitHub returned when it holds more than that one page, else None; and the names
+    whose only run is a draft's skip, which the ready PR's CI has not reached yet."""
     commits = pull["commits"]["nodes"]
     contexts = commits[0]["commit"]["statusCheckRollup"] if commits else None
     every = contexts["contexts"]["nodes"] if contexts else []
@@ -4924,7 +4705,7 @@ def head_checks(
         if contexts and (contexts["contexts"].get("totalCount") or 0) > len(every)
         else None
     )
-    wanted = {"check"} if required is None else required
+    wanted = required
     # CI skips a draft, and GitHub counts the skipped run as passing: one completed before the newest ready-for-review
     # is the draft's and says nothing about the ready PR. A run that completed on the draft is the head's result.
     ready = max(
@@ -4972,10 +4753,10 @@ def head_checks(
     return checks, more, {name for flow, name in drafts - newest.keys() if flow not in finished}
 
 
-def ci(where: str, pull: dict[str, Any], required: set[str] | None = None) -> list[str]:
+def ci(where: str, pull: dict[str, Any], required: set[str]) -> list[str]:
     """A line per check head_checks() reads that is not green on the head, or not there yet."""
     checks, more, drafts = head_checks(pull, required)
-    wanted = {"check"} if required is None else required
+    wanted = required
     if wanted:
         missing = [f"`{name}`" for name in sorted(wanted - {name for name, _ in checks})]
     else:  # every check of none would pass a head CI has not reached yet, or one only the draft skipped
@@ -5070,10 +4851,6 @@ class Drifted(Refused):
     def __init__(self, message: str, base: str) -> None:
         super().__init__(message)
         self.base = base
-
-
-class MachineFault(Refused):
-    """The gate exited with loop.md's `machine_exit` twice on one tree in `land`: the machine isn't ready."""
 
 
 # Ports: the policy reaches the tracker, the forge and the evidence only through these operations, each a function of
@@ -5791,7 +5568,7 @@ def setup() -> int:
     return 1 if problems else 0
 
 
-def check(point: str, pr: int | None, head: str | None = None, issue: int | None = None) -> int:
+def check(point: str, pr: int | None, issue: int | None = None) -> int:
     """`check <point>`: with a PR, under the policy of the base it merges onto (policy_from), else the default
     branch's."""
     toplevel()  # outside a checkout, refused before GitHub is asked
@@ -5822,7 +5599,7 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
             )  # a number no PR has is the issue's, as `--issue` reads it
         raise
     with policy_from(pull["baseRefName"]):
-        return checked(point, pull, head)
+        return checked(point, pull)
 
 
 def full_check_line() -> None:
@@ -5838,7 +5615,7 @@ def full_check_line() -> None:
             )
 
 
-def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
+def checked(point: str, pull: dict[str, Any]) -> int:
     tracker, loop = project()
     if (
         point == "ready"
@@ -5851,8 +5628,6 @@ def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
             else f"PR #{pull['number']}: its body holds the evidence proof"
         )
         return 1 if found else 0
-    if point == "queue" and head is not None:
-        return queueable(pull, head, tracker, loop)
     if point == "merge" and (why := outside(pull, loop)):
         print(why)
         return 0
@@ -5862,7 +5637,7 @@ def checked(point: str, pull: dict[str, Any], head: str | None) -> int:
     found, issues = gated(point, pull, tracker, loop)
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
-    covered = breakglass_cover(pull, loop, ran(pull, loop)) if point == "merge" else Covered([], [])
+    covered = breakglass_cover(pull, loop, ran(pull)) if point == "merge" else Covered([], [])
     waiting = waits(pull, issues, loop, checks=covered.lines) if point == "merge" else []
     rated = rating(pull, issues, loop) if point == "merge" else None
     if rated is not None:
@@ -7148,7 +6923,7 @@ def landable(
     named: bool = False,
 ) -> Verdict:
     """A check, which writes nothing to GitHub: whether the PR is a candidate for the batch (every merge proof, gated,
-    the head's own CI or local-ci pass aside, since the batch's gate is the proof; no owner wait; the base's required
+    no local-ci pass asked, since the verifier's record is the proof and no gate runs at land; no owner wait; the base's required
     checks green on its head; a signed squash possible where loop.md asks for one), or a draft that holds all that and is
     ready to mark, or why not, said once on stdout. The PR is judged as `flag` leaves it (a `risk:high` the gate added
     that `unflag` would take off no longer holds it); `land` writes the label and the ready mark itself. The `named` PR
@@ -7390,8 +7165,9 @@ def local_queue(
     worst: int = 0,
 ) -> tuple[int, bool]:
     """The local merge queue, under the lock (`held`, its commits): merge every candidate's head onto `base` locally,
-    oldest PR first, gate the result's tree once on this host (or reuse a pass on it), move the lock to name the last PR
-    to land (repointed), and merge each through GitHub in that order; a red batch lands one PR at a time."""
+    oldest PR first, leaving out a PR that conflicts or that `pre_land` refuses, move the lock to name the last PR to
+    land (repointed), and merge each through GitHub in that order. No gate runs: the verifier's record on each head is
+    the proof, beside the checks the base requires green on it (landable), so nothing reruns at land (#1872)."""
     candidates, waits, issues = candidates_of(named, base, tracker, loop, required, only)
     waited = ""
     if (
@@ -7402,51 +7178,35 @@ def local_queue(
         pulls = {pull["number"]: pull for pull in named}
         waited = batch_wait(seconds, pulls, issues, candidates, waits, tracker, loop, required)
     failed: set[int] = set()
-    # each PR to land, the tree it lands, the tree gated with it, and how that passed
-    landed: list[tuple[dict[str, Any], str, str, str]] = []
-    # narrowed mode selects tests only where no required CI check ran them on each head already (batch_narrows)
-    narrows = batch_narrows(loop, required)
+    # each PR to land, and the tree it lands
+    landed: list[tuple[dict[str, Any], str]] = []
     if candidates and policy_ref(toplevel()) is not None:
-        # no working tree here: the batch is computed in objects and gated only by a recorded pass, never run here
+        # no working tree here: the batch is computed in objects
         if settings(loop).get("pre_land"):
             raise Refused(
                 f"loop.md's `pre_land` runs in a checkout of {base}'s tip, and this clone has no working tree:"
                 " land where the files are checked out"
             )
         tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
-        # narrowed mode: the batch gate selects against the tip the batch merges onto (narrowed_gate)
-        with narrowed_to(tip if narrows else None):
-            landed = merged_trees(candidates, base, tip, failed)
+        landed = merged_trees(candidates, base, tip, failed)
+        # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
+        if landed and held is not None:
+            repointed(base, held, landed[-1][0]["number"])
+        if landed:
+            merges(landed, base, tip, loop, failed, waited, held)
+    elif candidates:
+        with batch_tree(base) as work:
+            tip = run_in(work, "rev-parse", "HEAD")
+            candidates = [pull for pull in candidates if pre_landed(pull, base, work, loop, failed)]
+            landed = merge_batch(candidates, base, work, failed)
             # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
             if landed and held is not None:
                 repointed(base, held, landed[-1][0]["number"])
             if landed:
-                merges(landed, base, tip, None, loop, failed, waited, held)
-    elif candidates:
-        with batch_tree(base) as work:
-            tip = run_in(work, "rev-parse", "HEAD")
-            with narrowed_to(tip if narrows else None):
-                candidates = [
-                    pull for pull in candidates if pre_landed(pull, base, work, loop, failed)
-                ]
-                landed = merge_batch(candidates, base, work, failed)
-                # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
-                if landed and held is not None:
-                    repointed(base, held, landed[-1][0]["number"])
-                if landed:
-                    merges(landed, base, tip, work, loop, failed, waited, held)
+                merges(landed, base, tip, loop, failed, waited, held)
     # each named PR's exit: its wait's, else 0 when it merged, else 1
     done = {pull["number"] for pull, *_ in landed} - failed
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
-
-
-def batch_narrows(loop: str | None, required: set[str]) -> bool:
-    """Whether `land`'s batch gate runs loop.md's `Affected tests:` command (narrowed mode) in place of the `gate`
-    line: only under `ci: false` or where the base requires no check. A required check already ran each head's tests
-    on that exact head, so selecting them again over the batch only holds the lock; the batch gate is then the `gate`
-    line, the project's whole-tree checks (a vendor check and lint, say), and a combination that breaks an untouched
-    test is the full run's to catch (a nightly, say)."""
-    return no_ci(loop) or not required
 
 
 def check_never_comes(pull: dict[str, Any], required: set[str]) -> bool:
@@ -7473,7 +7233,7 @@ def batch_wait(
     """Under the lock, before the batch tree: wait up to `seconds` (loop.md's `batch_wait_seconds`) while another PR is
     held by nothing but its required checks still running (landable's (WAITING, True), no owner wait behind it, and no
     check that never comes: check_never_comes), so
-    it rides this batch's one gate instead of paying one of its own. Each one that turns landable joins `candidates`
+    it lands in this batch instead of waiting for the next land. Each one that turns landable joins `candidates`
     (oldest first) and leaves `waits`; one that turns red, or asks the owner, is dropped from the wait. Returns the
     text for the Landed comment's `Batch:` line, empty when nothing was waited for."""
     near = {
@@ -7490,7 +7250,7 @@ def batch_wait(
     print(
         f"land waits up to {seconds} s for the required checks of "
         + ", ".join(f"#{n}" for n in sorted(near))
-        + " before it gates the batch"
+        + " before it lands the batch"
     )
     joined: list[int] = []
     while near and time.monotonic() < deadline:
@@ -7546,55 +7306,13 @@ def batch_tree(base: str) -> Any:
 
 def merge_batch(
     candidates: list[dict[str, Any]], base: str, work: Path, failed: set[int]
-) -> list[tuple[dict[str, Any], str, str, str]]:
-    """Merge the candidates onto the base in `work` and gate the result; red: one PR at a time on the last green
-    commit, a PR red alone gated once more, then evicted, and when the first one is red twice the bare base gated,
-    which red ends the run evicting nobody. Each PR to land, with the tree it lands (the base with it and the PRs
-    before it merged), the tree gated with it, and how."""
-    tip = run_in(work, "rev-parse", "HEAD")
-    merged: list[dict[str, Any]] = []
-    trees: list[str] = []
+) -> list[tuple[dict[str, Any], str]]:
+    """Merge the candidates onto the base in `work`, a PR that conflicts left out (merged_onto); no gate runs on the
+    result. Each PR to land, with the tree it lands: the base with it and the PRs before it merged."""
+    landed: list[tuple[dict[str, Any], str]] = []
     for pull in candidates:
-        if merged_onto(pull, work, base, [other["number"] for other in merged], failed):
-            merged.append(pull)
-            trees.append(run_in(work, "rev-parse", "HEAD^{tree}"))
-    if not merged:
-        return []
-    tree, how = gate_batch(work, merged)
-    if how:
-        return [(pull, own, tree, how) for pull, own in zip(merged, trees, strict=True)]
-    numbers = ", ".join(f"#{pull['number']}" for pull in merged)
-    print(f"the batch of {numbers} is red: one PR at a time")
-    green, landed, base_green = tip, [], False
-    for pull in merged:
-        reset(work, green)
-        if not merged_onto(pull, work, base, [p["number"] for p, *_ in landed], failed):
-            continue
-        # a one-PR batch's red run was this PR merged onto the same tip, the same tree: that is its first run alone
-        tree, how = (tree, "") if len(merged) == 1 else gate_batch(work, [pull])
-        if not how:
-            print(
-                f"PR #{pull['number']} is red alone on {green}: once more, in case it was a flake"
-            )
-            tree, how = gate_batch(work, [pull])
-        if how:
-            green = run_in(work, "rev-parse", "HEAD")
-            landed.append((pull, tree, tree, how))
-            continue
-        if green == tip and not base_green:
-            reset(work, tip)
-            # the full gate: at the tip itself the narrowed one selects nothing, so it reads a red base green
-            with narrowed_to(None):
-                base_ok = gate_batch(work, [])[1]
-            if not base_ok:
-                print(
-                    f"{base} itself is red at {tip}: nothing lands and nobody is evicted until it is fixed"
-                )
-                failed.add(pull["number"])
-                return []
-            base_green = True
-        evict(pull, base, green, work.parent / f"{tree}.log")
-        failed.add(pull["number"])
+        if merged_onto(pull, work, base, [other["number"] for other, _ in landed], failed):
+            landed.append((pull, run_in(work, "rev-parse", "HEAD^{tree}")))
     return landed
 
 
@@ -7603,15 +7321,14 @@ def run_in(work: Path, *args: str) -> str:
 
 
 def reset(work: Path, commit: str) -> None:
-    """`work` at `commit` with nothing a red gate left behind but ignored files, such as caches, so the next gate's
-    tree is the commit's."""
+    """`work` at `commit` with nothing a check (`pre_land`) left behind but ignored files, such as caches, so the batch
+    merges onto the commit's tree."""
     run_in(work, "reset", "-q", "--hard", commit)
     run_in(work, "clean", "-fdq")
 
 
 CONFLICTS = "Conflicts in the landing batch"
 PRE_LAND = "Refused by the pre-land check"
-EVICTED = "Evicted from the landing batch"
 
 
 def merged_onto(
@@ -7663,20 +7380,12 @@ def conflict_note(pull: dict[str, Any], base: str, ahead: str = "") -> None:
         )
 
 
-def recording_base() -> str:
-    """` --base <tip>` in narrowed mode (narrowed_gate), the base the batch gate selects against, so the `local-ci
-    --record` a message names records the pass the lookup then finds; empty for the full gate."""
-    return f" --base {NARROW_BASE.get()}" if narrowed_gate() is not None else ""
-
-
 def merged_trees(
     candidates: list[dict[str, Any]], base: str, tip: str, failed: set[int]
-) -> list[tuple[dict[str, Any], str, str, str]]:
+) -> list[tuple[dict[str, Any], str]]:
     """merge_batch for a clone with no working tree: each candidate's head merged onto `tip` (origin's `base`) in
-    objects alone, `git merge-tree --write-tree` and `git commit-tree`, so no file is checked out, then the batch's tree
-    reused from a recorded pass of every gate step on it (step_pass), since no gate runs here. With none it refuses,
-    naming the tree, so a session with a working tree passes it (`local-ci --record` on a head with that tree)."""
-    commit, merged, trees = tip, [], []
+    objects alone, `git merge-tree --write-tree` and `git commit-tree`, so no file is checked out."""
+    commit, landed = tip, []
     for pull in candidates:
         head = pull["headRefOid"]
         if not fetched(head):
@@ -7692,7 +7401,7 @@ def merged_trees(
             check=False,
         )
         if made.returncode == 1:
-            skip_conflict(pull, base, [p["number"] for p in merged], failed)
+            skip_conflict(pull, base, [p["number"] for p, _ in landed], failed)
             continue
         if made.returncode:
             raise Refused(
@@ -7711,20 +7420,8 @@ def merged_trees(
             "-m",
             f"Merge {head}",
         ).strip()
-        merged.append(pull)
-        trees.append(tree)
-    if not merged:
-        return []
-    missing = [step["name"] for step in gate_plan() if step_pass(commit, tree, step) is None]
-    if missing:
-        numbers = ", ".join(f"#{pull['number']}" for pull in merged)
-        raise Refused(
-            f"Tree {tree} (the batch of {numbers} on {base} at {tip}): {', '.join(f'`{m}`' for m in missing)} has no"
-            " recorded pass on it, and land runs no gate in a clone with no working tree: pass it where the files are"
-            f" checked out (`approvals.py local-ci --record{recording_base()}` on a head with this tree), then land again"
-        )
-    print(f"Tree {tree}: `{gate()[0]}` passed on it before, reused")
-    return [(pull, own, tree, "reused") for pull, own in zip(merged, trees, strict=True)]
+        landed.append((pull, tree))
+    return landed
 
 
 def pre_landed(
@@ -7789,334 +7486,6 @@ def pre_landed(
     return False
 
 
-def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
-    """The tree checked out in `work` and how it passed the gate (`run` or `reused`), empty when red. Each gate step
-    (gate_plan) that passed on the tree before, on any commit with it (a PR's head or the batch's), is reused (run_steps,
-    step_pass), which says where; never on GitHub's required checks alone, since the pass is published as the gate
-    command's. The others run there, under the host gate slot, each pass recorded by tree, so a tree equal to a head's
-    whose every step passed runs nothing. A `host` step with no pass in a cloud session is refused, naming it, since
-    the batch can't pass here and no PR is at fault. `pulls` is unused: a pass is found by tree. Its log stays beside
-    the worktree."""
-    commit, tree = run_in(work, "rev-parse", "HEAD"), run_in(work, "rev-parse", "HEAD^{tree}")
-    command = gate()[0]
-    log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
-    if cloud_gate(commit, tree):
-        return tree, ""
-    no_host_gate(commit, tree)
-    for again in (False, True):
-        with log.open("w") as out, saying(f"Tree {tree}: gating, log {public(str(log))}"):
-            done = run_steps(
-                commit,
-                tree,
-                lambda: (
-                    head_moved(
-                        commit,
-                        tree,
-                        run_in(work, "rev-parse", "HEAD"),
-                        run_in(work, "rev-parse", "HEAD^{tree}"),
-                    )
-                    or run_in(work, "status", "--porcelain", "--untracked-files=all")
-                ),
-                work,
-                out,
-                land=True,
-            )
-        code = done["code"]
-        if done["left"]:
-            raise Refused(
-                f"Tree {tree}: {', '.join(f'`{name}`' for name in done['left'])} has no pass on it and runs only on"
-                " a host (`where: host`): land on a host, or pass it there on a head with this tree"
-            )
-        if not done["ran"]:
-            found = done["records"]
-            pushed = f" from {found[0]['ref']}" if len(found) == 1 and found[0].get("ref") else ""
-            print(f"Tree {tree}: `{command}` passed on it before, reused{pushed}")
-            return tree, "reused"
-        if done["step"] is None or code != fault:
-            break
-        if again:
-            raise MachineFault(
-                f"Tree {tree}: `{command}` exited {code}, loop.md's `machine_exit`, twice: a machine fault, not the"
-                " change's, so nothing more lands and nobody is evicted. Fix the machine, then land again."
-                f" The gate's last lines (log {public(str(log))}):\n"
-                + "\n".join(log.read_text(errors="replace").splitlines()[-LOG_TAIL:])
-            )
-        print(
-            f"Tree {tree}: `{command}` exited {code}, loop.md's `machine_exit`: once more on the same tree"
-        )
-        reset(work, commit)
-    if not code and done["changed"]:
-        with log.open("a") as out:
-            out.write(
-                f"\nthe gate changed the tree, so it did not run on the batch as merged:\n{done['changed']}\n"
-            )
-        code = 1
-    print(f"Tree {tree}: `{command}` exited {code} (log {public(str(log))})")
-    if code:
-        return tree, ""
-    return tree, "run"
-
-
-LAND_BRANCH = "refs/heads/loop-land/{}"
-# land.cloud_gate_timeout_seconds: the measured cloud gate took 1,200-1,650 s, so 2,400 s leaves room for the first
-# session's start and a slow run, and a cloud that never answers costs one wait, not a hung land
-CLOUD_GATE_SECONDS = 2400
-CLOUD_RED = "the cloud gate ran red"
-
-
-def cloud_gate(commit: str, tree: str) -> bool:
-    """With loop.md's `land: gate_on: cloud`, ask the repo's standing cloud gate session to run `local-ci --record` on
-    the batch commit `commit` (pushed as the branch `loop-land/<tree>`, deleted after) and wait up to
-    `cloud_gate_timeout_seconds` for the record branches of exactly `tree` (step_pass, the one trust rule for a pass
-    pushed by another clone), so gate_batch's run_steps then reuses them and runs nothing. A step that may run only
-    on a host (`where: host`) is not waited for. True when the session's turn ended on `DONE: red <tree>` (its
-    `local-ci --record` failed): the tree is red at once, one printed line, and gate_batch runs nothing on the host,
-    since a red suite stays red. A refused start, a session that is gone, a turn that ended with no record and no
-    red line (a `machine_exit` fault is not red), or no record in time is one printed line, and the gate then runs on
-    this host as it does without the setting, unless `land: host_gate: false`, where no_host_gate refuses the tree."""
-    land = settings(project()[1]).get("land", {})
-    if land.get("gate_on", "host") != "cloud":
-        return False
-    steps = [step for step in gate_plan() if step["where"] != "host"]
-    if all(step_pass(commit, tree, step, show=False) for step in steps):
-        return False
-    ref = LAND_BRANCH.format(tree)
-    timeout = land.get("cloud_gate_timeout_seconds", CLOUD_GATE_SECONDS)
-    why = ""
-    try:
-        git("push", "-q", "--no-verify", "origin", f"{commit}:{ref}")
-        why = ask_cloud_gate(tree) or wait_records(
-            commit, tree, steps, timeout, lambda: gate_ended(tree)
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-        why = " ".join((getattr(exc, "stderr", None) or str(exc)).split())
-    finally:
-        with contextlib.suppress(subprocess.CalledProcessError, OSError):
-            git("push", "-q", "--no-verify", "origin", f":{ref}")
-    if why.startswith(CLOUD_RED):
-        print(f"Tree {tree}: {why}: red without a host run")
-        return True
-    if why:
-        then = (
-            "gating on this host"
-            if land.get("host_gate", True)
-            else "`host_gate: false`, no host gate"
-        )
-        print(f"Tree {tree}: no cloud gate ({why}): {then}")
-    return False
-
-
-def no_host_gate(commit: str, tree: str) -> None:
-    """With the policy's `land: host_gate: false`, refuse before any gate step would run on this host: every step of
-    the tree, a `where: host` one too, needs a recorded pass (step_pass), from the cloud gate or another clone's
-    `local-ci --record`, since a host that only orchestrates must not start a full gate. Without the key, nothing."""
-    if settings(project()[1]).get("land", {}).get("host_gate", True):
-        return
-    missing = [
-        step["name"] for step in gate_plan() if not step_pass(commit, tree, step, show=False)
-    ]
-    if missing:
-        raise Refused(
-            f"no cloud record for tree {tree}: land's `host_gate: false` runs no gate on this host"
-            f" ({', '.join(f'`{name}`' for name in missing)} has no pass on it); record it with"
-            " `local-ci --record` on a head with this tree elsewhere, then land again"
-        )
-
-
-def wait_records(
-    commit: str, tree: str, steps: list[dict[str, Any]], timeout: int, ended: Callable[[], str]
-) -> str:
-    """Wait until every step of `steps` has a pass on `tree` (step_pass); the reason none came within `timeout`
-    seconds, or because the gate session's turn ended with no record or the session is gone, else empty. A turn that
-    ended on `DONE: red <tree>` gives CLOUD_RED (a red run pushes no record), which cloud_gate takes as the tree's
-    verdict. `ended` (gate_ended: "", "ended" or "red") is read twice running before it counts, since a session just
-    messaged can still read idle."""
-    deadline, over = time.monotonic() + timeout, 0
-    with saying(f"Tree {tree}: waiting for the cloud gate's record, up to {timeout} s"):
-        while not all(step_pass(commit, tree, step, show=False) for step in steps):
-            if (left := deadline - time.monotonic()) <= 0:
-                return f"no record for the tree within {timeout} s"
-            time.sleep(min(POLL, left))
-            kind = ended()
-            over = over + 1 if kind else 0
-            if over >= 2 and not all(step_pass(commit, tree, step, show=False) for step in steps):
-                if kind == "red":
-                    return f"{CLOUD_RED}: its turn ended on `DONE: red {tree}`"
-                return "the cloud gate session ended its turn without a record"
-    return ""
-
-
-GATE_SESSION = "cloud-gate.json"
-# omnigent_agent.py's exit code for a relay that found the session mid-turn: the message is queued, so it is taken
-QUEUED_EXIT = 5
-
-
-def run_agent(*args: str | Path, seconds: int = 600) -> subprocess.CompletedProcess[str]:
-    """One omnigent_agent.py command, its exit code and output returned."""
-    return subprocess.run(
-        [sys.executable, str(agent_script()), *map(str, args)],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=seconds,
-    )
-
-
-def gate_state() -> Path:
-    """The per-clone folder (under the git common dir) that holds the standing gate session and its launch dirs."""
-    state = (
-        Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip()) / "approvals"
-    )
-    state.mkdir(parents=True, exist_ok=True)
-    return state
-
-
-def gate_session() -> dict[str, str]:
-    """The standing gate session's `session` id and `launch` dir, else empty."""
-    with contextlib.suppress(OSError, ValueError, TypeError):
-        return {k: str(v) for k, v in json.loads((gate_state() / GATE_SESSION).read_text()).items()}
-    return {}
-
-
-def gate_ended(tree: str) -> str:
-    """Whether the standing gate session's turn has ended or it is gone, so no record will come from it: "ended", or
-    "red" when its state (`status`'s first line, which alone names it) is `turn ended` or `archived` and its last message has
-    the line `DONE: red <tree>` for exactly this tree; else empty. A `failed` state reads "ended" even then, since its
-    last message can be an earlier turn's red line for the same tree; another tree's line, no line or an unreadable
-    status is never red."""
-    try:
-        sid = gate_session()["session"]
-        read = run_agent("status", sid, seconds=120)
-    except (KeyError, subprocess.TimeoutExpired, OSError, subprocess.CalledProcessError):
-        return ""
-    state, _, said = read.stdout.partition(
-        "\nlast message:"
-    )  # the model's own text must not pass for a state
-    if not read.returncode and not any(
-        word in state for word in (": turn ended", ": archived", ": failed")
-    ):
-        return ""
-    red = re.search(rf"(?:^|\s)DONE: red {re.escape(tree)}\s*$", said, re.MULTILINE)
-    over = ": turn ended" in state or ": archived" in state
-    return "red" if not read.returncode and over and red else "ended"
-
-
-def drop_session(sid: str) -> None:
-    """Finish a gate session this land no longer uses (omnigent_agent.py reap); it may already be gone."""
-    with contextlib.suppress(subprocess.SubprocessError, OSError):
-        run_agent("reap", sid, "--force", seconds=120)
-
-
-def drop_launch(path: str | Path) -> None:
-    """Remove a launch dir (a worktree of this clone, with its `launch/<name>` branch) that no session uses."""
-    path = Path(path)
-    for cmd in (
-        ["worktree", "remove", "--force", str(path)],
-        ["branch", "-D", f"launch/{path.name}"],
-    ):
-        with contextlib.suppress(subprocess.CalledProcessError, OSError):
-            git(*cmd)
-    shutil.rmtree(path, ignore_errors=True)
-
-
-def ask_cloud_gate(tree: str) -> str:
-    """Ask the repo's standing gate session to gate the branch `loop-land/<tree>`: a message to the session whose id
-    `approvals/cloud-gate.json` (under the git common dir, beside land's other per-clone state) holds, else a new
-    one, started through the omnigent-agents skill's omnigent_agent.py (`relay`, `launch-dir`, `start`). A session that
-    is mid-turn takes the message queued. One that is gone, or a start that fails, is closed and its launch dir
-    removed. The reason it could not be asked, else empty."""
-    script, branch = agent_script(), LAND_BRANCH.format(tree).removeprefix("refs/heads/")
-    # a narrowed batch gate (narrowed_gate) selects against the base tip the batch merges onto
-    narrowed = recording_base()
-    if not script.is_file():
-        return f"{script.name} is not installed"
-    # the command as the worker role names it: the cloud VM has its own skill install, never this host's paths
-    task = (
-        f"Gate the branch {branch}: fetch it from origin, check it out, run `uv run"
-        f" <engineering-loop skill>/scripts/approvals.py local-ci --record{narrowed}` on it (the gate and its environment as the"
-        " project's loop.md names them) and let the record branch be pushed. Touch no other branch. Then end the"
-        f" turn with `DONE: recorded {tree}`, or `DONE: red {tree}` when the gate ran and failed (an exit that"
-        " loop.md's `machine_exit` names is a machine fault, not red: end with `DONE: no record` then). More branches arrive as messages, each the same task."
-    )
-    state, old = gate_state(), gate_session()
-    if sid := old.get("session"):
-        told = run_agent("relay", sid, task, "--from", "land")
-        if told.returncode in (0, QUEUED_EXIT):
-            return ""
-        print(
-            f"cloud gate session {sid} did not take the message ({told.stderr.strip()[-200:]}): starting one"
-        )
-    dirs = state / "cloud-gate-dirs"
-    dirs.mkdir(exist_ok=True)
-    launch = Path(
-        tempfile.mkdtemp(dir=dirs, prefix="gate-")
-    )  # its name is the branch `launch/<name>`: unique
-    made = run_agent("launch-dir", git("remote", "get-url", "origin").strip(), branch, launch)
-    if made.returncode:
-        drop_launch(launch)
-        return f"no launch dir: {made.stderr.strip()[-200:]}"
-    try:
-        started = run_agent(
-            "start",
-            "claude-cloud",
-            "gate loop-land",
-            task,
-            launch / "tmp/loop/gate.md",
-            "--workspace",
-            launch,
-        )
-    except subprocess.TimeoutExpired:
-        drop_launch(launch)
-        raise
-    sid = (started.stdout.split() or [""])[-1]
-    if started.returncode or not sid:
-        if sid:
-            drop_session(sid)
-        drop_launch(launch)
-        return f"start refused: {(started.stderr.strip() or started.stdout.strip())[-200:]}"
-    (state / GATE_SESSION).write_text(json.dumps({"session": sid, "launch": str(launch)}) + "\n")
-    if old.get("session"):
-        drop_session(old["session"])
-    if old.get("launch"):
-        drop_launch(old["launch"])
-    return ""
-
-
-def landed_pass(tip: str, tree: str) -> dict[str, Any]:
-    """The pass `land` publishes on the base's new tip `tip`, whose tree `tree` was gated: each step's record on the
-    tree (gate_plan), run on the tip, with the seconds its pass took where this clone or origin holds them, so the
-    record branch pushed again for the tree keeps them."""
-    plan, steps = gate_plan(), []
-    for step in plan:
-        found = step_pass(tip, tree, step, show=False) or {}
-        steps.append(
-            {"head": tip, "tree": tree, "command": step["command"], "env": step["sets"]}
-            | {key: found[key] for key in TIMED if isinstance(found.get(key), int)}
-            | {key: found[key] for key in LOADED if found.get(key) is not None}
-            | step_field(step)
-            | inputs_field(tree, step)
-        )
-    if plan[0]["legacy"]:
-        return steps[0]
-    return {"head": tip, "tree": tree, "command": gate()[0], "env": gate()[2], "steps": steps}
-
-
-def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
-    """Take a PR red alone, twice, out of the local merge queue's batch (evicted), with its gate log's last lines."""
-    try:
-        tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
-    except OSError:
-        tail = []
-    evicted(
-        pull,
-        EVICTED,
-        f"is red alone on {base} at {green}, twice",
-        f"`{gate()[0]}` failed twice on it merged alone onto {base} at {green}",
-        tail,
-        "The gate's last lines",
-    )
-
-
 def evicted(
     pull: dict[str, Any], title: str, said: str, why: str, tail: list[str], what: str
 ) -> None:
@@ -8150,6 +7519,8 @@ FAILED_CHECKS, MERGE_CONFLICT, QUEUE_MERGED = "failed_checks", "merge_conflict",
 QUEUE_RED = "Red in the merge queue"
 QUEUE_EVICTED = "Evicted from the merge queue"
 LANDED = "Landed"
+# the local merge queue's `Landed` comment's `Gate:` line: no gate runs at land, the verifier's record is the proof
+NO_GATE = "none at land, on the verifier's record of the head"
 # the label land puts on each PR it enqueues, and takes off once the PR's `Landed` comment is posted (queue_landed)
 QUEUED = "loop:queued"
 
@@ -8275,7 +7646,7 @@ def hand_over(number: int) -> None:
     with policy_from(pull["baseRefName"]):
         if not mergify(project()[1]):
             return
-        if checked("merge", pull, None):
+        if checked("merge", pull):
             print(f"PR #{number} is not queued: what is missing is above")
             return
         if landing([number], only=True)[0]:
@@ -8857,10 +8228,9 @@ def refuse_red(pull: dict[str, Any], base: str) -> None:
 
 
 def merges(
-    landed: list[tuple[dict[str, Any], str, str, str]],
+    landed: list[tuple[dict[str, Any], str]],
     base: str,
     tip: str,
-    work: Path | None,
     loop: str | None,
     failed: set[int],
     waited: str = "",
@@ -8868,13 +8238,11 @@ def merges(
 ) -> None:
     """Merge each PR through GitHub in the batch's order, pinned to its head (or, with loop.md's `land` section, as a
     signed squash of the tree it lands on the commit before it), stopping at the first one GitHub refuses or leaves
-    open, or before the next once the heartbeat lost the lock (`held` emptied; None: no lock), then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
-    the batch partial, or someone merged meanwhile) the tip is gated here, or with no worktree (`work` None) its pass
-    reused where one is recorded and the tree named where none is. Each landed PR gets a `Landed` comment. Right before
-    its merge call a PR's head gets the `land` status naming the nonce of the lock commit `held` ends with, which the
-    base's ruleset can require, so only a land merges (#1289); a merge GitHub then refuses, or leaves open, turns it to
-    an error."""
-    local, command, done = signed(loop), gate()[0], []
+    open, or before the next once the heartbeat lost the lock (`held` emptied; None: no lock). No gate runs on the
+    base's new tip. Each landed PR gets a `Landed` comment. Right before its merge call a PR's head gets the `land`
+    status naming the nonce of the lock commit `held` ends with, which the base's ruleset can require, so only a land
+    merges (#1289); a merge GitHub then refuses, or leaves open, turns it to an error."""
+    local, done = signed(loop), []
 
     def owned() -> str | None:
         """The lock commit `held` ends with (None: no lock), read under `beating` so the heartbeat can't empty it
@@ -8885,7 +8253,7 @@ def merges(
                 raise Refused(f"another land took the landing lock {lock_name(base)}")
             return held[-1] if held else None
 
-    for pull, tree, gated, how in landed:
+    for pull, tree in landed:
         where, head, posted = f"PR #{pull['number']}", pull["headRefOid"], False
         try:
             refuse_red(pull, base)
@@ -8923,7 +8291,7 @@ def merges(
                     )
                 else:
                     # a merge queue the base's rules don't name (classic branch protection's) only queues it, to
-                    # merge later on a tree this batch never gated
+                    # merge later on a tree no land saw
                     if (state := pull_status(pull["number"])["state"]) != "MERGED":
                         raise Refused(f"GitHub left it {state}, not merged")
                     print(f"{where} merged at {head}")
@@ -8943,49 +8311,20 @@ def merges(
                     )
             failed.update(other["number"] for other, *_ in landed[len(done) :])
             break
-        done.append((pull, tree, gated, how))
+        done.append((pull, tree))
     if not done:
         return
     git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
     tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
-    actual, (_, tree, gated, _) = git("rev-parse", f"{tip}^{{tree}}").strip(), done[-1]
-    if actual == gated:
-        publish(tip, landed_pass(tip, actual))
-    else:
-        numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
-        print(
-            f"{base} holds {numbers} of the batch, whose tree {actual} was never gated, so {tip} is gated now"
-            if actual == tree
-            else f"{base}'s tree is {actual} after the merges, not the {tree} they make: someone merged meanwhile,"
-            f" so {tip} is gated now"
-        )
-        if work is None:
-            if all(step_pass(tip, actual, step) is not None for step in gate_plan()):
-                print(f"Tree {actual}: `{command}` passed on it before, reused")
-                publish(tip, landed_pass(tip, actual))
-            else:
-                print(
-                    f"Tree {actual}: no recorded pass, and land runs no gate in a clone with no working tree: pass {tip}"
-                    f" where the files are checked out (`approvals.py local-ci --record{recording_base()}`)"
-                )
-        else:
-            reset(work, tip)
-            try:
-                if gate_batch(work, [])[1]:
-                    publish(tip, landed_pass(tip, actual))
-            # the PRs landed: each still gets its comment, also when `host_gate: false` refuses the tip's tree
-            except (MachineFault, Refused) as exc:
-                print(exc)
-    # after every publication above, which pushes the landed tree's record again when it is the heads' tree
-    drop_records([pull["headRefOid"] for pull, *_ in done])
-    numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
-    for pull, tree, gated, how in done:
+    drop_records([pull["headRefOid"] for pull, _ in done])
+    numbers = ", ".join(f"#{pull['number']}" for pull, _ in done)
+    for pull, tree in done:
         comment(
             pull["number"],
             fold(
                 LANDED,
                 f"Merged as {tip[:7]}.",
-                f"Base: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}{waited}",
+                f"Base: {tip}\nTree: {tree}\nGate: {NO_GATE}\nBatch: {numbers}{waited}",
             ),
         )
         archive_workers(pull["number"])
@@ -11320,68 +10659,6 @@ def proved(head: str, status: str) -> bool:
     )
 
 
-def admitted(head: str, loop: str | None) -> str | None:
-    """The stand-in for `head`'s own local-ci pass that let it into a merge queue, `<status> status on tree <tree>`, or
-    None: loop.md's head proof (head_proof), such as a light gate's pass, green on the head for its own tree (proved).
-    It is the only stand-in, so no queue entry records one: the status on the head says it."""
-    proof = head_proof(loop)
-    if proof is None or not proved(head, proof["status"]):
-        return None
-    return f"{proof['status']} status on tree {tree_of(head)}"
-
-
-def nor_head_proof(loop: str | None) -> str:
-    """A refusal's mention of the head proof that would also have let the head in, when loop.md sets one."""
-    return ", nor its loop.md `head_proof` status" if head_proof(loop) else ""
-
-
-def elsewhere(head: str) -> str:
-    """What a refusal adds when `head`'s tree passed under another gate command: `; its tree passed under <command>`
-    for each, from this clone's records and the tree's record branches in origin, then today's; empty when none did.
-    Today's steps (gate_plan) are no other command, so a step's own pass is never named as one."""
-    if (held := tree_of(head)) is None:
-        return ""
-    command, others = gate()[0], set()
-    today = {step["command"] for step in gate_plan()} | {command}
-    with contextlib.suppress(OSError):
-        for path in recorded(held, command).parent.glob(f"{held}-*.json"):
-            with contextlib.suppress(OSError, ValueError):
-                record = json.loads(path.read_text())
-                if (
-                    isinstance(record, dict)
-                    and record.get("exit") == 0
-                    and isinstance(record.get("command"), str)
-                ):
-                    others.add(record["command"])
-    others |= pushed_commands(held)
-    others -= today | {f"sha256 {gate_key(one)}" for one in today}
-    if not others:
-        return ""
-    return (
-        f"; its tree passed under `{'`, `'.join(sorted(others))}`, and the gate is now `{command}`"
-    )
-
-
-def pushed_commands(held: str) -> set[str]:
-    """The gate commands (a digest, `sha256 <key>`, for one too long to name) of the record branches origin holds for
-    tree `held`, as their lines name them; origin unreachable: none."""
-    found = set()
-    with contextlib.suppress(subprocess.CalledProcessError, OSError):
-        for line in git("ls-remote", "origin", RECORD_BRANCH.format(f"{held}-*")).splitlines():
-            commit, ref = line.split()
-            git(
-                "fetch",
-                "-q",
-                "--no-tags",
-                "origin",
-                f"+{ref}:refs/loop/records/{ref.rsplit('/', 1)[1]}",
-            )
-            named = PASSED.fullmatch(git("log", "-1", "--format=%s", commit).strip())
-            if named and named[1] == held:
-                found.add(named[3])
-    return found
-
-
 def shown(head: str, record: dict[str, Any]) -> str | None:
     """Write the `gate` status for `record` on `head`, which the PR page shows and nothing reads; refused or
     unreachable: why, which is no error, since the record branch is the pass."""
@@ -11610,7 +10887,7 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
     loop = project()[1]
     # the PR is read only for a policy with an `incubating` section: no other project pays the read
     passed = tier(pull_request(pr), loop) if INCUBATING in settings(loop) else []
-    # narrowed mode's gate of record on a `ci: false` head (narrowed_pass); a full pass on it is taken first
+    # narrowed mode's gate of record on a `ci: false` head; a full pass on it is taken first
     if (
         NARROW_BASE.get() is None
         and no_ci(loop)
@@ -11840,16 +11117,9 @@ def main(argv: list[str]) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser("check")
-    checking.add_argument("point", choices=("build", "merge", "queue", "ready", "setup", "stalled"))
+    checking.add_argument("point", choices=("build", "merge", "ready", "setup", "stalled"))
     checking.add_argument("pr", type=int, nargs="?")
-    checking.add_argument("--head")
     checking.add_argument("--issue", type=int)
-    batching = commands.add_parser("batch")
-    batching.add_argument("pr", type=int)
-    batching.add_argument("--merge", required=True)
-    batching.add_argument("--batch", required=True)
-    batching.add_argument("--exit", type=int, required=True)
-    batching.add_argument("--log", type=Path, required=True)
     # `record`: the evidence the gate reads, written: an approval, a verdict, a check pass
     records = commands.add_parser("record").add_subparsers(dest="kind", required=True)
     approving = records.add_parser("approval")
@@ -11948,22 +11218,11 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return setup()
     one_repo()
     if args.command == "check":
-        if args.point == "queue" and (args.pr is None or args.head is None):
-            raise Refused(
-                "check queue takes a PR number and --head <sha>, the head the queue would merge"
-            )
         if args.point == "stalled" and (args.pr is not None or args.issue is not None):
             raise Refused("check stalled takes no PR: it lists every open PR")
-        if args.point != "queue" and args.head is not None:
-            raise Refused("--head goes with check queue only")
         if args.issue is not None and (args.point != "build" or args.pr is not None):
             raise Refused("--issue goes with check build and no PR number")
-        if args.point == "queue":
-            deprecated("check queue")
-        return check(args.point, args.pr, args.head, args.issue)
-    if args.command == "batch":
-        deprecated("batch")
-        return batch(args.pr, args.merge, args.batch, args.exit, args.log)
+        return check(args.point, args.pr, args.issue)
     if args.command == "breakglass-proof":
         return breakglass_proof(
             args.pr, args.head, args.failed_run, args.rerun, args.smoke, args.earlier
