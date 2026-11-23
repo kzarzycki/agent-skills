@@ -311,7 +311,7 @@ def gh(*args: str, data: str | None = None) -> str:
 
 # land --wait sets this (time.monotonic) to the end of its ceiling: a rate limit then waits, else gh() fails with the reset time
 wait_until: float | None = None
-JITTER = 60  # most seconds of random delay added to a rate-limit wait
+JITTER = 180  # most seconds of random delay added to a rate-limit wait: every waiter on one reset resumes over 3 min, not in its first second
 SLICE = 60  # seconds between the lines a rate-limit wait prints
 
 # answers a run keeps (#1771): (bucket, key) -> (time.monotonic when read, answer); writer, required_checks and a

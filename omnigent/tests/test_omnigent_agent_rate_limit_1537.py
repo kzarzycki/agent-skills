@@ -43,8 +43,16 @@ def test_wait_for_sleeps_instead_of_retrying(monkeypatch, capsys):
 
     monkeypatch.setattr(oa, "gate_outcome", gate)
     monkeypatch.setattr(oa.time, "sleep", slept.append)
+    monkeypatch.setattr(oa.random, "uniform", lambda low, high: high)  # the most jitter
     assert oa.wait_for(None, None, 5, "gate", 1000.0) == (0, "passed")
-    assert slept == [77.0] and "rate limit" in capsys.readouterr().err
+    assert slept == [77.0 + oa.RESET_JITTER] and "rate limit" in capsys.readouterr().err
+
+
+def test_waiters_on_one_reset_resume_over_minutes_not_in_its_first_second():
+    """Every poller that waited on one reset resuming in its first second drains the fresh bucket at once."""
+    waits = [oa.RateLimited("403", 90.0).jittered() for _ in range(200)]
+    assert all(90.0 <= wait <= 90.0 + oa.RESET_JITTER for wait in waits)
+    assert oa.RESET_JITTER >= 120 and max(waits) - min(waits) > 60  # spread over minutes
 
 
 def test_unchanged_pr_hour_is_bounded(monkeypatch):

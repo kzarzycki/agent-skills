@@ -267,6 +267,7 @@ import os
 import plistlib
 import posixpath
 import pwd
+import random
 import re
 import shlex
 import shutil
@@ -1302,9 +1303,17 @@ def write_failed(og: Omnigent, sid: str | None, report: Path, e: Fail) -> None:
         print(f"{report}: FAILED line not written: {reason(err)}", file=sys.stderr)
 
 
+RESET_JITTER = 180.0  # most seconds of random delay added to a wait for GitHub's rate-limit reset
+
+
 class RateLimited(Fail):
     """GitHub refused for its rate limit; ``wait`` is the seconds until the limit resets. A poller sleeps
     that long, since retrying early keeps the limit drained for every project on the account."""
+
+    def jittered(self) -> float:
+        """``wait`` plus up to RESET_JITTER random seconds, so the pollers that waited on one reset resume over a
+        few minutes, not all in its first second, when the burst would drain the fresh bucket at once."""
+        return self.wait + random.uniform(0, RESET_JITTER)
 
     def __init__(self, message: str, wait: float):
         super().__init__(message)
@@ -6137,7 +6146,7 @@ def wait_for(
                     file=sys.stderr,
                     flush=True,
                 )
-                time.sleep(min(e.wait, max(deadline - time.monotonic(), 0)))
+                time.sleep(min(e.jittered(), max(deadline - time.monotonic(), 0)))
                 continue
             except BLIPS:  # a GitHub blip: the next poll asks again
                 pass
@@ -9145,7 +9154,7 @@ def supervise_registry(
             try:
                 sha = default_head(repo)
             except RateLimited as e:
-                limited[0] = time.monotonic() + e.wait
+                limited[0] = time.monotonic() + e.jittered()
                 headed.pop(repo, None)
                 log(
                     ("head", repo),
@@ -9214,7 +9223,7 @@ def supervise_registry(
             try:
                 found = pr_stalls(repo, stall_after, state["pr_stalls"].setdefault(repo, {}))
             except RateLimited as e:
-                limited[0] = time.monotonic() + e.wait
+                limited[0] = time.monotonic() + e.jittered()
                 swept.pop(repo, None)
                 log(("pr-stall", repo), f"GitHub rate limit: open PRs not read for {e.wait:.0f}s")
                 continue
