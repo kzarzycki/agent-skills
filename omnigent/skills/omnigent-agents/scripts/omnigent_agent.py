@@ -10451,21 +10451,21 @@ def supervise_registry(
                 line = f"{head}: {what}\nlast message: {lead['last_line']}"
                 if quiet_named:
                     line += f"\nquiet: {', '.join(quiet_named)}"
-                # a wait that names no session is one event per wait text, not per progress chain
-                # (a wait that names sessions: keyed on its text and them, so a reply that restates
-                # it starts no new chain; it fires once more after 4x DEADLINE_SECONDS if still stuck)
-                named = sorted(lead.get("named") or [])
-                chain = lead["wait"]
-                if due is not None:
+                # a wait that names no session is one event per wait text, not per progress chain;
+                # one that names some (a session, a group, a PR, a task) is keyed on its text and
+                # the sessions it names, so a reply that restates it starts no new chain, and it
+                # fires once more after 4x DEADLINE_SECONDS if still stuck. An unknown or timed
+                # wait keeps its progress chain.
+                chain, late = lead["wait"], ""
+                if due is not None or lead["wait"] == "unknown":
                     chain = f"{lead['progress_at']:.0f}"
-                elif named:
-                    chain += "|" + ",".join(named)
-                late = ""
-                if named and due is None and not nudged:
-                    if lead.get("deadline_chain") != chain:
-                        lead.update(deadline_chain=chain, deadline_first=time.time())
-                    elif time.time() - lead["deadline_first"] >= 4 * DEADLINE_SECONDS:
-                        late = ":late"
+                elif names is not None:
+                    chain += "|" + ",".join(sorted(lead.get("named") or []))
+                    if not nudged:
+                        if lead.get("deadline_chain") != chain:
+                            lead.update(deadline_chain=chain, deadline_first=time.time())
+                        elif time.time() - lead["deadline_first"] >= 4 * DEADLINE_SECONDS:
+                            late = ":late"
                 if "quota" in lead["wait"].lower() and not quota_line_due(
                     state, time.time(), limited[0] - time.monotonic()
                 ):
