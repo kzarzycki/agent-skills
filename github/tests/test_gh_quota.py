@@ -144,6 +144,11 @@ def test_spent_counts_across_a_reset() -> None:
     assert gq.spent([(0, 100, 1), (60, 250, 1), (120, 40, 2), (180, 90, 2)]) == 150 + 40 + 50
 
 
+def test_spent_skips_a_sample_from_another_bucket() -> None:
+    # a first reply from another token's window (10 used) is not 4061 calls spent in a minute
+    assert gq.spent([(0, 10, 5), (60, 4071, 9), (120, 4117, 9)]) == 46
+
+
 def test_shim_runs_under_plain_sh() -> None:
     assert subprocess.run(["sh", "-n", str(SCRIPTS / "gh")], check=False).returncode == 0
     assert os.access(SCRIPTS / "gh", os.X_OK)
@@ -254,3 +259,49 @@ def test_command_keeps_the_route_past_flags() -> None:
     )
     assert gq.command("api --method=PATCH repos/o/r/issues/5") == "api PATCH repos/o/r/issues/N"
     assert gq.command("pr view 5 --json x") == "pr view"
+
+
+def test_the_report_reads_a_flag_value_with_a_space(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    subprocess.run(
+        ["gh", "api", "-H", "Accept: x", "repos/o/r/rulesets/7"],
+        input="",
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert gq.command(logged_args(log)[-1]) == "api repos/o/r/rulesets/N"
+
+
+@pytest.mark.parametrize("flag", ["-bs3cr3t-value", "-b=s3cr3t-value"])
+def test_a_joined_secret_body_is_masked(setup: tuple[dict[str, str], Path], flag: str) -> None:
+    env, log = setup
+    subprocess.run(
+        ["gh", "secret", "set", "NAME", flag], input="", env=env, capture_output=True, check=False
+    )
+    assert "s3cr3t-value" not in log.read_text()
+
+
+def test_a_token_in_the_parent_command_is_masked(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    hexed = "0123456789abcdef" * 2 + "01234567"
+    subprocess.run(
+        ["sh", "-c", f"GH_TOKEN={hexed} gh x; X={hexed}; true"],
+        env=env,
+        check=False,
+        capture_output=True,
+    )
+    assert hexed not in log.read_text()
+
+
+def test_the_host_falls_back_to_uname(setup: tuple[dict[str, str], Path], tmp_path: Path) -> None:
+    env, log = setup
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    (fakes / "hostname").write_text("#!/bin/sh\nexit 1\n")
+    (fakes / "uname").write_text("#!/bin/sh\necho fallback.example\n")
+    for fake in fakes.iterdir():
+        fake.chmod(0o755)
+    env = {**env, "PATH": f"{tmp_path / 'shims'}:{fakes}:{env['PATH']}"}
+    subprocess.run(["gh", "x"], input="", env=env, capture_output=True, check=False)
+    assert log.read_text().splitlines()[-1].split("\t")[1] == "fallback"
