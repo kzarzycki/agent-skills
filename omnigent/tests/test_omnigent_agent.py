@@ -2692,6 +2692,57 @@ def test_send_answers_live_session_and_clears_question(tmp_path: Path) -> None:
     assert omnigent_agent.text_of(og.sessions[sid][-1]) == "use main"
 
 
+def test_send_and_relay_post_an_expiry_and_the_senders_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    posted: list[dict] = []
+
+    class Posting(FakeOmnigent):
+        send = omnigent_agent.Omnigent.send  # type: ignore[assignment]
+
+        def call(self, method: str, path: str, body: dict) -> dict:
+            posted.append(body["data"])
+            return {}
+
+    og = Posting()
+    sid = og.create("claude", "t")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "sender-1")
+    (tmp_path / "m.md").write_text("hi")
+    monkeypatch.chdir(tmp_path)
+    for argv in (["relay", sid, "m.md"], ["relay", sid, "m.md", "--expires", "0"]):
+        posted.clear()
+        before = time.time()
+        omnigent_agent.main([*argv, "--confirm-seconds", "0"])
+        assert posted[-1]["sender_session_id"] == "sender-1"
+        if "--expires" in argv:
+            assert "expires_at" not in posted[-1]
+        else:
+            assert before + 29 * 60 < posted[-1]["expires_at"] < time.time() + 31 * 60
+
+
+def test_a_plain_send_posts_neither_an_expiry_nor_a_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the send and relay commands tag a message: start's first brief and supervise's lines
+    (run outside a session, so own_id() falls back to the parent) are never dropped."""
+    posted: list[dict] = []
+
+    class Posting(FakeOmnigent):
+        send = omnigent_agent.Omnigent.send  # type: ignore[assignment]
+        expires = omnigent_agent.Omnigent.expires
+
+        def call(self, method: str, path: str, body: dict) -> dict:
+            posted.append(body["data"])
+            return {}
+
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "sender-1")
+    og = Posting()
+    og.send(og.create("claude", "t"), "hi")
+    assert "expires_at" not in posted[-1]
+    assert "sender_session_id" not in posted[-1]
+
+
 def reaped(og: FakeOmnigent, reply: dict, online_after: int = 1) -> list[str]:
     """Make every session reaped until a retry_session answering ``reply``, then online after
     ``online_after`` more info() reads; returns the retried session ids."""
