@@ -624,7 +624,7 @@ RUN_URL = (
     r"https://github\.com/[\w.-]+/[\w.-]+/actions/runs/\d+"  # a GitHub Actions run: its end is news
 )
 ACCEPTED_WAITS = (
-    "supervisor, session <32-hex id>, #<pr> or owner/repo#<pr>, CI, until <YYYY-MM-DDTHH:MMZ>, "
+    "supervisor, own supervisor, session <32-hex id>, #<pr> or owner/repo#<pr>, CI, until <YYYY-MM-DDTHH:MMZ>, "
     "or a GitHub Actions run URL"
 )
 NAMED = re.compile(
@@ -635,6 +635,7 @@ NAMED = re.compile(
 )
 # What a report keeps for routing (``report_head``): an ending line, not one quoted in a code
 # fence, a ``>`` quote or backticks; and from its ``STILL WORKING`` this many characters, whole lines.
+STILL_OR_ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED|STILL WORKING)\b", re.MULTILINE)
 REPORT_ENDING = re.compile(r"^[\s*_#-]*(DONE|USER NEEDED|PARKED)\b")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1[^\n]*$", re.MULTILINE | re.DOTALL)
 REPORT_WAIT_CHARS = 600
@@ -651,7 +652,7 @@ WAIT_WORD = re.compile(r"\bwait(?:s|ing|ed)?\b", re.IGNORECASE)
 # one, or with a form this does not know.
 TRAILER = re.compile(r"^[\s*_>-]*Waits:[ \t]*(.+?)[\s*_]*$", re.MULTILINE | re.IGNORECASE)
 TRAILER_FORMS = re.compile(
-    rf"(?P<supervisor>supervisor)|session\s+`?(?P<session>[0-9a-f]{{32}})`?|"
+    rf"(?P<supervisor>supervisor)|(?P<own>own\s+supervisor)|session\s+`?(?P<session>[0-9a-f]{{32}})`?|"
     rf"(?P<ref>\[?{REF}\]?)|(?P<ci>CI)|(?P<run>{RUN_URL})|until\s+(?P<until>\d{{4}}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d)?)\s*(?:Z|UTC)?",
     re.IGNORECASE,
 )
@@ -8199,9 +8200,14 @@ def lead_status(info: dict, items: list[dict]) -> dict:
 
 def ending_of(text: str) -> str | None:
     """The ending a message names: ``USER NEEDED`` when any line opens with it, since an ask
-    after a ``DONE`` line still needs its answer; else the first line's ``DONE`` or ``PARKED``."""
-    endings = [m.group(1) for m in ENDING.finditer(text)]
-    return "USER NEEDED" if "USER NEEDED" in endings else next(iter(endings), None)
+    after a ``DONE`` line still needs its answer; else the first line that opens with an ending word, so a
+    ``DONE`` section after a ``STILL WORKING`` block leaves the turn still working: ``None``, as for any ``STILL
+    WORKING`` message, which is no ending."""
+    endings = [m.group(1) for m in STILL_OR_ENDING.finditer(text)]
+    if "USER NEEDED" in endings:
+        return "USER NEEDED"
+    first = next(iter(endings), None)
+    return None if first == "STILL WORKING" else first
 
 
 # A cloud lead's ``STILL WORKING`` whose wait is its own background run and nothing else (#1002):
@@ -8249,7 +8255,7 @@ def own_run_only(text: str) -> bool:
 
 def trailer_items(text: str) -> list[tuple[str, str]]:
     """The forms the last ``Waits:`` line of a ``STILL WORKING`` message names, in order, each
-    ``(form, value)`` with the form ``supervisor``, ``session``, ``ref``, ``ci`` or ``until``. The
+    ``(form, value)`` with the form ``supervisor``, ``own`` (a manager's own supervisor wakes it: no wait on its parent), ``session``, ``ref``, ``ci`` or ``until``. The
     line is a set: items split by a comma or "and", all of which must be a form, else none count,
     since a line half read would wake a lead on a wrong thing. Empty when there is no such line."""
     if "STILL WORKING" not in text:
@@ -8294,12 +8300,17 @@ def wait_line(words: list[str]) -> str:
         "pr": f"#{rest.lstrip('#')}",
         "ci": "CI",
         "supervisor": "supervisor",
+        "own": "own supervisor",
         "run": rest,
     }.get(form, f"{form} {rest}".strip())
     m = TRAILER_FORMS.fullmatch(text)
-    if not m or (form in ("ci", "supervisor") and rest) or (form in ("pr", "run") and not rest):
+    if (
+        not m
+        or (form in ("ci", "supervisor", "own") and rest)
+        or (form in ("pr", "run") and not rest)
+    ):
         raise Fail(
-            "wait-on takes supervisor, session <32-hex id>, pr <n>, ci, run <actions run URL>, "
+            "wait-on takes supervisor, own, session <32-hex id>, pr <n>, ci, run <actions run URL>, "
             "or until <YYYY-MM-DDTHH:MMZ>"
         )
     if m.group("until"):
