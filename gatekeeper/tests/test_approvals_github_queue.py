@@ -62,6 +62,24 @@ def queue(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, A
         return int(node.removeprefix("PR_"))
 
     def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("api", "graphql") and ": pullRequest(number:" in " ".join(args):
+            # a queue wait's poll (queue_watch): each PR's state, head, queue entry and labels
+            return json.dumps(
+                {
+                    "data": {
+                        "repository": {
+                            f"p{n}": {
+                                "state": pr["state"],
+                                "headRefOid": pr["headRefOid"],
+                                "isInMergeQueue": bool(pr.get("mergeQueueEntry")),
+                                "labels": pr["labels"],
+                            }
+                            for n, pr in pulls.items()
+                            if f"p{n}: pullRequest(number: {n})" in " ".join(args)
+                        }
+                    }
+                }
+            )
         if args[:2] == ("api", "graphql"):
             fields = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-f")
             number = numbered(fields["id"])
@@ -192,10 +210,11 @@ def test_a_bare_land_enqueues_every_landable_pr_oldest_first_pinned_to_its_head(
     assert (queue["tips"](), queue["runs"](), queue["merged"]()) == ([], 0, [])
 
 
-def test_land_wait_on_a_queue_base_enqueues_and_exits_without_a_sleep_or_another_read(
+def test_land_on_a_queue_base_enqueues_and_exits_without_a_sleep_or_another_read(
     queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The queue is GitHub's to watch: `--wait` never waits on the queue, so a session holds no slot and spends no quota."""
+    """Without `--wait` the queue is GitHub's to watch: land enqueues and exits, so a session holds no slot and spends no
+    quota; `land --wait` waits on until the queue merges it or takes it out (test_land_wait_queue_budget.py)."""
     head = queue["opened"](7)
     # a poll sleeps POLL (30 s) or more; subprocess.wait sleeps a few ms on the same time module, which a slow
     # runner reaches while a git push runs (#1892), so only a poll-length sleep fails
@@ -205,11 +224,11 @@ def test_land_wait_on_a_queue_base_enqueues_and_exits_without_a_sleep_or_another
         "sleep",
         lambda seconds: pytest.fail("polled the queue") if seconds >= 1 else real_sleep(seconds),
     )
-    code, lines = queue["land"]("7", "--wait")
+    code, lines = queue["land"]("7")
     assert (code, lines) == (0, [f"PR #7 enqueued at {head}, position 1"])
     assert queue["enqueued"] == [(7, head)]
     # a second land, or a relayed event, finds it in the queue: said, exit 0, not enqueued twice
-    code, lines = queue["land"]("7", "--wait")
+    code, lines = queue["land"]("7")
     assert (code, lines) == (0, [f"PR #7 is in the merge queue at {head}, position 1"])
     assert queue["enqueued"] == [(7, head)]
 
@@ -862,7 +881,7 @@ def test_land_wait_on_an_unknown_mergeability_exits_3_at_once_and_a_later_land_e
     code, lines = queue["land"]("8", "--wait")
     assert code == approvals.WAITING and queue["enqueued"] == [], lines
     queue["pulls"][8]["mergeable"] = "MERGEABLE"
-    assert queue["land"]("8", "--wait")[0] == 0
+    assert queue["land"]("8")[0] == 0  # with --wait it would wait on, for the merge (test_land_wait_queue_budget.py)
     assert queue["enqueued"] == [(8, head)]
 
 
