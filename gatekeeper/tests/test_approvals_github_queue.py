@@ -881,7 +881,8 @@ def test_land_wait_on_an_unknown_mergeability_exits_3_at_once_and_a_later_land_e
     code, lines = queue["land"]("8", "--wait")
     assert code == approvals.WAITING and queue["enqueued"] == [], lines
     queue["pulls"][8]["mergeable"] = "MERGEABLE"
-    assert queue["land"]("8")[0] == 0  # with --wait it would wait on, for the merge (test_land_wait_queue_budget.py)
+    # with --wait it would wait on, for the merge (test_land_wait_queue_budget.py)
+    assert queue["land"]("8")[0] == 0
     assert queue["enqueued"] == [(8, head)]
 
 

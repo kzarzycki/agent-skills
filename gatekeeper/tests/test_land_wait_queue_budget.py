@@ -19,6 +19,7 @@ subprocess.run under the real github.gh(), its quota guard included, and a fake 
 from __future__ import annotations
 
 import collections
+import itertools
 import json
 import re
 import subprocess
@@ -53,7 +54,9 @@ def route(args: tuple[str, ...]) -> str:
         return "graphql " + ("pullRequest" if "pullRequest(number" in text else "other")
     if args[:1] == ("api",):
         words = [a for a in args[1:] if not a.startswith(("-", ".", "If-None-Match"))]
-        return "api " + re.sub(r"/\d+(?=/|$)", "/N", re.sub(r"\?.*", "", words[0] if words else text))
+        return "api " + re.sub(
+            r"/\d+(?=/|$)", "/N", re.sub(r"\?.*", "", words[0] if words else text)
+        )
     return " ".join(args[:2])
 
 
@@ -72,14 +75,24 @@ def wait(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> dic
     state: dict[str, Any] = request.getfixturevalue("queue")
     fake, pulls = github.gh, state["pulls"]
     state.update(
-        now=0.0, ticks=[], gh_calls=[], rounds=[], user="loop", permission="write", limit_after=None, reset=None, rest=0
+        now=0.0,
+        ticks=[],
+        gh_calls=[],
+        rounds=[],
+        user="loop",
+        permission="write",
+        limit_after=None,
+        reset=None,
+        rest=0,
     )
     real_run, real_sleep = subprocess.run, approvals.time.sleep
 
     def rate_limit(args: tuple[str, ...]) -> str:
         text = " ".join(args)
         limited = state["reset"] is not None and state["now"] < state["reset"] - EPOCH
-        remaining, reset = (0, state["reset"]) if limited else (5000, EPOCH + int(state["now"]) + 3600)
+        remaining, reset = (
+            (0, state["reset"]) if limited else (5000, EPOCH + int(state["now"]) + 3600)
+        )
         if ".resources.graphql" in text:
             remaining = 5000
         return f"{remaining} 5000 {reset}" if "(.limit)" in text else f"{remaining} {reset}"
@@ -188,7 +201,9 @@ def polls(state: dict[str, Any]) -> list[float]:
 
 def within_a_poll(state: dict[str, Any], since: float) -> bool:
     """Whether a landing() round ran within one poll of `since`: QUEUE_WATCH, read on a POLL step."""
-    return any(since <= at <= since + approvals.QUEUE_WATCH + approvals.POLL for at in state["rounds"])
+    return any(
+        since <= at <= since + approvals.QUEUE_WATCH + approvals.POLL for at in state["rounds"]
+    )
 
 
 @pytest.mark.parametrize("user", ["loop", REFUSED])
@@ -215,8 +230,10 @@ def test_poll_rounds_and_landing_rounds_are_at_least_60_s_apart(wait: dict[str, 
     wait["at"](WAIT, lambda: wait["queue_merge"](7))
     assert wait["land"]("7", "--wait")[0] == 0
     for times in (polls(wait), wait["rounds"]):
-        assert all(later - earlier >= 60 for earlier, later in zip(times, times[1:])), times
-    assert len(wait["rounds"]) < len(polls(wait))  # a round runs on a move, or each FULL, never each poll
+        assert all(later - earlier >= 60 for earlier, later in itertools.pairwise(times)), times
+    assert len(wait["rounds"]) < len(
+        polls(wait)
+    )  # a round runs on a move, or each FULL, never each poll
 
 
 def test_under_a_rest_rate_limit_no_failed_read_is_asked_again_before_the_reset(

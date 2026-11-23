@@ -735,7 +735,13 @@ FULL = 900
 # and whether the round left the free lock to another land (locked: an older waiter, or lands that kept taking it),
 # so the probe also watches the lock only then: a CI wait on the local queue frees the lock each round, and lands that
 # all watched it would wake each other
-watched: dict[str, Any] = {"base": "", "pulls": [], "required": set(), "deferred": False, "queued": {}}
+watched: dict[str, Any] = {
+    "base": "",
+    "pulls": [],
+    "required": set(),
+    "deferred": False,
+    "queued": {},
+}
 # a wait on named PRs a merge queue holds (GitHub's or Mergify's: `watched["queued"]`, PR -> which) reads only what ends
 # it (#2101): each QUEUE_WATCH seconds one queue_watch call, the PRs' state, head, queue entry and labels, and runs the
 # round once one merged, closed, left the queue or was pushed to. A queue merges in minutes, and a round re-reads the

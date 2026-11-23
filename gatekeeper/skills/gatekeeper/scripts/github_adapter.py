@@ -351,7 +351,7 @@ def gh(*args: str, data: str | None = None) -> str:
         try:
             out = _gh(*args)
         except subprocess.CalledProcessError as exc:
-            if refused(exc.stderr) or RATE_LIMIT.search(str(exc.stderr or "")):
+            if refused(exc.stderr) or throttled(exc.stderr):
                 failed[key] = exc
             raise
         reads[key] = (time.monotonic(), out)
@@ -551,6 +551,11 @@ REFUSALS = ("HTTP 403", "Resource not accessible by integration", "status code: 
 def refused(stderr: str | None) -> bool:
     """Whether `gh`'s stderr says GitHub refused this token or path, as opposed to failing for another reason."""
     return any(text in (stderr or "") for text in REFUSALS)
+
+
+def throttled(stderr: str | None) -> bool:
+    """Whether `gh`'s stderr says GitHub rate-limited the call, which no refusal is, though both answer HTTP 403."""
+    return bool(RATE_LIMIT.search(stderr or ""))
 
 
 # set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again; GATEKEEPER_REST_ONLY=1
@@ -1254,7 +1259,9 @@ def minimize(comment_id: str) -> None:
     )
 
 
-viewer_login: dict[str, str] = {}  # the login `gh` runs as, read once per process (viewer); "" once GitHub refused it
+viewer_login: dict[
+    str, str
+] = {}  # the login `gh` runs as, read once per process (viewer); "" once GitHub refused it
 
 
 def viewer() -> str | None:
@@ -1274,10 +1281,13 @@ def whoami() -> tuple[str | None, bool]:
     try:
         login = viewer_login["login"] = gh("api", "user", "--jq", ".login").strip()
     except subprocess.CalledProcessError as exc:
-        if refused(exc.stderr) and not RATE_LIMIT.search(str(exc.stderr or "")):
+        if refused(exc.stderr) and not throttled(exc.stderr):
             viewer_login["login"] = ""  # refused: no login, for the process
             return None, True
-        return None, False  # not kept: a network or rate-limit failure must not read as a token GitHub refuses
+        return (
+            None,
+            False,
+        )  # not kept: a network or rate-limit failure must not read as a token GitHub refuses
     return login, True
 
 
@@ -1308,7 +1318,7 @@ def read_writer(login: str) -> tuple[bool, bool]:
     except subprocess.CalledProcessError as exc:
         # a cloud session's proxy refuses this path; the repo's own permissions answer it for the account running this
         # alone, and anyone else still can't, so a stranger never counts as a writer
-        if not refused(exc.stderr) or RATE_LIMIT.search(str(exc.stderr or "")):
+        if not refused(exc.stderr) or throttled(exc.stderr):
             return False, "HTTP 404" in (exc.stderr or "")
         me = viewer()
         if me != login:
