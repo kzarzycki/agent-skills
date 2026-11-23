@@ -53,6 +53,11 @@ yourself, keeping standards and spec as separate axes.
 - **A flake is not a finding** when the test passed on its retry and its `Flaky:` issue
   has the occurrence (SKILL.md, Flaky tests); a missing occurrence is a minor. A PR that
   quarantines a test weakens a gate (Judge the risk).
+- **A failure outside the diff is not a waiver.** A test red that the diff doesn't explain gets
+  a skip marker that links a new issue (SKILL.md, Known-red tests), in the PR or a PR from
+  main, and the verdict stands on the rest; never write the verdict as satisfied "apart from"
+  a red test, and never accept an expected-failures list in its place. An unconditional skip in the diff
+  without an issue link is a major.
 - **Out of scope:** an input the system never produces, an interleaving nobody can
   trigger, a value orders of magnitude outside what the data source emits. Style, naming,
   formatting and code-review's smell baseline are notes, not findings.
@@ -199,7 +204,7 @@ yourself, keeping standards and spec as separate axes.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is
   the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
-- **Gates and repros:** don't rerun the gate: read the gate of record and run the PR's own tests and acceptance checks. On a review head, the worker's report (its narrow-check command and exit code) is the check the worker ran, and no gate of record exists yet: it runs on the head you are satisfied with. The `gate` status and the `loop-gate/` record are a ready head's. Run a repro or test as the bare command, with no wrapper, redirect or detach around it, and keep it running with
+- **Gates and repros:** one test run per tree: never rerun the gate, and before you run the brief's acceptance command or the PR's tests, ask whether the gatekeeper already ran that exact command on the head's tree, with `uv run <the gatekeeper skill's folder>/scripts/approvals.py gate-record <head> -- <command>` (bare, `gate-record <head>`, for the gate itself). Exit 0 names origin's record branch: read it and don't run that command again. Exit 1 names what has no record: run it. A record is keyed by the tree and the command, so another tree, another command or another test list is never reused. Only that record counts, never a log, report or exit code the worker wrote, since the worker is what you check. Mutation and repro probes are always your own runs: the gate never exercises the code that way. On a review head, the worker's report (its narrow-check command and exit code) is the check the worker ran, and no gate of record exists yet: it runs on the head you are satisfied with. The `gate` status and the `loop-gate/` record are a ready head's. Run the suite, or more than a few test files, only through the project's test task (its `mise run` task, which carries the suite's parallel workers), never a bare runner such as `pytest`, which runs serially: one bare pass took 20 times the task's time. A selection of more than half the suite runs as the whole suite through that task. Run a repro or that task as the bare command, with no wrapper, redirect or detach around it, and keep it running with
   your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain
   command, so a wrapped one asks for approval, and on a reviewed sandbox each ask is a paid
   model call. Then write its proof log from what it printed: the head's SHA, the command, its

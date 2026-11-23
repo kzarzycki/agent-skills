@@ -349,7 +349,7 @@ session, 1 when not. It reads idle CPU, not the load average, which on macOS als
 waiting on I/O and memory and reads several times too high; load per core decides only when idle
 cannot be measured. `start` and `run` wait while the host the new session's load lands on has
 none: the host `--host` names, else this one. A `claude-cloud` start is judged there on memory
-and the row's `max_sessions` alone, since its bridge is all that runs on the host and its work runs
+alone (no `max_sessions` cap, and it isn't counted toward one), since its bridge is all that runs on the host and its work runs
 in the VM: its line reads `cloud start, cpu not judged, …`, and on another host only
 `/proc/meminfo` is read. Its memory floor is its own, `OMNIGENT_CLOUD_MIN_AVAILABLE_MB` (default
 1200), on every host, since the bridge adds about 150 MB: no row's `min_mb` and no
@@ -366,7 +366,7 @@ The limits are knobs set for the hardware: `OMNIGENT_MIN_CPU_IDLE` (percent, def
 gives `min_mb` and `max_load` (the 1-minute load average, absolute, not per core; a missing
 field takes the default): `cc-experiments` 2500 MB and load 40, `oz` load 10. Any host named `epic-*` (a burst box, 4 vCPU and 8 GB) has the `HOST_PREFIX_LIMITS` row
 1500 MB, load 6 and `max_sessions` 4: a start is refused once the box has that many live sessions,
-counted from the session list, so it holds where load and memory can't be read. A row's
+counted from the session list (bridged `claude-cloud` sessions excluded), so it holds where load and memory can't be read. A row's
 `max_load` decides another host's load in place of load per core, and on this host refuses on
 top of the idle-CPU judgement. `OMNIGENT_MIN_AVAILABLE_MB_<HOST>` and `OMNIGENT_MAX_LOAD_<HOST>`
 (the name upper-cased, `-` as `_`) override one row for a host start. A
@@ -551,6 +551,14 @@ to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
 (a scheduled job's status line to a chief of staff): its first line says so, and it never
 answers a question, even with `--answer`. A plain
 `relay` sent as a message, every `broadcast` message and every `send` follow-up open with `[relayed by <the relaying session>]`.
+
+To a lead (`omni.role=lead`), `relay` and `send` print a warning on stderr, and still deliver, when the
+message names an issue (`#N`, `owner/name#N` or its URL, in the lead's own repository) outside the
+lead's request: the issues its brief names, their epic, their sub-issues and the epic's other
+sub-issues. A lead takes one request or epic, so an unrelated item belongs to a fresh lead. A PR
+number, another repository's issue and a GitHub read that fails say nothing, since a false warning
+costs more than a missed one; it costs one GraphQL call, made only when the message names a number
+the brief does not.
 
 **Checking an owner's words.** `python3 scripts/omnigent_agent.py owner-said <session>
 <quote or quote-file>` pages through the session's whole history for the newest message holding the
@@ -740,6 +748,10 @@ The first head seen for a repo is only stored, so a start reports no old merge; 
 is kept in the state (`heads`), so a restart reports a landing made while it was down, and only
 that one. A workspace outside a checkout is not watched; a failed read is logged once and tried
 again. The event is for whoever owes the step after a landing (the chief of staff under `--console`), not for other leads: they read the new base on their next fetch, since a notice wakes each with its whole context. The lead's words play no part, so `route` and `lead.md` stay as they are.
+With `--console`, a followed lead quiet an hour whose PR (its `omni.pr` label or a PR its wait names) has a verdict on
+its current head over an hour old with no push since, and, for a satisfied one, no go (a green `owner` or `land` status,
+or `loop:queued`), gets one `news` line per PR and head naming the step it owes (`verdict_stall`), since nothing else
+picks up "verdict in, fix or go needed" overnight; each such PR is read at most once in 10 minutes.
 
 **`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
 state file, an events log, status labels, a progress deadline, settled events kept across
@@ -955,7 +967,7 @@ It archives the session, a sub-agent too: Omnigent leaves the runner it shares w
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
-each and `already archived` for one finished before, and prints which it kept. It keeps a `--pr` worker, `--force` included, until its PR is merged or closed, saying why: `start --pr`
+each and `already archived` for one finished before, and prints which it kept. It keeps an idle `--pr` worker, `--force` included, until its PR is merged or closed, saying why: `start --pr`
 labels the session `omni.pr=<owner>/<name>#<n>` (a start whose label fails archives the session and fails), and
 `reap` looks the PR up in that repository, never the caller's checkout; a PR it can't read keeps the worker. A verifier
 started with `--pr` carries the same label, so its spend groups by PR, but neither `reap` nor `reap --merged` holds or finds one
@@ -968,7 +980,9 @@ to come from a finished one, so a child whose `run` died is re-attached with `wa
 which finishes it on return, never reaped. Run `reap --children
 "$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` only once every child's report is in or the child is
 given up, as the last step before your own report. Never `DELETE` a session: it erases the
-transcript.
+transcript. `start` refuses a second worker or verifier of a PR while one with the same `omni.role` and `omni.pr` runs, naming it,
+since a twin repeats the first's whole run on the same head; `reap --force <that session>` stops and finishes the running
+one, its open PR included, and the start then goes on. An idle kept `--pr` worker is no twin: `start --pr` replaces it.
 
 **Permission prompts.** An agent's workspace is the directory it was started in, so its
 reads there, its children's checkouts included, never prompt, in any harness; its writes

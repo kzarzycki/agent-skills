@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.2 - 2026-11-22
+
+- chief-of-staff: a lead takes one request or epic; a new, unrelated item goes to a fresh lead, never to one that is running or done (#1830).
+
 ## 0.1.1 - 2026-11-22
 
 - chief-of-staff: the one-writer rule names a lead that merges, not rebases, in a shared checkout (#1768).

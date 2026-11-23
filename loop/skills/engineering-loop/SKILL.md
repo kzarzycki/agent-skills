@@ -215,7 +215,7 @@ between them. It lists the PRs merged on the default branch since the last green
 merges and squash commits, each PR's linked issues and their epics) and opens one issue
 `Nightly red since <short sha>` with that list and the link, or, while that issue is open,
 comments the new run and the merges since the last red on it, so a person or a lead bisects
-from a short list rather than the whole history. It needs only git and gh, checks each body
+from a short list rather than the whole history. A new red test that no merge on the list explains gets a skip marker with its issue (Known-red tests) in the same change, so the next run is green and the fix stays tracked. It needs only git and gh, checks each body
 against `LOOP_DENY_LIST` before posting, and its docstring has the formats and exit codes. A
 project's worker heads (and `land`'s batch gate, under `ci: false` or with no required check) run narrowed from the pack once its loop.md names
 its `Affected tests:` command; what it adds itself is that command (its selector plus its cheap
@@ -386,7 +386,12 @@ gatekeeper.md's policy (Settings) holds:
   `bot.renovate` with `branch` `renovate/`, names an updater that opens its PRs under a
   person's token instead: the PR's head is this repository's branch starting with the
   prefix (a fork's PR may name any branch), and every commit is that person's, so the
-  updater commits as that person (Renovate's `gitAuthor`), not as its default author. A PR labelled
+  updater commits as that person (Renovate's `gitAuthor`), not as its default author, or as
+  a git identity with no GitHub account, as a cloud worker does. Such a PR whose `apm.yml`
+  changes only its pack dependency's `ref:` line, to a release, the rest being the lock and generated
+  files `paths` covers, is a pack bump: its issue's spec needs no approval, since the
+  release it pins was reviewed and tagged. Name the pack bump's section by the branch
+  `claude/ready-pack-bump-<tag>`, which a cloud session may push. A PR labelled
   `verify` (a major update) needs the review either way. Without the section, every PR needs
   one.
 - `signoff`, such as `labels` `area:ios` and `area:watch`: the owner signs off a
@@ -882,6 +887,17 @@ or the owner's private network.
   from main that skips the test in the blocking gate, citing the issue, which stays open
   for the fix. A test red on both tries is a real failure: run it on main before blaming
   the PR.
+- **Known-red tests.** A test red for a reason the PR's diff doesn't explain (it fails the same
+  on main, or in a file the change doesn't touch) is skipped, not waived and not listed as an
+  expected failure: a list keeps the test running and its cost on every PR, and a waived
+  verdict lets the next lead meet the same red. Mark it with its runner's skip that links a new
+  issue (pytest: `skip`, or `xfail(run=False)`, with `reason="<why>, #<issue>"`; another runner
+  uses its own equivalent), and file that issue, the fix's home, in the same change. The
+  nightly's new red (Nightly, above) gets the same: one PR from main that adds the marker and
+  opens the issue. The project's repo check refuses a skip without an issue link, since an
+  unlinked skip is a test nobody tracks. A project that keeps an expected-failures list turns
+  each entry into a marked skip and drops the list. A skip for an environment (a missing tool,
+  an opt-in flag) names it and needs no issue.
 - **Land small and soon.** Every PR branches off a freshly fetched `origin/main` and merges
   as soon as its gates pass, because a branch that lives as long as the work behind it goes
   stale against main, and a pile of them cascades on every merge of the base and breaks main when they
