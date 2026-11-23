@@ -9,6 +9,7 @@ import pytest
 from approvals_harness import (
     AS_WRITTEN,
     BARE,
+    HEAD,
     TEXTED,
     add,
     approvals,
@@ -196,3 +197,20 @@ def test_delegate_spec_false_leaves_the_delegates_merge_go_counting(
     monkeypatch.setattr(approvals, "current", lambda *_a: True)
     assert approvals.delegation(OFF) == "all"
     assert approvals.go_on(pull(), head, OFF) == "delegate"
+
+
+def test_delegate_spec_false_leaves_approve_merge_by_delegate_giving_the_go(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    on_main(monkeypatch, OFF)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pull())
+    assert approvals.default(
+        pull()
+    )  # into the default branch, where only `delegate: all` lets the go count
+    assert approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "delegate"]) == 0
+    assert [(s["context"], s["description"]) for s in hub[HEAD]] == [
+        ("owner", f"The delegate's go on {HEAD[:12]}{approvals.DELEGATED}")
+    ]
+    assert github[0][2].endswith(f"Approved: merge\nBy: delegate\nHead: {HEAD}\n")
