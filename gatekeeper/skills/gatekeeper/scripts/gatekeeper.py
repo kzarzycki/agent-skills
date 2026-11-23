@@ -7689,8 +7689,8 @@ def hand_over(number: int) -> None:
 def stalled() -> int:
     """`check stalled`: each open PR, into any base, that `landable` finds a candidate (its go on its head, every proof,
     a satisfied verdict) and that its base's queue does not hold: under `land.queue: mergify` not queued at its head
-    (QUEUED and a `land` success there newer than land's last eviction at it, queued_here); where the base's rules require GitHub's merge queue, not in it;
-    on a base `land` merges itself, still open, so not landed. A `land` that was stopped, died or never ran left it.
+    (QUEUED and a `land` success there newer than land's last eviction at it, queued_here); where the base's rules
+    require GitHub's merge queue, not in it; on a base `land` merges itself, still open, so not landed. A `land` that was stopped, died or never ran left it.
     Also each one `land` refuses whose newest pass on its head is satisfied (or at the cap) but that lacks the go or
     the gate record it needs and has waited past `loop.stalled_after_hours` with no go, record or new head
     (idle_stall), its line naming what is missing: a hand-back that lived only in a session's prose left it.
@@ -7831,7 +7831,8 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
 def mergify_step(pull: dict[str, Any]) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
-    (QUEUED and a `land` success there since land's last eviction at it, queued_here), left alone (exit 0); else queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
+    (QUEUED and a `land` success there since land's last eviction at it, queued_here), left alone (exit 0); else
+    queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
     `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). A DEQUEUED label on a head land does not hold queued (a push
     since, or land's own eviction, which Mergify labels too) is stale, and comes off."""
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]

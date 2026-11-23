@@ -406,3 +406,32 @@ def test_a_dequeue_after_the_re_land_still_evicts(
     assert code == 1, lines
     assert f"PR #7 was dequeued by Mergify at {head}: evicted" in lines
     assert len(notes_on(refused, 7, approvals.QUEUE_EVICTED)) == 2
+
+
+def test_check_stalled_reads_a_success_older_than_the_eviction_as_not_queued(
+    refused: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`check stalled` on a PR carrying `loop:queued` whose head's only `land` success predates land's eviction at that
+    head: no hand-over holds it, so it is listed until a newer success comes (#1882)."""
+    head = refused["opened"](7)
+    assert refused["land"]("7")[0] == 0
+    old = {
+        "context": "land",
+        "state": "success",
+        "description": "",
+        "created_at": "2026-09-01T00:00:00Z",
+    }
+    hub.setdefault(head, []).insert(0, old)
+    capsys.readouterr()
+    assert approvals.main(["check", "stalled"]) == 0
+    approvals.comment(7, approvals.fold(approvals.QUEUE_EVICTED, "red", f"Head: {head}"))
+    capsys.readouterr()
+    assert approvals.main(["check", "stalled"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7 has its go and a satisfied verdict at {head} and is not queued"
+    ]
+    new = {**old, "created_at": "2026-11-01T00:00:00Z"}
+    hub[head].insert(0, new)
+    assert approvals.main(["check", "stalled"]) == 0
