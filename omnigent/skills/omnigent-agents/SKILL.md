@@ -225,7 +225,7 @@ question tool and a published page, since each waits on a prompt nobody in the c
 A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
-A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, not its path: the VM has none of this host's paths, and a target repo without the pack installed holds no copy, so a path would read nothing. The skill's other files that the role names may not be in the checkout either; the brief says so.
+`--role` also takes a bare `lead`, `worker` or `verifier`, which names engineering-loop's role file beside this skill, so a launch dir needs no copy of it. A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, not its path: the VM has none of this host's paths, and a target repo without the pack installed holds no copy, so a path would read nothing. The skill's other files that the role names may not be in the checkout either; the brief says so.
 Every `acp:claude-cloud` session's preamble, lead or worker, with or without `--pr`, says how to open a
 PR when its brief or role asks for one: `curl` to `https://api.github.com/repos/<owner>/<repo>/pulls` with a
 `Content-Type: application/json` header. The VM's HTTPS proxy authenticates that host as the GitHub App, so no
