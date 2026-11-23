@@ -8619,8 +8619,14 @@ def merges(
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
                 print(f"{where} lands as a {method}")
-                post_status(head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}")
-                posted = True
+                # a cloud session's proxy refuses the status write (#1816) but passes the merge, so a refusal lands
+                # it all the same, with no success to withdraw if the merge fails (#1917)
+                posted = (
+                    unwritten(
+                        head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}"
+                    )
+                    is None
+                )
                 try:
                     owned()
                     port("forge").merge(pull["number"], method, head)
