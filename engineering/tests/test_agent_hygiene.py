@@ -137,7 +137,9 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
         (bin_ / name).chmod(0o755)
     merged = {}  # branch -> the merged PR's head commit
-    (home / "gh.py").write_text(  # `gh pr list -R o/r --state closed ...`: the repo's PR listing, every call logged
+    (
+        home / "gh.py"
+    ).write_text(  # `gh pr list -R o/r --state closed ...`: the repo's PR listing, every call logged
         "import sys\n"
         f'open("{home}/gh.calls", "a").write(" ".join(sys.argv[1:]) + "\\n")\n'
         f'print(open("{home}/gh-prs.json").read() if sys.argv[1:3] == ["pr", "list"] else "[]")\n'
@@ -600,7 +602,9 @@ def landing_world(tmp_path, monkeypatch):
         if commit_message:
             git(path, "commit", "-q", "--allow-empty", "-m", commit_message)
         sha = git(path, "rev-parse", "HEAD")
-        pulls.append({"number": 9, "state": "CLOSED", "headRefName": f"pr-{name}", "headRefOid": sha})
+        pulls.append(
+            {"number": 9, "state": "CLOSED", "headRefName": f"pr-{name}", "headRefOid": sha}
+        )
         (home / "gh-prs.json").write_text(json.dumps(pulls))
         gitdir = Path(git(path, "rev-parse", "--absolute-git-dir"))
         age_git_state(gitdir, time.time() - 30 * 86400)
@@ -636,7 +640,9 @@ def test_gh_calls_per_run_do_not_grow_with_the_worktree_count(tmp_path, monkeypa
     out = run()
     many = (home / "gh.calls").read_text().splitlines()
     assert len(one) == len(many) == 1, (one, many)
-    assert many[0].startswith("pr list -R o/r --state closed --json number,state,headRefName,headRefOid"), many
+    assert many[0].startswith(
+        "pr list -R o/r --state closed --json number,state,headRefName,headRefOid"
+    ), many
     assert out.count("would remove worktree") == 6, out
 
 
