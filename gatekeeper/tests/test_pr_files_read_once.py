@@ -1,12 +1,11 @@
-"""A PR's REST file list is read once per run, not once per caller: `loop.py brief` on the REST path called
-`pulls/N/files` 30 to 60 times, since each `gh pr list` or GraphQL call emptied the read cache and rest_pull, paths()
-and overlaps() each asked again. Only a write, or a wait's read_afresh(), makes the next ask GitHub's."""
+"""A PR's REST file list is read once per run, not once per caller: a `gh pr list` or GraphQL call between callers
+doesn't drop it, and neither does time. Only a write, or a wait's read_afresh(), makes the next ask GitHub's; conftest's
+forget() before each test drops the last test's."""
 
 from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -47,21 +46,17 @@ class Hub:
 
 
 @pytest.fixture
-def hub(monkeypatch: pytest.MonkeyPatch) -> Iterator[Hub]:
+def hub(monkeypatch: pytest.MonkeyPatch) -> Hub:
     fake = Hub()
     monkeypatch.setattr(github.subprocess, "run", fake)
     monkeypatch.setattr(github, "wait_until", None)
-    github.read_afresh()
-    yield fake
-    github.read_afresh()  # the module's reads outlive a test; the next test must not see this one's PR
+    return fake
 
 
 def test_many_callers_in_one_run_read_a_prs_files_once(hub: Hub) -> None:
     for _ in range(5):
         github.pr_changes(7)
-        github.gh(
-            "pr", "list", "--state", "open"
-        )  # empties `reads`, which used to forget the files too
+        github.gh("pr", "list", "--state", "open")  # empties `reads`, not `files_read`
         github.gh("api", "graphql", "-f", "query=query { viewer { login } }")
         try:
             github.rest_pull(7)
