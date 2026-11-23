@@ -17,10 +17,7 @@ import collections
 import json
 import os
 import re
-<<<<<<< HEAD
 import shlex
-=======
->>>>>>> origin/main
 import shutil
 import stat
 import subprocess
@@ -128,16 +125,12 @@ VALUED = {
 def command(args: str) -> str:
     """The gh command, without its values: `api -X POST repos/o/r/pulls/12/reviews` -> `api POST
     repos/o/r/pulls/N/reviews`; any other command is its first two words (`pr view`)."""
-<<<<<<< HEAD
     try:
         words = shlex.split(
             args
         )  # the shim quotes a word with a space: `-H 'Accept: x'` is one value
     except ValueError:
         words = args.split()
-=======
-    words = args.split()
->>>>>>> origin/main
     if not words:
         return "-"
     if words[0] != "api":
@@ -232,7 +225,6 @@ def rate_limit() -> dict[str, dict[str, int]]:
 
 
 def spent(samples: list[tuple[float, int, int]]) -> int:
-<<<<<<< HEAD
     """Calls spent across (time, used, reset) samples: the growth of `used` within one window, and after a reset (a
     later reset time and a smaller count) its new count. Two samples of different windows whose count grew are not one
     bucket (a proxy may answer from another token's), so that step counts nothing rather than a whole bucket."""
@@ -242,12 +234,6 @@ def spent(samples: list[tuple[float, int, int]]) -> int:
             total += max(now_used - used, 0)
         elif now_reset > reset and now_used < used:
             total += now_used
-=======
-    """Calls spent across (time, used, reset) samples: the growth of `used`, and after a reset its new count."""
-    total = 0
-    for (_, used, reset), (_, now_used, now_reset) in zip(samples, samples[1:]):
-        total += now_used if now_reset != reset else max(now_used - used, 0)
->>>>>>> origin/main
     return total
 
 

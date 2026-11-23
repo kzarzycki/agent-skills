@@ -65,20 +65,14 @@ fi
 			case $word in
 			-b | --body | --value) [ $hide = 1 ] && next=1 ;;
 			--body=* | --value=*) [ $hide = 1 ] && word="${word%%=*}=***" ;;
-<<<<<<< HEAD
 			-b?*) [ $hide = 1 ] && word="-b***" ;;
-=======
->>>>>>> origin/main
 			*[Tt][Oo][Kk][Ee][Nn]*=* | *[Ss][Ee][Cc][Rr][Ee][Tt]*=* | *[Pp][Aa][Ss][Ss]*=* | *[Kk][Ee][Yy]*=* | *[Aa][Uu][Tt][Hh]*=*)
 				case $word in [Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:*) ;; *) word="${word%%=*}=***" ;; esac
 				;;
 			esac
 		fi
-<<<<<<< HEAD
 		# a word with a space is quoted, so the report reads `-H 'Accept: x'` as one flag value
 		case $word in *" "*) word="'$word'" ;; esac
-=======
->>>>>>> origin/main
 		args="$args${args:+ }$word"
 	done
 	# one line per call: tabs and newlines inside a field become spaces; tokens and Authorization headers are masked;
@@ -89,11 +83,7 @@ fi
 			cut -c1-400
 	}
 	printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$now" "$(clean "$host")" "$(clean "$session")" "$(clean "$PWD")" \
-<<<<<<< HEAD
 		"$(clean "${parent:--}" | sed -E 's/(TOKEN=)[^ ]+/\1***/g; s/[0-9a-f]{40}/***/g')" "$(clean "$args")" >>"$log"
-=======
-		"$(clean "${parent:--}")" "$(clean "$args")" >>"$log"
->>>>>>> origin/main
 } 2>/dev/null
 
 exec "$real" "$@"
