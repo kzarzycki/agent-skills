@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import shutil
@@ -131,36 +130,6 @@ def test_a_diff_outside_a_steps_paths_reuses_its_pass_and_names_the_source_tree(
     assert [one["tree"] for one in whole["steps"]] == [inputs["first"], second, inputs["first"]]
 
 
-def test_a_batch_tree_that_differs_from_the_prs_only_outside_a_steps_paths_reuses_its_pushed_pass(
-    inputs: dict[str, Any],
-    refs: dict[str, dict[str, Any]],
-    hub: dict[str, list[dict[str, Any]]],
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """The PR's head passed in another clone, which pushed each step's record; the batch merges another PR's docs
-    change beside it, so its tree is new, and land finds `lint` and `apple` by their inputs on origin."""
-    repo = inputs["repo"]
-    git_in(repo, "checkout", "-qb", "other")
-    inputs["commit"]({"docs/guide.md": "# guide\n"})
-    git_in(repo, "checkout", "-q", "-")
-    pr_tree = inputs["commit"]({"app.py": "value = 2\n"})
-    assert approvals.main(["local-ci", "--record"]) == 0
-    assert {found["tree"] for found in refs.values()} == {pr_tree}
-    shutil.rmtree(approvals.local_ci_dir())  # only origin's branches hold the PR's pass now
-    git_in(repo, "merge", "-q", "--no-edit", "other")
-    batch, commit = inputs["tree"](), inputs["head"]()
-    assert batch != pr_tree
-    capsys.readouterr()
-    assert approvals.gate_batch(repo, []) == (batch, "run")
-    assert inputs["ran"]() == ["lint", "unit", "apple", "unit"]
-    out = capsys.readouterr().out
-    for name in ("lint", "apple"):
-        assert f"{name}: reused, inputs unchanged since {pr_tree}" in out
-    # the batch commit shows each pass it reused from origin as its `gate` status
-    shown = [status["description"] for status in hub.get(commit, [])]
-    assert any(f"Tree {pr_tree} on" in line for line in shown)
-
-
 def test_a_diff_touching_one_path_inside_runs_the_step(inputs: dict[str, Any]) -> None:
     assert approvals.main(["local-ci", "--record"]) == 0
     inputs["commit"]({"ios/App.swift": "let x = 2\n"})
@@ -214,34 +183,6 @@ def test_a_step_without_paths_never_lists_the_tree(
     assert approvals.inputs_key(inputs["first"], step("unit")) is None
 
 
-def test_a_land_whose_host_steps_all_reuse_takes_no_heavy_slot(
-    inputs: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    taken: list[str] = []
-    real = approvals.heavy_slot
-
-    @contextlib.contextmanager
-    def slot(name: str, out: Any = None, land: bool = False) -> Any:
-        taken.append(name)
-        with real(name, out, land) as held:
-            yield held
-
-    assert approvals.main(["local-ci", "--record"]) == 0
-    inputs["commit"]({"docs/readme.md": "# a pack-only change\n"})
-    monkeypatch.setattr(approvals, "heavy_slot", slot)
-    assert approvals.gate_batch(inputs["repo"], []) == (inputs["tree"](), "run")
-    assert taken == ["unit"]  # the host step `apple` reused its pass and never waited on the slot
-    # with every step's paths named, a land on a tree changing none of them takes no slot at all
-    inputs["set_paths"](PATHS | {"unit": ["app.py", "tests/**"]})
-    monkeypatch.setattr(approvals, "heavy_slot", real)
-    assert approvals.main(["local-ci", "--record"]) == 0
-    inputs["commit"]({"docs/readme.md": "# another pack-only change\n"})
-    taken.clear()
-    monkeypatch.setattr(approvals, "heavy_slot", slot)
-    assert approvals.gate_batch(inputs["repo"], []) == (inputs["tree"](), "reused")
-    assert taken == []
-
-
 def test_each_step_record_carries_the_hosts_load_and_swap_at_its_start(
     inputs: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -250,11 +191,6 @@ def test_each_step_record_carries_the_hosts_load_and_swap_at_its_start(
     for name in PATHS:
         record = local_record(inputs, inputs["first"], name)
         assert record is not None and (record["load_1m"], record["swap_used_mb"]) == (3.5, 812)
-    landed = approvals.landed_pass("d" * 40, inputs["first"])
-    assert all((one["load_1m"], one["swap_used_mb"]) == (3.5, 812) for one in landed["steps"])
-    assert [one.get("inputs") for one in landed["steps"]] == [
-        approvals.inputs_key(inputs["first"], step(name)) for name in ("lint",)
-    ] + [None, approvals.inputs_key(inputs["first"], step("apple"))]
 
 
 def test_the_host_load_reads_the_load_average_and_swap_where_the_host_says_them(
@@ -448,3 +384,42 @@ def test_the_real_host_load_answers_on_this_host() -> None:
     assert set(load) == {"load_1m", "swap_used_mb"}
     if hasattr(os, "getloadavg"):
         assert isinstance(load["load_1m"], float)
+
+
+def test_gate_record_finds_a_step_by_its_inputs_on_another_tree(
+    inputs: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gate-record reads a step keyed by its inputs as step_pass does: tree A's pushed pass of `lint` and `apple` is
+    their pass on tree B, which changes only docs, naming A's tree and the key; `unit`, keyed by the tree, is read on
+    B's tree alone. Only origin counts: this clone's own records of B never do. A change to app.py is new inputs."""
+    assert approvals.main(["local-ci", "--record"]) == 0
+    head_a = inputs["head"]()
+    inputs["commit"]({"docs/readme.md": "# app, a comment-only fix\n"})
+    head_b = inputs["head"]()
+    capsys.readouterr()
+    # `unit` reads the whole tree, so B, with no pass of its own, still lacks one
+    assert approvals.main(["gate-record", head_b]) == 1
+    out = capsys.readouterr().out
+    assert f"no record of `{inputs['commands']['unit']}` on tree {inputs['tree']()}" in out
+    for name in ("lint", "apple"):
+        key = approvals.inputs_key(inputs["tree"](), step(name))
+        assert f"Tree {inputs['first']} on {head_a[:12]}: " in out
+        assert f"reused on tree {inputs['tree']()}, inputs key {key}" in out
+    # a pass of `unit` on B, kept only in this clone, never counts; pushed to origin, B's gate is whole
+    approvals.recorded(inputs["tree"](), inputs["commands"]["unit"]).write_text('{"exit": 0}')
+    assert approvals.main(["gate-record", head_b]) == 1
+    assert approvals.main(["gate-record", head_b, "--", *inputs["commands"]["lint"].split()]) == 0
+    assert approvals.main(["local-ci", "--record"]) == 0
+    capsys.readouterr()
+    assert approvals.main(["gate-record", head_b]) == 0
+    # app.py changes `lint`'s inputs: origin holds no pass with the new key
+    inputs["commit"]({"app.py": "value = 2\n"})
+    lint = inputs["commands"]["lint"]
+    key = approvals.inputs_key(inputs["tree"](), step("lint"))
+    capsys.readouterr()
+    assert approvals.main(["gate-record", inputs["head"](), "--", *lint.split()]) == 1
+    assert (
+        f"no record of `{lint}` with inputs {key} on tree {inputs['tree']()}"
+        in capsys.readouterr().out
+    )
+    assert approvals.main(["gate-record", inputs["head"]()]) == 1

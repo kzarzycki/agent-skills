@@ -24,9 +24,9 @@ def test_a_stub_set_on_a_path_loaded_shim_reaches_the_gatekeeper_code(tmp_path, 
     seen = []
     shim.pack_behind = lambda script: seen.append(Path(script).name) or "stale"
     shim.refuses_stale = lambda: True
-    message = tmp_path / "msg"
-    message.write_text("x\n")
-    assert shim.main(["commit-msg", str(message)]) == 1
+    report = tmp_path / "report.md"
+    report.write_text("x\n")
+    assert shim.main(["report", str(report)]) == 1
     assert seen == ["approvals.py"]
     assert "stale" in capsys.readouterr().err
 

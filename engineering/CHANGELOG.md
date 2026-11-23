@@ -5,6 +5,44 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.6 - 2026-11-23
+
+- agent-hygiene: a run reads each repo's closed and merged PRs once (`gh pr list --state closed`, GraphQL, newest 1000) and matches branch and detached-HEAD worktrees in memory, so its GitHub calls no longer grow with the worktree count (it was a call per branch worktree and a REST call per detached one) (#2081).
+
+## 0.35.5 - 2026-11-23
+
+- Carries gatekeeper 0.1.5: `loop.delegate_spec: false` keeps spec and plan approvals the owner's under `loop.delegate: all`, while the delegate's merge go still counts (#2018). Gatekeeper 0.1.5 is also the first tagged gatekeeper with #1872's behaviour change, which its 0.1.4 notes list but the `gatekeeper-v0.1.4` tag predates: on a base with no merge queue, `land` merges each landable PR on the verifier's record with no gate step, and `batch_queue` under `loop` and `land`'s `gate_on`, `cloud_gate_timeout_seconds` and `host_gate` now do nothing (see the upgrade note in gatekeeper's CHANGELOG) (#1872, #2026).
+
+## 0.35.4 - 2026-11-23
+
+- Releasing: one `Release` workflow run (`gh workflow run release.yml`) cuts every package with pending `changelog.d/` entries in one PR, lands it through the merge queue with no verifier, since `qualify` refuses a release PR whose tree isn't exactly the fold (`cli release-verify`), and pushes each package's tag on the squash commit. `cli cut-release` is the fold the workflow, the gate and a person all run, and `release-check` accepts a commit that releases several packages when each manifest it changes is tagged on it (#1861).
+
+## 0.35.3 - 2026-11-23
+
+- release-check: the pre-tag smoke run in a private organization repository (#1270) is off unless `RELEASE_SMOKE_REPOSITORY` is set; without it `release-check` prints `smoke run: off (RELEASE_SMOKE_REPOSITORY unset)` and passes. Setting `RELEASE_SMOKE_REPOSITORY` and `RELEASE_SMOKE_WORKFLOW` turns it back on (#1855).
+- engineering: the old-path copies of the loop's `lead.md`, `worker.md` and `verifier.md` match the loop package's files again (#1885).
+
+## 0.35.2 - 2026-11-22
+
+- agent-hygiene: a checkout with drift catches up with a landed pack bump itself when that is safe: with a clean tree it is installed from its committed lock (its `agent-sync` mise task with `--frozen`, else `apm install --frozen`), after a fast-forward when it is on its default branch with no local commits; one that runs services (a process has it open, or a systemd or launchd unit names it) is only installed, never pulled; anything else goes to its manager. Every install, the dotagents checkout's own included, puts its lock back, so a rewritten `generated_at` no longer dirties the tree, blocks the next pull or reads as an older pin, and puts back any committed agent file it changed, since committed copies change only in a bump PR; a failed install, an install that changed committed copies and a checkout with neither its task's `mise` nor `apm` on `PATH` are reported. A forwarder in the home skill install whose target skill is missing is drift, and the round runs `dotagents install` for it. Findings now address the manager they go to, not the owner (#1783).
+
+## 0.35.1 - 2026-11-22
+
+- engineering-loop: lead.md has a Cloud lead section: how a `claude-cloud` lead starts its worker and verifier as `auto` siblings, waits on wake notices, keeps its notes in a `## Lead state` PR comment and lands from the VM with no host step (#1601).
+- engineering: each skill name ships from one package. The leftover `engineering-loop` role docs and scripts that moved to the `gatekeeper` and `github-tracker` skills (`events.md`, `github.md`, `scripts/folding.py`, `scripts/github_adapter.py`) are gone from `engineering/skills/engineering-loop`, so an install deploys the `loop` package's copy of that folder whole; the install test's catalog follows what an install deploys, a test holds that no skill name ships from two packages, and a PR touching `*/skills/**` or a package manifest runs the install test (#1731).
+- engineering, upgrade note: the old-path forwarders (`engineering-loop/scripts/approvals.py`, `gatekeeper.py` and the rest, except `folding.py` and `github_adapter.py`, which are gone) keep forwarding a *run*, but raise `ImportError` on an *import*, as they were built to. A consumer test that imports `approvals` or `gatekeeper` from the old path moves to the `gatekeeper` skill's `scripts/gatekeeper.py` now. A run needs no change until the forwarders go.
+- engineering, upgrade note: 0.35.0's line "a project pinned to it still installs every skill it had" holds only for a project that installs the whole package. A project whose `apm.yml` names a `skills:` subset of `engineering` that includes a moved skill (the chief of staff, `engineering-loop`, `omnigent-telemetry` and the like) fails its frozen sync with `skill-subset-consistency: recorded skill subset path(s) not found in package tree`. Drop each moved skill name from the `engineering` subset: it arrives through the new package dependencies. Also replace imports of the old paths (see the note above).
+- orchestrating-agents: a rule, A wait wakes you, or you stay in the turn: a harness wakes a session only for its own tracked background tasks, a child's turn end or a message (a cloud session not even for its own subagent), so a long run is one of those, a detached run whose wrapper notifies, or a wait in the same turn, never a turn ended on a bare pid, a log or a cloud subagent (#1753).
+- orchestrating-agents: builds, tests, gates, lands and `git push` for another host run in a session there or in a cloud session, never over `ssh` (#1754).
+- orchestrating-agents: the host-work rule is one line, with no rationale (#1765).
+- engineering-loop: update a PR branch by merging its base in (`git merge origin/<base>`, plain push), never by rebasing or force-pushing it, and never with a replacement PR (#1768).
+
+## 0.35.0 - 2026-11-22
+
+- engineering: the package splits into `gatekeeper`, `loop`, `github`, `chief-of-staff` and `omnigent`, each a plugin of its own in the marketplace and an APM package of its own. `engineering` keeps the craft skills, `orchestrating-agents` with its native and herdr-link backends (its Omnigent backend is the `omnigent-agents` skill now) and a new `browsing` skill holding `browse.py`. For this release line `engineering` depends on the five new packages, by `dependencies` in `plugin.json` and in `apm.yml` (`git: kzarzycki/agent-skills/<package>`, `ref: ^0.1.0`, so each package's own `<package>-v0.1.0` tag must be on the forge before this release is tagged), so a project pinned to it that installs the whole package still installs every skill it had (one whose `apm.yml` names a `skills:` subset must drop the moved skill names from it, since they arrive through the dependencies: see the 0.35.1 notes); the next minor release drops them, and `loop` and `omnigent` then depend on `engineering`, since both at once is a cycle (#615).
+- orchestrating-agents: `scripts/omnigent_agent.py` keeps working for this release line: it runs the `omnigent-agents` skill's omnigent_agent.py with the same arguments, stdin and exit code, after one deprecation line on stderr naming the new path. It goes away with the release that drops `engineering`'s dependencies on the packages split out of it (#615).
+- engineering-loop: the gate of record runs once, on the head the verifier is satisfied with, and again on any later head; review heads get only the narrow checks (tests and lint for what changed). A gate failure now shows after the verifier, so its fix needs a short re-verify of the delta, and a fix round runs the narrow checks only, with no gate on a review head (#1715).
+
 ## 0.34.1 - 2026-11-22
 
 - A claude-cloud `start` or `run` (a verifier, the cloud gate, `claude-cloud-run`) from a host configuring no `acp:claude-cloud` goes to a bridge host that does, with the launcher's local path mapped to the repository's pinned launch dir there, found from the project's cloud sessions; with none it refuses before the create instead of the server's 412 (#1693).

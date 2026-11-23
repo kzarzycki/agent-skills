@@ -42,6 +42,14 @@ Split only asks that share no work item. One epic stays with one lead, which run
 stories in parallel itself, since two leads on one epic would both write its issues and
 its landing order.
 
+The other way round holds too: a lead takes one request or epic. A new, unrelated item goes
+to a fresh lead, never to a lead that is running or done, since a lead pays for its whole
+context on every call, and one that keeps taking unrelated work after its own lands spends
+far more per change than a fresh one would. A follow-up on the lead's own request, its
+epic or a PR it opened is a relay as usual. `send` and `relay` print a warning (and still
+deliver) when the message names an issue outside the lead's request, its epic or the
+epic's sub-issues.
+
 ## Starting a lead
 
 - **Issue first.** File the ask as an intent issue (Problem, Change, Acceptance, from the
@@ -157,7 +165,7 @@ its landing order.
   runs at most one child and only focused tests. Resume the leads one at a time once
   the host has room again, because sessions on an overloaded host time out and fail and lose
   their work.
-- **One writer per checkout.** A lead whose work rebases or checks out branches in a
+- **One writer per checkout.** A lead whose work merges or checks out branches in a
   checkout others use says so in its brief or relay, and every other lead works in its own
   worktree until that ends, because two writers in one checkout overwrite each other's
   tree.
@@ -264,6 +272,66 @@ it quoted.
   script, a clearer brief. An approval only the owner may give stays theirs; how much they
   delegate is their standing decision on the board, never a line in this skill.
 
+## Answering the owner's cards (optional delegation)
+
+An optional mode, for an owner who wants work to run while they are away: their coordinators
+answer the owner's question cards as the owner would.
+
+- **On and off.** The owner turns it on with a standing decision on the root board (Handover),
+  and it lasts until they record it off there; nobody else turns it on, extends it or widens it.
+  Nothing changes in the loop or in briefs: leads and workers post cards as usual and carry no
+  approval, so turning it on or off needs no relay.
+- **Who answers.** Each project manager answers its own project's sessions' cards, from its own
+  session; the chief of staff answers its own leads' cards and cross-project ones.
+- **Finding cards.** A session in your lead registry with a pending elicitation (a count above
+  0: `status <session>` names the card), and each supervisor `blocked on a prompt` event.
+- **Answering.** Through the card itself, so the lead sees an answered card: resolve it with
+  action accept and the chosen answer (Omnigent's `sys_resolve_question`, action `answer`, on
+  a descendant session's card, else `POST /v1/sessions/<id>/elicitations/<question id>/resolve`
+  with `accept` and the answer); a harness-parked question takes `relay --answer`. Each answer opens by saying it is
+  delegated and names the standing decision it rests on, and goes in the decision log with its
+  undo (A tree of coordinators). A card asking for a spec, plan or merge go is answered with
+  the delegate's record (`approve … --by delegate`, which the gate counts only under
+  `loop.delegate: all`), never the owner's (Authority). A card settled some other way (a relay, a decision elsewhere)
+  is withdrawn at once (`withdraw <session> <question id>`, which resolves it with action cancel),
+  so the owner never answers a moot one. An approval prompt (a tool call) stays the owner's, as
+  above.
+- **What stays on the card.** Leave the card open for the owner when it touches money,
+  secrets, tokens or 2FA, sudo, a send outside the project, an irreversible delete, a production
+  order or trading path, merging a long-lived feature branch into the default branch, a path on
+  the policy's `risk.critical_paths` (the gate refuses the delegate's go there), or anything on
+  the owner's own list on their board. Unsure which side a card is on, it stays.
+- **A project's opt-out.** A project keeps specs and plans with the owner through its gatekeeper
+  policy: `loop.delegate_spec: false` beside `loop.delegate: all` makes the gate refuse a
+  delegate's spec or plan approval and count none, while the delegate's merge go still counts.
+  Its cards for a spec or plan stay on the card.
+
+## A tree of coordinators
+
+A home of your own can serve several projects as a tree: you at its root and a project
+manager per project, each a node.
+
+- **Nodes.** One folder per node, holding its instructions and its board; a session's role
+  comes from the folder it starts in, so it survives a compaction or a harness change. A
+  project repo holds no coordinator instructions, since every session there reads them.
+- **Hand it down.** You coordinate and never do: a thread goes to the manager that owns it, with
+  the context it lacks, and an item spanning projects gets a lead of its own.
+- **One writer per board**, its node. Standing decisions pass down: a node reads its parent's
+  board, never copies it, since a copy goes stale; a decision for one project stays on that
+  project's board.
+- **One owner conversation per topic.** The node the owner talks to about it answers; nobody
+  relays or re-drafts it.
+- **The inbox is the channel.** Every owner question is a card (Speaking to the owner); no node
+  above reports, relays or counts one, since the owner already sees it, and a moot one is
+  withdrawn.
+- **Asks down, reports up**, and up only what changes the parent's work. Managers message each
+  other directly about a bug that crosses their projects.
+- **Leads.** Each manager's leads are in its own registry, followed by its own supervisor
+  (Follow).
+- **Decision log.** While the owner is away, each decision taken for them goes in the node's
+  decision log with how to undo it. A morning digest is drafted from it and the board's
+  `## Needs the owner`, and sent by hand, never by a scheduled send.
+
 ## Speaking to the owner
 
 - Lead with the answer or the decision needed. One line per lead, each with its link.
@@ -318,7 +386,9 @@ buys nothing, but a lead missing from the board is one a successor never finds:
     any lead followed by a `watch` or a subscription instead, with its command.
 
   It holds no history: finished work lives on its PR, issue or report, and the file links
-  it. A journal grows past what a successor can read cheaply and buries the live state.
+  it. A journal grows past what a successor can read cheaply and buries the live state. A
+  finished item leaves for a dated archive file beside it in the same commit, and a board commit
+  names its files, since another node's edits may sit in the same tree.
 - **When.** Rewrite it in the turn that changes what it holds, before you reply to the
   owner: a lead started, relayed, reporting, failing or closed, a standing decision, a
   takeover. State that is only in chat is lost at the next switch.

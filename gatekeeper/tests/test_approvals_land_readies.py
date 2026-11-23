@@ -100,7 +100,7 @@ def test_several_named_drafts_are_readied_and_land_in_one_batch(lands: dict[str,
     draft(lands, 7)
     draft(lands, 8)
     assert lands["land"]("7", "8")[0] == 0
-    assert (readied(lands), lands["merged"](), lands["runs"]()) == (["7", "8"], ["7", "8"], 1)
+    assert (readied(lands), lands["merged"](), lands["runs"]()) == (["7", "8"], ["7", "8"], 0)
 
 
 def test_a_named_pr_missing_its_proof_is_left_out_with_its_reason_and_the_rest_land(
@@ -144,13 +144,14 @@ def test_a_named_pr_of_another_base_or_closed_is_left_out_and_exits_one(
     assert "PR #8 is closed: nothing to land" in lines
 
 
-def test_a_cloud_session_leaves_a_named_draft_for_landable_to_refuse(
+def test_a_cloud_session_readies_a_named_draft_as_a_host_does(
     lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A cloud land with no `signed_squash_to` merges over REST (#1712), so a draft is readied and landed as on a host."""
     monkeypatch.setattr(approvals, "in_cloud", lambda: True)
     draft(lands, 7)
-    assert lands["land"]("7")[0] == 1
-    assert readied(lands) == []
+    assert lands["land"]("7")[0] == 0
+    assert (readied(lands), lands["merged"]()) == (["7"], ["7"])
 
 
 def test_a_pr_named_twice_is_readied_once(lands: dict[str, Any]) -> None:

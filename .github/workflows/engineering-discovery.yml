@@ -1,0 +1,31 @@
+name: Engineering install check
+
+# The install of the engineering package deploys every skill of every package it depends on into one directory, so a
+# skill folder two packages hold, or a catalog gone stale, shows only in a real install. The per-PR fast checks skip the
+# slow tests, so this runs the install test on a PR that can change what an install deploys, before a tag does (#1731).
+on:
+  pull_request:
+    paths:
+      - "*/skills/**"
+      - "*/apm.yml"
+      - "*/.claude-plugin/plugin.json"
+      - "engineering/tests/e2e/**"
+
+permissions:
+  contents: read
+
+jobs:
+  discovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          version: 2026.9.2
+          install: false
+      - run: mise install
+      - run: uv sync --frozen
+      - run: uv run pytest -q -m 'slow and not live_agent' engineering/tests/e2e/test_static_discovery.py

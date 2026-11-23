@@ -219,3 +219,46 @@ def test_a_pr_that_edits_gatekeeper_py_is_judged_with_the_bases_copy(
     assert shim.base_drift("main") == []
     edit(judging["work"], "scripts/gatekeeper.py")
     assert shim.base_drift("main") == ["scripts/gatekeeper.py"]
+
+
+def stalled_lines(
+    judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> tuple[int, list[str]]:
+    """`check stalled` on a base whose rules require no check and no merge queue: `land` merges it itself (#1746)."""
+    monkeypatch.setattr(
+        approvals, "required_checks", lambda _base: approvals.github.Required(set())
+    )
+    capsys.readouterr()
+    code = approvals.main(["check", "stalled"])
+    return code, capsys.readouterr().out.splitlines()
+
+
+def test_check_stalled_judges_from_a_checkout_whose_policy_files_differ(
+    judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A lead's worktree that edits loop.md, or lags a policy change on main: `check stalled` reads the base's policy
+    and writes nothing, so the edit judges nothing and every PR is still judged (#1746)."""
+    head = judging["open"](7, {"7.txt": "7\n"})
+    edit(judging["work"], LOOP)
+    assert approvals.base_drift("main") == [LOOP]
+    assert approvals.base_drift("main", rules=False) == []
+    assert stalled_lines(judging, monkeypatch, capsys) == (
+        1,
+        [f"PR #7 has its go and a satisfied verdict at {head} and is not landed"],
+    )
+
+
+def test_check_stalled_from_a_checkout_whose_running_script_differs_judges_nothing_and_says_so(
+    judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    judging["open"](7, {"7.txt": "7\n"})
+    edit(judging["work"], "scripts/approvals.py")
+    code, lines = stalled_lines(judging, monkeypatch, capsys)
+    assert code == 0
+    assert lines == [
+        (
+            "PR #7 into main is not judged here: scripts/approvals.py differs from origin/main's: a PR's own copy would"
+            " judge it; run from the base's code (a checkout of origin/main)"
+        ),
+        "1 of 1 open PRs not judged here",
+    ]

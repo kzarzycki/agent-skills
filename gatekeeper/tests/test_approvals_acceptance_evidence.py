@@ -131,14 +131,53 @@ def test_an_accepted_line_naming_no_proof_log_is_refused(
     assert posting == []
 
 
+@pytest.mark.parametrize("line", ["Not run: acceptance line 2", "Not run: nonesuch"])
 def test_a_satisfied_report_with_a_not_run_line_is_still_refused(
-    posting: list[tuple[int, dict[str, Any]]], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    posting: list[tuple[int, dict[str, Any]]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    line: str,
 ) -> None:
     report = tmp_path / "report.md"
-    report.write_text(report_text(extra="Not run: acceptance line 2\n"))
+    report.write_text(report_text(extra=f"{line}\n"))
     assert approvals.main(["verdict", "7", str(report)]) == 1
     assert "lists a `Not run:` line" in capsys.readouterr().out
     assert posting == []
+
+
+@pytest.mark.parametrize(
+    "line", ["Not run: none", "Not run: none.", "not run: None.", "Not run:  NONE  "]
+)
+def test_not_run_none_is_no_not_run_line(
+    posting: list[tuple[int, dict[str, Any]]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    line: str,
+) -> None:
+    report = tmp_path / "report.md"
+    report.write_text(report_text(extra=f"{line}\n"))
+    assert approvals.main(["verdict", "7", str(report)]) == 0
+    assert "lists a `Not run:` line" not in capsys.readouterr().out
+    assert len(posting) == 1
+
+
+def test_an_inline_accepted_phrase_is_refused_and_an_out_of_scope_line_blocks_nothing(
+    posting: list[tuple[int, dict[str, Any]]], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report = tmp_path / "report.md"
+    report.write_text(
+        report_text(extra="7. Manual: a demo. **Accepted on evidence:** the PR has one\n")
+    )
+    assert approvals.main(["verdict", "7", str(report)]) == 1
+    assert "write it as a line of its own" in capsys.readouterr().out
+    # a quote in prose, inline code or a fence takes nothing on evidence
+    quote = "C2: a line written `7. Manual: x **Accepted on evidence:** y` is refused.\n"
+    fence = "```\n7. Manual: x **Accepted on evidence:** y\nAccepted on evidence: z\n```\n"
+    report.write_text(report_text(extra=quote + fence))
+    assert approvals.main(["report", str(report)]) == 0
+    report.write_text(report_text(extra="Out of scope: the full gate, left to the lead\n"))
+    assert approvals.main(["verdict", "7", str(report)]) == 0
+    assert len(posting) == 1
 
 
 def test_report_json_gives_the_criteria_and_each_line_taken_on_evidence(
@@ -233,7 +272,7 @@ def test_verifier_writes_its_criteria_before_reading_the_workers_report() -> Non
     assert "`## Criteria`" in step
     assert "A criterion no line covers is a finding" in step
     assert "`Accepted on evidence: <line> — <proof log>`" in verifier
-    assert "You never rely on the worker's gate log" in verifier
+    assert "You never rely on the worker's test log" in verifier  # #1872: the worker runs no gate
 
 
 def test_lead_step_7_states_the_four_shared_worktree_conditions() -> None:

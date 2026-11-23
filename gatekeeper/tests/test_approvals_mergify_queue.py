@@ -62,16 +62,30 @@ def test_land_queues_for_mergify(
     untouched(mergify)
 
 
-def test_a_pr_body_loses_its_session_link_before_it_is_handed_to_mergify(
+def test_land_queues_a_head_whose_qualify_ran_only_cheap_checks(
     mergify: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
 ) -> None:
-    """Mergify squashes from the PR's title and body, so land drops a cloud session's link line from it first."""
-    body = "## Summary\n\nFix it.\n\n## Evidence\n\nlog line"
-    head = mergify["opened"](7, body=f"{body}\n\nhttps://claude.ai/code/session_01AbCdEf\n")
-    mergify["pulls"][7]["viewerCanUpdate"] = True
+    """A PR head's `qualify` runs no tests: the batch's draft PR runs them (#1821). land reads only the base's required
+    checks on the head, so a script change whose head holds nothing but that green run, no local gate pass and no
+    test record, is queued, and land runs no tests of its own: the tests' result is the batch's, which Mergify reads."""
+    # its one check: `qualify`, green
+    head = mergify["opened"](7, {"scripts/tool.py": "print('changed')\n"})
     code, lines = mergify["land"]("7")
     assert code == 0, lines
-    assert mergify["edits"] == {"repos/{owner}/{repo}/pulls/7": body}
+    assert land_statuses(hub, head) == [("success", f"Queued for Mergify at {head}")]
+    assert "loop:queued" in labels_of(mergify, 7)
+    untouched(mergify)
+
+
+def test_a_pr_body_keeps_its_session_link_when_it_is_handed_to_mergify(
+    mergify: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """A cloud session's link line may stay on GitHub, so land edits no PR body before the hand-over."""
+    body = "## Summary\n\nFix it.\n\n## Evidence\n\nlog line"
+    head = mergify["opened"](7, body=f"{body}\n\nhttps://claude.ai/code/session_01AbCdEf\n")
+    code, lines = mergify["land"]("7")
+    assert code == 0, lines
+    assert not mergify.get("edits")
     assert land_statuses(hub, head) == [("success", f"Queued for Mergify at {head}")]
 
 
@@ -179,11 +193,9 @@ def test_cloud_land_queues_for_mergify(
     cloud_queue: dict[str, Any],
     hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    """In a cloud session with no signing key, the Mergify path queues over REST; the local path still refuses."""
+    """In a cloud session with no signing key, the Mergify path queues over REST."""
     cloud_queue["rules"] = approvals.github.Required({"qualify"})
     head = cloud_queue["opened"](7)
-    code, lines = cloud_queue["land"]("7")
-    assert code == 1 and any("land in a cloud session needs" in line for line in lines), lines
     loop = cloud_queue["work"] / "docs" / "agents" / "loop.md"
     loop.write_text(add(loop.read_text(), "land", "queue: mergify\n"))
     code, lines = cloud_queue["land"]("7")
@@ -214,3 +226,103 @@ def test_an_unknown_queue_is_refused(mergify: dict[str, Any]) -> None:
     loop.write_text(loop.read_text().replace("queue: mergify", "queue: bors"))
     code, lines = mergify["land"]("7")
     assert code == 1 and any("land.queue" in line for line in lines), lines
+
+
+@pytest.fixture
+def clocked(
+    mergify: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
+    """`mergify` where each comment and status gets its own later time, as on GitHub, rather than the fixtures' fixed
+    ones, so which of an eviction and a hand-over came last is read from real order."""
+    ticks = iter(range(10, 60))
+    at = lambda: f"2026-11-23T03:{next(ticks):02d}:00Z"
+    comment, post = approvals.comment, approvals.post_status
+
+    def commented(number: int, body: str) -> None:
+        comment(number, body)
+        mergify["pulls"][number]["comments"]["nodes"][-1]["createdAt"] = at()
+
+    def posted(head: str, context: str, description: str, state: str = "success") -> None:
+        post(head, context, description, state)
+        hub[head][0]["created_at"] = at()
+
+    monkeypatch.setattr(approvals, "comment", commented)
+    monkeypatch.setattr(approvals, "post_status", posted)
+    return mergify
+
+
+def evict_and_ready(state: dict[str, Any], head: str) -> None:
+    """Mergify dequeues #7 (its label), land evicts it, Mergify labels the draft again, and `land 7` readies it."""
+    state["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    code, lines = state["land"]("7")
+    assert code == 1 and f"PR #7 was dequeued by Mergify at {head}: evicted" in lines, lines
+    state["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    assert state["land"]("7")[1][0] == "PR #7 is ready now"
+
+
+def test_a_host_re_land_after_an_eviction_asks_mergify_to_queue_it_once_per_eviction(
+    clocked: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """On a host, where the eviction's `land` `error` is written: the re-land takes the stale label off, posts the
+    success and `@mergifyio queue`, a later land leaves it; a second eviction at the same head gets a second command
+    on its re-land, and a first hand-over none (#1882)."""
+    head = clocked["opened"](7)
+    assert clocked["land"]("7")[0] == 0
+    assert notes_on(clocked, 7, approvals.REQUEUE) == []
+    evict_and_ready(clocked, head)
+    code, lines = clocked["land"]("7")
+    assert code == 0 and lines[-1] == f"PR #7 queued for Mergify at {head}", lines
+    assert land_statuses(hub, head)[0] == ("success", f"Queued for Mergify at {head}")
+    assert "loop:dequeued" not in labels_of(clocked, 7)
+    assert len(notes_on(clocked, 7, approvals.REQUEUE)) == 1
+    code, lines = clocked["land"]("7")
+    assert code == 0 and lines[-1] == f"PR #7 is queued for Mergify at {head}", lines
+    assert len(notes_on(clocked, 7, approvals.REQUEUE)) == 1
+    evict_and_ready(clocked, head)
+    assert clocked["land"]("7")[0] == 0
+    assert len(notes_on(clocked, 7, approvals.REQUEUE)) == 2
+    assert len(notes_on(clocked, 7, approvals.QUEUE_EVICTED)) == 2
+
+
+def test_a_new_head_after_an_eviction_gets_no_queue_command(clocked: dict[str, Any]) -> None:
+    """An eviction is bound to its head: after land evicts head A and the author pushes head B, B's hand-over posts no
+    `@mergifyio queue`, since Mergify never dequeued B (#2029)."""
+    first = clocked["opened"](7)
+    assert clocked["land"]("7")[0] == 0
+    evict_and_ready(clocked, first)
+    work = clocked["work"]
+    (work / "7.txt").write_text("7 again\n")
+    git_in(work, "commit", "-q", "-am", "PR 7 again")
+    second = git_in(work, "rev-parse", "HEAD").strip()
+    git_in(work, "push", "-q", "origin", f"{second}:refs/heads/pr7", f"{second}:refs/pull/7/head")
+    clocked["pulls"][7].update(headRefOid=second, reviews={"nodes": [verdict_on(second)]})
+    code, lines = clocked["land"]("7")
+    assert code == 0 and lines[-1] == f"PR #7 queued for Mergify at {second}", lines
+    assert notes_on(clocked, 7, approvals.REQUEUE) == []
+
+
+def test_a_refused_queue_command_is_posted_by_the_next_land(
+    clocked: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub refuses the `@mergifyio queue` comment after the status and label went on: the land says so and exits
+    1, and the next land, which finds the head queued, posts the command (#1882)."""
+    head = clocked["opened"](7)
+    assert clocked["land"]("7")[0] == 0
+    evict_and_ready(clocked, head)
+    comment = approvals.comment
+
+    def refusing(number: int, body: str) -> None:
+        if body.startswith(approvals.REQUEUE):
+            raise approvals.subprocess.CalledProcessError(1, "gh", stderr="HTTP 502")
+        comment(number, body)
+
+    with monkeypatch.context() as down:
+        down.setattr(approvals, "comment", refusing)
+        code, lines = clocked["land"]("7")
+    assert code == 1, lines
+    assert any("GitHub refused the `@mergifyio queue` command" in line for line in lines), lines
+    assert "loop:queued" in labels_of(clocked, 7)
+    assert notes_on(clocked, 7, approvals.REQUEUE) == []
+    code, lines = clocked["land"]("7")
+    assert code == 0 and lines[-1] == f"PR #7 is queued for Mergify at {head}", lines
+    assert len(notes_on(clocked, 7, approvals.REQUEUE)) == 1

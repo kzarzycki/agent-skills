@@ -15,27 +15,22 @@ def test_a_cloud_land_on_a_merge_queue_base_needs_no_land_section(
     monkeypatch.setenv(approvals.CLOUD, "true")
     with approvals.placed(NO_LAND, True):
         assert approvals.SIGNING == []
-    with (
-        pytest.raises(approvals.Refused, match="needs a base that requires GitHub's merge queue"),
-        approvals.placed(NO_LAND, False),
-    ):
-        pass
+    # no queue, no `signed_squash_to`: GitHub's REST merge, which signs, so still no key (#1712)
+    with approvals.placed(NO_LAND, False):
+        assert approvals.SIGNING == []
 
 
 @pytest.mark.parametrize(
     "land", ["merge_commit_heads: [sync/*]", "where: both", "signing_key_env: KEY"]
 )
-def test_a_land_section_without_signed_squash_to_refuses_on_a_base_without_the_queue(
+def test_a_land_section_without_signed_squash_to_lands_over_rest_on_a_base_without_the_queue(
     monkeypatch: pytest.MonkeyPatch, land: str
 ) -> None:
-    """No signing is set up, so GitHub would merge over GraphQL: the same line, never a key check or a KeyError."""
+    """No signing is set up, so GitHub merges over REST: no refusal, no key check, never a KeyError (#1712)."""
     monkeypatch.setenv(approvals.CLOUD, "true")
     loop = NO_LAND.replace("practice:", f"land:\n  {land}\npractice:")
-    with (
-        pytest.raises(approvals.Refused, match="needs a base that requires GitHub's merge queue"),
-        approvals.placed(loop, False),
-    ):
-        pass
+    with approvals.placed(loop, False):
+        assert approvals.SIGNING == []
     with approvals.placed(loop, True):
         pass
 

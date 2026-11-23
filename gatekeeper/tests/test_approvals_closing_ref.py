@@ -4,7 +4,15 @@ Development panel only for a closing keyword (`Part of` alone shows on no issue)
 from __future__ import annotations
 
 import pytest
-from approvals_harness import LOOP, TRACKER, approvals, approved, pull
+from approvals_harness import LOOP, TRACKER, add, approvals, approved, authored, pull
+
+# a consumer's release workflow: its App opens the `cz bump` PR, which names the standing release epic with `Part of`
+RELEASE_APP = "release-app[bot]"
+RELEASES = add(
+    LOOP,
+    "bot",
+    f'"{RELEASE_APP}":\n  paths:\n    - CHANGELOG.md\n    - pyproject.toml\n    - uv.lock\n',
+)
 
 
 def refusal(body: str, state: str = "OPEN") -> list[str]:
@@ -36,6 +44,21 @@ def test_a_pr_naming_no_issue_is_left_to_the_no_issue_refusal() -> None:
 def test_a_verified_release_pin_bump_is_exempt(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "pin_target", lambda _pull: "engineering-v1.0.0")
     assert refusal("Part of #1") == []
+
+
+@pytest.mark.parametrize(("pusher", "refused"), [(RELEASE_APP, False), ("worker", True)])
+def test_the_release_workflows_part_of_pr_is_exempt(pusher: str, refused: bool) -> None:
+    """The release fold a `bot` section covers finishes no issue of its own; the same `Part of` PR with a person's
+    commit on it is no bot's PR, so it is refused like any other."""
+    issue = approved(1, "kind:bug")
+    issue["state"] = "OPEN"
+    pr = {
+        **pull(body="Part of #1", files=("CHANGELOG.md", "pyproject.toml", "uv.lock")),
+        "author": {"__typename": "Bot", "login": RELEASE_APP},
+        "headRefName": "release/next",
+    }
+    pr["authored"] = {"nodes": [authored(RELEASE_APP), authored(pusher)]}
+    assert bool(approvals.closes_nothing(pr, [issue], RELEASES)) is refused
 
 
 @pytest.mark.parametrize(("body", "refused"), [("Part of #1", True), ("Closes #1", False)])

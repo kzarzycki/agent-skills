@@ -94,21 +94,3 @@ def test_local_ci_of_a_pr_reads_no_pr_without_an_incubating_section(
     )
     monkeypatch.setattr(approvals, "comment", lambda *_a: None)
     assert approvals.pr_local_ci(7, False) == 0
-
-
-def test_check_merge_without_ci_looks_for_the_tiered_pass(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: list[list[str]] = []
-    monkeypatch.setattr(approvals, "no_ci", lambda _l: True)
-    monkeypatch.setattr(approvals, "batch_queue", lambda _l: False)
-    monkeypatch.setattr(approvals, "closing_issues", lambda _p: [])
-    monkeypatch.setattr(approvals, "settings", lambda _l: {"incubating": {}})
-    monkeypatch.setattr(
-        approvals,
-        "reusable",
-        lambda head, passed=(), why=None: seen.append(list(passed)) or {"head": "h"},
-    )
-    assert approvals.ran(made(), "loop") == []
-    assert seen == [NAMES]
-    monkeypatch.setattr(approvals, "settings", lambda _l: {})
-    assert approvals.ran(made(), "loop") == []
-    assert seen == [NAMES, []]

@@ -48,9 +48,12 @@ def rest(
     def gh(*args: str, timeout: float = 0) -> str:
         calls.append(args)
         assert args[0] == "api" and timeout > 0
-        if "--paginate" in args:
-            return "".join(json.dumps(item) + "\n" for item in paged[args[2]])
-        return json.dumps(single[args[1]])
+        path, _, page = args[-1].partition("&page=")
+        if (
+            listed := path.removesuffix("?per_page=100")
+        ) in paged:  # a paged list: its first page holds it all
+            return json.dumps(paged[listed] if page == "1" else [])
+        return json.dumps(single[args[-1]])
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
     monkeypatch.setattr(omnigent_agent, "WAIT_FOR_PR_EVERY", 0.01)

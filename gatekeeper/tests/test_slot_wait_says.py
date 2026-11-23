@@ -133,7 +133,7 @@ def test_land_wait_repeats_an_unchanged_state_every_say_interval(
 
     monkeypatch.setattr(approvals, "landing", landing)
     monkeypatch.setattr(approvals, "POLL", 0.02)
-    monkeypatch.setattr(approvals, "poll_seconds", lambda: approvals.POLL)  # no real quota read
+    monkeypatch.setattr(approvals, "poll_seconds", lambda *_: approvals.POLL)  # no real quota read
     monkeypatch.setattr(approvals, "CEILING", 1)
     monkeypatch.setattr(approvals, "SLOT_SAY_SECONDS", 0.2)
     assert approvals.land(1, wait=True) == approvals.WAITING
@@ -167,28 +167,6 @@ def test_saying_repeats_its_line_while_the_block_runs(monkeypatch: pytest.Monkey
 
 def test_the_say_interval_is_well_under_the_stall_default() -> None:
     assert approvals.SLOT_SAY_SECONDS == 60 and omnigent_agent.WAIT_FOR_STALL == 300
-
-
-def test_a_batch_gate_says_it_is_gating_while_its_steps_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The batch gate writes to its own log, so land's stdout hears from it only through `saying`."""
-    heard = Heard("Tree t: gating, log")
-
-    def run_steps(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        assert heard.thrice.wait(30)
-        return {"code": 0, "left": [], "ran": ["gate"], "step": None, "changed": ""}
-
-    monkeypatch.setattr(sys, "__stdout__", heard)
-    monkeypatch.setattr(approvals, "SLOT_SAY_SECONDS", 0.05)
-    monkeypatch.setattr(approvals, "run_in", lambda work, *args: "t")
-    monkeypatch.setattr(approvals, "gate", lambda: ("mise run check",))
-    monkeypatch.setattr(approvals, "project", lambda: (None, None))
-    monkeypatch.setattr(approvals, "settings", lambda loop: {})
-    monkeypatch.setattr(approvals, "run_steps", run_steps)
-    work = tmp_path / "work"
-    work.mkdir()
-    assert approvals.gate_batch(work, []) == ("t", "run")
 
 
 def test_repeating_stops_its_thread_when_the_block_ends(monkeypatch: pytest.MonkeyPatch) -> None:

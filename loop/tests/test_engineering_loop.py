@@ -156,20 +156,44 @@ def test_placement_is_stated_once_and_the_role_files_point_to_it() -> None:
     lead = " ".join((LOOP / "lead.md").read_text().split())
     assert "each heavy run that did not go to the cloud with where it went and why" in lead
     assert (
-        "Every heavy run, a worker's or your own (a suite to sort failures, a build, an e2e run),"
+        "Every other heavy run, a worker's or your own (a build, an e2e run),"
         " goes where SKILL.md, Where heavy steps run says, which also gives your own run's recipe"
         in lead
     )
 
 
-def test_the_verifier_waits_in_few_long_calls_and_reruns_repros_together() -> None:
-    """A wait or a repro per short call re-reads the whole context each time."""
+def test_a_lead_runs_no_test_suite() -> None:
+    """A lead and its verifier both ran the suite on the same two heads (waste audit, finding 9): the worker's
+    affected-test run and the verifier's e2e proof are the only runs on a head, so the lead reads their logs (#1872)."""
+    lead = " ".join((LOOP / "lead.md").read_text().split())
+    assert (
+        "You run no test suite: the worker's affected-test run and the verifier's e2e proof are the only runs on a head"
+        in lead
+    )
+    assert "a suite to sort failures" not in lead and "Your own test or check run" not in lead
+
+
+def test_the_verifier_waits_with_one_wake_and_reruns_repros_together() -> None:
+    """A wait or a repro per short call re-reads the whole context each time: a run is waited on
+    by one tracked background wait as long as the run (waste audit, finding 1)."""
     verifier = " ".join((LOOP / "verifier.md").read_text().split())
     assert (
-        "never short polls or a sleep loop of your own, since every call re-reads the whole context"
+        "Never a short `wait-for`, an `until grep` or a `sleep` loop, since each return re-reads your whole context"
         in verifier
     )
-    assert "wait-for --log <log> --pid <pid>" in verifier  # the one verb that blocks to the limit
+    assert (
+        "wait-for --log <log> --pid <pid> --budget <the run's expected length>` started as a background call"
+        in verifier
+    )
+    worker = " ".join((LOOP / "worker.md").read_text().split())
+    assert (
+        "--budget <the run's expected length>`" in worker and "never a short `wait-for`" in worker
+    )
+    assert "blocks close to the tool limit and prints only the outcome" not in worker
+    assert "Use a `--beat` of at least half your longest wait" in verifier
+    lead = " ".join((LOOP / "lead.md").read_text().split())
+    assert "--budget <its expected length>`" in lead
+    assert "which blocks close to the tool limit and prints only the outcome" not in lead
     assert "waited on as a detached run is" in verifier  # the bare gate too
     assert "Rerun all of its repros from one script" in verifier
     assert "the diff since its head and the files it touches" in verifier
@@ -211,3 +235,15 @@ def test_the_verifier_keeps_real_data_out_of_the_report_it_posts() -> None:
     assert "The report is posted as the PR review, so it holds no real data" in verifier
     assert "local file next to the report (under `tmp/loop/`)" in verifier
     assert "cites that file by path and says what it shows, without the values" in verifier
+
+
+def test_the_verifier_runs_tests_through_the_project_s_test_task() -> None:
+    """A bare `pytest` skips the task's parallel workers: one verifier pass took 4,895 s bare against 223 s through
+    the task (waste audit, finding 2)."""
+    verifier = " ".join((LOOP / "verifier.md").read_text().split())
+    assert "only through the project's test task" in verifier
+    assert "never a bare runner such as `pytest`" in verifier
+    assert "never the whole suite: never widen that selection into a whole-suite run" in verifier
+    assert (
+        "A selection of more than half the suite runs as the whole suite" not in verifier
+    )  # #1872

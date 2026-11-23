@@ -9,6 +9,7 @@ session's proxy does. Reads return GitHub's GraphQL node shapes (ISSUE, PULL), w
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import random
@@ -16,12 +17,13 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+import zipfile
+from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
 
 
-# gatekeeper.py sets these three once it has loaded this module (sibling): the refusal that exits 1, the masking of a
-# home or temp path in a posted text, and the deny list's refusal of a text naming a listed term
+# gatekeeper.py sets these four once it has loaded this module (sibling): the refusal that exits 1, the masking of a
+# home or temp path in a posted text, the deny list's refusal of a text naming a listed term, and OWN_CHECKS
 class Refused(Exception):
     """A reason to stop with exit 1, printed as is: gatekeeper.py's own, once it loads this module."""
 
@@ -39,17 +41,13 @@ def denied(text: str) -> None:
 WRITE = {"admin", "maintain", "write"}
 
 
-NOTE = "id author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
+NOTE = "id url author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
 
 
 SPECCED = f"number state body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
 
 
 ASSIGNEES = "assignees(first: 10) { nodes { login } }"
-
-
-# what land needs to edit a PR's comment, and check merge to name one it can't (gatekeeper.py's session_links)
-EDITABLE = "databaseId url viewerCanUpdate"
 
 
 # who added `approved:spec` (approver) and who was assigned when (release); ponytail: the newest 100 such events
@@ -63,12 +61,12 @@ ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENT
 
 
 # a PR's review threads, which PULL reads and rest_threads() asks for alone where GitHub's REST has none
-THREADS = f"reviewThreads(first: 100) {{ totalCount nodes {{ isResolved comments(first: 50) {{ nodes {{ body {EDITABLE} }} }} }} }}"
+THREADS = "reviewThreads(first: 100) { totalCount nodes { isResolved comments(first: 50) { nodes { body } } } }"
 
 
-PULL = f"""id number url title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body viewerCanUpdate baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} {EDITABLE} }} }}
+PULL = f"""id number url title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType additions deletions }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
-  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} {EDITABLE} }} }}
+  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body submittedAt commit {{ oid }} }} }}
   {THREADS}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ author {{ user {{ login }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
@@ -157,8 +155,7 @@ def open_pull_files(limit: int) -> list[dict[str, Any]]:
     (GitHub's own cap there is 3000), and an overlap past the 100th file is never missed."""
 
     def every_file(number: int) -> list[str]:
-        # objects, not `.[].filename`: `gh --jq` prints a string raw, which rest_pages can't read as JSON
-        return [file["filename"] for file in rest_pages(f"pulls/{number}/files?per_page=100")]
+        return [file["filename"] for file in pr_changes(number)]
 
     return fast(  # type: ignore[no-any-return]
         lambda: [
@@ -210,12 +207,169 @@ def texts(data: str) -> list[str]:
     return strings
 
 
+# The flag that makes `gh pr merge` go past the base's rules. It is the owner's, in the GitHub UI, never a helper's: agents
+# act as the same Admin account, so this check is the only thing that keeps the bypass the owner's (#1722). Written in two
+# parts so that no script of the pack holds it whole, which a test asserts.
+BYPASS_FLAG = "-" * 2 + "ad" + "min"
+# the one REST route that merges, and the only fields a helper may send it; the route may end in slashes
+MERGE_ROUTE = re.compile(r"/pulls/\d+/merge/*(?:\?|$)")
+MERGE_FIELDS = frozenset({"merge_method", "sha", "commit_title", "commit_message"})
+# `gh api`'s field flags, in every spelling it accepts: `-f k=v`, `-fk=v`, `--field k=v`, `--field=k=v`, and the same
+# for -F and --raw-field. A short flag may sit in a cluster (`-if k=v`), and these short flags take a value
+FIELD_FLAGS = frozenset({"-f", "-F", "--field", "--raw-field"})
+VALUE_SHORT = frozenset("HqtXpfF")
+
+
+def api_fields(words: list[str]) -> tuple[list[str], bool]:
+    """The field names a `gh api` call sends, and whether it reads its body from `--input` (either spelling)."""
+    sent, body, i = [], False, 0
+    while i < len(words):
+        word, i = words[i], i + 1
+        value: str | None = None
+        if word == "--input" or word.startswith("--input="):
+            body = True
+        elif word in FIELD_FLAGS:
+            value, i = (words[i] if i < len(words) else ""), i + 1
+        elif word.startswith(("--field=", "--raw-field=")):
+            value = word.split("=", 1)[1]
+        elif word.startswith("-") and not word.startswith("--") and len(word) > 1:
+            for at, char in enumerate(word[1:], 1):
+                if char not in VALUE_SHORT:
+                    continue
+                rest = word[at + 1 :]
+                if char in "fF":
+                    value = rest.removeprefix("=") if rest else (words[i] if i < len(words) else "")
+                if not rest:
+                    i += 1
+                break
+        if value is not None:
+            sent.append(value.split("=", 1)[0])
+    return sent, body
+
+
+def refuse_bypass(args: tuple[str, ...]) -> None:
+    """Refuse a gh call that asks to merge past the base's rules: `gh pr merge` with the bypass flag, a call to the REST
+    merge route (`PUT pulls/N/merge`) that sends any field but MERGE_FIELDS or its body as `--input`, or a GraphQL
+    `mergePullRequest`, since any of them could carry a bypass the pack cannot read. Every gh call of the pack goes
+    through gh(), so no helper of it merges that way."""
+    words = [str(arg) for arg in args]
+    if any(word == BYPASS_FLAG or word.startswith(f"{BYPASS_FLAG}=") for word in words):
+        raise Refused(
+            "refused: a merge past the base's rules is the owner's, in the GitHub UI; no helper of the pack passes the"
+            " bypass flag"
+        )
+    if words[:1] != ["api"]:
+        return
+    sent, body = api_fields(words)
+    if any(MERGE_ROUTE.search(word) for word in words):
+        if body or (extra := sorted(set(sent) - MERGE_FIELDS)):
+            raise Refused(
+                "refused: a REST merge sends merge_method, sha, commit_title and commit_message only"
+                + (f", not {', '.join(extra)}" if not body else ", not a body read from --input")
+                + ": a merge past the base's rules is the owner's, in the GitHub UI"
+            )
+    elif "graphql" in words and any("mergepullrequest" in word.lower() for word in words):
+        raise Refused(
+            "refused: a GraphQL mergePullRequest is a merge the pack does not make: a merge past the base's rules is the"
+            " owner's, in the GitHub UI"
+        )
+
+
+# the reads this run made (#2016): one `approve merge` or `record verdict` read the same PR, its timeline, reviews,
+# files, comments and checks three or four times, about 40 REST calls; a repeat of the same `gh api` read within READ_TTL
+# seconds is answered from here, and any other call (a write, or any gh command but a plain `gh api` read) empties it,
+# so nothing is read back stale past this run's own write; each wait calls read_afresh() after its sleep, which
+# empties it, so its next read is GitHub's however short the wait.
+reads: dict[tuple[str, ...], tuple[float, str]] = {}
+READ_TTL = 20.0
+# each PR's REST file list, read once per run (pr_changes): every `gh pr list` or GraphQL call empties `reads`, and
+# rest_pull, paths(), overlaps() and open_pull_files each ask for it. Kept by PR number for the run; only a write to
+# GitHub (a body, a mutation, a non-GET), read_afresh() or forget() drops it, since only a push changes a PR's files
+# and a wait calls read_afresh() after its sleep.
+files_read: dict[int, list[dict[str, Any]]] = {}
+# the plain reads this round that GitHub refused (a 403, an integration's refusal) or rate-limited (#2101): asked again
+# inside the round, such a read gets the same error without a call, since a refusal or an empty bucket does not clear
+# in seconds. One land round asked a refused `api user` four times. Only read_afresh(), which a wait calls after its
+# sleep, or forget() drops them; a network failure is not kept, so the next ask still tries it.
+failed: dict[tuple[str, ...], subprocess.CalledProcessError] = {}
+WRITE_FLAGS = {"-f", "-F", "--field", "--raw-field", "--input"}
+# a rate limit as gh prints it: primary (`API rate limit exceeded`), secondary, or abuse detection
+RATE_LIMIT = re.compile(r"rate limit|abuse detection", re.IGNORECASE)
+
+
+def plain_read(args: Sequence[str]) -> bool:
+    """Whether `gh *args` is a `gh api` GET that may be answered from `reads`: no method but GET, no field or body
+    (which make gh POST), no `-i` (rest_if_changed's ETag read, which wants the headers), and not `rate_limit`."""
+    if args[:1] != ("api",) or "-i" in args or any("rate_limit" in arg for arg in args):
+        return False
+    if any(
+        arg in WRITE_FLAGS or arg.startswith(("--field=", "--raw-field=", "--input="))
+        for arg in args
+    ):
+        return False
+    for flag, value in zip(args, args[1:]):
+        if flag in ("-X", "--method") and value.upper() != "GET":
+            return False
+    return not any(arg.startswith("--method=") and arg[9:].upper() != "GET" for arg in args)
+
+
+def read_afresh() -> None:
+    """After a wait that reads again to see someone else's change (a push GitHub shows late, a PR that turns landable):
+    empty `reads`, so the next read is GitHub's however short the wait was; a wait never answers itself. The wait sleeps
+    on its own clock, which a test may fake."""
+    reads.clear()
+    files_read.clear()
+    failed.clear()
+
+
+def writes(args: Sequence[str], data: str | None) -> bool:
+    """Whether `gh *args` may change a PR: a body, a mutation, a `gh api` that isn't a plain GET (a GraphQL query's
+    `-f query=` is no write), or a `gh pr` command that edits, merges, comments, reviews, closes or readies."""
+    text = " ".join(args).lower()
+    if data is not None or "mutation" in text:
+        return True
+    if args[:1] == ("pr",):
+        return args[1:2] not in (("list",), ("view",), ("status",), ("checks",), ("diff",))
+    return (
+        args[:1] == ("api",)
+        and "graphql" not in text
+        and "rate_limit" not in text
+        and not plain_read(args)
+    )
+
+
 def gh(*args: str, data: str | None = None) -> str:
+    key = tuple(args)
+    # the quota guard's free read: neither kept nor a reason to forget
+    if key[:2] == ("api", "rate_limit"):
+        return _gh(*args, data=data)
+    if data is None and plain_read(key):
+        if (seen := reads.get(key)) and time.monotonic() - seen[0] < READ_TTL:
+            return seen[1]
+        if miss := failed.get(key):
+            raise subprocess.CalledProcessError(miss.returncode, miss.cmd, miss.output, miss.stderr)
+        try:
+            out = _gh(*args)
+        except subprocess.CalledProcessError as exc:
+            if refused(exc.stderr) or throttled(exc.stderr):
+                failed[key] = exc
+            raise
+        reads[key] = (time.monotonic(), out)
+        return out
+    reads.clear()  # a write, or a call this cache doesn't read: nothing read before it is trusted after it
+    if writes(key, data):
+        files_read.clear()
+    return _gh(*args, data=data)
+
+
+def _gh(*args: str, data: str | None = None) -> str:
+    refuse_bypass(args)
     if data is not None:  # every comment and review approvals.py posts goes as `data`
         for text in texts(data):
             denied(text)
     backoff = 60
     while True:
+        guard(args)
         try:
             return subprocess.run(
                 ["gh", *args], input=data, check=True, capture_output=True, text=True
@@ -226,7 +380,7 @@ def gh(*args: str, data: str | None = None) -> str:
             ) is None:
                 raise
             # jitter, so lands that waited on one reset do not all resume in the same second
-            pause += random.randint(0, JITTER)
+            pause = jittered(pause)
             until = time.time() + pause
             if wait_until is None or time.monotonic() + pause > wait_until:
                 exc.stderr = f"{exc.stderr}\nGitHub rate limit, resets at {time.strftime('%H:%M UTC', time.gmtime(until))}"
@@ -243,8 +397,98 @@ def gh(*args: str, data: str | None = None) -> str:
 
 # land --wait sets this (time.monotonic) to the end of its ceiling: a rate limit then waits, else gh() fails with the reset time
 wait_until: float | None = None
-JITTER = 60  # most seconds of random delay added to a rate-limit wait
+JITTER = 180  # most seconds of random delay added to a rate-limit wait: every waiter on one reset resumes over 3 min, not in its first second
 SLICE = 60  # seconds between the lines a rate-limit wait prints
+
+# answers a run keeps (#1771): (bucket, key) -> (time.monotonic when read, answer); writer, required_checks and a
+# settled head's check runs (rest_runs). KEPT bounds their age, so a wait of hours still sees a rule, a permission or a
+# rerun change within it; forget() drops them all, as a test does between cases
+kept: dict[tuple[str, str], tuple[float, Any]] = {}
+KEPT = 900
+# the quota guard (guard): while land --wait runs (wait_until set), each gh call first reads the bucket it spends from
+# `gh api rate_limit` (free; at most once per QUOTA_EVERY seconds), and one under QUOTA_FLOOR calls left waits for its
+# reset inside the ceiling, else stops naming it; quota_left holds the last reading for poll_seconds
+QUOTA_EVERY, QUOTA_FLOOR = 60, 50
+# bucket -> (time.monotonic when read, remaining, limit, reset epoch)
+quota_left: dict[str, tuple[float, int, int, int]] = {}
+
+
+def forget() -> None:
+    """Drop every answer this run kept: viewer's login, `kept`, `reads`, `files_read`, `failed` and the guard's last quota readings; and end any wait
+    (wait_until), so no guard runs."""
+    global wait_until
+    wait_until = None
+    viewer_login.clear()
+    kept.clear()
+    etags.clear()
+    quota_left.clear()
+    reads.clear()
+    files_read.clear()
+    failed.clear()
+
+
+def bucket_of(args: Sequence[str]) -> str:
+    """The rate-limit bucket a gh call spends: GraphQL's for `gh api graphql` and for any other gh command (gh pr,
+    gh issue), which GitHub serves through GraphQL; REST's (`core`) for every other `gh api`."""
+    return "core" if args[:1] == ("api",) and args[1:2] != ("graphql",) else "graphql"
+
+
+def quota(bucket: str) -> tuple[int, int, int] | None:
+    """(remaining, limit, reset epoch) of `bucket` from `gh api rate_limit`, which costs no quota, read at most once per
+    QUOTA_EVERY seconds; None when it can't be read, which the guard and the poll take as no news."""
+    if (seen := quota_left.get(bucket)) and time.monotonic() - seen[0] < QUOTA_EVERY:
+        return seen[1:]
+    try:
+        remaining, limit, reset = map(
+            int,
+            gh(
+                "api",
+                "rate_limit",
+                "--jq",
+                f'.resources.{bucket} | "\\(.remaining) \\(.limit) \\(.reset)"',
+            ).split(),
+        )
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+    quota_left[bucket] = (time.monotonic(), remaining, limit, reset)
+    return remaining, limit, reset
+
+
+def guard(args: Sequence[str]) -> None:
+    """While land --wait runs (wait_until set), a gh call whose bucket has under QUOTA_FLOOR calls left first waits for
+    the bucket's reset, in SLICE steps that each print, when the reset falls inside the wait's ceiling, and otherwise
+    stops with an error naming the reset, rather than spend the last calls and be refused mid-land. Outside a wait it
+    does nothing, so a one-shot command is never held; the rate_limit read itself is never guarded."""
+    if wait_until is None or tuple(args[:2]) == ("api", "rate_limit"):
+        return
+    bucket = bucket_of(tuple(args))
+    found = quota(bucket)
+    if found is None or found[0] >= QUOTA_FLOOR:
+        return
+    remaining, _, reset = found
+    pause = jittered(max(reset - int(time.time()), 0) + 1)
+    at = time.strftime("%H:%M UTC", time.gmtime(time.time() + pause))
+    if time.monotonic() + pause > wait_until:
+        raise subprocess.CalledProcessError(
+            1,
+            ["gh", *args],
+            "",
+            f"GitHub {bucket} quota nearly spent ({remaining} calls left), resets at {at}: land --wait stops"
+            " before its ceiling would pass; land again after the reset",
+        )
+    said = f"GitHub {bucket} quota nearly spent ({remaining} calls left), waiting until {at}"
+    for left in range(pause, 0, -SLICE):
+        print(said, file=sys.stderr, flush=True)
+        time.sleep(min(left, SLICE))
+    quota_left.pop(bucket, None)  # the reset passed: read the bucket afresh
+
+
+def jittered(pause: int) -> int:
+    """`pause` plus up to JITTER random seconds, so the lands that waited on one reset resume over minutes, not in its
+    first second; within a wait (wait_until set) never past the ceiling's room, so the jitter alone never stops a land
+    whose reset falls inside it."""
+    room = JITTER if wait_until is None else min(JITTER, int(wait_until - time.monotonic()) - pause)
+    return pause + random.randint(0, max(room, 0))
 
 
 def rate_limited(stderr: str, backoff: int, graphql: bool = False) -> int | None:
@@ -299,13 +543,19 @@ def _repository(fields: str) -> str:
 
 
 # how GitHub, or a cloud session's proxy in front of it, refuses GraphQL: `gh` ends its error with a 403, or, for a job
-# token a private organization repository withholds fields from, prints GraphQL's FORBIDDEN message
-REFUSALS = ("HTTP 403", "Resource not accessible by integration")
+# token a private organization repository withholds fields from, prints GraphQL's FORBIDDEN message. `gh pr merge`
+# names no `HTTP 403` where the proxy refuses it: it prints `non-200 OK status code: 403 Forbidden body: ...` (#1917)
+REFUSALS = ("HTTP 403", "Resource not accessible by integration", "status code: 403 Forbidden")
 
 
 def refused(stderr: str | None) -> bool:
     """Whether `gh`'s stderr says GitHub refused this token or path, as opposed to failing for another reason."""
     return any(text in (stderr or "") for text in REFUSALS)
+
+
+def throttled(stderr: str | None) -> bool:
+    """Whether `gh`'s stderr says GitHub rate-limited the call, which no refusal is, though both answer HTTP 403."""
+    return bool(RATE_LIMIT.search(stderr or ""))
 
 
 # set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again; GATEKEEPER_REST_ONLY=1
@@ -335,6 +585,38 @@ def rest(path: str) -> Any:
     return json.loads(gh("api", path))
 
 
+# rest_if_changed's last answer for each path: (its ETag, the parsed body)
+etags: dict[str, tuple[str, Any]] = {}
+# a 304 as gh reports it: the status line `gh api -i` prints, or its error `gh: HTTP 304` where it exits 1 on one
+NOT_MODIFIED = re.compile(r"\bHTTP(?:/[\d.]+)? 304\b")
+
+
+def rest_if_changed(path: str) -> tuple[bool, Any]:
+    """REST `repos/{owner}/{repo}/<path>` read with the ETag of its last read (`If-None-Match`): (False, the kept answer)
+    on GitHub's 304, which costs no quota, else (True, the answer), keeping its ETag (#1915). The first read of a path
+    is a plain one."""
+    known = etags.get(path)
+    args = [
+        "api",
+        "-i",
+        *(["-H", f"If-None-Match: {known[0]}"] if known else []),
+        f"repos/{{owner}}/{{repo}}/{path}",
+    ]
+    try:
+        out = gh(*args)
+    except subprocess.CalledProcessError as exc:
+        if known and NOT_MODIFIED.search(f"{exc.stdout or ''}\n{exc.stderr or ''}"):
+            return False, known[1]
+        raise
+    head, _, body = out.replace("\r\n", "\n").partition("\n\n")
+    if known and NOT_MODIFIED.search(head.split("\n", 1)[0]):
+        return False, known[1]
+    found = json.loads(body or "{}")
+    if tag := re.search(r"(?im)^etag:[ \t]*(\S[^\n]*?)[ \t]*$", head):
+        etags[path] = (tag[1], found)
+    return True, found
+
+
 def rest_pages(path: str, items: str = ".[]") -> list[Any]:
     """Every item of a paged REST list, `items` picking them out of each page."""
     out = gh("api", "--paginate", f"repos/{{owner}}/{{repo}}/{path}", "--jq", items)
@@ -355,9 +637,6 @@ def rest_notes(number: int) -> dict[str, Any]:
     nodes = [
         {
             "id": found["node_id"],
-            # what gatekeeper.py's session_links() names a comment by and edits it at; REST gives no right to edit it
-            "databaseId": found.get("id"),
-            "url": found.get("html_url"),
             "author": actor(found.get("user")),
             "body": found.get("body") or "",
             "createdAt": found["created_at"],
@@ -465,16 +744,47 @@ def rest_latest(reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def rest_checks(head: str) -> dict[str, Any]:
     """The head's checks as `statusCheckRollup` reads them, from REST: every check run (each rerun too), named by its
-    workflow, and each status context's newest state."""
+    workflow, and each status context's newest state. The check runs come from rest_runs, kept for a head whose runs
+    all finished (#1771); the status contexts are read each time, since anyone can post one at any moment."""
+    nodes = list(rest_runs(head))
+    combined = rest(f"repos/{{owner}}/{{repo}}/commits/{head}/status?per_page=100")
+    for status in combined.get("statuses") or []:
+        nodes.append(
+            {
+                "__typename": "StatusContext",
+                "context": status["context"],
+                "state": status["state"].upper(),
+                "createdAt": status.get("created_at"),
+                "targetUrl": status.get("target_url"),
+            }
+        )
+    total = len(nodes) - len(combined.get("statuses") or []) + combined.get("total_count", 0)
+    return {"contexts": {"totalCount": total, "nodes": nodes}}
+
+
+def rest_runs(head: str) -> list[dict[str, Any]]:
+    """The head's check runs as rest_checks reads them: three paged reads, kept (`kept`) once they are settled
+    (read_runs), since a finished head's runs change only by a rerun, which the age bound (KEPT) still sees. An
+    unsettled head (a run queued or in progress, or none yet) is read again each time; a new head is a new key."""
+    runs: list[dict[str, Any]] | None = fresh(("runs", head))
+    if runs is None:
+        runs, settled = read_runs(head)
+        if settled:
+            kept[("runs", head)] = (time.monotonic(), runs)
+    return [dict(run) for run in runs]
+
+
+def read_runs(head: str) -> tuple[list[dict[str, Any]], bool]:
+    """The head's check runs, and whether they are settled: at least one, and every check run and workflow run on
+    the head finished, so a workflow queued before its first job exists keeps the head unsettled. Suites are not
+    asked, since GitHub leaves an app's suite with no runs queued for good."""
     runs = rest_pages(f"commits/{head}/check-runs?filter=all&per_page=100", ".check_runs[]")
     suites = {
         suite["id"]: suite
         for suite in rest_pages(f"commits/{head}/check-suites?per_page=100", ".check_suites[]")
     }
-    flows = {
-        run["check_suite_id"]: run["name"]
-        for run in rest_pages(f"actions/runs?head_sha={head}&per_page=100", ".workflow_runs[]")
-    }
+    flows_seen = rest_pages(f"actions/runs?head_sha={head}&per_page=100", ".workflow_runs[]")
+    flows = {run["check_suite_id"]: run["name"] for run in flows_seen}
     nodes: list[dict[str, Any]] = []
     for run in runs:
         suite = (run.get("check_suite") or {}).get("id")
@@ -493,19 +803,9 @@ def rest_checks(head: str) -> dict[str, Any]:
                 },
             }
         )
-    combined = rest(f"repos/{{owner}}/{{repo}}/commits/{head}/status?per_page=100")
-    for status in combined.get("statuses") or []:
-        nodes.append(
-            {
-                "__typename": "StatusContext",
-                "context": status["context"],
-                "state": status["state"].upper(),
-                "createdAt": status.get("created_at"),
-                "targetUrl": status.get("target_url"),
-            }
-        )
-    total = len(nodes) - len(combined.get("statuses") or []) + combined.get("total_count", 0)
-    return {"contexts": {"totalCount": total, "nodes": nodes}}
+    return nodes, bool(runs) and all(
+        each.get("status") == "completed" for each in (*runs, *flows_seen)
+    )
 
 
 def rest_threads(number: int) -> dict[str, Any]:
@@ -513,7 +813,7 @@ def rest_threads(number: int) -> dict[str, Any]:
     serves. GitHub's own REST has none and answers 404: there, as for a job token in a private organization repository,
     whose GraphQL withholds other fields of PULL but not these, the threads come from GraphQL alone. Where that fails
     too, the error raises: unresolved threads are never read as none. Each thread's comments, which the proxy's route
-    names by id alone, come from the PR's review comments, with no right to edit them (session_links())."""
+    names by id alone, come from the PR's review comments."""
     try:
         threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
     except subprocess.CalledProcessError as exc:
@@ -531,8 +831,6 @@ def rest_threads(number: int) -> dict[str, Any]:
                 "nodes": [
                     {
                         "body": found.get("body") or "",
-                        "databaseId": found["id"],
-                        "url": found.get("html_url"),
                     }
                     for found in (listed.get(each) for each in thread.get("comment_ids") or [])
                     if found is not None
@@ -557,9 +855,8 @@ def rest_pull(pr: int) -> dict[str, Any]:
             "author": actor(review.get("user")),
             "state": review["state"],
             "body": review.get("body") or "",
+            "submittedAt": review.get("submitted_at"),
             "commit": {"oid": review.get("commit_id") or ""},
-            "databaseId": review.get("id"),
-            "url": review.get("html_url"),
         }
         for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
     ]
@@ -715,6 +1012,53 @@ def pull_status(pr: int) -> dict[str, Any]:
     }
 
 
+QUEUE_WATCH = "state headRefOid isInMergeQueue labels(first: 50) { nodes { name } }"
+
+
+def queue_watch(numbers: Sequence[int]) -> dict[int, dict[str, Any]]:
+    """What a wait on PRs a merge queue holds reads each poll (#2101), by PR: its `state` (`OPEN`, `MERGED`,
+    `CLOSED`), `headRefOid`, whether GitHub's merge queue holds it (`isInMergeQueue`) and its label names (`labels`,
+    which Mergify's queue moves). GraphQL's answer is one call for every PR; REST's is two ETag reads per PR, its
+    pull and its timeline, which GitHub answers 304, at no quota, while nothing changed. ponytail: REST reads the
+    timeline's first 100 events; read its last page when a queued PR outgrows it (the wait's FULL round still sees a
+    removal there)."""
+
+    def graphql() -> dict[int, dict[str, Any]]:
+        fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ {QUEUE_WATCH} }}" for n in numbers)
+        found = _graphql(
+            f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {fields} }} }}"
+        )
+        return {
+            n: {
+                "state": found[f"p{n}"]["state"],
+                "headRefOid": found[f"p{n}"]["headRefOid"],
+                "isInMergeQueue": bool(found[f"p{n}"].get("isInMergeQueue")),
+                "labels": {each["name"] for each in found[f"p{n}"]["labels"]["nodes"]},
+            }
+            for n in numbers
+        }
+
+    def rest_read() -> dict[int, dict[str, Any]]:
+        states = {}
+        for n in numbers:
+            _, found = rest_if_changed(f"pulls/{n}")
+            _, events = rest_if_changed(f"issues/{n}/timeline?per_page=100")
+            queue = [
+                event.get("event")
+                for event in events or []
+                if isinstance(event, dict) and event.get("event") in (QUEUE_ADDED, QUEUE_REMOVED)
+            ]
+            states[n] = {
+                "state": "MERGED" if found.get("merged") else found["state"].upper(),
+                "headRefOid": found["head"]["sha"],
+                "isInMergeQueue": bool(queue) and queue[-1] == QUEUE_ADDED,
+                "labels": {label["name"] for label in found.get("labels") or []},
+            }
+        return states
+
+    return fast(graphql, rest_read)
+
+
 def pull_request(pr: int) -> dict[str, Any]:
     return fast(
         lambda: _graphql(_repository(f"pullRequest(number: $n) {{ {PULL} }}"), n=pr)["pullRequest"],
@@ -723,15 +1067,11 @@ def pull_request(pr: int) -> dict[str, Any]:
 
 
 def pr_changes(number: int) -> list[dict[str, Any]]:
-    """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000."""
-    out = gh(
-        "api",
-        "--paginate",
-        f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100",
-        "--jq",
-        ".[]",
-    )
-    return [json.loads(line) for line in out.splitlines()]
+    """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000. Read once per run
+    (`files_read`), then answered from memory."""
+    if number not in files_read:
+        files_read[number] = rest_pages(f"pulls/{number}/files?per_page=100")
+    return files_read[number]
 
 
 def merged_pull(number: int) -> dict[str, Any] | None:
@@ -763,10 +1103,29 @@ class Required(set):
     queue: str | None = None
 
 
+def fresh(key: tuple[str, str]) -> Any | None:
+    """The answer `kept` holds for `key` while it is younger than KEPT, else None."""
+    if (found := kept.get(key)) and time.monotonic() - found[0] < KEPT:
+        return found[1]
+    return None
+
+
 def required_checks(base: str) -> Required:
     """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's, with the
     merge method of a `merge_queue` rule as `queue`, which picks land's GitHub merge queue. A private repo on GitHub's
-    free plan has no rulesets: that 403 reads as none, and any other error raises."""
+    free plan has no rulesets: that 403 reads as none, and any other error raises. Read once per base and KEPT
+    seconds (#1771): a pass of land asks it many times, and a rule changes far less often; a copy goes out, so a
+    caller's edit never reaches the kept one."""
+    found: Required | None = fresh(("required", base))
+    if found is None:
+        found = read_required(base)
+        kept[("required", base)] = (time.monotonic(), found)
+    copy = Required(found)
+    copy.queue = found.queue
+    return copy
+
+
+def read_required(base: str) -> Required:
     try:
         rulesets = gh(
             "api",
@@ -900,26 +1259,55 @@ def minimize(comment_id: str) -> None:
     )
 
 
-viewer_login: dict[str, str] = {}  # the login `gh` runs as, read once per process (viewer)
+viewer_login: dict[
+    str, str
+] = {}  # the login `gh` runs as, read once per process (viewer); "" once GitHub refused it
 
 
 def viewer() -> str | None:
     """The login of the account `gh` runs as; None for a token `GET /user` refuses, such as a workflow's installation
-    token (`github.token`), where the PR's author and the repo's writers are the ones trusted (passes). Read once per
-    process; a failure is not kept, so the next call asks again."""
-    if login := viewer_login.get("login"):
-        return login
+    token (`github.token`), where the PR's author and the repo's writers are the ones trusted (passes)."""
+    return whoami()[0]
+
+
+def whoami() -> tuple[str | None, bool]:
+    """viewer's login, and whether GitHub answered. Either answer is read once per process: a login, or a refusal
+    (definite: no rate limit), which is the token's, and a process never changes its token (#2101: a token whose
+    `GET /user` is refused was asked four times a round). Who may write is writer's, kept KEPT seconds, so a grant
+    later in a wait of hours is still seen. Any other failure (a network error, a rate limit) is no answer, and gh()
+    keeps a rate-limited one for the round only."""
+    if (login := viewer_login.get("login")) is not None:
+        return login or None, True
     try:
         login = viewer_login["login"] = gh("api", "user", "--jq", ".login").strip()
-    except subprocess.CalledProcessError:
-        return None  # not cached: a network or rate-limit failure must not read as a token GitHub refuses
-    return login
+    except subprocess.CalledProcessError as exc:
+        if refused(exc.stderr) and not throttled(exc.stderr):
+            viewer_login["login"] = ""  # refused: no login, for the process
+            return None, True
+        return (
+            None,
+            False,
+        )  # not kept: a network or rate-limit failure must not read as a token GitHub refuses
+    return login, True
 
 
 def writer(login: str) -> bool:
     """Whether `login` can write to the repo, by GitHub's collaborator permission; an account GitHub refuses to look
     up can't. ponytail: a bot's GraphQL login lacks the `bot` REST needs, so a bot author fails closed; add the
-    suffix when a project's bot opens sub-issues."""
+    suffix when a project's bot opens sub-issues. GitHub's answer is kept KEPT seconds (#1771), since a pass of land
+    asks it for every login it trusts, a refusal too, so a wait sees a grant within KEPT; a failure that is no answer
+    (a network error, a rate limit) is not kept."""
+    found: bool | None = fresh(("writer", login))
+    if found is None:
+        found, answered = read_writer(login)
+        if answered:
+            kept[("writer", login)] = (time.monotonic(), found)
+    return found
+
+
+def read_writer(login: str) -> tuple[bool, bool]:
+    """writer's answer, and whether GitHub gave it: a permission read, a lookup GitHub says has no such account (404),
+    or, where the lookup is refused, the repo's own permissions for the account running this."""
     try:
         permission = gh(
             "api",
@@ -930,14 +1318,18 @@ def writer(login: str) -> bool:
     except subprocess.CalledProcessError as exc:
         # a cloud session's proxy refuses this path; the repo's own permissions answer it for the account running this
         # alone, and anyone else still can't, so a stranger never counts as a writer
-        if not refused(exc.stderr) or login != viewer():
-            return False
+        if not refused(exc.stderr) or throttled(exc.stderr):
+            return False, "HTTP 404" in (exc.stderr or "")
+        me = viewer()
+        if me != login:
+            # a viewer() that failed is no answer about `login`; one GitHub refused is
+            return False, me is not None or viewer_login.get("login") == ""
         try:
             mine = rest("repos/{owner}/{repo}").get("permissions") or {}
         except subprocess.CalledProcessError:
-            return False
-        return bool(mine.get("push") or mine.get("maintain") or mine.get("admin"))
-    return permission.strip() in WRITE
+            return False, False
+        return bool(mine.get("push") or mine.get("maintain") or mine.get("admin")), True
+    return permission.strip() in WRITE, True
 
 
 def current_pr() -> int | None:
@@ -1096,44 +1488,158 @@ def ready(number: int, undo: bool = False) -> None:
     )
 
 
-def squash_message() -> str:
-    """The repo's `squash_merge_commit_message` setting: COMMIT_MESSAGES, PR_BODY or BLANK."""
-    found: str = json.loads(gh("api", "repos/{owner}/{repo}"))["squash_merge_commit_message"]
+# the statuses the loop posts itself, which a base's required checks never wait for: gatekeeper.py's OWN, set when it
+# loads this module, so the two never differ (empty until then, which only makes a required check of one of them count)
+OWN_CHECKS: frozenset[str] = frozenset()
+GREEN_CHECKS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
+
+
+def red_checks(number: int, head: str) -> list[str]:
+    """A line per check PR #number's base requires that is not green on `head`, red, pending or missing: empty when every
+    one is. A check run answers by its conclusion, a commit status (the newest of its context) by its state."""
+    required = required_checks(pull_status(number)["baseRefName"]) - OWN_CHECKS
+    runs = commit_checks(head)
+    marks: dict[str, str] = {}
+    for mark in statuses(head):  # newest first
+        marks.setdefault(mark["context"], mark["state"])
+    found = []
+    for name in sorted(required):
+        if name in runs:
+            state = runs[name]["conclusion"] or "PENDING"
+            green = state in GREEN_CHECKS
+        elif name in marks:
+            state, green = marks[name].upper(), marks[name] == "success"
+        else:
+            state, green = "missing", False
+        if not green:
+            found.append(f"`{name}` is {state}")
     return found
 
 
-def pull_commits(number: int) -> list[dict[str, Any]]:
-    """PR #number's commits as REST lists them, each with its message and author. ponytail: REST lists the first 250."""
-    return [
-        json.loads(line)
-        for line in gh(
-            "api",
-            "--paginate",
-            f"repos/{{owner}}/{{repo}}/pulls/{number}/commits?per_page=100",
-            "--jq",
-            ".[]",
-        ).splitlines()
-    ]
+# the two ways a cloud session's proxy answers the REST merge with a 403, by the words of its body
+PROXY_PATH = "not permitted through this proxy"
+PROXY_UNATTACHED = "not enabled for this session"
 
 
-def merge(number: int, method: str, body: str | None, head: str) -> None:
-    """Merge PR #number by `method` (merge, squash or rebase), pinned to `head`, with `body` as the commit's body unless
-    it is None (GitHub's default). A base requiring a merge queue only queues it."""
-    gh(
-        "pr",
-        "merge",
-        str(number),
-        f"--{method}",
-        *(("--body", body) if body is not None else ()),
-        "--match-head-commit",
-        head,
+def merge_refusal(number: int, stderr: str | None) -> str | None:
+    """What to do when the proxy refused PR #number's REST merge, None for any other error (a 409 or 422 is a stale
+    head or a conflict). A path rule is per session or environment, so attaching the repo can't lift it: the land
+    runs from a host checkout. A repo the session has no access to is the one `add_repo` fixes. Whether a proxy will
+    refuse can't be told without a write, so this only maps the answer."""
+    text = " ".join((stderr or "").split())
+    if "HTTP 403" not in text:
+        return None
+    if PROXY_PATH in text:
+        return (
+            f"PR #{number}: this cloud session's proxy refuses the merge call for this repo ({text}); it is a path rule,"
+            " and attaching the repo does not lift it. Run `land` from a host checkout of the repo (a clone of it on"
+            " a machine whose own GitHub login merges), where the same PR lands at the same head"
+        )
+    if PROXY_UNATTACHED in text:
+        return (
+            f"PR #{number}: this cloud session has no access to the repo ({text}); attach it with push access"
+            ' (`add_repo`, `access: "push"`) and land again, or run `land` from a host checkout'
+        )
+    return None
+
+
+def merge(number: int, method: str, head: str) -> None:
+    """Merge PR #number by `method` (merge, squash or rebase), pinned to `head`, with GitHub's default body. A base requiring a merge queue only queues it. Where GitHub refuses GraphQL, which
+    `gh pr merge` goes over, a cloud session's proxy for one, the same merge goes over REST (`PUT pulls/N/merge`, whose
+    `sha` is the pin). Refused while a required check is not green on `head`,
+    whether or not the owner approved a break-glass: that PR is merged only by the owner in the GitHub UI (#1722)."""
+    if held := red_checks(number, head):
+        raise Refused(
+            f"PR #{number}: refusing to merge while a required check is not green on {head}: {'; '.join(held)}"
+            " (a break-glass PR is merged by the owner in the GitHub UI, never by a helper)"
+        )
+
+    def rest_merge() -> str:
+        try:
+            return gh(
+                "api",
+                "-X",
+                "PUT",
+                f"repos/{{owner}}/{{repo}}/pulls/{number}/merge",
+                "-f",
+                f"merge_method={method}",
+                "-f",
+                f"sha={head}",
+            )
+        except subprocess.CalledProcessError as exc:
+            if (why := merge_refusal(number, exc.stderr)) is None:
+                raise
+            raise Refused(why) from exc
+
+    fast(
+        lambda: gh(
+            "pr",
+            "merge",
+            str(number),
+            f"--{method}",
+            "--match-head-commit",
+            head,
+        ),
+        rest_merge,
     )
 
 
-def edit_text(method: str, path: str, body: str) -> None:
-    """Replace the body of a PR, a comment or a review: `method` (PATCH, or PUT for a review) on the REST `path`
-    (`{owner}` and `{repo}` filled by gh), with `body` as the text."""
-    gh("api", "-X", method, path, "-f", f"body={body}")
+def run_info(run: int) -> dict[str, Any]:
+    """Actions run `run` as GitHub's REST API reads it: its repository, workflow, head commit, conclusion and times."""
+    found: dict[str, Any] = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/actions/runs/{run}"))
+    return found
+
+
+def run_jobs(run: int) -> list[dict[str, Any]]:
+    """The jobs of Actions run `run`, each with its name, conclusion and steps."""
+    return rest_pages(f"actions/runs/{run}/jobs?per_page=100", ".jobs[]")
+
+
+def workflow_runs(
+    workflow: int, branch: str | None = None, head: str | None = None
+) -> list[dict[str, Any]]:
+    """The newest 100 completed runs of workflow `workflow`, on `branch` or on the commit `head`, newest first."""
+    query = "status=completed&per_page=100" + (f"&branch={branch}" if branch else "")
+    query += f"&head_sha={head}" if head else ""
+    found: list[dict[str, Any]] = json.loads(
+        gh("api", f"repos/{{owner}}/{{repo}}/actions/workflows/{workflow}/runs?{query}")
+    )["workflow_runs"]
+    return found
+
+
+def run_artifact(run: int, name: str) -> dict[str, Any] | None:
+    """The JSON file inside run `run`'s artifact `name` (its first `.json` member), None when the run has no such
+    artifact or it holds no JSON. ponytail: the newest 100 artifacts of the run, one zip downloaded."""
+    listed = json.loads(
+        gh("api", f"repos/{{owner}}/{{repo}}/actions/runs/{run}/artifacts?per_page=100")
+    )
+    wanted = [a for a in listed["artifacts"] if a["name"] == name and not a.get("expired")]
+    if not wanted:
+        return None
+    done = subprocess.run(
+        ["gh", "api", f"repos/{{owner}}/{{repo}}/actions/artifacts/{wanted[0]['id']}/zip"],
+        check=True,
+        capture_output=True,
+    )
+    with zipfile.ZipFile(io.BytesIO(done.stdout)) as archive:
+        for member in archive.namelist():
+            if member.endswith(".json"):
+                found = json.loads(archive.read(member))
+                return found if isinstance(found, dict) else None
+    return None
+
+
+def compare(base: str, head: str) -> dict[str, Any]:
+    """How `head` stands against `base`: `status` (`ahead`, `behind`, `identical`, `diverged`), `ahead_by`, `behind_by`."""
+    found: dict[str, Any] = json.loads(
+        gh(
+            "api",
+            f"repos/{{owner}}/{{repo}}/compare/{base}...{head}?per_page=1",
+            "--jq",
+            "{status, ahead_by, behind_by}",
+        )
+    )
+    return found
 
 
 def open_heads() -> list[str]:
@@ -1301,6 +1807,7 @@ tracker = Port("issue_node", "issues", "comment", "label", "assign", "close_issu
 forge = Port(
     "pull_request",
     "pull_status",
+    "queue_watch",
     "current_pr",
     "pr_changes",
     "merged_pull",
@@ -1314,18 +1821,20 @@ forge = Port(
     "open_heads",
     "required_checks",
     "default_branch",
-    "squash_message",
-    "pull_commits",
     "viewer",
     "writer",
     "github_repo",
     "one_repo",
     "ready",
     "merge",
-    "edit_text",
     "enqueue_pull",
     "dequeue_pull",
     "commit_checks",
+    "run_info",
+    "run_jobs",
+    "workflow_runs",
+    "run_artifact",
+    "compare",
     "job_log",
     "commit_tree",
     "repo_tags",
