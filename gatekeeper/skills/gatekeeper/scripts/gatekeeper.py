@@ -10,10 +10,11 @@
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run --python '>=3.11' scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
     uv run scripts/approvals.py check ready <pr>                # the author's step before the verifier: the PR body's `## Evidence` (and demo form) alone, the check merge runs; exit 0 or 1
+    uv run scripts/approvals.py check stalled              # every open PR land would take that its queue does not hold, or verified and idle past loop.stalled_after_hours with no go or record: one line each, exit 1; one not judged here: its line, which changes no exit
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
-    uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
+    uv run scripts/approvals.py approve <spec|plan> <issue> --by <owner|delegate>   # on the owner's word, or the delegate's under `loop.delegate: all`
     uv run scripts/approvals.py approve merge <pr> --head <sha> --by <owner|delegate> [--withdraw]  # a go on that head
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
@@ -226,8 +227,11 @@ tree's: it runs once more on the same tree, and a second such exit stops the run
 nobody and posting nothing, and prints the log's last 30 lines: fix the machine, then land again.
 Exit 0 when the named PR merged (on a GitHub-queue base, also once it is enqueued or queued), or with no PR named when nothing landable failed; 1 for a refusal, a conflict, an
 eviction, a merge GitHub refused or a red base; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
-`land --wait` runs it again every 30 seconds while it waits on the lock or on CI, printing each new state once, for up
-to 2 hours, then exits 3; a wait for the owner ends it at once, since only the owner clears it.
+`land --wait` runs it again while it waits on the lock or on CI, printing each new state once, for up to 2 hours,
+then exits 3; a wait for the owner ends it at once, since only the owner clears it. Between two runs it reads every 30
+seconds only what it waits on, at no API quota: a held lock with one `git ls-remote` (running again once the lock moves
+past its holder's heartbeat, or has not moved for 15 minutes), a named PR's CI with one ls-remote of the base and the
+heads and an ETag read of each head's checks, which GitHub answers 304 for free while nothing changed (#1915).
 Each named PR's branch carries the `land` event (events.md): `waiting` rewritten at each poll of `--wait`, `ok` once it
 merged (its refs cleared EVENT_GRACE seconds later, so a `wait land <branch>` finds the end), `failed` when evicted (its
 `url` the log comment), `needs-owner` at the owner's go or the 2-hour ceiling. A write that fails changes no exit code.
@@ -492,7 +496,13 @@ A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof o
 
 A spec or plan approval is a person's: a comment `approve --by owner` writes on the owner's word, which the gate
 reads, plus the `approved:<point>` label for the board. No agent writes one, since an agent approving its own work
-is no approval:
+is no approval. Where the policy on origin's default branch sets `loop.delegate: all`, the owner's standing
+delegation covers specs and plans too: `approve <spec|plan> <issue> --by delegate` writes the record with `By:
+delegate` under the line `Approved under the owner's delegation.`, adds the label and removes the issue's
+`needs-owner`, the spec's hold; without the setting it is refused. The gate counts a delegate's current record in place of
+the owner's only while the policy it reads sets `delegate: all` and the PR touches no path `risk.critical_paths`
+names, which stays the owner's, and otherwise names why it doesn't count. `approve breakglass` stays the owner's
+alone. The owner's record:
 
     Approved: spec
     By: owner
@@ -743,13 +753,23 @@ ATTACHMENT = "https://github.com/user-attachments/"
 # ceiling is stale
 POLL, CEILING = 30, 2 * 60 * 60
 # land --wait runs landing() (a GraphQL read of every named PR's PULL, 5 points each, and more) again only this many
-# seconds after the last run, unless it holds a lock (RECHECK): a merge queue or a check takes minutes to move, so
+# seconds after the last run, unless it waits on something its probe watches (FULL): a merge queue or a check takes minutes to move, so
 # 30 s polls spend the account's quota, and its per-minute limit, on answers that did not change. POLL is the step
 # the sleep goes in, so the log is never silent and a lock that moved is seen at once
 QUEUE_POLL = 300
-# a wait on a held lock whose ref is unchanged runs landing() (the GitHub calls) again only after this many seconds: the
-# lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
-RECHECK = 300
+# between two landing() rounds a wait probes, each POLL, only what it waits on (#1915): a held lock with one `git
+# ls-remote` of its ref, which costs no API quota, running landing() again only when the lock moves past a heartbeat
+# (restamped), or has not moved for STALE seconds (its land died, so the round breaks it), never on FULL; a wait on CI
+# with one
+# ls-remote of the base and the named PRs' heads, and an ETag read (rest_if_changed: a 304 costs no quota) of each
+# head's check runs and statuses, running landing() again once a head, the base or a required check's state moved.
+# Nothing else a round reads can end such a wait, so the round runs again only after FULL seconds otherwise
+FULL = 900
+# what the last landing() round waited on, for that probe: the base, the named PRs and the base's required checks
+# and whether the round left the free lock to another land (locked: an older waiter, or lands that kept taking it),
+# so the probe also watches the lock only then: a CI wait on the local queue frees the lock each round, and lands that
+# all watched it would wake each other
+watched: dict[str, Any] = {"base": "", "pulls": [], "required": set(), "deferred": False}
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
 LOW_POLL, LOW_QUOTA = 600, 0.1
 # the longest poll of a wait whose state stays the same round after round: QUEUE_POLL doubles up to it (#1771). With
@@ -917,6 +937,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "head_proof": Table(status=str, env=list),
         "delegate": Choice(("all", "feature")),
         "pack_staleness": Choice(("warn", "refuse")),
+        "stalled_after_hours": int,
     },
     "mutate": {"inconclusive_exit": int},
     "spec": {"auto": SPEC_KINDS},
@@ -2261,11 +2282,37 @@ def current(node: dict[str, Any], point: str, key: str, value: str | set[str], b
     )
 
 
-def approvals(where: str, node: dict[str, Any], point: str, holder: dict[str, Any]) -> list[str]:
-    """One line per approval `point` lacks on `node`: the owner's record of this spec or plan (versions), and the
-    label. A record of its last edit where the edit time can't be read (REST) says how to renew it."""
-    found = []
-    if not current(node, point, point, versions(holder), "owner"):
+def delegated(pull: dict[str, Any], loop: str | None) -> str | None:
+    """Why a delegate's spec or plan record (approve `--by delegate`) can't stand in for the owner's on this PR, or
+    None where it does: it counts only while `loop` sets `loop.delegate: all` and the PR touches no path
+    `risk.critical_paths` names (critical), which stays the owner's, as for a merge's go (go)."""
+    if delegation(loop) != "all":
+        return f"{source(loop)} sets no `loop.delegate: all`"
+    return critical(pull, loop)
+
+
+def approvals(
+    where: str,
+    node: dict[str, Any],
+    point: str,
+    holder: dict[str, Any],
+    pull: dict[str, Any] | None = None,
+    loop: str | None = None,
+) -> list[str]:
+    """One line per approval `point` lacks on `node`: the owner's record of this spec or plan (versions), or the
+    delegate's where delegated() lets it count for `pull`, and the label. A record of its last edit where the edit
+    time can't be read (REST) says how to renew it; a delegate's current record that doesn't count says why."""
+    found, held = [], versions(holder)
+    owned = current(node, point, point, held, "owner")
+    if not owned and pull is not None and current(node, point, point, held, DELEGATE):
+        why = delegated(pull, loop)
+        owned = why is None
+        if why:
+            found.append(
+                f"{where}: the delegate's `Approved: {point}` record counts for nothing here, since {why}:"
+                " the owner approves it"
+            )
+    if not owned:
         owners = [record for record in records(node, point) if record.get("by") == "owner"]
         edited = "lastEditedAt" not in holder and any(
             str(record.get(point, "")).startswith(("as edited ", "as written "))
@@ -2589,11 +2636,11 @@ def proofs(
                     f"{where}: its spec is the owner's to approve, though it carries `{SCOPED}`, since {why}"
                 )
         if not covered:
-            found += approvals(where, issue, "spec", spec_holder(issue))
+            found += approvals(where, issue, "spec", spec_holder(issue), pull, loop)
         plan = headed(issue, "## Plan")
         if plan is not None:
             if matches(rule.get("plan", {}), labels, None):
-                found += approvals(where, issue, "plan", plan)
+                found += approvals(where, issue, "plan", plan, pull, loop)
         elif "plan" in rule.get("practice", {}):
             found.append(f"{where} has no `## Plan` comment, and one is due")
     if (
@@ -6015,6 +6062,9 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
     missed = 0  # network failures in a row, of landing() and of the lock poll
     while True:
         held_tip = None
+        watched.update(
+            base="", pulls=[], required=set(), deferred=False
+        )  # this round's, never an earlier one's
         out, drifted = io.StringIO(), None
         try:
             with contextlib.redirect_stdout(out):
@@ -6060,9 +6110,12 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
                 " say what holds it.\n",
             )
             return WAITING
-        # a round asks GitHub again after `nap`, or RECHECK on a held lock; the sleep goes in POLL steps, so the log
-        # is never silent past wait-for's stall check and a lock that moved is seen at once (ls-remote costs no quota)
-        asleep = 0.0
+        # the sleep goes in POLL steps, so the log is never silent past wait-for's stall check, and each step probes
+        # only what the round waited on (Probe, #1915): a held lock that moved is seen at once, and one held by a live
+        # land is never asked of GitHub; a CI state that moved runs the round again after `nap`, and nothing moving
+        # runs it again only after FULL. A land that names no PR
+        # and holds no lock has nothing to probe, so its round runs again after `nap`
+        probe, asleep, beaten = Probe(), 0.0, 0.0
         while time.monotonic() + POLL <= deadline:
             time.sleep(POLL)
             asleep += POLL
@@ -6071,27 +6124,170 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
             ):  # wait-for's stall check reads silence as a hang
                 print(heard, end="", flush=True)
                 spoke = time.monotonic()
-            # the lock still held at the same tip, and its holder checked lately: nothing to ask GitHub
-            if not held_tip:
-                if asleep >= nap:
-                    break
-            elif asleep >= max(nap, RECHECK):
+            if (asleep >= FULL and not probe.lock) or (
+                (probe.idle or probe.stirred) and asleep >= nap
+            ):
                 break
-            else:
-                try:
-                    tip = git("ls-remote", "origin", held_tip[0]).split()[:1]
-                except subprocess.CalledProcessError as exc:
-                    missed += 1
-                    if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
-                        raise
+            if probe.idle or probe.stirred:
+                continue
+            # the beats a round writes, which a probe alone would let go stale
+            if asleep - beaten >= BEAT:
+                beaten = asleep
+                probe.beat()
+            try:
+                moved = probe.moved()
+            except subprocess.CalledProcessError as exc:
+                if not probe.lock:
+                    # a CI probe that failed is no news, never the wait's end: the round, after its poll, reads all
+                    # again and has its own network retries
                     print(
-                        f"land --wait: network failure {missed}/{MISSES}, polling again: {stderr_of(exc)}",
+                        f"land --wait: the CI probe failed, the round reads again: {stderr_of(exc)}",
                         flush=True,
                     )
+                    probe.stirred = True
                     continue
-                missed = 0
-                if tip != [held_tip[1]]:
-                    break
+                missed += 1
+                if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
+                    raise
+                print(
+                    f"land --wait: network failure {missed}/{MISSES}, polling again: {stderr_of(exc)}",
+                    flush=True,
+                )
+                continue
+            missed = 0
+            if moved:
+                break
+
+
+class Probe:
+    """What a waiting land reads between two landing() rounds (FULL says what): the held lock the last round waited
+    on, else the base, the base's lock and the named PRs' heads and their checks. `idle` when it has neither,
+    `stirred` once a CI state moved (the round then runs again after its poll, with nothing more read meanwhile). Each
+    starts from what the round read (the base's tip and each head as the PRs gave them, each head's checks read at
+    once), so a move between the round and the first poll is still a move."""
+
+    def __init__(self) -> None:
+        self.lock = held_tip
+        self.since = time.monotonic()  # when the held lock last moved
+        self.base, self.required = watched["base"], set(watched["required"])
+        self.pulls = list(watched["pulls"])
+        # each named PR's head ref, and the head the round read, which a push moves
+        self.heads = {
+            f"refs/pull/{p['number']}/head": p.get("headRefOid") or "" for p in self.pulls
+        }
+        self.base_tip: str | None = next(
+            (p["baseRefOid"] for p in self.pulls if p.get("baseRefOid")), None
+        )
+        self.lock_tip: str | None = None
+        self.deferred = bool(watched["deferred"])
+        self.checks: dict[str, tuple[tuple[str, str], ...]] = {}
+        self.idle = not self.lock and not self.heads
+        self.stirred = False
+        if not self.lock:
+            for head in filter(None, self.heads.values()):
+                try:
+                    self.checks[head] = ci_state(head, self.required)
+                except subprocess.CalledProcessError:
+                    pass  # the first poll reads it
+
+    def beat(self) -> None:
+        """This land's place in the waiting order and each named PR's `waiting` event, as a round writes them, so a
+        quiet wait never reads as a dead one: both are git pushes, no GitHub API call."""
+        if waited["id"] and waited["base"]:
+            try:
+                stamp_wait(waited["base"], self.pulls[0]["number"] if self.pulls else None)
+            except subprocess.CalledProcessError as exc:
+                print(
+                    f"land --wait: its place in the waiting order was not stamped: {stderr_of(exc)}",
+                    file=sys.stderr,
+                )
+        for pull in self.pulls:
+            if pull["headRefName"] not in ended:
+                land_event(pull, "waiting")
+
+    def moved(self) -> bool:
+        """Whether landing() should run again now: the held lock moved past a heartbeat, or has not moved for STALE
+        seconds; for a wait on CI, True once `stirred`."""
+        if self.lock:
+            return self.lock_moved()
+        self.stirred = self.ci_moved()
+        return False
+
+    def lock_moved(self) -> bool:
+        assert self.lock
+        ref, tip = self.lock
+        found = git("ls-remote", "origin", ref).split()[:1]
+        if found == [tip]:
+            return time.monotonic() - self.since >= STALE
+        if found and restamped(ref, found[0], tip):
+            global held_tip
+            self.lock = held_tip = (ref, found[0])
+            self.since = time.monotonic()
+            return False
+        return True
+
+    def ci_moved(self) -> bool:
+        branch, lock = f"refs/heads/{self.base}", LOCK.format(self.base)
+        listed: dict[str, str] = {}
+        watch = [branch, *([lock] if self.deferred else []), *self.heads]
+        for line in git("ls-remote", "origin", *watch).splitlines():
+            sha, _, name = line.partition("\t")
+            listed[name.strip()] = sha.strip()
+        base = listed.get(branch)
+        if self.base_tip is None:
+            self.base_tip = base
+        elif base != self.base_tip:
+            return True
+        # the base's lock freed, where the round left it to another land: that land is done with it, so this one may
+        # take it
+        tip = listed.get(lock)
+        if tip and self.lock_tip is not None and tip != self.lock_tip and lock_free(lock, tip):
+            return True
+        self.lock_tip = tip or ""
+        for ref, head in list(self.heads.items()):
+            now = listed.get(ref) or head
+            if head and now != head:
+                return True
+            self.heads[ref] = now
+            if not now:
+                continue
+            state = ci_state(now, self.required)
+            if self.checks.setdefault(now, state) != state:
+                return True
+        return False
+
+
+def restamped(ref: str, tip: str, old: str) -> bool:
+    """Whether the lock's new `tip` is a HELD child of `old`: its holder's heartbeat, or a land that broke it as stale
+    and holds it now, so a waiting land still waits."""
+    name = ref.removeprefix("refs/heads/")
+    git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
+    title, _, parents = git("log", "-1", "--format=%s%x00%P", tip).strip().partition("\0")
+    return title.startswith(HELD) and parents.split()[:1] == [old]
+
+
+def lock_free(ref: str, tip: str) -> bool:
+    """Whether the lock's `tip` says it is free (FREE), fetched first: git only, no API call."""
+    name = ref.removeprefix("refs/heads/")
+    git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
+    return git("log", "-1", "--format=%s", tip).strip().startswith(FREE)
+
+
+def ci_state(head: str, required: set[str]) -> tuple[tuple[str, str], ...]:
+    """The state of each check on `head` a wait on CI reads: the base's `required` ones, or every check but the
+    loop's own (OWN) where it requires none, each `pending` until it completes, from two ETag reads (rest_if_changed),
+    which cost no quota while nothing changed. A check run still running moves no required check's state, so it
+    runs no round."""
+    _, runs = github.rest_if_changed(f"commits/{head}/check-runs?filter=latest&per_page=100")
+    _, combined = github.rest_if_changed(f"commits/{head}/status?per_page=100")
+    states: dict[str, str] = {}
+    for status in combined.get("statuses") or []:  # newest first
+        states.setdefault(status["context"], status["state"])
+    for run in runs.get("check_runs") or []:
+        done = run.get("status") == "completed"
+        states[run["name"]] = (run.get("conclusion") or "pending") if done else "pending"
+    names = required or set(states) - OWN
+    return tuple(sorted((name, states.get(name, "missing")) for name in names))
 
 
 DEADLINE_ENV = "LOOP_LAND_DEADLINE"
@@ -6198,9 +6394,11 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     and its policy read to place the land (placed: where it may run and the key it signs with) and to ready drafts,
     then read again after the fetch under the lock for the batch (landing_here)."""
     ended.clear()
+    watched.update(base="", pulls=[], required=set(), deferred=False)
     named, base, worst = land_base(pr)
     if named is None:
         return worst, False
+    watched.update(base=base, pulls=list(named))
     # origin's policy now, not the clone's last fetch of it, so no draft is readied under a policy already replaced
     fetch = subprocess.run(
         ["git", "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
@@ -6217,6 +6415,7 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         tracker, loop = project()
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
+        watched["required"] = set(rules) - OWN
         # Mergify, like GitHub's queue, merges and signs each PR itself, so a cloud land needs no key for it
         with placed(loop, bool(getattr(rules, "queue", None)) or mergify(loop)):
             code, again = landing_here(
@@ -6351,13 +6550,15 @@ def landing_here(
 RUNNING = tuple(dict.fromkeys((__file__, str(Path(__file__).with_name("gatekeeper.py")))))
 
 
-def base_drift(base: str) -> list[str]:
+def base_drift(base: str, rules: bool = True) -> list[str]:
     """The running gatekeeper.py and github_adapter.py and the three policy files (tracker, loop.md, gatekeeper.md) whose text here differs from
     `origin/<base>`'s, as repo paths, since a PR's own edit of the code or rules that judge it must not judge it. Reads
     the ref as fetched (a land has just fetched it); a script inside the checkout that the base lacks (a PR adds or moves it) differs; only one
     installed outside the checkout, or a ref that is missing, has nothing to compare and counts as equal. A policy file
     is compared as this run reads it (policy_bytes): with no working tree, origin's default branch's, so a land into
-    the default branch finds no drift by construction, and one into another base still compares with that base's."""
+    the default branch finds no drift by construction, and one into another base still compares with that base's.
+    Without `rules`, the code alone: for a caller that reads every policy file from the base (project()) and writes
+    nothing, as `check stalled`, a working tree's edit of them judges nothing."""
     root = toplevel()
     ref = f"refs/remotes/origin/{base}"
     if subprocess.run(
@@ -6374,7 +6575,7 @@ def base_drift(base: str) -> list[str]:
         except ValueError:
             pass
     differ = []
-    for path in [*paths, TRACKER, LOOP, POLICY]:
+    for path in [*paths, *((TRACKER, LOOP, POLICY) if rules else ())]:
         theirs = shown_at(root, ref, path)
         if path in (TRACKER, LOOP, POLICY):
             ours = policy_bytes(root, path)
@@ -6388,9 +6589,10 @@ def base_drift(base: str) -> list[str]:
     return differ
 
 
-def judge_with_base(base: str, fetch: bool = False) -> None:
+def judge_with_base(base: str, fetch: bool = False, rules: bool = True) -> None:
     """Refuse, naming the files, when the code or policy running here is not `origin/<base>`'s, so the caller runs from
-    the base's code; under GITHUB_ACTIONS (a workflow that checks out the PR) also when HEAD is not the base's tip."""
+    the base's code; under GITHUB_ACTIONS (a workflow that checks out the PR) also when HEAD is not the base's tip.
+    Without `rules`, only the code is compared (base_drift)."""
     if fetch:  # a land has fetched it already
         fetched_base = subprocess.run(
             [
@@ -6436,7 +6638,7 @@ def judge_with_base(base: str, fetch: bool = False) -> None:
                 f"the checked-out commit is not origin/{base}'s tip ({tip[:12]}): a workflow that checks out the PR judges"
                 " it by its own rules; check out the base"
             )
-    if differ := base_drift(base):
+    if differ := base_drift(base, rules):
         raise Drifted(
             f"{', '.join(differ)} differ{'s' * (len(differ) == 1)} from origin/{base}'s: a PR's own copy would judge it;"
             f" run from the base's code (a checkout of origin/{base})",
@@ -6751,6 +6953,7 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
                         " stale"
                     )
         if waiting and (first := waiter_ahead(base)):
+            watched["deferred"] = True
             print(
                 f"{first} began waiting for the landing lock {name} before this land, so it takes it first"
             )
@@ -6765,6 +6968,7 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
     print(
         f"other lands kept taking the landing lock {name} as this one tried to: land --wait waits for it"
     )
+    watched["deferred"] = True
     return False
 
 
@@ -8079,39 +8283,145 @@ def hand_over(number: int) -> None:
 
 
 def stalled() -> int:
-    """`check stalled`: each open PR into a base whose policy names Mergify that `landable` finds a candidate (its go on
-    its head, every proof, a satisfied verdict) and that is neither queued at its head (QUEUED and a `land` success
-    there, queued_here) nor merged: a `land` that was stopped or died left it. One line each, and exit 1 when any
-    is listed, so a sweep can queue it (`land <n> --only`) or flag it; judged as `land` judges, and written nowhere."""
-    bases: dict[str, tuple[str | None, str | None, set[str]] | None] = {}
-    found = []
+    """`check stalled`: each open PR, into any base, that `landable` finds a candidate (its go on its head, every proof,
+    a satisfied verdict) and that its base's queue does not hold: under `land.queue: mergify` not queued at its head
+    (QUEUED and a `land` success there, queued_here); where the base's rules require GitHub's merge queue, not in it;
+    on a base `land` merges itself, still open, so not landed. A `land` that was stopped, died or never ran left it.
+    Also each one `land` refuses whose newest pass on its head is satisfied (or at the cap) but that lacks the go or
+    the gate record it needs and has waited past `loop.stalled_after_hours` with no go, record or new head
+    (idle_stall), its line naming what is missing: a hand-back that lived only in a session's prose left it.
+    One line each, and exit 1 when any is listed, so a sweep can land it (`land <n> --only`) or flag it; judged as
+    `land` judges (by the base's policy, read from `origin/<base>`, and only where the gatekeeper code running here is
+    the base's: judge_with_base without its policy-file check, since a checkout's own edit of those files is never
+    read), and written nowhere. A PR that can't be judged from this checkout (its base's code differs from what runs
+    here, as a PR stacked on another's branch has, or GitHub refused a read) gets one `not judged` line and is skipped; the rest are still judged, a last line counts
+    the skipped (`<n> of <m> open PRs not judged here`), and a skip alone changes no exit."""
+    bases: dict[str, tuple[str | None, str | None, set[str], str] | str] = {}
+    lines, found, skipped, seen = [], False, 0, 0
     for listed in sorted(open_pulls(), key=lambda each: each["number"]):
         if listed["isDraft"]:
             continue
-        base = listed["baseRefName"]
-        if base not in bases:
+        number, base = listed["number"], listed["baseRefName"]
+        try:
+            if base not in bases:
+                bases[base] = stalled_base(base)
+            if isinstance(known := bases[base], str):
+                raise Refused(known)
+            tracker, loop, required, held_by = known
             with policy_from(base):
-                tracker, loop = project()
-                if mergify(loop):
-                    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
-                    bases[base] = (tracker, loop, required_checks(base) - OWN)
-                else:
-                    bases[base] = None
-        if (known := bases[base]) is None:
+                # its policy is origin/<base>'s (project()) and it writes nothing: a lead's worktree that edits or lags
+                # the policy files still judges, and only the code running here must be the base's
+                judge_with_base(base, rules=False)
+                pull = pull_request(number)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    judged = landable(pull, tracker, loop, required)
+        except (Refused, subprocess.CalledProcessError) as exc:
+            if base in bases and not isinstance(bases[base], str) and isinstance(exc, Drifted):
+                bases[base] = str(
+                    exc
+                )  # the base's code differs for every PR into it: said once per PR, not fetched again
+            why = str(exc) if isinstance(exc, Refused) else stderr_of(exc)
+            lines.append(f"PR #{number} into {base} is not judged here: {why}")
+            skipped += 1
             continue
-        pull = pull_request(listed["number"])
-        with policy_from(base):
-            judge_with_base(base)
-            with contextlib.redirect_stdout(io.StringIO()):
-                judged = landable(pull, known[0], known[1], known[2])
+        seen += 1
         head = pull["headRefOid"]
-        if judged.exit is None and not (QUEUED in names(pull) and queued_here(head)):
-            found.append(
-                f"PR #{pull['number']} has its go and a satisfied verdict at {head} and is not queued"
-            )
-    for line in found:
+        if pull["state"] != "OPEN":
+            continue
+        if judged.exit is not None:
+            with policy_from(base), contextlib.redirect_stdout(io.StringIO()):
+                idle = idle_stall(pull, loop)
+            if idle:
+                found = True
+                lines.append(idle)
+            continue
+        if held_by == MERGIFY:
+            if QUEUED in names(pull) and queued_here(head):
+                continue
+            left = "is not queued"
+        elif held_by == "github":
+            if pull.get("mergeQueueEntry") or pull.get("isInMergeQueue"):
+                continue
+            left = "is not in the merge queue"
+        else:
+            left = "is not landed"
+        found = True
+        lines.append(f"PR #{number} has its go and a satisfied verdict at {head} and {left}")
+    if skipped:  # so a reader tells a listing that judged nothing from one that found nothing
+        lines.append(f"{skipped} of {skipped + seen} open PRs not judged here")
+    for line in lines:
         print(line)
     return 1 if found else 0
+
+
+# `check stalled`'s default for `loop.stalled_after_hours`: how long a PR may hold a satisfied verdict on its head with
+# no go, no gate record and no new head before it is listed as waiting on what it lacks
+STALLED_HOURS = 4
+
+
+def idle_stall(pull: dict[str, Any], loop: str | None) -> str | None:
+    """`check stalled`'s line for a PR `landable` refuses that waits only on a person or a record: its newest verifier
+    pass on the head (passes) is satisfied with no blocker or major (held), or is at the cap or past it (cap), and it
+    still lacks the go its rating asks (owner_waits) or the gate record `loop.head_proof` asks on the head (proved), while its
+    head was pushed, and its newest verdict there posted, more than `loop.stalled_after_hours` (default STALLED_HOURS)
+    ago (head_pushed, the review's `submittedAt`), so no go, record, push or verdict came in that time. None for any other PR: one refused for something else is not stalled on a hand-back."""
+    head = pull["headRefOid"]
+    found = passes(pull)
+    if isinstance(found, str):
+        return None
+    on_head = [(number, lines) for commit, number, lines in found if commit == head.lower()]
+    if not on_head:
+        return None
+    last = max(number for number, _ in on_head)
+    satisfied = all(held(lines) for number, lines in on_head if number == last)
+    if not satisfied and last < cap(loop):
+        return None
+    missing = ["go"] if owner_waits(pull, rated_issues(pull), loop) else []
+    if (proof := head_proof(loop)) and not proved(head, proof["status"]):
+        missing.append("record")  # the head's gate record `land` reads (proof_gaps), not a batch's
+    if not missing:
+        return None
+    # the later of the head's push and the newest verdict on it: a pass just posted on an old head has had no time yet
+    # for its hand-back (a submitted review always has its time; one without, still pending, is no verdict)
+    moves = [head_pushed(pull) or ""] + [
+        review["submittedAt"]
+        for review in pull["reviews"]["nodes"]
+        if review.get("submittedAt")
+        and PASS.match(review.get("body") or "")
+        and ((review.get("commit") or {}).get("oid") or "").lower() == head.lower()
+    ]
+    if not moves[0]:
+        return None
+    since = max(datetime.fromisoformat(at.replace("Z", "+00:00")) for at in moves)
+    waited = datetime.now(timezone.utc) - since
+    hours = waited.total_seconds() / 3600
+    if hours <= settings(loop).get("stalled_after_hours", STALLED_HOURS):
+        return None
+    verdict = "a satisfied verdict" if satisfied else f"its pass {last} verdict, at the cap,"
+    return (
+        f"PR #{pull['number']} has {verdict} at {head} and no go, gate record or new head for {hours:.0f}h:"
+        f" missing: {', '.join(missing)}"
+    )
+
+
+def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | str:
+    """What `check stalled` judges every PR into `base` by, read once: its tracker and policy, its required checks
+    (OWN aside) and which queue holds a candidate (MERGIFY, `github` where its rules require GitHub's merge queue, else
+    `land`, which merges it itself); or, when the base can't be fetched or its policy is refused, why, which each PR
+    into it is skipped with."""
+    try:
+        git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        with policy_from(base):
+            tracker, loop = project()
+            rules = required_checks(base)
+            held_by = (
+                MERGIFY if mergify(loop) else "github" if getattr(rules, "queue", None) else "land"
+            )
+    except subprocess.CalledProcessError as exc:
+        return f"could not fetch or read {base}: {stderr_of(exc)}"
+    except Refused as exc:
+        return str(exc)
+    return tracker, loop, rules - OWN, held_by
 
 
 def mergify_step(pull: dict[str, Any]) -> int:
@@ -8587,8 +8897,14 @@ def merges(
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
                 print(f"{where} lands as a {method}")
-                post_status(head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}")
-                posted = True
+                # a cloud session's proxy refuses the status write (#1816) but passes the merge, so a refusal lands
+                # it all the same, with no success to withdraw if the merge fails (#1917)
+                posted = (
+                    unwritten(
+                        head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}"
+                    )
+                    is None
+                )
                 try:
                     owned()
                     port("forge").merge(pull["number"], method, head)
@@ -8724,10 +9040,18 @@ def archive_workers(number: int) -> None:
     print(f"PR #{number}: finishing its worker sessions in the background, log {log.name}")
 
 
-def approve(point: str, number: int, seen: str | None = None) -> int:
+def approve(point: str, number: int, seen: str | None = None, by: str = "owner") -> int:
     """Record the owner's approval of the issue's current spec or plan, on their word: the record, the label, and
     `needs-owner` removed. Every earlier record of the point is superseded and minimized. With `seen`, the version
-    the owner's label was checked against (adopted), an edit since is refused: the label never covered it."""
+    the owner's label was checked against (adopted), an edit since is refused: the label never covered it. With `by`
+    `delegate`, the delegated approver's, under the owner's delegation: refused unless the policy on origin's default
+    branch sets `loop.delegate: all`, its record opening with VOICED's line so a reader tells it from the owner's; the
+    gate counts it as delegated() says."""
+    if by == DELEGATE and delegation(project()[1]) != "all":
+        raise Refused(
+            f"approve {point} --by delegate needs `loop.delegate: all` in the policy on origin's default branch:"
+            f" without it the {point} is the owner's (`--by owner`)"
+        )
     issue = issue_node(number)
     holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
     if holder is None:
@@ -8746,15 +9070,29 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
         for _, found in earlier
     ):
         record += CHANGED[point]
-    comment(
-        number,
-        fold(f"Approved: {point}", f"The owner approved the {point}.", f"By: owner\n{record}"),
-    )
+    if by == DELEGATE:
+        comment(
+            number,
+            fold(
+                VOICED[DELEGATE],
+                f"The delegate approved the {point}.",
+                f"Approved: {point}\nBy: {DELEGATE}\n{record}",
+            ),
+        )
+    else:
+        comment(
+            number,
+            fold(f"Approved: {point}", f"The owner approved the {point}.", f"By: owner\n{record}"),
+        )
     for note, _ in earlier:
         if not note.get("isMinimized") and note.get("viewerCanMinimize"):
             minimize(note["id"])
     label(number, f"approved:{point}", add=True)
+    # the issue's `needs-owner` is its spec's or plan's hold, which problems() reads whatever the records say, so the
+    # delegate's approval lifts it too; a critical path still waits for the owner's record (delegated)
     label(number, NEEDS_OWNER, add=False)
+    if by == DELEGATE:
+        print(f"#{number}: the delegate's approval of the {point} is recorded{DELEGATED}")
     return 0
 
 
@@ -8953,7 +9291,7 @@ def parse_report(
     accepted(lines, report)
     # a run not made can't back a satisfied verdict: that ends in a question for the lead's proof run
     if satisfied[-1].lower().split()[1:2] == ["yes"] and any(
-        re.match(r"Not run:", line) for line in lines
+        re.match(r"Not run:(?!\s*none\.?\s*$)", line, re.IGNORECASE) for line in lines
     ):
         raise Refused(
             f"{report}: `{satisfied[-1]}` lists a `Not run:` line, so a run it relies on was never made: "
@@ -11510,7 +11848,8 @@ def main(argv: list[str]) -> int:
     approving.add_argument("point", choices=(*POINTS, "merge", BREAKGLASS))
     approving.add_argument("number", type=int)
     # an agent never approves: a record is a person's word, and the owner's policy in loop.md covers the rest; a
-    # merge's go may be the delegated approver's, under the owner's delegation
+    # merge's go, and with `loop.delegate: all` a spec or plan, may be the delegated approver's, under the owner's
+    # delegation (approve, delegated)
     approving.add_argument("--by", choices=("owner", DELEGATE), required=True)
     # merge only: the head the approver was shown, and their go taken back
     approving.add_argument("--head")
@@ -11638,14 +11977,10 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused("--head and --withdraw belong to `approve merge`")
         if args.point == "merge" and not args.head:
             raise Refused("approve merge needs --head <sha>: the head the approver was shown")
-        if args.point != "merge" and args.by != "owner":
-            raise Refused(
-                f"approve {args.point} is the owner's: only a merge's go may be the delegate's"
-            )
         return (
             go(args.number, args.head, args.by, args.withdraw)
             if args.point == "merge"
-            else approve(args.point, args.number)
+            else approve(args.point, args.number, None, args.by)
         )
     if args.command == "delegate":
         return delegate(args.pr)

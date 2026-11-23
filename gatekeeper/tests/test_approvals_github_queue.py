@@ -197,7 +197,14 @@ def test_land_wait_on_a_queue_base_enqueues_and_exits_without_a_sleep_or_another
 ) -> None:
     """The queue is GitHub's to watch: `--wait` never waits on the queue, so a session holds no slot and spends no quota."""
     head = queue["opened"](7)
-    monkeypatch.setattr(approvals.time, "sleep", lambda seconds: pytest.fail("polled the queue"))
+    # a poll sleeps POLL (30 s) or more; subprocess.wait sleeps a few ms on the same time module, which a slow
+    # runner reaches while a git push runs (#1892), so only a poll-length sleep fails
+    real_sleep = approvals.time.sleep
+    monkeypatch.setattr(
+        approvals.time,
+        "sleep",
+        lambda seconds: pytest.fail("polled the queue") if seconds >= 1 else real_sleep(seconds),
+    )
     code, lines = queue["land"]("7", "--wait")
     assert (code, lines) == (0, [f"PR #7 enqueued at {head}, position 1"])
     assert queue["enqueued"] == [(7, head)]
@@ -818,7 +825,14 @@ def test_land_wait_on_an_unknown_mergeability_exits_3_at_once_and_a_later_land_e
     head = queue["opened"](8)
     queue["pulls"][8]["mergeable"] = "UNKNOWN"
     queue["remove"](8, approvals.MERGE_CONFLICT)
-    monkeypatch.setattr(approvals.time, "sleep", lambda seconds: pytest.fail("polled the queue"))
+    # a poll sleeps POLL (30 s) or more; subprocess.wait sleeps a few ms on the same time module, which a slow
+    # runner reaches while a git push runs (#1892), so only a poll-length sleep fails
+    real_sleep = approvals.time.sleep
+    monkeypatch.setattr(
+        approvals.time,
+        "sleep",
+        lambda seconds: pytest.fail("polled the queue") if seconds >= 1 else real_sleep(seconds),
+    )
     code, lines = queue["land"]("8", "--wait")
     assert code == approvals.WAITING and queue["enqueued"] == [], lines
     queue["pulls"][8]["mergeable"] = "MERGEABLE"

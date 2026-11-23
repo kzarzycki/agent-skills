@@ -133,3 +133,38 @@ def test_all_actions_are_pinned_to_full_commit_shas() -> None:
 
     assert uses
     assert all(re.search(r"@[0-9a-f]{40}$", value) for value in uses)
+
+
+def test_release_workflow_cuts_on_dispatch_and_tags_the_squash_commit() -> None:
+    """One `gh workflow run release.yml` cuts every package and, after the merge, tags each (#1861)."""
+    workflow = _workflow("release.yml")
+    assert workflow["on"]["workflow_dispatch"]["inputs"]["magnitude"]["options"] == [
+        "patch",
+        "minor",
+    ]
+    assert workflow["on"]["push"]["branches"] == ["main"]
+    cut, tag = workflow["jobs"]["cut"], workflow["jobs"]["tag"]
+    cut_commands = "\n".join(step.get("run", "") for step in cut["steps"])
+    tag_commands = "\n".join(step.get("run", "") for step in tag["steps"])
+    assert "cli cut-release --magnitude" in cut_commands
+    assert 'branch="release/' in cut_commands
+    assert "--label loop:queued" in cut_commands
+    assert "context=land" in cut_commands
+    assert "startsWith(github.event.head_commit.message, 'chore(release):')" in tag["if"]
+    assert "cli release-tags" in tag_commands
+    assert "release-check" in tag_commands
+    assert (
+        "git push origin $TAGS" in tag_commands
+    )  # one push: every tag is in place for each tag check
+    # a push or PR made with github.token starts no workflow: no qualify on the PR, no tag check on the tags
+    for job in (cut, tag):
+        checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout"))
+        assert checkout["with"]["token"] == "${{ secrets.RELEASE_TOKEN }}"
+        assert checkout["with"]["fetch-depth"] == "0"
+
+
+def test_qualify_holds_a_release_pr_to_the_fold() -> None:
+    steps = _steps(_workflow("engineering-ci.yml"))
+    verify = next(st for st in steps if "release-verify" in st.get("run", ""))
+    assert verify["if"] == "startsWith(github.head_ref, 'release/')"
+    assert verify["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"

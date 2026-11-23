@@ -369,7 +369,14 @@ def test_land_wait_on_the_rest_queue_enqueues_and_exits_with_no_poll_and_no_grap
     cloud_queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     head = cloud_queue["opened"](7)
-    monkeypatch.setattr(approvals.time, "sleep", lambda seconds: pytest.fail("polled the queue"))
+    # a poll sleeps POLL (30 s) or more; subprocess.wait sleeps a few ms on the same time module, which a slow
+    # runner reaches while a git push runs (#1892), so only a poll-length sleep fails
+    real_sleep = approvals.time.sleep
+    monkeypatch.setattr(
+        approvals.time,
+        "sleep",
+        lambda seconds: pytest.fail("polled the queue") if seconds >= 1 else real_sleep(seconds),
+    )
     code, lines = cloud_queue["land"]("7", "--wait")
     assert code == 0, lines
     assert cloud_queue["enqueued"] == [(7, head)] and cloud_queue["graphql"] == []
@@ -507,3 +514,14 @@ def test_a_removal_read_while_github_works_out_mergeability_waits_as_on_a_host(
     cloud_queue["pulls"][7]["mergeable"] = "MERGEABLE"  # GitHub decided: no conflict
     assert cloud_queue["land"]("7")[0] == 0
     assert cloud_queue["enqueued"] == [(7, head), (7, head)]
+
+
+def test_rest_pull_carries_each_review_s_submitted_time(cloud: Cloud) -> None:
+    """`check stalled` measures a verified PR's idle hours from its newest verdict's time, which a cloud session reads
+    over REST (#1746)."""
+    reviews = cloud.routes["repos/{owner}/{repo}/pulls/7/reviews?per_page=100"]
+    reviews[0]["submitted_at"] = "2026-10-03T00:00:00Z"
+    pull = approvals.github.rest_pull(7)
+    assert [review["submittedAt"] for review in pull["reviews"]["nodes"]] == [
+        "2026-10-03T00:00:00Z"
+    ]
