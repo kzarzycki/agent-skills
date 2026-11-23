@@ -382,3 +382,31 @@ def test_a_rerun_of_a_check_is_no_push_and_its_latest_run_decides_red(monkeypatc
         "a verdict asking a fix round (SATISFIED: no)" in found[12]
     )  # the verdict is newer than the push
     assert "red" not in found[13]  # its re-run passed
+
+
+def test_a_pr_held_by_the_queue_is_no_stall(monkeypatch) -> None:
+    """omnigent #542's case (#2100): `loop:queued` on and Mergify's queue check running for over an hour is a PR
+    waiting in the queue; once the check ended and Mergify let go of it, the label alone holds nothing."""
+    queue = "Mergify Merge Queue"
+    embarked = {
+        "name": queue,
+        "status": "in_progress",
+        "conclusion": None,
+        "started_at": iso(2 * HOUR),
+    }
+    earlier = {
+        "name": queue,
+        "status": "completed",
+        "conclusion": "neutral",
+        "started_at": iso(2 * HOUR + 60),
+    }
+    held = pr(12, labels=[{"name": "loop:queued"}], checks=[earlier, embarked])
+    ended = {
+        **embarked,
+        "status": "completed",
+        "conclusion": "failure",
+        "completed_at": iso(2 * HOUR),
+    }
+    left = pr(13, labels=[{"name": "loop:queued"}], checks=[earlier, ended])
+    unlabelled = pr(14, checks=[earlier, embarked])
+    assert list(stalls(monkeypatch, [held, left, unlabelled])) == [13, 14]
