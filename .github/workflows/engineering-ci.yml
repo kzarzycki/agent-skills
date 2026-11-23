@@ -71,7 +71,7 @@ jobs:
           # the tests it skips, which leave no coverage context (tools/test_map_plugin.py)
           TEST_MAP_SKIPPED: ${{ github.workspace }}/.test-map/skipped
           GATE_TEST_PARALLEL: "0" # serial: under xdist --cov-context=test records no per-test contexts, so the map would name no test (#1610)
-          PYTEST_ADDOPTS: --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
+          PYTEST_ADDOPTS: -n 0 --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
         run: mise run check
       # Only a green run: the map names the lines every test ran, which a failed run leaves incomplete.
       - if: github.event_name == 'schedule'

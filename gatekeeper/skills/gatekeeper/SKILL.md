@@ -86,6 +86,15 @@ It refuses a report without the `Head:`, `Verifier:` or `Risk:` line, a `### ` h
 counts. A question for the owner goes in `<report>.question` beside it, which `report --json`
 prints.
 
+## Known-red tests
+
+A test that fails for a reason unrelated to a PR turns the required check red for every PR, so it
+gets a skip marker that links its issue, with the issue filed in the same change: pytest's `skip`
+or `xfail(run=False)` with `#<issue>` in the reason, or the project's runner's equivalent. An
+expected-failures list keeps the test running and its cost on every PR, so the gatekeeper takes
+none: a project's entries become skips. A project's repo check refuses a skip or `xfail` whose
+reason links no issue. A skip for the environment (a missing tool) needs no issue.
+
 ## The cap
 
 The cap is 3 passes, unless the project's gatekeeper.md sets its own with `cap` under `loop`
