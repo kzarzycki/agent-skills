@@ -2659,13 +2659,13 @@ def send(
             raise Gone(archived_note(og, sid, info))
         og.unarchive(sid)
         print(f"session {sid} was archived; unarchived it", file=sys.stderr)
-        info = og.info(sid)
+    # host_online is None without a host binding; False is a confirmed host-down.
+    if info.get("host_online") is False and not info.get("host_resumable"):
+        raise HostOffline(
+            f"session {sid}: its host is offline, so nothing was sent and Omnigent keeps nothing"
+            " for it; send again once the host is back"
+        )
     if not info.get("runner_online", True):
-        if info.get("host_online") is False and not info.get("host_resumable"):
-            raise HostOffline(
-                f"session {sid}: its host is offline, so nothing was sent and Omnigent keeps nothing"
-                " for it; send again once the host is back"
-            )
         revive(og, sid)
 
     # A copy is the same text exactly (both harnesses store it verbatim): a different message that

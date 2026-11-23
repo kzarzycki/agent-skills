@@ -7405,14 +7405,20 @@ def test_relay_unarchive_brings_an_archived_session_back_then_delivers(
     assert og.posts == 1
 
 
+@pytest.mark.parametrize("runner_online", [False, True])
 def test_relay_to_a_session_on_an_offline_host_sends_nothing_and_exits_host_offline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    runner_online: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     og = FakeOmnigent()
     sid = og.create("claude", "lead")
     retried = reaped(og, {"recovered": True, "recovery": "runner_relaunched"})
     info = og.info
-    og.info = lambda s: {**info(s), "host_online": False}  # type: ignore[method-assign]
+    # runner_online True: a runner not yet timed out on a host already reported down.
+    og.info = lambda s: {**info(s), "host_online": False, "runner_online": runner_online}  # type: ignore[method-assign]
+    assert issubclass(omnigent_agent.HostOffline, omnigent_agent.Gone)  # `except Gone` callers
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.HOST_OFFLINE
     assert "its host is offline" in capsys.readouterr().err
     assert (retried, og.posts) == ([], 0)
