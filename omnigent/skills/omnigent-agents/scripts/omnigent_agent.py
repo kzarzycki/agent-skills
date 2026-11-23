@@ -174,7 +174,7 @@ return the report or a question; ``reap`` drops the line of each session it fini
 finishing it, so the supervisor posts no ``archived`` for a finish its notified session ran.
 ``run``, ``wait``, ``reap`` and the supervisor (a child's relayed ``DONE`` report or failure; a followed lead's ``DONE`` once a lead waiting on it (``--after``) is told; a lead a followed lead started is reaped by its starter) all finish a session through
 ``finish_delivered``, the one place a taken result archives it: never one that asked a
-question, nor one given ``--keep`` (``run`` or ``start``, which labels it ``omni.keep``, so the supervisor leaves it open too), nor one with an open question card, a pending prompt or background work, nor a worker given ``--pr`` unless ``--no-keep`` (``--keep`` stays accepted):
+question, nor one given ``--keep`` (``run`` or ``start``, which labels it ``omni.keep``, so the supervisor leaves it open too), nor one with an open question card, a pending prompt or background work (a cloud worker, verifier or gate child's taken result ends its VM's background work with it, #2052), nor a worker given ``--pr`` unless ``--no-keep`` (``--keep`` stays accepted):
 a fix round or the next verifier pass reaches a kept worker with ``send``, warm, where a fresh one repeats its setup.
 ``start --pr`` labels the worker ``omni.pr=<owner/name>#<n>``, and fails, archiving the session, when it can't. A verifier for ``--pr`` carries the same label, so its spend groups by PR beside the worker's, but ``reap`` never holds a verifier on it. ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
 the rest, exiting 1 when a finish failed; it keeps a ``--pr`` worker, ``--force`` included, until its PR (looked up in the
@@ -6663,6 +6663,16 @@ FAILED_STATUSES = {"failed", "cancelled", "canceled", "errored", "error"}
 KEEP_LABEL = "omni.keep"  # set by ``start --keep``: the session stays open once its result is taken
 
 
+def cloud_child(og: Omnigent, info: dict) -> bool:
+    """Whether ``info`` is a cloud child whose VM ends with its result (#2052): an ``acp:claude-cloud`` worker or
+    verifier (``omni.role``), or a child session with no role (a ``claude-cloud-run`` gate). A lead, a manager (any
+    other role) and a top-level session with no role are none: they live past one result."""
+    role = str((info.get("labels") or {}).get("omni.role") or "")
+    if role not in ("", *LEAN_ROLES) or not (role or info.get("parent_session_id")):
+        return False
+    return cloud_session(og, info)
+
+
 def finish_delivered(
     og: Omnigent,
     sid: str,
@@ -6687,7 +6697,8 @@ def finish_delivered(
     Kept, not archived: ``keep`` (the caller's ``--keep``) or a session labelled ``KEEP_LABEL``
     (``start --keep``); an open question card, whose answer needs the session; a worker whose PR
     is open or unreadable (``hold_pr``; a caller that decided with ``--no-keep`` passes False);
-    a pending approval prompt; background work still running. ``settled`` says the result was taken from
+    a pending approval prompt; background work still running, unless the session is a cloud child
+    (``cloud_child``) and ``settled``, since that work is what its VM keeps spending quota on. ``settled`` says the result was taken from
     the session itself (a report or verdict read, a ``DONE`` relayed), so a status still ``running``
     for a moment after it is no hold; ``reap``, which reads sessions it knows nothing of, passes
     False and keeps any running one or one with input pending. ``force`` stops a stuck running
@@ -6749,11 +6760,13 @@ def finish_delivered(
             f"{name}: archived ({'stuck' if stuck else 'stopped'}); check git status in"
             f" {info.get('workspace') or '(workspace unknown)'}"
         ), False
+    # a taken cloud child's background tasks are what its VM keeps spending quota on: they end with it
+    ended = live_tasks(info) if settled and live_tasks(info) and cloud_child(og, info) else []
     busy = (
         "blocked on a prompt"
         if prompts_of(info)
         else "background work"
-        if live_tasks(info)
+        if live_tasks(info) and not ended
         else status
         if not settled and status in RUNNING
         else "input pending"
@@ -6771,7 +6784,8 @@ def finish_delivered(
     except Fail as e:  # one refused finish leaves the rest to reap
         print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
         return f"{name}: finish failed: {e}", True
-    lines, bad = [f"{name}: archived ({status})"], False
+    gone = f"; {len(ended)} background task(s) ended with its VM" if ended else ""
+    lines, bad = [f"{name}: archived ({status}{gone})"], False
     try:
         kids = [k for k in og.children(sid) if k not in seen]
     except Fail:  # the children stay for a reap
