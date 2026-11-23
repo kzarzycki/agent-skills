@@ -14510,3 +14510,40 @@ def test_role_name_resolves_to_the_pack_role_file_with_no_file_in_the_launch_dir
     # a path, or a name that is no role, is left as given
     assert omnigent_agent.resolve_role("x/verifier.md") == "x/verifier.md"
     assert omnigent_agent.resolve_role("other") == "other"
+
+
+def test_a_turn_end_that_only_shows_progress_or_waiting_is_never_act_2090() -> None:
+    no_model = lambda: ("none", "")
+
+    def route(last: str, **more: object) -> tuple[str, str, str]:
+        return omnigent_agent.route({"kind": "ended", "last": last, **more}, no_model)
+
+    assert route("STILL WORKING: waiting on the verifier")[1] == "record"
+    assert route("STILL WORKING: started a verifier")[1] == "record"
+    assert route("DONE: merged #5")[1] == "done"  # a report is the notified session's to act on
+    assert route("Which one?\n\nUSER NEEDED", decisions=False)[1] == "owner"
+
+
+def test_a_result_the_lead_already_sent_to_the_notified_session_gets_no_act_line_2090() -> None:
+    call = {
+        "type": "function_call",
+        "name": "sys_session_send",
+        "arguments": {"session_id": "cos", "text": "DONE: merged"},
+    }
+    before, final = said("assistant", "working", "m1"), said("assistant", "DONE: merged", "m2")
+    assert omnigent_agent.relayed_to([before, call, final], "cos")
+    assert not omnigent_agent.relayed_to([before, final, call], "cos")  # sent after its end
+    assert not omnigent_agent.relayed_to([before, call, final], "other")
+    event = {"kind": "ended", "last": "DONE: merged", "relayed": True}
+    assert omnigent_agent.route(event, lambda: ("none", ""))[1] == "done"  # waiters still told
+
+
+def test_the_quota_line_is_said_once_until_the_quota_resets_2090() -> None:
+    state: dict = {}
+    due = omnigent_agent.quota_line_due
+    assert due(state, 1000.0, 600.0)  # the first, with the reset 600s away
+    assert not due(state, 1100.0, 500.0)  # the same reset: not again
+    assert not due(state, 1599.0, 1.0)
+    assert due(state, 1601.0, 0.0)  # the reset passed: said as any deadline
+    assert due(state, 1700.0, 900.0)  # a new reset: once more
+    assert not due(state, 1800.0, 800.0)
