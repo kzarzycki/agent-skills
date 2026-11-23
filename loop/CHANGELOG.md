@@ -8,6 +8,8 @@ them here.
 ## 0.1.3 - 2026-11-23
 
 - A known-red test is skipped with its issue linked, never listed as an expected failure: the loop skill (Known-red tests, Nightly) and its verifier say so.
+- engineering-loop: the merge model. The worker runs only the tests the PR affects, never the whole suite or a gate of record, and writes the e2e tests the verifier proves the change with; the verifier's review is unchanged and its test run is those e2e tests, with no full suite. Without a merge queue a PR merges on the verifier's satisfied record with no gate step; with one, the PR head gets no CI check and the queue's batch check, the one run on the merged tree, runs only the tests the batch affects. The nightly runs the full suite, and a red nightly becomes an issue, a bisect and a fix or revert PR. A selector that can't tell which tests a change touches runs nothing and says so. SKILL.md gains a Merge model section (#1872).
+- engineering-loop: in a Claude cloud VM, the pack's scripts come from a clone of its latest release tag, resolved in the VM at run time, or the tag the brief pins with a `Pack:` line, never the checkout's vendored copy (#1987).
 
 ## 0.1.2 - 2026-11-22
 
