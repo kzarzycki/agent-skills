@@ -710,6 +710,8 @@ SKIPPED_LINE = re.compile(r"(\d+) of (\d+) open PRs not judged here")
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
+# a wait-until command that reads one PR through gh: wait-for --pr reads it through ETags, free while it doesn't move
+PR_POLL = re.compile(r"\bgh\s+(?:pr\s+(?:view|checks|status)\b|api\b[^;&|\n]*\bpulls/\d)")
 # wait-for's default budget, for a foreground call: under a 10-minute tool call with room for the call's own start
 # and exit. A wait the harness tracks in the background passes the run's expected length instead, so it wakes once.
 WAIT_FOR_BUDGET = 570.0
@@ -11805,6 +11807,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             cmd = args.until[1:] if args.until[:1] == ["--"] else args.until
             if not cmd or not 0 < args.every <= EVERY_MAX:
                 usage = Fail(f"wait-until needs -- CMD and 0 < --every <= {EVERY_MAX:.0f}")
+                usage.code = 2
+                raise usage
+            if PR_POLL.search(" ".join(cmd)):
+                usage = Fail(
+                    "wait-until: a PR poll through gh spends a GitHub call every round; run "
+                    "`wait-for --pr <n> --until checks|merged|closed`, whose ETag reads cost nothing while the PR doesn't move"
+                )
                 usage.code = 2
                 raise usage
             return wait_until(cmd, args.every, args.limit)
