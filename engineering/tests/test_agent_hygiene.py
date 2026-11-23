@@ -628,7 +628,7 @@ def test_gh_calls_per_run_do_not_grow_with_the_worktree_count(tmp_path, monkeypa
     """One PR listing per repo, whether it has 1 worktree or 6 (it was a call per branch and per detached worktree)."""
     worktree, run, home = landing_world(tmp_path, monkeypatch)
     worktree("a", "a")
-    first = run()
+    run()
     one = (home / "gh.calls").read_text().splitlines()
     for name in "bcdef":
         worktree(name, name)
