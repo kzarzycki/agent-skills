@@ -294,7 +294,7 @@ def gh(*args: str, data: str | None = None) -> str:
             ) is None:
                 raise
             # jitter, so lands that waited on one reset do not all resume in the same second
-            pause += random.randint(0, JITTER)
+            pause = jittered(pause)
             until = time.time() + pause
             if wait_until is None or time.monotonic() + pause > wait_until:
                 exc.stderr = f"{exc.stderr}\nGitHub rate limit, resets at {time.strftime('%H:%M UTC', time.gmtime(until))}"
@@ -311,7 +311,7 @@ def gh(*args: str, data: str | None = None) -> str:
 
 # land --wait sets this (time.monotonic) to the end of its ceiling: a rate limit then waits, else gh() fails with the reset time
 wait_until: float | None = None
-JITTER = 60  # most seconds of random delay added to a rate-limit wait
+JITTER = 180  # most seconds of random delay added to a rate-limit wait: every waiter on one reset resumes over 3 min, not in its first second
 SLICE = 60  # seconds between the lines a rate-limit wait prints
 
 # answers a run keeps (#1771): (bucket, key) -> (time.monotonic when read, answer); writer, required_checks and a
@@ -377,7 +377,7 @@ def guard(args: Sequence[str]) -> None:
     if found is None or found[0] >= QUOTA_FLOOR:
         return
     remaining, _, reset = found
-    pause = max(reset - int(time.time()), 0) + 1 + random.randint(0, JITTER)
+    pause = jittered(max(reset - int(time.time()), 0) + 1)
     at = time.strftime("%H:%M UTC", time.gmtime(time.time() + pause))
     if time.monotonic() + pause > wait_until:
         raise subprocess.CalledProcessError(
@@ -392,6 +392,14 @@ def guard(args: Sequence[str]) -> None:
         print(said, file=sys.stderr, flush=True)
         time.sleep(min(left, SLICE))
     quota_left.pop(bucket, None)  # the reset passed: read the bucket afresh
+
+
+def jittered(pause: int) -> int:
+    """`pause` plus up to JITTER random seconds, so the lands that waited on one reset resume over minutes, not in its
+    first second; within a wait (wait_until set) never past the ceiling's room, so the jitter alone never stops a land
+    whose reset falls inside it."""
+    room = JITTER if wait_until is None else min(JITTER, int(wait_until - time.monotonic()) - pause)
+    return pause + random.randint(0, max(room, 0))
 
 
 def rate_limited(stderr: str, backoff: int, graphql: bool = False) -> int | None:

@@ -239,3 +239,22 @@ def test_land_wait_naps_back_off_while_the_state_holds_and_reset_when_it_changes
     )  # the wait is over: a later gh() in this process is not guarded
     gaps = [b - a for a, b in itertools.pairwise(ran)]
     assert gaps == [300, 480, 480, 300, 480]
+
+
+def test_a_nearly_spent_bucket_inside_a_tight_ceiling_waits_with_the_jitter_cut_to_fit(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slept: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        hub.bucket = 5000
+
+    monkeypatch.setattr(github.time, "sleep", sleep)
+    monkeypatch.setattr(github.random, "randint", lambda low, high: high)
+    monkeypatch.setattr(github, "wait_until", time.monotonic() + 121 + 50)
+    hub.bucket = github.QUOTA_FLOOR - 1
+    github.required_checks(
+        "main"
+    )  # the reset falls inside the ceiling: it waits, never stops on the jitter
+    assert 120 <= sum(slept) <= 121 + 50
