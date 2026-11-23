@@ -6299,9 +6299,8 @@ def queue_alarms(repo: str, memo: dict, now: float | None = None) -> list[tuple[
                     ),
                 )
             )
-    memo["flakes_told"] = sorted(
-        counts["flakes"]
-    )  # one that leaves the window is news again on its return
+    # a flake that leaves the window is news again on its return
+    memo["flakes_told"] = sorted(counts["flakes"])
     over = counts["entries"] >= QUEUE_REJECT_FLOOR and counts["share"] > QUEUE_REJECT_SHARE
     if over and not memo.get("over"):
         rejected = "; ".join(
