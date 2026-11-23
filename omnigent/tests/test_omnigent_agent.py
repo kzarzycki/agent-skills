@@ -3525,7 +3525,7 @@ def test_worker_md_s_heavy_lock_command_waits_for_the_lock_and_passes_the_exit_t
         Path(__file__).resolve().parents[2] / "loop/skills/engineering-loop/worker.md"
     ).read_text()
     command = re.search(
-        r"`(perl -MFcntl=:flock .*?)\s+<path> uv run <gatekeeper>/scripts/approvals\.py heavy\s+mise run check`",
+        r"`(perl -MFcntl=:flock .*?)\s+<path> uv run <gatekeeper>/scripts/approvals\.py heavy\s+mise run test:changed`",
         text,
         re.DOTALL,
     )
