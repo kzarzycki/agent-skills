@@ -51,7 +51,7 @@ def test_the_base_fetch_authenticates_through_gh(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(approvals.subprocess, "run", run)
     monkeypatch.setattr(approvals, "toplevel", lambda: Path("."))
-    monkeypatch.setattr(approvals, "base_drift", lambda _base: [])
+    monkeypatch.setattr(approvals, "base_drift", lambda _base, rules=True: [])
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     REAL("main", fetch=True)
     (fetch,) = seen
