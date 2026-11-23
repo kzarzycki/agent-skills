@@ -155,8 +155,7 @@ def open_pull_files(limit: int) -> list[dict[str, Any]]:
     (GitHub's own cap there is 3000), and an overlap past the 100th file is never missed."""
 
     def every_file(number: int) -> list[str]:
-        # objects, not `.[].filename`: `gh --jq` prints a string raw, which rest_pages can't read as JSON
-        return [file["filename"] for file in rest_pages(f"pulls/{number}/files?per_page=100")]
+        return [file["filename"] for file in pr_changes(number)]
 
     return fast(  # type: ignore[no-any-return]
         lambda: [
@@ -283,6 +282,11 @@ def refuse_bypass(args: tuple[str, ...]) -> None:
 # empties it, so its next read is GitHub's however short the wait.
 reads: dict[tuple[str, ...], tuple[float, str]] = {}
 READ_TTL = 20.0
+# each PR's REST file list, read once per run (pr_changes): every `gh pr list` or GraphQL call empties `reads`, and
+# rest_pull, paths(), overlaps() and open_pull_files each ask for it. Kept by PR number for the run; only a write to
+# GitHub (a body, a mutation, a non-GET), read_afresh() or forget() drops it, since only a push changes a PR's files
+# and a wait calls read_afresh() after its sleep.
+files_read: dict[int, list[dict[str, Any]]] = {}
 WRITE_FLAGS = {"-f", "-F", "--field", "--raw-field", "--input"}
 
 
@@ -307,6 +311,23 @@ def read_afresh() -> None:
     empty `reads`, so the next read is GitHub's however short the wait was; a wait never answers itself. The wait sleeps
     on its own clock, which a test may fake."""
     reads.clear()
+    files_read.clear()
+
+
+def writes(args: Sequence[str], data: str | None) -> bool:
+    """Whether `gh *args` may change a PR: a body, a mutation, a `gh api` that isn't a plain GET (a GraphQL query's
+    `-f query=` is no write), or a `gh pr` command that edits, merges, comments, reviews, closes or readies."""
+    text = " ".join(args).lower()
+    if data is not None or "mutation" in text:
+        return True
+    if args[:1] == ("pr",):
+        return args[1:2] not in (("list",), ("view",), ("status",), ("checks",), ("diff",))
+    return (
+        args[:1] == ("api",)
+        and "graphql" not in text
+        and "rate_limit" not in text
+        and not plain_read(args)
+    )
 
 
 def gh(*args: str, data: str | None = None) -> str:
@@ -321,6 +342,8 @@ def gh(*args: str, data: str | None = None) -> str:
         reads[key] = (time.monotonic(), out)
         return out
     reads.clear()  # a write, or a call this cache doesn't read: nothing read before it is trusted after it
+    if writes(key, data):
+        files_read.clear()
     return _gh(*args, data=data)
 
 
@@ -376,7 +399,7 @@ quota_left: dict[str, tuple[float, int, int, int]] = {}
 
 
 def forget() -> None:
-    """Drop every answer this run kept: viewer's login, `kept`, `reads` and the guard's last quota readings; and end any wait
+    """Drop every answer this run kept: viewer's login, `kept`, `reads`, `files_read` and the guard's last quota readings; and end any wait
     (wait_until), so no guard runs."""
     global wait_until
     wait_until = None
@@ -385,6 +408,7 @@ def forget() -> None:
     etags.clear()
     quota_left.clear()
     reads.clear()
+    files_read.clear()
 
 
 def bucket_of(args: Sequence[str]) -> str:
@@ -975,15 +999,11 @@ def pull_request(pr: int) -> dict[str, Any]:
 
 
 def pr_changes(number: int) -> list[dict[str, Any]]:
-    """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000."""
-    out = gh(
-        "api",
-        "--paginate",
-        f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100",
-        "--jq",
-        ".[]",
-    )
-    return [json.loads(line) for line in out.splitlines()]
+    """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000. Read once per run
+    (`files_read`), then answered from memory."""
+    if number not in files_read:
+        files_read[number] = rest_pages(f"pulls/{number}/files?per_page=100")
+    return files_read[number]
 
 
 def merged_pull(number: int) -> dict[str, Any] | None:
