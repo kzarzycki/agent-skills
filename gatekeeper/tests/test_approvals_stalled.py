@@ -306,5 +306,9 @@ def test_the_idle_hours_run_from_the_newest_verdict_when_it_came_after_the_push(
     assert stalled(capsys) == (0, [])
     long_ago = (datetime.now(UTC) - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
     direct["pulls"][7]["reviews"]["nodes"][0]["submittedAt"] = long_ago
+    # a pass posted an hour ago on an earlier head says nothing of this one: the clock does not restart
+    direct["pulls"][7]["reviews"]["nodes"].insert(
+        0, *passes_on("e" * 40, (1, CLEAN, "yes"), at=hour_ago)
+    )
     code, lines = stalled(capsys)
     assert code == 1 and lines[0].endswith("new head for 6h: missing: go")
