@@ -284,6 +284,23 @@ def test_a_host_re_land_after_an_eviction_asks_mergify_to_queue_it_once_per_evic
     assert len(notes_on(clocked, 7, approvals.QUEUE_EVICTED)) == 2
 
 
+def test_a_new_head_after_an_eviction_gets_no_queue_command(clocked: dict[str, Any]) -> None:
+    """An eviction is bound to its head: after land evicts head A and the author pushes head B, B's hand-over posts no
+    `@mergifyio queue`, since Mergify never dequeued B (#2029)."""
+    first = clocked["opened"](7)
+    assert clocked["land"]("7")[0] == 0
+    evict_and_ready(clocked, first)
+    work = clocked["work"]
+    (work / "7.txt").write_text("7 again\n")
+    git_in(work, "commit", "-q", "-am", "PR 7 again")
+    second = git_in(work, "rev-parse", "HEAD").strip()
+    git_in(work, "push", "-q", "origin", f"{second}:refs/heads/pr7", f"{second}:refs/pull/7/head")
+    clocked["pulls"][7].update(headRefOid=second, reviews={"nodes": [verdict_on(second)]})
+    code, lines = clocked["land"]("7")
+    assert code == 0 and lines[-1] == f"PR #7 queued for Mergify at {second}", lines
+    assert notes_on(clocked, 7, approvals.REQUEUE) == []
+
+
 def test_a_refused_queue_command_is_posted_by_the_next_land(
     clocked: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
