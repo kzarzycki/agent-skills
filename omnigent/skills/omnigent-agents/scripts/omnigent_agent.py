@@ -11239,7 +11239,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # the body only: start adds its signature, lock and title lines once a session exists
             pr = report_pr(args.role, args.cloud, args.pr)
             # as start's: a path on another host is neither resolved nor checked here
-            report = args.report.resolve() if not args.remote or pr else args.report
+            report = args.report if args.remote else args.report.resolve()
             # ponytail: a lead's delegation line is read from this checkout, never another host's (start reads that
             # through the server, which brief does not reach)
             delegation = lead_delegation(None, None) if args.top_level and not pr else ""
@@ -11405,6 +11405,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # a path on the session's host, which this one neither resolves nor reads (as start's)
             far = not args.pr and elsewhere(og, og.info(args.session))
             report = args.report if far else args.report.resolve()
+            if args.pr and args.report.is_absolute() and elsewhere(og, og.info(args.session)):
+                # the comment's body comes here, where bring_home puts a path on that host's
+                report = (Path("tmp/loop") / args.report.name).resolve()
             try:
                 # --pr reads a comment, not a file
                 since = (
@@ -11499,7 +11502,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         host = og.host(args.host) if getattr(args, "host", None) else og.host_id
         # paths on another host: neither resolved nor checked here
         remote = elsewhere(og, session) or host != og.host_id
-        here = not remote or bool(args.pr)  # with --pr the report is the file wait writes here
+        here = not remote  # on another host the report is a path there, with --pr or without
         # a cloud agent's run on another host: no parent, so placed where --host says, and its
         # report comes home, since the caller reads it (claude-cloud-run from any host)
         placed = (
