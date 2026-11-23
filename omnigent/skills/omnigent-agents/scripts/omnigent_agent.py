@@ -267,6 +267,7 @@ import os
 import plistlib
 import posixpath
 import pwd
+import random
 import re
 import shlex
 import shutil
@@ -275,6 +276,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -682,6 +684,17 @@ LABEL_SECONDS = 60.0
 # every supervise on the host shares (N instances cost about one read): a landing is news within five
 # minutes, and a 60 s poll per instance drained the account's REST limit.
 HEAD_SECONDS = 300.0
+# Each followed repo's `check stalled` (the gatekeeper's: an approved, verified PR its queue never took) runs at most
+# this often, and is stopped past STALLED_TIMEOUT, so a hung GitHub read never holds the next one off.
+STALLED_SECONDS = 3600.0
+STALLED_TIMEOUT = 900.0
+# a landable PR its queue never took, or a verified one idle on a go or record it lacks (`... missing: go`)
+STALLED_LINE = re.compile(
+    r"PR #(\d+) has (?:its go and a satisfied verdict|a satisfied verdict|its pass \d+ verdict, at the cap,)"
+    r" at ([0-9a-f]{40}) .+"
+)
+UNJUDGED_LINE = re.compile(r"PR #(\d+) into \S+ is not judged here: (.+)")
+SKIPPED_LINE = re.compile(r"(\d+) of (\d+) open PRs not judged here")
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
@@ -857,16 +870,10 @@ ORIGIN_URL = re.compile(r'\[remote "origin"\][^\[]*?^\s*url\s*=\s*(\S+)', re.MUL
 GITHUB_REPO = re.compile(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 
 
-def far_policy_texts(
-    og: Omnigent, workspace: str, host_id: str, gk: Any
-) -> tuple[str | None, str | None] | None:
-    """The default branch's ``docs/agents/loop.md`` and gatekeeper.md texts (None for one it lacks, as ``base_policy``
-    reads the base) of the checkout at ``workspace`` on host ``host_id``, which has no git to ask: its git config
-    (through a worktree's gitdir and commondir, as ``workspace_head`` resolves them) is read through the host's file API for the ``origin`` repo, and the files come from GitHub's default branch
-    through ``gh``. None when ``workspace`` is no checkout; a ``Fail`` when the origin or a file can't be read."""
-    root = far_checkout_root(og, host_id, workspace, str(gk.POLICY))
-    if root is None:
-        return None
+def far_origin_slug(og: Omnigent, host_id: str, root: Path, what: str) -> str:
+    """``owner/name`` of the GitHub ``origin`` of the checkout at ``root`` on host ``host_id``, which has no git to
+    ask: its git config (through a worktree's gitdir and commondir, as ``workspace_head`` resolves them) is read
+    through the host's file API. A ``Fail`` naming ``what`` when the config can't be read or has no GitHub origin."""
     try:
         top = read_on_host(og, host_id, f"{root}/.git")
     except (Gone, Fail):
@@ -883,8 +890,21 @@ def far_policy_texts(
     except Gone as e:
         raise Fail(f"{config}: not found on the host") from e
     if not (found and (repo := GITHUB_REPO.search(found.group(1)))):
-        raise Fail(f"{config}: no GitHub `origin` url to read the base policy from")
-    slug = f"{repo.group(1)}/{repo.group(2)}"
+        raise Fail(f"{config}: no GitHub `origin` url {what}")
+    return f"{repo.group(1)}/{repo.group(2)}"
+
+
+def far_policy_texts(
+    og: Omnigent, workspace: str, host_id: str, gk: Any
+) -> tuple[str | None, str | None] | None:
+    """The default branch's ``docs/agents/loop.md`` and gatekeeper.md texts (None for one it lacks, as ``base_policy``
+    reads the base) of the checkout at ``workspace`` on host ``host_id``, which has no git to ask: its git config
+    (through a worktree's gitdir and commondir, as ``workspace_head`` resolves them) is read through the host's file API for the ``origin`` repo, and the files come from GitHub's default branch
+    through ``gh``. None when ``workspace`` is no checkout; a ``Fail`` when the origin or a file can't be read."""
+    root = far_checkout_root(og, host_id, workspace, str(gk.POLICY))
+    if root is None:
+        return None
+    slug = far_origin_slug(og, host_id, root, "to read the base policy from")
     branch = json.loads(gh("api", f"repos/{slug}"))["default_branch"]
 
     def read(file: Path) -> str | None:
@@ -949,6 +969,16 @@ CLOUD_NOTE = (
     " refuse `gh` beyond search, call any other REST endpoint the same way; never write under `.git/` (not even `.git/info/exclude`),"
     " since a write there waits on a permission prompt nobody in the cloud answers; `tmp/loop/` is"
     " scratch, ignored by the repo's `.gitignore`, and never committed.\n"
+)
+# Every acp:claude-cloud session's preamble: the owner's GitHub quota is one bucket every VM and host spends, so each
+# cloud session logs its own gh calls with gh-quota's shim and posts the tally, which no host can read in the VM.
+CLOUD_GH_QUOTA = (
+    "Before your first `gh` call, put gh-quota's logging shim ahead of the VM's gh: `python3"
+    ' "$HOME/pack/github/skills/gh-quota/scripts/gh_quota.py" install` (from the pack clone named below; in a'
+    " checkout of the pack's own repo, from the checkout). Your report then ends with the output of `gh_quota.py"
+    " counts --minutes <the minutes this session ran>`, or `gh-quota: not installed` when the file is missing or"
+    " the install failed, and one line counting the `curl` calls you made to `api.github.com`, which the shim does"
+    " not see.\n"
 )
 # Every acp:claude-cloud session's first prompt (#1485): a cloud session pushes only to the branch it
 # started on unless its first user message grants more, and a later relayed grant is refused, so a
@@ -1062,7 +1092,7 @@ def first_message(
     ):  # a lead's line on whose go may land a PR into the default branch (lead_delegation)
         preamble = preamble.removesuffix("\n") + delegation + "\n"
     if cloud:
-        preamble = cloud_preamble(preamble, pr)
+        preamble = cloud_preamble(preamble, pr, brief)
     elif not top_level:
         preamble = preamble.removesuffix("\n") + HOST_RUN_NOTE + "\n"
     return (
@@ -1071,9 +1101,44 @@ def first_message(
     )
 
 
-def cloud_preamble(preamble: str, pr: int | None) -> str:
+PACK_URL = "https://github.com/kzarzycki/agent-skills"  # the pack's repo, whose releases are PACK_RELEASE tags
+PACK_RELEASE = r"engineering-v\d+\.\d+\.\d+"
+# a brief's own pin of the pack: a line `Pack: engineering-vX.Y.Z`, written on purpose
+PACK_PIN = re.compile(rf"^Pack:[ \t]*`?({PACK_RELEASE})`?[ \t]*$", re.MULTILINE)
+
+
+def pack_latest() -> str:
+    """The shell that prints the pack's newest release tag (PACK_RELEASE) in the VM when it runs, sorted as versions:
+    `git ls-remote` reads git's refs, which costs no GitHub API quota."""
+    return (
+        f"\"$(git ls-remote --tags --refs {PACK_URL} 'engineering-v*'"
+        " | sed 's,.*refs/tags/,,' | sort -V | tail -1)\""
+    )
+
+
+def pack_line(brief: str) -> str:
+    """A cloud session's line on where the pack's scripts come from (#1987): a clone of the newest release, resolved
+    in the VM at run time, or of the release ``brief`` pins with a ``Pack:`` line; never the checkout's vendored copy,
+    which its pin may hold releases behind. The pack's own repo runs its plugin folders at the checked-out head."""
+    pin = PACK_PIN.search(brief)
+    ref, which = (
+        (pin[1], f"the release this brief pins, {pin[1]}")
+        if pin
+        else (pack_latest(), "its latest release")
+    )
+    return (
+        f"The pack's scripts (the loop's, its gate's, this driver's): run them from a clone of {which},"
+        f' `git clone -q --depth 1 --branch {ref} {PACK_URL} "$HOME/pack"`, each skill\'s from its folder there'
+        " (`$HOME/pack/<plugin>/skills/<skill>/scripts/`), never from the checkout's vendored `.agents/skills` or"
+        " `.claude/skills` copy, whose pin may be releases old. In a checkout of the pack's own repo, run its"
+        " plugin folders at the checkout instead.\n"
+    )
+
+
+def cloud_preamble(preamble: str, pr: int | None, brief: str = "") -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
-    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_HELPER``, ``CLOUD_BRANCHES`` and ``CLOUD_NO_PUSH`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_HELPER``, ``CLOUD_BRANCHES``, ``CLOUD_NO_PUSH``, ``CLOUD_GH_QUOTA`` and
+    ``pack_line(brief)`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
@@ -1084,6 +1149,8 @@ def cloud_preamble(preamble: str, pr: int | None) -> str:
         + CLOUD_HELPER
         + CLOUD_BRANCHES
         + CLOUD_NO_PUSH
+        + CLOUD_GH_QUOTA
+        + pack_line(brief).replace("{", "{{").replace("}", "}}")  # the preamble is format()ted
         + "\n"
     )
 
@@ -1152,18 +1219,41 @@ def pr_ref(text: str) -> PrRef:
     return ref
 
 
-def pr_repo(pr: int, workspace: str | Path | None, local: bool = True) -> str:
+def pr_repo(
+    pr: int,
+    workspace: str | Path | None,
+    local: bool = True,
+    far: tuple[Any, str] | None = None,
+) -> str:
     """The repository of PR ``pr``: the slug it was named with, else that of ``workspace`` when it is a
-    local checkout on this host (``local``), else of the current directory. Refused, naming ``--pr owner/repo#N``, when none resolves."""
+    local checkout on this host (``local``), else, for a workspace on another host, its ``origin`` read through
+    that host's file API (``far``: the server and the host id). Never the current directory's repository for a
+    workspace on another host. Refused, naming ``--pr owner/repo#N``, when none resolves."""
     if repo := getattr(pr, "repo", ""):
         return repo
-    here = Path(workspace) if local and workspace and (Path(workspace) / ".git").exists() else None
     try:
+        if not local:
+            if not (far and workspace):
+                raise Fail("the workspace is on another host")
+            og, host_id = far
+            root = far_checkout_root(og, host_id, str(workspace), "the PR's repository")
+            if root is None:
+                raise Fail(f"{workspace} is no checkout on that host")
+            return far_origin_slug(og, host_id, root, "to name the PR's repository")
+        here = Path(workspace) if workspace and (Path(workspace) / ".git").exists() else None
         return repo_slug(here) if here else repo_slug()
     except Fail as e:
         raise Fail(
             f"--pr {pr}: no repository to read it from ({e}); name it as --pr owner/repo#{pr}"
         ) from e
+
+
+def pr_where(
+    og: Omnigent, pr: int, workspace: str | Path | None, host_id: str | None
+) -> tuple[int, str | Path | None, bool, tuple[Omnigent, str] | None]:
+    """``pr_repo``'s arguments for a start on ``host_id``: whether its workspace is on this host, and else where."""
+    local = not host_id or host_id == og.host_id
+    return pr, workspace, local, None if local else (og, str(host_id))
 
 
 def pr_slug(pr: int) -> str:
@@ -1236,9 +1326,17 @@ def write_failed(og: Omnigent, sid: str | None, report: Path, e: Fail) -> None:
         print(f"{report}: FAILED line not written: {reason(err)}", file=sys.stderr)
 
 
+RESET_JITTER = 180.0  # most seconds of random delay added to a wait for GitHub's rate-limit reset
+
+
 class RateLimited(Fail):
     """GitHub refused for its rate limit; ``wait`` is the seconds until the limit resets. A poller sleeps
     that long, since retrying early keeps the limit drained for every project on the account."""
+
+    def jittered(self) -> float:
+        """``wait`` plus up to RESET_JITTER random seconds, so the pollers that waited on one reset resume over a
+        few minutes, not all in its first second, when the burst would drain the fresh bucket at once."""
+        return self.wait + random.uniform(0, RESET_JITTER)
 
     def __init__(self, message: str, wait: float):
         super().__init__(message)
@@ -4749,19 +4847,13 @@ def start(
         return Fail(reason + left)
 
     # the PR's repository, before any session exists: a failure here leaves nothing to abandon (#1167)
-    slug = (
-        pr_repo(pr, workspace, not host_id or host_id == og.host_id)
-        if pr and not reviews(role)
-        else ""
-    )
+    slug = pr_repo(*pr_where(og, pr, workspace, host_id)) if pr and not reviews(role) else ""
     # a verifier's PR label, set at create: a repository that doesn't resolve leaves the bare number,
     # since on a verifier the label is telemetry only (reap holds no verifier) and never stops a start
     label = ""
     if about and reviews(role):
         try:
-            label = (
-                f"{pr_repo(about, workspace, not host_id or host_id == og.host_id)}#{int(about)}"
-            )
+            label = f"{pr_repo(*pr_where(og, about, workspace, host_id))}#{int(about)}"
         except Fail:
             label = f"#{int(about)}"
     # one running session per PR and role (#1806): a second worker or verifier started while the first runs repeats its
@@ -5500,9 +5592,9 @@ def required_pending(info: dict, repo: str = "") -> bool:
     """Whether a check the base branch requires is queued or running on the PR's head (``info`` from ``pr_info``).
     A required check no run has registered is not pending, so a check that never starts cannot hold a wait live for
     good. Needs no producer."""
-    # ponytail: `--cache` bounds the reads to one a minute per URL; an ETag read would spare the quota entirely
+    # ETag reads (rest_if_changed): an unchanged rule set or run list answers 304, which costs no quota (#1984)
     slug = repo or "{owner}/{repo}"
-    rules = json.loads(gh("api", "--cache", "1m", f"repos/{slug}/rules/branches/{info['base']}"))
+    rules = rest_if_changed(f"repos/{slug}/rules/branches/{info['base']}")[1]
     required = {
         c["context"]
         for rule in rules
@@ -5511,7 +5603,7 @@ def required_pending(info: dict, repo: str = "") -> bool:
     }
     if not required or info["state"] != "open":
         return False
-    runs = json.loads(gh("api", "--cache", "1m", f"repos/{slug}/commits/{info['sha']}/check-runs"))
+    runs = rest_if_changed(f"repos/{slug}/commits/{info['sha']}/check-runs")[1]
     return any(
         r.get("name") in required and r.get("status") != "completed"
         for r in runs.get("check_runs", [])
@@ -5584,14 +5676,80 @@ COMMITS: dict[
 ] = {}  # git/commits/<sha> answers, kept for the process: a sha's commit is immutable
 
 
+ETAGS: dict[
+    str, tuple[str, Any]
+] = {}  # rest_if_changed's last answer for each REST path: (its ETag, the parsed body)
+ETAGS_KEPT = 256  # the most paths ETAGS keeps; the oldest read goes first
+# a 304 as gh reports it: the status line `gh api -i` prints, or its error `gh: HTTP 304` where it exits 1 on one
+NOT_MODIFIED = re.compile(r"\bHTTP(?:/[\d.]+)? 304\b")
+
+
+def rest_if_changed(path: str, timeout: float = HTTP_SECONDS) -> tuple[bool, Any]:
+    """REST ``path`` (``repos/...``) read with the ETag of its last read (``If-None-Match``): (False, the kept answer) on
+    GitHub's 304, which costs no quota, else (True, the answer), keeping its ETag (#1984). The first read of a path is a
+    plain one."""
+    known = ETAGS.get(path)
+    args = ["api", "-i", *(["-H", f"If-None-Match: {known[0]}"] if known else []), path]
+    try:
+        out = gh(*args, timeout=timeout)
+    except Fail as e:
+        if known and NOT_MODIFIED.search(f"{getattr(e.__cause__, 'stdout', '') or ''}\n{e}"):
+            return False, known[1]
+        raise
+    out = out.replace("\r\n", "\n")
+    if not out.startswith(
+        "HTTP/"
+    ):  # no status line (a gh that prints no headers): the body alone, no ETag kept
+        return True, json.loads(out or "{}")
+    head, _, body = out.partition("\n\n")
+    if known and NOT_MODIFIED.search(head.split("\n", 1)[0]):
+        return False, known[1]
+    found = json.loads(body or "{}")
+    if tag := re.search(r"(?im)^etag:[ \t]*(\S[^\n]*?)[ \t]*$", head):
+        ETAGS.pop(path, None)  # newest last, so the oldest goes first
+        ETAGS[path] = (tag[1], found)
+        while len(ETAGS) > ETAGS_KEPT:  # a supervisor runs for days, one head after another
+            del ETAGS[next(iter(ETAGS))]
+    return True, found
+
+
+def pr_rest_view(pr: int, until: str, timeout: float) -> dict:
+    """PR ``pr``'s state and, for ``until`` ``checks``, its head's checks, in ``pr_view``'s shape, from ETag reads
+    (rest_if_changed) of the pull, its head's check runs and its combined status, so a round where none moved costs no
+    quota (#1984). The answer is GitHub's REST alone, never a second read that could trail it."""
+    pull = rest_if_changed(f"repos/{{owner}}/{{repo}}/pulls/{pr}", timeout)[1]
+    state = "MERGED" if pull.get("merged") or pull.get("merged_at") else str(pull["state"]).upper()
+    data: dict = {"state": state, "headRefOid": pull["head"]["sha"]}
+    if until != "checks":
+        return data
+    head = pull["head"]["sha"]
+    runs = rest_if_changed(
+        f"repos/{{owner}}/{{repo}}/commits/{head}/check-runs?per_page=100", timeout
+    )[1]
+    status = rest_if_changed(f"repos/{{owner}}/{{repo}}/commits/{head}/status", timeout)[1]
+    data["statusCheckRollup"] = [
+        {
+            "name": r.get("name"),
+            "status": str(r.get("status") or "").upper(),
+            "conclusion": str(r.get("conclusion") or "").upper(),
+        }
+        for r in runs.get("check_runs") or []
+    ] + [
+        {"context": c.get("context"), "state": str(c.get("state") or "").upper()}
+        for c in status.get("statuses") or []
+    ]
+    return data
+
+
 def pr_rest(path: str, end: float, pages: bool = False) -> Any:
     """``repos/{owner}/{repo}/<path>`` through REST (``{owner}/{repo}`` from this clone, which a launch dir with no
-    working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list."""
+    working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list. A single read
+    carries its last ETag (rest_if_changed), so a poll of an unchanged path costs no quota."""
     timeout = max(0.01, min(HTTP_SECONDS, end - time.monotonic()))
     if not pages:
         if path in COMMITS:  # a commit never changes
             return COMMITS[path]
-        got = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/{path}", timeout=timeout))
+        got = rest_if_changed(f"repos/{{owner}}/{{repo}}/{path}", timeout)[1]
         if path.startswith("git/commits/"):
             COMMITS[path] = got
         return got
@@ -6000,7 +6158,10 @@ def wait_for(
                     extra = {"seen": seen} if until == "verdict" else {}
                     if outcome := settled(pr, time.monotonic() + left, since, **extra):
                         return outcome
-                elif outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
+                # REST alone, through ETags: a round where nothing moved costs no quota (#1984)
+                elif outcome := pr_outcome(
+                    pr, until, left, data=pr_rest_view(pr, until, min(HTTP_SECONDS, left))
+                ):
                     return outcome
             except RateLimited as e:  # retrying keeps the limit drained: sleep to its reset
                 print(
@@ -6008,7 +6169,7 @@ def wait_for(
                     file=sys.stderr,
                     flush=True,
                 )
-                time.sleep(min(e.wait, max(deadline - time.monotonic(), 0)))
+                time.sleep(min(e.jittered(), max(deadline - time.monotonic(), 0)))
                 continue
             except BLIPS:  # a GitHub blip: the next poll asks again
                 pass
@@ -7572,6 +7733,8 @@ def fresh_state() -> dict:
         "rate": {"next_post_at": 0, "model_calls": []},
         "notify_label": {},
         "heads": {},
+        "stalled": {},  # each repo's PRs `check stalled` listed last, by number: the head it named
+        "stalled_blind": {},  # each repo whose last sweep judged none of its PRs: the first reason
         "events": {},  # loop event refs: sha, stamp (when it last moved), state, beat, told
         "pr_stalls": {},  # per watched repo, what ``pr_stalls`` keeps between sweeps
     }
@@ -8006,6 +8169,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         kind = "ended"
     if kind == "landed":  # read from the repo, never from the lead's words
         return "rule", "act", "its default branch moved: a step owed after a landing"
+    if kind == "stalled":  # read from the repo's gatekeeper, never from the lead's words
+        return "rule", "act", "an approved, verified PR its queue never took: land it or flag it"
     if kind == "pr-stall":  # read from GitHub, never from a lead's words
         return "rule", "act", "a PR stalled: clear its blocker, or card the owner the fix"
     if kind == "archived":
@@ -8244,6 +8409,46 @@ def reloadable(script: Path, seen: dict[str, int]) -> bool:
         )
         return False
     return True
+
+
+class Sweep:
+    """One `check stalled` run in the checkout at ``workspace``, through the installed gatekeeper (``installed``,
+    outside the checkout, so it judges by the base's code and policy), started detached so the supervisor's poll goes
+    on: ``done`` is its exit once it has ended, else None; ``output`` its stdout and stderr together; ``stop`` kills
+    it. A gatekeeper that is not installed, or no ``uv`` to run it, is a ``Fail`` at the start."""
+
+    def __init__(self, workspace: str) -> None:
+        folder = installed("gatekeeper")
+        if folder is None:
+            raise Fail("check stalled: the landing checks are not installed beside this skill")
+        self.out = tempfile.TemporaryFile()  # noqa: SIM115 - outlives this call: closed by output or stop
+        try:
+            self.proc = subprocess.Popen(
+                ["uv", "run", "-q", "--script", str(folder / "gatekeeper.py"), "check", "stalled"],
+                cwd=workspace,
+                stdin=subprocess.DEVNULL,
+                stdout=self.out,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except OSError as e:
+            self.out.close()
+            raise Fail(f"check stalled not started in {workspace}: {e}") from e
+
+    def done(self) -> int | None:
+        return self.proc.poll()
+
+    def output(self) -> str:
+        self.out.seek(0)
+        text = self.out.read().decode(errors="replace")
+        self.out.close()
+        return text
+
+    def stop(self) -> None:
+        with contextlib.suppress(OSError):
+            os.killpg(self.proc.pid, signal.SIGKILL)
+        self.proc.wait()
+        self.out.close()
 
 
 def supervise_registry(
@@ -9016,7 +9221,7 @@ def supervise_registry(
             try:
                 sha = default_head(repo)
             except RateLimited as e:
-                limited[0] = time.monotonic() + e.wait
+                limited[0] = time.monotonic() + e.jittered()
                 headed.pop(repo, None)
                 log(
                     ("head", repo),
@@ -9065,6 +9270,109 @@ def supervise_registry(
                     )
             heads[repo] = sha
 
+    sweeps: dict[
+        str, tuple[Sweep, float, str]
+    ] = {}  # each repo's `check stalled` still running: began, lead
+    stalled_swept: dict[str, float] = {}  # when each repo's last `check stalled` began (monotonic)
+
+    def stalled_sweep() -> None:
+        """Run `check stalled` (``Sweep``) at most once per ``STALLED_SECONDS`` for each repo a followed lead not
+        marked ``direct`` works in, as ``landings`` reads them, in the first such lead's workspace that is a
+        checkout on this host (its info read only when a sweep is due); never while GitHub's rate limit holds. It
+        runs detached: each poll looks whether it has ended, and stops it past ``STALLED_TIMEOUT``. Each PR it lists
+        is said once per head and kind of line (idle on a go or record, or landable) as a ``stalled`` event on that lead (the repo's PRs listed last time are kept in the
+        state's ``stalled``), so an hourly sweep reports a stuck PR once, and again only after it left the listing or
+        its head moved; a PR it could not judge keeps what was listed for it, so a sweep that skips it says it
+        again only at a new head. A PR it could not judge, and a sweep that failed, are logged, once until they
+        clear; a sweep that judged none of the repo's open PRs (its last line, ``<n> of <n> open PRs not judged
+        here``) is said once, as a ``stalled`` event naming the first reason, since its silence would read as
+        nothing stalled (the state's ``stalled_blind``, cleared once a sweep judges again)."""
+        known = state.setdefault("stalled", {})
+        for repo, (sweep, began, sid) in list(sweeps.items()):
+            if (code := sweep.done()) is None:
+                if time.monotonic() - began > STALLED_TIMEOUT:
+                    sweep.stop()
+                    del sweeps[repo]
+                    log(
+                        ("stalled", repo),
+                        f"{repo}: check stalled ran past {STALLED_TIMEOUT:.0f}s: stopped",
+                    )
+                continue
+            del sweeps[repo]
+            out = [line.strip() for line in sweep.output().splitlines() if line.strip()]
+            if code not in (0, 1):
+                last = out[-1] if out else "no output"
+                log(("stalled", repo), f"{repo}: check stalled exited {code}: {last}")
+                continue
+            log(("stalled", repo), None)
+            # each PR by its head and the kind of its line: on one head a go turns an idle line (`missing: go`)
+            # into a landable one, which is news, while the idle line's hours growing is not
+            listed = {
+                m[1]: (f"{m[2]}:{'idle' if ': missing: ' in line else 'landable'}", line)
+                for line in out
+                if (m := STALLED_LINE.fullmatch(line))
+            }
+            unjudged = {m[1]: m[2] for line in out if (m := UNJUDGED_LINE.fullmatch(line))}
+            for number, why in unjudged.items():
+                log(("unjudged", repo, number), f"{repo}: PR #{number} is not judged here: {why}")
+            before = known.get(repo) or {}
+            blind = state.setdefault("stalled_blind", {})
+            count = next((m for line in out if (m := SKIPPED_LINE.fullmatch(line))), None)
+            if count and count[1] == count[2] and unjudged:
+                why = next(iter(unjudged.values()))
+                if blind.get(repo) != why:
+                    blind[repo] = why
+                    say(
+                        f"{repo}: check stalled judged none of its {count[2]} open PRs: {why}",
+                        sid,
+                        f"stalled-blind:{repo}:{hashlib.sha1(why.encode()).hexdigest()[:12]}",
+                        "stalled",
+                    )
+            else:
+                blind.pop(repo, None)
+            known[repo] = {number: seen for number, (seen, _) in listed.items()} | {
+                number: before[number] for number in unjudged if number in before
+            }
+            for number, (seen, line) in listed.items():
+                if before.get(number) != seen:
+                    step = (
+                        "ask its approver for what it is missing"
+                        if ": missing: " in line
+                        else f"land it (`land {number} --only`) or flag it"
+                    )
+                    say(
+                        f"{repo}: {line}: {step}",
+                        sid,
+                        f"stalled:{repo}#{number}:{seen}",
+                        "stalled",
+                    )
+        if time.monotonic() < limited[0]:  # GitHub's limit is account-wide
+            return
+        for sid, owes in owed.items():
+            repo = repos.get(sid)
+            if not owes[3] or owes[5] or not repo or repo in sweeps:
+                continue
+            if time.monotonic() - stalled_swept.get(repo, -STALLED_SECONDS) < STALLED_SECONDS:
+                continue
+            try:
+                info = looks[sid][0] if sid in looks else og.info(sid)
+            except Exception as e:  # noqa: BLE001 - read again next poll
+                log(
+                    ("stalled", repo),
+                    f"{repo}: check stalled not started: {sid} not read: {reason(e)}",
+                )
+                continue
+            workspace = str(info.get("workspace") or "")
+            if not workspace or elsewhere(og, info) or not Path(workspace).is_dir():
+                continue  # no checkout here: the repo's next lead may have one
+            stalled_swept[repo] = time.monotonic()
+            try:
+                sweeps[repo] = (Sweep(workspace), time.monotonic(), sid)
+            except Exception as e:  # noqa: BLE001 - started again at the next STALLED_SECONDS
+                log(("stalled", repo), f"{repo}: check stalled not started: {reason(e)}")
+            else:
+                log(("stalled", repo), None)
+
     swept: dict[str, float] = {}  # when each watched repo's open PRs were last listed
 
     def stalls() -> None:
@@ -9085,7 +9393,7 @@ def supervise_registry(
             try:
                 found = pr_stalls(repo, stall_after, state["pr_stalls"].setdefault(repo, {}))
             except RateLimited as e:
-                limited[0] = time.monotonic() + e.wait
+                limited[0] = time.monotonic() + e.jittered()
                 swept.pop(repo, None)
                 log(("pr-stall", repo), f"GitHub rate limit: open PRs not read for {e.wait:.0f}s")
                 continue
@@ -9897,6 +10205,10 @@ def supervise_registry(
             except Exception as e:  # noqa: BLE001 - never fatal; told again next poll
                 log("events-news", f"loop events not told: {reason(e)}")
         landings()
+        try:
+            stalled_sweep()
+        except Exception as e:  # noqa: BLE001 - never fatal; swept again next poll
+            log("stalled", f"check stalled not swept: {reason(e)}")
         stalls()
         if console:
             if read:  # a session gone from the registry leaves the state with it
