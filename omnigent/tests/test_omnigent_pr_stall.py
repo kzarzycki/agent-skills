@@ -410,3 +410,40 @@ def test_a_pr_held_by_the_queue_is_no_stall(monkeypatch) -> None:
     left = pr(13, labels=[{"name": "loop:queued"}], checks=[earlier, ended])
     unlabelled = pr(14, checks=[earlier, embarked])
     assert list(stalls(monkeypatch, [held, left, unlabelled])) == [13, 14]
+
+
+QUEUED = {"labels": [{"name": "loop:queued"}]}
+RUN = {"name": "Mergify Merge Queue", "status": "in_progress", "conclusion": None}
+DONE = {**RUN, "status": "completed", "conclusion": "failure"}
+
+
+@pytest.mark.parametrize(
+    "checks, statuses, holds",
+    [
+        ([], [{"context": "Mergify Merge Queue", "state": "pending"}], True),
+        (
+            [],
+            [
+                {"context": "Mergify Merge Queue", "state": "success"},
+                {"context": "Mergify Merge Queue", "state": "pending"},
+            ],
+            False,
+        ),
+        ([], [{"context": "ci/test", "state": "pending"}], False),
+        ([{**RUN, "started_at": "1"}, {**DONE, "started_at": "2"}], [], False),
+        ([{**DONE, "started_at": "1"}, {**RUN, "started_at": "2"}], [], True),
+    ],
+    ids=[
+        "a pending queue status",
+        "its newest status ended",
+        "a pending status of no queue",
+        "a stale running run under a newer ended one",
+        "a running run over an older ended one",
+    ],
+)
+def test_the_queue_holds_by_its_newest_check_run_or_status(
+    checks: list[dict], statuses: list[dict], holds: bool
+) -> None:
+    """A queue that reports through a commit status holds a PR as one with a check run does; each check or
+    status context is read at its newest run (statuses come newest first), so an older one never decides."""
+    assert omnigent_agent.queue_holds(QUEUED, checks, statuses) is holds

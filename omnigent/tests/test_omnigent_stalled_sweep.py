@@ -431,3 +431,29 @@ def test_a_failed_re_read_says_the_line(
     base.supervised(og, registry, monkeypatch, 2, notify="cos")
     assert told(og) == [f"Supervisor: o/r: {line(5, A)}: land it (`land 5 --only`) or flag it"]
     assert "o/r: PR #5 not read again: " in capsys.readouterr().err
+
+
+def test_a_rate_limited_re_read_says_the_rest_unread_and_backs_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub's limit is account-wide: once a re-read is refused for it, the other lines are said as the sweep read
+    them, with no read each, and the next sweep waits for the reset."""
+    og, registry = lead(tmp_path, monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "STALLED_SECONDS", 0)
+    earlier, reads = omnigent_agent.gh, []
+
+    def gh(*args: str, timeout: float = 0) -> str:
+        if any(a.startswith("repos/o/r/pulls/") for a in args):
+            reads.append(args)
+            raise omnigent_agent.RateLimited("API rate limit exceeded", 3600)
+        return earlier(*args, timeout=timeout)
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    sweeps = Sweeps(monkeypatch, (1, f"{line(5, A)}\n{line(6, B)}\n"), (1, ""))
+    base.supervised(og, registry, monkeypatch, 3, notify="cos")
+    assert [t.split(" has ")[0] for t in told(og)] == [
+        "Supervisor: o/r: PR #5",
+        "Supervisor: o/r: PR #6",
+    ]
+    assert len(reads) == 1
+    assert len(sweeps.started) == 1  # no second sweep before the reset

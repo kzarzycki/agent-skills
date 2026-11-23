@@ -9753,12 +9753,13 @@ def supervise_registry(
             }
             for number, (seen, line) in listed.items():
                 if before.get(number) != seen:
+                    gone = None  # said as the sweep read it, under GitHub's account-wide limit too
                     try:
-                        gone = stalled_gone(repo, number, seen.split(":")[0])
-                    except Exception as e:  # noqa: BLE001 - said as the sweep read it: a hiccup never hides a stall
+                        if time.monotonic() >= limited[0]:
+                            gone = stalled_gone(repo, number, seen.split(":")[0])
+                    except Exception as e:  # noqa: BLE001 - a hiccup never hides a stall
                         if isinstance(e, RateLimited):
                             limited[0] = time.monotonic() + e.jittered()
-                        gone = None
                         log(
                             ("stalled", repo, number),
                             f"{repo}: PR #{number} not read again: {reason(e)}",
