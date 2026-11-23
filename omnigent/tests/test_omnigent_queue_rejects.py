@@ -267,18 +267,52 @@ def test_dequeue_relays_to_worker_parent_lead(tmp_path, monkeypatch) -> None:
 
 
 def test_dequeue_unarchives_lead(tmp_path, monkeypatch) -> None:
+    """The archived lead is reached through ``relay``'s own unarchive, which runs before the send."""
     registry, og = fleet(
         tmp_path, L={"labels": {"omni.role": "lead", "omni.pr": "o/r#12"}, "archived": True}
     )
     gh = GitHub(monkeypatch)
     gh.comments.append(comment(100, 12, jobs=(7,)))
     order: list[str] = []
+    asked: list[dict] = []
+    real_relay = omnigent_agent.relay
+
+    def relay(og_, sid, text, *a, **kw):
+        asked.append({"sid": sid, **kw})
+        return real_relay(og_, sid, text, *a, **kw)
+
+    monkeypatch.setattr(omnigent_agent, "relay", relay)
     unarchive, send = og.unarchive, og.send
     og.unarchive = lambda sid: (order.append(f"unarchive {sid}"), unarchive(sid))[1]
     og.send = lambda sid, text: (order.append(f"send {sid}"), send(sid, text))[1]
     run(og, registry, monkeypatch, 2)
+    assert [a for a in asked if a["sid"] == "L"] == [{"sid": "L", "unarchive": True}]
     assert order[:2] == ["unarchive L", "send L"]
     assert [s for s, _ in relays(og, 12)] == ["L"]
+
+
+def test_dequeue_host_offline_retries(tmp_path, monkeypatch) -> None:
+    """The lead's host is offline on the first poll: nothing is sent and no act event raised; the next poll
+    delivers it, once."""
+    registry, og = fleet(tmp_path, L={"labels": {"omni.role": "lead", "omni.pr": "o/r#12"}})
+    og.snaps["L"].update(host_online=False)
+    og.offline.add("L")
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+
+    def back(poll: int) -> None:
+        if poll == 1:
+            assert not relays(og, 12)
+            og.snaps["L"].pop("host_online")
+            og.offline.discard("L")
+
+    run(og, registry, monkeypatch, 4, back)
+    assert [s for s, _ in relays(og, 12)] == ["L"]
+    assert not acts(og, "not delivered") and not acts(og, "o/r#12")
+    assert [e["id"] for e in events_of(registry) if e["kind"] == "dequeued"] == [
+        "dequeued:o/r:100",
+        "dequeued:o/r:100:1",
+    ]
 
 
 def test_a_followed_lead_whose_wait_names_the_pr_owns_it(tmp_path, monkeypatch) -> None:
@@ -411,6 +445,13 @@ def test_flake_told_apart(tmp_path, monkeypatch) -> None:
     assert counts["flakes"] == {"t::flaky": [12, 13, 14]}
 
 
+def test_two_prs_make_a_flake_and_one_does_not() -> None:
+    two = queue((1, 1, "dequeued", ("t::a",)), (2, 2, "dequeued", ("t::a",)))
+    assert omnigent_agent.queue_counts(two["entries"])["flakes"] == {"t::a": [1, 2]}
+    one = queue((1, 1, "dequeued", ("t::a",)), (2, 1, "dequeued", ("t::a",)))  # the same PR twice
+    assert omnigent_agent.queue_counts(one["entries"])["flakes"] == {}
+
+
 def test_window_prunes(monkeypatch) -> None:
     gh = GitHub(monkeypatch)
     gh.comments += [
@@ -532,11 +573,3 @@ def test_a_failed_pr_listing_still_reads_the_queue(tmp_path, monkeypatch) -> Non
     gh.pulls_down = True
     run(og, registry, monkeypatch, 2)
     assert [s for s, _ in relays(og, 12)] == ["L"]
-
-
-def test_unarchive_patches_the_session_back() -> None:
-    calls = []
-    og = omnigent_agent.Omnigent.__new__(omnigent_agent.Omnigent)
-    og.call = lambda method, path, body=None, **kw: calls.append((method, path, body)) or {}
-    og.unarchive("s1")
-    assert calls == [("PATCH", "/v1/sessions/s1", {"archived": False})]

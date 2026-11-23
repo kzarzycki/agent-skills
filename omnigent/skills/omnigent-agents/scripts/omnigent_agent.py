@@ -1989,11 +1989,6 @@ class Omnigent:
         which can take about a minute, so it gets ``ARCHIVE_SECONDS``."""
         self.call("PATCH", f"/v1/sessions/{sid}", {"archived": True}, timeout=ARCHIVE_SECONDS)
 
-    def unarchive(self, sid: str) -> None:
-        """Bring archived ``sid`` back, its history kept, so a relay reaches it (``relay`` refuses an archived
-        session): the same PATCH as ``archive``, with ``archived: false``."""
-        self.call("PATCH", f"/v1/sessions/{sid}", {"archived": False}, timeout=ARCHIVE_SECONDS)
-
     def find(self, title: str, after: float, top_level: bool = False) -> str | None:
         """The parent's child called ``title`` created at or after ``after`` (epoch seconds): the
         session a create that failed in transit made anyway. None when there is no parent. With
@@ -8987,15 +8982,18 @@ def supervise_registry(
         for intent in intents:
             sid, action, text = intent["session"], intent["action"], intent["text"]
             try:
-                info = og.info(sid)
-                if action == "dequeued" and info.get("archived"):  # it resumes with its history
-                    og.unarchive(sid)
-                    info = og.info(sid)
-                if prompts_of(info):  # the text would wait unread behind it
+                if prompts_of(og.info(sid)):  # the text would wait unread behind it
                     raise Fail("it waits on a prompt, which the supervisor never answers")
-                relay(og, sid, text, ACTION_SECONDS)
+                # a dequeue reaches an archived lead too: unarchived, it resumes with its history
+                relay(og, sid, text, ACTION_SECONDS, unarchive=action == "dequeued")
             except (Queued, SentUnconfirmed):
                 pass  # held behind a prompt or question, or out and unconfirmed: it lands or landed
+            except HostOffline as e:  # nothing sent: whoever raised the event sends it again
+                intent["status"] = "offline"
+                print(
+                    stamp(f"{intent['id']}: not sent, sent again next poll: {reason(e)}"),
+                    flush=True,
+                )
             except Exception as e:  # noqa: BLE001 - never fatal; the chief of staff is told
                 intent["status"] = "failed"
                 head = f"{sid} {state['leads'].get(sid, {}).get('title') or ''}".rstrip()
@@ -9161,7 +9159,7 @@ def supervise_registry(
             }
         elif action == "tell":
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
-        elif action == "relay":  # a dequeue to its PR's lead, unarchived first by act_on
+        elif action == "relay":  # a dequeue to its PR's lead, which ``relay`` unarchives first
             act_on(eid, [(sid, "dequeued", f"Supervisor: {line}")])
         elif action in ("act", "owner") or action == "done" and not event["direct"]:
             item = line if kind in ("loop-owner", "dequeued") else line.splitlines()[0]
@@ -9783,7 +9781,18 @@ def supervise_registry(
                 log(("queue-sessions", repo), None)
             lead = pr_lead(repo, entry["pr"], sessions)
             entry["told"] = True  # on disk with the event it raises: each comment is sent once
-            say(dequeue_message(repo, entry, flakes), lead, f"dequeued:{repo}:{cid}", "dequeued")
+            tries = entry.get(
+                "tries", 0
+            )  # each try its own event: a settled id is never settled again
+            eid = f"dequeued:{repo}:{cid}" + (f":{tries}" if tries else "")
+            say(dequeue_message(repo, entry, flakes), lead, eid, "dequeued")
+            if any(
+                i["id"] == f"dequeued:{lead}:{eid}" and i["status"] == "offline"
+                for i in state["intents"]
+            ):
+                entry.update(
+                    told=False, tries=tries + 1
+                )  # its lead's host is offline: next poll again
         for eid, kind, line in queue_alarms(repo, memo):
             say(line, sid, eid, kind)
 
