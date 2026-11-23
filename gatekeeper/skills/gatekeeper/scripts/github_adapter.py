@@ -334,6 +334,7 @@ def forget() -> None:
     wait_until = None
     viewer_login.clear()
     kept.clear()
+    etags.clear()
     quota_left.clear()
 
 
@@ -480,6 +481,38 @@ def fast(graphql: Callable[[], Answer], rest: Callable[[], Answer]) -> Answer:
 
 def rest(path: str) -> Any:
     return json.loads(gh("api", path))
+
+
+# rest_if_changed's last answer for each path: (its ETag, the parsed body)
+etags: dict[str, tuple[str, Any]] = {}
+# a 304 as gh reports it: the status line `gh api -i` prints, or its error `gh: HTTP 304` where it exits 1 on one
+NOT_MODIFIED = re.compile(r"\bHTTP(?:/[\d.]+)? 304\b")
+
+
+def rest_if_changed(path: str) -> tuple[bool, Any]:
+    """REST `repos/{owner}/{repo}/<path>` read with the ETag of its last read (`If-None-Match`): (False, the kept answer)
+    on GitHub's 304, which costs no quota, else (True, the answer), keeping its ETag (#1915). The first read of a path
+    is a plain one."""
+    known = etags.get(path)
+    args = [
+        "api",
+        "-i",
+        *(["-H", f"If-None-Match: {known[0]}"] if known else []),
+        f"repos/{{owner}}/{{repo}}/{path}",
+    ]
+    try:
+        out = gh(*args)
+    except subprocess.CalledProcessError as exc:
+        if known and NOT_MODIFIED.search(f"{exc.stdout or ''}\n{exc.stderr or ''}"):
+            return False, known[1]
+        raise
+    head, _, body = out.replace("\r\n", "\n").partition("\n\n")
+    if known and NOT_MODIFIED.search(head.split("\n", 1)[0]):
+        return False, known[1]
+    found = json.loads(body or "{}")
+    if tag := re.search(r"(?im)^etag:[ \t]*(\S[^\n]*?)[ \t]*$", head):
+        etags[path] = (tag[1], found)
+    return True, found
 
 
 def rest_pages(path: str, items: str = ".[]") -> list[Any]:
