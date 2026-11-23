@@ -573,3 +573,49 @@ def test_a_failed_pr_listing_still_reads_the_queue(tmp_path, monkeypatch) -> Non
     gh.pulls_down = True
     run(og, registry, monkeypatch, 2)
     assert [s for s, _ in relays(og, 12)] == ["L"]
+
+
+def test_a_labelled_lead_wins_over_another_leads_worker(tmp_path, monkeypatch) -> None:
+    """``w`` (listed first) is a worker labelled with the PR under lead ``Y``; lead ``X`` carries the label itself."""
+    registry, og = fleet(
+        tmp_path,
+        w={"labels": {"omni.pr": "o/r#12", "omni.role": "worker"}, "parent_session_id": "Y"},
+        Y={"labels": {"omni.role": "lead"}},
+        X={"labels": {"omni.role": "lead", "omni.pr": "o/r#12"}},
+    )
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    run(og, registry, monkeypatch, 2)
+    assert [s for s, _ in relays(og, 12)] == ["X"]
+
+
+def test_a_wait_on_another_pr_owns_nothing(tmp_path, monkeypatch) -> None:
+    registry, og = fleet(tmp_path)
+    og.histories["a"][-1] = ending("STILL WORKING: waiting on the queue\nWaits: o/r#13", 8000)
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    run(og, registry, monkeypatch, 2)
+    assert not [s for s, _ in relays(og, 12) if s == "a"]
+    assert len(acts(og, "o/r#12")) == 1
+
+
+def test_a_failed_checks_dequeue_with_no_test_found_is_a_rejection() -> None:
+    memo = queue((1, 1, "merged", ()), (2, 2, "dequeued", ()))
+    assert omnigent_agent.queue_counts(memo["entries"])["rejected"] == ["2"]
+
+
+@pytest.mark.parametrize(
+    "kind, session, action",
+    [
+        ("dequeued", "L", "relay"),
+        ("dequeued", "", "act"),
+        ("queue-rejects", "", "act"),
+        ("queue-flake", "", "act"),
+    ],
+)
+def test_queue_events_route_by_rule(kind, session, action) -> None:
+    def ask():
+        raise AssertionError("no model call")
+
+    event = {"kind": kind, "session": session, "last": "", "line": "x"}
+    assert omnigent_agent.route(event, ask)[:2] == ("rule", action)
