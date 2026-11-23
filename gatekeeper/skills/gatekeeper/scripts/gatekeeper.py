@@ -5444,14 +5444,18 @@ def closes_nothing(
 ) -> list[str]:
     """A line when the PR closes no open issue: GitHub lists a PR in an issue's Development panel (and the issue in
     the PR's) only for a closing keyword, so a PR that only says `Part of #n` shows on no issue. A slice of an epic closes
-    its own sub-issue, never the epic. A PR naming no issue at all is problems()'s refusal, not repeated here; a revert has its own path (gated) and a verified
-    release pin bump (pin_target) is exempt."""
+    its own sub-issue, never the epic. A PR naming no issue at all is problems()'s refusal, not repeated here; a revert has its own path (gated),
+    and a verified release pin bump (pin_target) and a PR a `bot` section covers (exempting: the release workflow's
+    fold, whose `Part of` names a standing release epic that stays open across releases) are exempt."""
     if not issues:
         return []
     mine = closed(pull, pull["baseRepository"]["nameWithOwner"], loop)
     if any(i["number"] in mine and str(i.get("state", "OPEN")).upper() == "OPEN" for i in issues):
         return []
     if pin_target(pull) is not None:  # a verified release pin bump has no issue to close
+        return []
+    # a bot's PR, the release fold among them, finishes no issue of its own
+    if exempting(pull, loop) is not None:
         return []
     return [
         (
