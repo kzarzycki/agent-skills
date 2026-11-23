@@ -7833,8 +7833,9 @@ def mergify_step(pull: dict[str, Any]) -> int:
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
     (QUEUED and a `land` success there since land's last eviction at it, queued_here), left alone (exit 0); else
     queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
-    `.mergify.yml`'s conditions unmet, and QUEUED, and at a head land evicted before, REQUEUE (requeue) (exit 0). A DEQUEUED label on a head land does not hold queued (a push
-    since, or land's own eviction, which Mergify labels too) is stale, and comes off."""
+    `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). Either way, at a head land evicted before, REQUEUE once
+    per hand-over (requeue), so a command GitHub refused is posted by the next land. A DEQUEUED label on a head land
+    does not hold queued (a push since, or land's own eviction, which Mergify labels too) is stale, and comes off."""
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
     labels = {each["name"] for each in pull["labels"]["nodes"]}
     try:
@@ -7844,19 +7845,29 @@ def mergify_step(pull: dict[str, Any]) -> int:
                 mergify_evict(pull, labels)
                 return 1
             label(number, DEQUEUED, add=False)
-        if QUEUED in labels and ours:
-            print(f"{where} is queued for Mergify at {head}")
-            return 0
-        refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
-        if QUEUED not in labels:
-            label(number, QUEUED, add=True)
-        if refused is not None:
-            handed_by_record(pull)
-        requeue(pull)
+        queued = QUEUED in labels and ours
+        if not queued:
+            refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
+            if QUEUED not in labels:
+                label(number, QUEUED, add=True)
+            if refused is not None:
+                handed_by_record(pull)
     except subprocess.CalledProcessError as exc:
         print(f"{where}: GitHub refused its hand-over to Mergify at {head}: {stderr_of(exc)}")
         return 1
-    print(f"{where} queued for Mergify at {head}")
+    try:
+        requeue(pull)
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"{where} is handed over to Mergify at {head}, but GitHub refused the `{REQUEUE}` command it needs"
+            f" after its eviction there, which the next `land {number}` posts: {stderr_of(exc)}"
+        )
+        return 1
+    print(
+        f"{where} is queued for Mergify at {head}"
+        if queued
+        else f"{where} queued for Mergify at {head}"
+    )
     return 0
 
 
