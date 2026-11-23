@@ -22,89 +22,161 @@ on:
 permissions:
   contents: read
 
+# One release, one bump PR in every repository that pins the pack: this one, then each the owner lists in the
+# repository variable ENGINEERING_CONSUMERS (a JSON list of `owner/repo`, or {"repository": "owner/repo", "queue":
+# "auto-merge" | "mergify" | "none"}), so no consumer's name lives in this public repo. Each leg mints an updater App
+# token scoped to its one repository, rebuilds the bump there, and opens it ready on claude/ready-pack-bump-<tag>, the
+# branch a consumer's gatekeeper `bot.pack-bump` section names, closing any older bump PR as superseded. A leg that
+# fails stops only itself.
 jobs:
-  propose:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment: engineering-updater-publish
+    timeout-minutes: 5
+    outputs:
+      consumers: ${{ steps.matrix.outputs.consumers }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          persist-credentials: false
+      - id: matrix
+        name: List the repositories to bump
+        env:
+          ENGINEERING_CONSUMERS: ${{ vars.ENGINEERING_CONSUMERS }}
+          OWN: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          consumers=$(python3 -I tools/capability_pack/consumers.py "$OWN")
+          echo "consumers=$consumers" >> "$GITHUB_OUTPUT"
+          echo "$consumers"
+  propose:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: engineering-updater-publish
+    permissions:
+      contents: read
+      statuses: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.consumers) }}
+    env:
+      SOURCE_TAG: ${{ inputs.source_tag }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      CONSUMER: ${{ matrix.repository }}
+      QUEUE: ${{ matrix.queue }}
+      BRANCH: claude/ready-pack-bump-${{ inputs.source_tag }}
+    steps:
+      - name: Validate publication configuration
+        env:
+          APP_CONFIGURED: ${{ vars.ENGINEERING_UPDATER_APP_CONFIGURED }}
+        run: |
+          if [ "$APP_CONFIGURED" != true ]; then
+            echo 'Updater App credentials are required; no branch or PR was written.' >&2
+            exit 1
+          fi
+      - id: target
+        name: Split the consumer's owner and name
+        run: |
+          echo "owner=${CONSUMER%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${CONSUMER#*/}" >> "$GITHUB_OUTPUT"
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          app-id: ${{ secrets.UPDATER_APP_ID }}
+          private-key: ${{ secrets.UPDATER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
+      - name: Check out the pack's tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
           ref: main
+          path: pack
+          persist-credentials: false
+      - name: Check out the consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ matrix.repository }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: consumer
           fetch-depth: 0
           persist-credentials: false
       - name: Fetch exact release tag
         env:
-          SOURCE_TAG: ${{ inputs.source_tag }}
-        run: git fetch --force origin "refs/tags/$SOURCE_TAG:refs/tags/$SOURCE_TAG"
+          PACK: ${{ github.server_url }}/${{ github.repository }}.git
+        run: git -C consumer fetch --force "$PACK" "refs/tags/$SOURCE_TAG:refs/tags/$SOURCE_TAG"
       - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14
         with:
           version: 2026.9.2
           install: false
-      - run: mise install && uv sync --frozen
-      - name: Validate and prepare exact consumer update
+      - name: Install the pack's and the consumer's tools
         env:
-          SOURCE_TAG: ${{ inputs.source_tag }}
-          SOURCE_COMMIT: ${{ inputs.source_commit }}
-        run: uv run python -m tools.capability_pack.cli prepare-consumer . "$SOURCE_TAG" "$SOURCE_COMMIT"
-      - run: mise run agent-sync --refresh
-      - name: Commit generated candidate before frozen replay
-        env:
-          SOURCE_TAG: ${{ inputs.source_tag }}
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/consumer
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          (cd pack && mise install && uv sync --frozen)
+          (cd consumer && mise install)
+      - name: Validate and prepare exact consumer update
+        run: cd pack && uv run python -m tools.capability_pack.cli prepare-consumer "$GITHUB_WORKSPACE/consumer" "$SOURCE_TAG" "$SOURCE_COMMIT"
+      - name: Refresh the consumer's agent files
+        env:
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/consumer
+        run: cd consumer && mise run agent-sync --refresh
+      - name: Commit generated candidate before frozen replay
+        run: |
+          cd consumer
+          # an identity no GitHub account holds: the consumer's `bot.pack-bump` section counts it as the PR author's
+          git config user.name 'Pack bump workflow'
+          git config user.email 'pack-bump-workflow@users.noreply.invalid'
           git add --all
           if git diff --cached --quiet; then
             echo 'Consumer refresh produced no candidate changes.' >&2
             exit 1
           fi
           git commit -m "chore: adopt $SOURCE_TAG"
-      - run: mise run agent-sync --frozen
+      - name: Replay the committed bump frozen
+        env:
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/consumer
+        run: cd consumer && mise run agent-sync --frozen
       - name: Assert released Codex inventory
-        env:
-          SOURCE_TAG: ${{ inputs.source_tag }}
-          SOURCE_COMMIT: ${{ inputs.source_commit }}
-        run: mise run assert-engineering-codex-inventory -- "$SOURCE_TAG" "$SOURCE_COMMIT"
-      - id: publication-config
-        name: Validate publication configuration
-        env:
-          APP_CONFIGURED: ${{ vars.ENGINEERING_UPDATER_APP_CONFIGURED }}
-        run: test "$APP_CONFIGURED" = true
-        continue-on-error: true
-      - id: app-token
-        if: steps.publication-config.outcome == 'success'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
-        continue-on-error: true
-        with:
-          app-id: ${{ secrets.UPDATER_APP_ID }}
-          private-key: ${{ secrets.UPDATER_APP_PRIVATE_KEY }}
-      - name: Stop safely without App credentials
-        if: steps.publication-config.outcome != 'success' || steps.app-token.outcome != 'success' || steps.app-token.outputs.token == ''
-        run: |
-          echo 'Updater App credentials are required; no branch or PR was written.' >&2
-          exit 1
+        if: matrix.repository == github.repository
+        run: cd consumer && mise run assert-engineering-codex-inventory -- "$SOURCE_TAG" "$SOURCE_COMMIT"
       - name: Write consumer proposal body
-        if: steps.app-token.outputs.token != ''
-        env:
-          SOURCE_TAG: ${{ inputs.source_tag }}
-          SOURCE_COMMIT: ${{ inputs.source_commit }}
         run: |
           printf '%s\n' \
-            "Adopt \`$SOURCE_TAG\` at \`$SOURCE_COMMIT\` exactly." \
+            "Adopt \`$SOURCE_TAG\` at \`$SOURCE_COMMIT\` exactly: \`apm.yml\`'s ref, the lock and the agent files \`mise run agent-sync --refresh\` wrote, replayed with \`--frozen\`." \
             '' \
-            '- [ ] Tag workflow passed' \
-            '- [ ] After merge, run `mise run agent-sync --refresh` locally' \
-            "- [ ] Resolve PACKAGE_COMMIT from \`$SOURCE_TAG^{commit}\` and run the Codex inventory assertion locally" \
-            > /tmp/engineering-consumer-pr-body.md
-      - name: Reconcile exact consumer draft
-        if: steps.app-token.outputs.token != ''
+            "Opened by the pack's consumer sync on its release; it supersedes any older pack bump PR." \
+            > "$RUNNER_TEMP/engineering-consumer-pr-body.md"
+      - name: Reconcile the consumer's bump PR
+        id: pr
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          SOURCE_TAG: ${{ inputs.source_tag }}
         run: |
-          uv run python -m tools.capability_pack.cli reconcile-draft-pr . \
-            --branch automation/engineering-consumer-sync \
+          set -euo pipefail
+          base=$(git -C consumer rev-parse --abbrev-ref HEAD@{upstream} 2>/dev/null | sed 's|^origin/||' || true)
+          base=${base:-$(gh repo view "$CONSUMER" --json defaultBranchRef --jq .defaultBranchRef.name)}
+          queue=()
+          case "$QUEUE" in
+            mergify) queue=(--label loop:queued) ;;
+            auto-merge) queue=(--auto-merge) ;;
+          esac
+          cd pack
+          number=$(uv run python -m tools.capability_pack.cli reconcile-pr "$GITHUB_WORKSPACE/consumer" \
+            --branch "$BRANCH" --base "$base" --ready "${queue[@]}" \
+            --supersede-prefix claude/ready-pack-bump- \
             --title "chore: adopt $SOURCE_TAG" \
-            --body-file /tmp/engineering-consumer-pr-body.md \
-            --commit-message "chore: adopt $SOURCE_TAG"
+            --body-file "$RUNNER_TEMP/engineering-consumer-pr-body.md" \
+            --commit-message "chore: adopt $SOURCE_TAG")
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "head=$(git -C "$GITHUB_WORKSPACE/consumer" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "$CONSUMER: bump PR #$number" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Hand this repo's bump to its Mergify queue
+        if: matrix.repository == github.repository && matrix.queue == 'mergify'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.pr.outputs.head }}
+        run: |
+          # the hand-over land makes, as the Release workflow's PR gets: Mergify queues a PR with `loop:queued` and
+          # `land` on its head, then merges it when its required checks pass
+          gh api -X POST "repos/$CONSUMER/statuses/$HEAD_SHA" -f state=success -f context=land \
+            -f "description=Pack bump, queued for Mergify at $HEAD_SHA" --silent

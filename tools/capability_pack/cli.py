@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from tools.capability_pack.consumer import assert_codex_inventory, prepare_consumer
-from tools.capability_pack.github import GitHubError, reconcile_draft_pr
+from tools.capability_pack.consumer import (
+    ConsumerSyncError,
+    assert_codex_inventory,
+    prepare_consumer,
+)
+from tools.capability_pack.consumers import consumer_matrix
+from tools.capability_pack.github import GitHubError, reconcile_draft_pr, reconcile_pr
 from tools.capability_pack.qualify import (
     SMOKE_REPOSITORY,
     BreakingDriftError,
@@ -91,6 +97,23 @@ def _parser() -> argparse.ArgumentParser:
     inventory.add_argument("repository", type=Path)
     inventory.add_argument("source_tag")
     inventory.add_argument("source_commit")
+    matrix = subparsers.add_parser(
+        "consumer-matrix", help="print the JSON list of repositories a release bumps"
+    )
+    matrix.add_argument("own", help="this repository, owner/repo")
+    ready = subparsers.add_parser("reconcile-pr")
+    ready.add_argument("repository", type=Path)
+    ready.add_argument("--branch", required=True)
+    ready.add_argument("--base", default="main")
+    ready.add_argument("--title", required=True)
+    ready.add_argument("--body-file", type=Path, required=True)
+    ready.add_argument("--commit-message", required=True)
+    ready.add_argument(
+        "--ready", action="store_true", help="open it ready for review, not as a draft"
+    )
+    ready.add_argument("--label", action="append", default=[])
+    ready.add_argument("--auto-merge", action="store_true")
+    ready.add_argument("--supersede-prefix")
     proposal = subparsers.add_parser("reconcile-draft-pr")
     proposal.add_argument("repository", type=Path)
     proposal.add_argument("--branch", required=True)
@@ -106,6 +129,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SystemExit as error:
         return int(error.code)
     try:
+        if args.command == "consumer-matrix":
+            print(json.dumps(consumer_matrix(args.own, os.environ.get("ENGINEERING_CONSUMERS"))))
+            return 0
+        if args.command == "reconcile-pr":
+            number = reconcile_pr(
+                args.repository,
+                branch=args.branch,
+                base=args.base,
+                title=args.title,
+                body=args.body_file.read_text(),
+                commit_message=args.commit_message,
+                draft=not args.ready,
+                labels=tuple(args.label),
+                auto_merge=args.auto_merge,
+                supersede_prefix=args.supersede_prefix,
+            )
+            print(number)
+            return 0
         if args.command == "reconcile-draft-pr":
             reconcile_draft_pr(
                 args.repository,
@@ -163,7 +204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except QualificationTimeoutError as error:
         print(error, file=sys.stderr)
         return MACHINE_EXIT
-    except (QualificationError, GitHubError, OSError, ValueError) as error:
+    except (QualificationError, GitHubError, ConsumerSyncError, OSError, ValueError) as error:
         print(error, file=sys.stderr)
         return 4
     if result.summary:
