@@ -7641,10 +7641,30 @@ def mergify_queue(
     return outcome(named, exits, worst, failed)
 
 
-def queued_here(head: str) -> bool:
-    """Whether the newest `land` status on `head` is a success: land handed this head to Mergify (mergify_step)."""
+def queued_here(pull: dict[str, Any]) -> bool:
+    """Whether land's current hand-over to Mergify is at the PR's head (mergify_step): the newest `land` status there is
+    a success, written after land's newest eviction at that head (evicted_at). An eviction whose `error` status was
+    refused (a cloud session, unwritten) leaves the older success newest, and Mergify labels DEQUEUED after every
+    draft of a PR it held, land's own eviction too: read as a hand-over, that success would evict the re-land again."""
+    head = pull["headRefOid"]
     found = next((each for each in statuses(head) if each.get("context") == LAND), None)
-    return bool(found) and found.get("state") == "success"
+    if not found or found.get("state") != "success":
+        return False
+    evicted = evicted_at(pull, head)
+    # ISO 8601 in UTC, so it orders as text; a status with no time is read as the hand-over, as before
+    return evicted is None or not found.get("created_at") or found["created_at"] > evicted
+
+
+def evicted_at(pull: dict[str, Any], head: str) -> str | None:
+    """When land last evicted the PR from Mergify's queue at `head`: its newest QUEUE_EVICTED comment naming that head,
+    which is written even where the `land` `error` status is refused."""
+    times = [
+        note.get("createdAt") or ""
+        for note in notes(pull)
+        if machine(note["body"]).strip().splitlines()[:1] == [QUEUE_EVICTED]
+        and fields(note["body"]).get("head", "").lower() == head.lower()
+    ]
+    return max(times) if times else None
 
 
 def hand_over(number: int) -> None:
@@ -7669,7 +7689,7 @@ def hand_over(number: int) -> None:
 def stalled() -> int:
     """`check stalled`: each open PR, into any base, that `landable` finds a candidate (its go on its head, every proof,
     a satisfied verdict) and that its base's queue does not hold: under `land.queue: mergify` not queued at its head
-    (QUEUED and a `land` success there, queued_here); where the base's rules require GitHub's merge queue, not in it;
+    (QUEUED and a `land` success there newer than land's last eviction at it, queued_here); where the base's rules require GitHub's merge queue, not in it;
     on a base `land` merges itself, still open, so not landed. A `land` that was stopped, died or never ran left it.
     Also each one `land` refuses whose newest pass on its head is satisfied (or at the cap) but that lacks the go or
     the gate record it needs and has waited past `loop.stalled_after_hours` with no go, record or new head
@@ -7720,7 +7740,7 @@ def stalled() -> int:
                 lines.append(idle)
             continue
         if held_by == MERGIFY:
-            if QUEUED in names(pull) and queued_here(head):
+            if QUEUED in names(pull) and queued_here(pull):
                 continue
             left = "is not queued"
         elif held_by == "github":
@@ -7811,13 +7831,13 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
 def mergify_step(pull: dict[str, Any]) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
-    (QUEUED and a `land` success there), left alone (exit 0); else queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
-    `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). A DEQUEUED label on a head land never queued (a push since)
-    is stale, and comes off."""
+    (QUEUED and a `land` success there since land's last eviction at it, queued_here), left alone (exit 0); else queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
+    `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). A DEQUEUED label on a head land does not hold queued (a push
+    since, or land's own eviction, which Mergify labels too) is stale, and comes off."""
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
     labels = {each["name"] for each in pull["labels"]["nodes"]}
     try:
-        ours = queued_here(head)
+        ours = queued_here(pull)
         if DEQUEUED in labels:
             if ours:
                 mergify_evict(pull, labels)

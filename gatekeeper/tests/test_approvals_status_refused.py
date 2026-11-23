@@ -339,3 +339,70 @@ def test_a_land_after_an_eviction_at_the_same_head_hands_over_again(
     assert "loop:queued" in labels_of(refused, 7)
     records = handed(refused, 7)
     assert len(records) == 2 and approvals.fields(records[-1])["head"] == head
+
+
+def test_a_re_land_after_its_own_eviction_is_not_evicted_again(
+    refused: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """A cloud land evicts a PR Mergify dequeued, its `land` `error` refused, so the head's newest `land` status is still
+    the old success; Mergify labels `loop:dequeued` again on that draft. The re-land reads the success as older than its
+    eviction, takes the stale label off and hands the head over again, rather than evicting it once more (#1882)."""
+    head = refused["opened"](7)
+    assert refused["land"]("7")[0] == 0
+    refused["pulls"][7]["labels"]["nodes"].append({"name": approvals.DEQUEUED})
+    # the land-status workflow's success for the first record, older than the eviction note (WRITTEN)
+    old = {
+        "context": "land",
+        "state": "success",
+        "description": "",
+        "created_at": "2026-09-01T00:00:00Z",
+    }
+    hub.setdefault(head, []).insert(0, old)
+    code, lines = refused["land"]("7")
+    assert code == 1, lines
+    assert notes_on(refused, 7, approvals.QUEUE_EVICTED)
+    assert refused["land"]("7")[1][0] == "PR #7 is ready now"
+    # Mergify labels every draft of a PR it held, land's own eviction too
+    refused["pulls"][7]["labels"]["nodes"].append({"name": approvals.DEQUEUED})
+    code, lines = refused["land"]("7")
+    assert code == 0, lines
+    assert lines[-1] == f"PR #7 queued for Mergify at {head}"
+    assert len(notes_on(refused, 7, approvals.QUEUE_EVICTED)) == 1
+    assert approvals.DEQUEUED not in labels_of(refused, 7)
+    assert "loop:queued" in labels_of(refused, 7)
+    assert refused["pulls"][7]["isDraft"] is False
+    records = handed(refused, 7)
+    assert len(records) == 2 and approvals.fields(records[-1])["head"] == head
+
+
+def test_a_dequeue_after_the_re_land_still_evicts(
+    refused: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Once the workflow posts the re-land's success, newer than the eviction, a dequeue by Mergify is real again."""
+    head = refused["opened"](7)
+    assert refused["land"]("7")[0] == 0
+    refused["pulls"][7]["labels"]["nodes"].append({"name": approvals.DEQUEUED})
+    old = {
+        "context": "land",
+        "state": "success",
+        "description": "",
+        "created_at": "2026-09-01T00:00:00Z",
+    }
+    hub.setdefault(head, []).insert(0, old)
+    assert refused["land"]("7")[0] == 1
+    assert refused["land"]("7")[1][0] == "PR #7 is ready now"
+    assert refused["land"]("7")[0] == 0
+    new = {
+        "context": "land",
+        "state": "success",
+        "description": "",
+        "created_at": "2026-11-01T00:00:00Z",
+    }
+    hub[head].insert(0, new)
+    refused["pulls"][7]["labels"]["nodes"].append({"name": approvals.DEQUEUED})
+    code, lines = refused["land"]("7")
+    assert code == 1, lines
+    assert f"PR #7 was dequeued by Mergify at {head}: evicted" in lines
+    assert len(notes_on(refused, 7, approvals.QUEUE_EVICTED)) == 2
