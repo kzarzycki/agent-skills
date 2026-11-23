@@ -5404,14 +5404,12 @@ def gated(
 
 
 def machine_made(pull: dict[str, Any], loop: str | None) -> bool:
-    """Whether the PR is a mechanical bump no person specs (#2040): a `bot` section with a `branch` exempts it (exempting:
-    the release workflow's fold on `release/`, the pack bump on `claude/ready-pack-bump-`, every file in the section's
-    `paths`), or it pins a released pack tag byte for byte (pin_target). Such a PR names no issue and needs none; any
-    other PR's `Closes #<n>` stays required. Read only when the PR names no issue, since pin_target reads the forge."""
-    bot = exempting(pull, loop)
-    if bot is not None and "branch" in bot:
-        return True
-    return pin_target(pull) is not None
+    """Whether the PR is a mechanical bump the gate itself proves (#2040): a pack bump (mechanical: a `bot` section's
+    `branch` PR whose `apm.yml` moves only the pack's `ref:` line, the rest its lock and generated files) or a pin to a
+    released pack tag byte for byte (pin_target). Such a PR names no issue and needs none. A `branch` section alone
+    is not enough, since it vouches only for the paths, not the change; and the release fold, which only CI's
+    `release-verify` checks, still names its issue. Read only when the PR names no issue, since both read the forge."""
+    return mechanical(pull, loop) is None or pin_target(pull) is not None
 
 
 def closes_nothing(
