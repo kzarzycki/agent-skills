@@ -368,7 +368,14 @@ def test_land_wait_on_the_rest_queue_enqueues_and_exits_with_no_poll_and_no_grap
     cloud_queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     head = cloud_queue["opened"](7)
-    monkeypatch.setattr(approvals.time, "sleep", lambda seconds: pytest.fail("polled the queue"))
+    # a poll sleeps POLL (30 s) or more; subprocess.wait sleeps a few ms on the same time module, which a slow
+    # runner reaches while a git push runs (#1892), so only a poll-length sleep fails
+    real_sleep = approvals.time.sleep
+    monkeypatch.setattr(
+        approvals.time,
+        "sleep",
+        lambda seconds: pytest.fail("polled the queue") if seconds >= 1 else real_sleep(seconds),
+    )
     code, lines = cloud_queue["land"]("7", "--wait")
     assert code == 0, lines
     assert cloud_queue["enqueued"] == [(7, head)] and cloud_queue["graphql"] == []

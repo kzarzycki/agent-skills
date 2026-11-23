@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from collections.abc import Sequence
@@ -9,6 +10,7 @@ from pathlib import Path
 from tools.capability_pack.consumer import assert_codex_inventory, prepare_consumer
 from tools.capability_pack.github import GitHubError, reconcile_draft_pr
 from tools.capability_pack.qualify import (
+    SMOKE_REPOSITORY,
     BreakingDriftError,
     ConfigurationError,
     PortRequiredError,
@@ -106,6 +108,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             validate_release_candidate(args.package, args.tag)
             if args.skip_smoke:
                 print("smoke run: skipped (--skip-smoke); the pre-tag run gated this release")
+            elif not os.environ.get(SMOKE_REPOSITORY):
+                # ponytail: off until a private organization repository hosts the smoke workflow (#1855)
+                print(f"smoke run: off ({SMOKE_REPOSITORY} unset)")
             else:
                 head = _git_output(["rev-parse", "HEAD"], cwd=args.package.resolve())
                 print(f"smoke run: {require_smoke_run(head)}")
