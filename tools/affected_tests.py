@@ -42,6 +42,11 @@ SETUP = ("pyproject.toml", "uv.lock", "mise.toml", "conftest.py")
 MAP = Path(os.environ.get("TEST_MAP", ".test-map"))
 SKIPS = re.compile(r"needs_tool|skipif|pytest\.skip|importorskip")
 CHEAP = sorted(str(p) for p in Path("tests").glob("test_skill_*.py"))
+# docs a test holds byte for byte against a copy, which no name match finds: a change to one runs that test
+DOC_TESTS = {
+    "loop/skills/engineering-loop/": "tests/test_old_paths.py",
+    "engineering/skills/engineering-loop/": "tests/test_old_paths.py",
+}
 
 
 def changed(base: str) -> list[str] | None:
@@ -211,7 +216,12 @@ def targets(files: list[str] | None, base: str | None = None) -> list[str]:
         ):  # a test file under a suite root; `tools/test_map_plugin.py` is a plugin, which the name match covers
             picked.add(f)
             say(f"{f}: a changed test")
-        elif path.suffix != ".md":
+        elif path.suffix == ".md":
+            for prefix, test in DOC_TESTS.items():
+                if f.startswith(prefix):
+                    picked.add(test)
+                    say(f"{f}: {test} holds a copy of it")
+        else:
             by_run = executed_by(f, *mapped) if mapped and path.suffix == ".py" else None
             needle = path.stem if path.suffix == ".py" else path.name
             named = {t: t.read_text(errors="ignore") for t in tests}
