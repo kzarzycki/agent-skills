@@ -36,6 +36,12 @@ def test_the_check_task_runs_the_gates_ci_runs_in_its_order() -> None:
     assert tasks["check"]["run"][0] == "mise run vendor-engineering-check"
 
 
+def test_the_nightly_check_runs_the_full_suite() -> None:
+    """#1872: no PR runs the whole suite, so the nightly `check` must, slow tests included."""
+    tasks = tomllib.loads((REPOSITORY / "mise.toml").read_text())["tasks"]
+    assert {"mise run test", "mise run test-slow"} <= set(tasks["check"]["run"])
+
+
 @pytest.mark.timeout(300)  # it runs the package gate in a subprocess: 20-40 s, more under load
 @pytest.mark.parametrize("mutation", ["corrupt", "delete"])
 def test_advertised_package_gate_rejects_marketplace_mutation(

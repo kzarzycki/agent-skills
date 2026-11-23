@@ -227,8 +227,11 @@ tree's: it runs once more on the same tree, and a second such exit stops the run
 nobody and posting nothing, and prints the log's last 30 lines: fix the machine, then land again.
 Exit 0 when the named PR merged (on a GitHub-queue base, also once it is enqueued or queued), or with no PR named when nothing landable failed; 1 for a refusal, a conflict, an
 eviction, a merge GitHub refused or a red base; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
-`land --wait` runs it again every 30 seconds while it waits on the lock or on CI, printing each new state once, for up
-to 2 hours, then exits 3; a wait for the owner ends it at once, since only the owner clears it.
+`land --wait` runs it again while it waits on the lock or on CI, printing each new state once, for up to 2 hours,
+then exits 3; a wait for the owner ends it at once, since only the owner clears it. Between two runs it reads every 30
+seconds only what it waits on, at no API quota: a held lock with one `git ls-remote` (running again once the lock moves
+past its holder's heartbeat, or has not moved for 15 minutes), a named PR's CI with one ls-remote of the base and the
+heads and an ETag read of each head's checks, which GitHub answers 304 for free while nothing changed (#1915).
 Each named PR's branch carries the `land` event (events.md): `waiting` rewritten at each poll of `--wait`, `ok` once it
 merged (its refs cleared EVENT_GRACE seconds later, so a `wait land <branch>` finds the end), `failed` when evicted (its
 `url` the log comment), `needs-owner` at the owner's go or the 2-hour ceiling. A write that fails changes no exit code.
@@ -744,13 +747,23 @@ ATTACHMENT = "https://github.com/user-attachments/"
 # ceiling is stale
 POLL, CEILING = 30, 2 * 60 * 60
 # land --wait runs landing() (a GraphQL read of every named PR's PULL, 5 points each, and more) again only this many
-# seconds after the last run, unless it holds a lock (RECHECK): a merge queue or a check takes minutes to move, so
+# seconds after the last run, unless it waits on something its probe watches (FULL): a merge queue or a check takes minutes to move, so
 # 30 s polls spend the account's quota, and its per-minute limit, on answers that did not change. POLL is the step
 # the sleep goes in, so the log is never silent and a lock that moved is seen at once
 QUEUE_POLL = 300
-# a wait on a held lock whose ref is unchanged runs landing() (the GitHub calls) again only after this many seconds: the
-# lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
-RECHECK = 300
+# between two landing() rounds a wait probes, each POLL, only what it waits on (#1915): a held lock with one `git
+# ls-remote` of its ref, which costs no API quota, running landing() again only when the lock moves past a heartbeat
+# (restamped), or has not moved for STALE seconds (its land died, so the round breaks it), never on FULL; a wait on CI
+# with one
+# ls-remote of the base and the named PRs' heads, and an ETag read (rest_if_changed: a 304 costs no quota) of each
+# head's check runs and statuses, running landing() again once a head, the base or a required check's state moved.
+# Nothing else a round reads can end such a wait, so the round runs again only after FULL seconds otherwise
+FULL = 900
+# what the last landing() round waited on, for that probe: the base, the named PRs and the base's required checks
+# and whether the round left the free lock to another land (locked: an older waiter, or lands that kept taking it),
+# so the probe also watches the lock only then: a CI wait on the local queue frees the lock each round, and lands that
+# all watched it would wake each other
+watched: dict[str, Any] = {"base": "", "pulls": [], "required": set(), "deferred": False}
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
 LOW_POLL, LOW_QUOTA = 600, 0.1
 # the longest poll of a wait whose state stays the same round after round: QUEUE_POLL doubles up to it (#1771). With
@@ -6017,6 +6030,9 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
     missed = 0  # network failures in a row, of landing() and of the lock poll
     while True:
         held_tip = None
+        watched.update(
+            base="", pulls=[], required=set(), deferred=False
+        )  # this round's, never an earlier one's
         out, drifted = io.StringIO(), None
         try:
             with contextlib.redirect_stdout(out):
@@ -6062,9 +6078,12 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
                 " say what holds it.\n",
             )
             return WAITING
-        # a round asks GitHub again after `nap`, or RECHECK on a held lock; the sleep goes in POLL steps, so the log
-        # is never silent past wait-for's stall check and a lock that moved is seen at once (ls-remote costs no quota)
-        asleep = 0.0
+        # the sleep goes in POLL steps, so the log is never silent past wait-for's stall check, and each step probes
+        # only what the round waited on (Probe, #1915): a held lock that moved is seen at once, and one held by a live
+        # land is never asked of GitHub; a CI state that moved runs the round again after `nap`, and nothing moving
+        # runs it again only after FULL. A land that names no PR
+        # and holds no lock has nothing to probe, so its round runs again after `nap`
+        probe, asleep, beaten = Probe(), 0.0, 0.0
         while time.monotonic() + POLL <= deadline:
             time.sleep(POLL)
             asleep += POLL
@@ -6073,27 +6092,170 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
             ):  # wait-for's stall check reads silence as a hang
                 print(heard, end="", flush=True)
                 spoke = time.monotonic()
-            # the lock still held at the same tip, and its holder checked lately: nothing to ask GitHub
-            if not held_tip:
-                if asleep >= nap:
-                    break
-            elif asleep >= max(nap, RECHECK):
+            if (asleep >= FULL and not probe.lock) or (
+                (probe.idle or probe.stirred) and asleep >= nap
+            ):
                 break
-            else:
-                try:
-                    tip = git("ls-remote", "origin", held_tip[0]).split()[:1]
-                except subprocess.CalledProcessError as exc:
-                    missed += 1
-                    if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
-                        raise
+            if probe.idle or probe.stirred:
+                continue
+            # the beats a round writes, which a probe alone would let go stale
+            if asleep - beaten >= BEAT:
+                beaten = asleep
+                probe.beat()
+            try:
+                moved = probe.moved()
+            except subprocess.CalledProcessError as exc:
+                if not probe.lock:
+                    # a CI probe that failed is no news, never the wait's end: the round, after its poll, reads all
+                    # again and has its own network retries
                     print(
-                        f"land --wait: network failure {missed}/{MISSES}, polling again: {stderr_of(exc)}",
+                        f"land --wait: the CI probe failed, the round reads again: {stderr_of(exc)}",
                         flush=True,
                     )
+                    probe.stirred = True
                     continue
-                missed = 0
-                if tip != [held_tip[1]]:
-                    break
+                missed += 1
+                if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
+                    raise
+                print(
+                    f"land --wait: network failure {missed}/{MISSES}, polling again: {stderr_of(exc)}",
+                    flush=True,
+                )
+                continue
+            missed = 0
+            if moved:
+                break
+
+
+class Probe:
+    """What a waiting land reads between two landing() rounds (FULL says what): the held lock the last round waited
+    on, else the base, the base's lock and the named PRs' heads and their checks. `idle` when it has neither,
+    `stirred` once a CI state moved (the round then runs again after its poll, with nothing more read meanwhile). Each
+    starts from what the round read (the base's tip and each head as the PRs gave them, each head's checks read at
+    once), so a move between the round and the first poll is still a move."""
+
+    def __init__(self) -> None:
+        self.lock = held_tip
+        self.since = time.monotonic()  # when the held lock last moved
+        self.base, self.required = watched["base"], set(watched["required"])
+        self.pulls = list(watched["pulls"])
+        # each named PR's head ref, and the head the round read, which a push moves
+        self.heads = {
+            f"refs/pull/{p['number']}/head": p.get("headRefOid") or "" for p in self.pulls
+        }
+        self.base_tip: str | None = next(
+            (p["baseRefOid"] for p in self.pulls if p.get("baseRefOid")), None
+        )
+        self.lock_tip: str | None = None
+        self.deferred = bool(watched["deferred"])
+        self.checks: dict[str, tuple[tuple[str, str], ...]] = {}
+        self.idle = not self.lock and not self.heads
+        self.stirred = False
+        if not self.lock:
+            for head in filter(None, self.heads.values()):
+                try:
+                    self.checks[head] = ci_state(head, self.required)
+                except subprocess.CalledProcessError:
+                    pass  # the first poll reads it
+
+    def beat(self) -> None:
+        """This land's place in the waiting order and each named PR's `waiting` event, as a round writes them, so a
+        quiet wait never reads as a dead one: both are git pushes, no GitHub API call."""
+        if waited["id"] and waited["base"]:
+            try:
+                stamp_wait(waited["base"], self.pulls[0]["number"] if self.pulls else None)
+            except subprocess.CalledProcessError as exc:
+                print(
+                    f"land --wait: its place in the waiting order was not stamped: {stderr_of(exc)}",
+                    file=sys.stderr,
+                )
+        for pull in self.pulls:
+            if pull["headRefName"] not in ended:
+                land_event(pull, "waiting")
+
+    def moved(self) -> bool:
+        """Whether landing() should run again now: the held lock moved past a heartbeat, or has not moved for STALE
+        seconds; for a wait on CI, True once `stirred`."""
+        if self.lock:
+            return self.lock_moved()
+        self.stirred = self.ci_moved()
+        return False
+
+    def lock_moved(self) -> bool:
+        assert self.lock
+        ref, tip = self.lock
+        found = git("ls-remote", "origin", ref).split()[:1]
+        if found == [tip]:
+            return time.monotonic() - self.since >= STALE
+        if found and restamped(ref, found[0], tip):
+            global held_tip
+            self.lock = held_tip = (ref, found[0])
+            self.since = time.monotonic()
+            return False
+        return True
+
+    def ci_moved(self) -> bool:
+        branch, lock = f"refs/heads/{self.base}", LOCK.format(self.base)
+        listed: dict[str, str] = {}
+        watch = [branch, *([lock] if self.deferred else []), *self.heads]
+        for line in git("ls-remote", "origin", *watch).splitlines():
+            sha, _, name = line.partition("\t")
+            listed[name.strip()] = sha.strip()
+        base = listed.get(branch)
+        if self.base_tip is None:
+            self.base_tip = base
+        elif base != self.base_tip:
+            return True
+        # the base's lock freed, where the round left it to another land: that land is done with it, so this one may
+        # take it
+        tip = listed.get(lock)
+        if tip and self.lock_tip is not None and tip != self.lock_tip and lock_free(lock, tip):
+            return True
+        self.lock_tip = tip or ""
+        for ref, head in list(self.heads.items()):
+            now = listed.get(ref) or head
+            if head and now != head:
+                return True
+            self.heads[ref] = now
+            if not now:
+                continue
+            state = ci_state(now, self.required)
+            if self.checks.setdefault(now, state) != state:
+                return True
+        return False
+
+
+def restamped(ref: str, tip: str, old: str) -> bool:
+    """Whether the lock's new `tip` is a HELD child of `old`: its holder's heartbeat, or a land that broke it as stale
+    and holds it now, so a waiting land still waits."""
+    name = ref.removeprefix("refs/heads/")
+    git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
+    title, _, parents = git("log", "-1", "--format=%s%x00%P", tip).strip().partition("\0")
+    return title.startswith(HELD) and parents.split()[:1] == [old]
+
+
+def lock_free(ref: str, tip: str) -> bool:
+    """Whether the lock's `tip` says it is free (FREE), fetched first: git only, no API call."""
+    name = ref.removeprefix("refs/heads/")
+    git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
+    return git("log", "-1", "--format=%s", tip).strip().startswith(FREE)
+
+
+def ci_state(head: str, required: set[str]) -> tuple[tuple[str, str], ...]:
+    """The state of each check on `head` a wait on CI reads: the base's `required` ones, or every check but the
+    loop's own (OWN) where it requires none, each `pending` until it completes, from two ETag reads (rest_if_changed),
+    which cost no quota while nothing changed. A check run still running moves no required check's state, so it
+    runs no round."""
+    _, runs = github.rest_if_changed(f"commits/{head}/check-runs?filter=latest&per_page=100")
+    _, combined = github.rest_if_changed(f"commits/{head}/status?per_page=100")
+    states: dict[str, str] = {}
+    for status in combined.get("statuses") or []:  # newest first
+        states.setdefault(status["context"], status["state"])
+    for run in runs.get("check_runs") or []:
+        done = run.get("status") == "completed"
+        states[run["name"]] = (run.get("conclusion") or "pending") if done else "pending"
+    names = required or set(states) - OWN
+    return tuple(sorted((name, states.get(name, "missing")) for name in names))
 
 
 DEADLINE_ENV = "LOOP_LAND_DEADLINE"
@@ -6200,9 +6362,11 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     and its policy read to place the land (placed: where it may run and the key it signs with) and to ready drafts,
     then read again after the fetch under the lock for the batch (landing_here)."""
     ended.clear()
+    watched.update(base="", pulls=[], required=set(), deferred=False)
     named, base, worst = land_base(pr)
     if named is None:
         return worst, False
+    watched.update(base=base, pulls=list(named))
     # origin's policy now, not the clone's last fetch of it, so no draft is readied under a policy already replaced
     fetch = subprocess.run(
         ["git", "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
@@ -6219,6 +6383,7 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         tracker, loop = project()
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
+        watched["required"] = set(rules) - OWN
         # Mergify, like GitHub's queue, merges and signs each PR itself, so a cloud land needs no key for it
         with placed(loop, bool(getattr(rules, "queue", None)) or mergify(loop)):
             code, again = landing_here(
@@ -6756,6 +6921,7 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
                         " stale"
                     )
         if waiting and (first := waiter_ahead(base)):
+            watched["deferred"] = True
             print(
                 f"{first} began waiting for the landing lock {name} before this land, so it takes it first"
             )
@@ -6770,6 +6936,7 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
     print(
         f"other lands kept taking the landing lock {name} as this one tried to: land --wait waits for it"
     )
+    watched["deferred"] = True
     return False
 
 
@@ -8687,8 +8854,14 @@ def merges(
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
                 print(f"{where} lands as a {method}")
-                post_status(head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}")
-                posted = True
+                # a cloud session's proxy refuses the status write (#1816) but passes the merge, so a refusal lands
+                # it all the same, with no success to withdraw if the merge fails (#1917)
+                posted = (
+                    unwritten(
+                        head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}"
+                    )
+                    is None
+                )
                 try:
                     owned()
                     port("forge").merge(pull["number"], method, head)

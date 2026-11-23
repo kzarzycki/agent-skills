@@ -349,7 +349,7 @@ session, 1 when not. It reads idle CPU, not the load average, which on macOS als
 waiting on I/O and memory and reads several times too high; load per core decides only when idle
 cannot be measured. `start` and `run` wait while the host the new session's load lands on has
 none: the host `--host` names, else this one. A `claude-cloud` start is judged there on memory
-and the row's `max_sessions` alone, since its bridge is all that runs on the host and its work runs
+alone (no `max_sessions` cap, and it isn't counted toward one), since its bridge is all that runs on the host and its work runs
 in the VM: its line reads `cloud start, cpu not judged, …`, and on another host only
 `/proc/meminfo` is read. Its memory floor is its own, `OMNIGENT_CLOUD_MIN_AVAILABLE_MB` (default
 1200), on every host, since the bridge adds about 150 MB: no row's `min_mb` and no
@@ -366,7 +366,7 @@ The limits are knobs set for the hardware: `OMNIGENT_MIN_CPU_IDLE` (percent, def
 gives `min_mb` and `max_load` (the 1-minute load average, absolute, not per core; a missing
 field takes the default): `cc-experiments` 2500 MB and load 40, `oz` load 10. Any host named `epic-*` (a burst box, 4 vCPU and 8 GB) has the `HOST_PREFIX_LIMITS` row
 1500 MB, load 6 and `max_sessions` 4: a start is refused once the box has that many live sessions,
-counted from the session list, so it holds where load and memory can't be read. A row's
+counted from the session list (bridged `claude-cloud` sessions excluded), so it holds where load and memory can't be read. A row's
 `max_load` decides another host's load in place of load per core, and on this host refuses on
 top of the idle-CPU judgement. `OMNIGENT_MIN_AVAILABLE_MB_<HOST>` and `OMNIGENT_MAX_LOAD_<HOST>`
 (the name upper-cased, `-` as `_`) override one row for a host start. A
@@ -748,10 +748,20 @@ The first head seen for a repo is only stored, so a start reports no old merge; 
 is kept in the state (`heads`), so a restart reports a landing made while it was down, and only
 that one. A workspace outside a checkout is not watched; a failed read is logged once and tried
 again. The event is for whoever owes the step after a landing (the chief of staff under `--console`), not for other leads: they read the new base on their next fetch, since a notice wakes each with its whole context. The lead's words play no part, so `route` and `lead.md` stay as they are.
-With `--console`, a followed lead quiet an hour whose PR (its `omni.pr` label or a PR its wait names) has a verdict on
-its current head over an hour old with no push since, and, for a satisfied one, no go (a green `owner` or `land` status,
-or `loop:queued`), gets one `news` line per PR and head naming the step it owes (`verdict_stall`), since nothing else
-picks up "verdict in, fix or go needed" overnight; each such PR is read at most once in 10 minutes.
+It also watches every open, non-draft PR of those repos and of each `--stall-repo <owner/name>` (#1819): a PR
+that has not moved toward landing for `--stall-minutes` (default 60; 0 turns the watch off) raises one `pr-stall`
+event, which routes `act` to the notified session, the manager, who clears the blocker or cards the owner the fix it
+proposes. Moving is a push (a commit, a force-push, the PR marked ready; a plain push, which GitHub gives no time, is dated no
+earlier than the head's first status or check run, or the sweep that first saw the head), a verifier report (`SATISFIED:`), a go (a
+green `owner` or `land` status) or a merge-queue step (`loop:queued` or `loop:dequeued` added or removed, a queue
+status or check run). The line names each blocker it finds: a red required check (the base's ruleset; any red check
+when unread), a conflict, a verdict on the head without a go (or a fix round asked with no push since), a card waiting
+(a loop event on the PR's branch at `needs-owner`, a verifier question newer than the push), else `none found on
+GitHub`: `o/r: PR #12 <title>: no push, verdict, go or queue step for 75m; blocker: a conflict with main: <url>`. It
+reads GitHub only (`pr_stalls`): the repo's open PRs at most once in 15 minutes, and a PR's timeline, statuses, check
+runs and pull only once it may have stalled (its last move plus the threshold), or again once its listing changed. It
+keeps only what stops a second wake for the same stall (each PR's newest move told, in the state's `pr_stalls`), so
+the same stall wakes no one twice and a new move starts a new one.
 
 For the same repos it also runs `check stalled`, the landing checks' listing (from their copy installed beside this
 skill, so it judges by the base's code), at most once an hour per repo (`STALLED_SECONDS`), in the first of their leads' workspaces that is
@@ -829,6 +839,7 @@ offline while idle raises nothing.
 | Event | Settled by | What happens |
 |---|---|---|
 | a default branch of a repo the followed, non-direct leads work in moved with a PR a lead's wait names or owns | rule | tell that lead (act, to the supervisor, when the lead waits on it), naming the new sha and the PRs merged since; no other lead and not the chief of staff |
+| `pr-stall`: an open PR of a watched repo with no push, verdict, go or queue step for `--stall-minutes` (#1819) | rule | act, to the manager, naming its blocker; the same stall once |
 | a PR or session a lead's wait names settled, or a session it started reached a final state | rule | tell that lead within a minute, read from GitHub and the session; a set tells on its first failure or its last end |
 | `stalled`: a PR `check stalled` lists, once per head | rule | act: the chief of staff lands it (`land N --only`) or flags it |
 | `archived` | rule | its line and state entry dropped; no post |
