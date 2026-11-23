@@ -290,7 +290,9 @@ answer the owner's question cards as the owner would.
   a descendant session's card, else `POST /v1/sessions/<id>/elicitations/<question id>/resolve`
   with `accept` and the answer); a harness-parked question takes `relay --answer`. Each answer opens by saying it is
   delegated and names the standing decision it rests on, and goes in the decision log with its
-  undo (A tree of coordinators). A card settled some other way (a relay, a decision elsewhere)
+  undo (A tree of coordinators). A card asking for a spec, plan or merge go is answered with
+  the delegate's record (`approve … --by delegate`, which the gate counts only under
+  `loop.delegate: all`), never the owner's (Authority). A card settled some other way (a relay, a decision elsewhere)
   is withdrawn at once (`withdraw <session> <question id>`, which resolves it with action cancel),
   so the owner never answers a moot one. An approval prompt (a tool call) stays the owner's, as
   above.
