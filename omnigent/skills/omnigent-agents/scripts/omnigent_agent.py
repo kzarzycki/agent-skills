@@ -1069,7 +1069,7 @@ def first_message(
     ):  # a lead's line on whose go may land a PR into the default branch (lead_delegation)
         preamble = preamble.removesuffix("\n") + delegation + "\n"
     if cloud:
-        preamble = cloud_preamble(preamble, pr)
+        preamble = cloud_preamble(preamble, pr, brief)
     elif not top_level:
         preamble = preamble.removesuffix("\n") + HOST_RUN_NOTE + "\n"
     return (
@@ -1078,9 +1078,44 @@ def first_message(
     )
 
 
-def cloud_preamble(preamble: str, pr: int | None) -> str:
+PACK_URL = "https://github.com/kzarzycki/agent-skills"  # the pack's repo, whose releases are PACK_RELEASE tags
+PACK_RELEASE = r"engineering-v\d+\.\d+\.\d+"
+# a brief's own pin of the pack: a line `Pack: engineering-vX.Y.Z`, written on purpose
+PACK_PIN = re.compile(rf"^Pack:[ \t]*`?({PACK_RELEASE})`?[ \t]*$", re.MULTILINE)
+
+
+def pack_latest() -> str:
+    """The shell that prints the pack's newest release tag (PACK_RELEASE) in the VM when it runs, sorted as versions:
+    `git ls-remote` reads git's refs, which costs no GitHub API quota."""
+    return (
+        f"\"$(git ls-remote --tags --refs {PACK_URL} 'engineering-v*'"
+        " | sed 's,.*refs/tags/,,' | sort -V | tail -1)\""
+    )
+
+
+def pack_line(brief: str) -> str:
+    """A cloud session's line on where the pack's scripts come from (#1987): a clone of the newest release, resolved
+    in the VM at run time, or of the release ``brief`` pins with a ``Pack:`` line; never the checkout's vendored copy,
+    which its pin may hold releases behind. The pack's own repo runs its plugin folders at the checked-out head."""
+    pin = PACK_PIN.search(brief)
+    ref, which = (
+        (pin[1], f"the release this brief pins, {pin[1]}")
+        if pin
+        else (pack_latest(), "its latest release")
+    )
+    return (
+        f"The pack's scripts (the loop's, its gate's, this driver's): run them from a clone of {which},"
+        f' `git clone -q --depth 1 --branch {ref} {PACK_URL} "$HOME/pack"`, each skill\'s from its folder there'
+        " (`$HOME/pack/<plugin>/skills/<skill>/scripts/`), never from the checkout's vendored `.agents/skills` or"
+        " `.claude/skills` copy, whose pin may be releases old. In a checkout of the pack's own repo, run its"
+        " plugin folders at the checkout instead.\n"
+    )
+
+
+def cloud_preamble(preamble: str, pr: int | None, brief: str = "") -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
-    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_HELPER``, ``CLOUD_BRANCHES`` and ``CLOUD_NO_PUSH`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_HELPER``, ``CLOUD_BRANCHES``, ``CLOUD_NO_PUSH`` and ``pack_line(brief)``
+    before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
@@ -1091,6 +1126,7 @@ def cloud_preamble(preamble: str, pr: int | None) -> str:
         + CLOUD_HELPER
         + CLOUD_BRANCHES
         + CLOUD_NO_PUSH
+        + pack_line(brief).replace("{", "{{").replace("}", "}}")  # the preamble is format()ted
         + "\n"
     )
 

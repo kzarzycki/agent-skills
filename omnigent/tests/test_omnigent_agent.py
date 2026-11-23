@@ -10783,7 +10783,9 @@ def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its
         and "Never ask the owner which branch" in brief
     )
     assert "claude/ready-demo-<pr>" in brief and "the demo media branch it names" in brief
-    assert "never committed.\n" in brief and brief.endswith(omnigent_agent.CLOUD_NO_PUSH + "\ndo X")
+    assert "never committed.\n" in brief and brief.endswith(
+        omnigent_agent.CLOUD_NO_PUSH + omnigent_agent.pack_line("do X") + "\ndo X"
+    )
     assert (
         "curl -sS -X POST -H 'Content-Type: application/json'" in brief
         and "api.github.com/repos/<owner>/<repo>/pulls" in brief
