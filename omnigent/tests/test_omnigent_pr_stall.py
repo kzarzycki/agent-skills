@@ -409,7 +409,11 @@ def test_a_pr_held_by_the_queue_is_no_stall(monkeypatch) -> None:
     }
     left = pr(13, labels=[{"name": "loop:queued"}], checks=[earlier, ended])
     unlabelled = pr(14, checks=[earlier, embarked])
-    assert list(stalls(monkeypatch, [held, left, unlabelled])) == [13, 14]
+    pending = {"context": queue, "state": "pending", "created_at": iso(2 * HOUR)}
+    by_status = pr(
+        15, labels=[{"name": "loop:queued"}], statuses=[pending]
+    )  # a queue that reports by status
+    assert list(stalls(monkeypatch, [held, left, unlabelled, by_status])) == [13, 14]
 
 
 QUEUED = {"labels": [{"name": "loop:queued"}]}

@@ -309,8 +309,8 @@ EARLIER = {
 
 
 def live(monkeypatch: pytest.MonkeyPatch, pulls: dict[int, dict]) -> list[str]:
-    """GitHub's live view of each PR in ``pulls`` (``state``, ``merged``, ``head``, ``labels`` and the ``checks`` on
-    its head, as REST serves them) for the supervisor's read of it again before it says a line (#2100); any other
+    """GitHub's live view of each PR in ``pulls`` (``state``, ``merged``, ``head``, ``labels`` and the ``checks`` and
+    ``statuses`` on its head, as REST serves them) for the supervisor's read of it again before it says a line (#2100); any other
     read goes to the ``gh`` already faked. Each path read is recorded."""
     earlier, reads = omnigent_agent.gh, []
     bodies = {
@@ -328,7 +328,7 @@ def live(monkeypatch: pytest.MonkeyPatch, pulls: dict[int, dict]) -> list[str]:
         bodies[f"repos/o/r/commits/{head}/check-runs?filter=all"] = {
             "check_runs": p.get("checks", [])
         }
-        bodies[f"repos/o/r/commits/{head}/statuses"] = []
+        bodies[f"repos/o/r/commits/{head}/statuses"] = p.get("statuses", [])
 
     def gh(*args: str, timeout: float = 0) -> str:
         path = next(
@@ -360,21 +360,42 @@ def stalled_events(registry: Path) -> list[str]:
     )
 
 
+QUEUE_STATUS = {"context": "Mergify Merge Queue", "state": "pending"}
+
+
+@pytest.mark.parametrize(
+    "hold, release",
+    [
+        (
+            {"checks": [EARLIER, MERGIFY]},
+            {"checks": [EARLIER, {**MERGIFY, "status": "completed", "conclusion": "cancelled"}]},
+        ),
+        (
+            {"statuses": [QUEUE_STATUS]},
+            {"statuses": [{**QUEUE_STATUS, "state": "error"}, QUEUE_STATUS]},
+        ),
+    ],
+    ids=["by a check run", "by a commit status"],
+)
 def test_a_pr_queued_during_the_sweep_is_not_said(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hold: dict,
+    release: dict,
 ) -> None:
     """#2089's case: the sweep read #5 before `land` handed it over, and by its end Mergify holds it. The line is
     dropped and not kept as said, so the sweep that lists it again once it left the queue says it."""
     og, registry = lead(tmp_path, monkeypatch)
     monkeypatch.setattr(omnigent_agent, "STALLED_SECONDS", 0)
-    held = {"labels": ["loop:queued"], "checks": [EARLIER, MERGIFY]}
+    held = {"labels": ["loop:queued"], **hold}
     live(monkeypatch, {5: held})
     Sweeps(monkeypatch, (1, f"{line(5, A, 'is not queued')}\n"))
     base.supervised(og, registry, monkeypatch, 2, notify="cos", console=True)
     assert stalled_events(registry) == []
     assert "o/r: PR #5 held by the queue since the sweep read it" in capsys.readouterr().err
     assert base.state_of(registry)["stalled"] == {"o/r": {}}
-    held["checks"] = [EARLIER, {**MERGIFY, "status": "completed", "conclusion": "cancelled"}]
+    held |= release
     live(monkeypatch, {5: held})  # dequeued, label still on: no longer held
     Sweeps(
         monkeypatch, (1, f"{line(5, A, 'is not queued')}\n")
