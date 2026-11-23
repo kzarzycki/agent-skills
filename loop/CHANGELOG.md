@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.3 - 2026-11-23
+
+- A known-red test is skipped with its issue linked, never listed as an expected failure: the loop skill (Known-red tests, Nightly) and its verifier say so.
+
 ## 0.1.2 - 2026-11-22
 
 - engineering-loop: verifier.md and worker.md wait on a long run with one wake, one harness-tracked background `wait-for --budget <the run's expected length>`, never a short `wait-for`, `until grep` or `sleep` loop, since each return re-reads the whole context (#1790).
