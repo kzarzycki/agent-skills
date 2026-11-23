@@ -438,3 +438,61 @@ def test_a_long_interpreter_path_keeps_the_script_name(
         ["python3", str(script), "land", "--wait"], env=env, check=False, capture_output=True
     )
     assert log.read_text().splitlines()[-1].split("\t")[4] == "python3 approvals.py land --wait"
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "Authorization: Digest x1secret",
+        "Authorization: Bot x1secret",
+        "Authorization: bearer  x1secret",
+    ],
+)
+def test_any_authorization_scheme_is_masked(
+    setup: tuple[dict[str, str], Path], header: str
+) -> None:
+    env, log = setup
+    subprocess.run(
+        ["gh", "api", "-H", header, "repos/o/r/pulls/3"],
+        input="",
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert "x1secret" not in log.read_text()
+    assert gq.command(logged_args(log)[-1]) == "api repos/o/r/pulls/N"
+
+
+def test_an_authorization_header_in_the_parent_is_masked(
+    setup: tuple[dict[str, str], Path],
+) -> None:
+    env, log = setup
+    subprocess.run(
+        ["sh", "-c", "gh x; : -H Authorization: Bearer p4rent"],
+        env=env,
+        check=False,
+        capture_output=True,
+    )
+    assert "p4rent" not in log.read_text()
+
+
+def test_a_long_grandparent_path_keeps_its_script_name(
+    setup: tuple[dict[str, str], Path], tmp_path: Path
+) -> None:
+    env, log = setup
+    deep = tmp_path.joinpath(*["d" * 30] * 6)
+    deep.mkdir(parents=True)
+    script = deep / "land.py"
+    script.write_text("import subprocess; subprocess.run(['sh', '-c', 'gh x; true'])\n")
+    subprocess.run(["python3", str(script), "--wait"], env=env, check=False, capture_output=True)
+    assert (
+        log.read_text().splitlines()[-1].split("\t")[4].startswith("python3 land.py --wait > sh -c")
+    )
+
+
+def test_a_token_with_a_slash_is_masked_whole(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    subprocess.run(
+        ["sh", "-c", "GH_TOKEN=abc/def123 gh x; true"], env=env, check=False, capture_output=True
+    )
+    assert "def123" not in log.read_text()  # the mask runs before paths are cut to their file names
