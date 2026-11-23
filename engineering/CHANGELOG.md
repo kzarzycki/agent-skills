@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.3 - 2026-11-23
+
+- engineering: the old-path copies of the loop's `lead.md`, `worker.md` and `verifier.md` match the loop package's files again (#1885).
+
 ## 0.35.2 - 2026-11-22
 
 - agent-hygiene: a checkout with drift catches up with a landed pack bump itself when that is safe: with a clean tree it is installed from its committed lock (its `agent-sync` mise task with `--frozen`, else `apm install --frozen`), after a fast-forward when it is on its default branch with no local commits; one that runs services (a process has it open, or a systemd or launchd unit names it) is only installed, never pulled; anything else goes to its manager. Every install, the dotagents checkout's own included, puts its lock back, so a rewritten `generated_at` no longer dirties the tree, blocks the next pull or reads as an older pin, and puts back any committed agent file it changed, since committed copies change only in a bump PR; a failed install, an install that changed committed copies and a checkout with neither its task's `mise` nor `apm` on `PATH` are reported. A forwarder in the home skill install whose target skill is missing is drift, and the round runs `dotagents install` for it. Findings now address the manager they go to, not the owner (#1783).
