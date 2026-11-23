@@ -213,7 +213,7 @@ message), `run` starts once more in a fresh session with the same brief, and one
 (`made no progress`, the bridge's `CLAUDE_CLOUD_STALL_TIMEOUT_S`) `wait` sends one continue
 message; each is named on stderr, and a second of either fails, naming both. `send --pr <n>`
 reaches a worker still open (kept, or one whose turn ended without a report), wherever its
-workspace is, since the report is the file `wait` writes here, and takes only a comment
+workspace is, since the report is the file `wait` writes here (for a path on another host, `tmp/loop/<its name>`, as `wait --pr` writes it), and takes only a comment
 created after the report already there, so a turn that ends on the old comment's link, or on
 none, gets the nudge and then fails. `--pr` arms no supervisor registry, since the supervisor reads the report file and
 would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
@@ -507,8 +507,9 @@ It needs `--top-level`, since Omnigent runs a child on its parent's runner. On a
 than this one, `--workspace` is required, and it and the report are absolute paths on that host, never resolved or checked here; the brief goes inline
 in the first message, because its file would be on this host, so a Claude lead may read it as
 pasted text and ask for a go-ahead; and the report is written there, so `wait` takes its path
-as given and reads it, and its `.question`, through the session's file API on that host; the supervisor's `check` and `send` do the same, and `send` deletes an answered question and writes its `.followup` file there. With `--pr <n>` (a cloud worker) the report is instead the path here
-that `wait --pr <n>` writes the PR comment to.
+as given and reads it, and its `.question`, through the session's file API on that host; the supervisor's `check` and `send` do the same, and `send` deletes an answered question and writes its `.followup` file there. With `--pr <n>` (a cloud worker) the same rule holds: the report is
+that host's absolute path, never made here, and `wait --pr <n>` writes the PR comment to
+`tmp/loop/<its name>` here, where a report from another host is copied home (#2028).
 
 **Verifiers on another host.** A verifier (a `--role` whose file is `verifier.md`) starts on another host
 the same way, `start --top-level --host <name> --pr <n> --role <verifier.md> --workspace <clone>
