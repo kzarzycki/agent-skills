@@ -1,9 +1,12 @@
 # Tracker: GitHub
 
-How the loop's issue conventions ([issues.md](issues.md)) are done on GitHub. A project
-whose `docs/agents/issue-tracker.md` says `Tracker: GitHub (engineering-loop's github.md)`
+How the loop's issue conventions (the `engineering-loop` skill's issues.md) are done on GitHub. A project
+whose `docs/agents/issue-tracker.md` says `Tracker: GitHub (github-tracker's github.md)`, or
+`engineering-loop's github.md` as it did before this file moved here,
 follows this file in place, never a copy, so a fix here reaches every project. Run `gh`
-inside the repository: it infers the repo from the remote.
+inside the repository: it infers the repo from the remote. The loop's files (issues.md, its
+SKILL.md) are the `engineering-loop` skill's; `<gatekeeper>` and `<engineering-loop>` stand for
+those skills' folders, wherever the host installed them.
 
 ## Operations
 
@@ -31,6 +34,33 @@ inside the repository: it infers the repo from the remote.
   when the repo has no such label.
 
 Pull requests are not a triage request surface.
+
+## Comment shape
+
+Every comment, review body and issue comment an agent or a script writes opens with what a person reads in
+GitHub's UI, at most about three lines (what happened, what it needs, a link), and folds the rest:
+
+```
+<heading line a parser reads, if the comment has one>
+<one to three lines: what happened, what it needs, a link>
+
+<details><summary>Details</summary>
+
+<the fields, the log, the evidence>
+
+</details>
+```
+
+- A script builds it with `scripts/folding.py`'s `fold(heading, summary, details)`, and reads a comment back with
+  `machine(body)`: the heading, then the folded lines where they stood before folding, so `Approved: merge`, `By:`,
+  `Head:`, `Landed` and `Merge queue batch` parse the same folded or not (a comment posted before folding is
+  returned as it is). A new reader of a comment's key lines takes its body through `machine()`.
+- An agent writes the same shape by hand: the verdict's closing lines (`Head:`, `VERDICT:`, `SATISFIED:`, `Risk:`)
+  and a status's result and link stay in view, since the gate and the lead's wait read them line by line, and a long
+  log, a criteria list or a worker's report goes under `<details>`. A `## Spec`, `## Plan` or `## Demo` comment keeps
+  its heading first and its body unfolded, since the owner's approval names the spec's text by hash.
+- One fold, one level: a second block (a log's last lines) goes after the first, never inside it, so `machine()`
+  ends the first fold at the first `</details>`.
 
 ## Posting under a person's account
 
@@ -66,16 +96,16 @@ assigned to anyone else, and, once every build proof holds, assigns the approver
 one is and the PR its issue's assignees. Before assigning it comments `Assigned: @<login>`
 on the issue as the record that the loop made the assignment; when that comment is refused
 it says so and leaves the issue unassigned. When you park an issue (`needs-owner`) or drop
-it, run `uv run <this skill's folder>/scripts/approvals.py release <issue>`: it removes an assignee that record
+it, run `uv run <engineering-loop>/scripts/loop.py release <issue>`: it removes an assignee that record
 names, unless someone assigned them again after the loop did, and keeps any other. Assign by hand
 only a person: `gh issue edit <number> --add-assignee <login>`.
 
 ## Review trail
 
-The calls behind SKILL.md, Review trail on the PR. `gh api` fills `{owner}` and `{repo}`
+The calls behind the loop's SKILL.md, Review trail on the PR. `gh api` fills `{owner}` and `{repo}`
 from the remote.
 
-- Post a pass: `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>`. It posts one review
+- Post a pass: `uv run <gatekeeper>/scripts/approvals.py verdict <pr> <report>`. It posts one review
   on the report's `Head:` commit, event `COMMENT`, because GitHub refuses
   `REQUEST_CHANGES` and `APPROVE` on your own PR. One comment whose path or line is outside
   the PR's diff at that commit refuses the whole review (422, `Path could not be resolved`
@@ -84,10 +114,10 @@ from the remote.
 - List the threads, each with the id to resolve it and its first comment's id to reply:
   `gh api graphql -F o='{owner}' -F r='{repo}' -F n=<pr> -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved path line comments(first:1){nodes{databaseId body}}}}}}}'`.
 - Reply on a thread: `gh api 'repos/{owner}/{repo}/pulls/<pr>/comments/<first comment databaseId>/replies' -f body="Fixed in <sha>."`
-- Resolve it with the triage's reason, `ADDRESSED`, `WONT_FIX` or `INVALID` (SKILL.md,
+- Resolve it with the triage's reason, `ADDRESSED`, `WONT_FIX` or `INVALID` (the loop's SKILL.md,
   Review trail on the PR): `gh api graphql -f t=<thread id> -f r=ADDRESSED -f query='mutation($t:ID!,$r:PullRequestReviewThreadResolutionReason){resolveReviewThread(input:{threadId:$t,resolutionReason:$r}){thread{isResolved}}}'`.
   GitHub keeps no readable reason, so the reply says why.
-- Dismiss a review, only as SKILL.md, Review trail on the PR allows:
+- Dismiss a review, only as the loop's SKILL.md, Review trail on the PR allows:
   `gh api -X PUT 'repos/{owner}/{repo}/pulls/<pr>/reviews/<id>/dismissals' -f message="<the owner's ask, quoted>" -f event=DISMISS`.
 - `gh pr create --draft` needs a commit the base lacks: before anything is built, push an
   empty one (`git commit --allow-empty -m "<spec title>"`), which the squash drops.
