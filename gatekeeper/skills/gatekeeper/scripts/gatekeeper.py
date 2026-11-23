@@ -451,9 +451,12 @@ reads, plus the `approved:<point>` label for the board. No agent writes one, sin
 is no approval. Where the policy on origin's default branch sets `loop.delegate: all`, the owner's standing
 delegation covers specs and plans too: `approve <spec|plan> <issue> --by delegate` writes the record with `By:
 delegate` under the line `Approved under the owner's delegation.`, adds the label and removes the issue's
-`needs-owner`, the spec's hold; without the setting it is refused. The gate counts a delegate's current record in place of
-the owner's only while the policy it reads sets `delegate: all` and the PR touches no path `risk.critical_paths`
-names, which stays the owner's, and otherwise names why it doesn't count. `approve breakglass` stays the owner's
+`needs-owner`, the spec's hold; without the setting it is refused. `loop.delegate_spec: false` (default true) keeps
+specs and plans the owner's under `delegate: all`: `approve <spec|plan> --by delegate` is refused, naming the key, and
+a delegate's record counts for nothing, while the delegate's go on a merge is unchanged. The gate counts a delegate's
+current record in place of the owner's only while the policy it reads sets `delegate: all`, no `delegate_spec:
+false`, and the PR touches no path `risk.critical_paths` names, which stays the owner's, and otherwise names why it
+doesn't count. `approve breakglass` stays the owner's
 alone. The owner's record:
 
     Approved: spec
@@ -885,6 +888,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "pre_land": str,
         "head_proof": Table(status=str, env=list),
         "delegate": Choice(("all", "feature")),
+        "delegate_spec": bool,
         "pack_staleness": Choice(("warn", "refuse")),
         "stalled_after_hours": int,
     },
@@ -1189,6 +1193,12 @@ def delegation(loop: str | None) -> str:
     """loop.md's `delegate`: `all` when the delegated approver's go on a head covers a PR into the default branch
     too, else `feature`, today's rule, where only the owner's does."""
     return str(settings(loop).get("delegate", "feature"))
+
+
+def delegate_spec(loop: str | None) -> bool:
+    """loop.md's `delegate_spec`: whether `delegate: all` covers specs and plans too (default true); false keeps them
+    the owner's while the delegate's go on a merge still counts."""
+    return settings(loop).get("delegate_spec", True) is not False
 
 
 def spec_auto(loop: str | None) -> bool:
@@ -2247,10 +2257,13 @@ def current(node: dict[str, Any], point: str, key: str, value: str | set[str], b
 
 def delegated(pull: dict[str, Any], loop: str | None) -> str | None:
     """Why a delegate's spec or plan record (approve `--by delegate`) can't stand in for the owner's on this PR, or
-    None where it does: it counts only while `loop` sets `loop.delegate: all` and the PR touches no path
+    None where it does: it counts only while `loop` sets `loop.delegate: all`, no `loop.delegate_spec: false`, and the
+    PR touches no path
     `risk.critical_paths` names (critical), which stays the owner's, as for a merge's go (go)."""
     if delegation(loop) != "all":
         return f"{source(loop)} sets no `loop.delegate: all`"
+    if not delegate_spec(loop):
+        return f"{source(loop)} sets `loop.delegate_spec: false`, which keeps specs and plans the owner's"
     return critical(pull, loop)
 
 
@@ -5893,6 +5906,7 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
         probe, asleep, beaten = Probe(), 0.0, 0.0
         while time.monotonic() + POLL <= deadline:
             time.sleep(POLL)
+            github.read_afresh()  # the next read is GitHub's, not this run's memory (#2016)
             asleep += POLL
             if (
                 heard and time.monotonic() - spoke >= SLOT_SAY_SECONDS
@@ -7255,6 +7269,7 @@ def batch_wait(
     joined: list[int] = []
     while near and time.monotonic() < deadline:
         time.sleep(min(QUEUE_POLL, max(0.0, deadline - time.monotonic())))
+        github.read_afresh()  # the next read is GitHub's, not this run's memory (#2016)
         for number in sorted(near):
             pull = pull_request(number)
             with contextlib.redirect_stdout(
@@ -7628,10 +7643,30 @@ def mergify_queue(
     return outcome(named, exits, worst, failed)
 
 
-def queued_here(head: str) -> bool:
-    """Whether the newest `land` status on `head` is a success: land handed this head to Mergify (mergify_step)."""
+def queued_here(pull: dict[str, Any]) -> bool:
+    """Whether land's current hand-over to Mergify is at the PR's head (mergify_step): the newest `land` status there is
+    a success, written after land's newest eviction at that head (evicted_at). An eviction whose `error` status was
+    refused (a cloud session, unwritten) leaves the older success newest, and Mergify labels DEQUEUED after every
+    draft of a PR it held, land's own eviction too: read as a hand-over, that success would evict the re-land again."""
+    head = pull["headRefOid"]
     found = next((each for each in statuses(head) if each.get("context") == LAND), None)
-    return bool(found) and found.get("state") == "success"
+    if not found or found.get("state") != "success":
+        return False
+    evicted = evicted_at(pull, head)
+    # ISO 8601 in UTC, so it orders as text; a status with no time is read as the hand-over, as before
+    return evicted is None or not found.get("created_at") or found["created_at"] > evicted
+
+
+def evicted_at(pull: dict[str, Any], head: str) -> str | None:
+    """When land last evicted the PR from Mergify's queue at `head`: its newest QUEUE_EVICTED comment naming that head,
+    which is written even where the `land` `error` status is refused."""
+    times = [
+        note.get("createdAt") or ""
+        for note in notes(pull)
+        if machine(note["body"]).strip().splitlines()[:1] == [QUEUE_EVICTED]
+        and fields(note["body"]).get("head", "").lower() == head.lower()
+    ]
+    return max(times) if times else None
 
 
 def hand_over(number: int) -> None:
@@ -7656,8 +7691,8 @@ def hand_over(number: int) -> None:
 def stalled() -> int:
     """`check stalled`: each open PR, into any base, that `landable` finds a candidate (its go on its head, every proof,
     a satisfied verdict) and that its base's queue does not hold: under `land.queue: mergify` not queued at its head
-    (QUEUED and a `land` success there, queued_here); where the base's rules require GitHub's merge queue, not in it;
-    on a base `land` merges itself, still open, so not landed. A `land` that was stopped, died or never ran left it.
+    (QUEUED and a `land` success there newer than land's last eviction at it, queued_here); where the base's rules
+    require GitHub's merge queue, not in it; on a base `land` merges itself, still open, so not landed. A `land` that was stopped, died or never ran left it.
     Also each one `land` refuses whose newest pass on its head is satisfied (or at the cap) but that lacks the go or
     the gate record it needs and has waited past `loop.stalled_after_hours` with no go, record or new head
     (idle_stall), its line naming what is missing: a hand-back that lived only in a session's prose left it.
@@ -7707,7 +7742,7 @@ def stalled() -> int:
                 lines.append(idle)
             continue
         if held_by == MERGIFY:
-            if QUEUED in names(pull) and queued_here(head):
+            if QUEUED in names(pull) and queued_here(pull):
                 continue
             left = "is not queued"
         elif held_by == "github":
@@ -7798,30 +7833,43 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
 def mergify_step(pull: dict[str, Any]) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
-    (QUEUED and a `land` success there), left alone (exit 0); else queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
-    `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). A DEQUEUED label on a head land never queued (a push since)
-    is stale, and comes off."""
+    (QUEUED and a `land` success there since land's last eviction at it, queued_here), left alone (exit 0); else
+    queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
+    `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). Either way, at a head land evicted before, REQUEUE once
+    per hand-over (requeue), so a command GitHub refused is posted by the next land. A DEQUEUED label on a head land
+    does not hold queued (a push since, or land's own eviction, which Mergify labels too) is stale, and comes off."""
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
     labels = {each["name"] for each in pull["labels"]["nodes"]}
     try:
-        ours = queued_here(head)
+        ours = queued_here(pull)
         if DEQUEUED in labels:
             if ours:
                 mergify_evict(pull, labels)
                 return 1
             label(number, DEQUEUED, add=False)
-        if QUEUED in labels and ours:
-            print(f"{where} is queued for Mergify at {head}")
-            return 0
-        refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
-        if QUEUED not in labels:
-            label(number, QUEUED, add=True)
-        if refused is not None:
-            handed_by_record(pull)
+        queued = QUEUED in labels and ours
+        if not queued:
+            refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
+            if QUEUED not in labels:
+                label(number, QUEUED, add=True)
+            if refused is not None:
+                handed_by_record(pull)
     except subprocess.CalledProcessError as exc:
         print(f"{where}: GitHub refused its hand-over to Mergify at {head}: {stderr_of(exc)}")
         return 1
-    print(f"{where} queued for Mergify at {head}")
+    try:
+        requeue(pull)
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"{where} is handed over to Mergify at {head}, but GitHub refused the `{REQUEUE}` command it needs"
+            f" after its eviction there, which the next `land {number}` posts: {stderr_of(exc)}"
+        )
+        return 1
+    print(
+        f"{where} is queued for Mergify at {head}"
+        if queued
+        else f"{where} queued for Mergify at {head}"
+    )
     return 0
 
 
@@ -7864,6 +7912,30 @@ def handed_by_record(pull: dict[str, Any]) -> None:
     print(
         f"{where}: the hand-over record names {head}, for the land-status workflow to post `land` on"
     )
+
+
+# the command that takes a PR Mergify dequeued (a red batch it found the PR's, a timeout) back into its queue: the
+# `queue` action land's `.mergify.yml` runs does not re-embark such a PR at an unchanged head, and Mergify's `requeue`
+# command is deprecated for this one (docs.mergify.com, merge-queue/lifecycle and commands/queue)
+REQUEUE = "@mergifyio queue"
+
+
+def requeue(pull: dict[str, Any]) -> None:
+    """After a hand-over at a head land evicted from Mergify's queue before (evicted_at): REQUEUE, once per hand-over,
+    so Mergify takes the head back once it matches its queue conditions; a hand-over whose command already follows
+    that eviction posts none, and a head never evicted needs none."""
+    head = pull["headRefOid"]
+    evicted = evicted_at(pull, head)
+    if evicted is None:
+        return
+    for note in notes(pull):
+        if (
+            note["body"].strip().splitlines()[:1] == [REQUEUE]
+            and (note.get("createdAt") or "") >= evicted
+        ):
+            return
+    comment(pull["number"], REQUEUE + "\n")
+    print(f"PR #{pull['number']}: asked Mergify to queue {head} again, which it evicted before")
 
 
 def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
@@ -8393,12 +8465,21 @@ def approve(point: str, number: int, seen: str | None = None, by: str = "owner")
     the owner's label was checked against (adopted), an edit since is refused: the label never covered it. With `by`
     `delegate`, the delegated approver's, under the owner's delegation: refused unless the policy on origin's default
     branch sets `loop.delegate: all`, its record opening with VOICED's line so a reader tells it from the owner's; the
-    gate counts it as delegated() says."""
-    if by == DELEGATE and delegation(project()[1]) != "all":
-        raise Refused(
-            f"approve {point} --by delegate needs `loop.delegate: all` in the policy on origin's default branch:"
-            f" without it the {point} is the owner's (`--by owner`)"
-        )
+    gate counts it as delegated() says. `loop.delegate_spec: false` there refuses it too, keeping the spec and plan
+    the owner's."""
+    if by == DELEGATE:
+        loop = project()[1]
+        if delegation(loop) != "all":
+            raise Refused(
+                f"approve {point} --by delegate needs `loop.delegate: all` in the policy on origin's default branch:"
+                f" without it the {point} is the owner's (`--by owner`)"
+            )
+        if not delegate_spec(loop):
+            raise Refused(
+                f"approve {point} --by delegate is refused: the policy on origin's default branch sets"
+                f" `loop.delegate_spec: false`, so the {point} is the owner's (`--by owner`); the delegate's go on a"
+                " merge still counts"
+            )
     issue = issue_node(number)
     holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
     if holder is None:
@@ -10806,6 +10887,7 @@ def settled_head(pr: int, want: str | None) -> str:
             return head
         if read < HEAD_READS - 1:
             time.sleep(HEAD_WAIT)
+            github.read_afresh()  # the next read is GitHub's, not this run's memory (#2016)
     raise Refused(
         f"PR #{pr}'s head on GitHub is {head}, not {want} after {HEAD_READS} reads over"
         f" {(HEAD_READS - 1) * HEAD_WAIT} s: nothing posted; run it again once GitHub shows the push"
