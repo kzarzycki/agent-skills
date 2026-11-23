@@ -5225,7 +5225,9 @@ def rest_land(cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> di
 
     def gh(*args: str, data: str | None = None) -> str:
         if args[:2] == ("pr", "merge"):
-            raise subprocess.CalledProcessError(1, "gh", stderr=REFUSED_GRAPHQL)
+            raise subprocess.CalledProcessError(
+                1, "gh", stderr=cloud_land.get("refusal", REFUSED_GRAPHQL)
+            )
         if args[:3] == ("api", "-X", "PUT") and args[3].endswith("/merge"):
             puts.append(args)
             fields = dict(arg.split("=", 1) for arg in args[4:] if arg != "-f")
