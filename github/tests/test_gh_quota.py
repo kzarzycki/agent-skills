@@ -145,6 +145,11 @@ def test_spent_counts_across_a_reset() -> None:
     assert gq.spent([(0, 100, 1), (60, 250, 1), (120, 40, 2), (180, 90, 2)]) == 150 + 40 + 50
 
 
+def test_spent_skips_a_sample_from_another_bucket() -> None:
+    # a first reply from another token's window (10 used) is not 4061 calls spent in a minute
+    assert gq.spent([(0, 10, 5), (60, 4071, 9), (120, 4117, 9)]) == 46
+
+
 def test_shim_runs_under_plain_sh() -> None:
     assert subprocess.run(["sh", "-n", str(SCRIPTS / "gh")], check=False).returncode == 0
     assert os.access(SCRIPTS / "gh", os.X_OK)
@@ -276,3 +281,221 @@ def test_command_keeps_the_route_past_flags() -> None:
     )
     assert gq.command("api --method=PATCH repos/o/r/issues/5") == "api PATCH repos/o/r/issues/N"
     assert gq.command("pr view 5 --json x") == "pr view"
+
+
+def test_the_report_reads_a_flag_value_with_a_space(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    subprocess.run(
+        ["gh", "api", "-H", "Accept: x", "repos/o/r/rulesets/7"],
+        input="",
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert gq.command(logged_args(log)[-1]) == "api repos/o/r/rulesets/N"
+
+
+@pytest.mark.parametrize("flag", ["-bs3cr3t-value", "-b=s3cr3t-value"])
+def test_a_joined_secret_body_is_masked(setup: tuple[dict[str, str], Path], flag: str) -> None:
+    env, log = setup
+    subprocess.run(
+        ["gh", "secret", "set", "NAME", flag], input="", env=env, capture_output=True, check=False
+    )
+    assert "s3cr3t-value" not in log.read_text()
+
+
+def test_a_token_in_the_parent_command_is_masked(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    hexed = "0123456789abcdef" * 2 + "01234567"
+    subprocess.run(
+        ["sh", "-c", f"GH_TOKEN={hexed} gh x; X={hexed}; true"],
+        env=env,
+        check=False,
+        capture_output=True,
+    )
+    assert hexed not in log.read_text()
+
+
+def test_the_host_falls_back_to_uname(setup: tuple[dict[str, str], Path], tmp_path: Path) -> None:
+    env, log = setup
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    (fakes / "hostname").write_text("#!/bin/sh\nexit 1\n")
+    (fakes / "uname").write_text("#!/bin/sh\necho fallback.example\n")
+    for fake in fakes.iterdir():
+        fake.chmod(0o755)
+    env = {**env, "PATH": f"{tmp_path / 'shims'}:{fakes}:{env['PATH']}"}
+    subprocess.run(["gh", "x"], input="", env=env, capture_output=True, check=False)
+    assert log.read_text().splitlines()[-1].split("\t")[1] == "fallback"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["body=it's done", "Authorization: token abc", "a\tb", "x\ny"],
+)
+def test_a_flag_value_with_a_quote_tab_or_newline_keeps_the_route(
+    setup: tuple[dict[str, str], Path], value: str
+) -> None:
+    env, log = setup
+    subprocess.run(
+        [
+            "gh",
+            "api",
+            "-H" if value.startswith("Auth") else "-f",
+            value,
+            "repos/o/r/issues/1/comments",
+        ],
+        input="",
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert gq.command(logged_args(log)[-1]) == "api repos/o/r/issues/N/comments"
+
+
+def test_a_named_token_in_the_parent_is_masked_whatever_its_shape(
+    setup: tuple[dict[str, str], Path],
+) -> None:
+    env, log = setup
+    subprocess.run(
+        ["sh", "-c", "gh_token=not-hex-but-secret; GH_TOKEN=s3cr3t-not-hex gh x; true"],
+        env=env,
+        check=False,
+        capture_output=True,
+    )
+    assert "s3cr3t-not-hex" not in log.read_text()
+
+
+def test_a_token_past_the_parent_cut_leaves_no_part_of_itself(
+    setup: tuple[dict[str, str], Path],
+) -> None:
+    env, log = setup
+    hexed = "0123456789abcdef" * 2 + "01234567"
+    subprocess.run(
+        ["sh", "-c", f"X={'y' * 170} {hexed}; gh x; true"],
+        env=env,
+        check=False,
+        capture_output=True,
+    )
+    assert "0123456789abcdef0123" not in log.read_text()
+
+
+def test_spent_counts_nothing_for_a_step_back_to_an_earlier_window() -> None:
+    assert gq.spent([(0, 4000, 9), (60, 10, 5)]) == 0  # an older window's reply, not a reset
+
+
+def test_a_quote_without_whitespace_is_quoted_too(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    subprocess.run(
+        ["gh", "api", "-H", "Accept: x", "-f", "body=don't", "repos/o/r/issues/1/comments"],
+        input="",
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert gq.command(logged_args(log)[-1]) == "api repos/o/r/issues/N/comments"
+
+
+def test_a_one_word_authorization_value_keeps_the_route(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    subprocess.run(
+        ["gh", "api", "-H", "authorization:abc", "repos/o/r/pulls/3"],
+        input="",
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert "abc" not in logged_args(log)[-1]
+    assert gq.command(logged_args(log)[-1]) == "api repos/o/r/pulls/N"
+
+
+def test_a_lowercase_token_name_in_the_parent_is_masked(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    subprocess.run(
+        ["sh", "-c", "gh_token=lower-s3cr3t; gh x; true"], env=env, check=False, capture_output=True
+    )
+    assert "lower-s3cr3t" not in log.read_text()
+
+
+def test_the_grandparent_is_masked_too(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    hexed = "0123456789abcdef" * 2 + "01234567"
+    script = f"import subprocess; x = 'GH_TOKEN=grand-s3cr3t {hexed}'; subprocess.run(['sh', '-c', 'gh x; true'])"
+    subprocess.run(["python3", "-c", script], env=env, check=False, capture_output=True)
+    parent = log.read_text().splitlines()[-1].split("\t")[4]
+    assert " > sh -c" in parent and "grand-s3cr3t" not in parent and hexed not in parent
+
+
+def test_a_long_interpreter_path_keeps_the_script_name(
+    setup: tuple[dict[str, str], Path], tmp_path: Path
+) -> None:
+    env, log = setup
+    deep = tmp_path.joinpath(*["d" * 30] * 6)
+    deep.mkdir(parents=True)
+    script = deep / "approvals.py"
+    script.write_text("import subprocess, sys; subprocess.run(['gh', 'x'])\n")
+    subprocess.run(
+        ["python3", str(script), "land", "--wait"], env=env, check=False, capture_output=True
+    )
+    assert log.read_text().splitlines()[-1].split("\t")[4] == "python3 approvals.py land --wait"
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "Authorization: Digest x1secret",
+        "Authorization: Bot x1secret",
+        "Authorization: bearer  x1secret",
+        "Authorization:Bearer x1secret",
+        "Authorization: Api-Key x1secret",
+        'Authorization: Digest username="u", response="x1secret"',
+    ],
+)
+def test_any_authorization_scheme_is_masked(
+    setup: tuple[dict[str, str], Path], header: str
+) -> None:
+    env, log = setup
+    subprocess.run(
+        ["gh", "api", "-H", header, "repos/o/r/pulls/3"],
+        input="",
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert "x1secret" not in log.read_text()
+    assert gq.command(logged_args(log)[-1]) == "api repos/o/r/pulls/N"
+
+
+def test_an_authorization_header_in_the_parent_is_masked(
+    setup: tuple[dict[str, str], Path],
+) -> None:
+    env, log = setup
+    subprocess.run(
+        ["sh", "-c", "gh x; : -H Authorization: Bearer p4rent; : Authorization: Api-Key p5rent"],
+        env=env,
+        check=False,
+        capture_output=True,
+    )
+    assert "p4rent" not in log.read_text() and "p5rent" not in log.read_text()
+
+
+def test_a_long_grandparent_path_keeps_its_script_name(
+    setup: tuple[dict[str, str], Path], tmp_path: Path
+) -> None:
+    env, log = setup
+    deep = tmp_path.joinpath(*["d" * 30] * 6)
+    deep.mkdir(parents=True)
+    script = deep / "land.py"
+    script.write_text("import subprocess; subprocess.run(['sh', '-c', 'gh x; true'])\n")
+    subprocess.run(["python3", str(script), "--wait"], env=env, check=False, capture_output=True)
+    assert (
+        log.read_text().splitlines()[-1].split("\t")[4].startswith("python3 land.py --wait > sh -c")
+    )
+
+
+def test_a_token_with_a_slash_is_masked_whole(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    subprocess.run(
+        ["sh", "-c", "GH_TOKEN=abc/def123 gh x; true"], env=env, check=False, capture_output=True
+    )
+    assert "def123" not in log.read_text()  # the mask runs before paths are cut to their file names
