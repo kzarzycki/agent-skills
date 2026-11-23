@@ -766,7 +766,7 @@ the same stall wakes no one twice and a new move starts a new one.
 For the same repos it also runs `check stalled`, the landing checks' listing (from their copy installed beside this
 skill, so it judges by the base's code), at most once an hour per repo (`STALLED_SECONDS`), in the first of their leads' workspaces that is
 a checkout on this host, detached so the poll goes on, and stopped past 15 minutes (`STALLED_TIMEOUT`). Each PR it
-lists (an approved, verified PR no `land` took) is said once per head, `<owner>/<name>: PR #N has its go and a
+lists (an approved, verified PR no `land` took) is said once per head and kind of line (so a go on an idle PR makes its landable line news at the same head), `<owner>/<name>: PR #N has its go and a
 satisfied verdict at <sha> and is not landed: land it (`land N --only`) or flag it`, or for a verified PR idle on a go or
 record it lacks, its line (`... missing: go`) and `: ask its approver for what it is missing`, a `stalled` event on that lead;
 the repo's last listing is kept (`stalled` in the state with `--console`), so the next hour's sweep says nothing new

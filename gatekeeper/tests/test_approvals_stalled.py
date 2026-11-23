@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from approvals_harness import approvals, git_in, lands  # noqa: F401
+from approvals_harness import approvals, git_in, lands, verdict_on  # noqa: F401
 from test_approvals import add
 from test_approvals_github_queue import queue  # noqa: F401
 from test_approvals_mergify_handover import go, risky
@@ -236,3 +236,75 @@ def test_a_verified_pr_with_no_gate_record_on_its_head_is_listed_missing_the_rec
     assert lines == [
         f"PR #7 has a satisfied verdict at {head} and no go, gate record or new head for 13h: missing: record"
     ]
+
+
+def passes_on(
+    head: str, *verdicts: tuple[int, str, str], at: str | None = None
+) -> tuple[dict[str, Any], ...]:
+    """The verifier's reviews on `head`: each (pass, counts, SATISFIED), posted at `at` when given."""
+    return tuple(
+        {
+            **verdict_on(head, counts, satisfied, heading=f"Verifier (claude), pass {number}"),
+            **({"submittedAt": at} if at else {}),
+        }
+        for number, counts, satisfied in verdicts
+    )
+
+
+def reviewed(
+    state: dict[str, Any], number: int, *verdicts: tuple[int, str, str], at: str | None = None
+) -> str:
+    """A PR waiting for its go whose head carries `verdicts` in place of the default satisfied one."""
+    head = risky(state, number)
+    state["pulls"][number]["reviews"]["nodes"] = list(passes_on(head, *verdicts, at=at))
+    return head
+
+
+OPEN, CLEAN = "0 blocker, 1 major, 0 minor", "0 blocker, 0 major, 0 minor"
+
+
+def test_an_unsatisfied_verdict_on_the_head_is_not_listed_until_it_is_at_the_cap(
+    direct: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A major open on pass 1 is the author's to fix, not an idle hand-back; at the cap it is the lead's call, so it
+    is listed, naming the pass."""
+    reviewed(direct, 7, (1, OPEN, "no"))
+    idle_for(monkeypatch, 13)
+    assert stalled(capsys) == (0, [])
+    cap = approvals.cap(None)
+    head = reviewed(direct, 8, (cap, OPEN, "no"))
+    code, lines = stalled(capsys)
+    assert code == 1
+    assert lines == [
+        (
+            f"PR #8 has its pass {cap} verdict, at the cap, at {head} and no go, gate record or new head"
+            " for 13h: missing: go"
+        )
+    ]
+
+
+def test_only_the_newest_pass_on_the_head_counts(
+    direct: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A satisfied pass 1 then an unsatisfied pass 2 on the head: the newest says fix it, so it is not listed; a
+    satisfied verdict on an earlier commit only says nothing of this head."""
+    reviewed(direct, 7, (1, CLEAN, "yes"), (2, OPEN, "no"))
+    head = risky(direct, 8)
+    direct["pulls"][8]["reviews"]["nodes"] = list(passes_on("e" * 40, (1, CLEAN, "yes")))
+    idle_for(monkeypatch, 13)
+    assert stalled(capsys) == (0, [])
+    assert head not in "".join(stalled(capsys)[1])
+
+
+def test_the_idle_hours_run_from_the_newest_verdict_when_it_came_after_the_push(
+    direct: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A head pushed 13 h ago whose satisfied verdict was posted an hour ago has waited an hour, not 13."""
+    hour_ago = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    reviewed(direct, 7, (1, CLEAN, "yes"), at=hour_ago)
+    idle_for(monkeypatch, 13)
+    assert stalled(capsys) == (0, [])
+    long_ago = (datetime.now(UTC) - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    direct["pulls"][7]["reviews"]["nodes"][0]["submittedAt"] = long_ago
+    code, lines = stalled(capsys)
+    assert code == 1 and lines[0].endswith("new head for 6h: missing: go")

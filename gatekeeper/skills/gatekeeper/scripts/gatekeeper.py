@@ -8331,8 +8331,8 @@ def idle_stall(pull: dict[str, Any], loop: str | None) -> str | None:
     """`check stalled`'s line for a PR `landable` refuses that waits only on a person or a record: its newest verifier
     pass on the head (passes) is satisfied with no blocker or major (held), or is at the cap or past it (cap), and it
     still lacks the go its rating asks (owner_waits) or the gate record `loop.head_proof` asks on the head (proved), while its
-    head was pushed more than `loop.stalled_after_hours` (default STALLED_HOURS) ago (head_pushed), so no go, record
-    or push came in that time. None for any other PR: one refused for something else is not stalled on a hand-back."""
+    head was pushed, and its newest verdict there posted, more than `loop.stalled_after_hours` (default STALLED_HOURS)
+    ago (head_pushed, the review's `submittedAt`), so no go, record, push or verdict came in that time. None for any other PR: one refused for something else is not stalled on a hand-back."""
     head = pull["headRefOid"]
     found = passes(pull)
     if isinstance(found, str):
@@ -8347,10 +8347,21 @@ def idle_stall(pull: dict[str, Any], loop: str | None) -> str | None:
     missing = ["go"] if owner_waits(pull, rated_issues(pull), loop) else []
     if (proof := head_proof(loop)) and not proved(head, proof["status"]):
         missing.append("record")  # the head's gate record `land` reads (proof_gaps), not a batch's
-    pushed = head_pushed(pull)
-    if not missing or not pushed:
+    if not missing:
         return None
-    waited = datetime.now(timezone.utc) - datetime.fromisoformat(pushed.replace("Z", "+00:00"))
+    # the later of the head's push and the newest verdict on it: a pass just posted on an old head has had no time yet
+    # for its hand-back (a submitted review always has its time; one without, still pending, is no verdict)
+    moves = [head_pushed(pull) or ""] + [
+        review["submittedAt"]
+        for review in pull["reviews"]["nodes"]
+        if review.get("submittedAt")
+        and PASS.match(review.get("body") or "")
+        and ((review.get("commit") or {}).get("oid") or "").lower() == head.lower()
+    ]
+    if not moves[0]:
+        return None
+    since = max(datetime.fromisoformat(at.replace("Z", "+00:00")) for at in moves)
+    waited = datetime.now(timezone.utc) - since
     hours = waited.total_seconds() / 3600
     if hours <= settings(loop).get("stalled_after_hours", STALLED_HOURS):
         return None

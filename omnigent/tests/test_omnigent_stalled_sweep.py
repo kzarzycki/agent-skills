@@ -52,7 +52,7 @@ def lead(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[base.Lead, Pa
 
 
 def told(og: base.Lead) -> list[str]:
-    return [t for t in base.posted(og) if "check stalled" in t or "satisfied verdict" in t]
+    return [t for t in base.posted(og) if "check stalled" in t or " verdict" in t]
 
 
 def test_a_stalled_pr_is_said_once_and_again_only_at_a_new_head(
@@ -129,9 +129,9 @@ def test_the_console_routes_a_stalled_pr_to_the_chief_of_staff_once_across_a_res
     base.supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
     events = [e for e in base.events_of(registry) if e["id"].startswith("stalled:")]
     assert [(e["id"], e["settled"], e["action"]) for e in events] == [
-        ("stalled:o/r#5:" + A, "rule", "act")
+        ("stalled:o/r#5:" + A + ":landable", "rule", "act")
     ]
-    assert base.state_of(registry)["stalled"] == {"o/r": {"5": A}}
+    assert base.state_of(registry)["stalled"] == {"o/r": {"5": f"{A}:landable"}}
     Sweeps(monkeypatch, (1, f"{line(5, A)}\n"))  # a restarted supervisor reads the state back
     base.supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
     assert len([e for e in base.events_of(registry) if e["id"].startswith("stalled:")]) == 1
@@ -266,3 +266,29 @@ def test_a_verified_pr_idle_on_its_go_is_said_once_with_what_it_misses(
     assert told(og) == [
         f"Supervisor: o/r: {idle.format(A, 13)}: ask its approver for what it is missing"
     ]
+
+
+def test_a_go_on_an_idle_pr_makes_its_landable_line_news_at_the_same_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The idle notice asks for the go; the go pins the same head, and the next sweep lists the PR as landable,
+    which is said, since nothing lands it by itself on a direct-land base (#1746, verifier pass 4's F5)."""
+    og, registry = lead(tmp_path, monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "STALLED_SECONDS", 0)
+    idle = f"PR #5 has a satisfied verdict at {A} and no go, gate record or new head for 13h: missing: go"
+    Sweeps(monkeypatch, (1, idle + "\n"), (1, f"{line(5, A)}\n"), (1, f"{line(5, A)}\n"))
+    base.supervised(og, registry, monkeypatch, 4, notify="cos")
+    assert told(og) == [
+        f"Supervisor: o/r: {idle}: ask its approver for what it is missing",
+        f"Supervisor: o/r: {line(5, A)}: land it (`land 5 --only`) or flag it",
+    ]
+
+
+def test_a_pr_at_the_cap_is_said_as_an_idle_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og, registry = lead(tmp_path, monkeypatch)
+    capped = f"PR #5 has its pass 3 verdict, at the cap, at {A} and no go, gate record or new head for 13h: missing: go"
+    Sweeps(monkeypatch, (1, capped + "\n"))
+    base.supervised(og, registry, monkeypatch, 2, notify="cos")
+    assert told(og) == [f"Supervisor: o/r: {capped}: ask its approver for what it is missing"]

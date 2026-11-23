@@ -9131,7 +9131,7 @@ def supervise_registry(
         marked ``direct`` works in, as ``landings`` reads them, in the first such lead's workspace that is a
         checkout on this host (its info read only when a sweep is due); never while GitHub's rate limit holds. It
         runs detached: each poll looks whether it has ended, and stops it past ``STALLED_TIMEOUT``. Each PR it lists
-        is said once per head as a ``stalled`` event on that lead (the repo's PRs listed last time are kept in the
+        is said once per head and kind of line (idle on a go or record, or landable) as a ``stalled`` event on that lead (the repo's PRs listed last time are kept in the
         state's ``stalled``), so an hourly sweep reports a stuck PR once, and again only after it left the listing or
         its head moved; a PR it could not judge keeps what was listed for it, so a sweep that skips it says it
         again only at a new head. A PR it could not judge, and a sweep that failed, are logged, once until they
@@ -9156,7 +9156,13 @@ def supervise_registry(
                 log(("stalled", repo), f"{repo}: check stalled exited {code}: {last}")
                 continue
             log(("stalled", repo), None)
-            listed = {m[1]: (m[2], line) for line in out if (m := STALLED_LINE.fullmatch(line))}
+            # each PR by its head and the kind of its line: on one head a go turns an idle line (`missing: go`)
+            # into a landable one, which is news, while the idle line's hours growing is not
+            listed = {
+                m[1]: (f"{m[2]}:{'idle' if ': missing: ' in line else 'landable'}", line)
+                for line in out
+                if (m := STALLED_LINE.fullmatch(line))
+            }
             unjudged = {m[1]: m[2] for line in out if (m := UNJUDGED_LINE.fullmatch(line))}
             for number, why in unjudged.items():
                 log(("unjudged", repo, number), f"{repo}: PR #{number} is not judged here: {why}")
@@ -9175,11 +9181,11 @@ def supervise_registry(
                     )
             else:
                 blind.pop(repo, None)
-            known[repo] = {number: head for number, (head, _) in listed.items()} | {
+            known[repo] = {number: seen for number, (seen, _) in listed.items()} | {
                 number: before[number] for number in unjudged if number in before
             }
-            for number, (head, line) in listed.items():
-                if before.get(number) != head:
+            for number, (seen, line) in listed.items():
+                if before.get(number) != seen:
                     step = (
                         "ask its approver for what it is missing"
                         if ": missing: " in line
@@ -9188,7 +9194,7 @@ def supervise_registry(
                     say(
                         f"{repo}: {line}: {step}",
                         sid,
-                        f"stalled:{repo}#{number}:{head}",
+                        f"stalled:{repo}#{number}:{seen}",
                         "stalled",
                     )
         if time.monotonic() < limited[0]:  # GitHub's limit is account-wide
