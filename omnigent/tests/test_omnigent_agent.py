@@ -14662,7 +14662,9 @@ def test_several_waits_on_one_pr_read_it_once(
     """A restart finds every lead's wait at once; M waits naming one PR make one read of it, not M (#2068)."""
     sids = ("a", "b", "c")
     registry = follows(tmp_path, *sids)
-    og = Leads(**{s: [told("brief", 4000), ending("STILL WORKING: x\nWaits: #976", 3600)] for s in sids})
+    og = Leads(
+        **{s: [told("brief", 4000), ending("STILL WORKING: x\nWaits: #976", 3600)] for s in sids}
+    )
     for sid in sids:
         og.snaps[sid] = {"status": "idle", "updated_at": time.time() - 60}
     calls: list[tuple] = []

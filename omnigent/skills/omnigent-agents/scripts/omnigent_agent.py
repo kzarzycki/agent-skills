@@ -592,7 +592,9 @@ FOLLOW_QUIET_SECONDS = 300.0
 # A followed lead with no progress (its own history, its live children) this long: a ``deadline``
 # event, whatever its status reads; this much more once it was nudged.
 DEADLINE_SECONDS = 1200.0
-SHARED_READ_SECONDS = 5.0  # a PR read this recently serves every wait on it (a restart reads each PR once)
+SHARED_READ_SECONDS = (
+    5.0  # a PR read this recently serves every wait on it (a restart reads each PR once)
+)
 PR_POLL_SECONDS = 60.0  # a lead's named PR is read from GitHub at most this often
 # An open PR with no push, verdict, go or merge-queue step this long is stalled: the supervisor wakes the manager with
 # the blocker it finds (#1819), since nobody else notices a PR waiting behind a red check or a missing go overnight.
@@ -5858,9 +5860,7 @@ def pr_rest_view(pr: int, until: str, timeout: float, repo: str = "") -> dict:
     if until != "checks":
         return data
     head = pull["head"]["sha"]
-    runs = rest_if_changed(
-        f"repos/{slug}/commits/{head}/check-runs?per_page=100", timeout
-    )[1]
+    runs = rest_if_changed(f"repos/{slug}/commits/{head}/check-runs?per_page=100", timeout)[1]
     status = rest_if_changed(f"repos/{slug}/commits/{head}/status", timeout)[1]
     data["statusCheckRollup"] = [
         {
@@ -10026,7 +10026,9 @@ def supervise_registry(
         seen = lead.setdefault("pr_seen", {})
         key = f"{'run ' if run else ''}{repo}#{pr}"
         if (shared := pr_shared.get(key)) and time.time() - shared[0] < SHARED_READ_SECONDS:
-            seen[key] = list(shared)  # another wait on this PR read it a moment ago (a restart's backfill): it serves this one
+            seen[key] = list(
+                shared
+            )  # another wait on this PR read it a moment ago (a restart's backfill): it serves this one
             if len(shared) > 2:
                 raise Fail(shared[2])
             return shared[1] and tuple(shared[1])
@@ -10531,7 +10533,9 @@ def supervise_registry(
                 except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
                     log(("pr", sid), f"{sid}: PR #{m[2]} not read: {reason(e)}")
                     gone = any(w in str(e) for w in ("Could not resolve", "Not Found", "HTTP 404"))
-                    if gone and not m[1] and (own := wait_repo(sid, "")):  # REST says 404 where GraphQL said "resolve"
+                    if (
+                        gone and not m[1] and (own := wait_repo(sid, ""))
+                    ):  # REST says 404 where GraphQL said "resolve"
                         try:  # told only when the lead's repo is known and has no such PR or issue
                             gh("api", f"repos/{own}/issues/{m[2]}")
                         except Fail as no:
