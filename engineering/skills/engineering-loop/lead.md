@@ -312,10 +312,12 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      `approvals.py`'s docstring has each step), and
      exit 0 means your PR merged in the local queue, with a `Landed` comment naming the base commit and the tree,
      and its kept `--pr` worker sessions finishing in the background (its log is named; `reap --merged
-     --pr <n>` finishes them again). On a base with GitHub's merge queue exit 0 means the PR is enqueued
-     (or already queued) and `land` has ended: it never polls the queue. The merge, or a removal for a red
-     check, reaches you as an event from the project's watcher; the PR is not landed until then. A removal's next
-     step is `land <pr>` again, which reads the PR once. Exit 1 names what stopped your PR, and the fix is yours:
+     --pr <n>` finishes them again). On a base with GitHub's merge queue, or under `land.queue: mergify`, `land <pr>` exits 0 once the
+     PR is enqueued (or already queued); `land <pr> --wait` waits on until the queue merges it (exit 0) or takes
+     it out, reading only the PR's queue state about once a minute, so don't poll the PR yourself. A removal's
+     next round runs in the same wait: a red is enqueued once more, a second red or a dequeue evicts (exit 1).
+     Without `--wait`, the merge or a removal reaches you as an event from the project's watcher, and a removal's
+     next step is `land <pr>` again, which reads the PR once. Exit 1 names what stopped your PR, and the fix is yours:
      - a missing proof, with nothing on the PR changed: add the proof;
      - a conflict with main or the PRs merged before it: merge `origin/main` in, as step 8's
        `Conflicts in the landing batch` bullet says;
@@ -327,8 +329,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      - a merge GitHub refused: as the bullet below says.
      Exit 3 is what `--wait` doesn't clear: the owner's go, or 2 hours of another land's lock
      (one whose PR already merged is broken at once). On a GitHub-queue
-     base `--wait` never waits on the queue, and exit 3 for a conflict GitHub is still working out, or for main's
-     checks on the commit a red group was built on, ends the run: run `land` again later. With gatekeeper.md's `land` section it squashes, signs and pushes
+     base exit 3 for a conflict GitHub is still working out, or for main's checks on the commit a red group was
+     built on, ends the run: run `land` again later. With gatekeeper.md's `land` section it squashes, signs and pushes
      each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what

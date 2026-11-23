@@ -251,10 +251,13 @@ gets a `Red in the merge queue` comment naming the check that failed on the queu
 its failed job log's last 30 lines, and is enqueued again; its second turns the PR back to draft with the same, as
 Mergify's queue evicts (`Evicted from the merge queue`, exit 1). Any other removal (`checks_timed_out`, `manual`) counts for
 nothing, and the PR is enqueued again. The count lives in GitHub's timeline, so any land applies it and `land` keeps no
-state. A PR enqueued or already queued exits 0, naming its queue position and head, and `land` ends: it never polls the
-queue (GitHub tracks it; a poll only spends the account's GraphQL quota), so `--wait` never waits on the queue (it only waits for the PR's own running checks or an owner's go, before enqueuing), and a
-later `land <pr>` reads a removed entry's state once (above). Exit 3 stays for a PR whose conflict GitHub is still
-working out, or a base still running its checks: nothing was enqueued yet. Who tells the lead of a merge or a removal
+state. A PR enqueued or already queued exits 0, naming its queue position and head, and `land` ends. `land <pr> --wait`
+waits on instead until the queue merges it (exit 0, after its `Landed` comment) or takes it out, whose removal the
+next round reads as above (#2101): between rounds it reads, each QUEUE_WATCH seconds (60), only the PR's state, head and
+queue entry, one GraphQL call (two ETag reads on REST, a 304 costing no quota), so a lead need not poll the PR itself;
+the same holds under `land.queue: mergify`, where a merge, Mergify's dequeued label or a push ends that read. A later
+`land <pr>` reads a removed entry's state once (above). Exit 3 stays for a PR whose conflict GitHub is still
+working out, or a base still running its checks: nothing was enqueued yet. Without `--wait`, who tells the lead of a merge or a removal
 is the project's watcher, not `land`. The first land that reads
 a PR the queue merged (a `land <pr>` naming it, or a bare `land`, which reads every merged PR into the base that carries
 `loop:queued`, the label `land` puts on each PR before it enqueues it) comments `Landed` on it, `Base:` its merge commit, `Tree:` that commit's tree and `Gate: merge
@@ -287,8 +290,8 @@ reason where its queue check run on the head gives one (a label left from an old
 `land <pr>` naming a merged one, comments `Landed` on each merged PR still carrying `loop:queued` (`Base:` its merge
 commit, `Tree:` that commit's tree, `Gate: Mergify merge queue` with the Actions runs on that commit), finishes its
 worker sessions and takes the label off. Exits as the GitHub merge queue path: 0 once queued, 1 for a refusal or an
-eviction, 3 while a required check on the head runs (`--wait` waits for that, never for the queue). Every call is REST,
-so a cloud session lands this way with no signing key; with `land.signed_squash_to` it is refused, since GitHub signs
+eviction, 3 while a required check on the head runs (`--wait` waits for that, and for a named PR it queued, until
+Mergify merges it or dequeues it, as above). Every call of a round is REST, so a cloud session lands this way with no signing key; with `land.signed_squash_to` it is refused, since GitHub signs
 Mergify's merges.
 With loop.md's `land` section (`signed_squash_to: <branch>`, `allowed_signers: <path>`), for a repo that trusts only
 commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the batch is the same, but each
@@ -732,7 +735,18 @@ FULL = 900
 # and whether the round left the free lock to another land (locked: an older waiter, or lands that kept taking it),
 # so the probe also watches the lock only then: a CI wait on the local queue frees the lock each round, and lands that
 # all watched it would wake each other
-watched: dict[str, Any] = {"base": "", "pulls": [], "required": set(), "deferred": False}
+watched: dict[str, Any] = {
+    "base": "",
+    "pulls": [],
+    "required": set(),
+    "deferred": False,
+    "queued": {},
+}
+# a wait on named PRs a merge queue holds (GitHub's or Mergify's: `watched["queued"]`, PR -> which) reads only what ends
+# it (#2101): each QUEUE_WATCH seconds one queue_watch call, the PRs' state, head, queue entry and labels, and runs the
+# round once one merged, closed, left the queue or was pushed to. A queue merges in minutes, and a round re-reads the
+# rules, the permissions and the merged high-risk PRs, none of which moves while a PR waits in it
+QUEUE_WATCH = 60
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
 LOW_POLL, LOW_QUOTA = 600, 0.1
 # the longest poll of a wait whose state stays the same round after round: QUEUE_POLL doubles up to it (#1771). With
@@ -4907,6 +4921,7 @@ PORTS = {
     "forge": (
         "pull_request",  # (pr) -> the PR node, with its reviews, threads, checks, comments and closing issues
         "pull_status",  # (pr) -> {state, baseRefName, headRefOid, mergeable} alone, for a caller that reads no more
+        "queue_watch",  # (prs) -> {pr: {state, headRefOid, isInMergeQueue, labels}}: a queue wait's poll, one call
         "current_pr",  # () -> the checkout's branch's open PR number, or None
         "pr_changes",  # (pr) -> each file the PR changes, with its patch
         "merged_pull",  # (pr) -> the merged PR with its head and merge commit, or None
@@ -5027,6 +5042,7 @@ issue_node, issues_of = through("tracker", "issue_node"), through("tracker", "is
 label, assign = through("tracker", "label"), through("tracker", "assign")
 close_issue = through("tracker", "close_issue")
 pull_request, current_pr = through("forge", "pull_request"), through("forge", "current_pr")
+queue_watch = through("forge", "queue_watch")
 pull_status = through("forge", "pull_status")
 pr_changes, merged_pull = through("forge", "pr_changes"), through("forge", "merged_pull")
 tag_tree, file_at = through("forge", "tag_tree"), through("forge", "file_at")
@@ -5895,7 +5911,7 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
     while True:
         held_tip = None
         watched.update(
-            base="", pulls=[], required=set(), deferred=False
+            base="", pulls=[], required=set(), deferred=False, queued={}
         )  # this round's, never an earlier one's
         out, drifted = io.StringIO(), None
         try:
@@ -5971,10 +5987,11 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
                 moved = probe.moved()
             except subprocess.CalledProcessError as exc:
                 if not probe.lock:
-                    # a CI probe that failed is no news, never the wait's end: the round, after its poll, reads all
-                    # again and has its own network retries
+                    # a CI or queue probe that failed is no news, never the wait's end: the round, after its poll,
+                    # reads all again and has its own network retries
                     print(
-                        f"land --wait: the CI probe failed, the round reads again: {stderr_of(exc)}",
+                        f"land --wait: the {'queue' if probe.queued else 'CI'} probe failed, the round reads again:"
+                        f" {stderr_of(exc)}",
                         flush=True,
                     )
                     probe.stirred = True
@@ -6014,9 +6031,12 @@ class Probe:
         self.lock_tip: str | None = None
         self.deferred = bool(watched["deferred"])
         self.checks: dict[str, tuple[tuple[str, str], ...]] = {}
+        # the named PRs a merge queue holds, and when their queue state was last read (the round, just now)
+        self.queued: dict[int, str] = dict(watched.get("queued") or {})
+        self.watched_at = time.monotonic()
         self.idle = not self.lock and not self.heads
         self.stirred = False
-        if not self.lock:
+        if not self.lock and not self.queued:
             for head in filter(None, self.heads.values()):
                 try:
                     self.checks[head] = ci_state(head, self.required)
@@ -6040,10 +6060,32 @@ class Probe:
 
     def moved(self) -> bool:
         """Whether landing() should run again now: the held lock moved past a heartbeat, or has not moved for STALE
-        seconds; for a wait on CI, True once `stirred`."""
+        seconds; a PR a merge queue holds merged, closed, left the queue or was pushed to (queue_moved); for a wait on
+        CI, never: it sets `stirred` instead, which runs the round after its poll."""
         if self.lock:
             return self.lock_moved()
+        if self.queued:
+            return self.queue_moved()
         self.stirred = self.ci_moved()
+        return False
+
+    def queue_moved(self) -> bool:
+        """At most once per QUEUE_WATCH seconds, one queue_watch read of the PRs a merge queue holds (#2101): True once
+        one is no longer open (merged, closed), is no longer in GitHub's queue, carries Mergify's DEQUEUED or lost
+        QUEUED, or has a head other than the round's (a push, which takes it out of either queue). A red check takes a
+        PR out of the queue, so it is seen as a removal; the round then reads what happened."""
+        if time.monotonic() - self.watched_at < QUEUE_WATCH:
+            return False
+        self.watched_at = time.monotonic()
+        found = queue_watch(sorted(self.queued))
+        for number, which in self.queued.items():
+            now, head = found[number], self.heads.get(f"refs/pull/{number}/head")
+            if now["state"] != "OPEN" or (head and now["headRefOid"] != head):
+                return True
+            if which == GITHUB and not now["isInMergeQueue"]:
+                return True
+            if which == MERGIFY and (DEQUEUED in now["labels"] or QUEUED not in now["labels"]):
+                return True
         return False
 
     def lock_moved(self) -> bool:
@@ -6227,7 +6269,7 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     and its policy read to place the land (placed: where it may run and the key it signs with) and to ready drafts,
     then read again after the fetch under the lock for the batch (landing_here)."""
     ended.clear()
-    watched.update(base="", pulls=[], required=set(), deferred=False)
+    watched.update(base="", pulls=[], required=set(), deferred=False, queued={})
     named, base, worst = land_base(pr)
     if named is None:
         return worst, False
@@ -7650,10 +7692,11 @@ def github_queue(
 ) -> tuple[int, bool]:
     """The GitHub merge queue, which `base`'s rules require (merging with `method`): no landing lock, local batch or
     local gate, since GitHub's queue orders the entries, gates each group with its `merge_group` CI run and isolates a
-    red one. Every candidate (candidates_of), oldest PR first, goes in pinned to its head (queue_step), and land exits:
-    it never loops on the queue (`--wait` waits only for a PR's own checks or an owner's go, before enqueuing), which GitHub tracks and a poll would only spend GraphQL
-    quota on. A PR in the queue is done (exit 0); exit 3 stays for a PR GitHub is still working out a conflict of, or
-    a base still running its checks, which a later `land` reads again."""
+    red one. Every candidate (candidates_of), oldest PR first, goes in pinned to its head (queue_step). A PR in
+    the queue is done (exit 0), and land exits; `--wait` waits on a named one until the queue merges it (exit 0) or
+    takes it out (the round then reads the removal), reading only its queue state each QUEUE_WATCH (#2101). Exit 3
+    stays for a PR GitHub is still working out a conflict of, or a base still running its checks, which a later `land`
+    reads again."""
     if signed(loop):
         raise Refused(
             f"{base}'s rules require GitHub's merge queue, which merges with GitHub's signature, but loop.md's"
@@ -7665,11 +7708,15 @@ def github_queue(
     candidates, exits, _ = candidates_of(named, base, tracker, loop, required, only)
     numbers, failed = {pull["number"] for pull in named}, set()
     for pull in candidates:
-        code, _ = queue_step(pull, base, method, loop, required)
+        code, queued = queue_step(pull, base, method, loop, required)
         if code == 1:
             failed.add(pull["number"])
-        if pull["number"] in numbers or code != WAITING:
-            # the queue is never polled; what candidates_of waits on (a check, an owner's go) keeps its own wait
+        if waiting and code == 0 and queued and pull["number"] in numbers:
+            # land --wait waits on until the queue merges it or takes it out (#2101), reading only its queue state
+            watched["queued"][pull["number"]] = GITHUB
+            exits[pull["number"]] = (WAITING, True)
+        elif pull["number"] in numbers or code != WAITING:
+            # what candidates_of waits on (a check, an owner's go) keeps its own wait
             exits[pull["number"]] = (code, False)
     if not named:
         queue_trail(base)
@@ -7745,17 +7792,24 @@ def mergify_queue(
     queue: as github_queue, no landing lock, local batch or local gate, since Mergify batches the queued PRs, tests
     each batch as a draft PR on top of `base` in CI and squash-merges on green. Every candidate (candidates_of), oldest
     PR first, is handed over with the `land` status on its head and QUEUED (mergify_step), which `.mergify.yml`'s
-    queue conditions read, and land exits: it never polls the queue, so `--wait` waits only for a PR's own checks or an
-    owner's go. A bare land writes the `Landed` trail of the PRs Mergify merged (queue_trail). Every call is REST."""
+    queue conditions read, and land exits; `--wait` waits on a named one until Mergify merges it (exit 0) or dequeues it
+    (DEQUEUED: the round then evicts it), reading only its state and labels each QUEUE_WATCH (#2101). A bare land
+    writes the `Landed` trail of the PRs Mergify merged (queue_trail). Every call of a round is REST."""
     git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
     judge_with_base(base)
     candidates, exits, _ = candidates_of(named, base, tracker, loop, required, only)
     failed = set()
+    numbers = {pull["number"] for pull in named}
     for pull in candidates:
         code = mergify_step(pull)
         if code:
             failed.add(pull["number"])
-        exits[pull["number"]] = (code, False)
+        if waiting and not code and pull["number"] in numbers:
+            # land --wait waits on until Mergify merges it or dequeues it (#2101), reading only its state and labels
+            watched["queued"][pull["number"]] = MERGIFY
+            exits[pull["number"]] = (WAITING, True)
+        else:
+            exits[pull["number"]] = (code, False)
     if not named:
         queue_trail(base)
     return outcome(named, exits, worst, failed)
@@ -8101,7 +8155,9 @@ def stderr_of(exc: Exception) -> str:
 def queue_step(
     pull: dict[str, Any], base: str, method: str, loop: str | None, required: set[str]
 ) -> tuple[int, bool]:
-    """One candidate in the GitHub merge queue, and the exit it means for a named PR. In the queue: left alone, or,
+    """One candidate in the GitHub merge queue: the exit it means for a named PR, and with exit 0 whether the queue
+    holds it after the step (a wait goes on from that), with exit 3 whether a wait would clear it. In the queue: left
+    alone, or,
     stuck (stuck), dequeued and enqueued again. Out of it, by the queue's last removal of its head (queue_removals):
     merged, done (exit 0); a conflict GitHub still reports (or one it reports with no removal), commented once per head and
     not enqueued; a red group, after a check that `base`'s tip is green (main_red), counted only when built on a green
@@ -8118,7 +8174,7 @@ def queue_step(
     if entry := pull.get("mergeQueueEntry"):
         if not stuck(entry):
             print(f"{where} is in the merge queue at {head}, position {entry.get('position')}")
-            return 0, False
+            return 0, True
         dequeue_pull(pull["number"], pull["id"])
         print(
             f"{where}: its merge-queue entry waited {STUCK // 60} minutes for checks GitHub never started:"
@@ -8275,7 +8331,8 @@ def required_state(
 
 def enqueue(pull: dict[str, Any], method: str) -> tuple[int, bool]:
     """Put the PR in the GitHub merge queue (merging with `method`) pinned to the head the proofs judged: exit 0 once
-    it is in, 1 when GitHub refuses, or when its head moved as it went in (the forge port's REST answer reads it again)."""
+    it is in (and True: the queue holds it), 1 when GitHub refuses, or when its head moved as it went in (the forge
+    port's REST answer reads it again)."""
     where, head = f"PR #{pull['number']}", pull["headRefOid"]
     # before the enqueue, so no PR the queue merges lacks it: the bare land's trail follows it (queue_trail)
     label(pull["number"], QUEUED, add=True)
@@ -8288,7 +8345,7 @@ def enqueue(pull: dict[str, Any], method: str) -> tuple[int, bool]:
         print(f"{where}: {exc}")
         return 1, False
     print(f"{where} enqueued at {head}, position {position}")
-    return 0, False
+    return 0, True
 
 
 def run_link(url: str) -> str:
