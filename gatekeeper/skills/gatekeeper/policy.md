@@ -65,6 +65,7 @@ loop:
   short_seconds: 120   # a job expected to finish within this takes the host's short lane; 0 turns the lane off
   pre_land: python3 scripts/check_fork.py   # land's check of each PR against the base, before it batches them
   delegate: all   # the delegated approver's go on a head covers a PR into the default branch too, and their spec or plan approval counts, but on risk.critical_paths; default feature
+  delegate_spec: true   # false keeps spec and plan approvals the owner's under delegate: all, whose merge go still counts; default true
   pack_staleness: refuse   # approvals.py exits 1 at start when its checkout is behind its upstream and the script changed there (default warn; omnigent_agent.py only warns)
   stalled_after_hours: 12   # check stalled lists a verified PR still missing its go or record this long after its head's push (default 4)
   head_proof:      # the status land requires on each head, and the names its recording takes from the caller

@@ -499,9 +499,12 @@ reads, plus the `approved:<point>` label for the board. No agent writes one, sin
 is no approval. Where the policy on origin's default branch sets `loop.delegate: all`, the owner's standing
 delegation covers specs and plans too: `approve <spec|plan> <issue> --by delegate` writes the record with `By:
 delegate` under the line `Approved under the owner's delegation.`, adds the label and removes the issue's
-`needs-owner`, the spec's hold; without the setting it is refused. The gate counts a delegate's current record in place of
-the owner's only while the policy it reads sets `delegate: all` and the PR touches no path `risk.critical_paths`
-names, which stays the owner's, and otherwise names why it doesn't count. `approve breakglass` stays the owner's
+`needs-owner`, the spec's hold; without the setting it is refused. `loop.delegate_spec: false` (default true) keeps
+specs and plans the owner's under `delegate: all`: `approve <spec|plan> --by delegate` is refused, naming the key, and
+a delegate's record counts for nothing, while the delegate's go on a merge is unchanged. The gate counts a delegate's
+current record in place of the owner's only while the policy it reads sets `delegate: all`, no `delegate_spec:
+false`, and the PR touches no path `risk.critical_paths` names, which stays the owner's, and otherwise names why it
+doesn't count. `approve breakglass` stays the owner's
 alone. The owner's record:
 
     Approved: spec
@@ -936,6 +939,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "pre_land": str,
         "head_proof": Table(status=str, env=list),
         "delegate": Choice(("all", "feature")),
+        "delegate_spec": bool,
         "pack_staleness": Choice(("warn", "refuse")),
         "stalled_after_hours": int,
     },
@@ -1226,6 +1230,12 @@ def delegation(loop: str | None) -> str:
     """loop.md's `delegate`: `all` when the delegated approver's go on a head covers a PR into the default branch
     too, else `feature`, today's rule, where only the owner's does."""
     return str(settings(loop).get("delegate", "feature"))
+
+
+def delegate_spec(loop: str | None) -> bool:
+    """loop.md's `delegate_spec`: whether `delegate: all` covers specs and plans too (default true); false keeps them
+    the owner's while the delegate's go on a merge still counts."""
+    return settings(loop).get("delegate_spec", True) is not False
 
 
 def spec_auto(loop: str | None) -> bool:
@@ -2284,10 +2294,13 @@ def current(node: dict[str, Any], point: str, key: str, value: str | set[str], b
 
 def delegated(pull: dict[str, Any], loop: str | None) -> str | None:
     """Why a delegate's spec or plan record (approve `--by delegate`) can't stand in for the owner's on this PR, or
-    None where it does: it counts only while `loop` sets `loop.delegate: all` and the PR touches no path
+    None where it does: it counts only while `loop` sets `loop.delegate: all`, no `loop.delegate_spec: false`, and the
+    PR touches no path
     `risk.critical_paths` names (critical), which stays the owner's, as for a merge's go (go)."""
     if delegation(loop) != "all":
         return f"{source(loop)} sets no `loop.delegate: all`"
+    if not delegate_spec(loop):
+        return f"{source(loop)} sets `loop.delegate_spec: false`, which keeps specs and plans the owner's"
     return critical(pull, loop)
 
 
@@ -9054,12 +9067,21 @@ def approve(point: str, number: int, seen: str | None = None, by: str = "owner")
     the owner's label was checked against (adopted), an edit since is refused: the label never covered it. With `by`
     `delegate`, the delegated approver's, under the owner's delegation: refused unless the policy on origin's default
     branch sets `loop.delegate: all`, its record opening with VOICED's line so a reader tells it from the owner's; the
-    gate counts it as delegated() says."""
-    if by == DELEGATE and delegation(project()[1]) != "all":
-        raise Refused(
-            f"approve {point} --by delegate needs `loop.delegate: all` in the policy on origin's default branch:"
-            f" without it the {point} is the owner's (`--by owner`)"
-        )
+    gate counts it as delegated() says. `loop.delegate_spec: false` there refuses it too, keeping the spec and plan
+    the owner's."""
+    if by == DELEGATE:
+        loop = project()[1]
+        if delegation(loop) != "all":
+            raise Refused(
+                f"approve {point} --by delegate needs `loop.delegate: all` in the policy on origin's default branch:"
+                f" without it the {point} is the owner's (`--by owner`)"
+            )
+        if not delegate_spec(loop):
+            raise Refused(
+                f"approve {point} --by delegate is refused: the policy on origin's default branch sets"
+                f" `loop.delegate_spec: false`, so the {point} is the owner's (`--by owner`); the delegate's go on a"
+                " merge still counts"
+            )
     issue = issue_node(number)
     holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
     if holder is None:
