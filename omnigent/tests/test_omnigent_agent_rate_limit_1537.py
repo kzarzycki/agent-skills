@@ -212,3 +212,45 @@ def test_rate_wait_branches(monkeypatch, stderr, bucket_answer, want):
 
     monkeypatch.setattr(oa.subprocess, "run", run)
     assert oa.rate_wait(stderr) == want
+
+
+def test_supervise_holds_its_head_reads_for_the_jittered_wait(monkeypatch, tmp_path):
+    """A limit that resets now (wait 0) still holds the reads for the jitter: the hold is wait + jitter, not wait."""
+    import test_omnigent_agent as t
+
+    reads = []
+
+    def gh(*args, timeout=0):
+        reads.append(args)
+        raise oa.RateLimited("403", 0.0)
+
+    monkeypatch.setattr(oa, "HEAD_SECONDS", 0)
+    monkeypatch.setattr(oa, "gh", gh)
+    monkeypatch.setattr(oa.random, "uniform", lambda low, high: 3600.0)
+    registry = t.following(tmp_path)
+    og = t.Lead(t.told("brief", 60))
+    t.in_checkout(og)
+    t.supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
+    assert len(reads) == 1
+
+
+def test_supervise_holds_its_open_pr_reads_for_the_jittered_wait(monkeypatch, tmp_path):
+    """The open-PR sweep's hold is wait + jitter too, so a limit that resets now still holds it."""
+    import test_omnigent_agent as t
+
+    sweeps = []
+
+    def stalls(repo, after, seen):
+        sweeps.append(repo)
+        raise oa.RateLimited("403", 0.0)
+
+    monkeypatch.setattr(oa, "HEAD_SECONDS", 3600)
+    monkeypatch.setattr(oa, "PR_STALL_POLL", 0)
+    monkeypatch.setattr(oa, "default_head", lambda repo: "a" * 40)
+    monkeypatch.setattr(oa, "pr_stalls", stalls)
+    monkeypatch.setattr(oa.random, "uniform", lambda low, high: 3600.0)
+    registry = t.following(tmp_path)
+    og = t.Lead(t.told("brief", 60))
+    t.in_checkout(og)
+    t.supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
+    assert len(sweeps) == 1
