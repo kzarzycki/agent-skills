@@ -30,6 +30,10 @@ class Hosts(omnigent_agent.Omnigent):
     def __init__(self, rows: list[dict], files: dict[str, str] | None = None) -> None:
         self.base, self.host_id, self._token, self.loops = "http://x", "here", "t", {}
         self.rows, self.files, self.gone = rows, files or {}, set()
+        self.serves_files = False  # whether the host has the file route, as a newer server
+        self.file_status = 0  # a status the file route answers instead of the text
+        self.file_reads: list[str] = []
+        self.bare = False  # the route answers 200 with no text
         self.records: list[dict] = []  # the project's sessions, as the server lists them
 
     def call(self, method: str, path: str, body: object = None, **_: object) -> dict:
@@ -40,6 +44,18 @@ class Hosts(omnigent_agent.Omnigent):
         if path.startswith("/v1/sessions?kind=default&project=repo"):
             return {"data": self.records}
         if path.startswith("/v1/hosts/"):
+            if "/files/" in path:
+                file = "/" + path.split("/files/")[1].strip("/")
+                self.file_reads.append(file)
+                if self.file_status:
+                    raise omnigent_agent.Fail(f"GET {path}: HTTP {self.file_status} no") from (
+                        HTTPError(path, self.file_status, "no", Message(), None)
+                    )
+                if self.bare:
+                    return {"object": "file", "path": file}
+                if self.serves_files and file in self.files:
+                    return {"object": "file", "path": file, "content": self.files[file]}
+                raise omnigent_agent.Fail("GET") from HTTPError(path, 404, "", Message(), None)
             folder = "/" + path.split("?")[0].split("/filesystem/")[1].strip("/") + "/"
             names = {f[len(folder) :].split("/")[0] for f in self.files if f.startswith(folder)}
             if not names:
@@ -147,6 +163,58 @@ def test_a_pin_that_cannot_be_read_refuses_an_explicit_host_and_says_how_to_go_o
         omnigent_agent.refuse_unfit_cloud_host(og, "there", Path(WORK))
 
 
+def test_the_pin_is_read_through_the_host_api_with_no_live_session(live: list[str]) -> None:
+    live.append("there")  # no live session on the host
+    og = Hosts([row("there", 900, CLOUD)], {SETTINGS: pinned()})
+    og.serves_files = True
+    omnigent_agent.refuse_unfit_cloud_host(og, "there", Path(WORK))
+    for files, why in (
+        ({f"{WORK}/x": ""}, "missing"),  # no settings file
+        ({SETTINGS: json.dumps({})}, "no remote.defaultEnvi"),  # a file with no pin
+    ):
+        og = Hosts([row("there", 900, CLOUD)], files)
+        og.serves_files = True
+        with pytest.raises(omnigent_agent.Fail, match=why):
+            omnigent_agent.refuse_unfit_cloud_host(og, "there", Path(WORK))
+
+
+@pytest.mark.parametrize("status", [403, 413, 503])
+def test_a_refused_file_read_is_a_failure_with_no_session_fallback(status: int) -> None:
+    og = Hosts([row("there", 900, CLOUD)], {SETTINGS: pinned()})
+    og.file_status = status  # a live session could read it, but the route said no
+    with pytest.raises(omnigent_agent.Fail, match=rf"can't be read.*HTTP {status}"):
+        omnigent_agent.refuse_unfit_cloud_host(og, "there", Path(WORK))
+
+
+@pytest.mark.parametrize("status", [400, 404, 405])
+def test_a_host_without_the_file_route_is_read_through_a_session(status: int) -> None:
+    og = Hosts([row("there", 900, CLOUD)], {SETTINGS: pinned()})
+    og.file_status = status
+    omnigent_agent.refuse_unfit_cloud_host(og, "there", Path(WORK))
+    assert og.file_reads == [SETTINGS]
+
+
+def test_a_folder_read_falls_back_to_a_session_listing() -> None:
+    og = Hosts([row("there", 900, CLOUD)], {f"{WORK}/.git/HEAD": ""})  # a main checkout's .git
+    og.file_status = 400  # the route answers 400 for a folder
+    assert omnigent_agent.read_on_host(og, "there", f"{WORK}/.git") == "HEAD"
+
+
+def test_a_route_answer_with_no_text_falls_back_to_a_session() -> None:
+    og = Hosts([row("there", 900, CLOUD)], {SETTINGS: pinned()})
+    og.serves_files = og.bare = True
+    omnigent_agent.refuse_unfit_cloud_host(og, "there", Path(WORK))
+    assert og.file_reads == [SETTINGS]
+
+
+def test_only_the_claude_config_falls_back_on_a_403() -> None:
+    og = Hosts([row("there", 900, CLOUD)], {"/h/.claude.json": "{}", "/h/.ssh/id": "k"})
+    og.file_status = 403  # a credential file
+    assert omnigent_agent.read_on_host(og, "there", "/h/.claude.json") == "{}"
+    with pytest.raises(omnigent_agent.Fail, match="HTTP 403"):
+        omnigent_agent.read_on_host(og, "there", "/h/.ssh/id")
+
+
 def test_a_pin_file_that_is_not_json_is_refused() -> None:
     og = Hosts([row("there", 900, CLOUD)], {SETTINGS: "{"})
     with pytest.raises(omnigent_agent.Fail, match="is not JSON") as e:
@@ -203,6 +271,26 @@ def test_trust_that_cannot_be_read_is_refused_and_a_home_not_found_is_not_checke
     og = trusting(None)  # no home under the workspace's path either
     og.files = {k.replace("/home/u", "/srv/u"): v for k, v in og.files.items()}
     omnigent_agent.refuse_unfit_cloud_host(og, "there", Path("/srv/u/repo"))
+
+
+def test_a_claude_config_over_the_file_route_limit_warns_and_is_not_checked(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    work = Path("/home/u/repo")
+    og = trusting(trust("/other"))  # untrusted, but the config can't be read to say so
+    og.serves_files = True
+    real = og.call
+
+    def call(method: str, path: str, body: object = None, **kw: object) -> dict:
+        if path.endswith("/files/home/u/.claude.json"):
+            raise omnigent_agent.Fail(f"GET {path}: HTTP 413 too large") from (
+                HTTPError(path, 413, "Request Entity Too Large", Message(), None)
+            )
+        return real(method, path, body, **kw)
+
+    og.call = call  # type: ignore[method-assign]
+    omnigent_agent.refuse_unfit_cloud_host(og, "there", work)
+    assert "folder trust not checked" in capsys.readouterr().err
 
 
 def cloud_far(

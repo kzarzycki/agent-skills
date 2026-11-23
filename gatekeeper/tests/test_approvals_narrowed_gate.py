@@ -1,6 +1,6 @@
-"""approvals.py narrowed mode (#1422): loop.md's `Affected tests:` command gates every head, `land`'s batch and a
-`ci: false` project's ready head, against an explicit base or the merge base; `Gate: full` opts out, and a narrowed
-pass never stands for a full one."""
+"""approvals.py narrowed mode (#1422): loop.md's `Affected tests:` command gates every head and a `ci: false`
+project's ready head, against an explicit base or the merge base; `Gate: full` opts out, and a narrowed pass never
+stands for a full one. `land` runs none of it (#1872)."""
 
 from __future__ import annotations
 
@@ -97,15 +97,16 @@ def test_an_explicit_base_overrides_the_merge_base(repo: dict[str, Any]) -> None
     assert repo["ran"]() == [f"selected app.py docs/agents/loop.md against {first}"]
 
 
-def test_a_base_git_cannot_resolve_runs_the_full_check_and_says_so(
+def test_a_base_git_cannot_resolve_runs_nothing_and_says_so(
     repo: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """#1872: no base, so it can't tell what changed: nothing runs, never the whole suite."""
     repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
     assert approvals.main(["affected-tests", "--base", "0" * 40]) == 0
-    assert repo["ran"]() == ["mise run check base=unset"]
-    assert (
-        f"the base {'0' * 40} is no commit here: running the full check" in capsys.readouterr().err
-    )
+    assert repo["ran"]() == []
+    said = capsys.readouterr().err
+    assert f"the base {'0' * 40} is no commit here" in said
+    assert "affected-tests: nothing: no base to select against" in said
 
 
 def test_without_the_line_no_base_is_resolved(
@@ -113,7 +114,7 @@ def test_without_the_line_no_base_is_resolved(
 ) -> None:
     repo["loop"]("# Loop\n")
     assert approvals.main(["affected-tests", "--base", "0" * 40]) == 0
-    assert repo["ran"]() == ["mise run check base=unset"]
+    assert repo["ran"]() == []
     assert "is no commit here" not in capsys.readouterr().err
 
 
@@ -198,20 +199,6 @@ def test_gate_steps_keep_their_steps_under_a_narrowed_base(repo: dict[str, Any])
 # --- land's batch gate ---
 
 
-def test_lands_batch_gate_runs_the_selector_against_the_base_tip(repo: dict[str, Any]) -> None:
-    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
-    tip = repo["base"]()
-    with approvals.narrowed_to(tip):
-        tree, how = approvals.gate_batch(repo["work"], [])
-        record = approvals.reusable(repo["head"]())
-    assert how == "run"
-    assert repo["ran"]() == [f"selected app.py against {tip}"]
-    assert record is not None and record["env"] == {"GATE_BASE": tip}
-    assert record["command"].endswith(approvals.NARROWED) and record["tree"] == tree
-    # the full gate finds no pass on the same tree
-    assert approvals.reusable(repo["head"]()) is None
-
-
 def batch_of(repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """Two PR heads pushed to origin, each adding one file to `main`'s tip, as `land` reads them: candidates_of names
     them, and merges, the GitHub part, is replaced by a log of what it was given."""
@@ -238,123 +225,44 @@ def batch_of(repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list[dict
     return pulls
 
 
-def test_land_gates_the_batch_with_the_selector_against_the_tip_it_merges_onto(
-    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """With a working tree: merge_batch's gate selects over the batch's combined diff against the tip."""
-    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
-    pulls = batch_of(repo, monkeypatch)
-    tip = repo["base"]()
-    assert approvals.local_queue(pulls, "main", None, None, set()) == (0, False)
-    assert repo["ran"]() == [f"selected b.py c.py against {tip}"]
-    [(landed, *_)] = repo["merged"]
-    assert [pull["number"] for pull, *_ in landed] == [7, 8]
-    assert {how for *_, how in landed} == {"run"}
-
-
-def test_a_red_main_is_not_read_green_by_the_selector_and_nobody_is_evicted(
+@pytest.mark.parametrize("working_tree", [True, False])
+@pytest.mark.parametrize("required", [set(), {"qualify"}])
+@pytest.mark.parametrize("loop", ["# Loop\n\nAffected tests: SELECTOR\n", f"# Loop\n\n{NO_CI}"])
+def test_land_merges_the_batch_with_no_gate_command_run(
     repo: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    working_tree: bool,
+    required: set[str],
+    loop: str,
 ) -> None:
-    """A PR red twice makes `land` gate the bare base; the selector selects nothing there (no diff), so only the full
-    gate can tell a main carrying breakage from an innocent PR."""
-    work, tools = repo["work"], repo["tools"]
-    # main's breakage: the selector fails once any change is selected (its tests reach app.py), the full check always
-    (tools / "selector.py").write_text(
-        SELECTOR
-        + 'if changed and "BROKEN" in pathlib.Path("app.py").read_text():\n    sys.exit(1)\n'
-    )
-    (tools / "mise").write_text(MISE + "grep -q BROKEN app.py && exit 1\nexit 0\n")
-    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
-    git_in(work, "checkout", "-q", "main")
-    (work / "app.py").write_text("value = BROKEN\n")
-    git_in(work, "commit", "-qam", "breakage")
-    git_in(work, "push", "-q", "origin", "main")
-    git_in(work, "checkout", "-q", "work")
+    """#1872: with no merge queue, land merges the batch on the verifier's record: neither the selector nor the
+    `gate` line runs, in narrowed mode or under `ci: false`, with or without a required check, with or without a
+    working tree, and no recorded pass is asked for."""
+    repo["loop"](loop)
     pulls = batch_of(repo, monkeypatch)
-    evicted: list[int] = []
-    monkeypatch.setattr(approvals, "evict", lambda pull, *_a: evicted.append(pull["number"]))
-    assert approvals.local_queue(pulls, "main", None, None, set())[0] != 0
-    assert "main itself is red" in capsys.readouterr().out
-    assert evicted == [] and repo["merged"] == []
-
-
-def test_land_in_a_clone_with_no_working_tree_looks_up_the_narrowed_pass_on_the_batch_tree(
-    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Without one: merged_trees finds the pass recorded against the tip, and refuses, naming that command, without."""
-    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
-    pulls = batch_of(repo, monkeypatch)
-    tip = repo["base"]()
-    monkeypatch.setattr(approvals, "working_tree", lambda root: False)
-    monkeypatch.delenv(
-        approvals.WORKING_TREE_POLICY
-    )  # the policy is origin's, as a clone with no files reads it
-    with pytest.raises(approvals.Refused) as refused:
-        approvals.local_queue(pulls, "main", None, None, set())
-    assert f"`approvals.py local-ci --record --base {tip}`" in str(refused.value)
-    assert repo["ran"]() == []  # no gate runs there
-    # the printed command's equivalent, on a head with the batch's tree: the lookup then finds that record
-    monkeypatch.setenv(approvals.WORKING_TREE_POLICY, "1")
-    monkeypatch.setattr(approvals, "working_tree", lambda root: True)
-    git_in(repo["work"], "checkout", "-q", "-B", "batch", "origin/main")
-    for pull in pulls:
-        git_in(repo["work"], "merge", "-q", "--no-ff", "--no-edit", pull["headRefOid"])
-    assert approvals.main(["local-ci", "--record", "--base", tip]) == 0
-    assert repo["ran"]() == [f"selected b.py c.py against {tip}"]
-    git_in(repo["work"], "checkout", "-q", "work")
-    monkeypatch.setattr(approvals, "working_tree", lambda root: False)
-    monkeypatch.delenv(approvals.WORKING_TREE_POLICY)
-    assert approvals.local_queue(pulls, "main", None, None, set()) == (0, False)
-    assert repo["ran"]() == [f"selected b.py c.py against {tip}"]  # nothing ran again
-    assert {how for *_, how in repo["merged"][0][0]} == {"reused"}
-
-
-def test_the_full_gate_keeps_its_refusal_text(
-    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n\nGate: full\n")
-    pulls = batch_of(repo, monkeypatch)
-    monkeypatch.setattr(approvals, "working_tree", lambda root: False)
-    monkeypatch.delenv(approvals.WORKING_TREE_POLICY)
-    with pytest.raises(approvals.Refused) as refused:
-        approvals.local_queue(pulls, "main", None, None, set())
-    assert "(`approvals.py local-ci --record` on a head with this tree)" in str(refused.value)
-
-
-def test_the_cloud_gate_task_passes_the_base_tip(
-    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
-    script = tmp_path / "omnigent_agent.py"
-    script.write_text("")
-    monkeypatch.setattr(approvals, "agent_script", lambda: script)
-    monkeypatch.setattr(approvals, "gate_session", lambda: {"session": "s1"})
-    told: list[str] = []
+    if not working_tree:
+        monkeypatch.setattr(approvals, "policy_ref", lambda _root: "refs/remotes/origin/main")
     monkeypatch.setattr(
-        approvals,
-        "run_agent",
-        lambda *args, **_: told.append(args[2]) or type("Done", (), {"returncode": 0})(),
+        approvals, "ran_step", lambda *_a, **_k: pytest.fail("land ran a gate step")
     )
-    tip = repo["base"]()
-    with approvals.narrowed_to(tip):
-        assert approvals.ask_cloud_gate("e" * 40) == ""
-    assert f"local-ci --record --base {tip}`" in told[0]
+    monkeypatch.setattr(approvals, "run_steps", lambda *_a, **_k: pytest.fail("land ran the gate"))
+    assert approvals.local_queue(pulls, "main", None, None, required) == (0, False)
+    assert repo["ran"]() == []
+    [(landed, *_)] = repo["merged"]
+    assert [pull["number"] for pull, _ in landed] == [7, 8]
 
 
 # --- ci: false: the narrowed record, check merge and local-ci --status ---
 
 
-def test_a_ci_false_record_is_narrowed_and_check_merge_takes_it(
+def test_a_ci_false_record_is_narrowed_and_check_merge_needs_none(
     repo: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     repo["loop"](f"# Loop\n\nAffected tests: SELECTOR\n\n{NO_CI}")
     base = git_in(repo["work"], "merge-base", "origin/main", "HEAD").strip()
     assert approvals.main(["local-ci", "--record"]) == 0
     assert repo["ran"]() == [f"selected app.py docs/agents/loop.md against {base}"]
-    loop = approvals.project()[1]
-    assert approvals.ran(pull(repo), loop) == []
+    assert approvals.ran(pull(repo)) == []
     # never a full pass: the full gate finds none on the head
     assert approvals.reusable(repo["head"]()) is None
     # the files a detached run leaves (detach): its exit and the commands it had to pass
@@ -368,24 +276,11 @@ def test_a_ci_false_record_is_narrowed_and_check_merge_takes_it(
     assert f"narrowed against {base}" in capsys.readouterr().out
 
 
-def test_with_the_opt_out_check_merge_refuses_a_narrowed_record(repo: dict[str, Any]) -> None:
-    repo["loop"](f"# Loop\n\nAffected tests: SELECTOR\n\n{NO_CI}")
-    assert approvals.main(["local-ci", "--record"]) == 0
-    # the policy is read from the working tree: the head and its tree stay the ones the narrowed pass ran on
-    (repo["work"] / "docs" / "agents" / "loop.md").write_text(
-        f"# Loop\n\nAffected tests: x\n\nGate: full\n\n{NO_CI}"
-    )
-    loop = approvals.project()[1]
-    [line] = approvals.ran(pull(repo), loop)
-    assert "no local check passed on the head" in line
-    assert approvals.narrowed_pass(pull(repo), []) is None
-
-
 def test_with_the_opt_out_a_ci_false_record_runs_the_full_gate(repo: dict[str, Any]) -> None:
     repo["loop"](f"# Loop\n\nAffected tests: SELECTOR\n\nGate: full\n\n{NO_CI}")
     assert approvals.main(["local-ci", "--record"]) == 0
     assert repo["ran"]() == ["mise run check:all base=unset"]
-    assert approvals.ran(pull(repo), approvals.project()[1]) == []
+    assert approvals.ran(pull(repo)) == []
 
 
 def test_with_ci_a_record_without_base_stays_full(repo: dict[str, Any]) -> None:
@@ -394,6 +289,16 @@ def test_with_ci_a_record_without_base_stays_full(repo: dict[str, Any]) -> None:
     assert repo["ran"]() == ["mise run check:all base=unset"]
     assert approvals.main(["local-ci", "--record", "--base", repo["base"]()]) == 0
     assert repo["ran"]()[-1] == f"selected app.py against {repo['base']()}"
+
+
+def test_a_record_against_a_base_git_cannot_resolve_says_it_runs_the_full_check(
+    repo: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """local-ci, unlike affected-tests, falls back to the full gate on an unresolvable base, and says so."""
+    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
+    assert approvals.main(["local-ci", "--record", "--base", "0" * 40]) == 0
+    assert repo["ran"]() == ["mise run check:all base=unset"]
+    assert "no base to narrow against: running the full check" in capsys.readouterr().err
 
 
 # --- check build's line ---
@@ -501,9 +406,8 @@ sys.exit(4)
 def test_a_selector_without_state_gets_only_the_base_and_its_own_result_stands(
     repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`affected-tests` and land's narrowed batch gate hand the command a clean checkout and the base variable (beside
-    the host gate slot's own), nothing else the pack provides: a selector with no state selects everything and its exit
-    passes through."""
+    """`affected-tests` hands the command a clean checkout and the base variable (beside the host gate slot's own),
+    nothing else the pack provides: a selector with no state selects everything and its exit passes through."""
     import json
 
     script, log = tmp_path / "no_state.py", tmp_path / "no_state.json"
@@ -516,10 +420,3 @@ def test_a_selector_without_state_gets_only_the_base_and_its_own_result_stands(
     seen = json.loads(log.read_text())
     assert set(seen["extra"]) <= pack_only and "GATE_BASE" in seen["extra"]
     assert seen["listed"] == "" and seen["base"] == merge_base
-    log.unlink()
-    tip = repo["base"]()
-    with approvals.narrowed_to(tip):
-        assert approvals.gate_batch(repo["work"], [])[1] == ""  # red: the selector's exit 4
-    seen = json.loads(log.read_text())
-    assert set(seen["extra"]) <= pack_only and "GATE_BASE" in seen["extra"]
-    assert seen["listed"] == "" and seen["base"] == tip

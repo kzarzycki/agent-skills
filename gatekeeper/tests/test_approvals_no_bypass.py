@@ -228,10 +228,9 @@ def test_land_merges_nothing_while_a_required_check_is_red_even_with_the_owners_
     monkeypatch.setattr(approvals, "required_checks", lambda _base: {"qualify"})
     monkeypatch.setattr(approvals.port("forge"), "merge", lambda *a: sent.append(a))
     monkeypatch.setattr(approvals, "signed", lambda _loop: None)
-    monkeypatch.setattr(approvals, "gate", lambda: ("gate", None))
     red = pull(checks=(("qualify", "FAILURE"),))
     failed: set[int] = set()
-    approvals.merges([(red, "t" * 40, "gated", "batch")], "main", "b" * 40, None, None, failed)
+    approvals.merges([(red, "t" * 40)], "main", "b" * 40, None, failed)
     assert sent == []
     out = capsys.readouterr().out
     assert "refusing to merge while a required check is not green" in out
@@ -245,9 +244,6 @@ def test_land_does_not_merge_a_head_whose_required_check_is_missing(
     monkeypatch.setattr(approvals, "required_checks", lambda _base: {"qualify"})
     monkeypatch.setattr(approvals.port("forge"), "merge", lambda *a: sent.append(a))
     monkeypatch.setattr(approvals, "signed", lambda _loop: None)
-    monkeypatch.setattr(approvals, "gate", lambda: ("gate", None))
-    approvals.merges(
-        [(pull(checks=()), "t" * 40, "gated", "batch")], "main", "b" * 40, None, None, set()
-    )
+    approvals.merges([(pull(checks=()), "t" * 40)], "main", "b" * 40, None, set())
     assert sent == []
     assert "no `qualify` on the head commit yet" in capsys.readouterr().out

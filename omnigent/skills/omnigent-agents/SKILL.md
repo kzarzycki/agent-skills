@@ -213,7 +213,7 @@ message), `run` starts once more in a fresh session with the same brief, and one
 (`made no progress`, the bridge's `CLAUDE_CLOUD_STALL_TIMEOUT_S`) `wait` sends one continue
 message; each is named on stderr, and a second of either fails, naming both. `send --pr <n>`
 reaches a worker still open (kept, or one whose turn ended without a report), wherever its
-workspace is, since the report is the file `wait` writes here, and takes only a comment
+workspace is, since the report is the file `wait` writes here (for a path on another host, `tmp/loop/<its name>`, as `wait --pr` writes it), and takes only a comment
 created after the report already there, so a turn that ends on the old comment's link, or on
 none, gets the nudge and then fails. `--pr` arms no supervisor registry, since the supervisor reads the report file and
 would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
@@ -225,7 +225,7 @@ question tool and a published page, since each waits on a prompt nobody in the c
 A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
-A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, not its path: the VM has none of this host's paths, and a target repo without the pack installed holds no copy, so a path would read nothing. The skill's other files that the role names may not be in the checkout either; the brief says so.
+`--role` also takes a bare `lead`, `worker` or `verifier`, which names engineering-loop's role file beside this skill, so a launch dir needs no copy of it. A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, not its path: the VM has none of this host's paths, and a target repo without the pack installed holds no copy, so a path would read nothing. The skill's other files that the role names may not be in the checkout either; the brief says so.
 Every `acp:claude-cloud` session's preamble, lead or worker, with or without `--pr`, says how to open a
 PR when its brief or role asks for one: `curl` to `https://api.github.com/repos/<owner>/<repo>/pulls` with a
 `Content-Type: application/json` header. The VM's HTTPS proxy authenticates that host as the GitHub App, so no
@@ -349,7 +349,7 @@ session, 1 when not. It reads idle CPU, not the load average, which on macOS als
 waiting on I/O and memory and reads several times too high; load per core decides only when idle
 cannot be measured. `start` and `run` wait while the host the new session's load lands on has
 none: the host `--host` names, else this one. A `claude-cloud` start is judged there on memory
-and the row's `max_sessions` alone, since its bridge is all that runs on the host and its work runs
+alone (no `max_sessions` cap, and it isn't counted toward one), since its bridge is all that runs on the host and its work runs
 in the VM: its line reads `cloud start, cpu not judged, …`, and on another host only
 `/proc/meminfo` is read. Its memory floor is its own, `OMNIGENT_CLOUD_MIN_AVAILABLE_MB` (default
 1200), on every host, since the bridge adds about 150 MB: no row's `min_mb` and no
@@ -366,7 +366,7 @@ The limits are knobs set for the hardware: `OMNIGENT_MIN_CPU_IDLE` (percent, def
 gives `min_mb` and `max_load` (the 1-minute load average, absolute, not per core; a missing
 field takes the default): `cc-experiments` 2500 MB and load 40, `oz` load 10. Any host named `epic-*` (a burst box, 4 vCPU and 8 GB) has the `HOST_PREFIX_LIMITS` row
 1500 MB, load 6 and `max_sessions` 4: a start is refused once the box has that many live sessions,
-counted from the session list, so it holds where load and memory can't be read. A row's
+counted from the session list (bridged `claude-cloud` sessions excluded), so it holds where load and memory can't be read. A row's
 `max_load` decides another host's load in place of load per core, and on this host refuses on
 top of the idle-CPU judgement. `OMNIGENT_MIN_AVAILABLE_MB_<HOST>` and `OMNIGENT_MAX_LOAD_<HOST>`
 (the name upper-cased, `-` as `_`) override one row for a host start. A
@@ -507,8 +507,9 @@ It needs `--top-level`, since Omnigent runs a child on its parent's runner. On a
 than this one, `--workspace` is required, and it and the report are absolute paths on that host, never resolved or checked here; the brief goes inline
 in the first message, because its file would be on this host, so a Claude lead may read it as
 pasted text and ask for a go-ahead; and the report is written there, so `wait` takes its path
-as given and reads it, and its `.question`, through the session's file API on that host; the supervisor's `check` and `send` do the same, and `send` deletes an answered question and writes its `.followup` file there. With `--pr <n>` (a cloud worker) the report is instead the path here
-that `wait --pr <n>` writes the PR comment to.
+as given and reads it, and its `.question`, through the session's file API on that host; the supervisor's `check` and `send` do the same, and `send` deletes an answered question and writes its `.followup` file there. With `--pr <n>` (a cloud worker) the same rule holds: the report is
+that host's absolute path, never made here, and `wait --pr <n>` writes the PR comment to
+`tmp/loop/<its name>` here, where a report from another host is copied home (#2028).
 
 **Verifiers on another host.** A verifier (a `--role` whose file is `verifier.md`) starts on another host
 the same way, `start --top-level --host <name> --pr <n> --role <verifier.md> --workspace <clone>
@@ -551,6 +552,14 @@ to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
 (a scheduled job's status line to a chief of staff): its first line says so, and it never
 answers a question, even with `--answer`. A plain
 `relay` sent as a message, every `broadcast` message and every `send` follow-up open with `[relayed by <the relaying session>]`.
+
+To a lead (`omni.role=lead`), `relay` and `send` print a warning on stderr, and still deliver, when the
+message names an issue (`#N`, `owner/name#N` or its URL, in the lead's own repository) outside the
+lead's request: the issues its brief names, their epic, their sub-issues and the epic's other
+sub-issues. A lead takes one request or epic, so an unrelated item belongs to a fresh lead. A PR
+number, another repository's issue and a GitHub read that fails say nothing, since a false warning
+costs more than a missed one; it costs one GraphQL call, made only when the message names a number
+the brief does not.
 
 **Checking an owner's words.** `python3 scripts/omnigent_agent.py owner-said <session>
 <quote or quote-file>` pages through the session's whole history for the newest message holding the
@@ -740,10 +749,33 @@ The first head seen for a repo is only stored, so a start reports no old merge; 
 is kept in the state (`heads`), so a restart reports a landing made while it was down, and only
 that one. A workspace outside a checkout is not watched; a failed read is logged once and tried
 again. The event is for whoever owes the step after a landing (the chief of staff under `--console`), not for other leads: they read the new base on their next fetch, since a notice wakes each with its whole context. The lead's words play no part, so `route` and `lead.md` stay as they are.
-With `--console`, a followed lead quiet an hour whose PR (its `omni.pr` label or a PR its wait names) has a verdict on
-its current head over an hour old with no push since, and, for a satisfied one, no go (a green `owner` or `land` status,
-or `loop:queued`), gets one `news` line per PR and head naming the step it owes (`verdict_stall`), since nothing else
-picks up "verdict in, fix or go needed" overnight; each such PR is read at most once in 10 minutes.
+It also watches every open, non-draft PR of those repos and of each `--stall-repo <owner/name>` (#1819): a PR
+that has not moved toward landing for `--stall-minutes` (default 60; 0 turns the watch off) raises one `pr-stall`
+event, which routes `act` to the notified session, the manager, who clears the blocker or cards the owner the fix it
+proposes. Moving is a push (a commit, a force-push, the PR marked ready; a plain push, which GitHub gives no time, is dated no
+earlier than the head's first status or check run, or the sweep that first saw the head), a verifier report (`SATISFIED:`), a go (a
+green `owner` or `land` status) or a merge-queue step (`loop:queued` or `loop:dequeued` added or removed, a queue
+status or check run). The line names each blocker it finds: a red required check (the base's ruleset; any red check
+when unread), a conflict, a verdict on the head without a go (or a fix round asked with no push since), a card waiting
+(a loop event on the PR's branch at `needs-owner`, a verifier question newer than the push), else `none found on
+GitHub`: `o/r: PR #12 <title>: no push, verdict, go or queue step for 75m; blocker: a conflict with main: <url>`. It
+reads GitHub only (`pr_stalls`): the repo's open PRs at most once in 15 minutes, and a PR's timeline, statuses, check
+runs and pull only once it may have stalled (its last move plus the threshold), or again once its listing changed. It
+keeps only what stops a second wake for the same stall (each PR's newest move told, in the state's `pr_stalls`), so
+the same stall wakes no one twice and a new move starts a new one.
+
+For the same repos it also runs `check stalled`, the landing checks' listing (from their copy installed beside this
+skill, so it judges by the base's code), at most once an hour per repo (`STALLED_SECONDS`), in the first of their leads' workspaces that is
+a checkout on this host, detached so the poll goes on, and stopped past 15 minutes (`STALLED_TIMEOUT`). Each PR it
+lists (an approved, verified PR no `land` took) is said once per head and kind of line (so a go on an idle PR makes its landable line news at the same head), `<owner>/<name>: PR #N has its go and a
+satisfied verdict at <sha> and is not landed: land it (`land N --only`) or flag it`, or for a verified PR idle on a go or
+record it lacks, its line (`... missing: go`) and `: ask its approver for what it is missing`, a `stalled` event on that lead;
+the repo's last listing is kept (`stalled` in the state with `--console`), so the next hour's sweep says nothing new
+for it, and a PR is said again only once its head moved or it left the listing and came back; a PR a sweep could not
+judge keeps what was listed for it. A PR the sweep could not judge, a failed sweep and a lead on another host are logged,
+never posted, except a sweep that judged none of the repo's PRs (its last line, `<n> of <n> open PRs not judged here`):
+that is said once per reason, `<owner>/<name>: check stalled judged none of its <n> open PRs: <why>`, since its silence
+would read as nothing stalled.
 
 **`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
 state file, an events log, status labels, a progress deadline, settled events kept across
@@ -808,7 +840,9 @@ offline while idle raises nothing.
 | Event | Settled by | What happens |
 |---|---|---|
 | a default branch of a repo the followed, non-direct leads work in moved with a PR a lead's wait names or owns | rule | tell that lead (act, to the supervisor, when the lead waits on it), naming the new sha and the PRs merged since; no other lead and not the chief of staff |
+| `pr-stall`: an open PR of a watched repo with no push, verdict, go or queue step for `--stall-minutes` (#1819) | rule | act, to the manager, naming its blocker; the same stall once |
 | a PR or session a lead's wait names settled, or a session it started reached a final state | rule | tell that lead within a minute, read from GitHub and the session; a set tells on its first failure or its last end |
+| `stalled`: a PR `check stalled` lists, once per head | rule | act: the chief of staff lands it (`land N --only`) or flags it |
 | `archived` | rule | its line and state entry dropped; no post |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a `STILL WORKING` that hands back to its manager: a `Handback: #<n> <what>` line, else prose saying a PR is ready (`#12 READY`, `READY FOR VERIFY`) or a PR's step is the manager's (`#12 ... is yours`, `#12 ... over to you`) (#1753) | rule | act, to the session it notifies, with what it hands back; an exact repeat: recorded |

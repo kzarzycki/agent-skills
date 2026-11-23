@@ -100,7 +100,7 @@ def test_several_named_drafts_are_readied_and_land_in_one_batch(lands: dict[str,
     draft(lands, 7)
     draft(lands, 8)
     assert lands["land"]("7", "8")[0] == 0
-    assert (readied(lands), lands["merged"](), lands["runs"]()) == (["7", "8"], ["7", "8"], 1)
+    assert (readied(lands), lands["merged"](), lands["runs"]()) == (["7", "8"], ["7", "8"], 0)
 
 
 def test_a_named_pr_missing_its_proof_is_left_out_with_its_reason_and_the_rest_land(

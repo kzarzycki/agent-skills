@@ -90,6 +90,22 @@ def test_release_candidate_rejects_other_package_manifest_change(
         validate_release_candidate(repo / "engineering", "engineering-v0.2.0")
 
 
+def test_release_candidate_accepts_other_manifest_tagged_on_the_commit(tmp_path: Path) -> None:
+    """One release commit may cut several packages, each with its own tag on it (#1861)."""
+    repo = _repository(tmp_path)
+    manifest = repo / "research" / ".claude-plugin" / "plugin.json"
+    manifest.write_text(json.dumps({"name": "research", "version": "1.0.1"}))
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "two-package release")
+    _git(repo, "tag", "research-v1.0.0")  # a wrong version's tag still refuses
+
+    with pytest.raises(ConfigurationError, match="research-v1.0.1 is not tagged"):
+        validate_release_candidate(repo / "engineering", "engineering-v0.2.0")
+
+    _git(repo, "tag", "research-v1.0.1")
+    validate_release_candidate(repo / "engineering", "engineering-v0.2.0")
+
+
 @pytest.mark.parametrize(
     "tag",
     [
@@ -146,7 +162,7 @@ def test_release_check_refuses_without_a_smoke_run_for_the_release_head() -> Non
     assert require_smoke_run(HEAD, SMOKE, _runs(other, failed, passed)) == "u-ok"
 
 
-def test_release_check_command_refuses_without_a_smoke_run_and_prints_a_skip(
+def test_release_check_command_is_off_without_the_smoke_repository_and_prints_a_skip(
     monkeypatch, capsys
 ) -> None:
     from tools.capability_pack import cli
@@ -156,8 +172,11 @@ def test_release_check_command_refuses_without_a_smoke_run_and_prints_a_skip(
     for name in SMOKE:
         monkeypatch.delenv(name, raising=False)
     argv = ["release-check", "engineering", "engineering-v0.0.0"]
+    assert cli.main(argv) == 0
+    assert "smoke run: off (RELEASE_SMOKE_REPOSITORY unset)" in capsys.readouterr().out
+    monkeypatch.setenv("RELEASE_SMOKE_REPOSITORY", "org/private")
     assert cli.main(argv) == 2
-    assert "RELEASE_SMOKE_REPOSITORY" in capsys.readouterr().err
+    assert "RELEASE_SMOKE_WORKFLOW" in capsys.readouterr().err
     assert cli.main([*argv, "--skip-smoke"]) == 0
     assert "smoke run: skipped" in capsys.readouterr().out
 
@@ -166,6 +185,7 @@ def test_release_check_asks_about_the_head_it_checked_out(monkeypatch, capsys) -
     from tools.capability_pack import cli
 
     asked: list[str] = []
+    monkeypatch.setenv("RELEASE_SMOKE_REPOSITORY", "org/private")
     monkeypatch.setattr(cli, "validate_release_candidate", lambda *_a: None)
     monkeypatch.setattr(cli, "_git_output", lambda *_a, **_k: HEAD)
     monkeypatch.setattr(cli, "require_smoke_run", lambda head: asked.append(head) or "u-ok")

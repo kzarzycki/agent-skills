@@ -1,5 +1,5 @@
-"""The landing gate's test selection (tools/affected_tests.py): a change runs the tests it touches, and anything the
-map cannot judge runs everything."""
+"""The affected-test selection (tools/affected_tests.py): a change runs the tests it touches, and anything it can't
+judge runs nothing and says so, never the whole suite (#1872)."""
 
 import subprocess
 from pathlib import Path
@@ -20,6 +20,12 @@ def test_a_docs_only_change_runs_only_the_repo_wide_checks() -> None:
     assert a.targets(["docs/agents/loop.md", "content/skills/x/SKILL.md"]) == a.CHEAP
 
 
+def test_a_loop_doc_change_runs_the_test_that_holds_its_old_path_copy() -> None:
+    assert a.targets(["loop/skills/engineering-loop/verifier.md"]) == sorted(
+        [*a.CHEAP, "tests/test_old_paths.py"]
+    )
+
+
 def test_a_script_change_runs_the_tests_that_name_it() -> None:
     picked = a.targets(["gatekeeper/skills/gatekeeper/scripts/gatekeeper.py"])
     assert "gatekeeper/tests/test_approvals.py" in picked
@@ -30,14 +36,23 @@ def test_a_changed_test_file_runs() -> None:
     assert "tests/test_affected_tests.py" in a.targets(["tests/test_affected_tests.py"])
 
 
-def test_test_setup_or_no_base_runs_everything() -> None:
-    assert a.targets(["pyproject.toml"]) == a.ALL
-    assert a.targets(["tools/gate_workers.py"]) == a.ALL
-    assert a.targets(None) == a.ALL
+def test_no_base_cant_tell_and_runs_nothing(capsys) -> None:
+    """#1872: the "can't tell" case runs no test at all, and says so."""
+    assert a.targets(None, "origin/main") == []
+    assert "affected-tests: nothing: no diff against origin/main" in capsys.readouterr().err
 
 
-def test_a_conftest_anywhere_runs_everything() -> None:
-    assert a.targets(["engineering/tests/conftest.py"]) == a.ALL
+def test_test_setup_runs_the_tests_that_name_it_never_the_suite(capsys) -> None:
+    """#1872: the map can't judge test setup, so it runs what names it, as any other file, never the whole suite."""
+    picked = a.targets(["mise.toml"])
+    assert "tests/test_check_fast_selection.py" in picked and "tests" not in picked
+    assert "mise.toml: test setup, which the map cannot judge" in capsys.readouterr().err
+    assert a.targets(["engineering/tests/conftest.py"]) != a.ALL
+
+
+def test_a_test_named_plugin_outside_the_suites_runs_the_tests_that_name_it() -> None:
+    """`tools/test_map_plugin.py` holds no tests: its own tests are found by the name match."""
+    assert "tests/test_test_map_plugin.py" in a.targets(["tools/test_map_plugin.py"])
 
 
 def test_a_non_python_file_runs_the_tests_that_name_its_file_name(tmp_path, monkeypatch) -> None:
@@ -230,9 +245,7 @@ def test_stderr_names_the_rule_behind_each_target(mapped, capsys) -> None:
     assert "affected-tests: pkg/mod.py: 2 tests from the map" in said
     assert "affected-tests: tests/test_one.py: a changed test" in said
     a.targets(["pyproject.toml"])
-    assert "affected-tests: everything: pyproject.toml is test setup" in capsys.readouterr().err
-    a.targets(None, "origin/main")
-    assert "affected-tests: everything: no diff against origin/main" in capsys.readouterr().err
+    assert "affected-tests: pyproject.toml: test setup" in capsys.readouterr().err
 
 
 def test_a_new_function_beside_a_def_line_selects_only_the_tests_around_it(mapped) -> None:
@@ -288,48 +301,20 @@ def suite(root, names: int, naming: int) -> None:
     (root / "tool.py").write_text("")
 
 
-def test_a_selection_of_over_half_the_test_files_runs_everything(monkeypatch, tmp_path) -> None:
-    """Waste audit, finding 2: a near-whole selection (~2,800 of ~4,000 tests) ran for 50 min where the whole suite
-    in parallel took 8; past half the files the gate runs the whole suite instead."""
-    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2 + 1)
+def test_a_selection_of_over_half_the_test_files_runs_only_them(monkeypatch, tmp_path) -> None:
+    """#1872: a near-whole selection runs as picked, never as the whole suite, which only the nightly runs."""
+    suite(tmp_path, 20, 11)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(a, "ALL", ["tests"])
     monkeypatch.setattr(a, "CHEAP", [])
-    assert a.targets(["tool.py"]) == ["tests"]
+    assert a.targets(["tool.py"]) == [f"tests/test_{n:02}.py" for n in range(11)]
 
 
-def test_a_selection_of_half_the_test_files_or_fewer_runs_only_them(monkeypatch, tmp_path) -> None:
-    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(a, "ALL", ["tests"])
-    monkeypatch.setattr(a, "CHEAP", [])
-    assert a.targets(["tool.py"]) == [f"tests/test_{n:02}.py" for n in range(a.WHOLE_FROM // 2)]
-
-
-def test_a_small_suite_runs_its_selection_as_picked(monkeypatch, tmp_path) -> None:
-    suite(tmp_path, a.WHOLE_FROM - 1, a.WHOLE_FROM - 1)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(a, "ALL", ["tests"])
-    monkeypatch.setattr(a, "CHEAP", [])
-    assert len(a.targets(["tool.py"])) == a.WHOLE_FROM - 1
-
-
-def test_map_node_ids_count_as_their_files(monkeypatch, tmp_path) -> None:
-    """Node ids the map picks fold to their files before the count: 3 ids in each of 11 files of a 20-file suite is
-    11 files, over half, so the whole suite runs."""
-    suite(tmp_path, a.WHOLE_FROM, 0)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(a, "ALL", ["tests"])
-    monkeypatch.setattr(a, "CHEAP", [])
-    ids = {f"tests/test_{n:02}.py::t{k}" for n in range(11) for k in range(3)}
-    monkeypatch.setattr(a, "node_files", lambda ran: ids)
-    assert a.targets(["tool.py"]) == ["tests"]
-
-
-def test_the_cheap_checks_and_e2e_files_count_for_nothing(monkeypatch, tmp_path) -> None:
-    """Exactly half the suite named, plus a cheap check and a changed e2e test, both picked: neither counts, since
-    the gate runs the cheap checks always and never runs an e2e file as part of the suite."""
-    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2)
+def test_the_cheap_checks_and_a_changed_e2e_file_are_picked_as_they_are(
+    monkeypatch, tmp_path
+) -> None:
+    """Half the suite named, plus a cheap check and a changed e2e test, all picked as they are."""
+    suite(tmp_path, 20, 10)
     (tmp_path / "tests" / "test_skill_x.py").write_text("# uses tool\n")
     (tmp_path / "tests" / "e2e").mkdir()
     (tmp_path / "tests" / "e2e" / "test_live.py").write_text("# other\n")
@@ -337,5 +322,5 @@ def test_the_cheap_checks_and_e2e_files_count_for_nothing(monkeypatch, tmp_path)
     monkeypatch.setattr(a, "ALL", ["tests"])
     monkeypatch.setattr(a, "CHEAP", ["tests/test_skill_x.py"])
     picked = a.targets(["tool.py", "tests/e2e/test_live.py"])
-    named = [f"tests/test_{n:02}.py" for n in range(a.WHOLE_FROM // 2)]
+    named = [f"tests/test_{n:02}.py" for n in range(10)]
     assert picked == sorted([*named, "tests/test_skill_x.py", "tests/e2e/test_live.py"])

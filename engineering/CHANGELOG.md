@@ -5,6 +5,23 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.5 - 2026-11-23
+
+- Carries gatekeeper 0.1.5: `loop.delegate_spec: false` keeps spec and plan approvals the owner's under `loop.delegate: all`, while the delegate's merge go still counts (#2018). Gatekeeper 0.1.5 is also the first tagged gatekeeper with #1872's behaviour change, which its 0.1.4 notes list but the `gatekeeper-v0.1.4` tag predates: on a base with no merge queue, `land` merges each landable PR on the verifier's record with no gate step, and `batch_queue` under `loop` and `land`'s `gate_on`, `cloud_gate_timeout_seconds` and `host_gate` now do nothing (see the upgrade note in gatekeeper's CHANGELOG) (#1872, #2026).
+
+## 0.35.4 - 2026-11-23
+
+- Releasing: one `Release` workflow run (`gh workflow run release.yml`) cuts every package with pending `changelog.d/` entries in one PR, lands it through the merge queue with no verifier, since `qualify` refuses a release PR whose tree isn't exactly the fold (`cli release-verify`), and pushes each package's tag on the squash commit. `cli cut-release` is the fold the workflow, the gate and a person all run, and `release-check` accepts a commit that releases several packages when each manifest it changes is tagged on it (#1861).
+
+## 0.35.3 - 2026-11-23
+
+- release-check: the pre-tag smoke run in a private organization repository (#1270) is off unless `RELEASE_SMOKE_REPOSITORY` is set; without it `release-check` prints `smoke run: off (RELEASE_SMOKE_REPOSITORY unset)` and passes. Setting `RELEASE_SMOKE_REPOSITORY` and `RELEASE_SMOKE_WORKFLOW` turns it back on (#1855).
+- engineering: the old-path copies of the loop's `lead.md`, `worker.md` and `verifier.md` match the loop package's files again (#1885).
+
+## 0.35.2 - 2026-11-22
+
+- agent-hygiene: a checkout with drift catches up with a landed pack bump itself when that is safe: with a clean tree it is installed from its committed lock (its `agent-sync` mise task with `--frozen`, else `apm install --frozen`), after a fast-forward when it is on its default branch with no local commits; one that runs services (a process has it open, or a systemd or launchd unit names it) is only installed, never pulled; anything else goes to its manager. Every install, the dotagents checkout's own included, puts its lock back, so a rewritten `generated_at` no longer dirties the tree, blocks the next pull or reads as an older pin, and puts back any committed agent file it changed, since committed copies change only in a bump PR; a failed install, an install that changed committed copies and a checkout with neither its task's `mise` nor `apm` on `PATH` are reported. A forwarder in the home skill install whose target skill is missing is drift, and the round runs `dotagents install` for it. Findings now address the manager they go to, not the owner (#1783).
+
 ## 0.35.1 - 2026-11-22
 
 - engineering-loop: lead.md has a Cloud lead section: how a `claude-cloud` lead starts its worker and verifier as `auto` siblings, waits on wake notices, keeps its notes in a `## Lead state` PR comment and lands from the VM with no host step (#1601).
