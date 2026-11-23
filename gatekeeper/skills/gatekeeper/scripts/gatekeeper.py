@@ -6118,6 +6118,7 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
         probe, asleep, beaten = Probe(), 0.0, 0.0
         while time.monotonic() + POLL <= deadline:
             time.sleep(POLL)
+            github.read_afresh()  # the next read is GitHub's, not this run's memory (#2016)
             asleep += POLL
             if (
                 heard and time.monotonic() - spoke >= SLOT_SAY_SECONDS
@@ -7495,6 +7496,7 @@ def batch_wait(
     joined: list[int] = []
     while near and time.monotonic() < deadline:
         time.sleep(min(QUEUE_POLL, max(0.0, deadline - time.monotonic())))
+        github.read_afresh()  # the next read is GitHub's, not this run's memory (#2016)
         for number in sorted(near):
             pull = pull_request(number)
             with contextlib.redirect_stdout(
@@ -7937,6 +7939,7 @@ def wait_records(
             if (left := deadline - time.monotonic()) <= 0:
                 return f"no record for the tree within {timeout} s"
             time.sleep(min(POLL, left))
+            github.read_afresh()  # the next read is GitHub's, not this run's memory (#2016)
             kind = ended()
             over = over + 1 if kind else 0
             if over >= 2 and not all(step_pass(commit, tree, step, show=False) for step in steps):
@@ -11529,6 +11532,7 @@ def settled_head(pr: int, want: str | None) -> str:
             return head
         if read < HEAD_READS - 1:
             time.sleep(HEAD_WAIT)
+            github.read_afresh()  # the next read is GitHub's, not this run's memory (#2016)
     raise Refused(
         f"PR #{pr}'s head on GitHub is {head}, not {want} after {HEAD_READS} reads over"
         f" {(HEAD_READS - 1) * HEAD_WAIT} s: nothing posted; run it again once GitHub shows the push"

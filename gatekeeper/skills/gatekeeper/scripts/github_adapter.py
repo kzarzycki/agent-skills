@@ -279,7 +279,8 @@ def refuse_bypass(args: tuple[str, ...]) -> None:
 # the reads this run made (#2016): one `approve merge` or `record verdict` read the same PR, its timeline, reviews,
 # files, comments and checks three or four times, about 40 REST calls; a repeat of the same `gh api` read within READ_TTL
 # seconds is answered from here, and any other call (a write, or any gh command but a plain `gh api` read) empties it,
-# so nothing is read back stale past this run's own write. READ_TTL stays under POLL, so a wait's next poll reads afresh.
+# so nothing is read back stale past this run's own write; each wait calls read_afresh() after its sleep, which
+# empties it, so its next read is GitHub's however short the wait.
 reads: dict[tuple[str, ...], tuple[float, str]] = {}
 READ_TTL = 20.0
 WRITE_FLAGS = {"-f", "-F", "--field", "--raw-field", "--input"}
@@ -301,12 +302,17 @@ def plain_read(args: Sequence[str]) -> bool:
     return not any(arg.startswith("--method=") and arg[9:].upper() != "GET" for arg in args)
 
 
+def read_afresh() -> None:
+    """After a wait that reads again to see someone else's change (a push GitHub shows late, a PR that turns landable):
+    empty `reads`, so the next read is GitHub's however short the wait was; a wait never answers itself. The wait sleeps
+    on its own clock, which a test may fake."""
+    reads.clear()
+
+
 def gh(*args: str, data: str | None = None) -> str:
     key = tuple(args)
-    if key[:2] == (
-        "api",
-        "rate_limit",
-    ):  # the quota guard's free read: neither kept nor a reason to forget
+    # the quota guard's free read: neither kept nor a reason to forget
+    if key[:2] == ("api", "rate_limit"):
         return _gh(*args, data=data)
     if data is None and plain_read(key):
         if (seen := reads.get(key)) and time.monotonic() - seen[0] < READ_TTL:
