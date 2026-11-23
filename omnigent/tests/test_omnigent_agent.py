@@ -4759,7 +4759,8 @@ def test_a_failed_line_is_no_report_to_the_supervisor_a_start_a_follow_up_or_a_r
     assert omnigent_agent.main(["start", "claude", "t", "b.md", "r.md"]) == 0
     # stamped later than the next write: what the kernel's coarse clock can do within one tick
     os.utime(report, (2**31, 2**31))
-    killed_mid_run(fake, 2, lambda: report.write_text("fixed"))
+    # send's first look is off_request's (#1835), before the message: the kill comes during the wait after it
+    killed_mid_run(fake, 3, lambda: report.write_text("fixed"))
     assert omnigent_agent.main(["send", "s0", "b.md", "r.md"]) == 0
     assert report.read_text() == "fixed"
 
@@ -10195,7 +10196,7 @@ def test_a_re_exec_drops_the_session_pairs_its_registry_already_holds(
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: Fleet())
     replayed: list[list[str]] = []
 
-    def supervise_registry(*_: object) -> None:  # it never returns
+    def supervise_registry(*_: object, **__: object) -> None:  # it never returns
         replayed.append(sys.argv[1:])
         raise Stop
 
@@ -11782,7 +11783,8 @@ def test_the_first_head_seen_for_a_repo_is_stored_and_raises_nothing(
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
     assert state_of(registry)["heads"] == {"o/r": OLD}
     assert landed(registry) == [] and posted(og) == []
-    assert [c[1] for c in calls] == ["repos/o/r/commits/HEAD"]  # no comparison: no old head
+    # no comparison: no old head (the PR-stall sweep's listing of open PRs aside, #1819)
+    assert [c[1] for c in calls if "pulls?state=open" not in c[2]] == ["repos/o/r/commits/HEAD"]
 
 
 def test_a_restart_reports_a_landing_made_while_it_was_down_but_not_one_it_reported(
@@ -13567,7 +13569,7 @@ def test_an_open_pr_a_lead_waits_on_costs_one_github_read_a_minute(
     )
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
     waits = [c for c in calls if c[:2] == ("pr", "view")]
-    # beside it, a lead quiet an hour costs one verdict-stall read per VERDICT_STALL_POLL (waste audit, finding 7)
+    # beside it, a stall sweep of a followed lead's repo reads GitHub's REST api (pr_stalls, #1819)
     stalls = [c for c in calls if c[:1] == ("api",)]
     assert len(waits) == 1 and len(stalls) <= 1 and len(calls) == len(waits) + len(stalls)
 
