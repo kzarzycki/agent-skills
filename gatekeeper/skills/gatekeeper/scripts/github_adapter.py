@@ -445,8 +445,9 @@ def _repository(fields: str) -> str:
 
 
 # how GitHub, or a cloud session's proxy in front of it, refuses GraphQL: `gh` ends its error with a 403, or, for a job
-# token a private organization repository withholds fields from, prints GraphQL's FORBIDDEN message
-REFUSALS = ("HTTP 403", "Resource not accessible by integration")
+# token a private organization repository withholds fields from, prints GraphQL's FORBIDDEN message. `gh pr merge`
+# names no `HTTP 403` where the proxy refuses it: it prints `non-200 OK status code: 403 Forbidden body: ...` (#1917)
+REFUSALS = ("HTTP 403", "Resource not accessible by integration", "status code: 403 Forbidden")
 
 
 def refused(stderr: str | None) -> bool:
