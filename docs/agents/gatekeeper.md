@@ -20,6 +20,16 @@ incubating:
   append_paths:
     - docs/layers.md
 
+bot:
+  pack-bump:   # the engineering pack's bump, which a cloud worker pushes to claude/ready-pack-bump-<tag>
+    branch: claude/ready-pack-bump-
+    paths:
+      - apm.yml
+      - apm.lock.yaml
+      - ".agents/**"
+      - ".claude/**"
+      - ".codex/**"
+
 land:
   # PRs into main merge through the Mergify merge queue `.mergify.yml` configures: land posts `land` and adds `loop:queued` on each landable PR, and Mergify tests each batch as a draft PR in CI and squash-merges it, so no host runs a landing gate (#1658). GitHub's own queue needs an organisation-owned repo.
   queue: mergify

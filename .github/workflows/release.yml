@@ -4,8 +4,8 @@
 #   runs `cli release-verify`, which fails the PR unless its tree is exactly the fold of its branch point, so the PR is
 #   risk low with no verifier (docs/agents/gatekeeper.md's `bot.release`).
 # - `tag` (the squash commit on main) pushes each package's tag on that commit, in one push, so `release-check` finds
-#   every manifest the commit changes tagged on it. Before an engineering tag it runs the pre-tag smoke run
-#   (engineering/RELEASING.md).
+#   every manifest the commit changes tagged on it. Before an engineering tag it runs the pre-tag smoke run when
+#   RELEASE_SMOKE_REPOSITORY is set (engineering/RELEASING.md).
 # Both push with RELEASE_TOKEN, a token that can write contents and pull requests here: a push or PR made with
 # `github.token` starts no workflow, so neither the release PR's `qualify` nor the tag check (and its consumer-sync PR)
 # would run.
@@ -153,8 +153,12 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          # off until a private organization repository hosts the smoke workflow, as release-check is (#1855)
+          if [ -z "$RELEASE_SMOKE_REPOSITORY" ]; then
+            echo "smoke run: off (RELEASE_SMOKE_REPOSITORY unset)"; exit 0
+          fi
           missing=""
-          for name in RELEASE_SMOKE_TOKEN:GH_TOKEN RELEASE_SMOKE_REPOSITORY RELEASE_SMOKE_WORKFLOW RELEASE_SMOKE_PR; do
+          for name in RELEASE_SMOKE_TOKEN:GH_TOKEN RELEASE_SMOKE_WORKFLOW RELEASE_SMOKE_PR; do
             secret=${name%%:*}; variable=${name##*:}
             [ -n "${!variable:-}" ] || missing="$missing $secret"
           done

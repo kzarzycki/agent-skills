@@ -34,13 +34,13 @@ nothing), commit its tree on a `release/` branch and open the PR.
 
 ## Check the gatekeeper against real github.com, before the tag
 
-This pre-tag smoke run is a required step for an engineering release. The in-repo job
+This pre-tag smoke run is off: no private organization repository hosts its workflow yet, so `release-check` prints `smoke run: off (RELEASE_SMOKE_REPOSITORY unset)` and passes without it (#1855). Setting the two variables below turns it back on, and then it is a required step. The in-repo job
 `Gatekeeper on real GitHub` runs on every PR that changes the engineering-loop scripts. The one
 place a private organization repository's `github.token` shows (GraphQL `FORBIDDEN`) is the
 smoke run: run the `workflow_dispatch` workflow below in a private organization repository with
 the release's squash commit on main as its `ref` (the full 40-character sha), and wait for it to pass.
 That is the commit that gets tagged, and its tree is exactly what ships; the release PR's head can
-differ from it when main moved. `release-check engineering <tag>`, run on that commit, refuses to
+differ from it when main moved. With the variables set, `release-check engineering <tag>`, run on that commit, refuses to
 pass until a passing run for `git rev-parse HEAD` exists. The repository comes from
 the releaser's own environment, never from this repository: `RELEASE_SMOKE_REPOSITORY`
 (`owner/name`) and `RELEASE_SMOKE_WORKFLOW` (the workflow file). Put the run's URL, which
@@ -80,10 +80,11 @@ jobs:
           ! printf '%s\n' "$out" | grep -q '^gh: ' && printf '%s\n' "$out" | grep -q "^PR #$PR: risk: .*; merge: "
 ```
 
-The release workflow runs this smoke run itself before it tags an engineering release, from four secrets the
-releaser sets: `RELEASE_SMOKE_REPOSITORY` and `RELEASE_SMOKE_WORKFLOW` as above, `RELEASE_SMOKE_PR` (the `pr`
+The release workflow runs this smoke run itself before it tags an engineering release once the releaser sets the
+`RELEASE_SMOKE_REPOSITORY` secret; until then it prints `smoke run: off` and tags without it, as `release-check`
+does. With it set, three more secrets are required: `RELEASE_SMOKE_WORKFLOW` as above, `RELEASE_SMOKE_PR` (the `pr`
 input) and `RELEASE_SMOKE_TOKEN` (a token that can dispatch and read that workflow). It dispatches the workflow with
-the squash commit as its `ref`, waits for it to pass, and tags nothing when it fails or a secret is missing.
+the squash commit as its `ref`, waits for it to pass, and tags nothing when it fails or one of them is missing.
 
 By hand, before the tag, on the commit that gets tagged (the squash commit on main, which is the smoke `ref`), run
 `uv run python -m tools.capability_pack.cli release-check engineering engineering-vX.Y.Z`.
