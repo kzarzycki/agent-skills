@@ -292,3 +292,189 @@ def test_a_pr_at_the_cap_is_said_as_an_idle_line(
     Sweeps(monkeypatch, (1, capped + "\n"))
     base.supervised(og, registry, monkeypatch, 2, notify="cos")
     assert told(og) == [f"Supervisor: o/r: {capped}: ask its approver for what it is missing"]
+
+
+MERGIFY = {
+    "name": "Mergify Merge Queue",
+    "status": "in_progress",
+    "conclusion": None,
+    "started_at": "2",
+}
+EARLIER = {
+    "name": "Mergify Merge Queue",
+    "status": "completed",
+    "conclusion": "neutral",
+    "started_at": "1",
+}
+
+
+def live(monkeypatch: pytest.MonkeyPatch, pulls: dict[int, dict]) -> list[str]:
+    """GitHub's live view of each PR in ``pulls`` (``state``, ``merged``, ``head``, ``labels`` and the ``checks`` and
+    ``statuses`` on its head, as REST serves them) for the supervisor's read of it again before it says a line (#2100); any other
+    read goes to the ``gh`` already faked. Each path read is recorded."""
+    earlier, reads = omnigent_agent.gh, []
+    bodies = {
+        f"repos/o/r/pulls/{n}": {
+            "number": n,
+            "state": p.get("state", "open"),
+            "merged": p.get("merged", False),
+            "head": {"sha": p.get("head", A)},
+            "labels": [{"name": x} for x in p.get("labels", [])],
+        }
+        for n, p in pulls.items()
+    }
+    for p in pulls.values():
+        head = p.get("head", A)
+        bodies[f"repos/o/r/commits/{head}/check-runs?filter=all"] = {
+            "check_runs": p.get("checks", [])
+        }
+        bodies[f"repos/o/r/commits/{head}/statuses"] = p.get("statuses", [])
+
+    def gh(*args: str, timeout: float = 0) -> str:
+        path = next(
+            (
+                a
+                for a in args
+                if omnigent_agent.re.match(r"repos/o/r/(pulls/|commits/[0-9a-f]{40}/)", a)
+            ),
+            None,
+        )
+        if path is None:
+            return earlier(*args, timeout=timeout)
+        reads.append(path)
+        key = omnigent_agent.re.sub(r"[?&](per_page|page)=\d+", "", path)
+        page = omnigent_agent.re.search(r"[?&]page=(\d+)", path)
+        body = bodies[key] if page is None or page[1] == "1" else type(bodies[key])()
+        return f'HTTP/2.0 200 OK\nEtag: "{hash(key)}"\n\n' + omnigent_agent.json.dumps(body)
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    return reads
+
+
+def stalled_events(registry: Path) -> list[str]:
+    path = registry.with_suffix(".events.jsonl")
+    return (
+        [e["id"] for e in base.events_of(registry) if e["id"].startswith("stalled:")]
+        if path.exists()
+        else []
+    )
+
+
+QUEUE_STATUS = {"context": "Mergify Merge Queue", "state": "pending"}
+
+
+@pytest.mark.parametrize(
+    "hold, release",
+    [
+        (
+            {"checks": [EARLIER, MERGIFY]},
+            {"checks": [EARLIER, {**MERGIFY, "status": "completed", "conclusion": "cancelled"}]},
+        ),
+        (
+            {"statuses": [QUEUE_STATUS]},
+            {"statuses": [{**QUEUE_STATUS, "state": "error"}, QUEUE_STATUS]},
+        ),
+    ],
+    ids=["by a check run", "by a commit status"],
+)
+def test_a_pr_queued_during_the_sweep_is_not_said(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hold: dict,
+    release: dict,
+) -> None:
+    """#2089's case: the sweep read #5 before `land` handed it over, and by its end Mergify holds it. The line is
+    dropped and not kept as said, so the sweep that lists it again once it left the queue says it."""
+    og, registry = lead(tmp_path, monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "STALLED_SECONDS", 0)
+    held = {"labels": ["loop:queued"], **hold}
+    live(monkeypatch, {5: held})
+    Sweeps(monkeypatch, (1, f"{line(5, A, 'is not queued')}\n"))
+    base.supervised(og, registry, monkeypatch, 2, notify="cos", console=True)
+    assert stalled_events(registry) == []
+    assert "o/r: PR #5 held by the queue since the sweep read it" in capsys.readouterr().err
+    assert base.state_of(registry)["stalled"] == {"o/r": {}}
+    held |= release
+    live(monkeypatch, {5: held})  # dequeued, label still on: no longer held
+    Sweeps(
+        monkeypatch, (1, f"{line(5, A, 'is not queued')}\n")
+    )  # the next hour's sweep lists it again
+    base.supervised(og, registry, monkeypatch, 2, notify="cos", console=True)
+    assert stalled_events(registry) == [f"stalled:o/r#5:{A}:landable"]
+
+
+@pytest.mark.parametrize(
+    "now, why",
+    [
+        ({"merged": True, "state": "closed"}, "merged"),
+        ({"state": "closed"}, "closed"),
+        ({"head": B}, "moved to bbbbbbbbbbbb"),
+    ],
+)
+def test_a_pr_merged_or_moved_during_the_sweep_is_not_said(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    now: dict,
+    why: str,
+) -> None:
+    og, registry = lead(tmp_path, monkeypatch)
+    reads = live(monkeypatch, {5: now})
+    Sweeps(monkeypatch, (1, f"{line(5, A)}\n"))
+    base.supervised(og, registry, monkeypatch, 2, notify="cos")
+    assert told(og) == []
+    assert f"o/r: PR #5 {why} since the sweep read it" in capsys.readouterr().err
+    assert reads == ["repos/o/r/pulls/5"]  # the pull alone settles it
+
+
+@pytest.mark.parametrize(
+    "now",
+    [{}, {"labels": ["loop:queued"]}, {"checks": [MERGIFY]}],
+    ids=["not queued", "a label and no queue check", "a queue check and no label"],
+)
+def test_a_pr_still_stalled_on_the_re_read_is_said(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, now: dict
+) -> None:
+    og, registry = lead(tmp_path, monkeypatch)
+    reads = live(monkeypatch, {5: now})
+    Sweeps(monkeypatch, (1, f"{line(5, A)}\n"))
+    base.supervised(og, registry, monkeypatch, 2, notify="cos")
+    assert told(og) == [f"Supervisor: o/r: {line(5, A)}: land it (`land 5 --only`) or flag it"]
+    assert reads[0] == "repos/o/r/pulls/5"
+
+
+def test_a_failed_re_read_says_the_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og, registry = lead(tmp_path, monkeypatch)  # its gh refuses any read of a single PR
+    Sweeps(monkeypatch, (1, f"{line(5, A)}\n"))
+    base.supervised(og, registry, monkeypatch, 2, notify="cos")
+    assert told(og) == [f"Supervisor: o/r: {line(5, A)}: land it (`land 5 --only`) or flag it"]
+    assert "o/r: PR #5 not read again: " in capsys.readouterr().err
+
+
+def test_a_rate_limited_re_read_says_the_rest_unread_and_backs_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub's limit is account-wide: once a re-read is refused for it, the other lines are said as the sweep read
+    them, with no read each, and the next sweep waits for the reset."""
+    og, registry = lead(tmp_path, monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "STALLED_SECONDS", 0)
+    earlier, reads = omnigent_agent.gh, []
+
+    def gh(*args: str, timeout: float = 0) -> str:
+        if any(a.startswith("repos/o/r/pulls/") for a in args):
+            reads.append(args)
+            raise omnigent_agent.RateLimited("API rate limit exceeded", 3600)
+        return earlier(*args, timeout=timeout)
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    sweeps = Sweeps(monkeypatch, (1, f"{line(5, A)}\n{line(6, B)}\n"), (1, ""))
+    base.supervised(og, registry, monkeypatch, 3, notify="cos")
+    assert [t.split(" has ")[0] for t in told(og)] == [
+        "Supervisor: o/r: PR #5",
+        "Supervisor: o/r: PR #6",
+    ]
+    assert len(reads) == 1
+    assert len(sweeps.started) == 1  # no second sweep before the reset

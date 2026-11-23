@@ -6039,8 +6039,11 @@ def pr_stall(facts: dict, threshold: float, now: float) -> tuple[float, str | No
         if QUEUE_CHECK.search(str(c.get("name"))):
             queued += [stamp(c[k]) for k in ("started_at", "completed_at") if c.get(k)]
     moved = max([*pushed, *reported, *goes, *queued])
-    if now - moved < threshold:
-        return moved, None
+    if now - moved < threshold or queue_holds(pr, facts["checks"], facts["statuses"]):
+        return (
+            moved,
+            None,
+        )  # moving, or waiting in the queue, which makes no move while it holds the PR
     last_push = max(pushed)
     blockers = []
     required = facts.get("required")
@@ -6085,6 +6088,47 @@ def pr_stall(facts: dict, threshold: float, now: float) -> tuple[float, str | No
         f"PR #{pr['number']}{title}: no push, verdict, go or queue step for {(now - moved) / 60:.0f}m;"
         f" blocker: {what}: {pr.get('html_url') or ''}"
     ).rstrip(": ")
+
+
+def queue_holds(pr: dict, checks: list[dict], statuses: list[dict]) -> bool:
+    """Whether the merge queue holds PR ``pr`` (a REST pull) at its head: it carries ``QUEUED_LABEL`` and a queue check
+    (``QUEUE_CHECK``) on the head is still running by its newest run (``checks``, the head's check runs), or a queue
+    status there is pending by its newest (``statuses``, newest first). Both stall sweeps ask it, so a PR waiting in the
+    queue is never reported stalled (#2100). ponytail: from `land`'s label to Mergify's first check (about 40 s) the
+    queue holds a PR this misses; the gatekeeper's `queued_here` covers that window, at a run of it per PR."""
+    if QUEUED_LABEL not in {str(label.get("name")) for label in pr.get("labels") or []}:
+        return False
+    latest: dict[
+        str, dict
+    ] = {}  # each queue check's newest run: Mergify ends an earlier one `neutral`
+    for c in checks:
+        name = str(c.get("name"))
+        if QUEUE_CHECK.search(name) and (c.get("started_at") or "") >= (
+            latest.get(name, {}).get("started_at") or ""
+        ):
+            latest[name] = c
+    newest: dict[str, dict] = {}
+    for s in statuses:
+        newest.setdefault(str(s.get("context")), s)
+    return any(
+        c.get("status") != "completed" and not c.get("conclusion") for c in latest.values()
+    ) or any(QUEUE_CHECK.search(name) and s.get("state") == "pending" for name, s in newest.items())
+
+
+def stalled_gone(repo: str, number: str, head: str) -> str | None:
+    """Why `check stalled`'s line for PR ``number`` of GitHub repo ``repo`` at ``head`` no longer stands, read from
+    GitHub now, since a sweep's read of a PR may be 15 minutes old when its line is acted on (#2100): ``merged``,
+    ``closed``, ``moved to <sha>`` or ``held by the queue`` (``queue_holds``); None while it still stands."""
+    pull = rest_if_changed(f"repos/{repo}/pulls/{number}")[1]
+    if pull.get("merged") or pull.get("merged_at"):
+        return "merged"
+    if pull.get("state") != "open":
+        return "closed"
+    if (now := str(pull["head"]["sha"]).lower()) != head.lower():
+        return f"moved to {now[:12]}"
+    checks = rest_pages(f"repos/{repo}/commits/{head}/check-runs?filter=all", "check_runs")
+    statuses = rest_pages(f"repos/{repo}/commits/{head}/statuses")
+    return "held by the queue" if queue_holds(pull, checks, statuses) else None
 
 
 def pr_facts(repo: str, pr: dict, bases: dict, refs: dict) -> dict:
@@ -9719,7 +9763,10 @@ def supervise_registry(
         runs detached: each poll looks whether it has ended, and stops it past ``STALLED_TIMEOUT``. Each PR it lists
         is said once per head and kind of line (idle on a go or record, or landable) as a ``stalled`` event on that lead (the repo's PRs listed last time are kept in the
         state's ``stalled``), so an hourly sweep reports a stuck PR once, and again only after it left the listing or
-        its head moved; a PR it could not judge keeps what was listed for it, so a sweep that skips it says it
+        its head moved. Before a line is said, its PR is read again (``stalled_gone``), since the sweep may have read it
+        15 minutes before: one merged, closed, moved or held by the queue since is logged and not said, nor kept as
+        said, and a failed read says the line as the sweep read it. A PR it could not judge keeps what was listed for
+        it, so a sweep that skips it says it
         again only at a new head. A PR it could not judge, and a sweep that failed, are logged, once until they
         clear; a sweep that judged none of the repo's open PRs (its last line, ``<n> of <n> open PRs not judged
         here``) is said once, as a ``stalled`` event naming the first reason, since its silence would read as
@@ -9772,6 +9819,25 @@ def supervise_registry(
             }
             for number, (seen, line) in listed.items():
                 if before.get(number) != seen:
+                    gone = None  # said as the sweep read it, under GitHub's account-wide limit too
+                    try:
+                        if time.monotonic() >= limited[0]:
+                            gone = stalled_gone(repo, number, seen.split(":")[0])
+                    except Exception as e:  # noqa: BLE001 - a hiccup never hides a stall
+                        if isinstance(e, RateLimited):
+                            limited[0] = time.monotonic() + e.jittered()
+                        log(
+                            ("stalled", repo, number),
+                            f"{repo}: PR #{number} not read again: {reason(e)}",
+                        )
+                    if gone:
+                        # not kept as said: a later sweep that lists it again (dequeued, stuck) says it then
+                        known[repo].pop(number)
+                        log(
+                            ("stalled", repo, number),
+                            f"{repo}: PR #{number} {gone} since the sweep read it",
+                        )
+                        continue
                     step = (
                         "ask its approver for what it is missing"
                         if ": missing: " in line

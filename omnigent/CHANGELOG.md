@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.8 - 2026-11-23
+
+- The supervisor no longer reports a PR the merge queue holds as stalled. A `check stalled` line is checked against the PR's live state before it goes out, and dropped when the PR merged, closed, moved to a new head or is held by the queue since the sweep read it, which may be 15 minutes earlier. A PR carrying `loop:queued` whose queue check on its head is still running is waiting, not a `pr-stall`, however long the queue takes (#2100).
+
 ## 0.1.7 - 2026-11-23
 
 - omnigent-agents: `send` and `relay` take `--expires <minutes>` (default 30, 0 = never) and tag their message with that expiry and the sending session, so one still queued behind a busy turn after its sender is gone is dropped instead of landing out of context (#909).

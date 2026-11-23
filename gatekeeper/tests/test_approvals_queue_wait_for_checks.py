@@ -1,4 +1,5 @@
-"""`land <pr> --wait` on a GitHub-queue base waits for the PR's own running check (#1287), never for the queue."""
+"""`land <pr> --wait` on a GitHub-queue base waits for the PR's own running check (#1287), then for the queue's
+merge (#2101)."""
 
 from __future__ import annotations
 
@@ -28,6 +29,8 @@ def test_land_wait_on_a_queue_base_waits_for_the_prs_own_running_check_then_enqu
     def nap(seconds: float) -> None:
         slept.append(seconds)
         qualify(queue, 7, "SUCCESS")
+        if queue["enqueued"] and queue["pulls"][7]["state"] == "OPEN":
+            queue["queue_merge"](7)  # the queue merges it while land waits on it
 
     monkeypatch.setattr(approvals.time, "sleep", nap)
     monkeypatch.setattr(approvals.github.random, "randint", lambda low, high: 0)
