@@ -232,8 +232,8 @@ can't be read (start any session on the host so a file can be read through it). 
 where the project's cloud sessions ran, pinned and trusted; with none, ``start`` refuses before the create, never a 412. A
 create that times out is looked up by title for a while and reused, never repeated. On a host other than this one ``--workspace`` and the
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
-its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report is the file ``wait --pr``
-writes here. A verifier (a ``--role`` whose file is engineering-loop's verifier.md) takes ``--pr`` as the PR it
+its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report ``wait --pr``
+writes here, under ``tmp/loop/`` by its name. A verifier (a ``--role`` whose file is engineering-loop's verifier.md) takes ``--pr`` as the PR it
 reviews, not a report channel, starts on another host's clone however many sessions hold it (it
 works in a worktree of its own), and runs on another host only when the project's loop.md has no
 ``Placement: hosts: <name>, <name>`` line (or the old ``Verifier hosts:`` one) or that line lists the host; ``--file`` writes a local
@@ -11514,6 +11514,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         )
         here = here or placed
         report = args.report.resolve() if here else args.report
+        if args.cmd == "send" and remote and args.pr and report.is_absolute():
+            report = (Path("tmp/loop") / report.name).resolve()  # where wait --pr wrote it
         if args.cmd != "send" and args.host and not args.top_level and not placed:
             raise Fail(
                 "--host needs --top-level, or a cloud agent: Omnigent runs a child on its"

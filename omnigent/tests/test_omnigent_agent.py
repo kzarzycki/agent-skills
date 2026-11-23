@@ -4173,6 +4173,11 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     og.info = lambda sid: {**info(sid), "host_id": og.hosts_of[sid]}  # type: ignore[method-assign]
     assert omnigent_agent.main(["wait", "s0", report, "--pr", "7"]) == 0
     assert (tmp_path / "tmp/loop/r.md").read_text() == "Branch: claude/x at abc\n"
+    # a follow-up takes that copy as the report before: a turn ending on its comment is not a new one
+    fake_gh(monkeypatch, {"42": {**on_pr(7, "old"), "created_at": "2001-01-01T00:00:00Z"}})
+    (tmp_path / "fix.md").write_text("fix it")
+    send = ["send", "s0", "fix.md", report, "--pr", "7", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(send) == 1
     assert not (tmp_path / "there").exists()
 
 
