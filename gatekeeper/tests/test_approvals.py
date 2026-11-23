@@ -3401,6 +3401,48 @@ sys.exit(1 if pathlib.Path("red.txt").exists() else 0)
 """
 
 
+def checks_if_changed(args: tuple[str, ...], pulls: dict[int, dict[str, Any]]) -> str:
+    """GitHub's answer to rest_if_changed's `gh api -i [-H If-None-Match: <etag>] repos/.../commits/<sha>/check-runs`
+    or `.../status` read (#1915): the check runs or statuses of the PR whose head is `<sha>`, as REST names them,
+    from its statusCheckRollup, so a wait between rounds sees the same checks a round does. An ETag that still
+    matches gets a 304, the way gh reports one where it exits 1 (test_land_wait_budget's Hub)."""
+    found = re.fullmatch(
+        r"repos/\{owner\}/\{repo\}/commits/([0-9a-f]+)/(check-runs|status)\?.*", args[-1]
+    )
+    assert found, args
+    sha, kind = found.groups()
+    contexts = [
+        context
+        for pr in pulls.values()
+        if pr["headRefOid"] == sha
+        for context in pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+    ]
+    if kind == "check-runs":
+        runs = [
+            {
+                "name": context["name"],
+                "status": (context.get("status") or "COMPLETED").lower(),
+                "conclusion": (context.get("conclusion") or "").lower() or None,
+            }
+            for context in contexts
+            if context.get("__typename") == "CheckRun"
+        ]
+        body = json.dumps({"total_count": len(runs), "check_runs": runs})
+    else:
+        statuses = [
+            {"context": context["context"], "state": context["state"].lower()}
+            for context in contexts
+            if context.get("__typename") == "StatusContext"
+        ]
+        body = json.dumps({"state": "pending", "statuses": statuses})
+    etag = f'"{hashlib.sha1(body.encode()).hexdigest()}"'
+    if f"If-None-Match: {etag}" in args:
+        raise subprocess.CalledProcessError(
+            1, ("gh", *args), f"HTTP/2.0 304 Not Modified\nEtag: {etag}\n\n", "gh: HTTP 304"
+        )
+    return f"HTTP/2.0 200 OK\nEtag: {etag}\n\n{body}"
+
+
 @pytest.fixture
 def lands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -3520,6 +3562,9 @@ def lands(
             )
         if args[:2] == ("api", "rate_limit"):  # land --wait's poll_seconds: plenty of quota
             return "5000 5000 0"
+        if args[:2] == ("api", "-i"):
+            # land --wait's ETag read of a head's checks between rounds (#1915)
+            return checks_if_changed(args, pulls)
         raise AssertionError(args)
 
     def comment(number: int, body: str) -> None:
@@ -9337,11 +9382,12 @@ def test_delegate_is_a_choice_of_all_or_feature() -> None:
         approvals.settings(add(BARE, "loop", "delegate: everything\n"))
 
 
-def test_a_spec_or_plan_is_never_the_delegates_to_approve(
+def test_a_spec_is_not_the_delegates_to_approve_without_delegate_all(
     github: list[tuple[Any, ...]], capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """The fixture project's policy sets no `loop.delegate: all` (test_approvals_delegate_spec.py has the rest)."""
     assert approvals.main(["approve", "spec", "1", "--by", "delegate"]) == 1
-    assert "approve spec is the owner's" in capsys.readouterr().out
+    assert "needs `loop.delegate: all`" in capsys.readouterr().out
     assert github == []
 
 

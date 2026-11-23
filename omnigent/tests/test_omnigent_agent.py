@@ -3525,7 +3525,7 @@ def test_worker_md_s_heavy_lock_command_waits_for_the_lock_and_passes_the_exit_t
         Path(__file__).resolve().parents[2] / "loop/skills/engineering-loop/worker.md"
     ).read_text()
     command = re.search(
-        r"`(perl -MFcntl=:flock .*?)\s+<path> uv run <gatekeeper>/scripts/approvals\.py heavy\s+mise run check`",
+        r"`(perl -MFcntl=:flock .*?)\s+<path> uv run <gatekeeper>/scripts/approvals\.py heavy\s+mise run test:changed`",
         text,
         re.DOTALL,
     )
@@ -4124,7 +4124,7 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
     argv = ["start", "claude-cloud", "t", "b.md", "r.md", "--top-level", "--host", "box"]
-    argv += ["--workspace", "/there/repo", "--pr", "7", "--confirm-seconds", "0"]
+    argv += ["--workspace", "/there/repo", "--pr", "o/r#7", "--confirm-seconds", "0"]
     assert omnigent_agent.main(argv) == 0
     assert og.top_level == [True] and og.workspaces == ["/there/repo"]
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
@@ -12398,7 +12398,16 @@ def test_a_cloud_pr_start_on_another_host_says_its_launch_dir_head_is_not_moved(
     og.files["/there/repo/.claude/settings.local.json"] = PINNED  # what the session reads
     og.harnesses = {"claude-cloud": "acp:claude-cloud"}
     argv = ["start", "claude-cloud", "w", "do X", str(tmp_path / "tmp" / "r.md"), "--top-level"]
-    argv += ["--host", "mac", "--pr", "7", "--workspace", "/there/repo", "--confirm-seconds", "0"]
+    argv += [
+        "--host",
+        "mac",
+        "--pr",
+        "a/b#7",
+        "--workspace",
+        "/there/repo",
+        "--confirm-seconds",
+        "0",
+    ]
     assert omnigent_agent.main(argv) == 0
     err = capsys.readouterr().err
     assert "launch dir is on another host" in err and "HEAD is not moved" in err
@@ -13324,9 +13333,39 @@ def test_a_far_workspace_never_reads_a_local_checkout_at_the_same_path(
     (tmp_path / "ws" / ".git").mkdir(parents=True)
     ran: list[Path | None] = []
     monkeypatch.setattr(omnigent_agent, "repo_slug", lambda cwd=None: ran.append(cwd) or "c/d")
-    assert omnigent_agent.pr_repo(7, tmp_path / "ws", local=False) == "c/d"
     assert omnigent_agent.pr_repo(7, tmp_path / "ws") == "c/d"
-    assert ran == [None, tmp_path / "ws"]
+    with pytest.raises(omnigent_agent.Fail, match=r"--pr owner/repo#7"):
+        omnigent_agent.pr_repo(7, tmp_path / "ws", local=False)
+    assert ran == [
+        tmp_path / "ws"
+    ]  # the far call never asked git, here or in the current directory
+
+
+def test_a_far_workspace_bare_pr_is_labelled_with_the_origin_read_on_its_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[Path | None] = []
+    monkeypatch.setattr(
+        omnigent_agent, "repo_slug", lambda cwd=None: ran.append(cwd) or "here/repo"
+    )
+    monkeypatch.setattr(omnigent_agent, "far_checkout_root", lambda *a: Path("/w"))
+    monkeypatch.setattr(
+        omnigent_agent,
+        "far_origin_slug",
+        lambda og, host, root, what: "far/repo" if (host, root) == ("h", Path("/w")) else "bad",
+    )
+    og = FakeOmnigent()
+    assert omnigent_agent.pr_repo(7, "/w", False, (og, "h")) == "far/repo"
+    assert ran == []  # the current directory's repository is never read
+
+
+def test_a_far_workspace_with_no_readable_origin_refuses_a_bare_pr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "repo_slug", lambda cwd=None: "here/repo")
+    monkeypatch.setattr(omnigent_agent, "far_checkout_root", lambda *a: None)
+    with pytest.raises(omnigent_agent.Fail, match=r"--pr owner/repo#7"):
+        omnigent_agent.pr_repo(7, "/w", False, (FakeOmnigent(), "h"))
 
 
 def test_a_named_repository_reaches_the_head_reads_inside_the_checkout_and_the_head_move(
@@ -13358,11 +13397,12 @@ def test_start_for_another_host_never_reads_a_local_checkout_at_its_path(
     ran: list[Path | None] = []
     monkeypatch.setattr(omnigent_agent, "repo_slug", lambda cwd=None: ran.append(cwd) or "c/d")
     og = FakeOmnigent()
-    omnigent_agent.start(
-        og, "claude", "t", "do X", tmp_path / "r", None, 0, workspace=str(tmp_path / "ws"),
-        host_id="far", pr=7,
-    )  # fmt: skip
-    assert ran == [None]
+    with pytest.raises(omnigent_agent.Fail, match=r"--pr owner/repo#7"):
+        omnigent_agent.start(
+            og, "claude", "t", "do X", tmp_path / "r", None, 0, workspace=str(tmp_path / "ws"),
+            host_id="far", pr=7,
+        )  # fmt: skip
+    assert ran == []  # neither the workspace's path here nor the current directory is read
 
 
 def test_an_unposted_report_of_a_named_repo_worker_posts_to_that_repo(tmp_path, monkeypatch):

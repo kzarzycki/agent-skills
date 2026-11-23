@@ -340,6 +340,8 @@ def batch_wait(
     clock = Clock()
     monkeypatch.setattr(approvals, "time", clock)
     monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)
+    # a CI wait whose checks never move runs its round again only after FULL (#1915): a round each poll, as before
+    monkeypatch.setattr(approvals, "FULL", approvals.POLL)
     monkeypatch.setattr(approvals, "CEILING", 6 * approvals.POLL)  # a few rounds, not the 2 hours
     lands["open"](7, {"7.txt": "7\n"})
     lands["open"](8, {"8.txt": "8\n"})
