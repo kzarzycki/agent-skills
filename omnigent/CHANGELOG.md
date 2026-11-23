@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.6 - 2026-11-23
+
+- An archive (`PATCH /v1/sessions/<id>`) waits up to `ARCHIVE_SECONDS` (120 s) rather than the 30 s every other call gets, since a claude-cloud session's archive returns only once its bridge has archived the claude.ai session, which ends the VM and can take about 65 s; a slow archive was reported as `finish failed` (#2060).
+
 ## 0.1.5 - 2026-11-23
 
 - omnigent-agents: `--role` takes `lead`, `worker` or `verifier` as well as a file path, naming the pack's engineering-loop role file, so a cloud child needs no role file in its launch dir (#1868).
