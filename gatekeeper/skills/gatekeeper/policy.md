@@ -121,6 +121,7 @@ bot:
       - apm.yml
       - apm.lock.yaml
       - ".agents/**"
+      - ".claude/**"        # every folder the pack sync writes its copies to
 
 land:
   signed_squash_to: main
