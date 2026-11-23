@@ -5,6 +5,12 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.3 - 2026-11-23
+
+- Guidance: a known-red test gets a skip marker that links its issue, and the gatekeeper takes no expected-failures list.
+- gatekeeper: `land --wait` asks GitHub only when what it waits on moved. Between two rounds it reads, every 30 s, only that: a land behind the landing lock reads the lock with one `git ls-remote` and makes no GitHub call until the lock moves past its holder's heartbeat (or stops beating for 15 minutes); a wait on a named PR's CI reads the base and the heads with one ls-remote and each head's check runs and statuses with an ETag (`If-None-Match`), which GitHub answers 304 at no quota while nothing changed, and runs the round again once a head, the base or a required check's state moved, or, for a land that left the free lock to an older waiter, that lock is freed, else after 15 minutes; it starts from what the round read, and a failed probe runs the round rather than ending the wait. The PR's `waiting` event and the land's place in the waiting order are still stamped every 5 minutes, by git push. `tests/test_land_wait_budget.py` counts the gh calls of one poll round of each wait state and fails above its budget (#1915).
+- A cloud session's `land` with no merge queue merges over REST again. The proxy refuses `gh pr merge` as `non-200 OK status code: 403 Forbidden`, with no `HTTP 403`, which the GraphQL-refusal check now reads as a refusal; and the `land` status written just before the merge, which the proxy refuses, is now reported as not written instead of failing the land (#1917).
+
 ## 0.1.2 - 2026-11-22
 
 - gatekeeper: `land: host_gate: false` makes `land` never run a gate on the host it runs on: a batch tree with no recorded pass, cloud or elsewhere, exits non-zero with `no cloud record for tree <t>` and starts nothing there, instead of falling back to a host gate (#1663).

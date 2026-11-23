@@ -1403,6 +1403,39 @@ def test_wait_for_fails_when_it_cannot_tell_a_pid_is_the_runs(
         run.wait()
 
 
+def rest_like(view: Callable[[], dict]) -> Callable[..., str]:
+    """A fake ``gh`` answering wait-for's REST reads (#1984) from ``view()``, a ``gh pr view`` shape read once a round
+    (at the round's pull read): the pull's state, then its check runs and statuses. No headers, so no ETag is kept."""
+    now: dict = {}
+
+    def gh(*args: str, **kw: object) -> str:
+        path = args[-1]
+        if path.endswith("/pulls/7"):
+            now.clear()
+            now.update(view())
+            state = now.get("state", "OPEN")
+            pull = {"state": "open" if state == "OPEN" else "closed", "merged": state == "MERGED"}
+            return json.dumps({**pull, "head": {"sha": "s"}})
+        rollup = now.get("statusCheckRollup") or []
+        if "check-runs" in path:
+            runs = [
+                {
+                    "name": c["name"],
+                    "status": c["status"].lower(),
+                    "conclusion": (c.get("conclusion") or "").lower(),
+                }
+                for c in rollup
+                if "name" in c
+            ]
+            return json.dumps({"check_runs": runs})
+        statuses = [
+            {"context": c["context"], "state": c["state"].lower()} for c in rollup if "context" in c
+        ]
+        return json.dumps({"statuses": statuses})
+
+    return gh
+
+
 def test_wait_for_a_pr_waits_until_its_checks_settle(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1421,7 +1454,7 @@ def test_wait_for_a_pr_waits_until_its_checks_settle(
             },
         ]
     )
-    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: json.dumps(next(views)))
+    monkeypatch.setattr(omnigent_agent, "gh", rest_like(lambda: next(views)))
     monkeypatch.setattr(omnigent_agent, "WAIT_FOR_PR_EVERY", 0.01)
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--budget", "30"]) == 1
     assert capsys.readouterr().out == "PR #7 checks red: test\n"
@@ -1434,11 +1467,11 @@ def test_wait_for_a_pr_waits_until_its_checks_settle(
             {"context": "lint", "state": "SUCCESS"},
         ],
     }
-    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: json.dumps(green))
+    monkeypatch.setattr(omnigent_agent, "gh", rest_like(lambda: green))
     assert omnigent_agent.main(["wait-for", "--pr", "7"]) == 0
     assert capsys.readouterr().out == "PR #7 checks green (2)\n"
 
-    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: '{"state": "CLOSED"}')
+    monkeypatch.setattr(omnigent_agent, "gh", rest_like(lambda: {"state": "CLOSED"}))
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "merged"]) == 1
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "closed"]) == 0
 
@@ -3525,7 +3558,7 @@ def test_worker_md_s_heavy_lock_command_waits_for_the_lock_and_passes_the_exit_t
         Path(__file__).resolve().parents[2] / "loop/skills/engineering-loop/worker.md"
     ).read_text()
     command = re.search(
-        r"`(perl -MFcntl=:flock .*?)\s+<path> uv run <gatekeeper>/scripts/approvals\.py heavy\s+mise run check`",
+        r"`(perl -MFcntl=:flock .*?)\s+<path> uv run <gatekeeper>/scripts/approvals\.py heavy\s+mise run test:changed`",
         text,
         re.DOTALL,
     )
@@ -4124,7 +4157,7 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
     argv = ["start", "claude-cloud", "t", "b.md", "r.md", "--top-level", "--host", "box"]
-    argv += ["--workspace", "/there/repo", "--pr", "7", "--confirm-seconds", "0"]
+    argv += ["--workspace", "/there/repo", "--pr", "o/r#7", "--confirm-seconds", "0"]
     assert omnigent_agent.main(argv) == 0
     assert og.top_level == [True] and og.workspaces == ["/there/repo"]
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
@@ -10783,7 +10816,9 @@ def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its
         and "Never ask the owner which branch" in brief
     )
     assert "claude/ready-demo-<pr>" in brief and "the demo media branch it names" in brief
-    assert "never committed.\n" in brief and brief.endswith(omnigent_agent.CLOUD_NO_PUSH + "\ndo X")
+    assert "never committed.\n" in brief and brief.endswith(
+        omnigent_agent.CLOUD_NO_PUSH + omnigent_agent.pack_line("do X") + "\ndo X"
+    )
     assert (
         "curl -sS -X POST -H 'Content-Type: application/json'" in brief
         and "api.github.com/repos/<owner>/<repo>/pulls" in brief
@@ -12398,7 +12433,16 @@ def test_a_cloud_pr_start_on_another_host_says_its_launch_dir_head_is_not_moved(
     og.files["/there/repo/.claude/settings.local.json"] = PINNED  # what the session reads
     og.harnesses = {"claude-cloud": "acp:claude-cloud"}
     argv = ["start", "claude-cloud", "w", "do X", str(tmp_path / "tmp" / "r.md"), "--top-level"]
-    argv += ["--host", "mac", "--pr", "7", "--workspace", "/there/repo", "--confirm-seconds", "0"]
+    argv += [
+        "--host",
+        "mac",
+        "--pr",
+        "a/b#7",
+        "--workspace",
+        "/there/repo",
+        "--confirm-seconds",
+        "0",
+    ]
     assert omnigent_agent.main(argv) == 0
     err = capsys.readouterr().err
     assert "launch dir is on another host" in err and "HEAD is not moved" in err
@@ -13324,9 +13368,39 @@ def test_a_far_workspace_never_reads_a_local_checkout_at_the_same_path(
     (tmp_path / "ws" / ".git").mkdir(parents=True)
     ran: list[Path | None] = []
     monkeypatch.setattr(omnigent_agent, "repo_slug", lambda cwd=None: ran.append(cwd) or "c/d")
-    assert omnigent_agent.pr_repo(7, tmp_path / "ws", local=False) == "c/d"
     assert omnigent_agent.pr_repo(7, tmp_path / "ws") == "c/d"
-    assert ran == [None, tmp_path / "ws"]
+    with pytest.raises(omnigent_agent.Fail, match=r"--pr owner/repo#7"):
+        omnigent_agent.pr_repo(7, tmp_path / "ws", local=False)
+    assert ran == [
+        tmp_path / "ws"
+    ]  # the far call never asked git, here or in the current directory
+
+
+def test_a_far_workspace_bare_pr_is_labelled_with_the_origin_read_on_its_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[Path | None] = []
+    monkeypatch.setattr(
+        omnigent_agent, "repo_slug", lambda cwd=None: ran.append(cwd) or "here/repo"
+    )
+    monkeypatch.setattr(omnigent_agent, "far_checkout_root", lambda *a: Path("/w"))
+    monkeypatch.setattr(
+        omnigent_agent,
+        "far_origin_slug",
+        lambda og, host, root, what: "far/repo" if (host, root) == ("h", Path("/w")) else "bad",
+    )
+    og = FakeOmnigent()
+    assert omnigent_agent.pr_repo(7, "/w", False, (og, "h")) == "far/repo"
+    assert ran == []  # the current directory's repository is never read
+
+
+def test_a_far_workspace_with_no_readable_origin_refuses_a_bare_pr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "repo_slug", lambda cwd=None: "here/repo")
+    monkeypatch.setattr(omnigent_agent, "far_checkout_root", lambda *a: None)
+    with pytest.raises(omnigent_agent.Fail, match=r"--pr owner/repo#7"):
+        omnigent_agent.pr_repo(7, "/w", False, (FakeOmnigent(), "h"))
 
 
 def test_a_named_repository_reaches_the_head_reads_inside_the_checkout_and_the_head_move(
@@ -13358,11 +13432,12 @@ def test_start_for_another_host_never_reads_a_local_checkout_at_its_path(
     ran: list[Path | None] = []
     monkeypatch.setattr(omnigent_agent, "repo_slug", lambda cwd=None: ran.append(cwd) or "c/d")
     og = FakeOmnigent()
-    omnigent_agent.start(
-        og, "claude", "t", "do X", tmp_path / "r", None, 0, workspace=str(tmp_path / "ws"),
-        host_id="far", pr=7,
-    )  # fmt: skip
-    assert ran == [None]
+    with pytest.raises(omnigent_agent.Fail, match=r"--pr owner/repo#7"):
+        omnigent_agent.start(
+            og, "claude", "t", "do X", tmp_path / "r", None, 0, workspace=str(tmp_path / "ws"),
+            host_id="far", pr=7,
+        )  # fmt: skip
+    assert ran == []  # neither the workspace's path here nor the current directory is read
 
 
 def test_an_unposted_report_of_a_named_repo_worker_posts_to_that_repo(tmp_path, monkeypatch):

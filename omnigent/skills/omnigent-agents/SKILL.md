@@ -763,6 +763,19 @@ runs and pull only once it may have stalled (its last move plus the threshold), 
 keeps only what stops a second wake for the same stall (each PR's newest move told, in the state's `pr_stalls`), so
 the same stall wakes no one twice and a new move starts a new one.
 
+For the same repos it also runs `check stalled`, the landing checks' listing (from their copy installed beside this
+skill, so it judges by the base's code), at most once an hour per repo (`STALLED_SECONDS`), in the first of their leads' workspaces that is
+a checkout on this host, detached so the poll goes on, and stopped past 15 minutes (`STALLED_TIMEOUT`). Each PR it
+lists (an approved, verified PR no `land` took) is said once per head and kind of line (so a go on an idle PR makes its landable line news at the same head), `<owner>/<name>: PR #N has its go and a
+satisfied verdict at <sha> and is not landed: land it (`land N --only`) or flag it`, or for a verified PR idle on a go or
+record it lacks, its line (`... missing: go`) and `: ask its approver for what it is missing`, a `stalled` event on that lead;
+the repo's last listing is kept (`stalled` in the state with `--console`), so the next hour's sweep says nothing new
+for it, and a PR is said again only once its head moved or it left the listing and came back; a PR a sweep could not
+judge keeps what was listed for it. A PR the sweep could not judge, a failed sweep and a lead on another host are logged,
+never posted, except a sweep that judged none of the repo's PRs (its last line, `<n> of <n> open PRs not judged here`):
+that is said once per reason, `<owner>/<name>: check stalled judged none of its <n> open PRs: <why>`, since its silence
+would read as nothing stalled.
+
 **`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
 state file, an events log, status labels, a progress deadline, settled events kept across
 restarts, and routing (below). Without it `supervise --registry` writes none of them, and the paragraphs above are
@@ -828,6 +841,7 @@ offline while idle raises nothing.
 | a default branch of a repo the followed, non-direct leads work in moved with a PR a lead's wait names or owns | rule | tell that lead (act, to the supervisor, when the lead waits on it), naming the new sha and the PRs merged since; no other lead and not the chief of staff |
 | `pr-stall`: an open PR of a watched repo with no push, verdict, go or queue step for `--stall-minutes` (#1819) | rule | act, to the manager, naming its blocker; the same stall once |
 | a PR or session a lead's wait names settled, or a session it started reached a final state | rule | tell that lead within a minute, read from GitHub and the session; a set tells on its first failure or its last end |
+| `stalled`: a PR `check stalled` lists, once per head | rule | act: the chief of staff lands it (`land N --only`) or flags it |
 | `archived` | rule | its line and state entry dropped; no post |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a `STILL WORKING` that hands back to its manager: a `Handback: #<n> <what>` line, else prose saying a PR is ready (`#12 READY`, `READY FOR VERIFY`) or a PR's step is the manager's (`#12 ... is yours`, `#12 ... over to you`) (#1753) | rule | act, to the session it notifies, with what it hands back; an exact repeat: recorded |
