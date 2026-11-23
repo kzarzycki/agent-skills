@@ -14037,6 +14037,14 @@ NO_PR = "gh pr view: Could not resolve to a PullRequest with the number"
 NOT_FOUND = "gh api: Not Found (HTTP 404)"
 
 
+def test_a_rest_404_on_a_bare_ref_is_told_once_like_graphql_could_not_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The supervisor reads a PR through REST (#2068), which says 404 where GraphQL said "Could not resolve"."""
+    told = badref_told(capsys, tmp_path, monkeypatch, "#1357", NOT_FOUND, NOT_FOUND)
+    assert len(told) == 1 and "#1357 in o/r" in told[0]
+
+
 def test_a_bare_ref_with_no_such_pr_or_issue_in_the_leads_repo_is_told_once_over_many_polls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -57,3 +57,9 @@ def test_the_read_carries_the_branches_the_supervisor_maps_a_wait_by(
     oa.pr_settled(7, "o/r")
     assert oa.PR_VIEWS[("o/r", 7)][1]["headRefName"] == "feat"
     assert oa.PR_VIEWS[("o/r", 7)][1]["baseRefName"] == "main"
+
+
+def test_a_merged_pull_reads_as_merged_not_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    hub = Hub(monkeypatch)
+    hub.bodies["repos/o/r/pulls/7"] = {**PULL, "state": "closed", "merged": True}
+    assert oa.pr_settled(7, "o/r")[:2] == (0, "PR #7 merged")
