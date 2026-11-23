@@ -12158,7 +12158,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         report = args.report.resolve() if here else args.report
         if args.cmd == "send" and remote and args.pr and report.is_absolute():
             report = (Path("tmp/loop") / report.name).resolve()  # where wait --pr wrote it
-        if args.cmd != "send" and args.host and not args.top_level and not placed:
+        # a child runs on its parent's runner, so --host naming that runner's own host is no move
+        if args.cmd != "send" and remote and not args.top_level and not placed:
             raise Fail(
                 "--host needs --top-level, or a cloud agent: Omnigent runs a child on its"
                 " parent's runner"
