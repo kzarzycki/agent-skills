@@ -13259,6 +13259,80 @@ def test_a_quiet_waiter_is_not_stalled_while_a_session_its_line_names_progresses
         assert stalls(og) == [] and deadlines(registry) == []
 
 
+def named_wait_deadlines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replies: list[tuple[float, str]],
+    first: str = "",
+) -> Leads:
+    """A manager quiet on a wait that names one of its leads and then, at each clock offset in
+    ``replies``, replying with the wait given there; the ``no progress`` lines it raised."""
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    first = first or f"STILL WORKING: waiting on {LEAD}. Report: m.md"
+    snaps = {LEAD: gone, "x": gone, "y": gone}
+    registry, og = manager(tmp_path, first, m={"status": "idle"}, **snaps)
+    offset = skewed(monkeypatch)
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")  # the first
+    for at, wait in replies:
+        offset[0] = at
+        og.histories["m"].append(
+            {**ending(wait, 0), "id": f"reply{at}"}
+        )  # a reply at ``at``, new progress
+        offset[0] = at + omnigent_agent.DEADLINE_SECONDS + 100  # quiet again
+        supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    return og
+
+
+def test_a_reply_that_restates_its_wait_starts_no_new_deadline_until_four_times_the_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = omnigent_agent.DEADLINE_SECONDS
+    same = f"STILL WORKING: waiting on {LEAD}. Report: m.md"
+    og = named_wait_deadlines(tmp_path, monkeypatch, [(100.0, same), (2 * d, same)])
+    assert len(stalls(og)) == 1  # once, though the reply was progress
+    second = tmp_path / "late"
+    second.mkdir()
+    og = named_wait_deadlines(second, monkeypatch, [(100.0, same), (5 * d, same)])
+    assert len(stalls(og)) == 2  # still stuck after 4x: one more
+
+
+def test_a_wait_on_a_group_is_keyed_on_its_text_and_fires_once_more_when_stuck(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = omnigent_agent.DEADLINE_SECONDS
+    group = "STILL WORKING: waiting on my leads. Report: m.md"
+    og = named_wait_deadlines(tmp_path, monkeypatch, [(100.0, group), (2 * d, group)], group)
+    assert len(stalls(og)) == 1
+    second = tmp_path / "late"
+    second.mkdir()
+    og = named_wait_deadlines(second, monkeypatch, [(100.0, group), (5 * d, group)], group)
+    assert len(stalls(og)) == 2
+
+
+def test_a_changed_wait_starts_a_new_deadline_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = omnigent_agent.DEADLINE_SECONDS
+    first = f"STILL WORKING: waiting on {LEAD}. Report: m.md"
+    other = "STILL WORKING: waiting on x. Report: m.md"
+    og = named_wait_deadlines(
+        tmp_path, monkeypatch, [(100.0, first), (2 * d, first), (4 * d, other)]
+    )
+    assert len(stalls(og)) == 2  # the first wait once, the changed one a new chain
+
+
+def test_a_wait_on_a_parked_session_raises_no_deadline_but_its_news(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wait = f"STILL WORKING: waiting on {LEAD}. Report: m.md"
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(tmp_path, wait, m={"status": "idle"}, **{LEAD: gone})
+    og.histories[LEAD] = [ending("PARKED: the host is full. Report: o.md", 1300)]
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == []
+    assert any(f"{LEAD} ended PARKED" in t and "your wait still names it" in t for _, t in og.inbox)
+
+
 @pytest.mark.parametrize(
     "wait, child, tail",
     [

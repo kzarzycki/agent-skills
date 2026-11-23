@@ -10351,7 +10351,10 @@ def supervise_registry(
         for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. A timed
         wait with no progress since its time raises one at its time, which wakes the lead, and
         once woken one more ``DEADLINE_SECONDS`` after it. Each is one event per ``progress_at``
-        (one per wait text when the wait names no session), so new progress starts a new chain. None while every session its wait names shows life
+        (one per wait text when the wait names no session; one per wait text and its named sessions,
+        and once more after 4x ``DEADLINE_SECONDS``, when it names some), so new progress starts a
+        new chain except for those. None while every session it names ended ``PARKED`` (news told
+        it), and None while every session its wait names shows life
         (``moving``), since it is waiting, not stalled."""
         if lead.get("direct"):
             return  # the owner drives it in its own session: they are its follower
@@ -10382,6 +10385,7 @@ def supervise_registry(
         # a session its STILL WORKING line names that shows life is progress, one that is archived,
         # unknown or unread is quiet
         quiet_named, mutual = [], ""
+        parked = []  # the named sessions whose turn ended PARKED
 
         def owns(parent: str, child: str, child_info: dict) -> bool:
             """Whether ``parent`` started ``child``: its parent id, or ``parent``'s own ``leads=``
@@ -10410,6 +10414,8 @@ def supervise_registry(
                 log(("named", other), f"{other}: history not read: {reason(e)}")
                 continue
             log(("named", other), None)
+            if over["ending"] == "PARKED" and over["state"] == "idle":
+                parked.append(other)
             if not mutual and not over["ending"] and over["wait"] != "unknown":
                 # it waits on this lead, or on no session, and this lead started it: a mutual wait
                 mine = owns(sid, other, info)
@@ -10422,6 +10428,8 @@ def supervise_registry(
                 head = f"{sid} {lead['title']}".rstrip()
                 line = f"{head}: {other} ended {over['ending']} at {at}; your wait still names it"
                 say(line, sid, f"deadline:{sid}:{other}:{end_of(over)}", "news")
+        if quiet_named and len(parked) == len(quiet_named) == len(lead.get("named") or []):
+            return  # all parked: the news line told its waiter, and only the waiter can act
         quiet = time.time() - lead["progress_at"]
         spent = lead.get("nudged_at") == lead["progress_at"]
         if due is not None and lead["progress_at"] < due:
@@ -10443,15 +10451,26 @@ def supervise_registry(
                 line = f"{head}: {what}\nlast message: {lead['last_line']}"
                 if quiet_named:
                     line += f"\nquiet: {', '.join(quiet_named)}"
-                # a wait that names no session is one event per wait text, not per progress chain
-                chain = (
-                    lead["wait"] if names is None and due is None else f"{lead['progress_at']:.0f}"
-                )
+                # a wait that names no session is one event per wait text, not per progress chain;
+                # one that names some (a session, a group, a PR, a task) is keyed on its text and
+                # the sessions it names, so a reply that restates it starts no new chain, and it
+                # fires once more after 4x DEADLINE_SECONDS if still stuck. An unknown or timed
+                # wait keeps its progress chain.
+                chain, late = lead["wait"], ""
+                if due is not None or lead["wait"] == "unknown":
+                    chain = f"{lead['progress_at']:.0f}"
+                elif names is not None:
+                    chain += "|" + ",".join(sorted(lead.get("named") or []))
+                    if not nudged:
+                        if lead.get("deadline_chain") != chain:
+                            lead.update(deadline_chain=chain, deadline_first=time.time())
+                        elif time.time() - lead["deadline_first"] >= 4 * DEADLINE_SECONDS:
+                            late = ":late"
                 if "quota" in lead["wait"].lower() and not quota_line_due(
                     state, time.time(), limited[0] - time.monotonic()
                 ):
                     continue  # one quota line per reset (#2090)
-                say(line, sid, f"deadline:{sid}:{chain}{nudged}", "deadline")
+                say(line, sid, f"deadline:{sid}:{chain}{nudged}{late}", "deadline")
 
     def has_event(sid: str) -> bool:  # an event settles what a prose wait would
         try:
