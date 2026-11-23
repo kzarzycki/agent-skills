@@ -138,3 +138,102 @@ def test_data_dir_comes_from_the_environment(
 
 def test_login_event_routes_to_the_owner() -> None:
     assert oa.route({"kind": "login"}, lambda: ("none", ""))[1] == "owner"
+
+
+def test_a_hung_cli_is_bounded_by_the_timeout_and_runs_again_only_next_hour(rig: Rig) -> None:
+    rig.raises = subprocess.TimeoutExpired("omnigent", oa.LOGIN_TIMEOUT)
+    rig.watch(0)
+    rig.watch(60)
+    assert rig.alerts == [] and len(rig.runs) == 1
+    assert [n[1] for n in rig.notes if n[1]] == [
+        f"omnigent login-status gave no answer in {oa.LOGIN_TIMEOUT:.0f}s"
+    ]
+    rig.watch(oa.LOGIN_POLL)
+    assert len(rig.runs) == 2
+
+
+def test_the_cli_is_run_with_the_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: list[dict] = []
+
+    def run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(kw)
+        return subprocess.CompletedProcess(cmd, 0, "{}", "")
+
+    monkeypatch.setattr(oa.subprocess, "run", run)
+    oa.login_watch(SERVER, {}, 0, lambda e, line: None, lambda k, m: None, tmp_path)
+    assert seen[0]["timeout"] == oa.LOGIN_TIMEOUT == 120.0
+
+
+# ---- the supervise_registry wiring
+
+
+def wired(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, code: int, base: str | None = SERVER
+) -> tuple[Any, Path, list[list[str]]]:
+    """A supervised fleet whose ``omnigent`` is a fake exiting ``code``; its ``base`` is the server."""
+    from test_omnigent_agent import Fleet, told
+
+    monkeypatch.setenv("OMNIGENT_DATA_DIR", str(tmp_path / "data"))
+    (tmp_path / "data").mkdir(exist_ok=True)
+    runs: list[list[str]] = []
+    real = subprocess.run
+
+    def run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[0] != "omnigent":
+            return real(cmd, **kw)
+        runs.append(cmd)
+        return subprocess.CompletedProcess(cmd, code, json.dumps({"reason": "soon"}), "")
+
+    monkeypatch.setattr(oa.subprocess, "run", run)
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={tmp_path / 'a.md'}\n")
+    og = Fleet(a=[told("brief", 60)])
+    if base:
+        og.base = base
+    return og, registry, runs
+
+
+def login_lines(og: Any) -> list[str]:
+    return [m for _, m in og.inbox if "Omnigent login" in m]
+
+
+def test_supervise_alerts_once_across_polls_and_a_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from test_omnigent_agent import supervised
+
+    og, registry, runs = wired(monkeypatch, tmp_path, 1)
+    supervised(og, registry, monkeypatch, 4, notify="cos", console=True)
+    assert runs == [["omnigent", "login-status", SERVER, "--live", "--json"]]
+    [line] = login_lines(og)
+    assert f"USER NEEDED: the Omnigent login of {SERVER} is expiring" in line
+    assert f"`omnigent login {SERVER}`" in line
+    state = tmp_path / "registry.state.json"
+    saved = json.loads(state.read_text())
+    assert saved["login"]["label"] == "expiring"
+    saved["login"]["checked_at"] = 0  # an hour later, after a restart: the CLI runs again
+    state.write_text(json.dumps(saved))
+    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)
+    assert len(runs) == 2 and len(login_lines(og)) == 1
+
+
+def test_supervise_reads_the_rejection_file_of_the_data_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from test_omnigent_agent import supervised
+
+    og, registry, _ = wired(monkeypatch, tmp_path, 0)
+    (tmp_path / "data" / "host_auth_rejected.json").write_text("{}")
+    supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
+    [line] = login_lines(og)
+    assert "rejected" in line and f"omnigent login {SERVER}" in line
+
+
+def test_supervise_watches_nothing_without_a_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from test_omnigent_agent import supervised
+
+    og, registry, runs = wired(monkeypatch, tmp_path, 1, base=None)
+    supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
+    assert runs == [] and login_lines(og) == []
