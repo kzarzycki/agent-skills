@@ -5,10 +5,6 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
-## 0.35.5 - 2026-11-23
-
-- Carries gatekeeper 0.1.5: `loop.delegate_spec: false` keeps spec and plan approvals the owner's under `loop.delegate: all`, while the delegate's merge go still counts (#2018, #2026).
-
 ## 0.35.4 - 2026-11-23
 
 - Releasing: one `Release` workflow run (`gh workflow run release.yml`) cuts every package with pending `changelog.d/` entries in one PR, lands it through the merge queue with no verifier, since `qualify` refuses a release PR whose tree isn't exactly the fold (`cli release-verify`), and pushes each package's tag on the squash commit. `cli cut-release` is the fold the workflow, the gate and a person all run, and `release-check` accepts a commit that releases several packages when each manifest it changes is tagged on it (#1861).
