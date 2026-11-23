@@ -9787,7 +9787,7 @@ def supervise_registry(
         repo's ``queue-flake`` and ``queue-rejects`` events (``queue_alarms``) on ``sid``, its first followed lead (or
         none). A rate limit, a failed read or an unread session list is logged and keeps the state: the next poll
         reads again, and a dequeue not yet sent is sent then."""
-        memo = state.setdefault("queue", {}).setdefault(repo, {})
+        memo = state["queue"].setdefault(repo, {})
         try:
             queue_read(repo, memo)
         except RateLimited as e:
@@ -9853,17 +9853,11 @@ def supervise_registry(
                 return sid
         for start in [s for s in by_id if str(labels(s).get(PR_LABEL, "")) == label]:
             sid, seen = start, set()
-            while sid and sid not in seen:
+            while sid and sid not in seen:  # the list holds every session, so each parent is in it
                 seen.add(sid)
-                if sid != start and is_lead(sid):
+                if is_lead(sid):
                     return sid
-                row = by_id.get(sid)
-                if row is None:
-                    try:
-                        row = og.info(sid)
-                    except Exception:  # noqa: BLE001 - its chain ends here: no lead up it
-                        break
-                sid = str(row.get("parent_session_id") or "")
+                sid = str(by_id.get(sid, {}).get("parent_session_id") or "")
         for sid in followed:
             lead = state["leads"].get(sid) or {}
             for ref in [*(lead.get("refs") or []), *(lead.get("wait") or "").split(", ")]:

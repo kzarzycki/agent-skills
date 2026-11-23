@@ -77,6 +77,8 @@ class GitHub:
         self.logs: dict[int, str] = {}
         self.calls: list[tuple[str, ...]] = []
         self.down = ""
+        self.pulls_down = False
+        self.log_limit = 0  # the next log reads refused for the rate limit
         monkeypatch.setattr(omnigent_agent, "gh", self.gh)
 
     def gh(self, *args: str, timeout: float = 0) -> str:
@@ -86,7 +88,12 @@ class GitHub:
             raise omnigent_agent.RateLimited("gh api: API rate limit exceeded", 0.0)
         if self.down and "comments" in path:
             raise omnigent_agent.Fail("gh api: HTTP 502")
+        if self.pulls_down and "pulls" in path:
+            raise omnigent_agent.Fail("gh api: HTTP 502")
         if job := re.fullmatch(r"repos/o/r/actions/jobs/(\d+)/logs", path):
+            if self.log_limit:
+                self.log_limit -= 1
+                raise omnigent_agent.RateLimited("gh api: API rate limit exceeded", 0.0)
             return self.logs.get(int(job[1]), "no tests ran\n")
         if path.startswith("repos/o/r/pulls?"):
             out = "[]"
@@ -114,9 +121,13 @@ class Fleet(Leads):
         super().__init__(**histories)
         self.unarchived: list[str] = []
         self.refuse_unarchive = False
+        self.unlisted = 0  # the next session lists that fail
 
     def call(self, method: str, path: str, body: object = None) -> dict:
         assert method == "GET" and path.startswith("/v1/sessions?"), path
+        if self.unlisted:
+            self.unlisted -= 1
+            raise omnigent_agent.Fail("GET /v1/sessions: HTTP 502")
         rows = [{"id": s, **self.snaps.get(s, {})} for s in self.histories]
         return {"data": rows}
 
@@ -302,8 +313,9 @@ def test_dequeue_without_lead_acts(tmp_path, monkeypatch, failure) -> None:
     run(og, registry, monkeypatch, 4)
     woken = acts(og, "o/r#12" if failure == "no lead" else "not delivered")
     assert len(woken) == 1
-    if failure == "no lead":
+    if failure == "no lead":  # the whole message, its failing check too, not only its first line
         assert "left the merge queue" in woken[0]
+        assert "Failing check: qualify https://github.com/o/r/actions/runs/9/job/7" in woken[0]
     assert not [t for s, t in og.inbox if s == "L"]
 
 
@@ -437,8 +449,13 @@ def test_a_poll_where_nothing_moved_reads_the_same_path_for_a_304(monkeypatch) -
     omnigent_agent.queue_read("o/r", memo)
     omnigent_agent.queue_read("o/r", memo)
     omnigent_agent.queue_read("o/r", memo)
-    _, second, third = gh.listings()
+    first, second, third = gh.listings()
     assert second == third  # the since cursor rests: the page's ETag answers it
+    assert (
+        unquote(re.search(r"since=([^&]+)", second)[1])
+        == gh.comments[0]["updated_at"]
+        != unquote(re.search(r"since=([^&]+)", first)[1])
+    )
     assert any("If-None-Match" in a for a in gh.calls[-1])
 
 
@@ -457,3 +474,69 @@ def test_a_failed_queue_read_keeps_state_and_retries_next_poll(tmp_path, monkeyp
 
     run(og, registry, monkeypatch, 4, recover)
     assert len(relays(og, 12)) == 1
+
+
+def test_the_share_counts_at_its_boundaries() -> None:
+    """5 entries is enough to judge; a share of exactly 20% is not over it."""
+    merged = [(i, i, "merged", ()) for i in range(1, 4)]
+    five = queue(*merged, (10, 10, "dequeued", ("t::a",)), (11, 11, "dequeued", ("t::b",)))
+    assert kinds(omnigent_agent.queue_alarms("o/r", five)) == ["queue-rejects"]
+    fifth = queue(*merged, (4, 4, "merged", ()), (10, 10, "dequeued", ("t::a",)))
+    assert omnigent_agent.queue_alarms("o/r", fifth) == []
+
+
+def test_falling_under_the_floor_does_not_re_arm_the_rejection_event() -> None:
+    merged = [(i, i, "merged", ()) for i in range(1, 5)]
+    memo = queue(*merged, (10, 10, "dequeued", ("t::a",)), (11, 11, "dequeued", ("t::b",)))
+    assert kinds(omnigent_agent.queue_alarms("o/r", memo)) == ["queue-rejects"]
+    kept = {c: memo["entries"].pop(c) for c in ("1", "2")}  # 2 of 4: over 20%, but under the floor
+    assert omnigent_agent.queue_alarms("o/r", memo) == []
+    memo["entries"].update(kept)  # 2 of 6 again: the share never dropped back, so no new event
+    assert omnigent_agent.queue_alarms("o/r", memo) == []
+
+
+def test_only_a_failed_checks_dequeue_reads_its_job_logs(monkeypatch) -> None:
+    gh = GitHub(monkeypatch)
+    gh.comments += [comment(100, 12, code="CONFLICT", jobs=(7,)), comment(101, 13, state="merged")]
+    memo: dict = {}
+    omnigent_agent.queue_read("o/r", memo)
+    assert gh.log_reads() == [] and memo["entries"]["100"]["tests"] == []
+
+
+def test_a_rate_limited_log_read_keeps_the_entry_for_the_next_read(monkeypatch) -> None:
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    gh.logs[7] = log_of("t::a")
+    gh.log_limit = 1
+    memo: dict = {}
+    with pytest.raises(omnigent_agent.RateLimited):
+        omnigent_agent.queue_read("o/r", memo)
+    assert "100" not in memo.get("entries", {}) and "since" not in memo
+    assert omnigent_agent.queue_read("o/r", memo) == ["100"]
+    assert memo["entries"]["100"]["tests"] == ["t::a"]
+
+
+def test_an_unread_session_list_sends_the_dequeue_at_the_next_poll(tmp_path, monkeypatch) -> None:
+    registry, og = fleet(tmp_path, L={"labels": {"omni.role": "lead", "omni.pr": "o/r#12"}})
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    og.unlisted = 1
+    run(og, registry, monkeypatch, 3)
+    assert [s for s, _ in relays(og, 12)] == ["L"]
+
+
+def test_a_failed_pr_listing_still_reads_the_queue(tmp_path, monkeypatch) -> None:
+    registry, og = fleet(tmp_path, L={"labels": {"omni.role": "lead", "omni.pr": "o/r#12"}})
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    gh.pulls_down = True
+    run(og, registry, monkeypatch, 2)
+    assert [s for s, _ in relays(og, 12)] == ["L"]
+
+
+def test_unarchive_patches_the_session_back() -> None:
+    calls = []
+    og = omnigent_agent.Omnigent.__new__(omnigent_agent.Omnigent)
+    og.call = lambda method, path, body=None, **kw: calls.append((method, path, body)) or {}
+    og.unarchive("s1")
+    assert calls == [("PATCH", "/v1/sessions/s1", {"archived": False})]
