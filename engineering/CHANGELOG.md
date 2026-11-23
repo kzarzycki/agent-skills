@@ -7,6 +7,7 @@ them here.
 
 ## 0.35.3 - 2026-11-23
 
+- release-check: the pre-tag smoke run in a private organization repository (#1270) is off unless `RELEASE_SMOKE_REPOSITORY` is set; without it `release-check` prints `smoke run: off (RELEASE_SMOKE_REPOSITORY unset)` and passes. Setting `RELEASE_SMOKE_REPOSITORY` and `RELEASE_SMOKE_WORKFLOW` turns it back on (#1855).
 - engineering: the old-path copies of the loop's `lead.md`, `worker.md` and `verifier.md` match the loop package's files again (#1885).
 
 ## 0.35.2 - 2026-11-22
