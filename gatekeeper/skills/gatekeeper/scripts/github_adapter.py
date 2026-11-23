@@ -276,7 +276,49 @@ def refuse_bypass(args: tuple[str, ...]) -> None:
         )
 
 
+# the reads this run made (#2016): one `approve merge` or `record verdict` read the same PR, its timeline, reviews,
+# files, comments and checks three or four times, about 40 REST calls; a repeat of the same `gh api` read within READ_TTL
+# seconds is answered from here, and any other call (a write, or any gh command but a plain `gh api` read) empties it,
+# so nothing is read back stale past this run's own write. READ_TTL stays under POLL, so a wait's next poll reads afresh.
+reads: dict[tuple[str, ...], tuple[float, str]] = {}
+READ_TTL = 20.0
+WRITE_FLAGS = {"-f", "-F", "--field", "--raw-field", "--input"}
+
+
+def plain_read(args: Sequence[str]) -> bool:
+    """Whether `gh *args` is a `gh api` GET that may be answered from `reads`: no method but GET, no field or body
+    (which make gh POST), no `-i` (rest_if_changed's ETag read, which wants the headers), and not `rate_limit`."""
+    if args[:1] != ("api",) or "-i" in args or any("rate_limit" in arg for arg in args):
+        return False
+    if any(
+        arg in WRITE_FLAGS or arg.startswith(("--field=", "--raw-field=", "--input="))
+        for arg in args
+    ):
+        return False
+    for flag, value in zip(args, args[1:]):
+        if flag in ("-X", "--method") and value.upper() != "GET":
+            return False
+    return not any(arg.startswith("--method=") and arg[9:].upper() != "GET" for arg in args)
+
+
 def gh(*args: str, data: str | None = None) -> str:
+    key = tuple(args)
+    if key[:2] == (
+        "api",
+        "rate_limit",
+    ):  # the quota guard's free read: neither kept nor a reason to forget
+        return _gh(*args, data=data)
+    if data is None and plain_read(key):
+        if (seen := reads.get(key)) and time.monotonic() - seen[0] < READ_TTL:
+            return seen[1]
+        out = _gh(*args)
+        reads[key] = (time.monotonic(), out)
+        return out
+    reads.clear()  # a write, or a call this cache doesn't read: nothing read before it is trusted after it
+    return _gh(*args, data=data)
+
+
+def _gh(*args: str, data: str | None = None) -> str:
     refuse_bypass(args)
     if data is not None:  # every comment and review approvals.py posts goes as `data`
         for text in texts(data):
@@ -328,7 +370,7 @@ quota_left: dict[str, tuple[float, int, int, int]] = {}
 
 
 def forget() -> None:
-    """Drop every answer this run kept: viewer's login, `kept` and the guard's last quota readings; and end any wait
+    """Drop every answer this run kept: viewer's login, `kept`, `reads` and the guard's last quota readings; and end any wait
     (wait_until), so no guard runs."""
     global wait_until
     wait_until = None
@@ -336,6 +378,7 @@ def forget() -> None:
     kept.clear()
     etags.clear()
     quota_left.clear()
+    reads.clear()
 
 
 def bucket_of(args: Sequence[str]) -> str:
