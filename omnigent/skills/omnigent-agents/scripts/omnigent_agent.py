@@ -1770,6 +1770,7 @@ class Omnigent:
         # claude-native takes Claude's own words; codex-native passes launch args to the codex CLI, which
         # takes only its own flags (a Claude word makes it fail "Codex native bridge state is missing").
         mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
+        cloud_mode = permission_mode  # a cloud create never takes the variable
         if agent == "codex":
             # No approvals, full access: an unattended session must never stop on a prompt nobody answers.
             # `--permission-mode default` keeps codex's own stance (on-request, its own sandbox).
@@ -1786,10 +1787,14 @@ class Omnigent:
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
             # agy's only permission flag; its effort is the user's, part of the model in its settings.
             body["terminal_launch_args"] = [AGY_BYPASS]
-        elif mode in CLOUD_MODES and agent not in AGENTS and self.harness(agent) == CLOUD_HARNESS:
+        elif (
+            cloud_mode in CLOUD_MODES
+            and agent not in AGENTS
+            and self.harness(agent) == CLOUD_HARNESS
+        ):
             # The server's own field: it answers the VM's tool requests itself under bypass, since
             # the VM starts in its default stance whatever it is launched with (#987).
-            body["permission_mode"] = mode
+            body["permission_mode"] = cloud_mode
         # The loop role, which Omnigent's usage metrics split spend by: a role file's name; and the PR a
         # verifier reviews (``owner/repo#N``), so its spend groups by PR as a worker's does (#945).
         labels = {"omni.role": name} if role and (name := Path(role).stem) in ROLES else {}
@@ -3418,14 +3423,6 @@ def unchecked(name: str, why: str) -> str:
     return f"{name}: load and memory not readable ({why}); starting unchecked"
 
 
-def mode_refused(e: Fail) -> bool:
-    """Whether a create failed with 400 over the permission mode it asked for: Omnigent refuses a
-    mode the creating session may not hand on (kzarzycki/omnigent#526)."""
-    return (
-        isinstance(e.__cause__, HTTPError) and e.__cause__.code == 400 and "mode" in str(e).lower()
-    )
-
-
 def taken(e: Fail) -> bool:
     """Whether a create failed with 409: Omnigent refuses a title a sibling already holds."""
     return isinstance(e.__cause__, HTTPError) and e.__cause__.code == 409
@@ -4742,26 +4739,17 @@ def start(
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
 
-    if harness == CLOUD_HARNESS and not permission_mode:
-        # ponytail: the pack's own default until kzarzycki/omnigent#529 ships, which gives each agent
-        # definition a default mode the server applies on every start path; then drop this branch and
-        # pass no mode unless the caller asks for one.
-        # A cloud session runs unattended in its own disposable VM: in `auto` a command the classifier
-        # doubts waits on a prompt that reaches the owner's inbox, so it starts in bypass unless the
-        # command line asks otherwise. The variable is often set for a host's native children, so a
-        # mode from it alone is not applied here: the start goes on in the safe mode, and says so.
-        if (named := os.environ.get("OMNIGENT_PERMISSION_MODE")) and named != BYPASS:
-            how = (
-                f"pass --permission-mode {named} to start it in {named}"
-                if named in CLOUD_MODES
-                else f"a cloud start takes --permission-mode {' or '.join(CLOUD_MODES)} alone"
-            )
-            print(
-                f"OMNIGENT_PERMISSION_MODE={named} is not applied to a {CLOUD_HARNESS} start: it"
-                f" starts in {BYPASS}; {how}",
-                file=sys.stderr,
-            )
-        permission_mode = BYPASS
+    if (
+        harness == CLOUD_HARNESS
+        and not permission_mode
+        and (named := os.environ.get("OMNIGENT_PERMISSION_MODE"))
+    ):
+        # the variable is often set for a host's native children: a cloud start takes its mode from the flag only
+        print(
+            f"OMNIGENT_PERMISSION_MODE={named} is not applied to a {CLOUD_HARNESS} start;"
+            f" pass --permission-mode {' or '.join(CLOUD_MODES)} to set its mode",
+            file=sys.stderr,
+        )
     if agent == "claude" and not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
         # Neither flag nor variable: a Claude child takes its Claude starter's own mode, and only
         # a Claude child, since another harness keeps its own explicit opt-in (the agy --role guard).
@@ -4787,7 +4775,9 @@ def start(
     # one is a Claude child's, always applied): the session starts in its harness's default stance,
     # which a run counting on the mode is told (#987). Codex is left out: it starts in no-approvals
     # whatever the variable says, so there is nothing to tell.
-    mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
+    mode = permission_mode or (
+        None if harness == CLOUD_HARNESS else os.environ.get("OMNIGENT_PERMISSION_MODE")
+    )
     if mode and agent != "codex" and not applied(mode):
         print(
             f"{agent} takes no permission mode: {mode} was not applied; its session starts in"
@@ -5003,16 +4993,6 @@ def start(
                 else:
                     raise failed(f"start failed: titles {title} to {name} are taken") from e
             break
-        if error and harness == CLOUD_HARNESS and permission_mode == BYPASS and mode_refused(error):
-            # Omnigent lets a session hand bypass only to a session it starts while in bypass itself
-            # (kzarzycki/omnigent#526): kept, never answered with a worker in auto, which would
-            # block on prompts nobody sees
-            raise failed(
-                f"start refused: {error}. Omnigent starts a {CLOUD_HARNESS} worker in {BYPASS}"
-                f" only for a session that runs in {BYPASS} itself, and this one does not. Start it"
-                f" from a session or a host shell in {BYPASS}, or pass --permission-mode auto to"
-                " accept a worker that waits on approval prompts"
-            ) from error
         if error:  # a timed-out create can have made the session: brief that one
             found = og.find(name, began, parentless)
             # the server can still be making a claude-cloud session on another host after the
@@ -11241,8 +11221,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--permission-mode",
             help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
-            " else the harness default); claude-cloud takes auto or bypassPermissions from this flag only (default"
-            " bypassPermissions, whatever the variable says), codex takes bypassPermissions (its default) or"
+            " else the harness default); claude-cloud takes auto or bypassPermissions from this flag only (with none,"
+            " the host's agent default applies, whatever the variable says), codex takes bypassPermissions (its default) or"
             " default (codex's own stance)",
         )
         p.add_argument(
