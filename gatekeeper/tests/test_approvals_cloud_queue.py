@@ -14,7 +14,6 @@ import re
 import subprocess
 from datetime import UTC, datetime, timedelta
 from itertools import count
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -423,19 +422,6 @@ def test_a_named_draft_is_marked_ready_through_the_draft_route_on_the_local_merg
     assert "PR #7 is ready now" in lines
     assert cloud_land["routes"] == [("POST", "ready_for_review", 7)]
     assert any(line.startswith("PR #7 landed in main as ") for line in lines), lines
-
-
-def test_a_cloud_eviction_from_the_local_merge_queue_turns_the_pr_back_to_draft(
-    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(approvals.github, "_rest_only", True)
-    monkeypatch.setattr(approvals.github, "gh", ccr(cloud_land, approvals.github.gh))
-    approvals.evict(cloud_land["pulls"][7], "main", "c" * 40, Path("missing.log"))
-    assert "PR #7 is red alone on main at " + "c" * 40 + ", twice: evicted" in (
-        capsys.readouterr().out.splitlines()
-    )
-    assert cloud_land["routes"] == [("POST", "convert_to_draft", 7)]
-    assert cloud_land["pulls"][7]["isDraft"]
 
 
 def test_rest_pull_reads_the_queue_state_from_the_timeline(cloud: Cloud) -> None:

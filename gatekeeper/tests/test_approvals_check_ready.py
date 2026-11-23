@@ -19,7 +19,7 @@ def test_ready_refuses_a_body_with_no_evidence_and_says_what_merge_says(
     project: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
     pr = pull(body="Closes #1\n")
-    assert approvals.checked("ready", pr, None) == 1
+    assert approvals.checked("ready", pr) == 1
     assert capsys.readouterr().out.strip() in approvals.proofs(
         "merge", pr, [approved(1)], loop_md("")
     )
@@ -29,7 +29,7 @@ def test_ready_takes_a_body_with_evidence_and_checks_nothing_else(
     project: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert (
-        approvals.checked("ready", pull(body="## Evidence\n\nran it\n"), None) == 0
+        approvals.checked("ready", pull(body="## Evidence\n\nran it\n")) == 0
     )  # no verdict, no gate owed
     assert "evidence proof" in capsys.readouterr().out
 
@@ -39,9 +39,7 @@ def test_ready_refuses_a_demo_that_only_links_its_media(
 ) -> None:
     monkeypatch.setattr(approvals, "writer", lambda login: login == "loop")
     linked = "## Demo\n\n- [check 1](https://example.com/check-1.mp4)\n"
-    assert (
-        approvals.checked("ready", pull(body="## Evidence\n\nran\n", comments=(linked,)), None) == 1
-    )
+    assert approvals.checked("ready", pull(body="## Evidence\n\nran\n", comments=(linked,))) == 1
     assert "demo.sh" in capsys.readouterr().out
 
 
@@ -59,11 +57,11 @@ def test_ready_honours_an_incubating_waiver_of_evidence_and_no_other(
     monkeypatch.setattr(
         approvals, "project", lambda: (None, loop_md("incubating:\n  waive: [evidence]\n"))
     )
-    assert approvals.checked("ready", pr, None) == 0
+    assert approvals.checked("ready", pr) == 0
     monkeypatch.setattr(
         approvals, "project", lambda: (None, loop_md("incubating:\n  waive: [verifier]\n"))
     )
-    assert approvals.checked("ready", pr, None) == 1  # nothing waived: Evidence still owed
+    assert approvals.checked("ready", pr) == 1  # nothing waived: Evidence still owed
 
 
 def test_the_ready_point_is_a_cli_choice(

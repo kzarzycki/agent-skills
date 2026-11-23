@@ -1,6 +1,6 @@
 ---
 name: gatekeeper
-description: Decide whether a change may take its next step - be built, enter a batching merge queue, or merge - from proof on the forge and the team's policy in docs/agents/gatekeeper.md, and record the proofs (an approval, a verifier verdict, a check pass). Use when running a merge gate or required check, recording an approval, a verdict or a check pass, or landing a PR on its proofs.
+description: Decide whether a change may take its next step - be built or merge - from proof on the forge and the team's policy in docs/agents/gatekeeper.md, and record the proofs (an approval, a verifier verdict, a check pass). Use when running a merge gate or required check, recording an approval, a verdict or a check pass, or landing a PR on its proofs.
 metadata:
   requires: "gh uv"
 ---
@@ -18,11 +18,10 @@ it exits with one line saying so. It needs Python 3.9 or later and `gh`, logged 
 
 | Verb | Does |
 |---|---|
-| `check build\|queue\|merge` | whether the change may be built, enter a batching merge queue, or merge |
+| `check build\|merge` | whether the change may be built, or merge |
 | `record approval\|verdict\|checks` | records a person's approval, a verifier report as a review, or a check pass on the head |
 | `land [--wait]` | every merge proof, then marks the PR ready and merges it, pinned to the head |
 | `report [--json]` | reads a verifier report as the gatekeeper does; `--json` prints its facts |
-| `batch` | the batching queue's proof for one PR in a batch |
 | `delegate` | the delegated approver's `approved:merge`, feature branch only |
 
 Exit codes, for every verb: `0` allowed or done; `1` refused, with one line per missing
