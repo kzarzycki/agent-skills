@@ -139,7 +139,10 @@ unchanged. A spec a policy covers is no trail, since under `spec.auto: true` eve
 `land [<pr>... [--only]]` is the one way an agent merges. It lands every landable PR into one base, the first named PR's or else the
 repository's default branch, through one of three merge queues, picked by the base's rules (`required_checks`) and the
 policy: the GitHub merge queue where the rules carry a `merge_queue` rule, else the Mergify queue where the policy's
-`land.queue` is `mergify` (below), else the local merge queue, the path for a project without a queue. All take the
+`land.queue` is `mergify` (below), else the local merge queue, the path for a project without a queue (held_by).
+`land.queue: github` records the project's choice of GitHub's queue: it changes nothing where the rules carry the
+`merge_queue` rule, and is refused (exit 1) where they carry none, since `land` would then merge each PR itself while
+the policy says a queue does. All take the
 same candidates (step 2). A queue gates each group it merges in CI (GitHub's `merge_group` run, Mergify's batch
 check); the local merge queue runs no gate at all: a PR merges on the verifier's record on its head, with the checks
 the base requires green there, and nothing reruns at land (#1872). One `land` runs one of them, never a mix. The local
@@ -925,7 +928,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         merge_queue=bool,
         merge_commit_heads=list,
         batch_wait_seconds=int,
-        queue=Choice(("mergify",)),
+        queue=Choice(("mergify", "github")),
         together=("signed_squash_to", "allowed_signers"),
         optional=(
             "signed_squash_to",
@@ -6243,7 +6246,7 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         rules = required_checks(base)
         watched["required"] = set(rules) - OWN
         # Mergify, like GitHub's queue, merges and signs each PR itself, so a cloud land needs no key for it
-        with placed(loop, bool(getattr(rules, "queue", None)) or mergify(loop)):
+        with placed(loop, held_by(loop, rules) != "land"):
             code, again = landing_here(
                 named, base, worst, tracker, loop, only, not fetch.returncode, rules
             )
@@ -6305,16 +6308,17 @@ def landing_here(
     excludes this place, and signed with its key), every PR is judged under it, a draft this land readied that it would
     not have readied goes back to draft (unreadied), and a verdict readied() kept for a draft it refused is reused only
     when the policy is unchanged."""
-    # the base's rules pick the merge queue: GitHub's where they require one, else the local one, never a mix of the two;
+    # the base's rules and the policy pick the merge queue (held_by), never a mix of two;
     # `loop:approvals`, `gatekeeper` and `land` are the loop's own statuses (OWN), on the proofs land reads itself
     rules = required_checks(base) if rules is None else rules
     required = rules - OWN
+    queue = held_by(loop, rules)  # before readied, so a refused policy touches no PR
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
     if ready:
         named = readied(named, required, tracker, loop)
-    if method := getattr(rules, "queue", None):
-        return github_queue(named, base, tracker, loop, required, method, only, worst)
-    if mergify(loop):
+    if queue == GITHUB:
+        return github_queue(named, base, tracker, loop, required, rules.queue, only, worst)
+    if queue == MERGIFY:
         return mergify_queue(named, base, tracker, loop, required, only, worst)
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
     stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
@@ -7704,6 +7708,26 @@ def mergify(loop: str | None) -> bool:
     return True
 
 
+GITHUB = "github"
+
+
+def held_by(loop: str | None, rules: set[str]) -> str:
+    """Which queue merges the base's PRs: GITHUB where its rules carry a `merge_queue` rule (they win over the policy),
+    else MERGIFY where the policy names it (mergify), else `land`, which merges each PR itself. A policy naming
+    GitHub's queue (`land.queue: github`) on a base whose rules carry none is refused, since `land` would then merge
+    directly while the policy says a queue does."""
+    if getattr(rules, "queue", None):
+        return GITHUB
+    if mergify(loop):
+        return MERGIFY
+    if (settings(loop).get("land") or {}).get("queue") == GITHUB:
+        raise Refused(
+            f"{source(loop)}'s `land.queue: github` names GitHub's merge queue, but the base's rules require none, so"
+            " land would merge each PR itself: add a `merge_queue` rule to the base's ruleset, or drop the setting"
+        )
+    return "land"
+
+
 def mergify_queue(
     named: list[dict[str, Any]],
     base: str,
@@ -7803,7 +7827,7 @@ def stalled() -> int:
                 bases[base] = stalled_base(base)
             if isinstance(known := bases[base], str):
                 raise Refused(known)
-            tracker, loop, required, held_by = known
+            tracker, loop, required, queue = known
             with policy_from(base):
                 # its policy is origin/<base>'s (project()) and it writes nothing: a lead's worktree that edits or lags
                 # the policy files still judges, and only the code running here must be the base's
@@ -7831,11 +7855,11 @@ def stalled() -> int:
                 found = True
                 lines.append(idle)
             continue
-        if held_by == MERGIFY:
+        if queue == MERGIFY:
             if QUEUED in names(pull) and queued_here(pull):
                 continue
             left = "is not queued"
-        elif held_by == "github":
+        elif queue == GITHUB:
             if pull.get("mergeQueueEntry") or pull.get("isInMergeQueue"):
                 continue
             left = "is not in the merge queue"
@@ -7910,14 +7934,12 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
         with policy_from(base):
             tracker, loop = project()
             rules = required_checks(base)
-            held_by = (
-                MERGIFY if mergify(loop) else "github" if getattr(rules, "queue", None) else "land"
-            )
+            queue = held_by(loop, rules)
     except subprocess.CalledProcessError as exc:
         return f"could not fetch or read {base}: {stderr_of(exc)}"
     except Refused as exc:
         return str(exc)
-    return tracker, loop, rules - OWN, held_by
+    return tracker, loop, rules - OWN, queue
 
 
 def mergify_step(pull: dict[str, Any]) -> int:
