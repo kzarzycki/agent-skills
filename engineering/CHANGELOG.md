@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.6 - 2026-11-23
+
+- agent-hygiene: a run reads each repo's closed and merged PRs once (`gh pr list --state closed`, GraphQL, newest 1000) and matches branch and detached-HEAD worktrees in memory, so its GitHub calls no longer grow with the worktree count (it was a call per branch worktree and a REST call per detached one) (#2081).
+
 ## 0.35.5 - 2026-11-23
 
 - Carries gatekeeper 0.1.5: `loop.delegate_spec: false` keeps spec and plan approvals the owner's under `loop.delegate: all`, while the delegate's merge go still counts (#2018). Gatekeeper 0.1.5 is also the first tagged gatekeeper with #1872's behaviour change, which its 0.1.4 notes list but the `gatekeeper-v0.1.4` tag predates: on a base with no merge queue, `land` merges each landable PR on the verifier's record with no gate step, and `batch_queue` under `loop` and `land`'s `gate_on`, `cloud_gate_timeout_seconds` and `host_gate` now do nothing (see the upgrade note in gatekeeper's CHANGELOG) (#1872, #2026).
