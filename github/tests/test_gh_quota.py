@@ -327,3 +327,58 @@ def test_the_host_falls_back_to_uname(setup: tuple[dict[str, str], Path], tmp_pa
     env = {**env, "PATH": f"{tmp_path / 'shims'}:{fakes}:{env['PATH']}"}
     subprocess.run(["gh", "x"], input="", env=env, capture_output=True, check=False)
     assert log.read_text().splitlines()[-1].split("\t")[1] == "fallback"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["body=it's done", "Authorization: token abc", "a\tb", "x\ny"],
+)
+def test_a_flag_value_with_a_quote_tab_or_newline_keeps_the_route(
+    setup: tuple[dict[str, str], Path], value: str
+) -> None:
+    env, log = setup
+    subprocess.run(
+        [
+            "gh",
+            "api",
+            "-H" if value.startswith("Auth") else "-f",
+            value,
+            "repos/o/r/issues/1/comments",
+        ],
+        input="",
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert gq.command(logged_args(log)[-1]) == "api repos/o/r/issues/N/comments"
+
+
+def test_a_named_token_in_the_parent_is_masked_whatever_its_shape(
+    setup: tuple[dict[str, str], Path],
+) -> None:
+    env, log = setup
+    subprocess.run(
+        ["sh", "-c", "gh_token=not-hex-but-secret; GH_TOKEN=s3cr3t-not-hex gh x; true"],
+        env=env,
+        check=False,
+        capture_output=True,
+    )
+    assert "s3cr3t-not-hex" not in log.read_text()
+
+
+def test_a_token_past_the_parent_cut_leaves_no_part_of_itself(
+    setup: tuple[dict[str, str], Path],
+) -> None:
+    env, log = setup
+    hexed = "0123456789abcdef" * 2 + "01234567"
+    subprocess.run(
+        ["sh", "-c", f"X={'y' * 170} {hexed}; gh x; true"],
+        env=env,
+        check=False,
+        capture_output=True,
+    )
+    assert "0123456789abcdef0123" not in log.read_text()
+
+
+def test_spent_counts_nothing_for_a_step_back_to_an_earlier_window() -> None:
+    assert gq.spent([(0, 4000, 9), (60, 10, 5)]) == 0  # an older window's reply, not a reset

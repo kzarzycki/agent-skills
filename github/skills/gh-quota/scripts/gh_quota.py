@@ -227,7 +227,8 @@ def rate_limit() -> dict[str, dict[str, int]]:
 def spent(samples: list[tuple[float, int, int]]) -> int:
     """Calls spent across (time, used, reset) samples: the growth of `used` within one window, and after a reset (a
     later reset time and a smaller count) its new count. Two samples of different windows whose count grew are not one
-    bucket (a proxy may answer from another token's), so that step counts nothing rather than a whole bucket."""
+    bucket (a proxy may answer from another token's), so that step counts nothing rather than a whole bucket; a real
+    reset whose new window already used more than the old one is undercounted the same way, which errs low."""
     total = 0
     for (_, used, reset), (_, now_used, now_reset) in zip(samples, samples[1:]):
         if now_reset == reset:
