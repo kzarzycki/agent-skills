@@ -84,7 +84,7 @@ fi
 	# long fields are cut to 400 characters
 	clean() {
 		printf '%s' "$1" | tr '\t\n\r' '   ' |
-			sed -E 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/\1***/g; s/'"'"'([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:)[^'"'"']*'"'"'/'"'"'\1 ***'"'"'/g; s/(^| )([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:)[^ '"'"']+/\1\2***/g; s/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:) +([A-Za-z]+ +)?[^ '"'"']+/\1 ***/g' |
+			sed -E 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/\1***/g; s/'"'"'([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:)[^'"'"']*'"'"'/'"'"'\1 ***'"'"'/g; s/(^| )([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:)[^ '"'"']+/\1\2***/g; s/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:) +([A-Za-z-]+ +)?[^ '"'"']+/\1 ***/g' |
 			cut -c1-400
 	}
 	printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$now" "$(clean "$host")" "$(clean "$session")" "$(clean "$PWD")" \

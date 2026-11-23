@@ -446,6 +446,9 @@ def test_a_long_interpreter_path_keeps_the_script_name(
         "Authorization: Digest x1secret",
         "Authorization: Bot x1secret",
         "Authorization: bearer  x1secret",
+        "Authorization:Bearer x1secret",
+        "Authorization: Api-Key x1secret",
+        'Authorization: Digest username="u", response="x1secret"',
     ],
 )
 def test_any_authorization_scheme_is_masked(
@@ -468,12 +471,12 @@ def test_an_authorization_header_in_the_parent_is_masked(
 ) -> None:
     env, log = setup
     subprocess.run(
-        ["sh", "-c", "gh x; : -H Authorization: Bearer p4rent"],
+        ["sh", "-c", "gh x; : -H Authorization: Bearer p4rent; : Authorization: Api-Key p5rent"],
         env=env,
         check=False,
         capture_output=True,
     )
-    assert "p4rent" not in log.read_text()
+    assert "p4rent" not in log.read_text() and "p5rent" not in log.read_text()
 
 
 def test_a_long_grandparent_path_keeps_its_script_name(
