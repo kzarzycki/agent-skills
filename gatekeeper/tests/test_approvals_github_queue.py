@@ -421,6 +421,32 @@ def test_a_queue_base_refuses_a_signed_squash(queue: dict[str, Any]) -> None:
     assert queue["enqueued"] == []
 
 
+def test_a_policy_naming_the_github_queue_enqueues_as_the_rules_do(queue: dict[str, Any]) -> None:
+    """`land.queue: github` on a base whose rules require the queue changes nothing: the PR is enqueued at its head."""
+    (queue["work"] / "docs" / "agents" / "loop.md").write_text(loop_md("land:\n  queue: github\n"))
+    head = queue["opened"](7)
+    assert queue["land"]("7") == (0, [f"PR #7 enqueued at {head}, position 1"])
+    assert (queue["enqueued"], queue["merged"]()) == ([(7, head)], [])
+
+
+def test_a_policy_naming_the_github_queue_is_refused_on_a_base_without_one(
+    queue: dict[str, Any],
+) -> None:
+    """Rules with no `merge_queue` rule would have land merge the PR itself while the policy claims GitHub's queue."""
+    queue["rules"] = approvals.github.Required({"qualify"})
+    (queue["work"] / "docs" / "agents" / "loop.md").write_text(loop_md("land:\n  queue: github\n"))
+    queue["opened"](7)
+    code, lines = queue["land"]("7")
+    assert code == 1, lines
+    assert "`land.queue: github`" in lines[-1] and "`merge_queue` rule" in lines[-1], lines
+    assert (queue["enqueued"], queue["merged"](), queue["tips"](), queue["runs"]()) == (
+        [],
+        [],
+        [],
+        0,
+    )
+
+
 def test_required_checks_reports_the_merge_queue_and_its_method(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

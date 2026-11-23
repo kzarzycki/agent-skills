@@ -312,3 +312,27 @@ def test_the_idle_hours_run_from_the_newest_verdict_when_it_came_after_the_push(
     )
     code, lines = stalled(capsys)
     assert code == 1 and lines[0].endswith("new head for 6h: missing: go")
+
+
+def test_a_policy_naming_the_github_queue_on_a_base_without_one_judges_none_of_its_prs(
+    direct: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    loop = direct["work"] / "docs" / "agents" / "loop.md"
+    loop.write_text(add(loop.read_text(), "land", "queue: github\n"))
+    direct["opened"](7)
+    code, lines = stalled(capsys)
+    assert code == 0 and lines[0].startswith("PR #7 into main is not judged here: "), lines
+    assert "`land.queue: github`" in lines[0], lines
+
+
+def test_a_base_whose_rules_require_github_s_queue_is_judged_by_it_under_mergify(
+    queue: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The base's rules win over `land.queue: mergify`, in `check stalled` as in `land`."""
+    loop = queue["work"] / "docs" / "agents" / "loop.md"
+    loop.write_text(add(loop.read_text(), "land", "queue: mergify\n"))
+    head = queue["opened"](7)
+    assert stalled(capsys) == (
+        1,
+        [f"PR #7 has its go and a satisfied verdict at {head} and is not in the merge queue"],
+    )
