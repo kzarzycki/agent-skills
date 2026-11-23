@@ -5852,8 +5852,8 @@ def pr_rest_view(pr: int, until: str, timeout: float, repo: str = "") -> dict:
     data: dict = {
         "state": state,
         "headRefOid": pull["head"]["sha"],
-        "headRefName": pull["head"]["ref"],
-        "baseRefName": pull["base"]["ref"],
+        "headRefName": pull["head"].get("ref"),
+        "baseRefName": (pull.get("base") or {}).get("ref"),
     }
     if until != "checks":
         return data
@@ -10530,7 +10530,8 @@ def supervise_registry(
                     found = settled(lead, int(m[2]), wait_repo(sid, m[1] or ""), fresh=True)
                 except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
                     log(("pr", sid), f"{sid}: PR #{m[2]} not read: {reason(e)}")
-                    if "Could not resolve" in str(e) and not m[1] and (own := wait_repo(sid, "")):
+                    gone = any(w in str(e) for w in ("Could not resolve", "Not Found", "HTTP 404"))
+                    if gone and not m[1] and (own := wait_repo(sid, "")):  # REST says 404 where GraphQL said "resolve"
                         try:  # told only when the lead's repo is known and has no such PR or issue
                             gh("api", f"repos/{own}/issues/{m[2]}")
                         except Fail as no:
