@@ -1369,18 +1369,33 @@ def exempting(pull: dict[str, Any], loop: str | None) -> dict[str, Any] | None:
     into the commit's `authors` list, so only the commit's own `author` is read. A renamed or copied file refuses
     it, since GraphQL gives only the new path, which may hide code moved onto a lock file's name, and so does the
     label `verify`, which asks for the review (a major update). No entry, or more files or commits than the gate
-    reads: no exemption."""
+    reads: no exemption. Under a `branch` section a pack bump whose files are a released tag's byte for byte
+    (pin_target) needs neither the commit check nor the move check: a cloud agent commits as an address GitHub may
+    tie to a stranger's account (`noreply@anthropic.com` is the user `claude`'s), so who committed proves nothing,
+    while the branch (only a writer pushes it) and the release's own bytes do, and the tag proves its moves too."""
     labels = {label["name"] for label in pull["labels"]["nodes"]}
-    if moved_files(pull) != [] or "verify" in labels:
+    if "verify" in labels:
         return None
     author, files = pull.get("author") or {}, paths(pull)
     if not files:
         return None
     login = (author.get("login") or "").removesuffix("[bot]").lower()
+    if not login:
+        return None
+    moved = moved_files(pull) != []
     commits = pull.get("authored") or {}
     nodes = commits.get("nodes") or []
-    if not login or not nodes or (commits.get("totalCount") or 0) > len(nodes):
-        return None
+    complete = bool(nodes) and (commits.get("totalCount") or 0) <= len(nodes)
+    released: list[bool] = []
+
+    def proven(bot: dict[str, Any]) -> bool:
+        """Whether a `branch` section's PR is a pin to a released tag byte for byte (pin_target), read once."""
+        if "branch" not in bot:
+            return False
+        if not released:
+            released.append(pin_target(pull) is not None)
+        return released[0]
+
     # each commit's author and committer login; None for no GitHub account
     accounts = [
         tuple(
@@ -1392,6 +1407,8 @@ def exempting(pull: dict[str, Any], loop: str | None) -> dict[str, Any] | None:
 
     def by(bot: dict[str, Any]) -> bool:
         """Whether every commit is the PR author's; under a `branch` section an author with no account is too."""
+        if not complete:
+            return False
         for wrote, committer in accounts:
             if wrote is None and "branch" not in bot:
                 return False
@@ -1416,8 +1433,8 @@ def exempting(pull: dict[str, Any], loop: str | None) -> dict[str, Any] | None:
             bot
             for bot in settings(loop).get("bot", [])
             if names(bot)
-            and by(bot)
             and all(any(fnmatch.fnmatch(path, glob) for glob in bot["paths"]) for path in files)
+            and ((not moved and by(bot)) or proven(bot))
         ),
         None,
     )
