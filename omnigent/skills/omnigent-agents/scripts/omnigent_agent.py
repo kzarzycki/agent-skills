@@ -275,6 +275,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -682,6 +683,17 @@ LABEL_SECONDS = 60.0
 # every supervise on the host shares (N instances cost about one read): a landing is news within five
 # minutes, and a 60 s poll per instance drained the account's REST limit.
 HEAD_SECONDS = 300.0
+# Each followed repo's `check stalled` (the gatekeeper's: an approved, verified PR its queue never took) runs at most
+# this often, and is stopped past STALLED_TIMEOUT, so a hung GitHub read never holds the next one off.
+STALLED_SECONDS = 3600.0
+STALLED_TIMEOUT = 900.0
+# a landable PR its queue never took, or a verified one idle on a go or record it lacks (`... missing: go`)
+STALLED_LINE = re.compile(
+    r"PR #(\d+) has (?:its go and a satisfied verdict|a satisfied verdict|its pass \d+ verdict, at the cap,)"
+    r" at ([0-9a-f]{40}) .+"
+)
+UNJUDGED_LINE = re.compile(r"PR #(\d+) into \S+ is not judged here: (.+)")
+SKIPPED_LINE = re.compile(r"(\d+) of (\d+) open PRs not judged here")
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
@@ -7701,6 +7713,8 @@ def fresh_state() -> dict:
         "rate": {"next_post_at": 0, "model_calls": []},
         "notify_label": {},
         "heads": {},
+        "stalled": {},  # each repo's PRs `check stalled` listed last, by number: the head it named
+        "stalled_blind": {},  # each repo whose last sweep judged none of its PRs: the first reason
         "events": {},  # loop event refs: sha, stamp (when it last moved), state, beat, told
         "pr_stalls": {},  # per watched repo, what ``pr_stalls`` keeps between sweeps
     }
@@ -8135,6 +8149,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         kind = "ended"
     if kind == "landed":  # read from the repo, never from the lead's words
         return "rule", "act", "its default branch moved: a step owed after a landing"
+    if kind == "stalled":  # read from the repo's gatekeeper, never from the lead's words
+        return "rule", "act", "an approved, verified PR its queue never took: land it or flag it"
     if kind == "pr-stall":  # read from GitHub, never from a lead's words
         return "rule", "act", "a PR stalled: clear its blocker, or card the owner the fix"
     if kind == "archived":
@@ -8373,6 +8389,46 @@ def reloadable(script: Path, seen: dict[str, int]) -> bool:
         )
         return False
     return True
+
+
+class Sweep:
+    """One `check stalled` run in the checkout at ``workspace``, through the installed gatekeeper (``installed``,
+    outside the checkout, so it judges by the base's code and policy), started detached so the supervisor's poll goes
+    on: ``done`` is its exit once it has ended, else None; ``output`` its stdout and stderr together; ``stop`` kills
+    it. A gatekeeper that is not installed, or no ``uv`` to run it, is a ``Fail`` at the start."""
+
+    def __init__(self, workspace: str) -> None:
+        folder = installed("gatekeeper")
+        if folder is None:
+            raise Fail("check stalled: the landing checks are not installed beside this skill")
+        self.out = tempfile.TemporaryFile()  # noqa: SIM115 - outlives this call: closed by output or stop
+        try:
+            self.proc = subprocess.Popen(
+                ["uv", "run", "-q", "--script", str(folder / "gatekeeper.py"), "check", "stalled"],
+                cwd=workspace,
+                stdin=subprocess.DEVNULL,
+                stdout=self.out,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except OSError as e:
+            self.out.close()
+            raise Fail(f"check stalled not started in {workspace}: {e}") from e
+
+    def done(self) -> int | None:
+        return self.proc.poll()
+
+    def output(self) -> str:
+        self.out.seek(0)
+        text = self.out.read().decode(errors="replace")
+        self.out.close()
+        return text
+
+    def stop(self) -> None:
+        with contextlib.suppress(OSError):
+            os.killpg(self.proc.pid, signal.SIGKILL)
+        self.proc.wait()
+        self.out.close()
 
 
 def supervise_registry(
@@ -9193,6 +9249,109 @@ def supervise_registry(
                         flush=True,
                     )
             heads[repo] = sha
+
+    sweeps: dict[
+        str, tuple[Sweep, float, str]
+    ] = {}  # each repo's `check stalled` still running: began, lead
+    stalled_swept: dict[str, float] = {}  # when each repo's last `check stalled` began (monotonic)
+
+    def stalled_sweep() -> None:
+        """Run `check stalled` (``Sweep``) at most once per ``STALLED_SECONDS`` for each repo a followed lead not
+        marked ``direct`` works in, as ``landings`` reads them, in the first such lead's workspace that is a
+        checkout on this host (its info read only when a sweep is due); never while GitHub's rate limit holds. It
+        runs detached: each poll looks whether it has ended, and stops it past ``STALLED_TIMEOUT``. Each PR it lists
+        is said once per head and kind of line (idle on a go or record, or landable) as a ``stalled`` event on that lead (the repo's PRs listed last time are kept in the
+        state's ``stalled``), so an hourly sweep reports a stuck PR once, and again only after it left the listing or
+        its head moved; a PR it could not judge keeps what was listed for it, so a sweep that skips it says it
+        again only at a new head. A PR it could not judge, and a sweep that failed, are logged, once until they
+        clear; a sweep that judged none of the repo's open PRs (its last line, ``<n> of <n> open PRs not judged
+        here``) is said once, as a ``stalled`` event naming the first reason, since its silence would read as
+        nothing stalled (the state's ``stalled_blind``, cleared once a sweep judges again)."""
+        known = state.setdefault("stalled", {})
+        for repo, (sweep, began, sid) in list(sweeps.items()):
+            if (code := sweep.done()) is None:
+                if time.monotonic() - began > STALLED_TIMEOUT:
+                    sweep.stop()
+                    del sweeps[repo]
+                    log(
+                        ("stalled", repo),
+                        f"{repo}: check stalled ran past {STALLED_TIMEOUT:.0f}s: stopped",
+                    )
+                continue
+            del sweeps[repo]
+            out = [line.strip() for line in sweep.output().splitlines() if line.strip()]
+            if code not in (0, 1):
+                last = out[-1] if out else "no output"
+                log(("stalled", repo), f"{repo}: check stalled exited {code}: {last}")
+                continue
+            log(("stalled", repo), None)
+            # each PR by its head and the kind of its line: on one head a go turns an idle line (`missing: go`)
+            # into a landable one, which is news, while the idle line's hours growing is not
+            listed = {
+                m[1]: (f"{m[2]}:{'idle' if ': missing: ' in line else 'landable'}", line)
+                for line in out
+                if (m := STALLED_LINE.fullmatch(line))
+            }
+            unjudged = {m[1]: m[2] for line in out if (m := UNJUDGED_LINE.fullmatch(line))}
+            for number, why in unjudged.items():
+                log(("unjudged", repo, number), f"{repo}: PR #{number} is not judged here: {why}")
+            before = known.get(repo) or {}
+            blind = state.setdefault("stalled_blind", {})
+            count = next((m for line in out if (m := SKIPPED_LINE.fullmatch(line))), None)
+            if count and count[1] == count[2] and unjudged:
+                why = next(iter(unjudged.values()))
+                if blind.get(repo) != why:
+                    blind[repo] = why
+                    say(
+                        f"{repo}: check stalled judged none of its {count[2]} open PRs: {why}",
+                        sid,
+                        f"stalled-blind:{repo}:{hashlib.sha1(why.encode()).hexdigest()[:12]}",
+                        "stalled",
+                    )
+            else:
+                blind.pop(repo, None)
+            known[repo] = {number: seen for number, (seen, _) in listed.items()} | {
+                number: before[number] for number in unjudged if number in before
+            }
+            for number, (seen, line) in listed.items():
+                if before.get(number) != seen:
+                    step = (
+                        "ask its approver for what it is missing"
+                        if ": missing: " in line
+                        else f"land it (`land {number} --only`) or flag it"
+                    )
+                    say(
+                        f"{repo}: {line}: {step}",
+                        sid,
+                        f"stalled:{repo}#{number}:{seen}",
+                        "stalled",
+                    )
+        if time.monotonic() < limited[0]:  # GitHub's limit is account-wide
+            return
+        for sid, owes in owed.items():
+            repo = repos.get(sid)
+            if not owes[3] or owes[5] or not repo or repo in sweeps:
+                continue
+            if time.monotonic() - stalled_swept.get(repo, -STALLED_SECONDS) < STALLED_SECONDS:
+                continue
+            try:
+                info = looks[sid][0] if sid in looks else og.info(sid)
+            except Exception as e:  # noqa: BLE001 - read again next poll
+                log(
+                    ("stalled", repo),
+                    f"{repo}: check stalled not started: {sid} not read: {reason(e)}",
+                )
+                continue
+            workspace = str(info.get("workspace") or "")
+            if not workspace or elsewhere(og, info) or not Path(workspace).is_dir():
+                continue  # no checkout here: the repo's next lead may have one
+            stalled_swept[repo] = time.monotonic()
+            try:
+                sweeps[repo] = (Sweep(workspace), time.monotonic(), sid)
+            except Exception as e:  # noqa: BLE001 - started again at the next STALLED_SECONDS
+                log(("stalled", repo), f"{repo}: check stalled not started: {reason(e)}")
+            else:
+                log(("stalled", repo), None)
 
     swept: dict[str, float] = {}  # when each watched repo's open PRs were last listed
 
@@ -10026,6 +10185,10 @@ def supervise_registry(
             except Exception as e:  # noqa: BLE001 - never fatal; told again next poll
                 log("events-news", f"loop events not told: {reason(e)}")
         landings()
+        try:
+            stalled_sweep()
+        except Exception as e:  # noqa: BLE001 - never fatal; swept again next poll
+            log("stalled", f"check stalled not swept: {reason(e)}")
         stalls()
         if console:
             if read:  # a session gone from the registry leaves the state with it

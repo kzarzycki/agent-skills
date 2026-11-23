@@ -66,7 +66,7 @@ THREADS = "reviewThreads(first: 100) { totalCount nodes { isResolved comments(fi
 
 PULL = f"""id number url title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType additions deletions }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
-  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
+  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body submittedAt commit {{ oid }} }} }}
   {THREADS}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ author {{ user {{ login }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
@@ -753,6 +753,7 @@ def rest_pull(pr: int) -> dict[str, Any]:
             "author": actor(review.get("user")),
             "state": review["state"],
             "body": review.get("body") or "",
+            "submittedAt": review.get("submitted_at"),
             "commit": {"oid": review.get("commit_id") or ""},
         }
         for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
