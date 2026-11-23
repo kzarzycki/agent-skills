@@ -9,6 +9,7 @@ import stat
 import sys
 import threading
 import time as real_time
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -36,9 +37,13 @@ COMMENT_URL = "https://example.test/pull/{}#issuecomment-1"
 
 
 @pytest.fixture
-def events_pushed(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+def events_pushed(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> Iterator[dict[str, Any]]:
     """`lands` on an origin that accepts a rewritten `refs/loop/*`, a comment URL as GitHub returns it, and the grace
-    before a merged PR's refs go set to `grace`; `event(branch)` is the event origin holds, None when it holds none."""
+    before a merged PR's refs go set to `grace`; `event(branch)` is the event origin holds, None when it holds none.
+    A delayed clear land_ended starts and the test outlives is killed at teardown: it is detached, so a test that sets
+    EVENT_GRACE to 3600 would otherwise leave it sleeping an hour, to clear a temp repo that is gone by then."""
     hook = lands["origin"] / "hooks" / "pre-receive"
     hook.write_text(PERMIT_EVENTS)
     hook.chmod(0o755)
@@ -58,7 +63,21 @@ def events_pushed(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dic
         return json.loads(git_in(lands["origin"], "show", f"{ref}:event.json"))
 
     lands["event"] = event
-    return lands
+    real_popen = approvals.subprocess.Popen
+    clears: list[Any] = []
+
+    def popen(args: Any, *a: Any, **kw: Any) -> Any:
+        proc = real_popen(args, *a, **kw)
+        if kw.get("start_new_session") and "clear" in args:
+            clears.append(proc)
+        return proc
+
+    monkeypatch.setattr(approvals.subprocess, "Popen", popen)
+    yield lands
+    for proc in clears:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
 
 
 def refs_gone(lands: dict[str, Any], limit: float = 10) -> bool:
