@@ -39,7 +39,8 @@ The shim makes each machine keep its own count, and the report names the caller.
     VM); `report --counts FILE` adds such files into one ranking.
   - `rate [--minutes N] [--every S] [--bucket core|graphql]` samples `gh api rate_limit`,
     which costs no quota, every S seconds (default 60) for N minutes (default 10) and prints
-    the account's spend in calls/min, across a reset too. Being the account's spend, it counts
+    the account's spend in calls/min, across a reset too. A step between two windows whose count
+    grew counts nothing (a reply from another bucket looks the same), so the rate errs low. Being the account's spend, it counts
     every machine, logged or not.
 
 ## Naming a burn
