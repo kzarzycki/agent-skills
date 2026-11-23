@@ -53,8 +53,9 @@ try:
 except Interrupted:
     sys.exit(99)
 """
-# a step that writes its pid and its group's, then sleeps past the test's patience
-SLEEPER = 'echo "$$ $(ps -o pgid= -p $$)" > "$1"; exec sleep 30'
+# a step that writes its pid and its group's, then sleeps far past the test's patience (STOP_BOUND_S): a step a
+# stop failed to kill must still be running when that patience runs out, so the test fails rather than waits it out
+SLEEPER = 'echo "$$ $(ps -o pgid= -p $$)" > "$1"; exec sleep 600'
 
 LOOP_SCRIPTS = (
     Path(__file__).resolve().parents[2] / "loop" / "skills" / "engineering-loop" / "scripts"
@@ -428,8 +429,8 @@ def test_an_exception_while_a_step_runs_kills_its_group(
     with pytest.raises(RuntimeError):
         approvals.run_heavy(["sh", "-c", SLEEPER, "sh", str(pids)])
     monkeypatch.setattr(approvals.subprocess.Popen, "communicate", real)
-    # killed, not waited out: the step would sleep 30 s
-    assert time.monotonic() - began < 10
+    # killed, not waited out: the step would sleep 600 s
+    assert time.monotonic() - began < STOP_BOUND_S
     assert gone(int(pids.read_text().split()[1]))
 
 
