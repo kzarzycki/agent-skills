@@ -375,3 +375,60 @@ def test_the_listing_follows_its_pages_and_two_environments_of_one_name_are_refu
     twice = [*ENVS, {"environment_id": "env_two", "name": "widget"}]
     with pytest.raises(envs.Refused, match="2 cloud environments are named 'widget'"):
         envs.pick(twice, "", "widget")
+
+
+def pinned(root: Path, env: str) -> None:
+    (root / ".claude").mkdir(exist_ok=True)
+    (root / ".claude/settings.local.json").write_text(
+        json.dumps({"remote": {"defaultEnvironmentId": env}})
+    )
+
+
+def test_cloud_env_applies_to_the_pinned_environment_and_never_makes_one_beside_it(
+    tmp_path: Path, api: dict, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """A checkout pinned to ``widget-dev`` while its name comes from the repository (``widget``) fails naming both,
+    rather than create an empty ``widget`` beside the pinned one (#ISSUE)."""
+    api["envs"]["env_dev"] = {"name": "widget-dev", "description": "", "config": {}}
+    checkout = repo(tmp_path, "Cloud worker: claude-cloud, gate test")
+    pinned(checkout, "env_dev")
+    assert omnigent_agent.main(["cloud-env", str(checkout)]) == 1
+    err = capfd.readouterr().err
+    assert (
+        "pins environment 'widget-dev' (env_dev), but the repository's name names 'widget'" in err
+    )
+    assert "add `env widget-dev` to loop.md's Cloud worker line" in err
+    assert list(api["envs"]) == ["env_dev"]  # nothing created
+    assert not [r for r in api["requests"] if r[0] == "POST"]
+
+    # the line naming the pinned environment updates it in place
+    named = repo(tmp_path, "Cloud worker: claude-cloud, gate test, env widget-dev", name="named")
+    pinned(named, "env_dev")
+    assert omnigent_agent.main(["cloud-env", str(named)]) == 0
+    assert "updated cloud environment widget-dev (env_dev)" in capfd.readouterr().out
+    assert list(api["envs"]) == ["env_dev"]
+
+
+def test_cloud_env_refuses_a_pin_the_login_has_no_environment_for(
+    tmp_path: Path, api: dict, capfd: pytest.CaptureFixture[str]
+) -> None:
+    checkout = repo(tmp_path, "Cloud worker: claude-cloud, gate test")
+    pinned(checkout, "env_gone")
+    assert omnigent_agent.main(["cloud-env", str(checkout)]) == 1
+    assert "pins environment env_gone, which this host's claude login has none of" in (
+        capfd.readouterr().err
+    )
+    assert api["envs"] == {}
+
+
+def test_cloud_env_reads_the_main_checkout_s_pin_from_a_linked_worktree(
+    tmp_path: Path, api: dict, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """A cloud session launched from a worktree takes its main checkout's pin, so that is the one checked."""
+    api["envs"]["env_dev"] = {"name": "widget-dev", "description": "", "config": {}}
+    main = repo(tmp_path, "Cloud worker: claude-cloud, gate test")
+    pinned(main, "env_dev")
+    git("worktree", "add", "-q", "--detach", str(tmp_path / "wt"), cwd=main)
+    assert omnigent_agent.main(["cloud-env", str(tmp_path / "wt")]) == 1
+    assert "pins environment 'widget-dev' (env_dev)" in capfd.readouterr().err
+    assert list(api["envs"]) == ["env_dev"]
