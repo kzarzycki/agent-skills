@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -236,7 +237,28 @@ def test_a_second_copy_is_skipped_and_no_real_gh_exits_127(
     assert (done.returncode, done.stdout) == (3, "out:status\n") and len(
         log.read_text().splitlines()
     ) == 1
-    alone = {**env, "PATH": f"{tmp_path / 'shims'}:{other}:/usr/bin:/bin"}
+    tools = (
+        tmp_path / "tools"
+    )  # the shim's own tools and no gh: a CI runner has a real gh in /usr/bin
+    tools.mkdir()
+    for tool in (
+        "sh",
+        "dirname",
+        "basename",
+        "head",
+        "grep",
+        "mkdir",
+        "date",
+        "hostname",
+        "uname",
+        "ps",
+        "cut",
+        "tr",
+        "sed",
+    ):
+        if found := shutil.which(tool):
+            (tools / tool).symlink_to(found)
+    alone = {**env, "PATH": f"{tmp_path / 'shims'}:{other}:{tools}"}
     done = subprocess.run(
         ["gh", "status"], env=alone, capture_output=True, text=True, check=False, timeout=10
     )
