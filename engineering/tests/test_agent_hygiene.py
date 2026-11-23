@@ -137,14 +137,10 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
         (bin_ / name).chmod(0o755)
     merged = {}  # branch -> the merged PR's head commit
-    (home / "gh.py").write_text(
-        "import json, sys\n"
-        f'if sys.argv[1] == "api":  # repos/o/r/commits/<sha>/pulls\n'
-        f'    print(json.dumps(json.load(open("{home}/gh-pulls.json")).get(sys.argv[2].split("/")[4], [])))\n'
-        "    sys.exit()\n"
-        'head = sys.argv[sys.argv.index("--head") + 1]\n'
-        f'heads = json.load(open("{home}/gh.json"))\n'
-        'print(json.dumps([{"number": 7, "headRefOid": heads[head]}] if head in heads else []))\n'
+    (home / "gh.py").write_text(  # `gh pr list -R o/r --state closed ...`: the repo's PR listing, every call logged
+        "import sys\n"
+        f'open("{home}/gh.calls", "a").write(" ".join(sys.argv[1:]) + "\\n")\n'
+        f'print(open("{home}/gh-prs.json").read() if sys.argv[1:3] == ["pr", "list"] else "[]")\n'
     )
     old = time.time() - 30 * 86400
     env = {
@@ -488,8 +484,10 @@ def test_agent_hygiene(tmp_path, monkeypatch):
     # Squashed on merge: the PR's head is another commit with the same tree, here only locally.
     merged["squashed"] = git(repo, "commit-tree", "squashed^{tree}", "-p", "main", "-m", "squash")
     del merged["open"]
-    (home / "gh.json").write_text(json.dumps(merged))
-    pulls = {}  # commit -> the PRs GitHub lists for it, as `gh api repos/o/r/commits/<sha>/pulls` returns them
+    listing = [  # the repo's PRs as `gh pr list --state closed --json number,state,headRefName,headRefOid` returns them
+        {"number": 7, "state": "MERGED", "headRefName": branch, "headRefOid": oid}
+        for branch, oid in merged.items()
+    ]
     for name, state in (
         ("prmerged", "closed"),
         ("propen", "open"),
@@ -504,14 +502,15 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         )  # on no remote branch, as a squash-merged PR's head is
         sha = git(dev / f"wt-{name}", "rev-parse", "HEAD")
         if state:  # GitHub lists a PR for each of its commits: prearly is in a closed PR whose head is a later commit
-            pulls[sha] = [
+            listing.append(
                 {
                     "number": 9,
-                    "state": state,
-                    "head": {"sha": "0" * 40 if name == "prearly" else sha},
+                    "state": state.upper(),
+                    "headRefName": f"pr-{name}",
+                    "headRefOid": "0" * 40 if name == "prearly" else sha,
                 }
-            ]
-    (home / "gh-pulls.json").write_text(json.dumps(pulls))
+            )
+    (home / "gh-prs.json").write_text(json.dumps(listing))
     (home / "shared-venv/lib").mkdir(parents=True)
     for name, idle in (("idle", True), ("recent", False), ("busy-env", True), ("linked", True)):
         checkout = dev / name
@@ -566,10 +565,9 @@ def landing_world(tmp_path, monkeypatch):
         (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
         (bin_ / name).chmod(0o755)
     (home / "gh.py").write_text(
-        "import json, sys\n"
-        'if sys.argv[1] == "api":\n'
-        f'    print(json.dumps(json.load(open("{home}/gh-pulls.json")).get(sys.argv[2].split("/")[4], [])))\n'
-        "else:\n    print('[]')\n"
+        "import sys\n"
+        f'open("{home}/gh.calls", "a").write(" ".join(sys.argv[1:]) + "\\n")\n'
+        f'print(open("{home}/gh-prs.json").read() if sys.argv[1:3] == ["pr", "list"] else "[]")\n'
     )
     env = {
         **os.environ,
@@ -593,7 +591,7 @@ def landing_world(tmp_path, monkeypatch):
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "base")
     git(repo, "push", "-q", "origin", "main")
-    pulls = {}
+    pulls = []
 
     def worktree(name, commit_message=None, parent=None):
         """A detached worktree: at main's tip, or at a new commit on no remote branch, whose closed PR #9 lists it."""
@@ -602,8 +600,8 @@ def landing_world(tmp_path, monkeypatch):
         if commit_message:
             git(path, "commit", "-q", "--allow-empty", "-m", commit_message)
         sha = git(path, "rev-parse", "HEAD")
-        pulls[sha] = [{"number": 9, "state": "closed", "head": {"sha": sha}}]
-        (home / "gh-pulls.json").write_text(json.dumps(pulls))
+        pulls.append({"number": 9, "state": "CLOSED", "headRefName": f"pr-{name}", "headRefOid": sha})
+        (home / "gh-prs.json").write_text(json.dumps(pulls))
         gitdir = Path(git(path, "rev-parse", "--absolute-git-dir"))
         age_git_state(gitdir, time.time() - 30 * 86400)
         return path, gitdir
@@ -623,13 +621,29 @@ def landing_world(tmp_path, monkeypatch):
             hygiene.main()
         return out.getvalue()
 
-    return worktree, run
+    return worktree, run, home
+
+
+def test_gh_calls_per_run_do_not_grow_with_the_worktree_count(tmp_path, monkeypatch):
+    """One PR listing per repo, whether it has 1 worktree or 6 (it was a call per branch and per detached worktree)."""
+    worktree, run, home = landing_world(tmp_path, monkeypatch)
+    worktree("a", "a")
+    first = run()
+    one = (home / "gh.calls").read_text().splitlines()
+    for name in "bcdef":
+        worktree(name, name)
+    (home / "gh.calls").unlink()
+    out = run()
+    many = (home / "gh.calls").read_text().splitlines()
+    assert len(one) == len(many) == 1, (one, many)
+    assert many[0].startswith("pr list -R o/r --state closed --json number,state,headRefName,headRefOid"), many
+    assert out.count("would remove worktree") == 6, out
 
 
 def test_a_worktree_at_a_remote_branch_tip_is_kept_though_a_closed_pr_has_that_head(
     tmp_path, monkeypatch
 ):
-    worktree, run = landing_world(tmp_path, monkeypatch)
+    worktree, run, _ = landing_world(tmp_path, monkeypatch)
     path, _ = worktree("landing")  # at origin/main, which a landed PR's head also is
     out = run()
     assert str(path) not in out, out
@@ -638,7 +652,7 @@ def test_a_worktree_at_a_remote_branch_tip_is_kept_though_a_closed_pr_has_that_h
 def test_a_worktree_whose_git_state_changed_an_hour_ago_is_kept_with_that_reason(
     tmp_path, monkeypatch
 ):
-    worktree, run = landing_world(tmp_path, monkeypatch)
+    worktree, run, _ = landing_world(tmp_path, monkeypatch)
     path, gitdir = worktree("recent", "verified")
     os.utime(gitdir / "logs/HEAD", (time.time() - 3600,) * 2)
     out = run()
@@ -652,7 +666,7 @@ def test_a_worktree_whose_git_state_changed_an_hour_ago_is_kept_with_that_reason
 def test_a_closed_pr_worktree_with_old_git_state_and_no_remote_branch_is_removed(
     tmp_path, monkeypatch
 ):
-    worktree, run = landing_world(tmp_path, monkeypatch)
+    worktree, run, _ = landing_world(tmp_path, monkeypatch)
     path, _ = worktree("finished", "verified")
     out = run()
     assert f"would remove worktree {path} (o/r#9 closed)" in out, out
@@ -661,7 +675,7 @@ def test_a_closed_pr_worktree_with_old_git_state_and_no_remote_branch_is_removed
 def test_a_worktree_holding_only_an_empty_ignored_dir_and_apm_local_is_removed(
     tmp_path, monkeypatch
 ):
-    worktree, run = landing_world(tmp_path, monkeypatch)
+    worktree, run, _ = landing_world(tmp_path, monkeypatch)
     path, _ = worktree("finished", "verified")
     exclude = tmp_path.resolve() / "dev/r/.git/info/exclude"
     exclude.write_text("emptyout/\n.apm-local/\nkept/\n")
@@ -1814,7 +1828,7 @@ def test_uv_lock_holder_with_an_unreadable_environment_is_not_forced(tmp_path, m
 def test_a_remote_tip_worktree_nested_in_a_closed_pr_worktree_is_kept_with_its_parent(
     tmp_path, monkeypatch
 ):
-    worktree, run = landing_world(tmp_path, monkeypatch)
+    worktree, run, _ = landing_world(tmp_path, monkeypatch)
     outer, _ = worktree("outer", "verified")  # removable alone: old git state, closed PR, no remote
     inner, _ = worktree("inner", parent=outer)  # at origin/main, so live
     out = run()
