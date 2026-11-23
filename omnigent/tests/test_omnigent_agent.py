@@ -13924,7 +13924,7 @@ def test_a_waits_line_that_does_not_parse_is_told_once_with_the_accepted_forms(
     )
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
     told = [t for s, t in og.inbox if s == "m" and "did not parse" in t]
-    assert len(told) == 1 and "Accepted: supervisor, session <32-hex id>" in told[0]
+    assert len(told) == 1 and "Accepted: supervisor, own supervisor, session <32-hex id>" in told[0]
     assert "GitHub Actions run URL" in told[0] and "my PR and the build" in told[0]
 
 
