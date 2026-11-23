@@ -48,6 +48,14 @@ jobs:
       # A PR or a push runs the cheap checks: vendor check, lint, config and repo checks.
       - if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         run: mise run check-fast
+      # A release PR (the Release workflow's `release/` branch) is exactly the fold of its branch point, `cli
+      # cut-release` rerun there, or it fails: a hand edit beyond the fold never lands without a verifier (#1861).
+      # The PR's own head, not the merge commit, so a main that moved since the cut leaves the check green.
+      - if: startsWith(github.head_ref, 'release/')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: uv run python -m tools.capability_pack.cli release-verify --base "$BASE_SHA" --head "$HEAD_SHA"
       # Only a Mergify batch's draft PR runs the tests, the ones the batch touches against main (#1821). A step-level
       # `if`, never a job-level one: a PR head's `qualify` must still run and report success, or Mergify never queues it.
       # The prefix is `.mergify.yml`'s `queue_branch_prefix`.
@@ -71,7 +79,7 @@ jobs:
           # the tests it skips, which leave no coverage context (tools/test_map_plugin.py)
           TEST_MAP_SKIPPED: ${{ github.workspace }}/.test-map/skipped
           GATE_TEST_PARALLEL: "0" # serial: under xdist --cov-context=test records no per-test contexts, so the map would name no test (#1610)
-          PYTEST_ADDOPTS: --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
+          PYTEST_ADDOPTS: -n 0 --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
         run: mise run check
       # Only a green run: the map names the lines every test ran, which a failed run leaves incomplete.
       - if: github.event_name == 'schedule'

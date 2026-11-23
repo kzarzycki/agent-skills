@@ -90,6 +90,7 @@ skills:
   omnigent-agents: {layer: 0, implements: [orchestrating-agents]}   # runner port
   operating-omnigent: {layer: 0, implements: [orchestrating-agents]}   # runner port
   omnigent-telemetry: {layer: 0}
+  gh-quota: {layer: 0}
   update-delta-audit: {layer: tooling}
 
 exceptions:
@@ -108,7 +109,7 @@ exceptions:
 | `gatekeeper` | 2 | `gatekeeper`: the gatekeeper CLI and its GitHub adapter |
 | `engineering` | 1 | every craft skill above at layer 1 under `engineering/`, `orchestrating-agents` with its native backend, `browsing` |
 | `omnigent` | 0 | `omnigent-agents` (the runner backend and its driver), `operating-omnigent`, `omnigent-telemetry` |
-| `github` | 0 | `github-tracker` (`github.md`, `board.py`, `labels.py`); `github-project-board-setup` joins it from `utilities` in #616 |
+| `github` | 0 | `github-tracker` (`github.md`, `board.py`, `labels.py`), `gh-quota` (the logging gh shim and its report); `github-project-board-setup` joins it from `utilities` in #616 |
 | `vendoring` | tooling | the capability-pack tool, `ROUTINE.md`, `update-delta-audit` |
 | `research`, `utilities`, `content`, `experimental` | 1 (`overnight-run` 4) | unchanged |
 

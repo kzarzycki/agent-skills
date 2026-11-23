@@ -61,9 +61,9 @@ def path_without(tmp_path: Path, *tools: str) -> str:
 
 
 def run_tests(path: str, *args: str) -> subprocess.CompletedProcess[str]:
-    """A pytest run of `args` with `path` as PATH."""
+    """A serial pytest run of `args` with `path` as PATH (`-n 0`: pyproject's addopts runs parallel, and xdist's `-q` summary drops the deselected count)."""
     return subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *args],
+        [sys.executable, "-m", "pytest", "-q", "-n", "0", "-p", "no:cacheprovider", *args],
         cwd=REPOSITORY,
         env={**os.environ, "PATH": path},
         capture_output=True,

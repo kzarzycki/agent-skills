@@ -1,0 +1,197 @@
+# One run releases every package with pending `changelog.d/` entries, with no agent (#1861):
+# - `cut` (workflow_dispatch) runs `cli cut-release`, the fold a person and the gate run too, commits its tree on a
+#   `release/` branch and opens the PR with `loop:queued` and the `land` status, so Mergify queues it. Its `qualify`
+#   runs `cli release-verify`, which fails the PR unless its tree is exactly the fold of its branch point, so the PR is
+#   risk low with no verifier (docs/agents/gatekeeper.md's `bot.release`).
+# - `tag` (the squash commit on main) pushes each package's tag on that commit, in one push, so `release-check` finds
+#   every manifest the commit changes tagged on it. Before an engineering tag it runs the pre-tag smoke run when
+#   RELEASE_SMOKE_REPOSITORY is set (engineering/RELEASING.md).
+# Both push with RELEASE_TOKEN, a token that can write contents and pull requests here: a push or PR made with
+# `github.token` starts no workflow, so neither the release PR's `qualify` nor the tag check (and its consumer-sync PR)
+# would run.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      magnitude:
+        description: "How far each package moves past its last tag"
+        type: choice
+        options: [patch, minor]
+        default: patch
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  cut:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      statuses: write
+    env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+    steps:
+      - name: Require the release credential
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::set the RELEASE_TOKEN secret: a token that can push branches and open PRs here, so the release PR's qualify runs"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0 # the tags: each package's version moves past its last one
+          token: ${{ secrets.RELEASE_TOKEN }}
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          version: 2026.9.2
+          install: false
+      - run: mise install
+      - run: uv sync --frozen
+      - name: Cut, commit and open the release PR
+        env:
+          MAGNITUDE: ${{ inputs.magnitude }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          STATUS_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          set +e
+          out=$(uv run python -m tools.capability_pack.cli cut-release --magnitude "$MAGNITUDE" 2>&1)
+          code=$?
+          set -e
+          printf '%s\n' "$out"
+          if [ "$code" -ne 0 ]; then
+            if printf '%s\n' "$out" | grep -q '^nothing to release'; then
+              echo "nothing to release"; exit 0
+            fi
+            exit "$code"
+          fi
+          names=$(printf '%s\n' "$out" | awk '{printf "%s%s %s", (NR>1 ? ", " : ""), $1, $2}')
+          title="chore(release): $names"
+          branch="release/$RUN"
+          body=$(printf 'Folds each package'"'"'s `changelog.d/` into its `CHANGELOG.md` and sets its version (`cli cut-release --magnitude %s`):\n\n%s\n\n`qualify` refuses this PR unless its tree is exactly that fold of its branch point (`cli release-verify`); after the squash, the Release workflow tags each package on the merge commit.\n' \
+            "$MAGNITUDE" "$(printf '%s\n' "$out" | sed 's/^/- /')")
+          # an identity no GitHub account holds: gatekeeper's `bot` section counts such a commit as the PR author's
+          git config user.name "Release workflow"
+          git config user.email "release-workflow@users.noreply.invalid"
+          git switch -c "$branch"
+          git add -A
+          git commit -q -m "$title" -m "$(printf '%s\n' "$out")"
+          git push -q origin "$branch"
+          url=$(gh pr create --repo "$REPO" --base main --head "$branch" --title "$title" --body "$body" --label loop:queued)
+          head=$(git rev-parse HEAD)
+          # the hand-over land makes: Mergify queues a PR with `loop:queued` and `land` on its head, then merges it
+          # when its required checks pass, `qualify`'s release-verify among them
+          GH_TOKEN="$STATUS_TOKEN" gh api -X POST "repos/$REPO/statuses/$head" -f state=success -f context=land \
+            -f "description=Release PR, queued for Mergify at $head" --silent
+          echo "release PR: $url" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  tag:
+    if: github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(release):')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+    steps:
+      - name: Require the release credential
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::set the RELEASE_TOKEN secret: a tag pushed with github.token starts no tag check"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          version: 2026.9.2
+          install: false
+      - run: mise install
+      - run: uv sync --frozen
+      - name: Find the tags of the release PR's squash commit
+        id: tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # only a release PR's commit, whose tree `qualify` checked was the fold
+          branch=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '[.[] | select(.merged_at != null)][0].head.ref // ""')
+          case "$branch" in
+            release/*) ;;
+            *) echo "$SHA is not a release PR's commit (head branch '$branch'): no tags"; echo "tags=" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          tags=$(uv run python -m tools.capability_pack.cli release-tags | tr '\n' ' ')
+          echo "tags: $tags"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+      # The pre-tag smoke run engineering/RELEASING.md requires: its repository is a private organization repository
+      # the releaser configures, so it comes from secrets, never from this repository's text.
+      - name: Smoke-run the gatekeeper before an engineering tag
+        if: contains(steps.tags.outputs.tags, 'engineering-v')
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_SMOKE_TOKEN }}
+          RELEASE_SMOKE_REPOSITORY: ${{ secrets.RELEASE_SMOKE_REPOSITORY }}
+          RELEASE_SMOKE_WORKFLOW: ${{ secrets.RELEASE_SMOKE_WORKFLOW }}
+          RELEASE_SMOKE_PR: ${{ secrets.RELEASE_SMOKE_PR }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # off until a private organization repository hosts the smoke workflow, as release-check is (#1855)
+          if [ -z "$RELEASE_SMOKE_REPOSITORY" ]; then
+            echo "smoke run: off (RELEASE_SMOKE_REPOSITORY unset)"; exit 0
+          fi
+          missing=""
+          for name in RELEASE_SMOKE_TOKEN:GH_TOKEN RELEASE_SMOKE_WORKFLOW RELEASE_SMOKE_PR; do
+            secret=${name%%:*}; variable=${name##*:}
+            [ -n "${!variable:-}" ] || missing="$missing $secret"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::set the secret(s)$missing: an engineering tag waits on the pre-tag smoke run (engineering/RELEASING.md)"
+            exit 1
+          fi
+          gh workflow run "$RELEASE_SMOKE_WORKFLOW" --repo "$RELEASE_SMOKE_REPOSITORY" -f ref="$SHA" -f pr="$RELEASE_SMOKE_PR"
+          id=""
+          for _ in $(seq 60); do
+            id=$(gh run list --repo "$RELEASE_SMOKE_REPOSITORY" --workflow "$RELEASE_SMOKE_WORKFLOW" --event workflow_dispatch \
+              --limit 20 --json databaseId,displayTitle --jq "map(select(.displayTitle | contains(\"$SHA\")))[0].databaseId // empty")
+            [ -n "$id" ] && break
+            sleep 10
+          done
+          [ -n "$id" ] || { echo "::error::the smoke run for $SHA never started"; exit 1; }
+          gh run watch "$id" --repo "$RELEASE_SMOKE_REPOSITORY" --exit-status > /dev/null
+          echo "smoke run passed for $SHA"
+      - name: Tag every released package on the commit, in one push
+        if: steps.tags.outputs.tags != ''
+        env:
+          SHA: ${{ github.sha }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          set -euo pipefail
+          git config user.name "Release workflow"
+          git config user.email "release-workflow@users.noreply.invalid"
+          for tag in $TAGS; do git tag -a "$tag" -m "$tag" "$SHA"; done
+          # every manifest the commit changes is tagged on it now, which each check requires; the step above
+          # was engineering's smoke run
+          for tag in $TAGS; do
+            uv run python -m tools.capability_pack.cli release-check "${tag%-v*}" "$tag" --skip-smoke
+          done
+          # one push: each tag check starts with every tag of the commit already in place
+          git push origin $TAGS
+          printf 'tagged %s: %s\n' "$SHA" "$TAGS" | tee -a "$GITHUB_STEP_SUMMARY"

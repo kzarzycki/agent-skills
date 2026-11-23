@@ -113,7 +113,7 @@ def test_stalled_lists_a_pr_whose_land_was_stopped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A go and a satisfied verdict with no hand-over (the `land` that would have made it never ran): listed, until it
-    is queued; a PR that waits for its go, or is already queued, is not."""
+    is queued; a PR already queued is not, and one that waits for its go is listed for that (#1746)."""
     stuck = risky(mergify, 7)
     waiting = risky(mergify, 8)
     queued = mergify["opened"](9, {"9.txt": "9\n"})
@@ -124,11 +124,16 @@ def test_stalled_lists_a_pr_whose_land_was_stopped(
     assert mergify["land"]("9", "--only")[0] == 0 and land_statuses(hub, queued)
     capsys.readouterr()
     assert approvals.main(["check", "stalled"]) == 1
-    assert capsys.readouterr().out.splitlines() == [
-        f"PR #7 has its go and a satisfied verdict at {stuck} and is not queued"
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == f"PR #7 has its go and a satisfied verdict at {stuck} and is not queued"
+    # #8 waits for its go, its head pushed long before this run: a hand-back left it (#1746)
+    assert lines[1:] == [
+        f"PR #8 has a satisfied verdict at {waiting} and no go, gate record or new head for {lines[1].split(' for ')[1]}"
     ]
+    assert lines[1].endswith(": missing: go")
     assert land_statuses(hub, waiting) == []
     assert mergify["land"]("7", "--only")[0] == 0
+    assert go(8, waiting) == 0 and mergify["land"]("8", "--only")[0] == 0
     assert approvals.main(["check", "stalled"]) == 0
 
 
