@@ -4,6 +4,7 @@ The seam: ``gh`` faked to serve each PR's GitHub timeline, statuses, check runs,
 repo's loop events, so ``pr_stalls`` and the supervisor read them as they would GitHub's."""
 
 import json
+import re
 import time
 from datetime import UTC, datetime
 
@@ -68,11 +69,22 @@ def github(
     }
 
     def lines(items: list) -> str:
-        return "".join(json.dumps(i) + "\n" for i in items)
+        return json.dumps(items)
 
     def gh(*args: str, timeout: float = 0) -> str:
+        """Answers as ``gh api -i`` does: one page of a list as a JSON array (an empty page ends a list), a single read
+        as its body, each with a status line and an ETag."""
         calls.append(args)
         path = next(a for a in args if a.startswith("repos/"))
+        paged = re.search(r"[?&]page=(\d+)", path)
+        path = re.sub(r"[?&]page=\d+", "", path).replace("?&", "?").rstrip("?")
+        out = serve(path)
+        if paged and int(paged[1]) > 1:
+            out = "[]" if out.startswith("[") else '{"check_runs": []}'
+        return f'HTTP/2.0 200 OK\nEtag: "{hash(out)}"\n\n{out}'
+
+    def serve(path: str) -> str:
+        path = path.replace("&per_page=100", "").replace("?per_page=100", "")
         if path.startswith("repos/o/r/pulls?"):
             return lines(
                 [
@@ -106,15 +118,15 @@ def github(
                 return lines(p["statuses"])
             if path.startswith(f"repos/o/r/commits/{sha(n)}/check-runs"):
                 if "filter=all" in path:
-                    return lines(p["checks"])
+                    return json.dumps({"check_runs": p["checks"]})
                 newest: dict = {}  # GitHub's default, filter=latest: each check's newest run alone
                 for c in p["checks"]:
                     if (c.get("started_at") or "") >= (
                         newest.get(c["name"], {}).get("started_at") or ""
                     ):
                         newest[c["name"]] = c
-                return lines(list(newest.values()))
-        raise AssertionError(f"unexpected read: {args}")
+                return json.dumps({"check_runs": list(newest.values())})
+        raise AssertionError(f"unexpected read: {path}")
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
     return calls

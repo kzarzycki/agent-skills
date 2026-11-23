@@ -11,7 +11,7 @@
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
-    python3 scripts/omnigent_agent.py relay <session> <message-file>
+    python3 scripts/omnigent_agent.py relay <session> <message-file>   (send, relay: [--expires MINUTES])
     python3 scripts/omnigent_agent.py broadcast <message-file> [--stop | --decisions FILE] [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
     python3 scripts/omnigent_agent.py owner-said <session> <quote-file>
@@ -53,6 +53,8 @@ once the runner is online; exit 4 only when that revive fails, naming its reply.
 ``send`` exits 7 when the message was posted and a later read (the poll that confirms it) failed:
 it is out, delivery unconfirmed, and running ``send`` again is safe, since it finds the earlier
 copy before it posts; a failure before the post stays exit 1.
+``send`` and ``relay`` take ``--expires <minutes>`` (default 30, 0 = never): only these two tag a message; it carries its expiry and
+sender, so one still queued after its sender is gone is dropped and never lands out of context.
 ``relay`` posts a message that owes no report (an owner's words for a lead) and returns at once:
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
 one), or when only the session's running step holds it (``queued until the session's current step
@@ -264,6 +266,7 @@ import fcntl
 import hashlib
 import http.client
 import importlib.util
+import itertools
 import json
 import os
 import plistlib
@@ -1468,6 +1471,9 @@ def error_body(e: HTTPError) -> str:
 SLIM = "?include_items=false&include_usage=false"
 
 
+EXPIRES_MINUTES = 30
+
+
 class Omnigent:
     def __init__(self, named: str = "") -> None:
         text = CONFIG.read_text()
@@ -1814,18 +1820,21 @@ class Omnigent:
         body = {"action": action, **({"content": content} if content else {})}
         self.call("POST", f"/v1/sessions/{sid}/elicitations/{eid}/resolve", body)
 
+    expires: float | None = (
+        None  # None: untagged; the send and relay commands set it (0 = no expiry)
+    )
+
     def send(self, sid: str, text: str) -> None:
-        self.call(
-            "POST",
-            f"/v1/sessions/{sid}/events",
-            {
-                "type": "message",
-                "data": {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": text}],
-                },
-            },
-        )
+        """Post ``text`` as a user message. Untagged unless ``self.expires`` is set (the send and
+        relay commands do): then it names the calling session as its sender, and expires
+        ``self.expires`` minutes on (0: never), so a message queued behind a busy turn is dropped,
+        and its sender told, once that sender is gone, instead of landing out of context."""
+        data: dict = {"role": "user", "content": [{"type": "input_text", "text": text}]}
+        if self.expires is not None and (sender := own_id()):
+            data["sender_session_id"] = sender
+        if self.expires:
+            data["expires_at"] = int(time.time() + self.expires * 60)
+        self.call("POST", f"/v1/sessions/{sid}/events", {"type": "message", "data": data})
 
     def items(self, sid: str) -> list[dict]:
         page = self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc")
@@ -5769,6 +5778,43 @@ def rest_if_changed(path: str, timeout: float = HTTP_SECONDS) -> tuple[bool, Any
     return True, found
 
 
+def rest_pages(path: str, key: str = "", timeout: float = HTTP_SECONDS) -> list:
+    """Every item of the paged REST list at ``path`` (``repos/...``; the items under ``key`` when the body is an object,
+    as a check-runs list is), each page read with its last ETag (``rest_if_changed``), so a poll of a list where nothing
+    moved costs a 304 per page, which spends no quota (#2070). The supervisor's every list poll goes through here, so
+    one function is where a push of GitHub events would replace the polling."""
+    items: list = []
+    base = path if "per_page=" in path else path + ("&" if "?" in path else "?") + "per_page=100"
+    for page in itertools.count(1):
+        body = rest_if_changed(f"{base}&page={page}", timeout)[1]
+        got = (body.get(key) if key else body) or []
+        items += got
+        if len(got) < 100:
+            return items
+    return items  # unreachable: the count never ends
+
+
+def etags_load(path: Path) -> None:
+    """Keep the ETag answers ``etags_save`` wrote to ``path`` (a restarted supervisor's first poll is then a 304 too);
+    missing or unreadable, none."""
+    try:
+        kept = json.loads(path.read_text())
+        for url, pair in kept.items():
+            ETAGS.setdefault(url, (str(pair[0]), pair[1]))
+    except (OSError, ValueError, TypeError, IndexError, AttributeError):
+        pass
+
+
+def etags_save(path: Path) -> None:
+    """Write the ETag answers kept so far to ``path``, atomically; a failure is no reason to stop a poll."""
+    try:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps({u: list(p) for u, p in ETAGS.items()}))
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError):
+        pass
+
+
 def pr_rest_view(pr: int, until: str, timeout: float) -> dict:
     """PR ``pr``'s state and, for ``until`` ``checks``, its head's checks, in ``pr_view``'s shape, from ETag reads
     (rest_if_changed) of the pull, its head's check runs and its combined status, so a round where none moved costs no
@@ -5809,10 +5855,7 @@ def pr_rest(path: str, end: float, pages: bool = False) -> Any:
         if path.startswith("git/commits/"):
             COMMITS[path] = got
         return got
-    out = gh(
-        "api", "--paginate", f"repos/{{owner}}/{{repo}}/{path}", "--jq", ".[]", timeout=timeout
-    )
-    return [json.loads(line) for line in out.splitlines() if line.strip()]
+    return rest_pages(f"repos/{{owner}}/{{repo}}/{path}", timeout=timeout)
 
 
 def gate_outcome(pr: int, end: float, since: float | None = None) -> tuple[int, str] | None:
@@ -6015,9 +6058,8 @@ def pr_facts(repo: str, pr: dict, bases: dict, refs: dict) -> dict:
     ``mergeable``), timeline, head statuses and check runs, its base's required checks (read once per sweep into
     ``bases``) and the loop events on its branch at ``needs-owner``, from ``refs`` (``loop_cards``)."""
 
-    def pages(path: str, jq: str = ".[]") -> list[dict]:
-        out = gh("api", "--paginate", f"repos/{repo}/{path}", "--jq", jq, timeout=HTTP_SECONDS)
-        return [json.loads(line) for line in out.splitlines() if line.strip()]
+    def pages(path: str, key: str = "") -> list[dict]:
+        return rest_pages(f"repos/{repo}/{path}", key)
 
     n, head, base = pr["number"], pr["head"]["sha"], pr["base"]["ref"]
     if base not in bases:
@@ -6034,11 +6076,11 @@ def pr_facts(repo: str, pr: dict, bases: dict, refs: dict) -> dict:
         except Fail:  # unread: any red check counts
             bases[base] = None
     return {
-        "pr": json.loads(gh("api", f"repos/{repo}/pulls/{n}", timeout=HTTP_SECONDS)),
+        "pr": rest_if_changed(f"repos/{repo}/pulls/{n}")[1],
         "timeline": pages(f"issues/{n}/timeline?per_page=100"),
         "statuses": pages(f"commits/{head}/statuses?per_page=100"),
         # every run, a re-run's first too: the first run of a check dates the push, a re-run is no move
-        "checks": pages(f"commits/{head}/check-runs?filter=all&per_page=100", ".check_runs[]"),
+        "checks": pages(f"commits/{head}/check-runs?filter=all&per_page=100", "check_runs"),
         "required": bases[base],
         "cards": refs.get(pr["head"]["ref"], []),
         "seen_at": 0.0,
@@ -6049,27 +6091,14 @@ def loop_cards(repo: str, seen: dict) -> dict[str, list[str]]:
     """The kinds of loop event (``refs/loop/<kind>/<branch>``, events.py's) at ``needs-owner`` on GitHub repo ``repo``,
     by branch: one listing of the refs, and each event commit's subject (``loop event <kind> <branch>: <state>``) read
     once, kept in ``seen`` by sha, since a commit never changes."""
-    out = gh(
-        "api",
-        "--paginate",
-        f"repos/{repo}/git/matching-refs/loop/",
-        "--jq",
-        ".[]",
-        timeout=HTTP_SECONDS,
-    )
     found: dict[str, list[str]] = {}
-    for line in out.splitlines():
-        if not line.strip():
-            continue
-        ref = json.loads(line)
+    for ref in rest_pages(f"repos/{repo}/git/matching-refs/loop/"):
         kind, _, branch = str(ref.get("ref")).removeprefix("refs/loop/").partition("/")
         sha = str((ref.get("object") or {}).get("sha"))
         if not branch or kind in ("records", "landing"):
             continue
         if sha not in seen:
-            message = json.loads(
-                gh("api", f"repos/{repo}/git/commits/{sha}", timeout=HTTP_SECONDS)
-            )["message"]
+            message = rest_if_changed(f"repos/{repo}/git/commits/{sha}")[1]["message"]
             seen[sha] = (
                 message.splitlines()[0].rpartition(": ")[2].split()[0] if ": " in message else ""
             )
@@ -6088,15 +6117,7 @@ def pr_stalls(
     so the same stall (the same newest move) wakes no one twice, and when it first saw its head (the sweep before,
     since a plain push has no time on GitHub); when it last swept; and the event commits ``loop_cards`` read."""
     now = time.time() if now is None else now
-    out = gh(
-        "api",
-        "--paginate",
-        f"repos/{repo}/pulls?state=open&per_page=100",
-        "--jq",
-        ".[]",
-        timeout=HTTP_SECONDS,
-    )
-    listed = [json.loads(line) for line in out.splitlines() if line.strip()]
+    listed = rest_pages(f"repos/{repo}/pulls?state=open&per_page=100")
     prs = memo.setdefault("prs", {})
     open_ = {str(p["number"]) for p in listed}
     for gone in [k for k in prs if k not in open_]:
@@ -8569,6 +8590,7 @@ def supervise_registry(
     rec = Recorded(og) if console else og
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
+    etags_path = registry.with_suffix(".etags.json")
     state = load_state(state_path) if console else fresh_state()
     if console and (me := parent_id()):
         # the chief of staff's registry is leads.registry; a project manager's is <repo>-leads.registry
@@ -9461,6 +9483,7 @@ def supervise_registry(
                 continue
             swept[repo] = time.monotonic()
             try:
+                etags_load(etags_path)
                 found = pr_stalls(repo, stall_after, state["pr_stalls"].setdefault(repo, {}))
             except RateLimited as e:
                 limited[0] = time.monotonic() + e.jittered()
@@ -9471,6 +9494,7 @@ def supervise_registry(
                 log(("pr-stall", repo), f"{repo}: open PRs not read: {reason(e)}")
                 continue
             log(("pr-stall", repo), None)
+            etags_save(etags_path)
             for eid, line in found:
                 say(line, sid, eid, "pr-stall")
 
@@ -10647,6 +10671,12 @@ def cover(og: Omnigent, sid: str, ended: dict[str, str]) -> None:
         pass
 
 
+EXPIRES_HELP = (
+    f"minutes the message stays deliverable (default {EXPIRES_MINUTES}; 0 = never): a message queued"
+    " behind a busy turn is dropped once it expires, and never lands out of context after its sender is gone"
+)
+
+
 def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -10770,6 +10800,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("brief", help="the answer or follow-up: a file, or the text itself")
     p.add_argument("report", type=Path)
     p.add_argument("--confirm-seconds", type=float, default=60.0)
+    p.add_argument(
+        "--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP
+    )
     p = sub.add_parser("relay")
     p.add_argument("session")
     p.add_argument("message", help="the message, a file or the text itself; it owes no report")
@@ -10789,6 +10822,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         " by the session's running step exits 0 with the queued line",
     )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
+    p.add_argument(
+        "--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP
+    )
     p = sub.add_parser("broadcast", description="relay one message file to many sessions at once")
     p.add_argument("message", help="the message, a file or the text itself; it owes no report")
     p.add_argument(
@@ -11329,6 +11365,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             sys.stdout.write(body)
             return 0
         og = Omnigent(args.server) if args.server else Omnigent()
+        if args.cmd in ("send", "relay"):
+            og.expires = args.expires
         if args.cmd == "capacity":
             target = og.host(args.host)
             name = host_name(og, target)
