@@ -1,13 +1,13 @@
 lockfile_version: '1'
-generated_at: '2026-11-22T22:09:09.826623+00:00'
+generated_at: '2026-11-23T03:26:58.575341+00:00'
 apm_version: 0.30.0
 dependencies:
 - repo_url: kzarzycki/agent-skills
   name: engineering
   host: github.com
-  resolved_commit: c3ec347e931d7192253a71f829629561c31bd2b1
-  resolved_ref: engineering-v0.35.2
-  version: 0.35.2
+  resolved_commit: 489e645a6e6b994a3fecf7cd50dab8522d492246
+  resolved_ref: engineering-v0.35.3
+  version: 0.35.3
   virtual_path: engineering
   is_virtual: true
   package_type: skill_bundle
@@ -441,7 +441,7 @@ dependencies:
     .claude/skills/wizard/SKILL.md: sha256:2fb85928b7ab44f20348553392b68142e1da0022142772473e2daed45789b65e
     .claude/skills/wizard/agents/openai.yaml: sha256:98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83
     .claude/skills/wizard/template.sh: sha256:2b9bceab14f71bf05d54847155b37c466065f2e86d83b348a70dacc0bff0a01f
-  content_hash: sha256:cc8e167190140f9d16687f9a759f4de8bcf8267ab90d64c210497ceb97b6f167
+  content_hash: sha256:0d76127afe2f1b6197d959043337ea7a6f93ae2cc2d5c20c91c5bb33bbe3ce04
 deployments:
 - kind: project-relative
   target: claude
