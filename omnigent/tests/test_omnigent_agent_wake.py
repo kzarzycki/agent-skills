@@ -129,8 +129,10 @@ def test_a_wait_that_names_no_session_yet_raises_its_deadline_once_a_lead_with_t
         og.histories["m"].append(ending(WAIT.format("queue"), 3000 - poll))
 
     supervised(og, registry, monkeypatch, 3, later, notify=COS, console=True, fyi="post")
+    # One event per declared wait (#2150): the wait is keyed on its text and the sessions it names (`queue`, then
+    # `queue|` once the lead joins the registry), so a reply that restates it (the third poll's progress) fires no
+    # third deadline; it fires once more only after 4x DEADLINE_SECONDS.
     assert stalls(og) == [
         "Supervisor: m t-m: no progress 60m (queue)",
-        "Supervisor: m t-m: no progress 50m (queue)",
         "Supervisor: m t-m: no progress 50m (queue)",
     ]
