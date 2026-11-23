@@ -5,6 +5,12 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.5 - 2026-11-23
+
+- omnigent-agents: `--role` takes `lead`, `worker` or `verifier` as well as a file path, naming the pack's engineering-loop role file, so a cloud child needs no role file in its launch dir (#1868).
+- `start --top-level --host <other>` takes the report as that host's absolute path with `--pr` too, as without it: a relative one is refused and an absolute one is no longer created or resolved here, which failed with `PermissionError` when this host could not make that folder. `brief` does the same, and `wait --pr` on a session on another host writes the PR comment to `tmp/loop/<name>` here, where `send --pr` reads it as the report before (#2028).
+- A cloud worker, verifier or gate child (`acp:claude-cloud`) whose result `run`, `wait` or the supervisor took is archived even while background tasks still run in its VM, since those pollers keep spending the account's GitHub quota; its line names how many ended with it. A lead, a manager, a top-level session with no role, a `--keep` child, an open card or prompt, a blind `reap` and every host session keep today's holds (#2052).
+
 ## 0.1.4 - 2026-11-23
 
 - omnigent-agents: every cloud session's preamble installs gh-quota's logging gh shim from the pack clone and ends its report with its `gh_quota.py counts` and a count of its `curl` calls to `api.github.com`, since its log stays in the VM (#1994).
