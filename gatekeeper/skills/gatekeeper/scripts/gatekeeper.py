@@ -5396,9 +5396,22 @@ def gated(
         pull["named"], pull["reverted"] = closing_issues(pull), reverted(revert)
         return found + proofs(point, pull, [], loop, revert), []
     issues = adopted(closing_issues(pull), loop)
-    found += problems(issues, None if tracker is None else label_names(tracker))
+    # a mechanical bump names no issue: there is no spec to build from
+    if issues or not machine_made(pull, loop):
+        found += problems(issues, None if tracker is None else label_names(tracker))
     found += closes_nothing(pull, issues, loop)
     return found + proofs(point, pull, issues, loop, revert), issues
+
+
+def machine_made(pull: dict[str, Any], loop: str | None) -> bool:
+    """Whether the PR is a mechanical bump no person specs (#2040): a `bot` section with a `branch` exempts it (exempting:
+    the release workflow's fold on `release/`, the pack bump on `claude/ready-pack-bump-`, every file in the section's
+    `paths`), or it pins a released pack tag byte for byte (pin_target). Such a PR names no issue and needs none; any
+    other PR's `Closes #<n>` stays required. Read only when the PR names no issue, since pin_target reads the forge."""
+    bot = exempting(pull, loop)
+    if bot is not None and "branch" in bot:
+        return True
+    return pin_target(pull) is not None
 
 
 def closes_nothing(

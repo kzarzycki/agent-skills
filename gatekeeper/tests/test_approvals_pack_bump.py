@@ -242,3 +242,23 @@ def test_a_mechanical_pack_bump_on_a_risk_path_is_no_spec_hold_under_spec_auto_t
     more = cloud_bump("apm.yml", "apm.lock.yaml", patch=REF_BUMP + "\n+extra: 1")
     assert approvals.holds(more, [ask], loop) == held
     assert approvals.proofs("merge", more, [ask], loop) == spec
+
+
+NO_ISSUE = "the PR names no issue: it needs a `Closes #<issue>` line for an approved spec"
+
+
+def test_a_mechanical_bump_needs_no_issue_and_any_other_pr_still_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bump no person specs (#2040): a `branch` section's PR (the release fold, the pack bump) or a verified pin bump
+    names no issue and is not refused for it; a person's PR naming none still is."""
+    monkeypatch.setattr(approvals, "pin_target", lambda pr: None)
+    bump = {**cloud_bump(*FILES), "body": ""}
+    found, issues = approvals.gated("merge", bump, None, PACK_BUMP)
+    assert issues == [] and NO_ISSUE not in found
+    person = {**cloud_bump(*FILES, branch="claude/ready-feature"), "body": ""}
+    assert NO_ISSUE in approvals.gated("merge", person, None, PACK_BUMP)[0]
+    monkeypatch.setattr(
+        approvals, "pin_target", lambda pr: "engineering-v0.36.0"
+    )  # a verified pin bump
+    assert NO_ISSUE not in approvals.gated("merge", person, None, PACK_BUMP)[0]
