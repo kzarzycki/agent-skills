@@ -5524,9 +5524,9 @@ def required_pending(info: dict, repo: str = "") -> bool:
     """Whether a check the base branch requires is queued or running on the PR's head (``info`` from ``pr_info``).
     A required check no run has registered is not pending, so a check that never starts cannot hold a wait live for
     good. Needs no producer."""
-    # ponytail: `--cache` bounds the reads to one a minute per URL; an ETag read would spare the quota entirely
+    # ETag reads (rest_if_changed): an unchanged rule set or run list answers 304, which costs no quota (#1984)
     slug = repo or "{owner}/{repo}"
-    rules = json.loads(gh("api", "--cache", "1m", f"repos/{slug}/rules/branches/{info['base']}"))
+    rules = rest_if_changed(f"repos/{slug}/rules/branches/{info['base']}")[1]
     required = {
         c["context"]
         for rule in rules
@@ -5535,7 +5535,7 @@ def required_pending(info: dict, repo: str = "") -> bool:
     }
     if not required or info["state"] != "open":
         return False
-    runs = json.loads(gh("api", "--cache", "1m", f"repos/{slug}/commits/{info['sha']}/check-runs"))
+    runs = rest_if_changed(f"repos/{slug}/commits/{info['sha']}/check-runs")[1]
     return any(
         r.get("name") in required and r.get("status") != "completed"
         for r in runs.get("check_runs", [])
@@ -5608,14 +5608,80 @@ COMMITS: dict[
 ] = {}  # git/commits/<sha> answers, kept for the process: a sha's commit is immutable
 
 
+ETAGS: dict[
+    str, tuple[str, Any]
+] = {}  # rest_if_changed's last answer for each REST path: (its ETag, the parsed body)
+ETAGS_KEPT = 256  # the most paths ETAGS keeps; the oldest read goes first
+# a 304 as gh reports it: the status line `gh api -i` prints, or its error `gh: HTTP 304` where it exits 1 on one
+NOT_MODIFIED = re.compile(r"\bHTTP(?:/[\d.]+)? 304\b")
+
+
+def rest_if_changed(path: str, timeout: float = HTTP_SECONDS) -> tuple[bool, Any]:
+    """REST ``path`` (``repos/...``) read with the ETag of its last read (``If-None-Match``): (False, the kept answer) on
+    GitHub's 304, which costs no quota, else (True, the answer), keeping its ETag (#1984). The first read of a path is a
+    plain one."""
+    known = ETAGS.get(path)
+    args = ["api", "-i", *(["-H", f"If-None-Match: {known[0]}"] if known else []), path]
+    try:
+        out = gh(*args, timeout=timeout)
+    except Fail as e:
+        if known and NOT_MODIFIED.search(f"{getattr(e.__cause__, 'stdout', '') or ''}\n{e}"):
+            return False, known[1]
+        raise
+    out = out.replace("\r\n", "\n")
+    if not out.startswith(
+        "HTTP/"
+    ):  # no status line (a gh that prints no headers): the body alone, no ETag kept
+        return True, json.loads(out or "{}")
+    head, _, body = out.partition("\n\n")
+    if known and NOT_MODIFIED.search(head.split("\n", 1)[0]):
+        return False, known[1]
+    found = json.loads(body or "{}")
+    if tag := re.search(r"(?im)^etag:[ \t]*(\S[^\n]*?)[ \t]*$", head):
+        ETAGS.pop(path, None)  # newest last, so the oldest goes first
+        ETAGS[path] = (tag[1], found)
+        while len(ETAGS) > ETAGS_KEPT:  # a supervisor runs for days, one head after another
+            del ETAGS[next(iter(ETAGS))]
+    return True, found
+
+
+def pr_rest_view(pr: int, until: str, timeout: float) -> dict:
+    """PR ``pr``'s state and, for ``until`` ``checks``, its head's checks, in ``pr_view``'s shape, from ETag reads
+    (rest_if_changed) of the pull, its head's check runs and its combined status, so a round where none moved costs no
+    quota (#1984). The answer is GitHub's REST alone, never a second read that could trail it."""
+    pull = rest_if_changed(f"repos/{{owner}}/{{repo}}/pulls/{pr}", timeout)[1]
+    state = "MERGED" if pull.get("merged") or pull.get("merged_at") else str(pull["state"]).upper()
+    data: dict = {"state": state, "headRefOid": pull["head"]["sha"]}
+    if until != "checks":
+        return data
+    head = pull["head"]["sha"]
+    runs = rest_if_changed(
+        f"repos/{{owner}}/{{repo}}/commits/{head}/check-runs?per_page=100", timeout
+    )[1]
+    status = rest_if_changed(f"repos/{{owner}}/{{repo}}/commits/{head}/status", timeout)[1]
+    data["statusCheckRollup"] = [
+        {
+            "name": r.get("name"),
+            "status": str(r.get("status") or "").upper(),
+            "conclusion": str(r.get("conclusion") or "").upper(),
+        }
+        for r in runs.get("check_runs") or []
+    ] + [
+        {"context": c.get("context"), "state": str(c.get("state") or "").upper()}
+        for c in status.get("statuses") or []
+    ]
+    return data
+
+
 def pr_rest(path: str, end: float, pages: bool = False) -> Any:
     """``repos/{owner}/{repo}/<path>`` through REST (``{owner}/{repo}`` from this clone, which a launch dir with no
-    working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list."""
+    working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list. A single read
+    carries its last ETag (rest_if_changed), so a poll of an unchanged path costs no quota."""
     timeout = max(0.01, min(HTTP_SECONDS, end - time.monotonic()))
     if not pages:
         if path in COMMITS:  # a commit never changes
             return COMMITS[path]
-        got = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/{path}", timeout=timeout))
+        got = rest_if_changed(f"repos/{{owner}}/{{repo}}/{path}", timeout)[1]
         if path.startswith("git/commits/"):
             COMMITS[path] = got
         return got
@@ -6024,7 +6090,10 @@ def wait_for(
                     extra = {"seen": seen} if until == "verdict" else {}
                     if outcome := settled(pr, time.monotonic() + left, since, **extra):
                         return outcome
-                elif outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
+                # REST alone, through ETags: a round where nothing moved costs no quota (#1984)
+                elif outcome := pr_outcome(
+                    pr, until, left, data=pr_rest_view(pr, until, min(HTTP_SECONDS, left))
+                ):
                     return outcome
             except RateLimited as e:  # retrying keeps the limit drained: sleep to its reset
                 print(

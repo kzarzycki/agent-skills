@@ -50,7 +50,7 @@ def rest(
         assert args[0] == "api" and timeout > 0
         if "--paginate" in args:
             return "".join(json.dumps(item) + "\n" for item in paged[args[2]])
-        return json.dumps(single[args[1]])
+        return json.dumps(single[args[-1]])
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
     monkeypatch.setattr(omnigent_agent, "WAIT_FOR_PR_EVERY", 0.01)
