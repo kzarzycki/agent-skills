@@ -5,6 +5,13 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.2 - 2026-11-22
+
+- omnigent-agents: the cloud brief waits on a run with one tracked `wait-for --budget <the run's expected length>` instead of a `--budget 480` loop, and `wait-for --budget`'s help says its default is for a foreground call (#1790).
+- omnigent-agents: `supervise --console` wakes a followed lead quiet an hour whose PR has a verdict on its current head over an hour old with no push or go since, with one `news` line per PR and head naming the step it owes (#1802).
+- omnigent-agents: `start` refuses a second worker or verifier of a PR while one with the same role and PR runs, and `reap --force <id>` stops and finishes that running one, its open PR included (#1806).
+- omnigent-agents: `relay` and `send` to a lead print a warning, and still deliver, when the message names an issue outside the lead's request, its epic or the epic's sub-issues (#1830).
+
 ## 0.1.1 - 2026-11-22
 
 - orchestrating-agents: a session whose result is taken is archived at one shared point, `finish_delivered`: `run`, `wait`, `reap`, the supervisor's relay of a child's `DONE` report or failure and of a followed lead's `DONE` all call it, and a kept session (`--keep`, an open card, a PR hold, background work) stays open; `start --keep` labels a session so the supervisor leaves it open; a run that ended failed, cancelled or errored is finished too, a stale `omnigent.keep` label holds nothing, and archiving a parent finishes its idle children (#1579).

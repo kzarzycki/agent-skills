@@ -98,7 +98,12 @@ shown; `--withdraw` posts a newer failing status and a `Withdrawn: merge` record
 label. A status belongs to one commit, so no push carries the go to a head the owner didn't see. `--by delegate` is
 the delegated approver's go, pinned to one head the same way: the `owner` status described as the delegate's (`The
 delegate's go on <sha>, under the owner's delegation`) and the record `Approved under the owner's delegation.`, then
-`Approved: merge`, `By: delegate`, `Head: <sha>`, so the PR shows whose go it is. Into the default branch it is
+`Approved: merge`, `By: delegate`, `Head: <sha>`, so the PR shows whose go it is. Where GitHub refuses the status
+write with a 403, as a cloud session's proxy does (#1816), the record is posted with a `Status: refused` line and
+stands as the go alone on a head with no `owner` status: the newest such record, or `Withdrawn: merge` record, naming
+that head and written by the account running this or a writer decides, still pinned to its head; over a status on
+the head only such a record written after it decides (so a withdrawal recorded from the cloud takes back a host's
+go), and a record without the line still needs its status. Into the default branch it is
 refused unless loop.md's `delegate: all` under `loop` (default `feature`) lets the delegate's go cover that branch
 too, and a delegate's status there counts only while it does, so removing the setting withdraws those goes on open
 PRs; into a feature branch it counts either way. `check merge` and `land` print whose go, the owner's or the
@@ -221,8 +226,11 @@ tree's: it runs once more on the same tree, and a second such exit stops the run
 nobody and posting nothing, and prints the log's last 30 lines: fix the machine, then land again.
 Exit 0 when the named PR merged (on a GitHub-queue base, also once it is enqueued or queued), or with no PR named when nothing landable failed; 1 for a refusal, a conflict, an
 eviction, a merge GitHub refused or a red base; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
-`land --wait` runs it again every 30 seconds while it waits on the lock or on CI, printing each new state once, for up
-to 2 hours, then exits 3; a wait for the owner ends it at once, since only the owner clears it.
+`land --wait` runs it again while it waits on the lock or on CI, printing each new state once, for up to 2 hours,
+then exits 3; a wait for the owner ends it at once, since only the owner clears it. Between two runs it reads every 30
+seconds only what it waits on, at no API quota: a held lock with one `git ls-remote` (running again once the lock moves
+past its holder's heartbeat, or has not moved for 15 minutes), a named PR's CI with one ls-remote of the base and the
+heads and an ETag read of each head's checks, which GitHub answers 304 for free while nothing changed (#1915).
 Each named PR's branch carries the `land` event (events.md): `waiting` rewritten at each poll of `--wait`, `ok` once it
 merged (its refs cleared EVENT_GRACE seconds later, so a `wait land <branch>` finds the end), `failed` when evicted (its
 `url` the log comment), `needs-owner` at the owner's go or the 2-hour ceiling. A write that fails changes no exit code.
@@ -274,7 +282,11 @@ queue (they win), a Mergify queue that `.mergify.yml` configures merges instead,
 no GitHub queue for: `land` takes no lock, runs no gate and merges nothing. It judges the same candidates (step 2) with
 the base's code, and hands each to Mergify by posting the `land` status (success, `Queued for Mergify at <sha>`) on its
 head and adding `loop:queued`; `.mergify.yml`'s queue conditions
-read both, and the status binds the hand-over to that head, so a push leaves them unmet. A PR already carrying the label
+read both, and the status binds the hand-over to that head, so a push leaves them unmet. Where GitHub refuses the
+status write with a 403 (a cloud session's proxy), `land` adds the label and comments a `Queued for Mergify` record
+with `Head: <sha>`, once per head, and the repo's `.github/workflows/land-status.yml` posts the `land` success on that
+sha for a writer's record while it is the PR's head and the label is on; an eviction's `land` error refused there is
+said, and the label coming off leaves the queue. A PR already carrying the label
 with `land` green on its head is reported queued and left alone. Mergify tests each batch as a draft PR on top of the
 base in CI, retries a red one once itself and squash-merges on green; a PR it dequeues (red again, or conflicting) gets
 its `dequeued_label`, `loop:dequeued`, and the next land that reads it with `land` green on the head evicts it: `land`
@@ -734,13 +746,23 @@ ATTACHMENT = "https://github.com/user-attachments/"
 # ceiling is stale
 POLL, CEILING = 30, 2 * 60 * 60
 # land --wait runs landing() (a GraphQL read of every named PR's PULL, 5 points each, and more) again only this many
-# seconds after the last run, unless it holds a lock (RECHECK): a merge queue or a check takes minutes to move, so
+# seconds after the last run, unless it waits on something its probe watches (FULL): a merge queue or a check takes minutes to move, so
 # 30 s polls spend the account's quota, and its per-minute limit, on answers that did not change. POLL is the step
 # the sleep goes in, so the log is never silent and a lock that moved is seen at once
 QUEUE_POLL = 300
-# a wait on a held lock whose ref is unchanged runs landing() (the GitHub calls) again only after this many seconds: the
-# lock is read with `git ls-remote`, which costs no API quota, and a holder's PR merging is the only change it can't show
-RECHECK = 300
+# between two landing() rounds a wait probes, each POLL, only what it waits on (#1915): a held lock with one `git
+# ls-remote` of its ref, which costs no API quota, running landing() again only when the lock moves past a heartbeat
+# (restamped), or has not moved for STALE seconds (its land died, so the round breaks it), never on FULL; a wait on CI
+# with one
+# ls-remote of the base and the named PRs' heads, and an ETag read (rest_if_changed: a 304 costs no quota) of each
+# head's check runs and statuses, running landing() again once a head, the base or a required check's state moved.
+# Nothing else a round reads can end such a wait, so the round runs again only after FULL seconds otherwise
+FULL = 900
+# what the last landing() round waited on, for that probe: the base, the named PRs and the base's required checks
+# and whether the round left the free lock to another land (locked: an older waiter, or lands that kept taking it),
+# so the probe also watches the lock only then: a CI wait on the local queue frees the lock each round, and lands that
+# all watched it would wake each other
+watched: dict[str, Any] = {"base": "", "pulls": [], "required": set(), "deferred": False}
 # the poll while the account's remaining quota is under LOW_QUOTA of its limit: waiting lands then ask GitHub less often
 LOW_POLL, LOW_QUOTA = 600, 0.1
 # the longest poll of a wait whose state stays the same round after round: QUEUE_POLL doubles up to it (#1771). With
@@ -3945,7 +3967,8 @@ def unchanged(pull: dict[str, Any], old: str) -> str | None:
 def go_on(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
     """Whose go (go) is on `head`, `owner` or `delegate`; '' when a status there is no go; None with no status there:
     the newest `owner` status there by the account running this or a writer (a status is the repo's to write) is green,
-    so a later one withdrawing it wins, and the PR holds the record by the same approver naming that head. The
+    so a later one withdrawing it wins, and the PR holds the record by the same approver naming that head. A record
+    recorded_go counts, written after that status, decides over it; with no status, those records decide alone. The
     delegate's (its description says so) counts into the default branch only while the default branch's `delegate` is `all`, so
     removing the setting withdraws it. A status once turned from the label (LABELLED) is no go. GitHub unreachable: no
     go."""
@@ -3961,6 +3984,12 @@ def go_on(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
             or not (login == viewer() or writer(login))
         ):
             continue
+        # a record written after this status, where a later status write was refused (a cloud withdrawal or go,
+        # #1816), decides over it, so a withdrawal that could only be recorded still takes the go back
+        if (at := status.get("created_at")) and (
+            later := recorded_go(pull, head, loop, at)
+        ) is not None:
+            return later
         description = status.get("description") or ""
         by = DELEGATE if description.endswith(DELEGATED) else "owner"
         if (
@@ -3972,6 +4001,54 @@ def go_on(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
         ):
             return ""
         return by if current(pull, "merge", "head", head, by) else ""
+    return recorded_go(pull, head, loop)
+
+
+# the first line of the record `approve merge --withdraw` writes, beside `Approved: merge`
+WITHDRAWN = "Withdrawn: merge"
+# the line an `Approved: merge` record carries when GitHub refused its `owner` status (unwritten), which lets it stand
+# as the go alone (recorded_go); a record without it still needs its status
+UNSTATUSED = "Status: refused"
+
+
+def recorded_go(
+    pull: dict[str, Any], head: str, loop: str | None, after: str | None = None
+) -> str | None:
+    """go_on for a head with no `owner` status, as a cloud session leaves it when its proxy refuses the status write
+    (#1816): the newest `Approved: merge` record that says its status was refused (UNSTATUSED), or `Withdrawn: merge`
+    record, naming `head` and written by the account running this or a writer (a comment is anyone's to write in a
+    public repo, so its author is what counts), decides: whose go it is, '' for a withdrawal or a delegate's go the
+    delegation no longer covers, None with no such record. An `Approved: merge` record without the line, as a host
+    writes beside its status, is still no go alone. With `after` (an ISO 8601 UTC time, a status's), only records
+    written after it count."""
+    for note in reversed(notes(pull)):
+        if after is not None and not (note.get("createdAt") or "") > after:
+            continue
+        lines = machine(note["body"]).strip().splitlines()
+        if lines and lines[0].strip() in VOICED.values():
+            lines = lines[1:]
+        if not lines or lines[0].strip() not in {"Approved: merge", WITHDRAWN}:
+            continue
+        found = fields("\n".join(lines))
+        login = (note.get("author") or {}).get("login")
+        if (
+            found.get("head", "").lower() != head.lower()
+            or found.get("by") not in VOICED
+            or lines[0].strip() != WITHDRAWN
+            and found.get("status") != UNSTATUSED.split(": ", 1)[1].lower()
+            or login is None
+            or not (login == viewer() or writer(login))
+        ):
+            continue
+        by = found["by"]
+        if (
+            lines[0].strip() == WITHDRAWN
+            or by == DELEGATE
+            and default(pull)
+            and delegation(base_policy(pull["baseRefName"], loop)) != "all"
+        ):
+            return ""
+        return by
     return None
 
 
@@ -3998,6 +4075,32 @@ def whose(pull: dict[str, Any], loop: str | None) -> list[str]:
             f" verifier's pass on it says `{LOGIC}: none`"
         )
     return [line]
+
+
+# what a cloud session's GitHub proxy answers a commit-status write it refuses (#1816): comments, labels and the
+# merge pass, `POST statuses/<sha>` alone does not
+STATUS_REFUSED = "HTTP 403"
+
+
+def status_refused(exc: BaseException) -> bool:
+    """Whether a status write failed because GitHub, or a proxy in front of it, refuses this token the path: a 403.
+    Any other failure (unreachable, a 422 on a bad sha) is no refusal, and stops as before."""
+    return isinstance(exc, subprocess.CalledProcessError) and STATUS_REFUSED in (exc.stderr or "")
+
+
+def unwritten(head: str, context: str, description: str, state: str = "success") -> str | None:
+    """post_status, and None; the refusal's text when the write is refused (status_refused), printed with what still
+    carries the step, so a cloud session goes on: the go's record (go_on reads it with no status there), or
+    `loop:queued` and the hand-over record (mergify_step). Any other failure raises."""
+    try:
+        post_status(head, context, description, state)
+    except subprocess.CalledProcessError as exc:
+        if not status_refused(exc):
+            raise
+        why = stderr_of(exc)
+        print(f"the `{context}` status on {head} was not written, GitHub refused it: {why}")
+        return why
+    return None
 
 
 def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int:
@@ -4034,13 +4137,11 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
     if withdraw:
         # the label off too, since into a feature branch it is a go of its own
         label(number, MERGE_LABEL, add=False)
-        post_status(
-            head, OWNER_GO, f"{who.capitalize()} withdrew their go on {head[:12]}", state="failure"
-        )
+        unwritten(head, OWNER_GO, f"{who.capitalize()} withdrew their go on {head[:12]}", "failure")
         comment(
             number,
             fold(
-                "Withdrawn: merge",
+                WITHDRAWN,
                 f"{who.capitalize()} withdrew their go on {head[:7]}.",
                 f"By: {by}\nHead: {head}",
             ),
@@ -4048,17 +4149,20 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
         print(f"PR #{number}: {who}'s go on {head} is withdrawn")
         return 0
     if by == DELEGATE:
-        post_status(head, OWNER_GO, f"The delegate's go on {head[:12]}{DELEGATED}")
+        refused = unwritten(head, OWNER_GO, f"The delegate's go on {head[:12]}{DELEGATED}")
     else:
-        post_status(head, OWNER_GO, f"The owner's go on {head[:12]}")
+        refused = unwritten(head, OWNER_GO, f"The owner's go on {head[:12]}")
     comment(
         number,
         fold(
             VOICED[by],
             f"Go to merge {head[:7]}.",
-            f"Approved: merge\nBy: {by}\nHead: {head}",
+            f"Approved: merge\nBy: {by}\nHead: {head}"
+            + (f"\n{UNSTATUSED}" if refused is not None else ""),
         ),
     )
+    if refused is not None:
+        print(f"PR #{number}: the record alone carries the go on {head}")
     print(f"PR #{number}: {who}'s go is on {head}{DELEGATED if by == DELEGATE else ''}")
     if by != DELEGATE and NEEDS_OWNER in names(pull):
         # the owner's go names this PR, so the hold it waited on is theirs to lift; the delegate's never is
@@ -5924,6 +6028,9 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
     missed = 0  # network failures in a row, of landing() and of the lock poll
     while True:
         held_tip = None
+        watched.update(
+            base="", pulls=[], required=set(), deferred=False
+        )  # this round's, never an earlier one's
         out, drifted = io.StringIO(), None
         try:
             with contextlib.redirect_stdout(out):
@@ -5969,9 +6076,12 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
                 " say what holds it.\n",
             )
             return WAITING
-        # a round asks GitHub again after `nap`, or RECHECK on a held lock; the sleep goes in POLL steps, so the log
-        # is never silent past wait-for's stall check and a lock that moved is seen at once (ls-remote costs no quota)
-        asleep = 0.0
+        # the sleep goes in POLL steps, so the log is never silent past wait-for's stall check, and each step probes
+        # only what the round waited on (Probe, #1915): a held lock that moved is seen at once, and one held by a live
+        # land is never asked of GitHub; a CI state that moved runs the round again after `nap`, and nothing moving
+        # runs it again only after FULL. A land that names no PR
+        # and holds no lock has nothing to probe, so its round runs again after `nap`
+        probe, asleep, beaten = Probe(), 0.0, 0.0
         while time.monotonic() + POLL <= deadline:
             time.sleep(POLL)
             asleep += POLL
@@ -5980,27 +6090,170 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
             ):  # wait-for's stall check reads silence as a hang
                 print(heard, end="", flush=True)
                 spoke = time.monotonic()
-            # the lock still held at the same tip, and its holder checked lately: nothing to ask GitHub
-            if not held_tip:
-                if asleep >= nap:
-                    break
-            elif asleep >= max(nap, RECHECK):
+            if (asleep >= FULL and not probe.lock) or (
+                (probe.idle or probe.stirred) and asleep >= nap
+            ):
                 break
-            else:
-                try:
-                    tip = git("ls-remote", "origin", held_tip[0]).split()[:1]
-                except subprocess.CalledProcessError as exc:
-                    missed += 1
-                    if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
-                        raise
+            if probe.idle or probe.stirred:
+                continue
+            # the beats a round writes, which a probe alone would let go stale
+            if asleep - beaten >= BEAT:
+                beaten = asleep
+                probe.beat()
+            try:
+                moved = probe.moved()
+            except subprocess.CalledProcessError as exc:
+                if not probe.lock:
+                    # a CI probe that failed is no news, never the wait's end: the round, after its poll, reads all
+                    # again and has its own network retries
                     print(
-                        f"land --wait: network failure {missed}/{MISSES}, polling again: {stderr_of(exc)}",
+                        f"land --wait: the CI probe failed, the round reads again: {stderr_of(exc)}",
                         flush=True,
                     )
+                    probe.stirred = True
                     continue
-                missed = 0
-                if tip != [held_tip[1]]:
-                    break
+                missed += 1
+                if missed >= MISSES or not NETWORK.search(stderr_of(exc)):
+                    raise
+                print(
+                    f"land --wait: network failure {missed}/{MISSES}, polling again: {stderr_of(exc)}",
+                    flush=True,
+                )
+                continue
+            missed = 0
+            if moved:
+                break
+
+
+class Probe:
+    """What a waiting land reads between two landing() rounds (FULL says what): the held lock the last round waited
+    on, else the base, the base's lock and the named PRs' heads and their checks. `idle` when it has neither,
+    `stirred` once a CI state moved (the round then runs again after its poll, with nothing more read meanwhile). Each
+    starts from what the round read (the base's tip and each head as the PRs gave them, each head's checks read at
+    once), so a move between the round and the first poll is still a move."""
+
+    def __init__(self) -> None:
+        self.lock = held_tip
+        self.since = time.monotonic()  # when the held lock last moved
+        self.base, self.required = watched["base"], set(watched["required"])
+        self.pulls = list(watched["pulls"])
+        # each named PR's head ref, and the head the round read, which a push moves
+        self.heads = {
+            f"refs/pull/{p['number']}/head": p.get("headRefOid") or "" for p in self.pulls
+        }
+        self.base_tip: str | None = next(
+            (p["baseRefOid"] for p in self.pulls if p.get("baseRefOid")), None
+        )
+        self.lock_tip: str | None = None
+        self.deferred = bool(watched["deferred"])
+        self.checks: dict[str, tuple[tuple[str, str], ...]] = {}
+        self.idle = not self.lock and not self.heads
+        self.stirred = False
+        if not self.lock:
+            for head in filter(None, self.heads.values()):
+                try:
+                    self.checks[head] = ci_state(head, self.required)
+                except subprocess.CalledProcessError:
+                    pass  # the first poll reads it
+
+    def beat(self) -> None:
+        """This land's place in the waiting order and each named PR's `waiting` event, as a round writes them, so a
+        quiet wait never reads as a dead one: both are git pushes, no GitHub API call."""
+        if waited["id"] and waited["base"]:
+            try:
+                stamp_wait(waited["base"], self.pulls[0]["number"] if self.pulls else None)
+            except subprocess.CalledProcessError as exc:
+                print(
+                    f"land --wait: its place in the waiting order was not stamped: {stderr_of(exc)}",
+                    file=sys.stderr,
+                )
+        for pull in self.pulls:
+            if pull["headRefName"] not in ended:
+                land_event(pull, "waiting")
+
+    def moved(self) -> bool:
+        """Whether landing() should run again now: the held lock moved past a heartbeat, or has not moved for STALE
+        seconds; for a wait on CI, True once `stirred`."""
+        if self.lock:
+            return self.lock_moved()
+        self.stirred = self.ci_moved()
+        return False
+
+    def lock_moved(self) -> bool:
+        assert self.lock
+        ref, tip = self.lock
+        found = git("ls-remote", "origin", ref).split()[:1]
+        if found == [tip]:
+            return time.monotonic() - self.since >= STALE
+        if found and restamped(ref, found[0], tip):
+            global held_tip
+            self.lock = held_tip = (ref, found[0])
+            self.since = time.monotonic()
+            return False
+        return True
+
+    def ci_moved(self) -> bool:
+        branch, lock = f"refs/heads/{self.base}", LOCK.format(self.base)
+        listed: dict[str, str] = {}
+        watch = [branch, *([lock] if self.deferred else []), *self.heads]
+        for line in git("ls-remote", "origin", *watch).splitlines():
+            sha, _, name = line.partition("\t")
+            listed[name.strip()] = sha.strip()
+        base = listed.get(branch)
+        if self.base_tip is None:
+            self.base_tip = base
+        elif base != self.base_tip:
+            return True
+        # the base's lock freed, where the round left it to another land: that land is done with it, so this one may
+        # take it
+        tip = listed.get(lock)
+        if tip and self.lock_tip is not None and tip != self.lock_tip and lock_free(lock, tip):
+            return True
+        self.lock_tip = tip or ""
+        for ref, head in list(self.heads.items()):
+            now = listed.get(ref) or head
+            if head and now != head:
+                return True
+            self.heads[ref] = now
+            if not now:
+                continue
+            state = ci_state(now, self.required)
+            if self.checks.setdefault(now, state) != state:
+                return True
+        return False
+
+
+def restamped(ref: str, tip: str, old: str) -> bool:
+    """Whether the lock's new `tip` is a HELD child of `old`: its holder's heartbeat, or a land that broke it as stale
+    and holds it now, so a waiting land still waits."""
+    name = ref.removeprefix("refs/heads/")
+    git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
+    title, _, parents = git("log", "-1", "--format=%s%x00%P", tip).strip().partition("\0")
+    return title.startswith(HELD) and parents.split()[:1] == [old]
+
+
+def lock_free(ref: str, tip: str) -> bool:
+    """Whether the lock's `tip` says it is free (FREE), fetched first: git only, no API call."""
+    name = ref.removeprefix("refs/heads/")
+    git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
+    return git("log", "-1", "--format=%s", tip).strip().startswith(FREE)
+
+
+def ci_state(head: str, required: set[str]) -> tuple[tuple[str, str], ...]:
+    """The state of each check on `head` a wait on CI reads: the base's `required` ones, or every check but the
+    loop's own (OWN) where it requires none, each `pending` until it completes, from two ETag reads (rest_if_changed),
+    which cost no quota while nothing changed. A check run still running moves no required check's state, so it
+    runs no round."""
+    _, runs = github.rest_if_changed(f"commits/{head}/check-runs?filter=latest&per_page=100")
+    _, combined = github.rest_if_changed(f"commits/{head}/status?per_page=100")
+    states: dict[str, str] = {}
+    for status in combined.get("statuses") or []:  # newest first
+        states.setdefault(status["context"], status["state"])
+    for run in runs.get("check_runs") or []:
+        done = run.get("status") == "completed"
+        states[run["name"]] = (run.get("conclusion") or "pending") if done else "pending"
+    names = required or set(states) - OWN
+    return tuple(sorted((name, states.get(name, "missing")) for name in names))
 
 
 DEADLINE_ENV = "LOOP_LAND_DEADLINE"
@@ -6107,9 +6360,11 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     and its policy read to place the land (placed: where it may run and the key it signs with) and to ready drafts,
     then read again after the fetch under the lock for the batch (landing_here)."""
     ended.clear()
+    watched.update(base="", pulls=[], required=set(), deferred=False)
     named, base, worst = land_base(pr)
     if named is None:
         return worst, False
+    watched.update(base=base, pulls=list(named))
     # origin's policy now, not the clone's last fetch of it, so no draft is readied under a policy already replaced
     fetch = subprocess.run(
         ["git", "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
@@ -6126,6 +6381,7 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         tracker, loop = project()
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
+        watched["required"] = set(rules) - OWN
         # Mergify, like GitHub's queue, merges and signs each PR itself, so a cloud land needs no key for it
         with placed(loop, bool(getattr(rules, "queue", None)) or mergify(loop)):
             code, again = landing_here(
@@ -6660,6 +6916,7 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
                         " stale"
                     )
         if waiting and (first := waiter_ahead(base)):
+            watched["deferred"] = True
             print(
                 f"{first} began waiting for the landing lock {name} before this land, so it takes it first"
             )
@@ -6674,6 +6931,7 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
     print(
         f"other lands kept taking the landing lock {name} as this one tried to: land --wait waits for it"
     )
+    watched["deferred"] = True
     return False
 
 
@@ -8041,14 +8299,49 @@ def mergify_step(pull: dict[str, Any]) -> int:
         if QUEUED in labels and ours:
             print(f"{where} is queued for Mergify at {head}")
             return 0
-        post_status(head, LAND, MERGIFY_QUEUED.format(head))
+        refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
         if QUEUED not in labels:
             label(number, QUEUED, add=True)
+        if refused is not None:
+            handed_by_record(pull)
     except subprocess.CalledProcessError as exc:
         print(f"{where}: GitHub refused its hand-over to Mergify at {head}: {stderr_of(exc)}")
         return 1
     print(f"{where} queued for Mergify at {head}")
     return 0
+
+
+# the first line of the hand-over record a cloud land comments when the `land` status is refused (#1816); the
+# workflow `.github/workflows/land-status.yml` reads it and posts the `land` status on its `Head:`
+HANDED = "Queued for Mergify"
+
+
+def handed_by_record(pull: dict[str, Any]) -> None:
+    """The hand-over where the `land` status can't be written (unwritten): a HANDED record naming the head, once per
+    head, which the repo's land-status workflow turns into the `land` success on that sha while it is still the PR's
+    head and the PR carries QUEUED, so `.mergify.yml` reads the same status and a push still leaves the queue."""
+    where, head = f"PR #{pull['number']}", pull["headRefOid"]
+    if any(
+        machine(note["body"]).strip().splitlines()[:1] == [HANDED]
+        and fields(note["body"]).get("head", "").lower() == head.lower()
+        for note in notes(pull)
+    ):
+        print(
+            f"{where}: its hand-over record for {head} is already on the PR; with no `land` status on {head} yet,"
+            " re-run the land-status workflow's run for that comment, or `land` from a host"
+        )
+        return
+    comment(
+        pull["number"],
+        fold(
+            HANDED,
+            f"Queued for Mergify at {head[:7]}: the land-status workflow posts the `land` status on it.",
+            f"Head: {head}",
+        ),
+    )
+    print(
+        f"{where}: the hand-over record names {head}, for the land-status workflow to post `land` on"
+    )
 
 
 def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
@@ -8057,7 +8350,9 @@ def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
     reason where its check run on the head gives one (mergify_reason). Mergify already retried a red batch once
     (`max_checks_retries: 1`), so its dequeue is the second red and land keeps no count."""
     head, number = pull["headRefOid"], pull["number"]
-    post_status(head, LAND, "Evicted from the Mergify merge queue", "error")
+    # refused (unwritten), the label coming off is what leaves the queue, since the land-status workflow posts nothing
+    # without it
+    unwritten(head, LAND, "Evicted from the Mergify merge queue", "error")
     for name in (QUEUED, DEQUEUED):
         if name in labels:
             label(number, name, add=False)
@@ -8459,8 +8754,14 @@ def merges(
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
                 print(f"{where} lands as a {method}")
-                post_status(head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}")
-                posted = True
+                # a cloud session's proxy refuses the status write (#1816) but passes the merge, so a refusal lands
+                # it all the same, with no success to withdraw if the merge fails (#1917)
+                posted = (
+                    unwritten(
+                        head, LAND, f"Landing under the lock {lock_name(base)}, nonce {nonce}"
+                    )
+                    is None
+                )
                 try:
                     owned()
                     port("forge").merge(pull["number"], method, head)
