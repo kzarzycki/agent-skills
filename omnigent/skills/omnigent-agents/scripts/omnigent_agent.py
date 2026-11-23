@@ -957,6 +957,15 @@ CLOUD_NOTE = (
     " since a write there waits on a permission prompt nobody in the cloud answers; `tmp/loop/` is"
     " scratch, ignored by the repo's `.gitignore`, and never committed.\n"
 )
+# Every acp:claude-cloud session's preamble: the owner's GitHub quota is one bucket every VM and host spends, so each
+# cloud session logs its own gh calls with gh-quota's shim and posts the tally, which no host can read in the VM.
+CLOUD_GH_QUOTA = (
+    "Before your first `gh` call, put gh-quota's logging shim ahead of the VM's gh: `python3"
+    ' "$HOME/pack/github/skills/gh-quota/scripts/gh_quota.py" install` (from the pack clone named below, when it'
+    " holds that file). Your report then ends with the output of `gh_quota.py counts --minutes <the minutes this"
+    " session ran>` and one line counting the `curl` calls you made to `api.github.com`, which the shim does not"
+    " see.\n"
+)
 # Every acp:claude-cloud session's first prompt (#1485): a cloud session pushes only to the branch it
 # started on unless its first user message grants more, and a later relayed grant is refused, so a
 # cloud lead building several PRs gets one branch per PR only from this standing grant.
@@ -1114,8 +1123,8 @@ def pack_line(brief: str) -> str:
 
 def cloud_preamble(preamble: str, pr: int | None, brief: str = "") -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
-    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_HELPER``, ``CLOUD_BRANCHES``, ``CLOUD_NO_PUSH`` and ``pack_line(brief)``
-    before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_HELPER``, ``CLOUD_BRANCHES``, ``CLOUD_NO_PUSH``, ``CLOUD_GH_QUOTA`` and
+    ``pack_line(brief)`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
@@ -1126,6 +1135,7 @@ def cloud_preamble(preamble: str, pr: int | None, brief: str = "") -> str:
         + CLOUD_HELPER
         + CLOUD_BRANCHES
         + CLOUD_NO_PUSH
+        + CLOUD_GH_QUOTA
         + pack_line(brief).replace("{", "{{").replace("}", "}}")  # the preamble is format()ted
         + "\n"
     )
