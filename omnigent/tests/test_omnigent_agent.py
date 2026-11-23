@@ -14528,9 +14528,11 @@ def test_a_turn_end_that_only_shows_progress_or_waiting_is_never_act_2090(
     assert acts_of(og, COS) == []
 
 
-def lead_done(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sent: str | None) -> Lead:
+def lead_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sent: str | None, archived: bool = False
+) -> Lead:
     """A followed lead that ends ``DONE``, after sending ``sent`` (if any) to the notified session."""
-    tmp_path = tmp_path / ("sent" if sent else "none")
+    tmp_path = tmp_path / ("sent" if sent else "archived" if archived else "none")
     tmp_path.mkdir(exist_ok=True)
     registry = following(tmp_path)
     call = {
@@ -14540,7 +14542,7 @@ def lead_done(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sent: str | None)
     }
     items = [told("brief", 900), ending("working", 600), *([call] if sent else [])]
     og = Lead(*items, ending("DONE: merged #5. Report: a.md", 400))
-    og.snap = {"status": "idle"}
+    og.snap = {"status": "idle", "archived": archived}
     supervised(og, registry, monkeypatch, 2, notify=COS, console=True)
     return og
 
@@ -14550,6 +14552,12 @@ def test_a_result_the_lead_already_sent_to_the_notified_session_gets_no_act_line
 ) -> None:
     assert acts_of(lead_done(tmp_path, monkeypatch, None), COS)  # the control: it is told
     assert acts_of(lead_done(tmp_path, monkeypatch, "DONE: merged #5. Report: a.md"), COS) == []
+
+
+def test_a_done_of_a_session_the_notified_session_already_archived_gets_no_act_line_2090(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert acts_of(lead_done(tmp_path, monkeypatch, None, archived=True), COS) == []
 
 
 def test_a_send_that_is_not_the_result_leaves_the_done_an_act_line_2090(

@@ -8664,7 +8664,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
             return (
                 "rule",
                 "done",
-                "done, already sent to the notified session: told only to its waiters",
+                "done, its result already taken by the notified session: told only to its waiters",
             )
         return "rule", "done", "done: its result, and the leads waiting on it"
     if ending == "USER NEEDED":
@@ -9171,7 +9171,9 @@ def supervise_registry(
             # a subagent's end re-invokes no cloud session (#1753): read only for a wait that names one
             "cloud": bool(SUBAGENT_WAIT.search(parsed or "")) and cloud_session(og, info),
             "session": sid,
-            "relayed": relayed_to(items, notify, last),
+            # its result already reached the notified session: it sent it, or archived the session after
+            # taking it (#2090)
+            "relayed": bool(info.get("archived")) or relayed_to(items, notify, last),
         }
 
         def ask() -> tuple[str, str]:
