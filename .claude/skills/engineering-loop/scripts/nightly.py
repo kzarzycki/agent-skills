@@ -48,6 +48,32 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+# importing the gatekeeper skill's folding.py would cache its bytecode in the installed skill folder, an untracked change there
+sys.dont_write_bytecode = True
+
+
+def installed(skill: str) -> Path:
+    """The scripts folder of `skill`, which another package ships, found by the host's install layout: a sibling
+    skill folder (APM's one skills directory), a sibling plugin's (this repo, or a marketplace Claude Code loads in
+    place), else the newest version of a plugin in Claude Code's cache (`<marketplace>/<plugin>/<version>/`) that
+    no update has orphaned. Exits naming the skill to install when none holds it."""
+    # ponytail: three layouts, the ones APM and Claude Code use; a host with another adds its glob here.
+    own = Path(__file__).resolve().parents[1]
+    plugin = own.parent.parent
+    cached = plugin.parent.parent.glob(f"[!.]*/[!.]*/skills/{skill}")
+    for folder in [
+        own.parent / skill,
+        *sorted(plugin.parent.glob(f"[!.]*/skills/{skill}")),
+        *sorted(cached, key=lambda path: path.stat().st_mtime, reverse=True),
+    ]:
+        if (folder / "SKILL.md").is_file() and not (folder.parents[1] / ".orphaned_at").exists():
+            return folder / "scripts"
+    sys.exit(f"{Path(__file__).name} needs the `{skill}` skill: install the package that ships it")
+
+
+sys.path.insert(0, str(installed("gatekeeper")))
+from folding import fold
+
 # the environment variable naming the local deny list, a file kept outside the repo (gatekeeper.py's DENY_LIST)
 DENY_LIST = "LOOP_DENY_LIST"
 TITLE = "Nightly red since {}"
@@ -278,17 +304,14 @@ def red(args: argparse.Namespace) -> int:
     marker = MARKER.format(green, failed)
     if existing is None:
         lines = listing(hub, green, failed) or ["- none: the red commit is the last green one"]
-        body = "\n".join(
-            [
+        body = (
+            fold(
                 f"The nightly is red since `{green[:SHORT]}`, its last green commit; "
                 + f"it failed on `{failed[:SHORT]}`: {args.run}",
-                "",
-                "Merged on the default branch since the last green, oldest first; bisect from these:",
-                "",
-                *lines,
-                "",
-                marker,
-            ]
+                details="Merged on the default branch since the last green, oldest first; bisect from these:\n\n"
+                + "\n".join(lines),
+            )
+            + f"\n{marker}"
         )
     else:
         posts = [existing.get("body") or ""] + [
@@ -299,16 +322,12 @@ def red(args: argparse.Namespace) -> int:
         lines = listing(hub, since, failed) or [
             f"- none since `{since[:SHORT]}`, the red commit the last post names"
         ]
-        body = "\n".join(
-            [
+        body = (
+            fold(
                 f"Still red on `{failed[:SHORT]}`: {args.run}",
-                "",
-                f"Merged since `{since[:SHORT]}`, oldest first:",
-                "",
-                *lines,
-                "",
-                marker,
-            ]
+                details=f"Merged since `{since[:SHORT]}`, oldest first:\n\n" + "\n".join(lines),
+            )
+            + f"\n{marker}"
         )
     denied(body)
     if args.dry_run:

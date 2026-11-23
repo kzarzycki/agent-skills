@@ -4,6 +4,9 @@
 # --attach`, so every video plays inline. A `.png` or `.jpg` is attached as it is, for a change
 # with nothing moving. Earlier `## Demo` comments by the same poster are
 # minimized as outdated. Every refusal runs before anything records.
+# Where GitHub's GraphQL is refused (a claude-cloud session's proxy allows REST only) it falls back to
+# REST: each recording becomes a GIF pushed to the media-only branch `claude/ready-demo-<pr>`, linked
+# `?raw=true` from the comment, since an MP4 linked that way is only a link; `--pr` is then required.
 # Usage: demo.sh [--pr <number>] [--caption "<what it shows>"] <recording>...
 set -euo pipefail
 
@@ -31,18 +34,6 @@ for recording in "$@"; do
   esac
 done
 
-# --attach arrived in gh 2.99.0; an older gh would fail only after the recording.
-version="$(gh --version | sed -nE '1s/^gh version ([0-9]+)\.([0-9]+).*/\1 \2/p')"
-read -r major minor <<<"${version:-0 0}"
-if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 99 ]; }; then
-  echo "demo: gh $major.$minor cannot attach a video to a comment; upgrade gh to 2.99.0 or later, else stop and report: a video posted another way (a release asset, a link) downloads instead of playing, and check merge refuses it" >&2
-  exit 1
-fi
-if [ "$tapes" = 1 ] && ! command -v ttyd >/dev/null; then
-  echo "demo: VHS needs ttyd on PATH to render a tape; install it" >&2
-  exit 1
-fi
-
 # With several GitHub remotes and no `gh repo set-default`, gh reads the PR as `upstream`'s: refuse rather than
 # post to a repo nobody chose.
 repos="$(git remote -v | awk '{print $2}' | sed -E 's#/+$##; s#\.git/*$##' |
@@ -53,9 +44,33 @@ if [ "$(printf '%s' "$repos" | grep -c .)" -gt 1 ] && ! git config --get-regexp 
   exit 1
 fi
 
+# One cheap GraphQL call decides the route: where it is refused, post over REST (see the header).
+rest=0
+gh api graphql -f query='{ viewer { login } }' >/dev/null 2>&1 || rest=1
+if [ "$rest" = 1 ] && [ -z "$pr" ]; then
+  echo "demo: GraphQL is refused here, so gh cannot find the PR from the branch; pass --pr <number>" >&2
+  exit 2
+fi
+
+# --attach arrived in gh 2.99.0; an older gh would fail only after the recording.
+version="$(gh --version | sed -nE '1s/^gh version ([0-9]+)\.([0-9]+).*/\1 \2/p')"
+read -r major minor <<<"${version:-0 0}"
+if [ "$rest" = 0 ] && { [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 99 ]; }; }; then
+  echo "demo: gh $major.$minor cannot attach a video to a comment; upgrade gh to 2.99.0 or later, else stop and report: a video posted another way (a release asset, a link) downloads instead of playing, and check merge refuses it" >&2
+  exit 1
+fi
+if [ "$tapes" = 1 ] && ! command -v ttyd >/dev/null; then
+  echo "demo: VHS needs ttyd on PATH to render a tape; install it" >&2
+  exit 1
+fi
+
 pr="${pr:-$(gh pr view --json number --jq .number)}"
 head="$(git rev-parse HEAD)"
-pr_head="$(gh pr view "$pr" --json headRefOid --jq .headRefOid)"
+if [ "$rest" = 1 ]; then
+  pr_head="$(gh api "repos/{owner}/{repo}/pulls/$pr" --jq .head.sha)"
+else
+  pr_head="$(gh pr view "$pr" --json headRefOid --jq .headRefOid)"
+fi
 if [ "$head" != "$pr_head" ]; then
   echo "demo: this checkout is at ${head:0:7}, PR #$pr's head is ${pr_head:0:7}; record from a clean checkout of the head" >&2
   exit 3
@@ -69,25 +84,71 @@ fi
 
 staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
-attach=() names=""
+attach=() files=() names=""
 i=0
 for recording in "$@"; do
   i=$((i + 1))
-  video="$staging/pr$pr-${head:0:7}-$i.mp4"
+  ext=mp4; [ "$rest" = 1 ] && ext=gif
+  video="$staging/pr$pr-${head:0:7}-$i.$ext"
   case "$recording" in *.png | *.jpg) video="$staging/pr$pr-${head:0:7}-$i.${recording##*.}" ;; esac
   case "$recording" in
     *.tape) vhs "$recording" -o "$video" ;;
-    *.webm | *.mov) ffmpeg -loglevel error -y -i "$recording" -c:v libx264 -pix_fmt yuv420p -movflags +faststart "$video" ;;
-    *.mp4 | *.png | *.jpg) cp "$recording" "$video" ;;
+    *.png | *.jpg) cp "$recording" "$video" ;;
+    *.webm | *.mov | *.mp4)
+      if [ "$rest" = 1 ]; then
+        ffmpeg -loglevel error -y -i "$recording" -vf "fps=10,scale=800:-2" "$video"
+      elif [ "${recording##*.}" = mp4 ]; then cp "$recording" "$video"
+      else ffmpeg -loglevel error -y -i "$recording" -c:v libx264 -pix_fmt yuv420p -movflags +faststart "$video"; fi ;;
   esac
   [ -s "$video" ] || { echo "demo: $recording produced no file" >&2; exit 1; }
   attach+=(--attach "$video")
+  files+=("$video")
   names+="${names:+, }$(basename "$recording")"
 done
 
+me="$(gh api user --jq .login)"
+
+if [ "$rest" = 1 ]; then
+  # The media goes to the one branch a cloud session may push for it, on top of what is there (it can't
+  # delete a branch, and a force-push is refused), from a scratch worktree so this checkout stays as it is.
+  branch="claude/ready-demo-$pr"
+  work="$staging/media"
+  git worktree add --detach "$work" >/dev/null
+  trap 'git worktree remove --force "$work" 2>/dev/null; rm -rf "$staging"' EXIT
+  if git -C "$work" fetch -q origin "$branch" 2>/dev/null; then
+    git -C "$work" checkout -q --detach FETCH_HEAD
+  else
+    git -C "$work" checkout -q --orphan "$branch"
+    git -C "$work" rm -rfq . 2>/dev/null || true
+  fi
+  cp "${files[@]}" "$work/"
+  git -C "$work" add -A
+  git -C "$work" commit -q --allow-empty -m "demo for PR #$pr at ${head:0:7}"
+  git -C "$work" push -q origin "HEAD:refs/heads/$branch"
+  sha="$(git -C "$work" rev-parse HEAD)"
+  slug="$(gh api "repos/{owner}/{repo}" --jq .full_name)"
+  links=""
+  for f in "${files[@]}"; do
+    links+="![$(basename "$f")](https://github.com/$slug/blob/$sha/$(basename "$f")?raw=true)"$'\n\n'
+  done
+  old="$(gh api "repos/{owner}/{repo}/issues/$pr/comments" --paginate \
+    --jq ".[] | select(.user.login == \"$me\" and (.body | startswith(\"## Demo\"))) | .id")"
+  gh api "repos/{owner}/{repo}/issues/$pr/comments" -f body="## Demo
+
+${caption:-$names}, on ${head:0:7}.
+
+$links" --jq .html_url
+  for id in $old; do
+    # No minimize over REST: the old comment says it is outdated instead.
+    gh api -X PATCH "repos/{owner}/{repo}/issues/comments/$id" \
+      -f body="$(gh api "repos/{owner}/{repo}/issues/comments/$id" --jq '"Outdated, superseded by a later demo.\n\n" + (.body | sub("^## Demo"; "Demo"))')" >/dev/null ||
+      echo "demo: posted, but could not mark $id outdated" >&2
+  done
+  exit 0
+fi
+
 # Read your earlier demos before posting, so the new comment is not among them; a
 # reviewer's own `## Demo` comment is left alone.
-me="$(gh api user --jq .login)"
 old="$(gh api "repos/{owner}/{repo}/issues/$pr/comments" --paginate \
   --jq ".[] | select(.user.login == \"$me\" and (.body | startswith(\"## Demo\"))) | .node_id")"
 

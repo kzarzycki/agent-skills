@@ -15,13 +15,13 @@ Outside an Omnigent session on a machine with several logins,
 `--server URL` names the server the API sections are read from; without it they are left out
 with the reason. It exits 0 whenever it prints a report. `--json` prints the report as data; `--html PATH`
 also writes one page from the same data, with no script and nothing fetched, so it opens
-offline. The page holds the numbers; a retro's narrative stays the `retro` skill's.
+offline. The page holds the numbers, not a retro's narrative.
 
 ## Sources
 
 | Source | Where it answers | Gives |
 |---|---|---|
-| Omnigent API, `GET /v1/usage` | any host logged in to the server (`orchestrating-agents`' `scripts/omnigent_agent.py` does the login and token refresh) | spend today, over 7 and 30 days; each top-level session tree's cost by model |
+| Omnigent API, `GET /v1/usage` | any host logged in to the server (`omnigent-agents`' `scripts/omnigent_agent.py` does the login and token refresh) | spend today, over 7 and 30 days; each top-level session tree's cost by model |
 | Server Postgres, `docker exec <container> psql` (default `omnigent-postgres-1`) | the server host only | daily cost, tokens by model, each tree's sub-agents, nested Codex sub-agents, compactions and forked items, live subscriptions, scheduled-task runs, all flags |
 | Codex rollouts, `~/.omnigent/codex-native/*/codex-home/sessions/` | each host that ran Codex | the newest rate-limit snapshot, per window (5h, weekly) |
 
