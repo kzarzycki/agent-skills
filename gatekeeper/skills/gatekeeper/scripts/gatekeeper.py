@@ -7833,7 +7833,7 @@ def mergify_step(pull: dict[str, Any]) -> int:
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
     (QUEUED and a `land` success there since land's last eviction at it, queued_here), left alone (exit 0); else
     queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
-    `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). A DEQUEUED label on a head land does not hold queued (a push
+    `.mergify.yml`'s conditions unmet, and QUEUED, and at a head land evicted before, REQUEUE (requeue) (exit 0). A DEQUEUED label on a head land does not hold queued (a push
     since, or land's own eviction, which Mergify labels too) is stale, and comes off."""
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
     labels = {each["name"] for each in pull["labels"]["nodes"]}
@@ -7852,6 +7852,7 @@ def mergify_step(pull: dict[str, Any]) -> int:
             label(number, QUEUED, add=True)
         if refused is not None:
             handed_by_record(pull)
+        requeue(pull)
     except subprocess.CalledProcessError as exc:
         print(f"{where}: GitHub refused its hand-over to Mergify at {head}: {stderr_of(exc)}")
         return 1
@@ -7898,6 +7899,30 @@ def handed_by_record(pull: dict[str, Any]) -> None:
     print(
         f"{where}: the hand-over record names {head}, for the land-status workflow to post `land` on"
     )
+
+
+# the command that takes a PR Mergify dequeued (a red batch it found the PR's, a timeout) back into its queue: the
+# `queue` action land's `.mergify.yml` runs does not re-embark such a PR at an unchanged head, and Mergify's `requeue`
+# command is deprecated for this one (docs.mergify.com, merge-queue/lifecycle and commands/queue)
+REQUEUE = "@mergifyio queue"
+
+
+def requeue(pull: dict[str, Any]) -> None:
+    """After a hand-over at a head land evicted from Mergify's queue before (evicted_at): REQUEUE, once per hand-over,
+    so Mergify takes the head back once it matches its queue conditions; a hand-over whose command already follows
+    that eviction posts none, and a head never evicted needs none."""
+    head = pull["headRefOid"]
+    evicted = evicted_at(pull, head)
+    if evicted is None:
+        return
+    for note in notes(pull):
+        if (
+            note["body"].strip().splitlines()[:1] == [REQUEUE]
+            and (note.get("createdAt") or "") >= evicted
+        ):
+            return
+    comment(pull["number"], REQUEUE + "\n")
+    print(f"PR #{pull['number']}: asked Mergify to queue {head} again, which it evicted before")
 
 
 def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:

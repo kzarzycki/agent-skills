@@ -435,3 +435,31 @@ def test_check_stalled_reads_a_success_older_than_the_eviction_as_not_queued(
     new = {**old, "created_at": "2026-11-01T00:00:00Z"}
     hub[head].insert(0, new)
     assert approvals.main(["check", "stalled"]) == 0
+
+
+def test_a_hand_over_after_an_eviction_at_the_same_head_asks_mergify_to_queue_it_once(
+    refused: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Mergify takes back a PR it dequeued for failing checks only on `@mergifyio queue` (its lifecycle docs), and
+    land's `queue` action does not ask: the hand-over after an eviction at the same head posts the command, once per
+    hand-over; a first hand-over posts none (#1882)."""
+    head = refused["opened"](7)
+    assert refused["land"]("7")[0] == 0
+    assert notes_on(refused, 7, approvals.REQUEUE) == []
+    refused["pulls"][7]["labels"]["nodes"].append({"name": approvals.DEQUEUED})
+    old = {
+        "context": "land",
+        "state": "success",
+        "description": "",
+        "created_at": "2026-09-01T00:00:00Z",
+    }
+    hub.setdefault(head, []).insert(0, old)
+    assert refused["land"]("7")[0] == 1
+    assert refused["land"]("7")[1][0] == "PR #7 is ready now"
+    code, lines = refused["land"]("7")
+    assert code == 0, lines
+    assert len(notes_on(refused, 7, approvals.REQUEUE)) == 1
+    # a land before the workflow's status: the same hand-over, so no second command
+    assert refused["land"]("7")[0] == 0
+    assert len(notes_on(refused, 7, approvals.REQUEUE)) == 1
