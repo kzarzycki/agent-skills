@@ -196,6 +196,12 @@ plus the PRs merged before it, so it needs the base merged in. No gate runs on t
 From a clone with no working tree (no index: a `--no-checkout` launch dir), where every command reads the policy files
 from origin's default branch (policy_ref), step 3 makes no worktree: the heads merge in objects (`git merge-tree
 --write-tree`), and `land` refuses a `pre_land` it has no checkout to run in.
+   `check merge` runs the same `pre_land` the same way (one function, pre_land_run), in a temporary worktree of the
+base's tip, once nothing else holds the merge, so it never calls clear a PR `land` would leave out: a refusal prints
+`PR #<n>: `<cmd>` refuses it against <base> at <tip>, exiting <code>: land leaves it out` with its output's last
+lines and exits WAITING, not 1, since land keeps the PR ready; it posts no comment. While something else holds the
+merge it prints `PR #<n>: pre_land not run: `<cmd>` (land runs it once nothing else holds the merge)`, and from a
+clone with no working tree, where land refuses a `pre_land`, a `pre_land not run` line saying so, exiting WAITING.
 4. It merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
 --match-head-commit`), with the body the repo's squash default writes. A merge GitHub refuses, or leaves unmerged
 (a merge queue the base's rules don't name, such as classic branch protection's, only queues it, to merge later on a
@@ -5683,6 +5689,8 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     advice = (
         [f"PR #{pull['number']}: {said}"] if point == "merge" and (said := unforced(pull)) else []
     )
+    # what land's pre-land check would refuse, after the rest, so check merge never calls clear a PR land leaves out
+    waiting += pre_land_holds(pull, loop, bool(found or waiting)) if point == "merge" else []
     for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
         print(line)
     return 1 if found else WAITING if waiting else 0
@@ -7457,48 +7465,66 @@ def merged_trees(
     return landed
 
 
-def pre_landed(
-    pull: dict[str, Any], base: str, work: Path, loop: str | None, failed: set[int]
-) -> bool:
-    """Whether loop.md's `pre_land` passes the PR, True without one. It runs in `work` at the base's tip, with
-    LAND_HEAD and LAND_BASE set, so the base's tree holds the check that judges a PR, never the PR's own. Non-zero
-    leaves the PR out of this batch with its output's end printed on every land and said once per head on the PR; it
-    isn't red, so it stays ready."""
+class PreLand(NamedTuple):
+    """One run of loop.md's `pre_land` on a PR: the command as written, the base's tip it ran at, its exit and its
+    output (stdout and stderr together)."""
+
+    command: str
+    tip: str
+    exit: int
+    output: str
+
+    def tail(self) -> str:
+        """Its output's last LOG_TAIL lines, each indented on a line of its own, where a check says why."""
+        return "".join(f"\n  {line}" for line in self.output.rstrip("\n").splitlines()[-LOG_TAIL:])
+
+
+def pre_land_run(pull: dict[str, Any], work: Path, loop: str | None) -> PreLand | None:
+    """Run loop.md's `pre_land` on the PR in `work`, a checkout of the base's tip, with LAND_HEAD (the PR's head) and
+    LAND_BASE (that tip) set, so the base's tree holds the check that judges a PR, never the PR's own. None when loop.md
+    sets none, or the head isn't on origin (the check couldn't read it: the caller says so). The one run `land`
+    (pre_landed) and `check merge` (pre_land_holds) share, so they can't disagree on what it passes."""
     if not (written := settings(loop).get("pre_land")):
-        return True
+        return None
     command, words, sets = command_line(written, "pre_land")
-    where, head, tip = (
-        f"PR #{pull['number']}",
-        pull["headRefOid"],
-        run_in(work, "rev-parse", "HEAD"),
-    )
-    # so the check can read the head; a head not on origin is merged_onto's to report
+    head, tip = pull["headRefOid"], run_in(work, "rev-parse", "HEAD")
+    # so the check can read the head
     if not fetched(head):
-        return True
+        return None
     try:
-        ran = subprocess.CompletedProcess(
+        code, output = run_heavy(
             words,
-            *run_heavy(
-                words,
-                cwd=work,
-                env=os.environ | sets | {"LAND_HEAD": head, "LAND_BASE": tip},
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors="replace",
-            ),
+            cwd=work,
+            env=os.environ | sets | {"LAND_HEAD": head, "LAND_BASE": tip},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
         )
     except OSError as exc:
         raise Refused(f"loop.md's `pre_land` {command!r} can't run: {exc}") from None
-    reset(work, tip)  # the batch merges onto the base as it is, whatever the check left
-    if not ran.returncode:
+    return PreLand(command, tip, code, output or "")
+
+
+def pre_landed(
+    pull: dict[str, Any], base: str, work: Path, loop: str | None, failed: set[int]
+) -> bool:
+    """Whether loop.md's `pre_land` passes the PR (pre_land_run), True without one. Non-zero leaves the PR out of this
+    batch with its output's end printed on every land and said once per head on the PR; it isn't red, so it stays
+    ready."""
+    ran = pre_land_run(pull, work, loop)
+    if ran is None:
+        return True  # a head not on origin is merged_onto's to report
+    reset(work, ran.tip)  # the batch merges onto the base as it is, whatever the check left
+    if not ran.exit:
         return True
+    where, head = f"PR #{pull['number']}", pull["headRefOid"]
     failed.add(pull["number"])
     # its output's end on every land, not only in the comment, which is once per head: a land again on the same head
     # would otherwise say only the exit code
     print(
-        f"{where}: `{command}` refused it against {base} at {tip}, exiting {ran.returncode}: left out of this batch"
-        + "".join(f"\n  {line}" for line in ran.stdout.rstrip("\n").splitlines()[-LOG_TAIL:])
+        f"{where}: `{ran.command}` refused it against {base} at {ran.tip}, exiting {ran.exit}: left out of this batch"
+        + ran.tail()
     )
     if not any(
         note["body"].startswith(PRE_LAND) and f"Head: {head}" in note["body"]
@@ -7508,15 +7534,50 @@ def pre_landed(
             pull["number"],
             fold(
                 PRE_LAND,
-                f"`{command}` refused it against {base} at {tip}, exiting {ran.returncode}: fix what it says, then"
+                f"`{ran.command}` refused it against {base} at {ran.tip}, exiting {ran.exit}: fix what it says, then"
                 " land again.",
                 f"Head: {head}\n\n````\n"
                 # its end, where a check says why, within GitHub's 65536 characters a comment holds
-                + ran.stdout.rstrip("\n")[-60000:]
+                + ran.output.rstrip("\n")[-60000:]
                 + "\n````",
             ),
         )
     return False
+
+
+def pre_land_holds(pull: dict[str, Any], loop: str | None, rest_holds: bool) -> list[str]:
+    """`check merge`'s lines for loop.md's `pre_land`, so it never calls clear a PR `land` would leave out: none
+    without one. While something else holds the merge (`rest_holds`), one line that it has not run yet, since land runs
+    it only on a candidate; else it runs as land runs it (pre_land_run), in a temporary worktree of the base's tip, and
+    a refusal is one line with its output's end. From a clone with no working tree, where land refuses a `pre_land`,
+    one line saying so. Each line is a wait, not a failure: land leaves the PR out but keeps it ready (#2063)."""
+    if not (written := settings(loop).get("pre_land")):
+        return []
+    where, base = f"PR #{pull['number']}", pull["baseRefName"]
+    command = command_line(written, "pre_land")[0]
+    if rest_holds:
+        return [
+            f"{where}: pre_land not run: `{command}` (land runs it once nothing else holds the merge)"
+        ]
+    if policy_ref(toplevel()) is not None:
+        return [
+            (
+                f"{where}: pre_land not run: `{command}` runs in a checkout of {base}'s tip, and this clone has no"
+                " working tree, so land refuses it here too: check merge where the files are checked out"
+            )
+        ]
+    if not fetched(pull["headRefOid"]):
+        return [
+            f"{where}: pre_land not run: its head {pull['headRefOid']} is not on origin: push it"
+        ]
+    with batch_tree(base) as work:
+        ran = pre_land_run(pull, work, loop)
+    if ran is None or not ran.exit:
+        return []
+    return [
+        f"{where}: `{ran.command}` refuses it against {base} at {ran.tip}, exiting {ran.exit}: land leaves it out"
+        + ran.tail()
+    ]
 
 
 def evicted(
