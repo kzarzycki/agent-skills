@@ -349,7 +349,7 @@ session, 1 when not. It reads idle CPU, not the load average, which on macOS als
 waiting on I/O and memory and reads several times too high; load per core decides only when idle
 cannot be measured. `start` and `run` wait while the host the new session's load lands on has
 none: the host `--host` names, else this one. A `claude-cloud` start is judged there on memory
-and the row's `max_sessions` alone, since its bridge is all that runs on the host and its work runs
+alone (no `max_sessions` cap, and it isn't counted toward one), since its bridge is all that runs on the host and its work runs
 in the VM: its line reads `cloud start, cpu not judged, …`, and on another host only
 `/proc/meminfo` is read. Its memory floor is its own, `OMNIGENT_CLOUD_MIN_AVAILABLE_MB` (default
 1200), on every host, since the bridge adds about 150 MB: no row's `min_mb` and no
@@ -366,7 +366,7 @@ The limits are knobs set for the hardware: `OMNIGENT_MIN_CPU_IDLE` (percent, def
 gives `min_mb` and `max_load` (the 1-minute load average, absolute, not per core; a missing
 field takes the default): `cc-experiments` 2500 MB and load 40, `oz` load 10. Any host named `epic-*` (a burst box, 4 vCPU and 8 GB) has the `HOST_PREFIX_LIMITS` row
 1500 MB, load 6 and `max_sessions` 4: a start is refused once the box has that many live sessions,
-counted from the session list, so it holds where load and memory can't be read. A row's
+counted from the session list (bridged `claude-cloud` sessions excluded), so it holds where load and memory can't be read. A row's
 `max_load` decides another host's load in place of load per core, and on this host refuses on
 top of the idle-CPU judgement. `OMNIGENT_MIN_AVAILABLE_MB_<HOST>` and `OMNIGENT_MAX_LOAD_<HOST>`
 (the name upper-cased, `-` as `_`) override one row for a host start. A
