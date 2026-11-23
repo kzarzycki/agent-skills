@@ -9789,10 +9789,8 @@ def supervise_registry(
             if any(
                 i["id"] == f"dequeued:{lead}:{eid}" and i["status"] == "offline"
                 for i in state["intents"]
-            ):
-                entry.update(
-                    told=False, tries=tries + 1
-                )  # its lead's host is offline: next poll again
+            ):  # its lead's host is offline: next poll again
+                entry.update(told=False, tries=tries + 1)
         for eid, kind, line in queue_alarms(repo, memo):
             say(line, sid, eid, kind)
 
