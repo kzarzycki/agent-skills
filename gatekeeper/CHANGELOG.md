@@ -5,6 +5,11 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.5 - 2026-11-23
+
+- gatekeeper: `loop.delegate_spec: false` restores owner-only specs and plans under `loop.delegate: all`: `approve spec|plan --by delegate` is refused, naming the key, and posts nothing; `check build` and `check merge` count no delegate's spec or plan record, with one line saying why; the delegate's go on a merge still counts. The key defaults to true, so a policy that doesn't set it keeps #1805's behaviour (#2018).
+- gatekeeper: 0.1.5 is the first tag with #1872's no-gate `land` on a base with no merge queue, listed under 0.1.4 above, whose `gatekeeper-v0.1.4` tag predates it: read its upgrade note when moving from the 0.1.4 tag (#1872, #2026).
+
 ## 0.1.4 - 2026-11-23
 
 - gatekeeper: `check stalled` judges every base, not only Mergify's: a PR `land` would take into a base it merges itself is listed while still open, and one into a base GitHub's merge queue holds while not in it; it also lists a PR whose newest verifier pass on its head is satisfied (or at the cap) but that still lacks its go or its `head_proof` record past `loop.stalled_after_hours` (default 4) since the later of its head's push and its newest verdict there, naming what is missing (`missing: go`); it reads the policy from the base and compares only the running code with the base's, so a worktree that edits or lags the policy files still judges; a PR it can't judge from this checkout (one stacked on another PR's branch, a base it can't fetch or whose policy is refused, a refused read) gets one `not judged` line, a last line counts them, and the rest are still judged (#1746).
