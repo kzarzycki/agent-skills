@@ -147,3 +147,110 @@ def test_spent_counts_across_a_reset() -> None:
 def test_shim_runs_under_plain_sh() -> None:
     assert subprocess.run(["sh", "-n", str(SCRIPTS / "gh")], check=False).returncode == 0
     assert os.access(SCRIPTS / "gh", os.X_OK)
+
+
+def logged_args(log: Path) -> list[str]:
+    return [line.split("\t")[5] for line in log.read_text().splitlines()]
+
+
+def test_the_shim_passes_each_argument_whole(setup: tuple[dict[str, str], Path]) -> None:
+    env, _ = setup
+    done = subprocess.run(
+        ["gh", "api", "-f", "body=two words", "*"],
+        input="",
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.stdout.splitlines()[0] == "out:api -f body=two words *"
+    # a fake gh that counts its arguments shows "a b" stayed one
+    real = Path(env["PATH"].split(":")[1]) / "gh"
+    real.write_text('#!/bin/sh\necho "$#"\n')
+    assert (
+        subprocess.run(
+            ["gh", "a b", "c"], env=env, capture_output=True, text=True, check=False
+        ).stdout
+        == "2\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("args", "hidden"),
+    [
+        (["api", "user", "-H", "AUTHORIZATION: bearer abc123secret"], "abc123secret"),
+        (["api", "x", "-f", "token=" + "0123456789abcdef" * 2 + "01234567"], "0123456789abcdef"),
+        (["secret", "set", "NAME", "--body", "s3cr3t-value"], "s3cr3t-value"),
+        (["secret", "set", "NAME", "--body=s3cr3t-value"], "s3cr3t-value"),
+        (["variable", "set", "NAME", "-b", "s3cr3t-value"], "s3cr3t-value"),
+        (["api", "x", "-F", "client_secret=s3cr3t-value"], "s3cr3t-value"),
+    ],
+)
+def test_the_shim_masks_secret_values(
+    setup: tuple[dict[str, str], Path], args: list[str], hidden: str
+) -> None:
+    env, log = setup
+    subprocess.run(["gh", *args], input="", env=env, capture_output=True, check=False)
+    assert hidden not in log.read_text() and "***" in log.read_text()
+
+
+def test_the_shim_logs_both_session_ids_and_cuts_long_arguments(
+    setup: tuple[dict[str, str], Path],
+) -> None:
+    env, log = setup
+    env = {**env, "OMNIGENT_RUNNER_PRIMARY_SESSION_ID": "p1"}
+    subprocess.run(
+        ["gh", "api", "-f", "body=" + "x" * 1000],
+        input="",
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    line = log.read_text().splitlines()[-1].split("\t")
+    assert line[2] == "s1/p1" and len(line[5]) == 400
+
+
+def test_a_shell_parent_names_the_command_that_ran_it(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    subprocess.run(
+        ["python3", "-c", "import subprocess; subprocess.run(['sh', '-c', 'gh x; true'])"],
+        env=env,
+        check=False,
+    )
+    parent = log.read_text().splitlines()[-1].split("\t")[4]
+    assert parent.startswith("python3 -c import subprocess") and " > sh -c gh x; true" in parent
+
+
+def test_a_second_copy_is_skipped_and_no_real_gh_exits_127(
+    setup: tuple[dict[str, str], Path], tmp_path: Path
+) -> None:
+    env, log = setup
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "gh").write_bytes((SCRIPTS / "gh").read_bytes())
+    (other / "gh").chmod(0o755)
+    env = {**env, "PATH": f"{tmp_path / 'shims'}:{other}:{env['PATH']}"}
+    done = subprocess.run(
+        ["gh", "status"], input="", env=env, capture_output=True, text=True, check=False, timeout=10
+    )
+    assert (done.returncode, done.stdout) == (3, "out:status\n") and len(
+        log.read_text().splitlines()
+    ) == 1
+    alone = {**env, "PATH": f"{tmp_path / 'shims'}:{other}:/usr/bin:/bin"}
+    done = subprocess.run(
+        ["gh", "status"], env=alone, capture_output=True, text=True, check=False, timeout=10
+    )
+    assert done.returncode == 127 and "no real gh" in done.stderr
+
+
+def test_command_keeps_the_route_past_flags() -> None:
+    assert (
+        gq.command("api -X POST repos/o/r/pulls/12/reviews -f body=x")
+        == "api POST repos/o/r/pulls/N/reviews"
+    )
+    assert (
+        gq.command("api -H Accept:x repos/o/r/commits/abcdef1234567/status")
+        == "api repos/o/r/commits/N/status"
+    )
+    assert gq.command("api --method=PATCH repos/o/r/issues/5") == "api PATCH repos/o/r/issues/N"
+    assert gq.command("pr view 5 --json x") == "pr view"

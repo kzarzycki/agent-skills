@@ -4,7 +4,8 @@
 # and the shim makes no API call of its own. A failure to log never stops the call.
 #
 # Line (tab-separated): UTC time, host, session ids (OMNIGENT_* only), cwd, parent command, gh arguments.
-# Arguments are cut to 400 characters and anything shaped like a GitHub token is masked; no other env value is logged.
+# Arguments are cut to 400 characters; GitHub tokens, Authorization headers, secret and variable values and token-,
+# secret-, password-, key- or auth-named fields are masked; no env value but the OMNIGENT_* session ids is logged.
 # Log: $GH_QUOTA_LOG, else ${XDG_STATE_HOME:-$HOME/.local/state}/gh-quota/calls.log.
 # Real gh: $GH_QUOTA_REAL, else the first gh on PATH that is not this file.
 
@@ -36,7 +37,7 @@ fi
 	log=${GH_QUOTA_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/gh-quota/calls.log}
 	mkdir -p "$(dirname "$log")" 2>/dev/null
 	now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-	host=$(hostname 2>/dev/null)
+	host=$(hostname 2>/dev/null || uname -n 2>/dev/null)
 	host=${host%%.*}
 	session=${OMNIGENT_SESSION_ID:-}
 	[ -n "${OMNIGENT_RUNNER_PRIMARY_SESSION_ID:-}" ] && session="$session/${OMNIGENT_RUNNER_PRIMARY_SESSION_ID}"
@@ -51,9 +52,33 @@ fi
 		[ -n "$above" ] && parent="$above > $parent"
 		;;
 	esac
-	args=$*
-	# one line per call: tabs and newlines inside a field become spaces; tokens are masked; long bodies are cut
-	clean() { printf '%s' "$1" | tr '\t\n\r' '   ' | sed -E 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/\1***/g; s/([Aa]uthorization:[ ]*)[^ ]+( [^ ]+)?/\1***/g' | cut -c1-400; }
+	# the arguments, masked: a secret's or variable's value, and a field whose name says token, secret, password,
+	# key or auth, are never logged
+	args=
+	next=
+	case "${1:-} ${2:-}" in secret\ * | variable\ *) hide=1 ;; *) hide=0 ;; esac
+	for word in "$@"; do
+		if [ -n "$next" ]; then
+			word='***'
+			next=
+		else
+			case $word in
+			-b | --body | --value) [ $hide = 1 ] && next=1 ;;
+			--body=* | --value=*) [ $hide = 1 ] && word="${word%%=*}=***" ;;
+			*[Tt][Oo][Kk][Ee][Nn]*=* | *[Ss][Ee][Cc][Rr][Ee][Tt]*=* | *[Pp][Aa][Ss][Ss]*=* | *[Kk][Ee][Yy]*=* | *[Aa][Uu][Tt][Hh]*=*)
+				case $word in [Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:*) ;; *) word="${word%%=*}=***" ;; esac
+				;;
+			esac
+		fi
+		args="$args${args:+ }$word"
+	done
+	# one line per call: tabs and newlines inside a field become spaces; tokens and Authorization headers are masked;
+	# long fields are cut to 400 characters
+	clean() {
+		printf '%s' "$1" | tr '\t\n\r' '   ' |
+			sed -E 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/\1***/g; s/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:[ ]*)[^ ]+( [^ ]+)?/\1***/g' |
+			cut -c1-400
+	}
 	printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$now" "$(clean "$host")" "$(clean "$session")" "$(clean "$PWD")" \
 		"$(clean "${parent:--}")" "$(clean "$args")" >>"$log"
 } 2>/dev/null

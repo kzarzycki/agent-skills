@@ -17,11 +17,12 @@ The shim makes each machine keep its own count, and the report names the caller.
   appends one tab-separated line per call to its log and then `exec`s the real gh with the
   same arguments and streams, so gh's stdout, stderr and exit code never change. It makes no
   API call, so a call's `X-RateLimit-*` headers are not logged: read the bucket with `rate`
-  below. Its own cost is a few forks (`date`, `hostname`, `ps`), about 10-20 ms.
+  below. Its own cost is a few forks (`date`, `hostname`, `ps`, `sed`), about 30-50 ms a call.
   - Line: UTC time, host, session (the `OMNIGENT_SESSION_ID` and
     `OMNIGENT_RUNNER_PRIMARY_SESSION_ID` ids, no other env value), cwd, parent command (and,
-    when the parent is a shell, the command that ran it), gh arguments cut to 400 characters
-    with token-shaped values and `Authorization:` headers masked.
+    when the parent is a shell, the command that ran it), gh arguments cut to 400 characters,
+    with GitHub tokens, `Authorization:` headers, `secret`/`variable set` values and fields
+    named for a token, secret, password, key or auth masked.
   - Log: `$GH_QUOTA_LOG`, else `${XDG_STATE_HOME:-~/.local/state}/gh-quota/calls.log`.
   - Real gh: `$GH_QUOTA_REAL`, else the first gh on `PATH` that is not a copy of the shim. A
     failure to write the log never stops the call.
@@ -32,7 +33,7 @@ The shim makes each machine keep its own count, and the report names the caller.
   - `report [--minutes N] [LOG ...] [--counts FILE ...]` prints calls per caller (host,
     session, parent command, each script path cut to its file name) over the last N minutes
     (default 60), with calls/min and each caller's top gh commands, PR numbers and SHAs
-    folded (`api repos/o/r/pulls/N/reviews`).
+    folded and the method kept (`api POST repos/o/r/pulls/N/reviews`).
   - `counts [--minutes N] [LOG ...]` prints the same tally as tab-separated lines, small
     enough to post in a report or comment from a machine whose log no one else reads (a cloud
     VM); `report --counts FILE` adds such files into one ranking.

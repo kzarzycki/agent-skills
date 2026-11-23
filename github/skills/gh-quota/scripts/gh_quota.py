@@ -99,16 +99,51 @@ def caller(parent: str) -> str:
     return " ".join(words)[:100] or "-"
 
 
+# gh api's flags that take a value, so the route is the first word that is neither a flag nor a flag's value
+VALUED = {
+    "-X",
+    "--method",
+    "-H",
+    "--header",
+    "-f",
+    "--raw-field",
+    "-F",
+    "--field",
+    "-q",
+    "--jq",
+    "-t",
+    "--template",
+    "--input",
+    "-p",
+    "--preview",
+    "--hostname",
+    "--cache",
+}
+
+
 def command(args: str) -> str:
-    """The gh command, without its values: `api repos/o/r/pulls/12/reviews` -> `api repos/o/r/pulls/N/reviews`."""
+    """The gh command, without its values: `api -X POST repos/o/r/pulls/12/reviews` -> `api POST
+    repos/o/r/pulls/N/reviews`; any other command is its first two words (`pr view`)."""
     words = args.split()
     if not words:
         return "-"
-    if words[0] == "api":
-        route = next((w for w in words[1:] if not w.startswith("-")), "")
-        route = re.sub(r"\?.*", "", route)
-        return "api " + re.sub(r"/[0-9a-f]{7,40}(?=/|$)|/\d+(?=/|$)", "/N", route)
-    return " ".join(words[:2])
+    if words[0] != "api":
+        return " ".join(words[:2])
+    method, route, skip = "", "", False
+    for before, word in zip(words, words[1:]):
+        if skip:
+            skip = False
+            if before in ("-X", "--method"):
+                method = word.upper() + " "
+            continue
+        if word in VALUED:
+            skip = True
+        elif word.startswith("--method="):
+            method = word.split("=", 1)[1].upper() + " "
+        elif not word.startswith("-") and not route:
+            route = word
+    route = re.sub(r"\?.*", "", route)
+    return "api " + method + re.sub(r"/[0-9a-f]{7,40}(?=/|$)|/\d+(?=/|$)", "/N", route)
 
 
 def calls(logs: Iterable[Path], since: datetime) -> Iterator[dict[str, str]]:

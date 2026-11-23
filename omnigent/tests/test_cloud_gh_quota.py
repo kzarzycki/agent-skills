@@ -15,6 +15,7 @@ def test_a_cloud_brief_installs_the_shim_and_posts_its_counts() -> None:
     assert found, text
     assert (REPO / found[1]).is_file()  # the path the brief names is the pack's
     assert "gh_quota.py counts --minutes" in text and "`curl` calls" in text
+    assert "`gh-quota: not installed`" in text  # an empty tally is never read as no calls
     assert text.index(oa.CLOUD_GH_QUOTA.strip()) < text.index("The pack's scripts")
 
 
