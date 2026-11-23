@@ -1460,6 +1460,33 @@ def rest_like(view: Callable[[], dict]) -> Callable[..., str]:
     return gh
 
 
+def pr_rest(
+    calls: list | None = None, state: str = "open", repo_seen: list | None = None
+) -> Callable[..., str]:
+    """A fake ``gh`` answering the supervisor's PR read through REST (#2068): the pull (branches, head), no check runs.
+    Every call is kept in ``calls``; the repo each pull read names, in ``repo_seen`` ("" for the clone's own)."""
+
+    def gh(*args: str, **kw: object) -> str:
+        if calls is not None:
+            calls.append(args)
+        path = args[-1]
+        if m := re.fullmatch(r"repos/([^/]+/[^/]+|\{owner\}/\{repo\})/pulls/\d+", path):
+            if repo_seen is not None:
+                repo_seen.append("" if m[1].startswith("{") else m[1])
+            return json.dumps(
+                {
+                    "state": state,
+                    "head": {"sha": "s1", "ref": "feat"},
+                    "base": {"ref": "main"},
+                }
+            )
+        if "check-runs" in path:
+            return json.dumps({"check_runs": []})
+        return json.dumps({"statuses": []})
+
+    return gh
+
+
 def test_wait_for_a_pr_waits_until_its_checks_settle(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -13696,14 +13723,17 @@ def test_pr_settled_carries_the_head_gh_reports(monkeypatch: pytest.MonkeyPatch)
     """The head keys a waited PR's end, so it is asked of GitHub and returned."""
     asked = []
 
+    check = {"name": "gate", "status": "COMPLETED", "conclusion": "FAILURE"}
+    inner = rest_like(lambda: {"state": "OPEN", "statusCheckRollup": [check]})
+
     def gh(*args: str, timeout: float = 0) -> str:
         asked.append(args)
-        check = {"name": "gate", "status": "COMPLETED", "conclusion": "FAILURE"}
-        return json.dumps({"state": "OPEN", "headRefOid": "b2", "statusCheckRollup": [check]})
+        return inner(*args[:-1], args[-1].replace("pulls/976", "pulls/7"))
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
-    assert omnigent_agent.pr_settled(976) == (1, "PR #976 checks red: gate", "b2")
-    assert "headRefOid" in asked[0][-1]
+    monkeypatch.setattr(omnigent_agent, "ETAGS", {})
+    assert omnigent_agent.pr_settled(976) == (1, "PR #976 checks red: gate", "s")
+    assert asked[0][-1].endswith("/pulls/976")  # the pull's head is asked of GitHub and returned
 
 
 def test_a_started_child_that_fails_again_after_a_revive_is_news_again(
@@ -13779,19 +13809,12 @@ def test_an_open_pr_a_lead_waits_on_costs_one_github_read_a_minute(
 ) -> None:
     registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976", m={"status": "idle"})
     calls: list[tuple] = []
-    monkeypatch.setattr(
-        omnigent_agent,
-        "gh",
-        lambda *a, **k: (
-            calls.append(a)
-            or '{"state":"OPEN","statusCheckRollup":[],"headRefName":"feat","headRefOid":"s1","baseRefName":"main"}'
-        ),
-    )
+    monkeypatch.setattr(omnigent_agent, "ETAGS", {})
+    monkeypatch.setattr(omnigent_agent, "gh", pr_rest(calls))
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
-    waits = [c for c in calls if c[:2] == ("pr", "view")]
-    # beside it, a stall sweep of a followed lead's repo reads GitHub's REST api (pr_stalls, #1819)
-    stalls = [c for c in calls if c[:1] == ("api",)]
-    assert len(waits) == 1 and len(stalls) <= 1 and len(calls) == len(waits) + len(stalls)
+    assert not [c for c in calls if c[:2] == ("pr", "view")]  # no GraphQL read (#2068)
+    waits = [c for c in calls if c[-1].endswith("/pulls/976")]
+    assert len(waits) == 1
 
 
 @pytest.mark.parametrize("labelled", [False, True])
@@ -13806,16 +13829,19 @@ def test_a_bare_pr_wait_is_read_from_the_leads_repo_not_the_supervisors_director
     else:
         in_checkout(og)
     calls: list[tuple] = []
+    inner = pr_rest()
 
     def gh(*args: str, **_: object) -> str:
         calls.append(args)
-        if "-R" not in args:
-            raise omnigent_agent.Fail("gh pr view 976: no git remotes found")
-        return '{"state":"OPEN","statusCheckRollup":[],"headRefOid":"h"}'
+        if "{owner}" in args[-1]:
+            raise omnigent_agent.Fail("gh api: no git remotes found")
+        return inner(*args)
 
+    monkeypatch.setattr(omnigent_agent, "ETAGS", {})
     monkeypatch.setattr(omnigent_agent, "gh", gh)
     supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
-    assert calls and all(c[c.index("-R") + 1] == "o/r" for c in calls if "pr" in c), calls
+    pulls = [c[-1] for c in calls if "/pulls/976" in c[-1]]
+    assert pulls and all(p == "repos/o/r/pulls/976" for p in pulls), calls
 
 
 def bare_pr_wait_reads(
@@ -13825,13 +13851,8 @@ def bare_pr_wait_reads(
     registry, og = manager(tmp_path, f"STILL WORKING: x\nWaits: {wait}", m={"status": "idle"})
     og_setup(og)
     calls: list[str] = []
-
-    def gh(*args: str, **_: object) -> str:
-        if args[:2] == ("pr", "view"):
-            calls.append(args[args.index("-R") + 1] if "-R" in args else "")
-        return '{"state":"OPEN","statusCheckRollup":[],"headRefOid":"h"}'
-
-    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    monkeypatch.setattr(omnigent_agent, "ETAGS", {})
+    monkeypatch.setattr(omnigent_agent, "gh", pr_rest(repo_seen=calls))
     supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
     return calls
 
@@ -13991,7 +14012,7 @@ def badref_told(
     setup(og)
 
     def gh(*args: str, **_: object) -> str:
-        if args[0] == "api":
+        if "/pulls/" not in args[-1]:  # the issues endpoint
             if issue_error:
                 raise omnigent_agent.Fail(issue_error)
             return "{}"
@@ -14014,6 +14035,14 @@ def badref_told(
 
 NO_PR = "gh pr view: Could not resolve to a PullRequest with the number"
 NOT_FOUND = "gh api: Not Found (HTTP 404)"
+
+
+def test_a_rest_404_on_a_bare_ref_is_told_once_like_graphql_could_not_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The supervisor reads a PR through REST (#2068), which says 404 where GraphQL said "Could not resolve"."""
+    told = badref_told(capsys, tmp_path, monkeypatch, "#1357", NOT_FOUND, NOT_FOUND)
+    assert len(told) == 1 and "#1357 in o/r" in told[0]
 
 
 def test_a_bare_ref_with_no_such_pr_or_issue_in_the_leads_repo_is_told_once_over_many_polls(
@@ -14633,3 +14662,21 @@ def test_quota_line_due_counts_one_line_per_reset_2090() -> None:
     assert due(state, 1601.0, 0.0)
     assert due(state, 1700.0, 900.0)
     assert not due(state, 1800.0, 800.0)
+
+
+def test_several_waits_on_one_pr_read_it_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restart finds every lead's wait at once; M waits naming one PR make one read of it, not M (#2068)."""
+    sids = ("a", "b", "c")
+    registry = follows(tmp_path, *sids)
+    og = Leads(
+        **{s: [told("brief", 4000), ending("STILL WORKING: x\nWaits: #976", 3600)] for s in sids}
+    )
+    for sid in sids:
+        og.snaps[sid] = {"status": "idle", "updated_at": time.time() - 60}
+    calls: list[tuple] = []
+    monkeypatch.setattr(omnigent_agent, "ETAGS", {})
+    monkeypatch.setattr(omnigent_agent, "gh", pr_rest(calls))
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert len([c for c in calls if c[-1].endswith("/pulls/976")]) == 1
