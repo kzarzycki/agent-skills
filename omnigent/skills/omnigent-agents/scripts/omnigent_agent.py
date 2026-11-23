@@ -206,7 +206,9 @@ the repository, else the account's ``Default``. A name the login has no environm
 ``env``, else the repository's name) from the checkout's committed ``.claude/claude-cloud-setup.sh`` (the older
 ``.claude/cloud-setup.sh`` is still read) and ``.claude/claude-cloud-environment.json``, or brings the one already
 there up to them (``POST /v1/environment_providers/<id>``, no ``kind``), leaving the variables they do not name as they
-are; it is ``claude_cloud.py setup`` without the secrets and the proof, sends no secret and prints none.
+are. A checkout that pins an environment (its ``.claude/settings.local.json``, else its main checkout's) must pin one of
+that name: another name, or a pin the login has no environment for, fails naming both before anything is made, never
+a second, empty environment beside the pinned one (#2078); it is ``claude_cloud.py setup`` without the secrets and the proof, sends no secret and prints none.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -3860,6 +3862,30 @@ def unmake_launch_dir(path: Path, main: Path | None) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
+def refuse_other_pin(root: Path, name: str, source: str) -> None:
+    """``cloud-env`` brings up the environment the checkout's cloud sessions run in, its pin (``SETTINGS``'s
+    ``remote.defaultEnvironmentId``, else its main checkout's): a pinned environment of another name than ``name``
+    (from ``source``) fails naming both, as does a pin this login has no environment for, where an apply by name
+    would make a second, empty environment beside the pinned one (#2078). No pin: nothing to check."""
+    pins = [
+        (p / SETTINGS, environment_pin(own_settings(p))) for p in (root, main_worktree(root)) if p
+    ]
+    where, pin = next(((w, e) for w, e in pins if e), (None, ""))
+    if where is None:
+        return
+    pinned = next((e for e in cloud_environments() if str(e.get("environment_id")) == pin), None)
+    if pinned is None:
+        raise Fail(
+            f"cloud-env: {where} pins environment {pin}, which this host's claude login has none of:"
+            f" repin it to {name!r}'s environment, or remove the pin to make {name!r}"
+        )
+    if (other := str(pinned.get("name") or "")) != name:
+        raise Fail(
+            f"cloud-env: {where} pins environment {other!r} ({pin}), but {source} names {name!r}:"
+            f" add `env {other}` to loop.md's Cloud worker line, or repin {where} to {name!r}'s environment"
+        )
+
+
 def cloud_env(checkout: Path) -> str:
     """Make the claude.ai environment ``checkout``'s cloud sessions run in, or bring it up to the committed
     ``.claude/claude-cloud-setup.sh`` (the older ``.claude/cloud-setup.sh`` is still read) and, when there is one,
@@ -3893,6 +3919,14 @@ def cloud_env(checkout: Path) -> str:
         raise Fail(
             f"cloud-env: {root} has no remote to name the environment after: add env <name> to loop.md's Cloud worker line"
         )
+    source = (
+        "loop.md's Cloud worker line"
+        if line and line.env
+        else f"{ENVS.DEFINITION}'s name"
+        if definition.get("name")
+        else "the repository's name"
+    )
+    refuse_other_pin(Path(root), name, source)
     try:
         action, env = ENVS.apply(
             ENVS.headers(), name, script, f"Cloud sessions of {name}, set up by {path}", definition
