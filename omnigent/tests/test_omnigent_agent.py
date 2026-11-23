@@ -318,6 +318,9 @@ class FakeOmnigent:
             raise omnigent_agent.Fail(f"PATCH {sid}: HTTP 503")
         self.archived.append(sid)
 
+    def unarchive(self, sid: str) -> None:
+        self.archived.remove(sid)
+
 
 REAL_TRIAGE = omnigent_agent.triage
 
@@ -7388,6 +7391,44 @@ def test_relay_to_an_archived_session_names_its_state_and_where_its_work_continu
     relay(og, sid, tmp_path, monkeypatch)
     assert "no sub-agent or successor session is recorded" in capsys.readouterr().err
     assert og.posts == 0
+
+
+def test_relay_unarchive_brings_an_archived_session_back_then_delivers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    og.archive(sid)
+    assert relay(og, sid, tmp_path, monkeypatch, "go", "--unarchive") == 0
+    assert sid not in og.archived
+    assert capsys.readouterr().out.splitlines()[-1].startswith(f"session {sid}: delivered")
+    assert og.posts == 1
+
+
+def test_relay_to_a_session_on_an_offline_host_sends_nothing_and_exits_host_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    retried = reaped(og, {"recovered": True, "recovery": "runner_relaunched"})
+    info = og.info
+    og.info = lambda s: {**info(s), "host_online": False}  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.HOST_OFFLINE
+    assert "its host is offline" in capsys.readouterr().err
+    assert (retried, og.posts) == ([], 0)
+
+
+def test_a_dormant_resumable_host_is_revived_not_reported_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    retried = reaped(og, {"recovered": True, "recovery": "runner_relaunched"})
+    info = og.info
+    og.info = lambda s: {**info(s), "host_online": False, "host_resumable": True}  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    assert retried == [sid]
 
 
 def test_relay_of_the_same_words_after_the_session_worked_through_tools_is_a_new_message(

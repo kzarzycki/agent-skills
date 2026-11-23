@@ -60,7 +60,9 @@ exit 0 once it is in the history (or a copy the session has not answered yet alr
 one), or when only the session's running step holds it (``queued until the session's current step
 ends``, it lands then), 5 while an approval prompt or a question holds it, 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
-a later read failed (delivered, unconfirmed: run it again, it posts no second copy). An open
+a later read failed (delivered, unconfirmed: run it again, it posts no second copy), 8 when the
+session's host is offline (nothing sent, nothing kept: run it again once the host is back).
+``relay --unarchive`` unarchives an archived session first, so it resumes with its history. An open
 question card (``sys_ask_user_question``: elicitation id ``question_…``, not ``elicit_question_…``) holds
 nothing (``holds_input``): ``relay``, ``broadcast`` and ``watch`` treat the session as free and show
 ``card open: <question>``; a plain relay (or ``send``, which prints the same line before it waits) is
@@ -720,6 +722,8 @@ ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send fo
 # prompt or a question (one held only by the session's running step exits 0: it lands then)
 # send or relay posted the message, then a read that confirms it failed (6 is wait-for's)
 SENT_UNCONFIRMED = 7
+# send or relay found the session's host offline: nothing was sent, so send again once it is back
+HOST_OFFLINE = 8
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
 QUEUED_SECONDS = 10.0
 BROADCAST_WORKERS = 8  # sessions a broadcast relays to at once
@@ -1371,6 +1375,13 @@ class Gone(Fail):
     code = GONE
 
 
+class HostOffline(Gone):
+    """The session's host is offline and cannot be woken: nothing was sent, and Omnigent keeps
+    nothing for it, so the caller sends again once the host is back."""
+
+    code = HOST_OFFLINE
+
+
 class Undeleted(Fail):
     """A file a remote delete answered 404 for is still there: a host without the route."""
 
@@ -1965,6 +1976,12 @@ class Omnigent:
         """Stop ``sid``'s running turn, as the owner's stop does."""
         self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt"})
 
+    def unarchive(self, sid: str) -> None:
+        """Bring archived ``sid`` back with its transcript: the next message relaunches its agent
+        on the same conversation (Claude's same transcript, Codex's same thread, a cloud
+        session's same claude.ai session)."""
+        self.call("PATCH", f"/v1/sessions/{sid}", {"archived": False})
+
     def archive(self, sid: str) -> None:
         """Finish ``sid``: archive it, which ends its agent process and keeps its transcript. Never
         DELETE, which erases the transcript. A sub-agent's archive leaves the runner it shares
@@ -2438,7 +2455,7 @@ def archived_note(og: Omnigent, sid: str, info: dict) -> str:
     )
     return (
         f"session {sid} is archived (title {info.get('title') or '?'!r}, status"
-        f" {info.get('status') or '?'}{work}); {where}"
+        f" {info.get('status') or '?'}{work}); {where}; `relay --unarchive` resumes it with its history"
     )
 
 
@@ -2609,11 +2626,13 @@ def send(
     confirm_seconds: float,
     queued_after: float | None = None,
     far: bool = False,
+    unarchive: bool = False,
 ) -> tuple[str, bool]:
     """Send a follow-up (an answer) to a session whose runner is still up, and wait until it lands:
     ``delivered``, or ``already`` when a copy had landed before, and whether this call posted. With ``queued_after`` (a relay),
     ``queued`` once the copy has been pending that long instead. ``far``: the session runs on
-    another host (``elsewhere``), where ``report`` and its question are.
+    another host (``elsewhere``), where ``report`` and its question are. ``unarchive``: an
+    archived session is unarchived first, so it resumes with its history; otherwise it is Gone.
 
     Omnigent hands a message to the harness at once, also mid-turn: that is steering (the web
     composer's queue and its "Always steer" live only in the browser). The session lists it under
@@ -2636,8 +2655,17 @@ def send(
     old = frozenset(str(i.get("id")) for i in items)
     info = og.info(sid)
     if info.get("archived"):
-        raise Gone(archived_note(og, sid, info))
+        if not unarchive:
+            raise Gone(archived_note(og, sid, info))
+        og.unarchive(sid)
+        print(f"session {sid} was archived; unarchived it", file=sys.stderr)
+        info = og.info(sid)
     if not info.get("runner_online", True):
+        if info.get("host_online") is False and not info.get("host_resumable"):
+            raise HostOffline(
+                f"session {sid}: its host is offline, so nothing was sent and Omnigent keeps nothing"
+                " for it; send again once the host is back"
+            )
         revive(og, sid)
 
     # A copy is the same text exactly (both harnesses store it verbatim): a different message that
@@ -2829,6 +2857,7 @@ def relay(
     source: str = "",
     by: str = "",
     skip: bool = False,
+    unarchive: bool = False,
 ) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered, or queued behind the
     session's running step (it lands when the step ends); raise ``Queued`` while a prompt or
@@ -2842,7 +2871,8 @@ def relay(
     any prompt pending (a question or an approval) is skipped instead, sent nothing. With a
     ``source`` (a task or an agent, not the owner) ``text`` goes after a ``RELAY_FROM`` line and
     never answers a question, even with ``answer``. With ``by`` (the relaying session) a message
-    sent, not an answer, opens with a ``RELAYED`` line."""
+    sent, not an answer, opens with a ``RELAYED`` line. With ``unarchive``, an archived session is
+    unarchived first and resumes with its history."""
     if source:
         text = f"{RELAY_FROM.format(source=source)}\n{text}"
     info = og.info(sid)
@@ -2862,7 +2892,9 @@ def relay(
         return f"session {sid}: answered its open question: {'; '.join(_asks(e) for e in asked)}"
     if by and not source:
         text = f"{RELAYED.format(who=by)}\n{text}"
-    outcome, posted = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
+    outcome, posted = send(
+        og, sid, text, None, confirm_seconds, QUEUED_SECONDS, unarchive=unarchive
+    )
     if outcome == "queued":
         try:
             info = og.info(sid)
@@ -10787,6 +10819,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         " session waiting on a question holds the message behind it (exit 5); one held only"
         " by the session's running step exits 0 with the queued line",
     )
+    p.add_argument(
+        "--unarchive",
+        action="store_true",
+        help="unarchive an archived session first, so it resumes with its history; without it,"
+        " an archived session exits 4",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p.add_argument(
         "--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP
@@ -11405,6 +11443,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     answer=args.answer,
                     source=args.source,
                     by=own_id() or "an agent",
+                    unarchive=args.unarchive,
                 )
             )
             return 0
