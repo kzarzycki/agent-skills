@@ -2710,10 +2710,16 @@ def test_send_and_relay_post_an_expiry_and_the_senders_session(
     monkeypatch.setenv("OMNIGENT_SESSION_ID", "sender-1")
     (tmp_path / "m.md").write_text("hi")
     monkeypatch.chdir(tmp_path)
-    for argv in (["relay", sid, "m.md"], ["relay", sid, "m.md", "--expires", "0"]):
+    for argv in (
+        ["relay", sid, "m.md"],
+        ["relay", sid, "m.md", "--expires", "0"],
+        ["send", sid, "m.md", "r.md", "--timeout", "0"],
+        ["send", sid, "m.md", "r.md", "--timeout", "0", "--expires", "0"],
+    ):
         posted.clear()
         before = time.time()
         omnigent_agent.main([*argv, "--confirm-seconds", "0"])
+        assert posted, argv
         assert posted[-1]["sender_session_id"] == "sender-1"
         if "--expires" in argv:
             assert "expires_at" not in posted[-1]
