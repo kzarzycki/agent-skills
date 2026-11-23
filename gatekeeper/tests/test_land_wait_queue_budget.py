@@ -61,7 +61,8 @@ def route(args: tuple[str, ...]) -> str:
 def wait(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """The `queue` world under a fake clock (`now`, which time.sleep advances, running each due `ticks` action), with
     the adapter's own viewer, writer, merged_high, required_checks and pull_request on the real github.gh(), and `gh`
-    answered at subprocess.run: the login (`user`: a login, or the stderr of its refusal), the permission, the rules
+    answered at subprocess.run: the login (`user`: a login, or the stderr of its refusal), the permission
+    (`permission`: one, or the stderr of its refusal), the rules
     (a SQUASH merge queue requiring `qualify`), the PR's GraphQL read and the free `api rate_limit`; the rest,
     queue_watch's poll too, by the `queue` fake. `limit_after`: the REST bucket empties after that many REST answers, for 600 s, during
     which each REST read is refused with GitHub's rate-limit error and `api rate_limit` says so. Each call is kept in
@@ -71,7 +72,7 @@ def wait(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> dic
     state: dict[str, Any] = request.getfixturevalue("queue")
     fake, pulls = github.gh, state["pulls"]
     state.update(
-        now=0.0, ticks=[], gh_calls=[], rounds=[], user="loop", limit_after=None, reset=None, rest=0
+        now=0.0, ticks=[], gh_calls=[], rounds=[], user="loop", permission="write", limit_after=None, reset=None, rest=0
     )
     real_run, real_sleep = subprocess.run, approvals.time.sleep
 
@@ -101,7 +102,9 @@ def wait(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> dic
                 raise subprocess.CalledProcessError(1, ["gh", *args], "", state["user"])
             return state["user"] + "\n"
         if args[0] == "api" and any(a.endswith("/permission") for a in args):
-            return "write\n"
+            if state["permission"].startswith("gh:"):
+                raise subprocess.CalledProcessError(1, ["gh", *args], "", state["permission"])
+            return state["permission"] + "\n"
         if args[0] == "api" and "/rules/branches/" in text:
             return ":merge_queue:SQUASH\nqualify\n"
         if args[0] == "api" and any(a.startswith("repos/{owner}/{repo}/branches/") for a in args):
@@ -355,7 +358,9 @@ def test_a_mergify_wait_ends_when_mergify_merges_the_pr(mergify_wait: dict[str, 
     mergify_wait["at"](600, lambda: mergify_wait["queue_merge"](7))
     code, lines = mergify_wait["land"]("7", "--wait")
     assert code == 0, lines
-    assert mergify_wait["now"] >= 600 and "PR #7 is merged" in lines
+    assert "PR #7 is merged" in lines
+    # the merge leaves its labels as they were: the PR's state alone says it, read within one poll
+    assert 600 <= mergify_wait["now"] <= 600 + approvals.QUEUE_WATCH + approvals.POLL
     assert len(polls(mergify_wait)) >= 600 // approvals.QUEUE_WATCH - 2
 
 
@@ -370,3 +375,47 @@ def test_a_mergify_wait_ends_when_mergify_dequeues_the_pr(mergify_wait: dict[str
     assert code == 1, lines
     assert f"PR #7 was dequeued by Mergify at {head}: evicted" in lines
     assert 300 <= mergify_wait["now"] <= 300 + approvals.QUEUE_WATCH + approvals.POLL
+
+
+def test_a_push_to_a_head_queued_for_mergify_runs_the_round_within_one_poll(
+    mergify_wait: dict[str, Any],
+) -> None:
+    """A push leaves Mergify's labels as they were: the new head alone says it, and its round refuses it (exit 1)."""
+    mergify_wait["opened"](7)
+    mergify_wait["at"](300, lambda: mergify_wait["pulls"][7].update(headRefOid="c" * 40))
+    code, lines = mergify_wait["land"]("7", "--wait")
+    assert code == 1, "\n".join(dict.fromkeys(lines))
+    assert 300 <= mergify_wait["now"] <= 300 + approvals.QUEUE_WATCH + approvals.POLL
+
+
+def test_a_wait_that_enqueues_the_pr_waits_on_for_the_merge(wait: dict[str, Any]) -> None:
+    head = wait["opened"](7)
+    wait["at"](300, lambda: wait["queue_merge"](7))
+    code, lines = wait["land"]("7", "--wait")
+    assert code == 0, lines
+    assert wait["enqueued"] == [(7, head)] and within_a_poll(wait, 300)
+    assert "PR #7 is merged" in lines
+
+
+def test_a_rate_limited_permission_read_is_no_answer_and_is_asked_again_next_round(
+    wait: dict[str, Any],
+) -> None:
+    """A permission read GitHub refuses for its rate limit (an HTTP 403 too) says nothing about the account: it is not
+    kept as a refusal, so the next round, past read_afresh(), reads the permission again."""
+    wait["permission"] = LIMITED
+    assert github.writer("worker") is False
+    github.read_afresh()
+    wait["permission"] = "write"
+    assert github.writer("worker") is True
+
+
+def test_a_refused_permission_read_for_another_account_is_kept_as_an_answer(
+    wait: dict[str, Any],
+) -> None:
+    """Where the proxy refuses the permission path and GitHub refuses `api user`, another account is no writer, and
+    that answer is kept KEPT seconds: later rounds, past read_afresh(), do not read it again."""
+    wait["user"], wait["permission"] = REFUSED, REFUSED
+    assert github.writer("worker") is False
+    github.read_afresh()
+    assert github.writer("worker") is False
+    assert spent(wait)["api repos/{owner}/{repo}/collaborators/worker/permission"] == 1
