@@ -6075,9 +6075,10 @@ def wait_for(
                 # again next round rather than hidden behind that ETag's 304
                 else:
                     again, look = look, True
-                    if again or not pr_quiet(pr, until, min(HTTP_SECONDS, left)):
-                        if outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
-                            return outcome
+                    if (again or not pr_quiet(pr, until, min(HTTP_SECONDS, left))) and (
+                        outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left))
+                    ):
+                        return outcome
                     look = False
             except RateLimited as e:  # retrying keeps the limit drained: sleep to its reset
                 print(

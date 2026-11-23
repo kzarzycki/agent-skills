@@ -1403,6 +1403,12 @@ def test_wait_for_fails_when_it_cannot_tell_a_pid_is_the_runs(
         run.wait()
 
 
+def rest_or(args: tuple[str, ...], view: Callable[[], dict]) -> str:
+    """`gh pr view`'s answer `view()`; any REST read (wait-for's ETag reads, #1984) a pull with a head and no headers,
+    so no ETag is kept and every round reads the view."""
+    return json.dumps(view() if args[0] == "pr" else {"head": {"sha": "s"}, "check_runs": []})
+
+
 def test_wait_for_a_pr_waits_until_its_checks_settle(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1421,7 +1427,7 @@ def test_wait_for_a_pr_waits_until_its_checks_settle(
             },
         ]
     )
-    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: json.dumps(next(views)))
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: rest_or(a, lambda: next(views)))
     monkeypatch.setattr(omnigent_agent, "WAIT_FOR_PR_EVERY", 0.01)
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--budget", "30"]) == 1
     assert capsys.readouterr().out == "PR #7 checks red: test\n"
@@ -1434,11 +1440,13 @@ def test_wait_for_a_pr_waits_until_its_checks_settle(
             {"context": "lint", "state": "SUCCESS"},
         ],
     }
-    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: json.dumps(green))
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: rest_or(a, lambda: green))
     assert omnigent_agent.main(["wait-for", "--pr", "7"]) == 0
     assert capsys.readouterr().out == "PR #7 checks green (2)\n"
 
-    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: '{"state": "CLOSED"}')
+    monkeypatch.setattr(
+        omnigent_agent, "gh", lambda *a, **k: rest_or(a, lambda: {"state": "CLOSED"})
+    )
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "merged"]) == 1
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "closed"]) == 0
 
