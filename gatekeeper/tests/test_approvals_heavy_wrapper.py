@@ -287,6 +287,12 @@ def test_a_heavy_step_leaves_each_stop_handler_as_it_found_it() -> None:
             signal.signal(sig, handler)
 
 
+# Each wait below ends on its event; the bound only decides when to give up. On a host whose CPUs are
+# saturated (every core busy, load several times the core count) a stop takes seconds to reach a forked
+# step, and 10-15 s bounds failed there (#1189), so the bound is a minute.
+STOP_BOUND_S = 60
+
+
 def alive(pgid: int) -> bool:
     """Whether the group `pgid` has a process that has not ended: a zombie has, and only waits for its parent (or init,
     which may take seconds on a host) to reap it."""
@@ -306,7 +312,7 @@ def alive(pgid: int) -> bool:
     )
 
 
-def gone(pgid: int, within: float = 10) -> bool:
+def gone(pgid: int, within: float = STOP_BOUND_S) -> bool:
     """Whether the group `pgid` has no process left within `within` seconds, zombies reaped by their parents."""
     deadline = time.monotonic() + within
     while alive(pgid):
@@ -319,9 +325,9 @@ def gone(pgid: int, within: float = 10) -> bool:
 def stop_run(argv: list[str], pids: Path, sig: signal.Signals) -> tuple[int, int]:
     """Start `argv` in a session of its own, wait for its step to write its pid file, send `sig` to the runner alone
     (never its group, which the step is no longer in), and return the runner's exit and the step's group. A runner
-    still going after 15 s is killed with its step's group, and the test fails."""
+    still going after STOP_BOUND_S is killed with its step's group, and the test fails."""
     runner = subprocess.Popen(argv, start_new_session=True, stdout=subprocess.PIPE, text=True)
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + STOP_BOUND_S
     while not pids.exists() or not pids.read_text().strip():
         assert time.monotonic() < deadline and runner.poll() is None, "the step never started"
         time.sleep(0.05)
@@ -329,7 +335,7 @@ def stop_run(argv: list[str], pids: Path, sig: signal.Signals) -> tuple[int, int
     assert pgid != runner.pid, "the step runs in a group of its own"
     runner.send_signal(sig)
     try:
-        code = runner.wait(timeout=15)
+        code = runner.wait(timeout=STOP_BOUND_S)
     except subprocess.TimeoutExpired:
         for group in (runner.pid, pgid):
             with contextlib.suppress(OSError):
