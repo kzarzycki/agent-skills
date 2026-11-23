@@ -291,6 +291,16 @@ def test_with_ci_a_record_without_base_stays_full(repo: dict[str, Any]) -> None:
     assert repo["ran"]()[-1] == f"selected app.py against {repo['base']()}"
 
 
+def test_a_record_against_a_base_git_cannot_resolve_says_it_runs_the_full_check(
+    repo: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """local-ci, unlike affected-tests, falls back to the full gate on an unresolvable base, and says so."""
+    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
+    assert approvals.main(["local-ci", "--record", "--base", "0" * 40]) == 0
+    assert repo["ran"]() == ["mise run check:all base=unset"]
+    assert "no base to narrow against: running the full check" in capsys.readouterr().err
+
+
 # --- check build's line ---
 
 

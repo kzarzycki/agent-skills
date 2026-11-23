@@ -10936,10 +10936,11 @@ def local_ci(
         and NARROW_BASE.get() is None
         and narrowing() is not None
         and (given is not None or no_ci(project()[1]))
-        and (base := selection_base(given))
     ):
-        with narrowed_to(base):
-            return local_ci(None, None, run, want)
+        if (base := selection_base(given)) is not None:
+            with narrowed_to(base):
+                return local_ci(None, None, run, want)
+        print("local-ci: no base to narrow against: running the full check", file=sys.stderr)
     if pr is None:
         passed = proof["env"] if proof else ()
         # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
