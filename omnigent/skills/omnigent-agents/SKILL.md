@@ -755,7 +755,8 @@ event, which routes `act` to the notified session, the manager, who clears the b
 proposes. Moving is a push (a commit, a force-push, the PR marked ready; a plain push, which GitHub gives no time, is dated no
 earlier than the head's first status or check run, or the sweep that first saw the head), a verifier report (`SATISFIED:`), a go (a
 green `owner` or `land` status) or a merge-queue step (`loop:queued` or `loop:dequeued` added or removed, a queue
-status or check run). The line names each blocker it finds: a red required check (the base's ruleset; any red check
+status or check run). A PR the merge queue holds (`loop:queued` on, and a queue check on its head still running or a
+queue status there pending) is waiting, not stalled, however long the queue takes (#2100). The line names each blocker it finds: a red required check (the base's ruleset; any red check
 when unread), a conflict, a verdict on the head without a go (or a fix round asked with no push since), a card waiting
 (a loop event on the PR's branch at `needs-owner`, a verifier question newer than the push), else `none found on
 GitHub`: `o/r: PR #12 <title>: no push, verdict, go or queue step for 75m; blocker: a conflict with main: <url>`. It
@@ -771,7 +772,11 @@ lists (an approved, verified PR no `land` took) is said once per head and kind o
 satisfied verdict at <sha> and is not landed: land it (`land N --only`) or flag it`, or for a verified PR idle on a go or
 record it lacks, its line (`... missing: go`) and `: ask its approver for what it is missing`, a `stalled` event on that lead;
 the repo's last listing is kept (`stalled` in the state with `--console`), so the next hour's sweep says nothing new
-for it, and a PR is said again only once its head moved or it left the listing and came back; a PR a sweep could not
+for it, and a PR is said again only once its head moved or it left the listing and came back. Since one sweep may
+read a PR 15 minutes before its line is acted on, each line is first checked against the PR's live pull, check runs and
+statuses (`stalled_gone`): one merged, closed, moved to a new head or held by the merge queue since is logged and not
+said, nor kept as said, so a later sweep that lists it again says it; a failed read says the line as the sweep read it
+(#2100). A PR a sweep could not
 judge keeps what was listed for it. A PR the sweep could not judge, a failed sweep and a lead on another host are logged,
 never posted, except a sweep that judged none of the repo's PRs (its last line, `<n> of <n> open PRs not judged here`):
 that is said once per reason, `<owner>/<name>: check stalled judged none of its <n> open PRs: <why>`, since its silence
