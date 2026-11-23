@@ -2658,6 +2658,8 @@ def off_request(og: Omnigent, sid: str, text: str) -> str:
     brief does not."""
     # ponytail: the brief's own refs are the request; an epic's grandchildren and a lead's later
     # PRs are not traced, which errs on quiet. Read the lead's PRs (omni.pr, its report) if it misses.
+    if not ISSUE_REF.search(text):
+        return ""  # names no issue: nothing to warn about, and no session read
     try:
         if (og.info(sid).get("labels") or {}).get("omni.role") != "lead":
             return ""

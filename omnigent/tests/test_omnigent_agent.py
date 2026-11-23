@@ -4728,7 +4728,7 @@ def test_a_re_attached_wait_takes_the_child_s_report_over_run_s_failed_line(
     assert report.read_text() == "the real report"
 
 
-@pytest.mark.skip(reason="Fails on main: #1944, skipped until it is fixed")
+@pytest.mark.skip(reason="red on main, tracked in #1935")
 def test_a_failed_line_is_no_report_to_the_supervisor_a_start_a_follow_up_or_a_rerun(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
