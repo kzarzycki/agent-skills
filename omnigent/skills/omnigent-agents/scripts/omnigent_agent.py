@@ -5611,6 +5611,7 @@ COMMITS: dict[
 ETAGS: dict[
     str, tuple[str, Any]
 ] = {}  # rest_if_changed's last answer for each REST path: (its ETag, the parsed body)
+ETAGS_KEPT = 256  # the most paths ETAGS keeps; the oldest read goes first
 # a 304 as gh reports it: the status line `gh api -i` prints, or its error `gh: HTTP 304` where it exits 1 on one
 NOT_MODIFIED = re.compile(r"\bHTTP(?:/[\d.]+)? 304\b")
 
@@ -5637,20 +5638,39 @@ def rest_if_changed(path: str, timeout: float = HTTP_SECONDS) -> tuple[bool, Any
         return False, known[1]
     found = json.loads(body or "{}")
     if tag := re.search(r"(?im)^etag:[ \t]*(\S[^\n]*?)[ \t]*$", head):
+        ETAGS.pop(path, None)  # newest last, so the oldest goes first
         ETAGS[path] = (tag[1], found)
+        while len(ETAGS) > ETAGS_KEPT:  # a supervisor runs for days, one head after another
+            del ETAGS[next(iter(ETAGS))]
     return True, found
 
 
-def pr_quiet(pr: int, until: str, timeout: float) -> bool:
-    """Whether nothing PR ``pr``'s ``until`` condition (``checks``, ``merged``, ``closed``) reads moved since the last
-    call: ETag reads of the pull and, for ``checks``, its head's check runs and combined status, every one of them
-    read so each keeps its ETag. False on the first call, when every read is a plain one."""
-    moved, pull = rest_if_changed(f"repos/{{owner}}/{{repo}}/pulls/{pr}", timeout)
-    if until == "checks":
-        head = pull["head"]["sha"]
-        for path in (f"commits/{head}/check-runs?per_page=100", f"commits/{head}/status"):
-            moved = rest_if_changed(f"repos/{{owner}}/{{repo}}/{path}", timeout)[0] or moved
-    return not moved
+def pr_rest_view(pr: int, until: str, timeout: float) -> dict:
+    """PR ``pr``'s state and, for ``until`` ``checks``, its head's checks, in ``pr_view``'s shape, from ETag reads
+    (rest_if_changed) of the pull, its head's check runs and its combined status, so a round where none moved costs no
+    quota (#1984). The answer is GitHub's REST alone, never a second read that could trail it."""
+    pull = rest_if_changed(f"repos/{{owner}}/{{repo}}/pulls/{pr}", timeout)[1]
+    state = "MERGED" if pull.get("merged") or pull.get("merged_at") else str(pull["state"]).upper()
+    data: dict = {"state": state, "headRefOid": pull["head"]["sha"]}
+    if until != "checks":
+        return data
+    head = pull["head"]["sha"]
+    runs = rest_if_changed(
+        f"repos/{{owner}}/{{repo}}/commits/{head}/check-runs?per_page=100", timeout
+    )[1]
+    status = rest_if_changed(f"repos/{{owner}}/{{repo}}/commits/{head}/status", timeout)[1]
+    data["statusCheckRollup"] = [
+        {
+            "name": r.get("name"),
+            "status": str(r.get("status") or "").upper(),
+            "conclusion": str(r.get("conclusion") or "").upper(),
+        }
+        for r in runs.get("check_runs") or []
+    ] + [
+        {"context": c.get("context"), "state": str(c.get("state") or "").upper()}
+        for c in status.get("statuses") or []
+    ]
+    return data
 
 
 def pr_rest(path: str, end: float, pages: bool = False) -> Any:
@@ -6054,7 +6074,7 @@ def wait_for(
             [f"stalled: no output in {log} for {age:.0f}s; killed pid {target}'s group", *tail]
         )
 
-    queued = look = False
+    queued = False
     while True:
         if outcome := ended() or silent():
             return outcome
@@ -6070,16 +6090,11 @@ def wait_for(
                     extra = {"seen": seen} if until == "verdict" else {}
                     if outcome := settled(pr, time.monotonic() + left, since, **extra):
                         return outcome
-                # the GraphQL read only once something it reads moved: ETag reads first, a 304 costs nothing (#1984);
-                # `look` stays set until a round's reads all answer, so a read that failed after an ETag moved is made
-                # again next round rather than hidden behind that ETag's 304
-                else:
-                    again, look = look, True
-                    if (again or not pr_quiet(pr, until, min(HTTP_SECONDS, left))) and (
-                        outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left))
-                    ):
-                        return outcome
-                    look = False
+                # REST alone, through ETags: a round where nothing moved costs no quota (#1984)
+                elif outcome := pr_outcome(
+                    pr, until, left, data=pr_rest_view(pr, until, min(HTTP_SECONDS, left))
+                ):
+                    return outcome
             except RateLimited as e:  # retrying keeps the limit drained: sleep to its reset
                 print(
                     f"GitHub rate limit: waiting {e.wait:.0f}s for its reset",
