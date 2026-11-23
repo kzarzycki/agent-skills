@@ -382,3 +382,45 @@ def test_a_token_past_the_parent_cut_leaves_no_part_of_itself(
 
 def test_spent_counts_nothing_for_a_step_back_to_an_earlier_window() -> None:
     assert gq.spent([(0, 4000, 9), (60, 10, 5)]) == 0  # an older window's reply, not a reset
+
+
+def test_a_quote_without_whitespace_is_quoted_too(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    subprocess.run(
+        ["gh", "api", "-H", "Accept: x", "-f", "body=don't", "repos/o/r/issues/1/comments"],
+        input="",
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert gq.command(logged_args(log)[-1]) == "api repos/o/r/issues/N/comments"
+
+
+def test_a_one_word_authorization_value_keeps_the_route(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    subprocess.run(
+        ["gh", "api", "-H", "authorization:abc", "repos/o/r/pulls/3"],
+        input="",
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert "abc" not in logged_args(log)[-1]
+    assert gq.command(logged_args(log)[-1]) == "api repos/o/r/pulls/N"
+
+
+def test_a_lowercase_token_name_in_the_parent_is_masked(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    subprocess.run(
+        ["sh", "-c", "gh_token=lower-s3cr3t; gh x; true"], env=env, check=False, capture_output=True
+    )
+    assert "lower-s3cr3t" not in log.read_text()
+
+
+def test_the_grandparent_is_masked_too(setup: tuple[dict[str, str], Path]) -> None:
+    env, log = setup
+    hexed = "0123456789abcdef" * 2 + "01234567"
+    script = f"import subprocess; x = 'GH_TOKEN=grand-s3cr3t {hexed}'; subprocess.run(['sh', '-c', 'gh x; true'])"
+    subprocess.run(["python3", "-c", script], env=env, check=False, capture_output=True)
+    parent = log.read_text().splitlines()[-1].split("\t")[4]
+    assert " > sh -c" in parent and "grand-s3cr3t" not in parent and hexed not in parent
