@@ -24,6 +24,21 @@
 # starts with `queue_branch_prefix`, as a step-level `if`, so on a PR head the job runs its cheap steps (lint, config
 # and repo checks) and still reports success. A job-level `if` would skip the job, and a skipped required check never
 # reports, so Mergify would never queue the PR.
+#
+# Gate in the queue only, the setup for a repo with a merge queue and free CI minutes: the one gate run that proves a
+# PR is the queue's, on the tree that will merge, and a PR head runs none of it. Three changes from the above:
+# - the gate's job gets a job-level `if: startsWith(github.head_ref, 'mergify/merge-queue/')`, so it runs only on
+#   Mergify's draft PRs and a PR head shows it skipped;
+# - the base's ruleset drops the gate from its required checks, since a skipped required check never reports and
+#   Mergify would never queue the PR;
+# - the queue rule adds `merge_conditions: [check-success = <gate>]`, so the gate is still what merges a batch. Merge
+#   conditions that differ from `queue_conditions` also make Mergify test every batch on a draft PR, never in place.
+# Its undo: add the gate back to the ruleset's required checks, drop the job-level `if`, drop `merge_conditions`.
+# Keep the step-level variant above in a repo that pays for CI minutes, or whose queue rejects PRs often: there a PR
+# head's run still catches what the queue would reject, before a queue run is spent on it. Either way a dequeue goes
+# back to the session that owns the PR: the supervisor reads Mergify's status comment on the PR and relays the failing
+# check, its job and the failing tests to that PR's lead, and counts how often the queue rejects.
+# This file is the step-level variant; the queue-only one is this file plus that `merge_conditions` line.
 
 queue_rules:
   - name: default

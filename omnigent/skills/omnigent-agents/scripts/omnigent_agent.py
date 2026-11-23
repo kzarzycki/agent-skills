@@ -1972,6 +1972,11 @@ class Omnigent:
         which can take about a minute, so it gets ``ARCHIVE_SECONDS``."""
         self.call("PATCH", f"/v1/sessions/{sid}", {"archived": True}, timeout=ARCHIVE_SECONDS)
 
+    def unarchive(self, sid: str) -> None:
+        """Bring archived ``sid`` back, its history kept, so a relay reaches it (``relay`` refuses an archived
+        session): the same PATCH as ``archive``, with ``archived: false``."""
+        self.call("PATCH", f"/v1/sessions/{sid}", {"archived": False}, timeout=ARCHIVE_SECONDS)
+
     def find(self, title: str, after: float, top_level: bool = False) -> str | None:
         """The parent's child called ``title`` created at or after ``after`` (epoch seconds): the
         session a create that failed in transit made anyway. None when there is no parent. With
@@ -6127,6 +6132,223 @@ def pr_stalls(
     return said
 
 
+# ponytail: one window, ceiling and floor for every repo the supervisor watches; the upgrade path is a per-repo setting
+QUEUE_WINDOW = (
+    7 * 86400.0
+)  # how far back queue entries count, and the first read of a repo's comments backfills
+QUEUE_REJECT_SHARE = (
+    0.2  # rejections over this share of the window's entries raise one queue-rejects event
+)
+QUEUE_REJECT_FLOOR = 5  # the fewest entries in the window a share is judged on
+QUEUE_FRESH = 1800.0  # a dequeue a repo's first read finds is relayed when it left the queue this recently: 2 PR polls
+MERGIFY_LOGIN = "mergify[bot]"
+MERGIFY_PAYLOAD = re.compile(
+    r"-\*- Mergify Payload -\*-\s*(\{.*?\})\s*-\*- Mergify Payload End -\*-", re.DOTALL
+)
+# a failing check's line under `Failing checks:`: its name and job URL, whose last number is the job id
+FAILING_CHECK = re.compile(r"^- \S+ \[`([^`]+)`\]\((https://github\.com/[^)\s]*/job/(\d+))\)")
+QUEUE_FAULT = re.compile(r"^\*\*The failure is in this pull request\.\*\*.*$", re.MULTILINE)
+# pytest's summary line for a failed test, behind the Actions log's timestamp
+PYTEST_FAILED = re.compile(r"^(?:\d{4}-\d\d-\d\dT[\d:.]+Z )?FAILED (\S+)", re.MULTILINE)
+
+
+def queue_comment(comment: dict) -> dict | None:
+    """One merge-queue entry from a Mergify status comment (a row of GitHub's issue comments): the PR, ``state``
+    (``merged``, ``dequeued``, or one not yet final), ``left_at`` (seconds, 0 while in the queue), the dequeue
+    ``code``, the ``checks`` under ``Failing checks:`` as ``[name, job URL, job id]`` and Mergify's ``fault`` line
+    when it named this PR as the failure, else empty. None for a comment not from Mergify or holding no payload."""
+    if str((comment.get("user") or {}).get("login")) != MERGIFY_LOGIN:
+        return None
+    body = str(comment.get("body") or "")
+    found = MERGIFY_PAYLOAD.search(body)
+    pr = re.search(r"/issues/(\d+)$", str(comment.get("issue_url") or ""))
+    if not found or not pr:
+        return None
+    try:
+        payload = json.loads(found[1])
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    reason_ = payload.get("dequeue_reason") or {}
+    _, _, failing = body.partition("\nFailing checks:\n")
+    checks = []
+    for line in failing.splitlines():
+        if not line.strip():
+            break  # the list ends at its blank line
+        if m := FAILING_CHECK.match(line.strip()):
+            checks.append([m[1], m[2], m[3]])
+    fault = QUEUE_FAULT.search(body)
+    return {
+        "pr": int(pr[1]),
+        "state": str(payload.get("state") or ""),
+        "left_at": stamp(payload["left_at"]) if payload.get("left_at") else 0.0,
+        "code": str(reason_.get("code") or "") if isinstance(reason_, dict) else "",
+        "checks": checks,
+        "fault": fault[0].replace("**", "") if fault else "",
+    }
+
+
+def failed_tests(log: str) -> list[str]:
+    """The test ids of pytest's ``FAILED <id>`` lines in an Actions job log, the timestamp each line opens with
+    stripped, once each, in order."""
+    return list(dict.fromkeys(PYTEST_FAILED.findall(log)))
+
+
+def queue_read(repo: str, memo: dict, now: float | None = None) -> list[str]:
+    """Read GitHub repo ``repo``'s issue comments updated since the last read (the first read: ``QUEUE_WINDOW`` back),
+    paged and ETag-guarded (``rest_pages``, its ``since`` moved only when a comment is new, so a poll where nothing
+    moved costs a 304), and keep each final Mergify entry (``queue_comment``) in ``memo["entries"]`` by comment id;
+    each ``CHECKS_*`` dequeue's failing tests come from one log read per failing job (``failed_tests``), made once.
+    Entries that left the queue over ``QUEUE_WINDOW`` ago are pruned. Returns the ids of the dequeues new to
+    ``memo``, oldest first. A ``RateLimited`` or failed listing raises with ``since`` unmoved, so the next poll reads
+    again and an entry kept before the failure is kept, never read twice."""
+    now = time.time() if now is None else now
+    entries = memo.setdefault("entries", {})
+    first = "since" not in memo
+    since = memo.get("since") or datetime.fromtimestamp(now - QUEUE_WINDOW, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    listed = rest_pages(
+        f"repos/{repo}/issues/comments?since={quote(since, safe=':')}&sort=updated&direction=asc"
+    )
+    new = []
+    for comment in listed:
+        cid = str(comment.get("id"))
+        entry = queue_comment(comment)
+        if cid in entries or not entry or entry["state"] not in ("merged", "dequeued"):
+            continue
+        if entry["left_at"] < now - QUEUE_WINDOW:
+            continue  # an old entry edited since (a requeue line): out of the window
+        entry["tests"] = []
+        if entry["state"] == "dequeued" and entry["code"].startswith("CHECKS_"):
+            for name, _, job in entry["checks"]:
+                try:
+                    log = gh("api", f"repos/{repo}/actions/jobs/{job}/logs")
+                except RateLimited:
+                    raise
+                except Fail as e:  # gone or unreadable: the check's name stands for it
+                    print(f"{repo}: job {job} ({name}) log not read: {e}", file=sys.stderr)
+                    continue
+                entry["tests"] += [t for t in failed_tests(log) if t not in entry["tests"]]
+        # the first read's backfill is counted, not relayed: a lead hears only of a dequeue since the poll before
+        entry["told"] = (
+            first and entry["state"] == "dequeued" and entry["left_at"] < now - QUEUE_FRESH
+        )
+        entries[cid] = entry
+        if entry["state"] == "dequeued" and not entry["told"]:
+            new.append(cid)
+    if listed:
+        memo["since"] = max(str(c.get("updated_at") or since) for c in listed)
+    else:
+        memo["since"] = since
+    for cid in [c for c, e in entries.items() if e["left_at"] < now - QUEUE_WINDOW]:
+        del entries[cid]
+    return sorted(new, key=lambda c: entries[c]["left_at"])
+
+
+def queue_counts(entries: dict, now: float | None = None) -> dict:
+    """The window's queue outcomes from ``entries`` (``queue_read``'s): ``entries`` (merged and dequeued),
+    ``flakes`` (each test id that failed dequeues of two or more different PRs, to those PRs), ``rejected`` (the
+    comment ids of the ``CHECKS_*`` dequeues not all of whose failing tests are known flakes: one with no test, its
+    check alone, is a rejection) and ``share`` (rejections over entries, 0 with none)."""
+    now = time.time() if now is None else now
+    kept = {c: e for c, e in entries.items() if e["left_at"] >= now - QUEUE_WINDOW}
+    failing = {
+        c: e
+        for c, e in kept.items()
+        if e["state"] == "dequeued" and e["code"].startswith("CHECKS_")
+    }
+    by_test: dict[str, set[int]] = {}
+    for e in failing.values():
+        for test in e.get("tests") or []:
+            by_test.setdefault(test, set()).add(e["pr"])
+    flakes = {t: sorted(prs) for t, prs in by_test.items() if len(prs) >= 2}
+    rejected = [
+        c
+        for c, e in failing.items()
+        if not e.get("tests") or any(t not in flakes for t in e["tests"])
+    ]
+    n = len(kept)
+    return {
+        "entries": n,
+        "flakes": flakes,
+        "rejected": rejected,
+        "share": len(rejected) / n if n else 0.0,
+    }
+
+
+def queue_alarms(repo: str, memo: dict, now: float | None = None) -> list[tuple[str, str, str]]:
+    """``(id, kind, line)`` for each queue event ``memo`` (``queue_read``'s) newly calls for: one ``queue-flake`` per
+    test newly known as a flake, and one ``queue-rejects`` when rejections pass ``QUEUE_REJECT_SHARE`` of at least
+    ``QUEUE_REJECT_FLOOR`` entries, raised again only once the share has dropped back to or below it."""
+    now = time.time() if now is None else now
+    counts, entries = queue_counts(memo.get("entries") or {}, now), memo.get("entries") or {}
+    said: list[tuple[str, str, str]] = []
+    told = set(memo.get("flakes_told") or [])
+    for test, prs in sorted(counts["flakes"].items()):
+        if test not in told:
+            named = ", ".join(f"#{n}" for n in prs)
+            said.append(
+                (
+                    f"queue-flake:{repo}:{hashlib.sha1(test.encode()).hexdigest()[:12]}",
+                    "queue-flake",
+                    (
+                        f"{repo}: `{test}` failed merge-queue runs of {named}: a known flake, not those PRs' fault;"
+                        " skip it with its issue linked under gatekeeper's Known-red tests rule"
+                    ),
+                )
+            )
+    memo["flakes_told"] = sorted(
+        counts["flakes"]
+    )  # one that leaves the window is news again on its return
+    over = counts["entries"] >= QUEUE_REJECT_FLOOR and counts["share"] > QUEUE_REJECT_SHARE
+    if over and not memo.get("over"):
+        rejected = "; ".join(
+            f"#{entries[c]['pr']} ({', '.join(entries[c].get('tests') or [x[0] for x in entries[c]['checks']] or [entries[c]['code']])})"
+            for c in sorted(counts["rejected"], key=lambda c: entries[c]["left_at"])
+        )
+        flakes = "; ".join(
+            f"{t} ({', '.join(f'#{n}' for n in prs)})"
+            for t, prs in sorted(counts["flakes"].items())
+        )
+        days = QUEUE_WINDOW / 86400
+        said.append(
+            (
+                f"queue-rejects:{repo}:{now:.0f}",
+                "queue-rejects",
+                f"{repo}: the merge queue rejected {len(counts['rejected'])} of {counts['entries']} entries in"
+                f" {days:.0f} days ({counts['share']:.0%}, over {QUEUE_REJECT_SHARE:.0%}): {rejected}"
+                + (f"; known flakes, not counted: {flakes}" if flakes else ""),
+            )
+        )
+    if over or counts["share"] <= QUEUE_REJECT_SHARE:
+        memo["over"] = over  # re-armed only once the share is back at or under the ceiling
+    return said
+
+
+def dequeue_message(repo: str, entry: dict, flakes: dict) -> str:
+    """What a dequeue tells the lead that owns its PR: the PR, the code, each failing check with its job URL, the
+    failing tests with the known flakes among them named, Mergify's fault line, and the step to take."""
+    n = entry["pr"]
+    lines = [f"{repo}#{n} left the merge queue: {entry['code'] or 'dequeued'}."]
+    lines += [f"Failing check: {name} {url}" for name, url, _ in entry["checks"]]
+    tests = entry.get("tests") or []
+    if tests:
+        lines.append(
+            "Failing tests: " + ", ".join(f"{t}{' (a known flake)' * (t in flakes)}" for t in tests)
+        )
+        if all(t in flakes for t in tests):
+            lines.append(
+                "Every failing test is a known flake (it failed other PRs' queue runs too): the PR is still out"
+                " of the queue."
+            )
+    if entry.get("fault"):
+        lines.append(entry["fault"])
+    lines.append(f"Fix it, then run `land {n}` again.")
+    return "\n".join(lines)
+
+
 def stamp(when: str) -> float:
     """A GitHub ISO time as seconds."""
     return datetime.fromisoformat(when.replace("Z", "+00:00")).timestamp()
@@ -7794,6 +8016,7 @@ def fresh_state() -> dict:
         "stalled_blind": {},  # each repo whose last sweep judged none of its PRs: the first reason
         "events": {},  # loop event refs: sha, stamp (when it last moved), state, beat, told
         "pr_stalls": {},  # per watched repo, what ``pr_stalls`` keeps between sweeps
+        "queue": {},  # per watched repo, its merge-queue entries and alarms (``queue_read``, ``queue_alarms``)
     }
 
 
@@ -8230,6 +8453,26 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "act", "an approved, verified PR its queue never took: land it or flag it"
     if kind == "pr-stall":  # read from GitHub, never from a lead's words
         return "rule", "act", "a PR stalled: clear its blocker, or card the owner the fix"
+    if kind == "dequeued":  # a Mergify comment, raised on the lead that owns the PR, else on none
+        if event.get("session"):
+            return (
+                "rule",
+                "relay",
+                "the merge queue dequeued its PR: its lead fixes it with its own context",
+            )
+        return (
+            "rule",
+            "act",
+            "the merge queue dequeued a PR no lead owns: relay it to one, or fix it",
+        )
+    if kind == "queue-rejects":
+        return (
+            "rule",
+            "act",
+            "the merge queue rejects too many PRs: are agents handing over broken ones?",
+        )
+    if kind == "queue-flake":
+        return "rule", "act", "a test fails unrelated PRs' queue runs: skip it as known-red"
     if kind == "archived":
         return "rule", "absorb", "archived: drop its row"
     error = event.get("line", "").partition("\n")[0]  # the status line, not the lead's own words
@@ -8713,7 +8956,11 @@ def supervise_registry(
         for intent in intents:
             sid, action, text = intent["session"], intent["action"], intent["text"]
             try:
-                if prompts_of(og.info(sid)):  # the text would wait unread behind it
+                info = og.info(sid)
+                if action == "dequeued" and info.get("archived"):  # it resumes with its history
+                    og.unarchive(sid)
+                    info = og.info(sid)
+                if prompts_of(info):  # the text would wait unread behind it
                     raise Fail("it waits on a prompt, which the supervisor never answers")
                 relay(og, sid, text, ACTION_SECONDS)
             except (Queued, SentUnconfirmed):
@@ -8817,6 +9064,7 @@ def supervise_registry(
             "supervisor": notify if waits_on(parsed, lead, notify, bool(lead_ev)) else "",
             # a subagent's end re-invokes no cloud session (#1753): read only for a wait that names one
             "cloud": bool(SUBAGENT_WAIT.search(parsed or "")) and cloud_session(og, info),
+            "session": sid,
         }
 
         def ask() -> tuple[str, str]:
@@ -8882,8 +9130,10 @@ def supervise_registry(
             }
         elif action == "tell":
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
+        elif action == "relay":  # a dequeue to its PR's lead, unarchived first by act_on
+            act_on(eid, [(sid, "dequeued", f"Supervisor: {line}")])
         elif action in ("act", "owner") or action == "done" and not event["direct"]:
-            item = line if kind == "loop-owner" else line.splitlines()[0]
+            item = line if kind in ("loop-owner", "dequeued") else line.splitlines()[0]
             if asked := question_for(lead_ev, parsed):
                 item = f"{item}\n{asked}"  # the whole question, never cut
             to = "owner" if action == "owner" else "act"
@@ -9458,11 +9708,103 @@ def supervise_registry(
                 continue
             except Exception as e:  # noqa: BLE001 - read again at the next PR_STALL_POLL
                 log(("pr-stall", repo), f"{repo}: open PRs not read: {reason(e)}")
+            else:
+                log(("pr-stall", repo), None)
+                etags_save(etags_path)
+                for eid, line in found:
+                    say(line, sid, eid, "pr-stall")
+            queue_round(repo, sid)
+
+    def queue_round(repo: str, sid: str) -> None:
+        """At the PR poll: read ``repo``'s new Mergify queue entries (``queue_read``), send each new dequeue to the
+        lead that owns its PR (``pr_lead``) as a ``dequeued`` event, else raise it for the manager, and raise the
+        repo's ``queue-flake`` and ``queue-rejects`` events (``queue_alarms``) on ``sid``, its first followed lead (or
+        none). A rate limit, a failed read or an unread session list is logged and keeps the state: the next poll
+        reads again, and a dequeue not yet sent is sent then."""
+        memo = state.setdefault("queue", {}).setdefault(repo, {})
+        try:
+            queue_read(repo, memo)
+        except RateLimited as e:
+            limited[0] = time.monotonic() + e.jittered()
+            swept.pop(repo, None)
+            log(("queue", repo), f"GitHub rate limit: queue comments not read for {e.wait:.0f}s")
+            return
+        except Exception as e:  # noqa: BLE001 - read again at the next PR_STALL_POLL
+            log(("queue", repo), f"{repo}: queue comments not read: {reason(e)}")
+            return
+        log(("queue", repo), None)
+        etags_save(etags_path)
+        entries = memo["entries"]
+        flakes = queue_counts(entries)["flakes"]
+        sessions: list[dict] | None = None
+        for cid, entry in sorted(entries.items(), key=lambda x: x[1]["left_at"]):
+            if entry["state"] != "dequeued" or entry.get("told"):
                 continue
-            log(("pr-stall", repo), None)
-            etags_save(etags_path)
-            for eid, line in found:
-                say(line, sid, eid, "pr-stall")
+            if sessions is None:
+                try:
+                    sessions = every_session()
+                except Exception as e:  # noqa: BLE001 - sent at the next poll, once sessions read
+                    log(
+                        ("queue-sessions", repo),
+                        f"{repo}: sessions not read, dequeues wait: {reason(e)}",
+                    )
+                    return
+                log(("queue-sessions", repo), None)
+            lead = pr_lead(repo, entry["pr"], sessions)
+            entry["told"] = True  # on disk with the event it raises: each comment is sent once
+            say(dequeue_message(repo, entry, flakes), lead, f"dequeued:{repo}:{cid}", "dequeued")
+        for eid, kind, line in queue_alarms(repo, memo):
+            say(line, sid, eid, kind)
+
+    def every_session() -> list[dict]:
+        """Every session the supervisor sees, archived ones included, each with its labels and parent."""
+        path, rows, after = "/v1/sessions?kind=any&include_archived=true&limit=1000", [], ""
+        while True:
+            page = og.call("GET", path + (f"&after={after}" if after else ""))
+            rows += page.get("data") or []
+            if not (page.get("has_more") and page.get("last_id")):
+                return rows
+            after = str(page["last_id"])
+
+    def pr_lead(repo: str, pr: int, sessions: list[dict]) -> str:
+        """The lead that owns PR ``pr`` of ``repo``, else empty: a lead (followed, or any ``omni.role`` lead, archived
+        too) whose own ``PR_LABEL`` names it; else the lead that started a session labelled with it (a ``start --pr``
+        worker, archived too), found up its ``parent_session_id`` chain; else a followed lead whose wait names it."""
+        label = f"{repo}#{pr}"
+        followed = [s for s, owes in owed.items() if owes[3]]
+        by_id = {str(s.get("id")): s for s in sessions}
+
+        def labels(sid: str) -> dict:
+            if sid in looks:
+                return looks[sid][0].get("labels") or {}
+            return by_id.get(sid, {}).get("labels") or {}
+
+        def is_lead(sid: str) -> bool:
+            return sid in followed or labels(sid).get("omni.role") == "lead"
+
+        for sid in [*followed, *by_id]:
+            if is_lead(sid) and str(labels(sid).get(PR_LABEL, "")) == label:
+                return sid
+        for start in [s for s in by_id if str(labels(s).get(PR_LABEL, "")) == label]:
+            sid, seen = start, set()
+            while sid and sid not in seen:
+                seen.add(sid)
+                if sid != start and is_lead(sid):
+                    return sid
+                row = by_id.get(sid)
+                if row is None:
+                    try:
+                        row = og.info(sid)
+                    except Exception:  # noqa: BLE001 - its chain ends here: no lead up it
+                        break
+                sid = str(row.get("parent_session_id") or "")
+        for sid in followed:
+            lead = state["leads"].get(sid) or {}
+            for ref in [*(lead.get("refs") or []), *(lead.get("wait") or "").split(", ")]:
+                m = re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", ref.strip())
+                if m and int(m[2]) == pr and (m[1] == repo or not m[1] and repos.get(sid) == repo):
+                    return sid
+        return ""
 
     def alive(other: str, info: dict) -> bool:
         """Whether session ``other`` (its ``info``) shows life: not archived or failed, no

@@ -174,8 +174,10 @@ def test_supervise_reads_the_default_branch_rarely_over_an_hour(monkeypatch, tmp
     t.supervised(og, registry, monkeypatch, int(HOUR / step) + 1, tick, notify="cos", console=True)
     heads = [r for r in reads if "repos/o/r/commits/HEAD" in r]
     assert 1 <= len(heads) <= 13
-    # beside them the PR-stall sweep lists the repo's open PRs once per PR_STALL_POLL (#1819)
-    assert len(reads) - len(heads) <= HOUR / oa.PR_STALL_POLL + 1
+    # beside them each PR poll (once per PR_STALL_POLL) lists the repo's open PRs (#1819) and its queue comments (#2085)
+    polls = HOUR / oa.PR_STALL_POLL + 1
+    assert len([r for r in reads if any("issues/comments" in a for a in r)]) <= polls
+    assert len(reads) - len(heads) <= 2 * polls
 
 
 @pytest.mark.parametrize(
