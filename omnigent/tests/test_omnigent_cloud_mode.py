@@ -131,6 +131,7 @@ def test_an_unsupported_mode_from_the_environment_is_not_applied_to_a_cloud_star
     err = capsys.readouterr().err
     assert "OMNIGENT_PERMISSION_MODE=plan is not applied" in err
     assert "--permission-mode plan" not in err
+    assert "takes no permission mode" not in err
 
 
 def test_an_unread_record_reports_its_mode_unknown(
