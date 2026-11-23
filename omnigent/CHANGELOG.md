@@ -5,6 +5,12 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.3 - 2026-11-23
+
+- omnigent-agents: `supervise --registry` watches every open, non-draft PR of the repos it follows (and each `--stall-repo`) and wakes the manager with one `pr-stall` act event when a PR has had no push, verdict, go or merge-queue step for `--stall-minutes` (default 60), naming its blocker: a red required check, a conflict, a verdict without a go, a card waiting. It replaces the per-lead verdict-stall wake, which is now one blocker of this check (#1819).
+- omnigent-agents: `start claude-cloud --host` on a bridge whose `~/.claude.json` is over 64 KB (the host files API answers 413) prints a warning that folder trust was not checked and goes ahead, instead of refusing (#1870).
+- omnigent-agents: `relay` and `send` check a message for an off-request issue only when it names one: a message that names no issue reads nothing from Omnigent, so it no longer costs a session read and the follow-up path `test_a_failed_line_is_no_report_to_the_supervisor_a_start_a_follow_up_or_a_rerun` covers passes again (#1892).
+
 ## 0.1.2 - 2026-11-22
 
 - omnigent-agents: the cloud brief waits on a run with one tracked `wait-for --budget <the run's expected length>` instead of a `--budget 480` loop, and `wait-for --budget`'s help says its default is for a foreground call (#1790).
