@@ -341,7 +341,9 @@ wake beside Omnigent's notice. Don't poll or `watch` a child for the wake you we
 <s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so
 each sleep stays short of any tool timeout, and exits 0 once it exits 0, or 6 once `--limit`
 passes; keep a call's `--limit` under the harness's tool timeout, so the call returns rather
-than being cut off, and call it again while the budget lasts.
+than being cut off, and call it again while the budget lasts. It refuses a command that reads one PR through gh
+(`gh pr view|checks|status`, `gh api .../pulls/<n>`) with exit 2: `wait-for --pr <n>` reads the
+PR through ETags, which cost no quota while it doesn't move.
 
 **Host capacity.** `python3 scripts/omnigent_agent.py capacity` prints this host's idle CPU
 share over about a second and its available memory, and exits 0 when it has room for another
