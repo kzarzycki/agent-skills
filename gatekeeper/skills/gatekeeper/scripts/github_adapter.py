@@ -283,6 +283,11 @@ def refuse_bypass(args: tuple[str, ...]) -> None:
 # empties it, so its next read is GitHub's however short the wait.
 reads: dict[tuple[str, ...], tuple[float, str]] = {}
 READ_TTL = 20.0
+# each PR's REST file list, read once per run (pr_changes): `loop.py brief` on the REST path read it 30 to 60 times, since
+# every `gh pr list` or GraphQL call empties `reads` and each of rest_pull, paths() and overlaps() asked again. Kept by
+# PR number for READ_TTL seconds; only a write to GitHub (a body, a mutation, a non-GET) or read_afresh() forgets it,
+# since only a push changes a PR's files and a wait calls read_afresh() after its sleep.
+files_read: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 WRITE_FLAGS = {"-f", "-F", "--field", "--raw-field", "--input"}
 
 
@@ -307,6 +312,18 @@ def read_afresh() -> None:
     empty `reads`, so the next read is GitHub's however short the wait was; a wait never answers itself. The wait sleeps
     on its own clock, which a test may fake."""
     reads.clear()
+    files_read.clear()
+
+
+def writes(args: Sequence[str], data: str | None) -> bool:
+    """Whether `gh *args` may change a PR: a body, a mutation, a `gh api` that isn't a plain GET (a GraphQL query's
+    `-f query=` is no write), or a `gh pr` command that edits, merges, comments, reviews, closes or readies."""
+    text = " ".join(args).lower()
+    if data is not None or "mutation" in text:
+        return True
+    if args[:1] == ("pr",):
+        return args[1:2] not in (("list",), ("view",), ("status",), ("checks",), ("diff",))
+    return args[:1] == ("api",) and "graphql" not in text and "rate_limit" not in text and not plain_read(args)
 
 
 def gh(*args: str, data: str | None = None) -> str:
@@ -321,6 +338,8 @@ def gh(*args: str, data: str | None = None) -> str:
         reads[key] = (time.monotonic(), out)
         return out
     reads.clear()  # a write, or a call this cache doesn't read: nothing read before it is trusted after it
+    if writes(key, data):
+        files_read.clear()
     return _gh(*args, data=data)
 
 
@@ -975,7 +994,10 @@ def pull_request(pr: int) -> dict[str, Any]:
 
 
 def pr_changes(number: int) -> list[dict[str, Any]]:
-    """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000."""
+    """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000. Read once per run
+    (`files_read`), then answered from memory."""
+    if (seen := files_read.get(number)) and time.monotonic() - seen[0] < READ_TTL:
+        return seen[1]
     out = gh(
         "api",
         "--paginate",
@@ -983,7 +1005,8 @@ def pr_changes(number: int) -> list[dict[str, Any]]:
         "--jq",
         ".[]",
     )
-    return [json.loads(line) for line in out.splitlines()]
+    files_read[number] = (time.monotonic(), changes := [json.loads(line) for line in out.splitlines()])
+    return changes
 
 
 def merged_pull(number: int) -> dict[str, Any] | None:
