@@ -1271,6 +1271,7 @@ def test_wait_until_refuses_pr_poll(tmp_path: Path, capsys: pytest.CaptureFixtur
     for cmd in (
         ["sh", "-c", f"touch {ran}; gh pr view 7 --json state"],
         ["gh", "pr", "checks", "7"],
+        ["gh", "pr", "status"],
         ["gh", "api", "repos/o/r/pulls/7"],
         ["gh", "api", "-H", "Accept: x", "repos/o/r/pulls/7/reviews"],
     ):
@@ -1282,6 +1283,8 @@ def test_wait_until_refuses_pr_poll(tmp_path: Path, capsys: pytest.CaptureFixtur
     # only a single-PR read has a free replacement
     assert omnigent_agent.main(["wait-until", "--every", "5", "--limit", "5", "--", "true"]) == 0
     assert not omnigent_agent.PR_POLL.search("gh pr list --state open")
+    # one line of a script: a later line naming a PR does not make an earlier gh api call a PR read
+    assert not omnigent_agent.PR_POLL.search("gh api repos/o/r/issues/1\necho pulls/7")
 
 
 def test_wait_for_a_gate_returns_at_its_exit_line_or_still_running_with_its_last_log_lines(

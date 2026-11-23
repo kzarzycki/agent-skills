@@ -709,7 +709,7 @@ SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to co
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
 # a wait-until command that reads one PR through gh: wait-for --pr reads it through ETags, free while it doesn't move
-PR_POLL = re.compile(r"\bgh\s+(?:pr\s+(?:view|checks|status)\b|api\b[^;&|]*\bpulls/\d)")
+PR_POLL = re.compile(r"\bgh\s+(?:pr\s+(?:view|checks|status)\b|api\b[^;&|\n]*\bpulls/\d)")
 # wait-for's default budget, for a foreground call: under a 10-minute tool call with room for the call's own start
 # and exit. A wait the harness tracks in the background passes the run's expected length instead, so it wakes once.
 WAIT_FOR_BUDGET = 570.0
