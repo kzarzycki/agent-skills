@@ -388,7 +388,7 @@ def test_cloud_env_applies_to_the_pinned_environment_and_never_makes_one_beside_
     tmp_path: Path, api: dict, capfd: pytest.CaptureFixture[str]
 ) -> None:
     """A checkout pinned to ``widget-dev`` while its name comes from the repository (``widget``) fails naming both,
-    rather than create an empty ``widget`` beside the pinned one (#ISSUE)."""
+    rather than create an empty ``widget`` beside the pinned one (#2078)."""
     api["envs"]["env_dev"] = {"name": "widget-dev", "description": "", "config": {}}
     checkout = repo(tmp_path, "Cloud worker: claude-cloud, gate test")
     pinned(checkout, "env_dev")

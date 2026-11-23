@@ -208,7 +208,7 @@ the repository, else the account's ``Default``. A name the login has no environm
 there up to them (``POST /v1/environment_providers/<id>``, no ``kind``), leaving the variables they do not name as they
 are. A checkout that pins an environment (its ``.claude/settings.local.json``, else its main checkout's) must pin one of
 that name: another name, or a pin the login has no environment for, fails naming both before anything is made, never
-a second, empty environment beside the pinned one (#ISSUE); it is ``claude_cloud.py setup`` without the secrets and the proof, sends no secret and prints none.
+a second, empty environment beside the pinned one (#2078); it is ``claude_cloud.py setup`` without the secrets and the proof, sends no secret and prints none.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -3866,7 +3866,7 @@ def refuse_other_pin(root: Path, name: str, source: str) -> None:
     """``cloud-env`` brings up the environment the checkout's cloud sessions run in, its pin (``SETTINGS``'s
     ``remote.defaultEnvironmentId``, else its main checkout's): a pinned environment of another name than ``name``
     (from ``source``) fails naming both, as does a pin this login has no environment for, where an apply by name
-    would make a second, empty environment beside the pinned one (#ISSUE). No pin: nothing to check."""
+    would make a second, empty environment beside the pinned one (#2078). No pin: nothing to check."""
     pins = [
         (p / SETTINGS, environment_pin(own_settings(p))) for p in (root, main_worktree(root)) if p
     ]
