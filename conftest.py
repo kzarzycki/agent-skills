@@ -1,5 +1,4 @@
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -15,6 +14,8 @@ sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 import pytest
+
+from tools.gh_trap import install_trap, without_trap
 
 # the gatekeeper's test harness, whose fixtures every package's tests run under, and the Omnigent driver's tests
 for package in (
@@ -41,27 +42,19 @@ from approvals_harness import (  # noqa: F401
     required,
 )
 
-# No test reaches GitHub through the real `gh` (#2035): every test runs with a `gh` first on PATH that answers each call
-# with gh's no-GitHub-host error and exit 1; a test that needs a fake puts its own ahead of it. In a cloud worker's or
-# verifier's checkout, whose remote is github.com, an un-stubbed call otherwise spends the owner's quota on every suite and
-# mutation run. A `live_agent` test keeps the real gh, and so does a run with GH_REAL_IN_TESTS=1.
-# gh's own answer in a checkout whose remotes name no GitHub host, as a test's temporary repo has: the answer most tests
-# already got from the real gh, so the trap changes no path a test takes
-NO_GH = (
-    "none of the git remotes configured for this repository point to a known GitHub host."
-    " (the test suite reaches no GitHub: GH_REAL_IN_TESTS=1 lets it)"
-)
+# No test reaches GitHub through the real `gh` (tools/gh_trap.py, #2035); the trap folder this process made is removed
+# when its run ends, and an xdist worker reuses its controller's (inherited through GH_NO_GITHUB_TRAP)
+_made_trap: list[Path] = []
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    if os.environ.get("GH_REAL_IN_TESTS") == "1":
-        return
-    trap = Path(config.rootpath) / ".pytest_cache" / "no-gh" / str(os.getpid())
-    trap.mkdir(parents=True, exist_ok=True)
-    (trap / "gh").write_text(f"#!/bin/sh\necho {shlex.quote(NO_GH)} >&2\nexit 1\n")
-    (trap / "gh").chmod(0o755)
-    os.environ["PATH"] = f"{trap}{os.pathsep}{os.environ.get('PATH', '')}"
-    os.environ["GH_NO_GITHUB_TRAP"] = str(trap)
+    if made := install_trap(os.environ):
+        _made_trap.append(made)
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    for made in _made_trap:
+        shutil.rmtree(made, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
@@ -71,9 +64,7 @@ def _real_gh_for_live_agents(
     """A `live_agent` test drives a real harness against the real forge: it gets PATH without the trap."""
     trap = os.environ.get("GH_NO_GITHUB_TRAP")
     if trap and request.node.get_closest_marker("live_agent"):
-        monkeypatch.setenv(
-            "PATH", os.pathsep.join(p for p in os.environ["PATH"].split(os.pathsep) if p != trap)
-        )
+        monkeypatch.setenv("PATH", without_trap(os.environ["PATH"], trap))
 
 
 @pytest.fixture
