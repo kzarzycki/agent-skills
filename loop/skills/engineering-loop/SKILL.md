@@ -416,7 +416,10 @@ gatekeeper.md's policy (Settings) holds:
   person's token instead: the PR's head is this repository's branch starting with the
   prefix (a fork's PR may name any branch), and every commit is that person's, so the
   updater commits as that person (Renovate's `gitAuthor`), not as its default author, or as
-  a git identity with no GitHub account, as a cloud worker does. Such a PR whose `apm.yml`
+  a git identity with no GitHub account. A pack bump whose files are a released tag's byte
+  for byte needs no such commit, and may rename what the tag renames: a cloud worker's
+  `noreply@anthropic.com` is another person's account on GitHub, so its commits name who
+  pushed nothing. Such a PR whose `apm.yml`
   changes only its pack dependency's `ref:` line, to a release, the rest being the lock and generated
   files `paths` covers, is a pack bump: its issue's spec needs no approval, since the
   release it pins was reviewed and tagged. Name the pack bump's section by the branch

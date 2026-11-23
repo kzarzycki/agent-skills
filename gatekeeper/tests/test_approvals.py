@@ -735,7 +735,7 @@ def test_skill_mds_settings_examples_pass_their_schema() -> None:
         {
             "login": "pack-bump",
             "branch": "claude/ready-pack-bump-",
-            "paths": ["apm.yml", "apm.lock.yaml", ".agents/**"],
+            "paths": ["apm.yml", "apm.lock.yaml", ".agents/**", ".claude/**"],
         },
     ]
     assert approvals.tracker_settings(loop_md(tracker))["renames"] == {"frontend": "area:web"}

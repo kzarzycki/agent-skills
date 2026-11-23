@@ -5,6 +5,13 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.6 - 2026-11-23
+
+- gatekeeper: a run answers a repeat of the same plain `gh api` read within 20 s from memory, emptied by any write, so one `approve merge` or `record verdict` no longer reads its PR three or four times (#2016).
+- gatekeeper: under `land.queue: mergify`, a `land` success on a head counts as land's hand-over only when it is newer than land's last `Evicted from the merge queue` comment naming that head. A cloud eviction, whose `land: error` status is refused, left the old success newest, and Mergify labels `loop:dequeued` after every draft of a PR it held, so each re-land evicted the PR again and never handed it over. Now that label comes off as stale and the head is handed over again, in `land` and in `check stalled` (#2029).
+- gatekeeper: a Mergify hand-over at a head `land` evicted before also comments `@mergifyio queue`, once per hand-over. Mergify does not take back a PR it dequeued for failing checks at an unchanged head through `.mergify.yml`'s `queue` action, only on that command (its merge-queue lifecycle docs; `requeue` is deprecated), so every such re-land was dropped and labelled `loop:dequeued` again (#2029).
+- gatekeeper: `gate-record <head>` finds a gate step whose `paths` key it by its inputs as `local-ci` reuses one: by its inputs key on origin's record branches, on any tree, naming the tree and key the pass came from. It read such a step only on the head's tree, so a pass recorded on another tree with the same inputs read as no record and the verifier ran the step again. A step keyed by the tree keeps the tree match, and only origin's record branches count, as before (#2042).
+
 ## 0.1.5 - 2026-11-23
 
 - gatekeeper: `loop.delegate_spec: false` restores owner-only specs and plans under `loop.delegate: all`: `approve spec|plan --by delegate` is refused, naming the key, and posts nothing; `check build` and `check merge` count no delegate's spec or plan record, with one line saying why; the delegate's go on a merge still counts. The key defaults to true, so a policy that doesn't set it keeps #1805's behaviour (#2018).
