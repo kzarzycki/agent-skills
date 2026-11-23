@@ -323,7 +323,12 @@ def writes(args: Sequence[str], data: str | None) -> bool:
         return True
     if args[:1] == ("pr",):
         return args[1:2] not in (("list",), ("view",), ("status",), ("checks",), ("diff",))
-    return args[:1] == ("api",) and "graphql" not in text and "rate_limit" not in text and not plain_read(args)
+    return (
+        args[:1] == ("api",)
+        and "graphql" not in text
+        and "rate_limit" not in text
+        and not plain_read(args)
+    )
 
 
 def gh(*args: str, data: str | None = None) -> str:
@@ -1005,7 +1010,10 @@ def pr_changes(number: int) -> list[dict[str, Any]]:
         "--jq",
         ".[]",
     )
-    files_read[number] = (time.monotonic(), changes := [json.loads(line) for line in out.splitlines()])
+    files_read[number] = (
+        time.monotonic(),
+        changes := [json.loads(line) for line in out.splitlines()],
+    )
     return changes
 
 

@@ -29,8 +29,12 @@ class Hub:
         elif path.endswith("pulls/7"):
             out = json.dumps(
                 {
-                    "node_id": "n", "number": 7, "title": "t", "state": "open", "head": {"ref": "h", "sha": "a" * 40,
-                    "repo": {"full_name": "o/r"}}, "base": {"ref": "main", "sha": "b" * 40, "repo": {"full_name": "o/r"}},
+                    "node_id": "n",
+                    "number": 7,
+                    "title": "t",
+                    "state": "open",
+                    "head": {"ref": "h", "sha": "a" * 40, "repo": {"full_name": "o/r"}},
+                    "base": {"ref": "main", "sha": "b" * 40, "repo": {"full_name": "o/r"}},
                 }
             )
         else:
@@ -53,11 +57,13 @@ def hub(monkeypatch: pytest.MonkeyPatch) -> Hub:
 def test_many_callers_in_one_run_read_a_prs_files_once(hub: Hub) -> None:
     for _ in range(5):
         github.pr_changes(7)
-        github.gh("pr", "list", "--state", "open")  # empties `reads`, which used to forget the files too
+        github.gh(
+            "pr", "list", "--state", "open"
+        )  # empties `reads`, which used to forget the files too
         github.gh("api", "graphql", "-f", "query=query { viewer { login } }")
         try:
             github.rest_pull(7)
-        except (KeyError, TypeError):
+        except KeyError, TypeError:
             pass  # the fake PR answers no more than the files and the PR need
     assert hub.files() == 1, hub.calls
 
