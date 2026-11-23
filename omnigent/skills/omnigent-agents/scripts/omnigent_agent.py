@@ -8435,24 +8435,25 @@ def quota_line_due(state: dict, now: float, until: float) -> bool:
 SEND_TOOLS = re.compile(r"session_(send|message)|relay")
 
 
-def relayed_to(items: list[dict], notify: str | None) -> bool:
-    """Whether the session sent or relayed to ``notify`` in its last turn: a tool call naming it
-    after the assistant message before its final one. Its turn end then repeats what ``notify``
-    already holds, so it is no ``act`` (#2090)."""
-    if not notify:
-        return False
+def relayed_to(items: list[dict], notify: str | None, last: str = "") -> bool:
+    """Whether the session sent its result to ``notify`` in its last turn: a tool call naming it,
+    between the last two assistant messages, whose text carries the result's first line (``last``
+    up to its ``Report:`` path). Any other send (a progress note, a question) leaves the ``DONE``
+    news to ``notify``, so it still acts. Its turn end then repeats what ``notify`` holds (#2090)."""
     said = [
         n
         for n, i in enumerate(items)
         if i.get("type") == "message" and i.get("role") == "assistant"
     ]
-    start = said[-2] if len(said) > 1 else -1
-    end = said[-1] if said else len(items)
+    head = last.strip().split("Report:")[0].strip().splitlines()[0:1]
+    if not notify or not said or not head or not head[0]:
+        return False
     return any(
         i.get("type") == "function_call"
         and SEND_TOOLS.search(str(i.get("name") or ""))
-        and notify in json.dumps(i.get("arguments") or "")
-        for i in items[start + 1 : end]
+        and notify in (sent := json.dumps(i.get("arguments") or ""))
+        and head[0] in sent
+        for i in items[(said[-2] if len(said) > 1 else -1) + 1 : said[-1]]
     )
 
 
@@ -9170,7 +9171,7 @@ def supervise_registry(
             # a subagent's end re-invokes no cloud session (#1753): read only for a wait that names one
             "cloud": bool(SUBAGENT_WAIT.search(parsed or "")) and cloud_session(og, info),
             "session": sid,
-            "relayed": relayed_to(items, notify),
+            "relayed": relayed_to(items, notify, last),
         }
 
         def ask() -> tuple[str, str]:

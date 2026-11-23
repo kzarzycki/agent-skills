@@ -14512,38 +14512,92 @@ def test_role_name_resolves_to_the_pack_role_file_with_no_file_in_the_launch_dir
     assert omnigent_agent.resolve_role("other") == "other"
 
 
-def test_a_turn_end_that_only_shows_progress_or_waiting_is_never_act_2090() -> None:
-    no_model = lambda: ("none", "")
-
-    def route(last: str, **more: object) -> tuple[str, str, str]:
-        return omnigent_agent.route({"kind": "ended", "last": last, **more}, no_model)
-
-    assert route("STILL WORKING: waiting on the verifier")[1] == "record"
-    assert route("STILL WORKING: started a verifier")[1] == "record"
-    assert route("DONE: merged #5")[1] == "done"  # a report is the notified session's to act on
-    assert route("Which one?\n\nUSER NEEDED", decisions=False)[1] == "owner"
+def acts_of(og: Fleet, to: str) -> list[str]:
+    return [t for s, t in og.inbox if s == to and "[act]" in t]
 
 
-def test_a_result_the_lead_already_sent_to_the_notified_session_gets_no_act_line_2090() -> None:
+def test_a_turn_end_that_only_shows_progress_or_waiting_is_never_act_2090(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(
+        told("brief", 900), ending("STILL WORKING: waiting on the verifier. Report: a.md", 400)
+    )
+    og.snap = {"status": "idle"}
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True)
+    assert acts_of(og, COS) == []
+
+
+def lead_done(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sent: str | None) -> Lead:
+    """A followed lead that ends ``DONE``, after sending ``sent`` (if any) to the notified session."""
+    tmp_path = tmp_path / ("sent" if sent else "none")
+    tmp_path.mkdir(exist_ok=True)
+    registry = following(tmp_path)
     call = {
         "type": "function_call",
         "name": "sys_session_send",
-        "arguments": {"session_id": "cos", "text": "DONE: merged"},
+        "arguments": {"session_id": COS, "text": sent},
     }
-    before, final = said("assistant", "working", "m1"), said("assistant", "DONE: merged", "m2")
-    assert omnigent_agent.relayed_to([before, call, final], "cos")
-    assert not omnigent_agent.relayed_to([before, final, call], "cos")  # sent after its end
-    assert not omnigent_agent.relayed_to([before, call, final], "other")
-    event = {"kind": "ended", "last": "DONE: merged", "relayed": True}
-    assert omnigent_agent.route(event, lambda: ("none", ""))[1] == "done"  # waiters still told
+    items = [told("brief", 900), ending("working", 600), *([call] if sent else [])]
+    og = Lead(*items, ending("DONE: merged #5. Report: a.md", 400))
+    og.snap = {"status": "idle"}
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True)
+    return og
 
 
-def test_the_quota_line_is_said_once_until_the_quota_resets_2090() -> None:
+def test_a_result_the_lead_already_sent_to_the_notified_session_gets_no_act_line_2090(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert acts_of(lead_done(tmp_path, monkeypatch, None), COS)  # the control: it is told
+    assert acts_of(lead_done(tmp_path, monkeypatch, "DONE: merged #5. Report: a.md"), COS) == []
+
+
+def test_a_send_that_is_not_the_result_leaves_the_done_an_act_line_2090(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert acts_of(lead_done(tmp_path, monkeypatch, "STILL WORKING: gate started"), COS)
+
+
+def test_the_quota_line_is_said_once_until_the_quota_resets_2090(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    registry.write_text("".join(f"{s}={tmp_path / s}.md\tfollow\n" for s in ("a", "b")))
+    quota = lambda ago: ending("STILL WORKING: waiting on quota. Report: a.md", ago)
+    og = Leads(a=[told("brief", 5000), quota(1000)], b=[told("brief", 5000), quota(800)])
+    og.snaps = {"a": {"status": "idle"}, "b": {"status": "idle"}}
+    monkeypatch.setattr(
+        omnigent_agent,
+        "default_head",
+        lambda repo: (_ for _ in ()).throw(omnigent_agent.RateLimited("limit", 3000.0)),
+    )
+    monkeypatch.setattr(omnigent_agent, "workspace_repo", lambda og, sid: "o/r")
+    offset = skewed(
+        monkeypatch
+    )  # the limit is read in the first poll; a's deadline passes in a later one, b's after
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        5,
+        lambda poll: offset.__setitem__(0, 250.0 * poll),
+        notify=COS,
+        console=True,
+        fyi="post",
+    )
+    quiet = [
+        t
+        for t in [t for s, t in og.inbox if s == COS]
+        if t.startswith("Supervisor: ") and "no progress" in t and "(quota" in t
+    ]
+    assert len(quiet) == 1
+
+
+def test_quota_line_due_counts_one_line_per_reset_2090() -> None:
     state: dict = {}
     due = omnigent_agent.quota_line_due
-    assert due(state, 1000.0, 600.0)  # the first, with the reset 600s away
-    assert not due(state, 1100.0, 500.0)  # the same reset: not again
-    assert not due(state, 1599.0, 1.0)
-    assert due(state, 1601.0, 0.0)  # the reset passed: said as any deadline
-    assert due(state, 1700.0, 900.0)  # a new reset: once more
+    assert due(state, 1000.0, 600.0)
+    assert not due(state, 1100.0, 500.0)
+    assert due(state, 1601.0, 0.0)
+    assert due(state, 1700.0, 900.0)
     assert not due(state, 1800.0, 800.0)
