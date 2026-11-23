@@ -7643,10 +7643,30 @@ def mergify_queue(
     return outcome(named, exits, worst, failed)
 
 
-def queued_here(head: str) -> bool:
-    """Whether the newest `land` status on `head` is a success: land handed this head to Mergify (mergify_step)."""
+def queued_here(pull: dict[str, Any]) -> bool:
+    """Whether land's current hand-over to Mergify is at the PR's head (mergify_step): the newest `land` status there is
+    a success, written after land's newest eviction at that head (evicted_at). An eviction whose `error` status was
+    refused (a cloud session, unwritten) leaves the older success newest, and Mergify labels DEQUEUED after every
+    draft of a PR it held, land's own eviction too: read as a hand-over, that success would evict the re-land again."""
+    head = pull["headRefOid"]
     found = next((each for each in statuses(head) if each.get("context") == LAND), None)
-    return bool(found) and found.get("state") == "success"
+    if not found or found.get("state") != "success":
+        return False
+    evicted = evicted_at(pull, head)
+    # ISO 8601 in UTC, so it orders as text; a status with no time is read as the hand-over, as before
+    return evicted is None or not found.get("created_at") or found["created_at"] > evicted
+
+
+def evicted_at(pull: dict[str, Any], head: str) -> str | None:
+    """When land last evicted the PR from Mergify's queue at `head`: its newest QUEUE_EVICTED comment naming that head,
+    which is written even where the `land` `error` status is refused."""
+    times = [
+        note.get("createdAt") or ""
+        for note in notes(pull)
+        if machine(note["body"]).strip().splitlines()[:1] == [QUEUE_EVICTED]
+        and fields(note["body"]).get("head", "").lower() == head.lower()
+    ]
+    return max(times) if times else None
 
 
 def hand_over(number: int) -> None:
@@ -7671,8 +7691,8 @@ def hand_over(number: int) -> None:
 def stalled() -> int:
     """`check stalled`: each open PR, into any base, that `landable` finds a candidate (its go on its head, every proof,
     a satisfied verdict) and that its base's queue does not hold: under `land.queue: mergify` not queued at its head
-    (QUEUED and a `land` success there, queued_here); where the base's rules require GitHub's merge queue, not in it;
-    on a base `land` merges itself, still open, so not landed. A `land` that was stopped, died or never ran left it.
+    (QUEUED and a `land` success there newer than land's last eviction at it, queued_here); where the base's rules
+    require GitHub's merge queue, not in it; on a base `land` merges itself, still open, so not landed. A `land` that was stopped, died or never ran left it.
     Also each one `land` refuses whose newest pass on its head is satisfied (or at the cap) but that lacks the go or
     the gate record it needs and has waited past `loop.stalled_after_hours` with no go, record or new head
     (idle_stall), its line naming what is missing: a hand-back that lived only in a session's prose left it.
@@ -7722,7 +7742,7 @@ def stalled() -> int:
                 lines.append(idle)
             continue
         if held_by == MERGIFY:
-            if QUEUED in names(pull) and queued_here(head):
+            if QUEUED in names(pull) and queued_here(pull):
                 continue
             left = "is not queued"
         elif held_by == "github":
@@ -7813,30 +7833,43 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
 def mergify_step(pull: dict[str, Any]) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
-    (QUEUED and a `land` success there), left alone (exit 0); else queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
-    `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). A DEQUEUED label on a head land never queued (a push since)
-    is stale, and comes off."""
+    (QUEUED and a `land` success there since land's last eviction at it, queued_here), left alone (exit 0); else
+    queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
+    `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). Either way, at a head land evicted before, REQUEUE once
+    per hand-over (requeue), so a command GitHub refused is posted by the next land. A DEQUEUED label on a head land
+    does not hold queued (a push since, or land's own eviction, which Mergify labels too) is stale, and comes off."""
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
     labels = {each["name"] for each in pull["labels"]["nodes"]}
     try:
-        ours = queued_here(head)
+        ours = queued_here(pull)
         if DEQUEUED in labels:
             if ours:
                 mergify_evict(pull, labels)
                 return 1
             label(number, DEQUEUED, add=False)
-        if QUEUED in labels and ours:
-            print(f"{where} is queued for Mergify at {head}")
-            return 0
-        refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
-        if QUEUED not in labels:
-            label(number, QUEUED, add=True)
-        if refused is not None:
-            handed_by_record(pull)
+        queued = QUEUED in labels and ours
+        if not queued:
+            refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
+            if QUEUED not in labels:
+                label(number, QUEUED, add=True)
+            if refused is not None:
+                handed_by_record(pull)
     except subprocess.CalledProcessError as exc:
         print(f"{where}: GitHub refused its hand-over to Mergify at {head}: {stderr_of(exc)}")
         return 1
-    print(f"{where} queued for Mergify at {head}")
+    try:
+        requeue(pull)
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"{where} is handed over to Mergify at {head}, but GitHub refused the `{REQUEUE}` command it needs"
+            f" after its eviction there, which the next `land {number}` posts: {stderr_of(exc)}"
+        )
+        return 1
+    print(
+        f"{where} is queued for Mergify at {head}"
+        if queued
+        else f"{where} queued for Mergify at {head}"
+    )
     return 0
 
 
@@ -7879,6 +7912,30 @@ def handed_by_record(pull: dict[str, Any]) -> None:
     print(
         f"{where}: the hand-over record names {head}, for the land-status workflow to post `land` on"
     )
+
+
+# the command that takes a PR Mergify dequeued (a red batch it found the PR's, a timeout) back into its queue: the
+# `queue` action land's `.mergify.yml` runs does not re-embark such a PR at an unchanged head, and Mergify's `requeue`
+# command is deprecated for this one (docs.mergify.com, merge-queue/lifecycle and commands/queue)
+REQUEUE = "@mergifyio queue"
+
+
+def requeue(pull: dict[str, Any]) -> None:
+    """After a hand-over at a head land evicted from Mergify's queue before (evicted_at): REQUEUE, once per hand-over,
+    so Mergify takes the head back once it matches its queue conditions; a hand-over whose command already follows
+    that eviction posts none, and a head never evicted needs none."""
+    head = pull["headRefOid"]
+    evicted = evicted_at(pull, head)
+    if evicted is None:
+        return
+    for note in notes(pull):
+        if (
+            note["body"].strip().splitlines()[:1] == [REQUEUE]
+            and (note.get("createdAt") or "") >= evicted
+        ):
+            return
+    comment(pull["number"], REQUEUE + "\n")
+    print(f"PR #{pull['number']}: asked Mergify to queue {head} again, which it evicted before")
 
 
 def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
@@ -10202,19 +10259,39 @@ def gate_record(head: str, words: list[str]) -> int:
     `gate_steps` (gate_plan), or of `<command>`, on `head`'s tree, so the verifier reads it instead of running the
     same tests again. Exit 0 names each record branch; exit 1 names each command with
     no record and why, which the verifier then runs. A record is keyed by the tree and the command's digest
-    (record_name), so another tree, another command or another test list in it is another record and never reused.
-    Only origin counts, the branch `local-ci --record` pushes: never this clone's own record file, which a worker
+    (record_name), so another tree, another command or another test list in it is another record and never reused;
+    a step whose `paths` key it by its inputs (inputs_key) is found by that key on any tree instead, naming the tree
+    and key it was found by (origin_input_pass). Only origin counts, the branch `local-ci --record` pushes: never this clone's own record file, which a worker
     sharing the clone may have written, and never a worker's log or report."""
     # tree_of fetches a head this clone lacks from origin, as reusable() does
     if (held := tree_of(head)) is None:
         print(f"no tree for {head}: run the tests")
         return 1
-    # ponytail: a step keyed by its inputs (inputs_key) is read by its tree here, so a pass on another tree with the
-    # same inputs is not found and the verifier runs it; reading step_pass's inputs match would lift that
-    commands = [shlex.join(words)] if words else [step["command"] for step in gate_plan()]
+    # a command the gate's steps (gate_plan) name is read as that step, so one keyed by its inputs (inputs_key) is
+    # found by that key on any tree (origin_input_pass); any other command is keyed by the tree alone
+    steps = {step["command"]: step for step in gate_plan()}
+    commands = [shlex.join(words)] if words else list(steps)
     missing = 0
     for command in commands:
         why: list[str] = []
+        step = steps.get(command)
+        if step is not None and (key := inputs_key(held, step)) is not None:
+            record = origin_input_pass(key, step, why)
+            if record is None:
+                missing += 1
+                reason = (
+                    "; ".join(why)
+                    or f"origin holds no record branch of it with the inputs key {key}"
+                )
+                print(
+                    f"no record of `{command}` with inputs {key} on tree {held}: run it ({reason})"
+                )
+            else:
+                print(
+                    f"recorded by inputs: {described(record['tree'], record['head'], command)}, as {record['ref']}"
+                    f" at {record['time']}, reused on tree {held}, inputs key {key}"
+                )
+            continue
         record = record_ref(held, command, command_line(command, "gate")[2], why)
         if record is None:
             missing += 1
@@ -10382,11 +10459,22 @@ def input_pass(
                 found.append(record)
     if found:
         return max(found, key=lambda record: record["time"])
+    record = origin_input_pass(key, step, why)
+    if record is not None and show:
+        shown(head, record)
+    return record
+
+
+def origin_input_pass(
+    key: str, step: dict[str, Any], why: list[str] | None = None
+) -> dict[str, Any] | None:
+    """input_pass's read of origin alone: the record branch of gate step `step`'s command, on a tree whose `Inputs:`
+    line says `key` (input_candidates) and whose own tree today's `paths` give that key, sound as record_ref reads
+    one, or None. With `why` as record_ref's."""
+    command, env = step["command"], step["sets"]
     for tree in input_candidates(command, key, why):
         record = record_ref(tree, command, env, why)
         if record is not None and inputs_key(tree, step) == key:
-            if show:
-                shown(head, record)
             return record | step_field(step)
     return None
 
