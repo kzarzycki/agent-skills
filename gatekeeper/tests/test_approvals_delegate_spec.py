@@ -9,6 +9,7 @@ import pytest
 from approvals_harness import (
     AS_WRITTEN,
     BARE,
+    HEAD,
     TEXTED,
     add,
     approvals,
@@ -132,3 +133,84 @@ def test_a_delegated_spec_leaves_no_owner_hold_on_the_gate() -> None:
     )
     held = delegates("needs-owner")  # what the issue would be had the approve left the hold
     assert approvals.problems([held], None) == ["#1 waits for the owner (needs-owner)"]
+
+
+OFF = add(
+    ALL, "loop", "delegate_spec: false\n"
+)  # delegate: all for the merge go, specs and plans the owner's
+
+
+def test_delegate_spec_false_refuses_the_delegates_spec_and_plan_approval_and_posts_nothing(
+    github: list[tuple[Any, ...]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    on_main(monkeypatch, OFF)
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: specced(1, "kind:bug", "needs-owner"))
+    for point in ("spec", "plan"):
+        assert approvals.main(["approve", point, "1", "--by", "delegate"]) == 1
+        out = capsys.readouterr().out
+        assert f"approve {point} --by delegate is refused" in out
+        assert "`loop.delegate_spec: false`" in out
+    assert github == []
+    # the owner's own approval still records
+    assert approvals.main(["approve", "spec", "1", "--by", "owner"]) == 0
+    assert github[0][2].startswith("Approved: spec")
+
+
+def test_delegate_spec_false_keeps_the_delegates_record_out_of_the_gate_with_one_line_why() -> None:
+    for gate in ("build", "merge"):
+        found = approvals.proofs(gate, pull(), [delegates()], OFF)
+        why = [line for line in found if "counts for nothing" in line]
+        assert why == [
+            (
+                "#1: the delegate's `Approved: spec` record counts for nothing here, since loop.md sets"
+                " `loop.delegate_spec: false`, which keeps specs and plans the owner's: the owner approves it"
+            )
+        ], found
+        assert "#1 has no `Approved: spec` record by the owner" in found
+    # the owner's record still covers it
+    owners = issue(
+        1, "size:S", "approved:spec", comments=(record("spec", "owner", spec=AS_WRITTEN),)
+    )
+    assert approvals.proofs("build", pull(), [owners], OFF) == []
+
+
+def test_delegate_spec_true_or_unset_keeps_the_delegates_record_counting() -> None:
+    on = add(ALL, "loop", "delegate_spec: true\n")
+    assert approvals.proofs("build", pull(), [delegates()], on) == []
+    assert approvals.delegate_spec(ALL) is True and approvals.delegate_spec(OFF) is False
+
+
+def test_delegate_spec_false_leaves_the_delegates_merge_go_counting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    head = "a" * 40
+    status = {
+        "context": "owner",
+        "state": "success",
+        "description": f"go on {head[:12]}{approvals.DELEGATED}",
+        "creator": {"login": "bot"},
+    }
+    monkeypatch.setattr(approvals, "statuses", lambda _head: [status])
+    monkeypatch.setattr(approvals, "viewer", lambda: "bot")
+    monkeypatch.setattr(approvals, "current", lambda *_a: True)
+    assert approvals.delegation(OFF) == "all"
+    assert approvals.go_on(pull(), head, OFF) == "delegate"
+
+
+def test_delegate_spec_false_leaves_approve_merge_by_delegate_giving_the_go(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    on_main(monkeypatch, OFF)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pull())
+    assert approvals.default(
+        pull()
+    )  # into the default branch, where only `delegate: all` lets the go count
+    assert approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "delegate"]) == 0
+    assert [(s["context"], s["description"]) for s in hub[HEAD]] == [
+        ("owner", f"The delegate's go on {HEAD[:12]}{approvals.DELEGATED}")
+    ]
+    assert github[0][2].endswith(f"Approved: merge\nBy: delegate\nHead: {HEAD}\n")
