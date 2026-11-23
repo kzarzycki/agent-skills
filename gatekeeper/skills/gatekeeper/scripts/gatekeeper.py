@@ -10279,8 +10279,13 @@ def gate_record(head: str, words: list[str]) -> int:
             record = origin_input_pass(key, step, why)
             if record is None:
                 missing += 1
-                reason = "; ".join(why) or f"origin holds no record branch of it with the inputs key {key}"
-                print(f"no record of `{command}` with inputs {key} on tree {held}: run it ({reason})")
+                reason = (
+                    "; ".join(why)
+                    or f"origin holds no record branch of it with the inputs key {key}"
+                )
+                print(
+                    f"no record of `{command}` with inputs {key} on tree {held}: run it ({reason})"
+                )
             else:
                 print(
                     f"recorded by inputs: {described(record['tree'], record['head'], command)}, as {record['ref']}"

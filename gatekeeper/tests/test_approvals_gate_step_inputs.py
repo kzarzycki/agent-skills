@@ -418,5 +418,8 @@ def test_gate_record_finds_a_step_by_its_inputs_on_another_tree(
     key = approvals.inputs_key(inputs["tree"](), step("lint"))
     capsys.readouterr()
     assert approvals.main(["gate-record", inputs["head"](), "--", *lint.split()]) == 1
-    assert f"no record of `{lint}` with inputs {key} on tree {inputs['tree']()}" in capsys.readouterr().out
+    assert (
+        f"no record of `{lint}` with inputs {key} on tree {inputs['tree']()}"
+        in capsys.readouterr().out
+    )
     assert approvals.main(["gate-record", inputs["head"]()]) == 1
