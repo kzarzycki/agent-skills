@@ -197,7 +197,12 @@ installs the skill it is under the install, such as
 `.agents/skills/engineering-loop/scripts/loop.py`. `<gatekeeper>`, `<github-tracker>` and
 `<browsing>` stand for those skills' folders: the first two come in packages the loop's package
 pulls in, `browsing` in `engineering`, and each sits wherever the host installed it (`.agents/skills/<skill>/` under APM,
-`skills/<skill>/` in its plugin under Claude Code). Run a script from the worktree with `uv run`,
+`skills/<skill>/` in its plugin under Claude Code). A Claude cloud VM holds only the checkout, whose vendored copy
+its pin may keep releases old: there, run the pack's scripts from a clone of its latest release tag, resolved in the
+VM at run time (`git ls-remote --tags --refs https://github.com/kzarzycki/agent-skills 'engineering-v*'`, sorted
+as versions, which costs no API quota), or of the tag the brief pins on purpose with a `Pack: engineering-vX.Y.Z` line, never a
+tag of your own; a cloud brief the host writes says the same. In a checkout of the pack's own repo, run its plugin
+folders at the checkout. Run a script from the worktree with `uv run`,
 which installs what its inline header declares. `<browsing>/scripts/browse.py` renders a web UI headless, signed in to an Omnigent server when
 asked, and screenshots it (worker.md, Report; its docstring has the flags). `scripts/mutate.py` applies
 each mutation patch alone, runs the tests and restores the tree, writing a log stamped with the head: the worker
