@@ -5524,9 +5524,9 @@ def required_pending(info: dict, repo: str = "") -> bool:
     """Whether a check the base branch requires is queued or running on the PR's head (``info`` from ``pr_info``).
     A required check no run has registered is not pending, so a check that never starts cannot hold a wait live for
     good. Needs no producer."""
-    # ponytail: `--cache` bounds the reads to one a minute per URL; an ETag read would spare the quota entirely
+    # ETag reads (rest_if_changed): an unchanged rule set or run list answers 304, which costs no quota (#1984)
     slug = repo or "{owner}/{repo}"
-    rules = json.loads(gh("api", "--cache", "1m", f"repos/{slug}/rules/branches/{info['base']}"))
+    rules = rest_if_changed(f"repos/{slug}/rules/branches/{info['base']}")[1]
     required = {
         c["context"]
         for rule in rules
@@ -5535,7 +5535,7 @@ def required_pending(info: dict, repo: str = "") -> bool:
     }
     if not required or info["state"] != "open":
         return False
-    runs = json.loads(gh("api", "--cache", "1m", f"repos/{slug}/commits/{info['sha']}/check-runs"))
+    runs = rest_if_changed(f"repos/{slug}/commits/{info['sha']}/check-runs")[1]
     return any(
         r.get("name") in required and r.get("status") != "completed"
         for r in runs.get("check_runs", [])
@@ -5608,14 +5608,60 @@ COMMITS: dict[
 ] = {}  # git/commits/<sha> answers, kept for the process: a sha's commit is immutable
 
 
+ETAGS: dict[
+    str, tuple[str, Any]
+] = {}  # rest_if_changed's last answer for each REST path: (its ETag, the parsed body)
+# a 304 as gh reports it: the status line `gh api -i` prints, or its error `gh: HTTP 304` where it exits 1 on one
+NOT_MODIFIED = re.compile(r"\bHTTP(?:/[\d.]+)? 304\b")
+
+
+def rest_if_changed(path: str, timeout: float = HTTP_SECONDS) -> tuple[bool, Any]:
+    """REST ``path`` (``repos/...``) read with the ETag of its last read (``If-None-Match``): (False, the kept answer) on
+    GitHub's 304, which costs no quota, else (True, the answer), keeping its ETag (#1984). The first read of a path is a
+    plain one."""
+    known = ETAGS.get(path)
+    args = ["api", "-i", *(["-H", f"If-None-Match: {known[0]}"] if known else []), path]
+    try:
+        out = gh(*args, timeout=timeout)
+    except Fail as e:
+        if known and NOT_MODIFIED.search(f"{getattr(e.__cause__, 'stdout', '') or ''}\n{e}"):
+            return False, known[1]
+        raise
+    out = out.replace("\r\n", "\n")
+    if not out.startswith(
+        "HTTP/"
+    ):  # no status line (a gh that prints no headers): the body alone, no ETag kept
+        return True, json.loads(out or "{}")
+    head, _, body = out.partition("\n\n")
+    if known and NOT_MODIFIED.search(head.split("\n", 1)[0]):
+        return False, known[1]
+    found = json.loads(body or "{}")
+    if tag := re.search(r"(?im)^etag:[ \t]*(\S[^\n]*?)[ \t]*$", head):
+        ETAGS[path] = (tag[1], found)
+    return True, found
+
+
+def pr_quiet(pr: int, until: str, timeout: float) -> bool:
+    """Whether nothing PR ``pr``'s ``until`` condition (``checks``, ``merged``, ``closed``) reads moved since the last
+    call: ETag reads of the pull and, for ``checks``, its head's check runs and combined status, every one of them
+    read so each keeps its ETag. False on the first call, when every read is a plain one."""
+    moved, pull = rest_if_changed(f"repos/{{owner}}/{{repo}}/pulls/{pr}", timeout)
+    if until == "checks":
+        head = pull["head"]["sha"]
+        for path in (f"commits/{head}/check-runs?per_page=100", f"commits/{head}/status"):
+            moved = rest_if_changed(f"repos/{{owner}}/{{repo}}/{path}", timeout)[0] or moved
+    return not moved
+
+
 def pr_rest(path: str, end: float, pages: bool = False) -> Any:
     """``repos/{owner}/{repo}/<path>`` through REST (``{owner}/{repo}`` from this clone, which a launch dir with no
-    working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list."""
+    working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list. A single read
+    carries its last ETag (rest_if_changed), so a poll of an unchanged path costs no quota."""
     timeout = max(0.01, min(HTTP_SECONDS, end - time.monotonic()))
     if not pages:
         if path in COMMITS:  # a commit never changes
             return COMMITS[path]
-        got = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/{path}", timeout=timeout))
+        got = rest_if_changed(f"repos/{{owner}}/{{repo}}/{path}", timeout)[1]
         if path.startswith("git/commits/"):
             COMMITS[path] = got
         return got
@@ -6008,7 +6054,7 @@ def wait_for(
             [f"stalled: no output in {log} for {age:.0f}s; killed pid {target}'s group", *tail]
         )
 
-    queued = False
+    queued = look = False
     while True:
         if outcome := ended() or silent():
             return outcome
@@ -6024,8 +6070,15 @@ def wait_for(
                     extra = {"seen": seen} if until == "verdict" else {}
                     if outcome := settled(pr, time.monotonic() + left, since, **extra):
                         return outcome
-                elif outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
-                    return outcome
+                # the GraphQL read only once something it reads moved: ETag reads first, a 304 costs nothing (#1984);
+                # `look` stays set until a round's reads all answer, so a read that failed after an ETag moved is made
+                # again next round rather than hidden behind that ETag's 304
+                else:
+                    again, look = look, True
+                    if again or not pr_quiet(pr, until, min(HTTP_SECONDS, left)):
+                        if outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
+                            return outcome
+                    look = False
             except RateLimited as e:  # retrying keeps the limit drained: sleep to its reset
                 print(
                     f"GitHub rate limit: waiting {e.wait:.0f}s for its reset",
