@@ -312,3 +312,30 @@ def test_another_status_failure_still_stops(
     head = risky(mergify, 7)
     assert approvals.main(["approve", "merge", "7", "--head", head, "--by", "owner"]) != 0
     assert not notes_on(mergify, 7, approvals.VOICED["owner"])
+
+
+def test_a_land_after_an_eviction_at_the_same_head_hands_over_again(
+    refused: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """A cloud land of a PR Mergify evicted at an unchanged head (its batch was red for a reason not its own): the
+    eviction record ends the first hand-over, so the re-land posts a second record for the land-status workflow, rather
+    than leave the head's `land` at the host's `error` with no record to answer (#2006)."""
+    head = refused["opened"](7)
+    code, lines = refused["land"]("7")
+    assert code == 0, lines
+    assert len(handed(refused, 7)) == 1
+    refused["pulls"][7]["labels"]["nodes"].append({"name": approvals.DEQUEUED})
+    hub.setdefault(head, []).insert(0, {"context": "land", "state": "success", "description": ""})
+    code, lines = refused["land"]("7")
+    assert code == 1, lines  # Mergify dequeued it at the head land queued: evicted
+    assert notes_on(refused, 7, approvals.QUEUE_EVICTED)
+    code, lines = refused["land"]("7")
+    assert lines[0] == "PR #7 is ready now", (
+        lines
+    )  # `land <pr>` marks it ready again; CI starts on ready
+    code, lines = refused["land"]("7")
+    assert code == 0, lines
+    assert "loop:queued" in labels_of(refused, 7)
+    records = handed(refused, 7)
+    assert len(records) == 2 and approvals.fields(records[-1])["head"] == head

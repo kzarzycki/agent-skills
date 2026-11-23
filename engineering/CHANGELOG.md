@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.4 - 2026-11-23
+
+- Releasing: one `Release` workflow run (`gh workflow run release.yml`) cuts every package with pending `changelog.d/` entries in one PR, lands it through the merge queue with no verifier, since `qualify` refuses a release PR whose tree isn't exactly the fold (`cli release-verify`), and pushes each package's tag on the squash commit. `cli cut-release` is the fold the workflow, the gate and a person all run, and `release-check` accepts a commit that releases several packages when each manifest it changes is tagged on it (#1861).
+
 ## 0.35.3 - 2026-11-23
 
 - release-check: the pre-tag smoke run in a private organization repository (#1270) is off unless `RELEASE_SMOKE_REPOSITORY` is set; without it `release-check` prints `smoke run: off (RELEASE_SMOKE_REPOSITORY unset)` and passes. Setting `RELEASE_SMOKE_REPOSITORY` and `RELEASE_SMOKE_WORKFLOW` turns it back on (#1855).

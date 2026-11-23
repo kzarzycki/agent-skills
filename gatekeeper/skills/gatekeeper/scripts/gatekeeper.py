@@ -8462,13 +8462,21 @@ HANDED = "Queued for Mergify"
 def handed_by_record(pull: dict[str, Any]) -> None:
     """The hand-over where the `land` status can't be written (unwritten): a HANDED record naming the head, once per
     head, which the repo's land-status workflow turns into the `land` success on that sha while it is still the PR's
-    head and the PR carries QUEUED, so `.mergify.yml` reads the same status and a push still leaves the queue."""
+    head and the PR carries QUEUED, so `.mergify.yml` reads the same status and a push still leaves the queue. Once per
+    head and hand-over: a land after an eviction at that head (QUEUE_EVICTED) posts a new record."""
     where, head = f"PR #{pull['number']}", pull["headRefOid"]
-    if any(
-        machine(note["body"]).strip().splitlines()[:1] == [HANDED]
-        and fields(note["body"]).get("head", "").lower() == head.lower()
-        for note in notes(pull)
-    ):
+    # a record still stands until an eviction at the same head follows it: after one (a red batch, a conflict), the
+    # head's `land` status may be the host's `error`, so a re-land posts a new record for the workflow to answer
+    standing = False
+    for note in notes(pull):
+        first = machine(note["body"]).strip().splitlines()[:1]
+        if fields(note["body"]).get("head", "").lower() != head.lower():
+            continue
+        if first == [HANDED]:
+            standing = True
+        elif first == [QUEUE_EVICTED]:
+            standing = False
+    if standing:
         print(
             f"{where}: its hand-over record for {head} is already on the PR; with no `land` status on {head} yet,"
             " re-run the land-status workflow's run for that comment, or `land` from a host"
