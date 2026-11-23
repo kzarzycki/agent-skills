@@ -364,7 +364,7 @@ def test_an_entry_whose_group_waited_for_checks_github_never_started_is_taken_ou
     assert cloud_queue["dequeued"] == [7] and cloud_queue["enqueued"] == [(7, head)] * 2
 
 
-def test_land_wait_on_the_rest_queue_enqueues_and_exits_with_no_poll_and_no_graphql(
+def test_land_on_the_rest_queue_enqueues_and_exits_with_no_poll_and_no_graphql(
     cloud_queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     head = cloud_queue["opened"](7)
@@ -376,7 +376,8 @@ def test_land_wait_on_the_rest_queue_enqueues_and_exits_with_no_poll_and_no_grap
         "sleep",
         lambda seconds: pytest.fail("polled the queue") if seconds >= 1 else real_sleep(seconds),
     )
-    code, lines = cloud_queue["land"]("7", "--wait")
+    # without --wait; `land --wait` waits on for the merge (test_land_wait_queue_budget.py)
+    code, lines = cloud_queue["land"]("7")
     assert code == 0, lines
     assert cloud_queue["enqueued"] == [(7, head)] and cloud_queue["graphql"] == []
 
