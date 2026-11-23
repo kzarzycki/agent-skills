@@ -5217,10 +5217,15 @@ def test_watch_wakes_when_a_running_session_gains_a_prompt() -> None:
 
 def test_a_sub_agent_is_archived_like_a_top_level_session(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple] = []
-    monkeypatch.setattr(omnigent_agent.Omnigent, "call", lambda self, *c: calls.append(c) or {})
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "call", lambda self, *c, **kw: calls.append((*c, kw)) or {}
+    )
     og = object.__new__(omnigent_agent.Omnigent)
     og.archive("kid")  # the server leaves the parent's shared runner up (omnigent 4dd0af32)
-    assert calls == [("PATCH", "/v1/sessions/kid", {"archived": True})]
+    # a cloud archive ends its VM through the bridge, up to about 65 s: no 30 s cut (#2052)
+    timeout = {"timeout": omnigent_agent.ARCHIVE_SECONDS}
+    assert calls == [("PATCH", "/v1/sessions/kid", {"archived": True}, timeout)]
+    assert omnigent_agent.ARCHIVE_SECONDS > 65 > omnigent_agent.HTTP_SECONDS
 
 
 def test_reap_finishes_done_children_and_keeps_the_busy_ones() -> None:

@@ -320,6 +320,9 @@ RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
 HTTP_SECONDS = 30.0
+# An archive of a claude-cloud session waits while its bridge archives the claude.ai session, which ends the VM: up to
+# about 65 s, so a slower return is no failure (#2052). It is a PATCH, never retried.
+ARCHIVE_SECONDS = 120.0
 START_CONFIRM_SECONDS = 300.0  # how long `start` waits for the brief to show in the history
 LATE_BRIEF_SECONDS = HTTP_SECONDS  # the grace a missed confirm gives a brief the server still holds
 ERROR_BODY_BYTES, ERROR_BODY_SECONDS = (
@@ -1956,8 +1959,9 @@ class Omnigent:
     def archive(self, sid: str) -> None:
         """Finish ``sid``: archive it, which ends its agent process and keeps its transcript. Never
         DELETE, which erases the transcript. A sub-agent's archive leaves the runner it shares
-        with its parent up (kzarzycki/omnigent 4dd0af32)."""
-        self.call("PATCH", f"/v1/sessions/{sid}", {"archived": True})
+        with its parent up (kzarzycki/omnigent 4dd0af32). A cloud session's archive ends its VM through the bridge,
+        which can take about a minute, so it gets ``ARCHIVE_SECONDS``."""
+        self.call("PATCH", f"/v1/sessions/{sid}", {"archived": True}, timeout=ARCHIVE_SECONDS)
 
     def find(self, title: str, after: float, top_level: bool = False) -> str | None:
         """The parent's child called ``title`` created at or after ``after`` (epoch seconds): the
