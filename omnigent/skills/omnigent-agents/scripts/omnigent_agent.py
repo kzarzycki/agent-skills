@@ -592,6 +592,7 @@ FOLLOW_QUIET_SECONDS = 300.0
 # A followed lead with no progress (its own history, its live children) this long: a ``deadline``
 # event, whatever its status reads; this much more once it was nudged.
 DEADLINE_SECONDS = 1200.0
+SHARED_READ_SECONDS = 5.0  # a PR read this recently serves every wait on it (a restart reads each PR once)
 PR_POLL_SECONDS = 60.0  # a lead's named PR is read from GitHub at most this often
 # An open PR with no push, verdict, go or merge-queue step this long is stalled: the supervisor wakes the manager with
 # the blocker it finds (#1819), since nobody else notices a PR waiting behind a red check or a missing go overnight.
@@ -5587,21 +5588,13 @@ PR_VIEWS: dict[
 
 
 def pr_view(pr: int, timeout: float, repo: str = "") -> dict:
-    """PR ``pr``'s state and checks from one ``gh pr view``, which gets ``timeout`` seconds."""
-    view = gh(
-        "pr",
-        "view",
-        str(pr),
-        *(["-R", repo] if repo else []),
-        "--json",
-        "state,statusCheckRollup,headRefOid,headRefName,baseRefName",
-        timeout=timeout,
-    )
-    data = json.loads(view)
-    if data.get(
-        "headRefName"
-    ):  # the supervisor maps a wait to its events' branch from this read, with no second one
-        PR_VIEWS[(repo, pr)] = (time.time(), data)
+    """PR ``pr``'s state and checks, in ``gh pr view``'s shape, from ETag reads (``pr_rest_view``): a poll where the PR
+    did not move answers 304, which costs no quota (#2068). The read gets ``timeout`` seconds."""
+    data = pr_rest_view(pr, "checks", timeout, repo)
+    PR_VIEWS[(repo, pr)] = (
+        time.time(),
+        data,
+    )  # the supervisor maps a wait to its events' branch from this read, with no second one
     return data
 
 
@@ -5849,20 +5842,26 @@ def etags_save(path: Path) -> None:
         pass
 
 
-def pr_rest_view(pr: int, until: str, timeout: float) -> dict:
+def pr_rest_view(pr: int, until: str, timeout: float, repo: str = "") -> dict:
     """PR ``pr``'s state and, for ``until`` ``checks``, its head's checks, in ``pr_view``'s shape, from ETag reads
     (rest_if_changed) of the pull, its head's check runs and its combined status, so a round where none moved costs no
     quota (#1984). The answer is GitHub's REST alone, never a second read that could trail it."""
-    pull = rest_if_changed(f"repos/{{owner}}/{{repo}}/pulls/{pr}", timeout)[1]
+    slug = repo or "{owner}/{repo}"
+    pull = rest_if_changed(f"repos/{slug}/pulls/{pr}", timeout)[1]
     state = "MERGED" if pull.get("merged") or pull.get("merged_at") else str(pull["state"]).upper()
-    data: dict = {"state": state, "headRefOid": pull["head"]["sha"]}
+    data: dict = {
+        "state": state,
+        "headRefOid": pull["head"]["sha"],
+        "headRefName": pull["head"]["ref"],
+        "baseRefName": pull["base"]["ref"],
+    }
     if until != "checks":
         return data
     head = pull["head"]["sha"]
     runs = rest_if_changed(
-        f"repos/{{owner}}/{{repo}}/commits/{head}/check-runs?per_page=100", timeout
+        f"repos/{slug}/commits/{head}/check-runs?per_page=100", timeout
     )[1]
-    status = rest_if_changed(f"repos/{{owner}}/{{repo}}/commits/{head}/status", timeout)[1]
+    status = rest_if_changed(f"repos/{slug}/commits/{head}/status", timeout)[1]
     data["statusCheckRollup"] = [
         {
             "name": r.get("name"),
@@ -10018,12 +10017,19 @@ def supervise_registry(
                 return ""
         return repos[sid]
 
+    pr_shared: dict[str, list] = {}  # key -> the last read, whichever lead made it
+
     def settled(lead: dict, pr: int, repo: str, fresh: bool = False, run: bool = False):
         """``pr_settled`` (``run_settled`` for an Actions run) for ``lead``, read at most once per
         ``PR_POLL_SECONDS`` unless ``fresh``, so the overdue check and the news check share one
         GitHub read."""
         seen = lead.setdefault("pr_seen", {})
         key = f"{'run ' if run else ''}{repo}#{pr}"
+        if (shared := pr_shared.get(key)) and time.time() - shared[0] < SHARED_READ_SECONDS:
+            seen[key] = list(shared)  # another wait on this PR read it a moment ago (a restart's backfill): it serves this one
+            if len(shared) > 2:
+                raise Fail(shared[2])
+            return shared[1] and tuple(shared[1])
         if not fresh and key in seen and time.time() - seen[key][0] < PR_POLL_SECONDS:
             if len(seen[key]) > 2:  # a failed read counts as a read: GitHub is asked once a minute
                 raise Fail(seen[key][2])
@@ -10031,9 +10037,9 @@ def supervise_registry(
         try:
             found = run_settled(pr, repo) if run else pr_settled(pr, repo)
         except Exception as e:
-            seen[key] = [time.time(), None, reason(e)]
+            seen[key] = pr_shared[key] = [time.time(), None, reason(e)]
             raise
-        seen[key] = [time.time(), found]
+        seen[key] = pr_shared[key] = [time.time(), found]
         return found
 
     def moving(sid: str, lead: dict, wait: str = "") -> bool | None:
