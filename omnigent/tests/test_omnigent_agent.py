@@ -4156,7 +4156,8 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     fake_gh(monkeypatch, {"42": on_pr(7, "Branch: claude/x at abc\n")})
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
-    argv = ["start", "claude-cloud", "t", "b.md", "r.md", "--top-level", "--host", "box"]
+    report = str(tmp_path / "there" / "r.md")  # a path on box, never made here
+    argv = ["start", "claude-cloud", "t", "b.md", report, "--top-level", "--host", "box"]
     argv += ["--workspace", "/there/repo", "--pr", "o/r#7", "--confirm-seconds", "0"]
     assert omnigent_agent.main(argv) == 0
     assert og.top_level == [True] and og.workspaces == ["/there/repo"]
@@ -4167,9 +4168,17 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     assert "checked out in the workspace this session started from" in brief
     assert "git fetch origin pull/7/head" in brief and "10 minutes" not in brief
     assert "A run may not outlive the turn" in brief and LONG_RUN_POINTER not in brief
-    # its report is the PR comment, written here although the session runs there
-    assert omnigent_agent.main(["wait", "s0", "r.md", "--pr", "7"]) == 0
-    assert (tmp_path / "r.md").read_text() == "Branch: claude/x at abc\n"
+    # its report is the PR comment, written here under tmp/loop/, as a far report comes home
+    info = og.info
+    og.info = lambda sid: {**info(sid), "host_id": og.hosts_of[sid]}  # type: ignore[method-assign]
+    assert omnigent_agent.main(["wait", "s0", report, "--pr", "7"]) == 0
+    assert (tmp_path / "tmp/loop/r.md").read_text() == "Branch: claude/x at abc\n"
+    # a follow-up takes that copy as the report before: a turn ending on its comment is not a new one
+    fake_gh(monkeypatch, {"42": {**on_pr(7, "old"), "created_at": "2001-01-01T00:00:00Z"}})
+    (tmp_path / "fix.md").write_text("fix it")
+    send = ["send", "s0", "fix.md", report, "--pr", "7", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(send) == 1
+    assert not (tmp_path / "there").exists()
 
 
 def test_wait_keep_leaves_a_delivered_worker_open_for_a_relay(
@@ -14356,6 +14365,25 @@ def test_every_cloud_preamble_says_a_helper_is_a_native_subagent(
     assert "sys_session_create`: a created child" not in omnigent_agent.first_message(
         False, top_level, None, "r.md", None, "do X"
     )
+
+
+def test_a_report_on_another_host_is_its_path_there_with_or_without_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One rule for a start's report on another host, ``--pr`` or not: a relative one is refused,
+    and an absolute one is that host's path, never created or resolved here."""
+    og = far_host(monkeypatch, tmp_path, "cc-experiments", meminfo=mem(9000), loadavg="0 0 0")
+    og.procs.setdefault("far", {})["/there/repo/.claude/settings.local.json"] = PINNED
+    there = tmp_path / "there-home" / "r.md"  # a folder this host must not make
+    for pr in ([], ["--pr", "o/r#7"]):
+        argv = [*far_start("claude-cloud", "cc-experiments"), "--workspace", "/there/repo", *pr]
+        argv[4] = "tmp/loop/r.md"
+        assert omnigent_agent.main(argv) == 1, pr
+        assert "is another host" in capsys.readouterr().err
+        argv[4] = str(there)
+        assert omnigent_agent.main(argv) == 0, pr
+        assert not there.parent.exists(), pr
+        og.archived = list(og.sessions)
 
 
 @pytest.mark.parametrize("role", ["lead", "worker", "verifier"])
