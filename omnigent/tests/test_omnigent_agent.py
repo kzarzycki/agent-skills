@@ -1403,6 +1403,39 @@ def test_wait_for_fails_when_it_cannot_tell_a_pid_is_the_runs(
         run.wait()
 
 
+def rest_like(view: Callable[[], dict]) -> Callable[..., str]:
+    """A fake ``gh`` answering wait-for's REST reads (#1984) from ``view()``, a ``gh pr view`` shape read once a round
+    (at the round's pull read): the pull's state, then its check runs and statuses. No headers, so no ETag is kept."""
+    now: dict = {}
+
+    def gh(*args: str, **kw: object) -> str:
+        path = args[-1]
+        if path.endswith("/pulls/7"):
+            now.clear()
+            now.update(view())
+            state = now.get("state", "OPEN")
+            pull = {"state": "open" if state == "OPEN" else "closed", "merged": state == "MERGED"}
+            return json.dumps({**pull, "head": {"sha": "s"}})
+        rollup = now.get("statusCheckRollup") or []
+        if "check-runs" in path:
+            runs = [
+                {
+                    "name": c["name"],
+                    "status": c["status"].lower(),
+                    "conclusion": (c.get("conclusion") or "").lower(),
+                }
+                for c in rollup
+                if "name" in c
+            ]
+            return json.dumps({"check_runs": runs})
+        statuses = [
+            {"context": c["context"], "state": c["state"].lower()} for c in rollup if "context" in c
+        ]
+        return json.dumps({"statuses": statuses})
+
+    return gh
+
+
 def test_wait_for_a_pr_waits_until_its_checks_settle(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1421,7 +1454,7 @@ def test_wait_for_a_pr_waits_until_its_checks_settle(
             },
         ]
     )
-    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: json.dumps(next(views)))
+    monkeypatch.setattr(omnigent_agent, "gh", rest_like(lambda: next(views)))
     monkeypatch.setattr(omnigent_agent, "WAIT_FOR_PR_EVERY", 0.01)
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--budget", "30"]) == 1
     assert capsys.readouterr().out == "PR #7 checks red: test\n"
@@ -1434,11 +1467,11 @@ def test_wait_for_a_pr_waits_until_its_checks_settle(
             {"context": "lint", "state": "SUCCESS"},
         ],
     }
-    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: json.dumps(green))
+    monkeypatch.setattr(omnigent_agent, "gh", rest_like(lambda: green))
     assert omnigent_agent.main(["wait-for", "--pr", "7"]) == 0
     assert capsys.readouterr().out == "PR #7 checks green (2)\n"
 
-    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: '{"state": "CLOSED"}')
+    monkeypatch.setattr(omnigent_agent, "gh", rest_like(lambda: {"state": "CLOSED"}))
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "merged"]) == 1
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "closed"]) == 0
 
@@ -10783,7 +10816,12 @@ def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its
         and "Never ask the owner which branch" in brief
     )
     assert "claude/ready-demo-<pr>" in brief and "the demo media branch it names" in brief
-    assert "never committed.\n" in brief and brief.endswith(omnigent_agent.CLOUD_NO_PUSH + "\ndo X")
+    assert "never committed.\n" in brief and brief.endswith(
+        omnigent_agent.CLOUD_NO_PUSH
+        + omnigent_agent.CLOUD_GH_QUOTA
+        + omnigent_agent.pack_line("do X")
+        + "\ndo X"
+    )
     assert (
         "curl -sS -X POST -H 'Content-Type: application/json'" in brief
         and "api.github.com/repos/<owner>/<repo>/pulls" in brief
