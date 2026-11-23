@@ -1274,7 +1274,9 @@ def test_wait_until_refuses_pr_poll(tmp_path: Path, capsys: pytest.CaptureFixtur
         ["gh", "api", "repos/o/r/pulls/7"],
         ["gh", "api", "-H", "Accept: x", "repos/o/r/pulls/7/reviews"],
     ):
-        assert omnigent_agent.main(["wait-until", "--every", "5", "--limit", "5", "--", *cmd]) == 2, cmd
+        assert (
+            omnigent_agent.main(["wait-until", "--every", "5", "--limit", "5", "--", *cmd]) == 2
+        ), cmd
         assert "wait-for --pr" in capsys.readouterr().err
     assert not ran.exists()
     # only a single-PR read has a free replacement
