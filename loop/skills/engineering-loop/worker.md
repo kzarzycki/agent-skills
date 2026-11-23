@@ -1,13 +1,13 @@
 # Worker
 
 You implement one item of a spec, or a list of findings, on your own branch. The
-lead's message gives the spec, the item, the PR, worktree, branch, notes path and gates.
+lead's message gives the spec, the item, the PR, worktree, branch, notes path and the tests to run.
 Read the notes, the spec, [coding-standards.md](coding-standards.md) and the project's
 `docs/agents/coding-standards.md` first. Run every command in your worktree, never in the
 main checkout. A lead that builds an item itself follows this file on its own PR
 branch: it pushes that branch, merges nothing, and writes the report into its notes.
 A worker in a cloud session pushes to the `claude/…` branch its session started on, not to a `<branch>` a brief names, and reports that branch and its head SHA (SKILL.md, Cloud worker).
-Where your build, gate and proof runs go is SKILL.md, Where heavy steps run; a worker in a
+Where your build, test and proof runs go is SKILL.md, Where heavy steps run; a worker in a
 cloud session (the default unless loop.md's `Cloud worker:` line says `none`) follows SKILL.md, Cloud worker.
 
 1. **Build**, with the Build skill when gatekeeper.md's `practice` names one, under these rules.
@@ -22,7 +22,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    Read the spec's comments as well as its body, since a later comment can narrow
    the spec. A brief with "the verifier will check" lists the checks the verifier will run on
    your head: run each on your own head before you report, and list each one's result in the
-   report, since a check left to the verifier costs a fix round, a full gate and another pass.
+   report, since a check left to the verifier costs a fix round and another pass.
    For each scriptable Before merge line of the spec, write the check it names and commit it
    in the PR: in the project's suite where loop.md's `Acceptance tests:` line is set, else as
    an executable file in `acceptance/<issue>/` (SKILL.md, Acceptance checks), so the example
@@ -31,55 +31,44 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
 2. **Gates and push.** Iterate on the narrowest check that covers the change: an incremental build of the touched
-   target, then `mise run test:changed` (that module's tests), then the gate limited to one step where the project has
-   one, since a full gate can take twenty minutes to show a compile error a build shows in one. Those narrow checks are
-   the loop between heads; a review head gets only those narrow checks (tests and lint for what changed). The gate of
-   record runs once, on the head the verifier is satisfied with, and again on any later head, since a push voids a gate;
-   when it fails, find the cheaper check that was skipped before the next run. A gate failure now shows after the
-   verifier, so its fix needs a short re-verify of the delta. Lint runs at commit, in the hook's `lint:` tasks on
-   the staged files, so the gate adds none. Before each push (after it on a fix round, below), where loop.md has an
-   `Affected tests:` line, run `uv run <gatekeeper>/scripts/approvals.py affected-tests` on every head, a fix
-   round's too: it runs that selection against `git merge-base origin/<base> HEAD` (the base of the branch's open PR,
-   else the default branch; a shallow clone is deepened) in the variable `Gate base:` names (else `GATE_BASE`), under the
-   host gate slot, in place of the full `mise run check`, and is the narrow check for a review head. Without the line, or with loop.md's
-   `Gate: full`, a review head's narrow check is `mise run test:changed`, and `mise run check` is the gate of record only
-   (it runs `affected-tests` under that name where the line exists). A selector that selects nothing exits 0. With `ci: false` the draft heads run `affected-tests` too,
-   and the gate of record on the ready head is `approvals.py local-ci --record` on the committed head, run once when the
-   PR goes ready (again only if the head moves after that, or its merge base with the PR's base does: a stacked PR whose parent lands, a retarget, since a narrowed record is keyed by that merge base): a narrowed pass against the merge base where loop.md has
-   the line and no `Gate: full`, which `check merge` takes, else the full gate, since then `check merge` needs a full
-   pass on the head (SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
+   target, then the tests of the module you changed, since a whole-suite run can take twenty minutes to show a compile
+   error a build shows in one. The run you report is the tests the PR affects, on every head you push, a fix
+   round's too, and never the whole suite: where loop.md has an `Affected tests:` line, `uv run
+   <gatekeeper>/scripts/approvals.py affected-tests`, which runs that selection against `git merge-base origin/<base>
+   HEAD` (the base of the branch's open PR, else the default branch; a shallow clone is deepened) in the variable
+   `Gate base:` names (else `GATE_BASE`), under the host gate slot; without the line, `mise run test:changed`. A
+   selector that can't tell which tests a change touches runs nothing and says so: report that line as it is, and
+   never fall back to the whole suite. You run no gate of record, no full `mise run check` and no `local-ci`, with
+   `ci: false` too: no gate runs on the PR before it merges, and the nightly runs the full suite (SKILL.md, Merge
+   model). Lint runs at commit, in the hook's `lint:` tasks on the staged files.
+   Write the e2e tests that prove the change works, in the PR, and name them in the report: the verifier proves
+   the change with those tests and runs no suite of its own, so a behaviour no e2e test of yours reaches is one
+   nothing runs before the merge. Where the project has no e2e tier, the acceptance checks of step 1 are those tests.
+   A test that passed only on its retry, or failed in a
    file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report with
-   the run it came from (a CI run's id, else the time the gate started), since that run and
+   the run it came from (a CI run's id, else the time the run started), since that run and
    the head are what make it one occurrence.
-   When your brief opens with a `LOOP_HEAVY_LOCK=<path>` line, run each gate or full test run
-   under that lock, around the host's heavy wrapper (SKILL.md, One heavy gate per host slot; `affected-tests` and `local-ci` take the slot themselves, so the lock is for `mise run check` and other bare commands), since your lead may run another
+   When your brief opens with a `LOOP_HEAVY_LOCK=<path>` line, run each test run
+   under that lock, around the host's heavy wrapper (SKILL.md, One heavy gate per host slot; `affected-tests` takes the slot itself, so the lock is for `mise run test:changed` and other bare commands), since your lead may run another
    worker beside you and the host's slot counts every caller: `perl -MFcntl=:flock -e '$^F =
    1023; open(F, ">>", shift) or die "$!\n"; flock(F, LOCK_EX) or die "$!\n"; exec @ARGV'
-   <path> uv run <gatekeeper>/scripts/approvals.py heavy mise run check`, or, with an `Affected tests:` line, `<path> uv run <gatekeeper>/scripts/approvals.py affected-tests` (perl, since macOS has no `flock`).
+   <path> uv run <gatekeeper>/scripts/approvals.py heavy mise run test:changed`, or, with an `Affected tests:` line, `<path> uv run <gatekeeper>/scripts/approvals.py affected-tests` (perl, since macOS has no `flock`).
    Once it exits 0, commit and push with `git push -u origin <branch>` as
    its own command, since a pre-tool hook may scan the whole command text. Commit and push
-   after each step whose gates are green, not only at the end, so a worker killed mid-task
-   leaves its work on the branch. A fix round (a brief of a verdict's findings) runs the narrow checks only:
-   once `test:changed` (or `affected-tests` where loop.md has the line) and the mutation check (Report) pass, commit and
-   push and report the head, since the lead starts the next verifier on it. No gate starts on a review head. When the
-   brief says the verifier is satisfied with the head, start the gate of record detached on it (below), report its log
-   and pid in place of its exit code, and never wait on it: the lead waits on it, and a red gate sends a short
-   re-verify of the delta. When the brief says the verifier reviews in your worktree (lead.md step 7,
-   Shared worktree), run no gate there beside the pass: run the changed tests and the
-   mutation check, push and stop, since the verifier's mutation patches edit that tree;
-   `land` and CI gate the head. With an `Affected tests:` line the gate of record is `affected-tests` again, which
-   replaces the delta form below. Without it, for the gate of record, when the brief names the last green head (the newest head whose gate
-   passed) and `git merge-base --is-ancestor <it> HEAD` exits 0, put `GATE_BASE=<it>` (or the
-   variable loop.md's `Gate base:` line names) in front of `mise run check`, so a check that
-   reads it selects only what changed since that head; with `ci: false` run the check that way,
-   never `local-ci --record`, which clears the variable. The head that lands is gated by `land`, CI and `local-ci`,
-   which clear it and set their own base only in narrowed mode (SKILL.md, Adopting the loop). The lead merges your branch and opens the PR: a
+   after each step whose tests are green, not only at the end, so a worker killed mid-task
+   leaves its work on the branch. A fix round (a brief of a verdict's findings) runs the same:
+   once the affected tests and the mutation check (Report) pass, commit and
+   push and report the head, since the lead starts the next verifier on it. When the
+   brief says the verifier reviews in your worktree (lead.md step 7,
+   Shared worktree), run nothing there beside the pass: run the affected tests and the
+   mutation check, push and stop, since the verifier's mutation patches edit that tree.
+   The lead merges your branch and opens the PR: a
    brief that asks for a PR means push the branch and report it. A spec or plan the brief
    asks for goes in a file under `tmp/loop/`, and you report its path: the lead
    posts it, since the spec lives on the issue. Your job ends at the push, and once the head is handed to the queue or for approval the branch is frozen: PR events (review comments, checks) are read-only to you, and a follow-up goes in a new PR. Don't wait for
-   CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
-   the worktree you are given, then the gate of step 2 (`affected-tests` with an `Affected tests:` line, else `mise run check`) and push the same way. A command that
-   may outlast one tool call (a gate, a held lock, a queue) starts detached (verifier.md, A long or locked run is detached),
+   CI. A brief that is a failing check log (a merge queue's batch check) is a check red after the PR went ready: fix it in
+   the worktree you are given, then run the affected tests above and push the same way. A command that
+   may outlast one tool call (a test run, a held lock, a queue) starts detached (verifier.md, A long or locked run is detached),
    with its log, pid and exit code in files, and is waited on with one wake, as that section says: one
    `wait-for --log <log> --pid <pid> --budget <the run's expected length>` (a PR's checks: `wait-for --pr <n>`) as a
    background call your harness tracks, never a short `wait-for`, `until grep` or `sleep` loop, since each return
@@ -93,7 +82,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    push, reply on each finding's thread with its commit SHA and resolve it, reason
    `ADDRESSED` (github.md, Review trail). Resolve only a thread you fixed: deferring or
    rejecting a finding is triage, the lead's.
-4. **Report.** Every log or capture you hand over as proof (a gate run, a repro, a drive
+4. **Report.** Every log or capture you hand over as proof (a test run, a repro, a drive
    of the instance) starts with the output of `git rev-parse HEAD` and the command that
    produced it, since a proof of another commit says nothing about the one under review.
    That SHA is the whole provenance: a checksum manifest or digest exchange adds nothing a
@@ -130,8 +119,8 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    worktree path once `lsof -a -p <pid> -d cwd` shows each match runs there, never with
    `pkill -f` or `killall` on a pattern other agents share, since on a shared host it kills
    their runs too. Then write your
-   report to a file and send the lead its path: the branch and head SHA, the PR, the gate
-   exit codes, your signature (what orchestrating-agents' `scripts/omnigent_agent.py signature` prints, else
+   report to a file and send the lead its path: the branch and head SHA, the PR, the test
+   runs' exit codes, the e2e tests you wrote for the verifier, your signature (what orchestrating-agents' `scripts/omnigent_agent.py signature` prints, else
    the `AGENT_SIGNATURE=` line atop your brief), the line `First commit: <n> s after the brief` (the brief file's time to the first commit's committer date, `unknown` when no commit is made), the line `Spec deviations: none` or that line
    with one bullet per deviation quoting the spec line it narrows (each one already asked,
    above), anything else left out and why, and what you tried and dropped. The deviations

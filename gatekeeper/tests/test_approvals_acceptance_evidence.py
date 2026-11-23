@@ -272,7 +272,7 @@ def test_verifier_writes_its_criteria_before_reading_the_workers_report() -> Non
     assert "`## Criteria`" in step
     assert "A criterion no line covers is a finding" in step
     assert "`Accepted on evidence: <line> — <proof log>`" in verifier
-    assert "You never rely on the worker's gate log" in verifier
+    assert "You never rely on the worker's test log" in verifier  # #1872: the worker runs no gate
 
 
 def test_lead_step_7_states_the_four_shared_worktree_conditions() -> None:
