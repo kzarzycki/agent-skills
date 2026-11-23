@@ -350,3 +350,23 @@ def test_a_land_with_no_working_tree_names_the_wait_in_its_landed_comment(
     monkeypatch.setattr(approvals, "merges", lambda *a: seen.append(a[5]))
     approvals.local_queue([pull], "main", None, None, {"check"})
     assert seen == [" (waited 60 s, joined: none)"]
+
+
+def test_each_poll_of_the_wait_reads_github_not_the_runs_memory(
+    lands: dict[str, Any], clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A poll can be shorter than the run's read memory (READ_TTL, #2016): `batch_wait_seconds` under it, or the last
+    poll's remainder. After each sleep the wait empties that memory (read_afresh), so a PR whose checks just turned
+    green is read from GitHub and joins the batch."""
+    polls: list[float] = []
+    monkeypatch.setattr(approvals.github, "read_afresh", lambda: polls.append(clock.now))
+    policy(lands, "land:\n  batch_wait_seconds: 15")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    check(lands, 8, "PENDING")
+    clock.tick = lambda now: check(lands, 8, "SUCCESS") if now >= 15 else None
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert clock.slept == [15] and polls == [
+        15.0
+    ]  # the one short poll emptied the memory before it read
