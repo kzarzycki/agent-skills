@@ -8530,6 +8530,43 @@ def report_head(text: str) -> str:
     return "\n".join(kept) or next(iter(lines), "")
 
 
+def quota_line_due(state: dict, now: float, until: float) -> bool:
+    """Whether a "no progress (quota)" line may be said ``now``, ``until`` seconds before GitHub's
+    quota resets (zero or less: no known reset, so as any deadline). One per reset: said, it is
+    kept in ``state`` and not said again until that reset has passed (#2090)."""
+    if until <= 0:
+        return True
+    if now < state.get("quota_said", 0.0):
+        return False
+    state["quota_said"] = now + until
+    return True
+
+
+SEND_TOOLS = re.compile(r"session_(send|message)|relay")
+
+
+def relayed_to(items: list[dict], notify: str | None, last: str = "") -> bool:
+    """Whether the session sent its result to ``notify`` in its last turn: a tool call naming it,
+    between the last two assistant messages, whose text carries the result's first line (``last``
+    up to its ``Report:`` path). Any other send (a progress note, a question) leaves the ``DONE``
+    news to ``notify``, so it still acts. Its turn end then repeats what ``notify`` holds (#2090)."""
+    said = [
+        n
+        for n, i in enumerate(items)
+        if i.get("type") == "message" and i.get("role") == "assistant"
+    ]
+    head = last.strip().split("Report:")[0].strip().splitlines()[0:1]
+    if not notify or not said or not head or not head[0]:
+        return False
+    return any(
+        i.get("type") == "function_call"
+        and SEND_TOOLS.search(str(i.get("name") or ""))
+        and notify in (sent := json.dumps(i.get("arguments") or ""))
+        and head[0] in sent
+        for i in items[(said[-2] if len(said) > 1 else -1) + 1 : said[-1]]
+    )
+
+
 def waits_on(text: str, lead: dict, notify: str | None, event: bool = False) -> bool:
     """Whether a lead's ``STILL WORKING`` wait names the session the supervisor notifies: a
     ``Waits: supervisor`` line, its full id, the words ``pm``, ``pm's``, ``manager``, ``you``,
@@ -8735,6 +8772,12 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
             return "rule", "act", "ended PARKED with no park message before it"
         return "rule", "record", "parked: waits on host capacity"
     if ending == "DONE":
+        if event.get("relayed"):  # it sent its result to the notified session itself (#2090)
+            return (
+                "rule",
+                "done",
+                "done, its result already taken by the notified session: told only to its waiters",
+            )
         return "rule", "done", "done: its result, and the leads waiting on it"
     if ending == "USER NEEDED":
         if not event.get("decisions"):
@@ -9240,6 +9283,9 @@ def supervise_registry(
             # a subagent's end re-invokes no cloud session (#1753): read only for a wait that names one
             "cloud": bool(SUBAGENT_WAIT.search(parsed or "")) and cloud_session(og, info),
             "session": sid,
+            # its result already reached the notified session: it sent it, or archived the session after
+            # taking it (#2090)
+            "relayed": bool(info.get("archived")) or relayed_to(items, notify, last),
         }
 
         def ask() -> tuple[str, str]:
@@ -9307,7 +9353,9 @@ def supervise_registry(
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
         elif action == "relay":  # a dequeue to its PR's lead, which ``relay`` unarchives first
             act_on(eid, [(sid, "dequeued", f"Supervisor: {line}")])
-        elif action in ("act", "owner") or action == "done" and not event["direct"]:
+        elif action in ("act", "owner") or (
+            action == "done" and not event["direct"] and not event["relayed"]
+        ):
             item = line if kind in ("loop-owner", "dequeued") else line.splitlines()[0]
             if asked := question_for(lead_ev, parsed):
                 item = f"{item}\n{asked}"  # the whole question, never cut
@@ -10446,6 +10494,10 @@ def supervise_registry(
                 chain = (
                     lead["wait"] if names is None and due is None else f"{lead['progress_at']:.0f}"
                 )
+                if "quota" in lead["wait"].lower() and not quota_line_due(
+                    state, time.time(), limited[0] - time.monotonic()
+                ):
+                    continue  # one quota line per reset (#2090)
                 say(line, sid, f"deadline:{sid}:{chain}{nudged}", "deadline")
 
     def has_event(sid: str) -> bool:  # an event settles what a prose wait would
