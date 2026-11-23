@@ -5,6 +5,13 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.4 - 2026-11-23
+
+- gatekeeper: `check stalled` judges every base, not only Mergify's: a PR `land` would take into a base it merges itself is listed while still open, and one into a base GitHub's merge queue holds while not in it; it also lists a PR whose newest verifier pass on its head is satisfied (or at the cap) but that still lacks its go or its `head_proof` record past `loop.stalled_after_hours` (default 4) since the later of its head's push and its newest verdict there, naming what is missing (`missing: go`); it reads the policy from the base and compares only the running code with the base's, so a worktree that edits or lags the policy files still judges; a PR it can't judge from this checkout (one stacked on another PR's branch, a base it can't fetch or whose policy is refused, a refused read) gets one `not judged` line, a last line counts them, and the rest are still judged (#1746).
+- gatekeeper: under `loop.delegate: all`, `approve spec|plan <n> --by delegate` records the delegated approver's approval, under the owner's delegation, adds `approved:<point>` and lifts `needs-owner`; `check build` and `check merge` count it in place of the owner's record unless the PR touches `risk.critical_paths`. Without the setting it is refused. `approve breakglass` stays the owner's (#1805).
+- gatekeeper: a `land --wait` that waits on a GitHub rate-limit reset resumes up to 3 minutes after it at random, not 1, so the lands that waited on one reset do not spend the fresh bucket in its first minute (#2000).
+- gatekeeper: a cloud `land` after Mergify evicted a PR at an unchanged head posts a new `Queued for Mergify` record for the land-status workflow, rather than finding the old one and handing nothing over, since the eviction may have left `land: error` on that head (#2006).
+
 ## 0.1.3 - 2026-11-23
 
 - Guidance: a known-red test gets a skip marker that links its issue, and the gatekeeper takes no expected-failures list.
