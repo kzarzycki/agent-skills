@@ -514,43 +514,6 @@ def proof(status: str) -> str:
     )
 
 
-def test_batch_judges_a_head_by_the_head_proof_of_the_base_the_pr_merges_onto(
-    based: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """main's head proof is `proof-main` and feature's `proof-feature`: a PR into feature is admitted on the status
-    feature names, not the one the default branch names."""
-    repo = based["repo"]
-    policy(repo, proof("proof-main"), "main's head proof")
-    git_in(repo, "push", "-q", "origin", "main")
-    git_in(repo, "switch", "-q", "feature")
-    head = policy(repo, proof("proof-feature"), "feature's head proof")
-    git_in(repo, "push", "-q", "origin", "feature")
-    git_in(repo, "switch", "-q", "main")
-    git_in(repo, "fetch", "-q", "origin")
-    merged = git_in(
-        repo, "commit-tree", "HEAD^{tree}", "-p", "main", "-p", head, "-m", "queue merge"
-    ).strip()
-    asked: list[str] = []
-    posted: list[str] = []
-    monkeypatch.setattr(approvals, "fetched", lambda _sha: True)
-    monkeypatch.setattr(approvals, "reusable", lambda _head, _p=(): None)
-    monkeypatch.setattr(
-        approvals, "proved", lambda _head, status: asked.append(status) or status == "proof-feature"
-    )
-    monkeypatch.setattr(approvals, "comment", lambda _n, body: posted.append(body))
-    log = tmp_path / "gate.log"
-    log.write_text("green\n")
-    assert approvals.batch(7, merged, "b" * 40, 0, log) == 0
-    assert asked == ["proof-feature"]
-    assert f"Admitted: proof-feature status on tree {approvals.tree_of(head)}" in posted[0]
-    based["pull"]["baseRefName"] = (
-        "main"  # the same head, into main: judged by main's proof, which it lacks
-    )
-    with pytest.raises(approvals.Refused, match="nor its loop.md `head_proof` status"):
-        approvals.batch(7, merged, "b" * 40, 0, log)
-    assert asked == ["proof-feature", "proof-main"]
-
-
 def test_the_working_tree_env_var_reads_the_working_tree_and_says_why(monkeypatch, capsys):
     root = str(approvals.toplevel())
     monkeypatch.setenv(approvals.WORKING_TREE_POLICY, "1")

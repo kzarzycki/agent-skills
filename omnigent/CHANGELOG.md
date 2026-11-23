@@ -5,6 +5,11 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.4 - 2026-11-23
+
+- omnigent-agents: every cloud session's preamble installs gh-quota's logging gh shim from the pack clone and ends its report with its `gh_quota.py counts` and a count of its `curl` calls to `api.github.com`, since its log stays in the VM (#1994).
+- omnigent-agents: `wait-for` and `supervise` resume up to 3 minutes after a GitHub rate-limit reset at random, so every poller that waited on one reset does not resume in its first second (#2000).
+
 ## 0.1.3 - 2026-11-23
 
 - orchestrating-agents: `supervise --registry` runs the gatekeeper's `check stalled` at most once an hour for each repo its followed leads work in, detached from its poll, and says each stalled PR once per head as a `stalled` event, which `--console` routes to the chief of staff; a sweep that judged none of a repo's PRs is said once too (#1746).
