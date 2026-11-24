@@ -136,6 +136,11 @@ run = """mise run vendor-engineering-check
 mise run lint
 uv run gatekeeper/skills/gatekeeper/scripts/approvals.py queue-config | cmp - .mergify.yml || { echo 'error: .mergify.yml drifted from `approvals.py queue-config`, the pack template rendered with gatekeeper.md'"'"'s land block: write its output to .mergify.yml' >&2; exit 1; }"""
 
+[tasks.check-affected]
+description = "loop.md's `Affected tests:` run on a PR head: check-fast, then the tests tools/affected_tests.py selects against GATE_BASE (test-batch), so the worker's recorded run proves the PR's tests"
+run = """mise run check-fast
+mise run test-batch"""
+
 [tasks.test-batch]
 description = "What `qualify` runs on a Mergify batch's draft PR against GATE_BASE (tools/cross_change_tests.py: R6): the select.unkeyed checks, the cross-change tests and the affected tests of a PR with no record, else the batch's affected tests; never the whole suite"
 # A selector that fails or refuses (nothing to run on a PR with no record) fails the step. One that selects no test
