@@ -919,6 +919,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "stalled_after_hours": int,
     },
     "mutate": {"inconclusive_exit": int},
+    # the checks whose pass is never reused (unkeyed): each a gate step's name or command, or `gate`'s command
+    "select": {"unkeyed": list},
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
     "risk": {
@@ -9074,6 +9076,7 @@ def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
     policy setting both is refused, since two sources of the gate would drift."""
     loop = settings(project()[1])
     written = loop.get("gate_steps")
+    unkeyed = set(loop.get("select", {}).get("unkeyed", []))
     if not written:
         command, words, sets = gate(passed)
         return [
@@ -9086,6 +9089,7 @@ def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
                 "legacy": True,
                 "paths": None,
                 "setting": None,
+                "unkeyed": bool({command, loop.get("gate")} & unkeyed),
             }
         ]
     if loop.get("gate"):
@@ -9106,6 +9110,7 @@ def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
                 "legacy": False,
                 "paths": step.get("paths"),
                 "setting": written,
+                "unkeyed": bool({step["name"], step["command"], command} & unkeyed),
             }
         )
     return plan
@@ -10606,7 +10611,11 @@ def step_pass(
     `env` (0.23.1 wrote none) never matches, since nothing says what tier it ran; nor does a failed one, which is never
     recorded. With `why`, the reason origin's record branch, found, was rejected is appended to it (record_ref).
     Without `show`, origin's record is read without writing the `gate` status on `head` (published). A step whose
-    `paths` give it an inputs key on `held` (inputs_key) is found by that key alone (input_pass), on any tree."""
+    `paths` give it an inputs key on `held` (inputs_key) is found by that key alone (input_pass), on any tree. A step
+    `select.unkeyed` lists has none: it reads what no key covers (a live service, a rotating credential, the host), so
+    the same tree can give another result, and every run decision (run_steps, reusable) runs it again."""
+    if step.get("unkeyed"):
+        return None
     if (key := inputs_key(held, step)) is not None:
         return input_pass(head, key, step, why, show)
     command, env = step["command"], step["sets"]
@@ -11064,6 +11073,9 @@ def no_pass(head: str, why: list[str] | tuple[str, ...] = ()) -> str:
     for step in gate_plan():
         command, env = step["command"], step["sets"]
         said = "" if step["legacy"] else f"step `{step['name']}`: "
+        if step["unkeyed"]:
+            lines.append(f"{said}`select.unkeyed` lists it, so its pass is never reused: run it")
+            continue
         if (key := inputs_key(held, step)) is not None:
             if step_pass(head, held, step, show=False) is None:
                 lines.append(
