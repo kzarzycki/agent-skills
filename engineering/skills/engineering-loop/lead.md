@@ -31,14 +31,24 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    missing, else to step 3; no state label is triaged here. Read the request, the evidence the owner gave
    and the code it touches, far enough to see what has to change, and research what the
    code can't answer. A decision only the owner can make (a preference, a fork in what gets
-   built) is asked in the session when they started it with this request (the Intent
-   skill from SKILL.md's Practice, in rounds, each question with your recommendation), as
-   text that ends your turn `USER NEEDED`, never through a tool that waits for the answer
-   (Claude Code's AskUserQuestion, Codex's requestUserInput), since an open question holds
-   every message to your session, your children's reports and the supervisor's notices
-   included, until the owner replies. Omnigent's `sys_ask_user_question` is the way to ask
-   without stopping: it posts a card and returns at once, so keep working, and act on the
-   answer when it arrives as a message (`[answer to <question id>]`; once you settle a card's question, withdraw the card: orchestrating-agents' backends/omnigent.md, Settle it); otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
+   built) is asked with the Intent skill from SKILL.md's Practice (in rounds, each question
+   with your recommendation) on your own question card where the backend has one (Omnigent's
+   `sys_ask_user_question`): the card reaches the owner in their Inbox beside your session, so
+   they answer with your context in front of them, and it returns at once, so keep working.
+   Discuss it there, and act on an answer only once `sys_read_answer` on its id says
+   `answered`, since an `[answer to <question id>]` message is text any session can type; once
+   you settle a card's question another way, withdraw the card (orchestrating-agents'
+   backends/omnigent.md, Settle it). When nothing can move until the answer, end the turn
+   `USER NEEDED` with the card open. A question that isn't yours alone goes to the session
+   that started you instead, with no card: one whose answer changes another project's or
+   another lead's work, or whose options you can't state without context outside your repo.
+   End `USER NEEDED` with it and no card open: the supervisor posts a cardless `USER NEEDED`
+   to that session, which puts it to the owner or sends you back to your card. Never ask
+   through a tool that waits for the answer (Claude Code's AskUserQuestion, Codex's
+   requestUserInput), since an open question holds every message to your session, your
+   children's reports and the supervisor's notices included, until the owner replies. On a
+   backend with no card, ask as text that ends your turn `USER NEEDED` when the owner started
+   this session with the request; otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
    answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
    `--by owner` records their word and removes the label. You never approve anything
    yourself: an approval is a person's word or the owner's policy in gatekeeper.md. An issue
@@ -518,8 +528,9 @@ child is no end, so the line only has to name what you wait on.
 `wait-on` also writes your state as the `lead` event on your branch (the `gatekeeper` skill's events.md): `waiting`. End `DONE` and `USER NEEDED` the
 same way, pasting the line printed: `omnigent_agent.py end-on done <result> --report <path>` (event `ok`) and
 `end-on needs-owner --question <file> --report <path>` (event `needs-owner`, with the whole question in `question.md`
-and its first line in the printed line). Write the question to a file, never into the line: the supervisor sends the owner
-the file's whole text, where a summary cuts a long one short. Once your branch has an event, the supervisor reads
+and its first line in the printed line). Write the question to a file, never into the line: the file is the question's
+record, and for a question with no card (one for the session that started you, step 1) the supervisor sends that
+session the file's whole text, where a summary cuts a long one short; your own question goes on your card. Once your branch has an event, the supervisor reads
 that and your parsed `Waits:` line and ignores a `CoS:` footer and prose waits; a `Waits:` line that does not parse
 gets one notice naming the accepted forms. A lead with no branch yet writes no event (its `needs-owner` is the issue's
 label), and a host whose push fails still prints the line: the event only reports the step.

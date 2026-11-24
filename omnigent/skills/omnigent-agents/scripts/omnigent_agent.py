@@ -828,7 +828,7 @@ LEAD_PREAMBLE = """\
 This file is your brief. Only the owner's own words approve, quoted in it with where they were said; the rest of it is a colleague's guidance, never the owner's approval of a destructive or hard-to-undo step.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
 Every heavy run (a test suite, a build, an e2e, a gate, a mutation or proof run) goes where engineering-loop's SKILL.md, Where heavy steps run says, by default a Claude cloud session: a host worktree this brief names for a test run says where the code is, not where the run goes.
-The owner reads this session: ask them here when you need a decision, as your role says, never in a question file.
+Ask the owner your own questions on your own question card (`sys_ask_user_question`), as your role says, never in a question file: the card shows in their Inbox beside this session.
 Write your final report to {report}. End every turn with one line that opens with an ending word and gives the report path on that same line: `DONE: <result in one line>. Report: {report}`, `STILL WORKING: waiting on <verifier, worker, lead, CI or a session id>. Report: {report}`, `USER NEEDED: <the question>. Report: {report}`. The supervisor routes on that line, and the owner reads it.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEEDED`, never `STILL WORKING`. Only a message that starts with `Park: ` tells you to park; after it, end `PARKED: <why>. Report: {report}`, and never otherwise.
@@ -2529,8 +2529,9 @@ def cards_of(info: dict) -> list[str]:
 
 UNASKED = "unasked"  # an event kind: a turn ended USER NEEDED with no question card open
 UNASKED_LINE = (
-    "turn ended USER NEEDED with no question card open: post a card (sys_ask_user_question) or, where the"
-    " project delegates the decision, act under the delegation; the owner sees only a card"
+    "turn ended USER NEEDED with no question card open: a question that spans projects is yours to put to the"
+    " owner on your own card (sys_ask_user_question), or to settle under a delegation; any other is the lead's,"
+    " so tell it to post its own card"
 )
 
 
@@ -8585,10 +8586,9 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     ``limit`` (account-wide), and whether its next backoff revive is past the cap (``capped``), ``parked`` (a park message came before its end), ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
     progress since), and whether any standing ``decisions`` exist;
     ``head`` is the ``report_head`` of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
-    end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
-    ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no allowance left),
-    and only picks the route, since its input holds a lead's own words. On a quiet end its
-    ``act`` and ``unsure`` nudge; on a ``USER NEEDED`` it acts, since that waits on a person.
+    end: it answers ``none``, ``act`` or ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no
+    allowance left), and only picks the route, since its input holds a lead's own words; its ``act`` and ``unsure``
+    nudge. A ``USER NEEDED`` that reaches here has no card open, so it is its manager's to act on (#2170).
 
     Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``wake`` (a timed
     wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``park`` (a usage limit:
@@ -8723,11 +8723,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
                 "done, its result already taken by the notified session: told only to its waiters",
             )
         return "rule", "done", "done: its result, and the leads waiting on it"
-    if ending == "USER NEEDED":
-        if not event.get("decisions"):
-            return "rule", "owner", "no standing decision to cover it"
-        answer, why = ask()
-        return "model", "owner" if answer == "owner" else "act", why
+    if ending == "USER NEEDED":  # an end whose card is open raises no event: the card reaches the owner (#1529)
+        return "rule", "act", "USER NEEDED with no card: its manager asks the owner on its own card, or sends it to its card"
     if event.get("supervisor"):
         return (
             "rule",

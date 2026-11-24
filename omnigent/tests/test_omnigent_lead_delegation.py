@@ -344,11 +344,21 @@ def test_user_needed_with_no_card_is_its_own_event_and_with_one_the_card_alone_t
     )
 
 
-def test_the_unasked_kind_routes_as_a_user_needed_turn_end_does() -> None:
+@pytest.mark.parametrize("decisions", [False, True])
+def test_the_unasked_kind_routes_to_the_manager_to_act_on(decisions: bool) -> None:
+    """A USER NEEDED with no card is its manager's question (or a card the lead forgot), never one to forward as it
+    stands: the manager asks the owner on its own card or sends the lead to its card (#2170). The small model is not
+    asked, standing decisions or not; a direct lead and a repeat are recorded as any turn end."""
     event = {"kind": omnigent_agent.UNASKED, "line": "a: x", "last": "USER NEEDED: q"}
-    plain = {**event, "kind": "ended"}
-    got = omnigent_agent.route(event, lambda: ("owner", ""))
-    assert got == omnigent_agent.route(plain, lambda: ("owner", "")) and got[1] == "owner"
+    event["decisions"] = decisions
+
+    def ask() -> tuple[str, str]:
+        raise AssertionError("the small model is not asked: the route is the rule's")
+
+    got = omnigent_agent.route(event, ask)
+    assert got == omnigent_agent.route({**event, "kind": "ended"}, ask) and got[:2] == ("rule", "act")
+    for extra in ({"direct": True}, {"repeat": True}):
+        assert omnigent_agent.route({**event, **extra}, ask)[1] == "record"
 
 
 @pytest.mark.parametrize(
