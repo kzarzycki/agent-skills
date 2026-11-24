@@ -9,6 +9,7 @@ import stat
 import sys
 import threading
 import time as real_time
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -36,9 +37,13 @@ COMMENT_URL = "https://example.test/pull/{}#issuecomment-1"
 
 
 @pytest.fixture
-def events_pushed(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+def events_pushed(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> Iterator[dict[str, Any]]:
     """`lands` on an origin that accepts a rewritten `refs/loop/*`, a comment URL as GitHub returns it, and the grace
-    before a merged PR's refs go set to `grace`; `event(branch)` is the event origin holds, None when it holds none."""
+    before a merged PR's refs go set to `grace`; `event(branch)` is the event origin holds, None when it holds none.
+    A delayed clear land_ended starts and the test outlives is killed at teardown: it is detached, so a test that sets
+    EVENT_GRACE to 3600 would otherwise leave it sleeping an hour, to clear a temp repo that is gone by then."""
     hook = lands["origin"] / "hooks" / "pre-receive"
     hook.write_text(PERMIT_EVENTS)
     hook.chmod(0o755)
@@ -58,7 +63,21 @@ def events_pushed(lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dic
         return json.loads(git_in(lands["origin"], "show", f"{ref}:event.json"))
 
     lands["event"] = event
-    return lands
+    real_popen = approvals.subprocess.Popen
+    clears: list[Any] = []
+
+    def popen(args: Any, *a: Any, **kw: Any) -> Any:
+        proc = real_popen(args, *a, **kw)
+        if kw.get("start_new_session") and "clear" in args:
+            clears.append(proc)
+        return proc
+
+    monkeypatch.setattr(approvals.subprocess, "Popen", popen)
+    yield lands
+    for proc in clears:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
 
 
 def refs_gone(lands: dict[str, Any], limit: float = 10) -> bool:
@@ -343,7 +362,7 @@ def test_land_batch_wait_keeps_the_owners_question_of_a_pr_that_ended(
     events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With PR 7 held for the owner's go and PR 8 waiting on CI, the wait's beat rewrites 8 only: 7's event stays
-    `needs-owner` at every sleep (the ceiling asks for both)."""
+    `needs-owner` at every sleep (the ceiling leaves 8 `waiting`, a PR still waiting on CI, and 7's question)."""
     lands = events_pushed
 
     def one_round(named: list[dict[str, Any]]) -> tuple[int, bool]:
@@ -352,7 +371,9 @@ def test_land_batch_wait_keeps_the_owners_question_of_a_pr_that_ended(
 
     seen = batch_wait(lands, monkeypatch, one_round)
     assert seen and {state for _, state in seen} == {"needs-owner"}, seen
-    assert (events_of(lands, 8) or {}).get("state") == "needs-owner"  # the ceiling
+    # the ceiling leaves 8, still waiting on CI, `waiting`, and 7's question as it was
+    assert (events_of(lands, 8) or {}).get("state") == "waiting"
+    assert (events_of(lands, 7) or {}).get("state") == "needs-owner"
 
 
 def test_land_batch_wait_keeps_the_ok_of_a_pr_that_merged(
@@ -376,7 +397,7 @@ def test_land_batch_wait_keeps_the_ok_of_a_pr_that_merged(
     assert len(calls) > 2  # the rounds went on, with 8 alone once 7 was merged
     assert (events_of(lands, 8) or {}).get(
         "state"
-    ) == "needs-owner"  # the ceiling asks for the PR still open
+    ) == "waiting"  # the ceiling leaves the PR still open, waiting on CI, `waiting`
     event = events_of(lands, 7)
     assert event and (event["state"], event["seq"]) == ("ok", 1)  # and leaves the one that merged
 

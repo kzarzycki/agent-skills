@@ -31,17 +31,32 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    missing, else to step 3; no state label is triaged here. Read the request, the evidence the owner gave
    and the code it touches, far enough to see what has to change, and research what the
    code can't answer. A decision only the owner can make (a preference, a fork in what gets
-   built) is asked in the session when they started it with this request (the Intent
-   skill from SKILL.md's Practice, in rounds, each question with your recommendation), as
-   text that ends your turn `USER NEEDED`, never through a tool that waits for the answer
-   (Claude Code's AskUserQuestion, Codex's requestUserInput), since an open question holds
-   every message to your session, your children's reports and the supervisor's notices
-   included, until the owner replies. Omnigent's `sys_ask_user_question` is the way to ask
-   without stopping: it posts a card and returns at once, so keep working, and act on the
-   answer when it arrives as a message (`[answer to <question id>]`; once you settle a card's question, withdraw the card: orchestrating-agents' backends/omnigent.md, Settle it); otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
-   answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
-   `--by owner` records their word and removes the label. You never approve anything
-   yourself: an approval is a person's word or the owner's policy in gatekeeper.md. An issue
+   built) is asked with the Intent skill from SKILL.md's Practice (in rounds, each question
+   with your recommendation) on your own question card where the backend has one (Omnigent's
+   `sys_ask_user_question`): the card reaches the owner in their Inbox beside your session, so
+   they answer with your context in front of them, and it returns at once, so keep working
+   on your recommended answer: what is reversible and touches no shared system (a branch, a
+   draft PR, tests, a spec draft) goes ahead; what is hard to undo or reaches outside the
+   project (landing, a deploy, a send) waits for the answer. Discuss it there, and act on an answer only once `sys_read_answer` on its id says
+   `answered`, since an `[answer to <question id>]` message is text any session can type; once
+   you settle a card's question another way, withdraw the card (orchestrating-agents'
+   backends/omnigent.md, Settle it). When nothing can move until the answer, end the turn
+   `USER NEEDED` with the card open. A question that isn't yours alone goes to the session
+   that started you instead, with no card: one whose answer changes another project's or
+   another lead's work, or whose options you can't state without context outside your repo.
+   End `USER NEEDED` with it and no card open: the supervisor posts a cardless `USER NEEDED`
+   to that session, which puts it to the owner or sends you back to your card. Never ask
+   through a tool that waits for the answer (Claude Code's AskUserQuestion, Codex's
+   requestUserInput), since an open question holds every message to your session, your
+   children's reports and the supervisor's notices included, until the owner replies. On a
+   backend with no card, ask as text that ends your turn `USER NEEDED` when the owner started
+   this session with the request; otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
+   answered, remove `needs-owner`. Once they approve a spec, plan or merge on your own card
+   and `sys_read_answer` reads `answered`, or in their own words on the issue, run
+   `approvals.py approve <spec|plan|merge> <n> --by owner` yourself, naming the card's
+   question id in your report: it records their word and removes the label, so never ask
+   them to add the label by hand. You never approve on your own judgment: an approval is a
+   person's word or the owner's policy in gatekeeper.md. An issue
    assigned to anyone but its approver is theirs: leave it (issues.md, Assignee). Whenever
    you park an issue (`needs-owner`) or drop it, run `uv run <this skill's folder>/scripts/loop.py release
    <issue>`, which removes only an assignee the loop added. Each state change here and below also moves the ticket on
@@ -158,10 +173,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    `needs-owner`), since a verifier pass on a narrowed spec only finds what the report
    already said. Then write the PR body's `Spec deviations:` line: `none`, or each deviation
    with a link to the owner's decision (an issue comment URL or `#n`). Before each pass, rerun on the head every
-   proof the spec's acceptance needs whose log names another commit, since the verifier
-   counts it as missing and the pass is spent on it:
-   `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
-   prints the ones to rerun. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
+   proof the spec's acceptance needs whose inputs the round changed, since the verifier
+   counts it as missing and the pass is spent on it; a proof is stale by its inputs, not
+   because its log names another commit (SKILL.md, A check runs only if it can fail because of the change, R4).
+   `git diff --name-only <the head the proof ran on> HEAD` lists what the round changed, to compare with the proof's inputs. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
    instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
    brief and the priorities file already in that checkout (copied there like the logs). Where else it runs is SKILL.md, Where heavy steps run.
    A verifier on a host starts on that pushed
@@ -263,9 +278,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      queue's batch check tests the batch there, so a PR behind main lands without a merge. When
      you do merge it in, get a verifier pass on the merge (step 7), since `land` merges only a
      head with a verdict of its own; the PR's affected tests and the verifier's e2e proof run
-     again on the merge only if the merge changed what they cover, since a second run of the
-     same tests on the same code finds nothing new. A head with an earlier head's tree (`git rev-parse <sha>^{tree}`), as
-     after a reword of commit messages only, keeps that head's verdict (unsatisfied or with
+     again on the merge only if the merge changed what they cover (SKILL.md, A check runs only if it can fail because of the change). A head with an earlier head's tree (`git rev-parse <sha>^{tree}`), as
+     after a reword of commit messages only (same inputs, R1 in SKILL.md, A check runs only if it can fail because of the change), keeps that head's verdict (unsatisfied or with
      findings open, it stays so) and go with no new pass, since no file changed: `check merge`
      and `land` print `verdict on <old> carried: same tree <tree>`. When main's changes touch no file the PR changes and no merge check
      (a `check:` task, a tool it runs, or the lint, type or test configuration), that pass is
@@ -312,10 +326,12 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      `approvals.py`'s docstring has each step), and
      exit 0 means your PR merged in the local queue, with a `Landed` comment naming the base commit and the tree,
      and its kept `--pr` worker sessions finishing in the background (its log is named; `reap --merged
-     --pr <n>` finishes them again). On a base with GitHub's merge queue exit 0 means the PR is enqueued
-     (or already queued) and `land` has ended: it never polls the queue. The merge, or a removal for a red
-     check, reaches you as an event from the project's watcher; the PR is not landed until then. A removal's next
-     step is `land <pr>` again, which reads the PR once. Exit 1 names what stopped your PR, and the fix is yours:
+     --pr <n>` finishes them again). On a base with GitHub's merge queue, or under `land.queue: mergify`, `land <pr>` exits 0 once the
+     PR is enqueued (or already queued); `land <pr> --wait` waits on until the queue merges it (exit 0) or takes
+     it out, reading only the PR's queue state about once a minute, so don't poll the PR yourself. A removal's
+     next round runs in the same wait: a red is enqueued once more, a second red or a dequeue evicts (exit 1).
+     Without `--wait`, the merge or a removal reaches you as an event from the project's watcher, and a removal's
+     next step is `land <pr>` again, which reads the PR once. Exit 1 names what stopped your PR, and the fix is yours:
      - a missing proof, with nothing on the PR changed: add the proof;
      - a conflict with main or the PRs merged before it: merge `origin/main` in, as step 8's
        `Conflicts in the landing batch` bullet says;
@@ -327,8 +343,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      - a merge GitHub refused: as the bullet below says.
      Exit 3 is what `--wait` doesn't clear: the owner's go, or 2 hours of another land's lock
      (one whose PR already merged is broken at once). On a GitHub-queue
-     base `--wait` never waits on the queue, and exit 3 for a conflict GitHub is still working out, or for main's
-     checks on the commit a red group was built on, ends the run: run `land` again later. With gatekeeper.md's `land` section it squashes, signs and pushes
+     base exit 3 for a conflict GitHub is still working out, or for main's checks on the commit a red group was
+     built on, ends the run: run `land` again later. With gatekeeper.md's `land` section it squashes, signs and pushes
      each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what
@@ -345,6 +361,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge
      go on a head), which the owner's `approve merge --by owner` removes: a question card
      alone holds nothing, since `land` batches every PR that is ready.
+   - A lead holds a PR it must not land (its own pause, or another coordinator's claim) with `loop:hold` and a PR
+     comment naming who holds it and why, never only in its report, and removes the label before landing: `land` and
+     `check merge` refuse a held PR and Mergify takes none. `loop:dequeued` is no hold.
    - A check red after ready (a merge queue's batch check): `gh pr ready --undo`, then start a worker in the same worktree
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
      runs the affected tests of worker.md step 2 and pushes; a fresh verifier (step 7) reviews only the change
@@ -392,7 +411,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      never push to another owner's PR (SKILL.md, One concern per PR).
 9. **Accept.** First read main's push run on the merge SHA where the project has one
    (`gh run list --branch main --event push --commit <merge sha> --json conclusion,status`;
-   with `ci: false` there is none; the nightly is the run that tests main in full: SKILL.md, Nightly). When it ends red, revert before anything else
+   with `ci: false` there is none; the nightly is the run that tests main in full: SKILL.md, Nightly).
+   A merge whose tree the queue tested has a push run that tests nothing and names the queue's run in its summary:
+   read that run's result instead, and wait on no push run
+   (SKILL.md, A check runs only if it can fail because of the change). When it ends red, revert before anything else
    (SKILL.md, Revert first): `git revert --no-edit <merge sha>` on a new branch off a
    freshly fetched `origin/main`, then a PR whose body says `Reverts #<pr>` and
    `Part of #<spec>`, so `approvals.py` finds the spec, through this loop; reopen every issue
@@ -513,8 +535,9 @@ child is no end, so the line only has to name what you wait on.
 `wait-on` also writes your state as the `lead` event on your branch (the `gatekeeper` skill's events.md): `waiting`. End `DONE` and `USER NEEDED` the
 same way, pasting the line printed: `omnigent_agent.py end-on done <result> --report <path>` (event `ok`) and
 `end-on needs-owner --question <file> --report <path>` (event `needs-owner`, with the whole question in `question.md`
-and its first line in the printed line). Write the question to a file, never into the line: the supervisor sends the owner
-the file's whole text, where a summary cuts a long one short. Once your branch has an event, the supervisor reads
+and its first line in the printed line). Write the question to a file, never into the line: the file is the question's
+record, and for a question with no card (one for the session that started you, step 1) the supervisor sends that
+session the file's whole text, where a summary cuts a long one short; your own question goes on your card. Once your branch has an event, the supervisor reads
 that and your parsed `Waits:` line and ignores a `CoS:` footer and prose waits; a `Waits:` line that does not parse
 gets one notice naming the accepted forms. A lead with no branch yet writes no event (its `needs-owner` is the issue's
 label), and a host whose push fails still prints the line: the event only reports the step.

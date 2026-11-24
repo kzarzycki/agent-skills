@@ -399,18 +399,26 @@ def worktrees(run, found, dev, procs, asks):
     # another one goes (or is kept) before the outer one is judged.
     candidates.sort(key=lambda c: -len(Path(c[2]['worktree']).parts))
     prs, live = {}, set()  # live: detached at a remote branch's tip, never judged, not even with an outer merged worktree
+    closed = {}  # repo -> its closed and merged PRs, newest first: one listing per repo and run, however many worktrees it has
+
+    def closed_pulls(repo):
+        if repo not in closed:  # a failed listing counts as empty and is not retried: a worktree is kept, never removed on a guess
+            closed[repo] = json.loads(sh(['gh', 'pr', 'list', '-R', repo, '--state', 'closed', '--json',
+                                          'number,state,headRefName,headRefOid', '--limit', str(PR_LISTING)],
+                                         timeout=300) or '[]')
+        return closed[repo]
+
     for root, repo, w in candidates:
         if (branch := w.get('branch', '').removeprefix('refs/heads/')) and Path(w['worktree']).is_dir():
-            pr = json.loads(sh(['gh', 'pr', 'list', '-R', repo, '--state', 'merged', '--head', branch,
-                                '--json', 'number,headRefOid', '--limit', '1']) or '[]')
+            pr = next((p for p in closed_pulls(repo) if p['state'] == 'MERGED' and p['headRefName'] == branch), None)
             if pr:
-                prs[Path(w['worktree'])] = f'{repo}#{pr[0]["number"]} merged', pr[0]
+                prs[Path(w['worktree'])] = f'{repo}#{pr["number"]} merged', pr
         elif 'detached' in w and Path(w['worktree']).is_dir():  # a verifier's checkout at a PR's head: a squash leaves it on no branch
             if (git(root, 'branch', '-r', '--points-at', w['HEAD']) or '').strip():
                 live.add(Path(w['worktree']))
                 continue  # at a remote branch's tip (a landing checkout at the default branch): live, and a landed PR's head is that tip
-            pulls = json.loads(sh(['gh', 'api', f'repos/{repo}/commits/{w["HEAD"]}/pulls']) or '[]')
-            if pr := next((p for p in pulls if p['state'] == 'closed' and p['head']['sha'] == w['HEAD']), None):
+            if pr := next((p for p in closed_pulls(repo)
+                           if p['state'] != 'OPEN' and p['headRefOid'] == w['HEAD']), None):
                 prs[Path(w['worktree'])] = f'{repo}#{pr["number"]} closed', {'number': pr['number'], 'headRefOid': w['HEAD']}
     for root, repo, w in candidates:
         path = Path(w['worktree'])
@@ -508,6 +516,9 @@ def worktrees(run, found, dev, procs, asks):
                 run.say(f'removed worktree {path} ({what}): '
                         f'freed {(free() - before) / GB:.2f} GB')
 
+
+# How many closed PRs one repo's listing reads (GraphQL, 100 a page): a worktree whose PR is older goes unjudged, so is kept
+PR_LISTING = 1000
 
 # Ignored paths a merged worktree may hold and still be removed: environments and build output,
 # which rebuild, and logs and what is under tmp/ or logs/ (loop reports, proof), which go with their merged PR.

@@ -64,6 +64,7 @@ class Memory:
             "close_issue": lambda n: None,
             "pull_request": lambda n: self.pulls[n],
             "pull_status": lambda n: self.pulls[n],
+            "queue_watch": lambda numbers: {n: self.pulls[n] for n in numbers},
             "current_pr": lambda: None,
             "pr_changes": lambda n: [],
             "merged_pull": lambda n: None,

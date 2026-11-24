@@ -155,8 +155,7 @@ def open_pull_files(limit: int) -> list[dict[str, Any]]:
     (GitHub's own cap there is 3000), and an overlap past the 100th file is never missed."""
 
     def every_file(number: int) -> list[str]:
-        # objects, not `.[].filename`: `gh --jq` prints a string raw, which rest_pages can't read as JSON
-        return [file["filename"] for file in rest_pages(f"pulls/{number}/files?per_page=100")]
+        return [file["filename"] for file in pr_changes(number)]
 
     return fast(  # type: ignore[no-any-return]
         lambda: [
@@ -283,7 +282,19 @@ def refuse_bypass(args: tuple[str, ...]) -> None:
 # empties it, so its next read is GitHub's however short the wait.
 reads: dict[tuple[str, ...], tuple[float, str]] = {}
 READ_TTL = 20.0
+# each PR's REST file list, read once per run (pr_changes): every `gh pr list` or GraphQL call empties `reads`, and
+# rest_pull, paths(), overlaps() and open_pull_files each ask for it. Kept by PR number for the run; only a write to
+# GitHub (a body, a mutation, a non-GET), read_afresh() or forget() drops it, since only a push changes a PR's files
+# and a wait calls read_afresh() after its sleep.
+files_read: dict[int, list[dict[str, Any]]] = {}
+# the plain reads this round that GitHub refused (a 403, an integration's refusal) or rate-limited (#2101): asked again
+# inside the round, such a read gets the same error without a call, since a refusal or an empty bucket does not clear
+# in seconds. One land round asked a refused `api user` four times. Only read_afresh(), which a wait calls after its
+# sleep, or forget() drops them; a network failure is not kept, so the next ask still tries it.
+failed: dict[tuple[str, ...], subprocess.CalledProcessError] = {}
 WRITE_FLAGS = {"-f", "-F", "--field", "--raw-field", "--input"}
+# a rate limit as gh prints it: primary (`API rate limit exceeded`), secondary, or abuse detection
+RATE_LIMIT = re.compile(r"rate limit|abuse detection", re.IGNORECASE)
 
 
 def plain_read(args: Sequence[str]) -> bool:
@@ -307,6 +318,24 @@ def read_afresh() -> None:
     empty `reads`, so the next read is GitHub's however short the wait was; a wait never answers itself. The wait sleeps
     on its own clock, which a test may fake."""
     reads.clear()
+    files_read.clear()
+    failed.clear()
+
+
+def writes(args: Sequence[str], data: str | None) -> bool:
+    """Whether `gh *args` may change a PR: a body, a mutation, a `gh api` that isn't a plain GET (a GraphQL query's
+    `-f query=` is no write), or a `gh pr` command that edits, merges, comments, reviews, closes or readies."""
+    text = " ".join(args).lower()
+    if data is not None or "mutation" in text:
+        return True
+    if args[:1] == ("pr",):
+        return args[1:2] not in (("list",), ("view",), ("status",), ("checks",), ("diff",))
+    return (
+        args[:1] == ("api",)
+        and "graphql" not in text
+        and "rate_limit" not in text
+        and not plain_read(args)
+    )
 
 
 def gh(*args: str, data: str | None = None) -> str:
@@ -317,10 +346,19 @@ def gh(*args: str, data: str | None = None) -> str:
     if data is None and plain_read(key):
         if (seen := reads.get(key)) and time.monotonic() - seen[0] < READ_TTL:
             return seen[1]
-        out = _gh(*args)
+        if miss := failed.get(key):
+            raise subprocess.CalledProcessError(miss.returncode, miss.cmd, miss.output, miss.stderr)
+        try:
+            out = _gh(*args)
+        except subprocess.CalledProcessError as exc:
+            if refused(exc.stderr) or throttled(exc.stderr):
+                failed[key] = exc
+            raise
         reads[key] = (time.monotonic(), out)
         return out
     reads.clear()  # a write, or a call this cache doesn't read: nothing read before it is trusted after it
+    if writes(key, data):
+        files_read.clear()
     return _gh(*args, data=data)
 
 
@@ -376,7 +414,7 @@ quota_left: dict[str, tuple[float, int, int, int]] = {}
 
 
 def forget() -> None:
-    """Drop every answer this run kept: viewer's login, `kept`, `reads` and the guard's last quota readings; and end any wait
+    """Drop every answer this run kept: viewer's login, `kept`, `reads`, `files_read`, `failed` and the guard's last quota readings; and end any wait
     (wait_until), so no guard runs."""
     global wait_until
     wait_until = None
@@ -385,6 +423,8 @@ def forget() -> None:
     etags.clear()
     quota_left.clear()
     reads.clear()
+    files_read.clear()
+    failed.clear()
 
 
 def bucket_of(args: Sequence[str]) -> str:
@@ -511,6 +551,11 @@ REFUSALS = ("HTTP 403", "Resource not accessible by integration", "status code: 
 def refused(stderr: str | None) -> bool:
     """Whether `gh`'s stderr says GitHub refused this token or path, as opposed to failing for another reason."""
     return any(text in (stderr or "") for text in REFUSALS)
+
+
+def throttled(stderr: str | None) -> bool:
+    """Whether `gh`'s stderr says GitHub rate-limited the call, which no refusal is, though both answer HTTP 403."""
+    return bool(RATE_LIMIT.search(stderr or ""))
 
 
 # set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again; GATEKEEPER_REST_ONLY=1
@@ -967,6 +1012,53 @@ def pull_status(pr: int) -> dict[str, Any]:
     }
 
 
+QUEUE_WATCH = "state headRefOid isInMergeQueue labels(first: 50) { nodes { name } }"
+
+
+def queue_watch(numbers: Sequence[int]) -> dict[int, dict[str, Any]]:
+    """What a wait on PRs a merge queue holds reads each poll (#2101), by PR: its `state` (`OPEN`, `MERGED`,
+    `CLOSED`), `headRefOid`, whether GitHub's merge queue holds it (`isInMergeQueue`) and its label names (`labels`,
+    which Mergify's queue moves). GraphQL's answer is one call for every PR; REST's is two ETag reads per PR, its
+    pull and its timeline, which GitHub answers 304, at no quota, while nothing changed. ponytail: REST reads the
+    timeline's first 100 events; read its last page when a queued PR outgrows it (the wait's FULL round still sees a
+    removal there)."""
+
+    def graphql() -> dict[int, dict[str, Any]]:
+        fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ {QUEUE_WATCH} }}" for n in numbers)
+        found = _graphql(
+            f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {fields} }} }}"
+        )
+        return {
+            n: {
+                "state": found[f"p{n}"]["state"],
+                "headRefOid": found[f"p{n}"]["headRefOid"],
+                "isInMergeQueue": bool(found[f"p{n}"].get("isInMergeQueue")),
+                "labels": {each["name"] for each in found[f"p{n}"]["labels"]["nodes"]},
+            }
+            for n in numbers
+        }
+
+    def rest_read() -> dict[int, dict[str, Any]]:
+        states = {}
+        for n in numbers:
+            _, found = rest_if_changed(f"pulls/{n}")
+            _, events = rest_if_changed(f"issues/{n}/timeline?per_page=100")
+            queue = [
+                event.get("event")
+                for event in events or []
+                if isinstance(event, dict) and event.get("event") in (QUEUE_ADDED, QUEUE_REMOVED)
+            ]
+            states[n] = {
+                "state": "MERGED" if found.get("merged") else found["state"].upper(),
+                "headRefOid": found["head"]["sha"],
+                "isInMergeQueue": bool(queue) and queue[-1] == QUEUE_ADDED,
+                "labels": {label["name"] for label in found.get("labels") or []},
+            }
+        return states
+
+    return fast(graphql, rest_read)
+
+
 def pull_request(pr: int) -> dict[str, Any]:
     return fast(
         lambda: _graphql(_repository(f"pullRequest(number: $n) {{ {PULL} }}"), n=pr)["pullRequest"],
@@ -975,15 +1067,11 @@ def pull_request(pr: int) -> dict[str, Any]:
 
 
 def pr_changes(number: int) -> list[dict[str, Any]]:
-    """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000."""
-    out = gh(
-        "api",
-        "--paginate",
-        f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100",
-        "--jq",
-        ".[]",
-    )
-    return [json.loads(line) for line in out.splitlines()]
+    """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000. Read once per run
+    (`files_read`), then answered from memory."""
+    if number not in files_read:
+        files_read[number] = rest_pages(f"pulls/{number}/files?per_page=100")
+    return files_read[number]
 
 
 def merged_pull(number: int) -> dict[str, Any] | None:
@@ -1171,27 +1259,44 @@ def minimize(comment_id: str) -> None:
     )
 
 
-viewer_login: dict[str, str] = {}  # the login `gh` runs as, read once per process (viewer)
+viewer_login: dict[
+    str, str
+] = {}  # the login `gh` runs as, read once per process (viewer); "" once GitHub refused it
 
 
 def viewer() -> str | None:
     """The login of the account `gh` runs as; None for a token `GET /user` refuses, such as a workflow's installation
-    token (`github.token`), where the PR's author and the repo's writers are the ones trusted (passes). Read once per
-    process; a failure is not kept, so the next call asks again."""
-    if login := viewer_login.get("login"):
-        return login
+    token (`github.token`), where the PR's author and the repo's writers are the ones trusted (passes)."""
+    return whoami()[0]
+
+
+def whoami() -> tuple[str | None, bool]:
+    """viewer's login, and whether GitHub answered. Either answer is read once per process: a login, or a refusal
+    (definite: no rate limit), which is the token's, and a process never changes its token (#2101: a token whose
+    `GET /user` is refused was asked four times a round). Who may write is writer's, kept KEPT seconds, so a grant
+    later in a wait of hours is still seen. Any other failure (a network error, a rate limit) is no answer, and gh()
+    keeps a rate-limited one for the round only."""
+    if (login := viewer_login.get("login")) is not None:
+        return login or None, True
     try:
         login = viewer_login["login"] = gh("api", "user", "--jq", ".login").strip()
-    except subprocess.CalledProcessError:
-        return None  # not cached: a network or rate-limit failure must not read as a token GitHub refuses
-    return login
+    except subprocess.CalledProcessError as exc:
+        if refused(exc.stderr) and not throttled(exc.stderr):
+            viewer_login["login"] = ""  # refused: no login, for the process
+            return None, True
+        return (
+            None,
+            False,
+        )  # not kept: a network or rate-limit failure must not read as a token GitHub refuses
+    return login, True
 
 
 def writer(login: str) -> bool:
     """Whether `login` can write to the repo, by GitHub's collaborator permission; an account GitHub refuses to look
     up can't. ponytail: a bot's GraphQL login lacks the `bot` REST needs, so a bot author fails closed; add the
     suffix when a project's bot opens sub-issues. GitHub's answer is kept KEPT seconds (#1771), since a pass of land
-    asks it for every login it trusts; a failure that is no answer (a network error) is not kept."""
+    asks it for every login it trusts, a refusal too, so a wait sees a grant within KEPT; a failure that is no answer
+    (a network error, a rate limit) is not kept."""
     found: bool | None = fresh(("writer", login))
     if found is None:
         found, answered = read_writer(login)
@@ -1213,10 +1318,12 @@ def read_writer(login: str) -> tuple[bool, bool]:
     except subprocess.CalledProcessError as exc:
         # a cloud session's proxy refuses this path; the repo's own permissions answer it for the account running this
         # alone, and anyone else still can't, so a stranger never counts as a writer
-        if not refused(exc.stderr):
+        if not refused(exc.stderr) or throttled(exc.stderr):
             return False, "HTTP 404" in (exc.stderr or "")
-        if (me := viewer()) != login:
-            return False, me is not None  # viewer() failing is no answer about `login`
+        me = viewer()
+        if me != login:
+            # a viewer() that failed is no answer about `login`; one GitHub refused is
+            return False, me is not None or viewer_login.get("login") == ""
         try:
             mine = rest("repos/{owner}/{repo}").get("permissions") or {}
         except subprocess.CalledProcessError:
@@ -1700,6 +1807,7 @@ tracker = Port("issue_node", "issues", "comment", "label", "assign", "close_issu
 forge = Port(
     "pull_request",
     "pull_status",
+    "queue_watch",
     "current_pr",
     "pr_changes",
     "merged_pull",

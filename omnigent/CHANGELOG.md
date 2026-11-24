@@ -5,6 +5,19 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.8 - 2026-11-23
+
+- The supervisor no longer reports a PR the merge queue holds as stalled. A `check stalled` line is checked against the PR's live state before it goes out, and dropped when the PR merged, closed, moved to a new head or is held by the queue since the sweep read it, which may be 15 minutes earlier. A PR carrying `loop:queued` whose queue check on its head is still running is waiting, not a `pr-stall`, however long the queue takes (#2100).
+
+## 0.1.7 - 2026-11-23
+
+- omnigent-agents: `send` and `relay` take `--expires <minutes>` (default 30, 0 = never) and tag their message with that expiry and the sending session, so one still queued behind a busy turn after its sender is gone is dropped instead of landing out of context (#909).
+- `claude-cloud-env <checkout>` checks the environment the checkout pins (`.claude/settings.local.json`'s `remote.defaultEnvironmentId`, else its main checkout's) before it makes or updates one: a pinned environment named otherwise than loop.md's `Cloud worker: …, env <name>` (else the definition's name, else the repository's) fails naming both, as does a pin the login has no environment for, where it used to create a second, empty environment named after the repository beside the pinned one (#2078).
+
+## 0.1.6 - 2026-11-23
+
+- An archive (`PATCH /v1/sessions/<id>`) waits up to `ARCHIVE_SECONDS` (120 s) rather than the 30 s every other call gets, since a claude-cloud session's archive returns only once its bridge has archived the claude.ai session, which ends the VM and can take about 65 s; a slow archive was reported as `finish failed` (#2060).
+
 ## 0.1.5 - 2026-11-23
 
 - omnigent-agents: `--role` takes `lead`, `worker` or `verifier` as well as a file path, naming the pack's engineering-loop role file, so a cloud child needs no role file in its launch dir (#1868).

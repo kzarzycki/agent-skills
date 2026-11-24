@@ -5,6 +5,19 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.8 - 2026-11-23
+
+- gatekeeper: `check merge` runs loop.md's `pre_land` as `land` does (one shared run, `pre_land_run`), in a temporary worktree of the base's tip once nothing else holds the merge, so it never calls clear a PR `land` would refuse with "Refused by the pre-land check": a refusal prints `` `<cmd>` refuses it against <base> at <tip>, exiting <code>: land leaves it out `` with its output's end and exits 3 (a wait, since land keeps the PR ready), posting no comment. While something else holds the merge, or from a clone with no working tree, it prints `pre_land not run: <cmd>` instead (#2074).
+- gatekeeper: `land.queue: github` is a valid policy value beside `mergify`. Where the base's ruleset requires a merge queue `land` hands PRs to GitHub's queue as before; where it requires none, `land` and `check stalled` refuse the setting and name the missing `merge_queue` rule, since `land` would otherwise merge each PR itself. `check stalled` now picks the queue in `land`'s order, so a base whose ruleset requires GitHub's queue is judged by it even under `queue: mergify` (#2091).
+- gatekeeper: the GitHub adapter reads a PR's REST file list (`pulls/N/files`) once per run, forgetting it only after a write to GitHub or a wait's fresh read, so one brief on the REST path makes one call, not 30 to 60 (#2092).
+- gatekeeper: `closes_nothing` no longer refuses a PR a `bot` section covers, such as a release workflow's own `cz bump` PR, whose `Part of` names a standing release epic that stays open across releases; an ordinary `Part of` PR, or the same PR with a person's commit on it, is still refused (#2103).
+
+## 0.1.7 - 2026-11-23
+
+- gatekeeper: `affected-tests` runs nothing when it can't tell what a change affects, says so in one line and exits 0, never the whole suite, which the nightly runs: a loop.md with no `Affected tests:` line, and a `--base` git can't resolve (the push of a new branch), no longer fall back to `mise run check`. Only the opt-out `Gate: full`, the project's own choice, still runs `check` (#1872).
+- gatekeeper: a bump the gate proves mechanical (a pack bump whose `apm.yml` moves only the pack's `ref:` line, or a pin to a released pack tag) is no longer refused for naming no issue; any other PR, a `bot` section's other PRs and the release fold included, still needs its `Closes #<n>` (#2040).
+- gatekeeper: a pack bump a cloud agent pushes to a `bot` section's `branch` gets the verifier-review exemption when its files are a released tag's byte for byte (`pin_target`), whoever its commits name, and a rename the tag makes no longer refuses it. The agent's `Claude <noreply@anthropic.com>` identity is the GitHub user `claude`'s, not no account, so its commits read as another account's push and the exemption never applied. A bump the tag doesn't prove keeps the commit-author check (#2059).
+
 ## 0.1.6 - 2026-11-23
 
 - gatekeeper: a run answers a repeat of the same plain `gh api` read within 20 s from memory, emptied by any write, so one `approve merge` or `record verdict` no longer reads its PR three or four times (#2016).
