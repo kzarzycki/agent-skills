@@ -14,6 +14,11 @@ components:
   playwright: the Playwright MCP plugin and its skill (playwright/)
   experimental: the experimental plugin, skills under iteration (experimental/)
   utilities: the utilities plugin, standalone skills (utilities/)
+  loop: the loop plugin, the engineering-loop skill (loop/)
+  gatekeeper: the gatekeeper plugin, the merge gate and its proofs (gatekeeper/)
+  github: the github plugin, the GitHub tracker and forge conventions (github/)
+  omnigent: the omnigent plugin, Omnigent as the agent runner (omnigent/)
+  chief-of-staff: the chief-of-staff plugin, supervision over many leads, and its cos-console mod (chief-of-staff/)
   ci: CI workflows, rulesets, mise tasks, tools/ and the repo's own agent configuration
 
 board:
