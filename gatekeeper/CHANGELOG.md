@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.15 - 2026-11-24
+
+- `rerun-tests` reads the JUnit XML report that loop.md's new `Test report: <path>` line names. If the report shows zero tests where the red run had some, the rerun prints `rerun did not run: zero tests collected` and exits 75, rather than reading as a flake that passed. Before the rerun starts, it removes any report an earlier run left. A red rerun that wrote no report failed before its tests ran, so it stays red again (#2277).
+
 ## 0.1.14 - 2026-11-24
 
 - gatekeeper: breakglass.md names the re-run of the proof by what it runs, `approvals.py rerun-tests` on the failed ids (the red run's whole selection, R5), never the failed ids alone; this repo's `qualify` calls it on a rerun attempt of a red batch run and on a `tests` dispatch (#1794).
