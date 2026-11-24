@@ -42,12 +42,14 @@ bot:
 land:
   # PRs into main merge through the Mergify merge queue `.mergify.yml` configures: land posts `land` and adds `loop:queued` on each landable PR, and Mergify tests each batch as a draft PR in CI and squash-merges it, so no host runs a landing gate (#1658). GitHub's own queue needs an organisation-owned repo.
   queue: mergify
+  # the batching `approvals.py queue-config` renders into `.mergify.yml` (check-fast fails on drift): up to 3 PRs per batch, each batch waiting up to 5 minutes for more
+  batch_size: 3
+  batch_wait_seconds: 300
 
 breakglass:
   max_age: 7d   # a run older than this counts for nothing in the owner's break-glass proof
   max_commits: 20   # nor a head further from the PR's
   earlier_runs: 2   # green runs of the required check the proof needs from before the red
-  smoke: QUALIFY_TIMEOUT=900 mise run check-land   # the local-ci record, or Actions run, that shows the head builds
 
 risk:
   verifier: true

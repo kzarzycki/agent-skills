@@ -28,6 +28,8 @@ permissions:
 jobs:
   qualify:
     runs-on: ubuntu-latest
+    outputs:
+      selection: ${{ steps.selection.outputs.selection }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -76,15 +78,20 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli release-verify --base "$BASE_SHA" --head "$HEAD_SHA"
-      # Only a Mergify batch's draft PR runs the tests, the ones the batch touches against main (#1821). A step-level
+      # Only a Mergify batch's draft PR runs the tests, what R6 selects against main (test-batch). A step-level
       # `if`, never a job-level one: a PR head's `qualify` must still run and report success, or Mergify never queues it.
       # The prefix is `.mergify.yml`'s `queue_branch_prefix`.
-      - if: startsWith(github.head_ref, 'mergify/merge-queue/')
+      - id: batch
+        if: startsWith(github.head_ref, 'mergify/merge-queue/')
         env:
           GATE_BASE: ${{ github.event.pull_request.base.sha }}
           # one file per run: a check that starts several pytest runs keeps the last one's
           PYTEST_ADDOPTS: --junitxml=.qualify/junit.xml
         run: mise run test-batch
+      # what the queue-run job below reads: set only when the batch's test step ran its selection and passed
+      - id: selection
+        if: steps.batch.outcome == 'success'
+        run: echo selection=ran >> "$GITHUB_OUTPUT"
       - if: github.event_name == 'workflow_dispatch' && inputs.tests != ''
         env:
           TESTS: ${{ inputs.tests }}
@@ -124,3 +131,17 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           git diff --check "$BASE_SHA"...HEAD
+
+  # R6's refusal: `.mergify.yml` merges a batch only on this check's success, which needs the batch step above to have
+  # run its selection (tools/cross_change_tests.py). A path that skips it leaves this skipped or red, so nothing merges
+  # untested (#2169, #2121). Not a required check of the base: a job-level `if` is safe here, unlike on `qualify`.
+  queue-run:
+    needs: qualify
+    if: startsWith(github.head_ref, 'mergify/merge-queue/')
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          SELECTION: ${{ needs.qualify.outputs.selection }}
+        run: |
+          [ "$SELECTION" = ran ] || { echo "queue-run: the batch's test step did not run its selection, so the batch does not merge" >&2; exit 1; }
+          echo "queue-run: the batch's test step ran its selection"

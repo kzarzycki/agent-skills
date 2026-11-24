@@ -82,3 +82,20 @@ def test_every_plugin_has_a_component() -> None:
     }
     plugins = {path.parent.parent.name for path in REPOSITORY.glob("*/.claude-plugin/plugin.json")}
     assert plugins <= components, f"no component for: {sorted(plugins - components)}"
+
+
+def test_breakglass_smoke_is_the_gate_and_check_land_is_gone() -> None:
+    """Break-glass's smoke is the `gate` command (check-fast), so the worker's gate record already proves the head
+    builds; `check-land` duplicated check-fast minus the Mergify drift check and is gone (#2260)."""
+    import tomllib
+
+    spec = importlib.util.spec_from_file_location("approvals_smoke", COPIES["shipped"])
+    assert spec and spec.loader
+    approvals = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(approvals)
+    # this checkout's file, not project()'s origin/main copy, so the test judges the change it ships with
+    policy = approvals.Policy((REPOSITORY / "docs" / "agents" / "gatekeeper.md").read_text())
+    assert approvals.breakglass_settings(policy)["smoke"] == approvals.settings(policy)["gate"]
+    assert "mise run check-fast" in approvals.settings(policy)["gate"]
+    tasks = tomllib.loads((REPOSITORY / "mise.toml").read_text())["tasks"]
+    assert "check-land" not in tasks
