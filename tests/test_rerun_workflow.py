@@ -174,5 +174,13 @@ def test_anything_but_one_record_branch_of_the_heads_tree_is_refused(
     bundle(origin, refs)
     run = pushed(origin)
     assert run.returncode != 0
+    said = {
+        "another-branch": "is no record branch of the head's tree",
+        "another-tree-name": "is no record branch of the head's tree",
+        "another-parent": "one parent is not the head",
+        "another-tree": "holds another tree than the head",
+        "two-branches": "the bundle holds more than one branch",
+    }[case]
+    assert "refused: " in run.stdout and said in run.stdout, run.stdout + run.stderr
     assert branches(origin) == ""
     assert git(origin["bare"], "for-each-ref", "--format=%(refname)", "refs/heads/main") == ""

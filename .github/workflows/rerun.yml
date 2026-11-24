@@ -101,13 +101,13 @@ jobs:
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git fetch -q --no-tags --depth=1 origin "$HEAD_SHA"
           heads=$(git bundle unbundle "$RUNNER_TEMP/record/rerun.bundle")
-          test "$(printf '%s\n' "$heads" | wc -l)" -eq 1
+          test "$(printf '%s\n' "$heads" | wc -l)" -eq 1 || { echo "refused: the bundle holds more than one branch"; exit 1; }
           commit=${heads%% *}
           ref=${heads#* }
           tree=$(git rev-parse "$HEAD_SHA^{tree}")
           # only a record branch of the head's own tree, a commit holding that tree whose one parent is the head
-          printf '%s\n' "$ref" | grep -Eqx "refs/heads/loop-gate/${tree}-[0-9a-f]{12}"
-          test "$(git rev-list --parents -n 1 "$commit")" = "$commit $HEAD_SHA"
-          test "$(git rev-parse "$commit^{tree}")" = "$tree"
+          printf '%s\n' "$ref" | grep -Eqx "refs/heads/loop-gate/${tree}-[0-9a-f]{12}" || { echo "refused: $ref is no record branch of the head's tree"; exit 1; }
+          test "$(git rev-list --parents -n 1 "$commit")" = "$commit $HEAD_SHA" || { echo "refused: $commit's one parent is not the head"; exit 1; }
+          test "$(git rev-parse "$commit^{tree}")" = "$tree" || { echo "refused: $commit holds another tree than the head"; exit 1; }
           git push -q origin "$commit:$ref"
           echo "pushed $ref at $commit"
