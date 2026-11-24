@@ -356,6 +356,9 @@ TURN_END_SECONDS = 30.0
 PROMPT_CONFIRM_SECONDS = 120.0
 # how long one listing of every session serves ``Omnigent.creations``: well inside the prompt's hold
 CREATED_SECONDS = 30.0
+# A PR with this label is parked on purpose and dropped from the merge queue by a rule (#2164): it raises no stall and no
+# dequeue for a manager to fix (#2316).
+HOLD_LABEL = "loop:hold"
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
 # A loaded server times out reads the child never noticed; a GET is retried after each of these.
 RETRY_SECONDS = (2.0, 5.0, 15.0, 30.0, 60.0)  # a GET outlasts a server restart
@@ -6299,11 +6302,28 @@ def pr_stalls(
     refs: dict | None = None
     last = memo.get("swept", 0.0)  # the sweep before this one: a head new since was pushed after it
     said = []
+    memo["held"] = sorted(  # ``queue_round`` tells no dequeue of these
+        p["number"]
+        for p in listed
+        if HOLD_LABEL in {str(x.get("name")) for x in p.get("labels") or []}
+    )
     for row in sorted(listed, key=lambda p: p["number"]):
         if row.get("draft"):
             continue  # its lead is still building it: the lead's own deadline watches that
         key = str(row["number"])
         seen = prs.get(key) or {}
+        if row["number"] in memo["held"]:
+            # no read while held, but its head stays first-seen and it is due at once: it stalls as before when released
+            prs[key] = {
+                "head": row["head"]["sha"],
+                "updated": row.get("updated_at"),
+                "said": seen.get("said"),
+                "seen_at": seen.get("seen_at", 0.0)
+                if seen.get("head") == row["head"]["sha"]
+                else last,
+                "due": 0,
+            }
+            continue
         same = seen.get("head") == row["head"]["sha"] and seen.get("updated") == row.get(
             "updated_at"
         )
@@ -10045,6 +10065,9 @@ def supervise_registry(
         sessions: list[dict] | None = None
         for cid, entry in sorted(entries.items(), key=lambda x: x[1]["left_at"]):
             if entry["state"] != "dequeued" or entry.get("told"):
+                continue
+            if entry["pr"] in (state["pr_stalls"].get(repo) or {}).get("held", []):
+                entry["told"] = True  # parked on purpose: its drop is no news (#2316)
                 continue
             if sessions is None:
                 try:
