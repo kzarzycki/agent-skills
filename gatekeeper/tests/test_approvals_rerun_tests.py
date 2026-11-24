@@ -177,3 +177,26 @@ def test_a_file_that_holds_no_failed_tests_is_never_rerun_on(
     assert approvals.main(["rerun-tests", worker["failed"], "--red", red]) != 0
     assert "holds no red run's failed tests" in capsys.readouterr().out
     assert worker["ran"]() == []
+
+
+def test_a_class_name_that_names_the_changed_file_is_reselected(
+    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    red = red_head(worker)
+    Path(worker["failed"]).write_text(
+        json.dumps({"failed": ["app.Case::test_value"], "selected": []})
+    )
+    worker["commit"]("app.py", "value = 3\n")
+    code, _ = rerun(worker, red, capsys)
+    assert code == 0 and worker["ran"]() == ["selected app.py"]
+
+
+def test_a_red_with_no_test_id_reruns_the_whole_selection(
+    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Its tests never started (an infrastructure fault): nothing is reselected, so the whole selection runs."""
+    red = red_head(worker)
+    Path(worker["failed"]).write_text(json.dumps({"failed": [], "selected": []}))
+    worker["commit"]("app.py", "value = 3\n")
+    code, _ = rerun(worker, red, capsys)
+    assert code == 0 and worker["ran"]() == ["selected app.py other.py"]

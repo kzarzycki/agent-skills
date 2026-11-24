@@ -9477,9 +9477,14 @@ def fix_since(red: str, base: str | None) -> set[str]:
 
 def reselected(test: str, changed: set[str]) -> bool:
     """Whether a changed file is the failed test's own: the id's part before `::` is that path, or the path with
-    its extension dropped and `.` for `/` (a class name naming its file)."""
+    its extension dropped and `.` for `/`, itself or followed by a class (`pkg.module.Class`)."""
     owner = test.split("::", 1)[0]
-    return any(owner in (name, name.rsplit(".", 1)[0].replace("/", ".")) for name in changed)
+    return any(
+        owner == name
+        or owner == (dotted := name.rsplit(".", 1)[0].replace("/", "."))
+        or owner.startswith(f"{dotted}.")
+        for name in changed
+    )
 
 
 def rerun_plan(failed: list[str], changed: set[str]) -> tuple[bool, list[str]]:
