@@ -72,7 +72,8 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 - `mise.toml` tasks: the `check:`, `lint:`, `test:`, `ci:`, `loop:`, `setup:` and `agent:`
   groups, with the old names as aliases;
 - `.pre-commit-config.yaml`: the git hooks, each one a caller of a mise task;
-- `.github/workflows/`: CI, which runs every `check:` part, and the `loop:approvals`
+- `.github/workflows/`: CI, which runs no layer's tests (A check runs only if it can fail
+  because of the change, R2), and the `loop:approvals`
   workflow, which turns `mise run loop:approvals merge`'s exit into the `loop:approvals`
   commit status on the head (0 success, 1 failure, 3 pending, since a job's own result can't
   hold a merge as pending), runs again when CI completes, and removes `approved:merge` on a
@@ -153,7 +154,7 @@ When the loop can't tell whether a check's inputs changed, it treats them as cha
 Each derived rule follows from the one above.
 
 - **R1. Once per tree.** No test set runs again on a tree it passed on, or on a tree whose difference from it the test set can't read. A pass is a gatekeeper record keyed by tree and command, run in the environment `local_ci_env` fixes (`local-ci --record`, `gate-record`), never a log or status someone wrote. Where: worker (push hook and affected-test run are one run), PR CI on ready, a merge of the base or a reword that changes nothing the tests read, the queue, the verifier, the push run on main after the queue tested that tree.
-- **R2. Scope by what the change touches.** A diff that cannot reach the product (agentic layer, skills, docs, CI config outside the gating job) runs no product suite; it runs the checks of the layer it touches (the `checks` entries of `select`). An unclassified file counts as a build input. Where: worker, PR CI, queue, the verifier's pass on an instructions change.
+- **R2. Scope by what the change touches.** A diff that cannot reach the product (agentic layer, skills, docs, CI config outside the gating job) runs no product suite; it runs the checks of the layer it touches (the `checks` entries of `select`). A file `select` doesn't classify counts as a build input, so the product's affected tests run for it. Where: worker, PR CI, queue, the verifier's pass on an instructions change.
 - **R3. Affected tests only, selected by what a test executes.** The selector picks tests whose executed files or functions changed, from a per-test map the nightly builds; name matching is the fallback where there is no map. It diffs against the right base (the merge commit's first parent on a PR run). Where: worker, queue, nightly-built map.
 - **R4. A fix round runs only what the round's diff reaches.** A test or proof that passed on the previous head and whose inputs the round didn't change is known. The selection for a fix round diffs against the last head its run passed on, not the PR's base. Where: worker fix rounds, the lead's stale-proof check before a pass, the verifier's later passes (acceptance checks and repros the delta reaches, plus every repro still `NOT FIXED`).
 - **R5. A red run reruns only what failed, and only once the cause is fixed or shown unrelated.** Fixed: the failed tests plus what the fix reaches (R4). Shown unrelated (a test the change can't reach, a known flake with its `Flaky:` issue, an infrastructure fault): the failed tests alone, once. Never the whole set again on the same head, and never before the cause is known. Where: CI job reruns, the merge queue's red entry, `land`, the verifier, the flaky retry.
