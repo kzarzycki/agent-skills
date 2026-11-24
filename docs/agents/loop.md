@@ -5,7 +5,9 @@ The engineering loop's values for this repo. `engineering/skills/engineering-loo
 
 Orchestration backend: omnigent
 
-Affected tests: mise run check-fast
+Affected tests: mise run check-affected
+
+<!-- ponytail: `check-affected` is check-fast plus the PR's tests that tools/affected_tests.py selects against the base, the selection test-batch runs. #2232 swaps it for the pack's `affected-tests` selector with #2217's fallback once PR #2247 lands. -->
 
 Worker model: mid for size:S or smaller
 
