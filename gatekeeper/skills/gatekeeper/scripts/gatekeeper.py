@@ -920,7 +920,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "stalled_after_hours": int,
     },
     "mutate": {"inconclusive_exit": int},
-    # the checks whose pass is never reused (unkeyed): each a gate step's name or command, or `gate`'s command
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
     "risk": {
@@ -966,7 +965,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "select": Table(
         build_inputs=list,
         checks=Rows(paths=list, command=str, unique=("command",)),
-        unkeyed=list,  # the gate_steps that always run, keyed on no paths (#2183)
+        # the checks whose pass is never reused (#2183): each a gate step's name or command, or `gate`'s command
+        unkeyed=list,
         optional=("build_inputs", "checks", "unkeyed"),
     ),
     # the break-glass land's proof windows (breakglass_settings); every key is optional
