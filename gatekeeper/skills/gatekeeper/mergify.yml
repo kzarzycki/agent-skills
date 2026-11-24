@@ -31,14 +31,26 @@
 #   Mergify's draft PRs and a PR head shows it skipped;
 # - the base's ruleset drops the gate from its required checks, since a skipped required check never reports and
 #   Mergify would never queue the PR;
-# - the queue rule adds `merge_conditions: [check-success = <gate>]`, so the gate is still what merges a batch. Merge
-#   conditions that differ from `queue_conditions` also make Mergify test every batch on a draft PR, never in place.
-# Its undo: add the gate back to the ruleset's required checks, drop the job-level `if`, drop `merge_conditions`.
+# - the queue rule's `merge_conditions` becomes `[check-success = <gate>]`, so the gate is still what merges a batch.
+# Its undo: add the gate back to the ruleset's required checks, drop the job-level `if`, and set `merge_conditions`
+# back to `[-conflict]` (see "Never in place" below).
 # Keep the step-level variant above in a repo that pays for CI minutes, or whose queue rejects PRs often: there a PR
 # head's run still catches what the queue would reject, before a queue run is spent on it. Either way a dequeue goes
 # back to the session that owns the PR: the supervisor reads Mergify's status comment on the PR and relays the failing
 # check, its job and the failing tests to that PR's lead, and counts how often the queue rejects.
-# This file is the step-level variant; the queue-only one is this file plus that `merge_conditions` line.
+# This file is the step-level variant; the queue-only one is this file with that `merge_conditions` line.
+#
+# Never in place: every merge goes through a draft PR, where the tests run (#2157). Mergify's docs (configuration
+# file format, `allow_inplace_checks`, "deprecated: this value is computed automatically") say it checks a PR in
+# place, on its own branch and without a draft PR, when `max_parallel_checks` is 1, the mode is serial, `batch_size`
+# is 1, `max_checks_retries` is 0, `merge_method` is not `merge-batch` and "its queue rule's CI is single-step:
+# merge_conditions are empty or identical to queue_conditions"; and, whatever the other keys, when "the pull request
+# is first in the queue, its queue rule's CI is single-step ... and it is already up to date with its base branch",
+# which it then merges with no draft PR and no new CI run. That is how #2151 and #2134 merged on only the PR head's
+# `qualify`, where the test step does not run. `allow_inplace_checks` cannot be set (it is computed); the one key
+# that forbids it is `merge_conditions` that differ from `queue_conditions` (two-step CI: `queue_conditions` gate
+# entry, `merge_conditions` gate the final merge, evaluated on the draft PR). `-conflict` is that difference: true on
+# every draft PR the queue builds, so it adds no check, and no CI name, to the file.
 
 queue_rules:
   - name: default
@@ -48,8 +60,9 @@ queue_rules:
     # the branch every batch's draft PR is pushed from, the prefix the CI's test step matches: named here, not left to
     # the default, so the two can't drift apart
     queue_branch_prefix: mergify/merge-queue/
-    # one retry of a red batch, so a dequeue is the second red. It also keeps every batch on a draft PR: with 0 retries
-    # Mergify may test a batch of one in place on the PR's own branch, where the test step doesn't run
+    # one retry of a red batch, so a dequeue is the second red. A retry also disables in-place checks, but that is not
+    # what keeps a batch off the PR's own branch: an up-to-date first PR merges with no draft PR whatever this is set
+    # to, so `merge_conditions` below is what forces the draft PR
     max_checks_retries: 1
     # a red batch is split, each part tested on top of the ones before it, until the failing PR is found, however
     # many rounds that takes; only it leaves the queue. A number would dequeue a part still holding several PRs once
@@ -63,6 +76,9 @@ queue_rules:
       - label = loop:queued
       - -label = loop:hold
       - check-success = land
+    # two-step CI, so the queue never checks a PR in place (Never in place, above): different from `queue_conditions`
+    merge_conditions:
+      - -conflict
 
 pull_request_rules:
   - name: queue what land handed over
