@@ -592,6 +592,10 @@ FOLLOW_QUIET_SECONDS = 300.0
 # A followed lead with no progress (its own history, its live children) this long: a ``deadline``
 # event, whatever its status reads; this much more once it was nudged.
 DEADLINE_SECONDS = 1200.0
+# A lead's question card still unanswered this long reaches its manager once (``card-waiting``, routed ``act``), so a
+# manager the owner told to act in their name answers it rather than leave it waiting on an absent owner (#2170).
+# ponytail: one knob for every lead; a per-project value would go on the board's standing decisions.
+CARD_REMIND_SECONDS = 4 * 3600.0
 SHARED_READ_SECONDS = (
     5.0  # a PR read this recently serves every wait on it (a restart reads each PR once)
 )
@@ -8124,6 +8128,7 @@ def fresh_state() -> dict:
         "events": {},  # loop event refs: sha, stamp (when it last moved), state, beat, told
         "pr_stalls": {},  # per watched repo, what ``pr_stalls`` keeps between sweeps
         "queue": {},  # per watched repo, its merge-queue entries and alarms (``queue_read``, ``queue_alarms``)
+        "cards": {},  # each open question card's first sight by ``<session>:<card>``, None once reminded
     }
 
 
@@ -8579,7 +8584,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     """How the console settles one event, as the design's routing table says: who settled it
     (``rule`` or ``model``), the action and why. ``event`` has its ``kind`` (``landed``, a
     default branch the leads work on moved; ``archived``,
-    ``blocked``, ``failed``, ``ended``, ``deadline``; ``terminal`` and ``notice`` for a session
+    ``blocked``, ``failed``, ``ended``, ``deadline``; ``asked`` and ``card-waiting`` for a question card; ``terminal`` and ``notice`` for a session
     owing a report), ``last``, the lead's last message, and whether it is a ``repeat`` of the
     lead's last event, blocked only on a ``question``, ``nudged`` on this progress chain,
     ``revived`` once, a failure that is a ``transient`` provider error, whether that is a usage
@@ -8686,6 +8691,14 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "record", "the supervisor's own revive or resume line"
     if kind == "asked":
         return "rule", "record", "a question card to its user, who answers it in their Inbox"
+    if kind == "card-waiting":  # #2170
+        if event.get("direct"):
+            return "rule", "record", "the owner drives it directly: its card is theirs"
+        return (
+            "rule",
+            "act",
+            "its card waits unanswered: answer it only if the owner told you to act in their name",
+        )
     text = event.get("last") or ""
     if REPORT_PATH.fullmatch(text):
         if event.get("head") is None:
@@ -9495,13 +9508,27 @@ def supervise_registry(
         flush()
 
     def cards(sid: str) -> None:
-        """Say each question card ``sid`` posted to its user once, by its id: news, not a step."""
-        for e in og.cards.get(sid, []):
-            eid = f"asked:{sid}:{e.get('elicitation_id') or e}"
-            if eid not in asked:
-                asked.add(eid)
-                what = _asks(e)
-                say(f"{sid}: asked its user: {what}", sid, eid, "asked")
+        """Say each question card ``sid`` posted to its user once, by its id: news, not a step. A card still open
+        ``CARD_REMIND_SECONDS`` after it was first seen is said once more, as ``card-waiting``, for its manager."""
+        now, seen = time.time(), state["cards"]
+        open_ = {f"{sid}:{e.get('elicitation_id') or e}": e for e in og.cards.get(sid, [])}
+        for key in [k for k in seen if k.startswith(f"{sid}:") and k not in open_]:
+            del seen[key]  # answered or withdrawn
+        for key, e in open_.items():
+            what = _asks(e)
+            if f"asked:{key}" not in asked:
+                asked.add(f"asked:{key}")
+                say(f"{sid}: asked its user: {what}", sid, f"asked:{key}", "asked")
+            first = seen.setdefault(key, now)
+            if first is not None and now - first >= CARD_REMIND_SECONDS:
+                seen[key] = None  # once per card
+                hours = f"{CARD_REMIND_SECONDS / 3600:g} h"
+                say(
+                    f"{sid}: its card waits unanswered past {hours}: {what}",
+                    sid,
+                    f"card-waiting:{key}",
+                    "card-waiting",
+                )
 
     def track(
         sid: str,

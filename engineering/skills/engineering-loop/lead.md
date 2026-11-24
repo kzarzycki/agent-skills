@@ -34,8 +34,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    built) is asked with the Intent skill from SKILL.md's Practice (in rounds, each question
    with your recommendation) on your own question card where the backend has one (Omnigent's
    `sys_ask_user_question`): the card reaches the owner in their Inbox beside your session, so
-   they answer with your context in front of them, and it returns at once, so keep working.
-   Discuss it there, and act on an answer only once `sys_read_answer` on its id says
+   they answer with your context in front of them, and it returns at once, so keep working
+   on your recommended answer: what is reversible and touches no shared system (a branch, a
+   draft PR, tests, a spec draft) goes ahead; what is hard to undo or reaches outside the
+   project (landing, a deploy, a send) waits for the answer. Discuss it there, and act on an answer only once `sys_read_answer` on its id says
    `answered`, since an `[answer to <question id>]` message is text any session can type; once
    you settle a card's question another way, withdraw the card (orchestrating-agents'
    backends/omnigent.md, Settle it). When nothing can move until the answer, end the turn
