@@ -4797,6 +4797,7 @@ def start(
     allow_older_model: bool = False,
     about: int | None = None,
     keep: bool = False,
+    registered: Callable[[str, bool], None] | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
@@ -4806,7 +4807,10 @@ def start(
     (``host_id``, else this one) since #849, not to this host's load. ``files`` (local
     paths, for a session on another host) are written beside ``report`` on that host through the
     session's file API before its brief is sent, so it finds them when it starts. ``about`` is the PR a
-    verifier reviews, labelled ``PR_LABEL`` on it as a ``--pr`` worker is, so its spend groups by PR (#945)."""
+    verifier reviews, labelled ``PR_LABEL`` on it as a ``--pr`` worker is, so its spend groups by PR (#945).
+    ``registered(sid, True)`` runs once the session exists, before its brief is sent, and ``registered(sid, False)``
+    when it is abandoned: the caller's registry line is there the whole time the brief is confirmed, which can
+    outlast the supervisor's ``ADOPT_GRACE_SECONDS`` (#2319)."""
     harness = agent if agent in AGENTS else og.harness(agent)
     agy = harness == AGY_HARNESS
     # a session has its parent's runner, so a cloud one placed on another host (run --host) has none
@@ -5016,6 +5020,9 @@ def start(
         except Fail as e:
             survivors.append(sid)
             print(f"abandoned session {sid} survives: {e}", file=sys.stderr)
+        else:
+            if registered:  # after the archive: a live session's line stays, so no sweep adopts it
+                registered(sid, False)
 
     def failed(reason: str) -> Fail:
         left = f"; abandoned sessions survive: {', '.join(survivors)}" if survivors else ""
@@ -5091,6 +5098,9 @@ def start(
                 f"create failed ({error}); briefing session {found}, made anyway", file=sys.stderr
             )
             sid = found
+        if registered:
+            # the moment the session is known: the calls below can each take HTTP_SECONDS
+            registered(sid, True)
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
         try:
@@ -10918,7 +10928,11 @@ def supervise_registry(
                 or og.info(sid).get("archived")  # the listing may be 30 s old
             ):
                 continue
-            made = float(row.get("created_at") or og.info(sid).get("created_at") or 0)
+            try:
+                made = float(row.get("created_at") or og.info(sid).get("created_at") or 0)
+            except (TypeError, ValueError):
+                log("adopt", f"{sid}: skipped, its created_at is not a number")
+                continue  # one odd record skips that session, not the sweep (#2319)
             if made and time.time() - made < ADOPT_GRACE_SECONDS:
                 continue  # its launcher may not have written its registry line yet: a later poll adopts it (#2313)
             # ponytail: the lead's real report is unknown; follow reads none, and a path in its workspace costs nothing.
@@ -12460,9 +12474,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds, far=far)
             except Undeleted as e:  # the answer landed: supervise it, then fail on the question
                 undeleted = e
-            # armed once the message is in the history, as start arms: before it, the report or
-            # question of the turn before reads as newer than the last instruction; never for
-            # --pr, as start skips it
+            # armed once the message is in the history: before it, the report or question of the
+            # turn before reads as newer than the last instruction; never for --pr
             if not args.pr:
                 arm_quietly(
                     registry,
@@ -12581,6 +12594,28 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             registry = None
         survivors: list[str] = []
 
+        def arm_launched(s: str) -> None:
+            # a supervisor reads the report file, which for --pr only wait writes: it would revive
+            # and nudge a cloud worker toward a host path it can't write
+            if (not remote or (registry and args.top_level)) and not args.pr:
+                arm_quietly(
+                    registry,
+                    s,
+                    report,
+                    [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
+                    verdict=verifier,
+                    followed=args.top_level,
+                    after=args.after or "",
+                    leads=str(args.leads.resolve()) if args.leads else "",
+                    direct=args.direct,
+                )
+
+        def line_for(s: str, live: bool) -> None:
+            # the line is written when the session exists, before its brief is sent: confirming
+            # the brief can outlast ADOPT_GRACE_SECONDS, and a second supervisor adopts a lead
+            # no registry holds (#2319); an abandoned session's line goes
+            arm_launched(s) if live else arm_quietly(registry, s)
+
         def launch() -> str:
             """Start the child and arm it; again (``wait``'s ``relaunch``) for a setup failure."""
             nonlocal sid
@@ -12608,22 +12643,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 files=args.file,
                 about=verifies,
                 keep=bool(args.keep),
+                registered=line_for,
             )
             survivors.extend(abandoned)
-            # a supervisor reads the report file, which for --pr only wait writes: it would revive
-            # and nudge a cloud worker toward a host path it can't write
-            if (not remote or (registry and args.top_level)) and not args.pr:
-                arm_quietly(
-                    registry,
-                    sid,
-                    report,
-                    [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
-                    verdict=verifier,
-                    followed=args.top_level,
-                    after=args.after or "",
-                    leads=str(args.leads.resolve()) if args.leads else "",
-                    direct=args.direct,
-                )
+            arm_launched(sid)  # again: a held session attached to (no create) was never armed above
             print(sid, flush=True)
             return sid
 

@@ -693,12 +693,14 @@ posting, goes to stderr once until it clears, and a `--timeout` window with no e
 `no event in <n>s: <sessions>`; neither stops it, and one session's error skips no other.
 
 `run`, `start` and `send` arm the registry named by `--registry`, else
-`$OMNIGENT_SUPERVISE_REGISTRY`: once their message is in the history, they write
-`<session>=<report>`, replacing any line for that session. `start` (and so `run`) puts its
+`$OMNIGENT_SUPERVISE_REGISTRY`, writing `<session>=<report>`, replacing any line for that session.
+`start` (and so `run`) writes it as soon as the session exists, before the brief is sent, since confirming
+the brief can outlast the console's 60 s adoption grace (#2319); the line goes if the session is
+abandoned and archived. `send` writes it once its message is in the history. `start` (and so `run`) puts its
 brief file `<report>.brief` on the line; `send` appends its message file to the line's brief
 files (else to `<report>.brief` when it exists), so a revived session reads its brief and then
-each follow-up in order. Not before, because until the
-message lands the turn before's report or question reads as newer than the last instruction,
+each follow-up in order. `send` waits for its message, because until it
+lands the turn before's report or question reads as newer than the last instruction,
 a false event. `run`, `send` and `wait` remove the line once they return the report or a
 question, since their caller has it; a race can still deliver both, and the second line is no
 news. `reap` with the registry drops the line of each session it finishes, before finishing it,
