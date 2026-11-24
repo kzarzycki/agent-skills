@@ -21,13 +21,9 @@ One line per repo for the 7 days from `--since`, with the 7 days before it besid
   the batch's PRs that merged in the two weeks, and a line that holds such minutes says
   `batch minutes split evenly`.
 
-- no-record: merged PRs whose head (the tree of its last commit) had no R1 record, a ref
-  `loop-gate/<tree>-<key>`, so nothing but the unkeyed CI checks or a break-glass land verified them. One listing
-  of the record refs (a page per 100), never a call per PR; the tree comes from the timeline already read.
-  CAVEAT (open, #2143's owner decides): `land` deletes a landed tree's record ref (`drop_records`), so for a
-  merge made through `land` the ref is gone by the time this runs, and the count reads the refs still standing
-  (a merge of the last day, a head landed another way), not what verified the week. No other source outlives the
-  merge today: `land` asks no R1 record of a head unless loop.md sets `head_proof`.
+- merged with no record: not measured yet (#2310). A merged PR's record ref is deleted at landing, so it can't be read
+  after the merge; the line prints `merged with no record: not measured yet (#2310)` until `land` names the record
+  in the head's `land` status.
 - reverts: merged PRs titled `Revert`, counted from the merged-PR search already made.
 - red-nights: red-nightly issues (`Nightly red since ...`, one search) created in the week whose body names the
   number of a merged PR (`#<n>`).
@@ -35,7 +31,7 @@ One line per repo for the 7 days from `--since`, with the 7 days before it besid
 A repo with no Actions workflows is skipped with a line that says so.
 
 Quota, per repo: one search for the two weeks' merged PRs (a page per 100), one search for the queue-batch
-PRs, one for the red-nightly issues, one refs listing, one `timeline` call per merged PR (the only source of its ready events, heads and merge commit; never
+PRs, one for the red-nightly issues, one `timeline` call per merged PR (the only source of its ready events, heads and merge commit; never
 per job), the runs listing in bulk, one day at a time (`created=<d>..<d>`, a page per 100 runs, indexed here by
 `head_sha`; from the oldest merged PR's creation, at most 14 days before the two weeks, to the day after the
 week's end), and one jobs listing per attributed run (`filter=all`, so every attempt). The runs listing serves
@@ -148,7 +144,6 @@ def batches(gh: Gh, repo: str, first: dt.date) -> dict[int, list[int]]:
 def read_timeline(gh: Gh, repo: str, number: int) -> dict[str, Any]:
     ready = None
     shas: set[str] = set()
-    tree = None
     for event in pages(gh, f"repos/{repo}/issues/{number}/timeline"):
         kind = event.get("event")
         if kind == "ready_for_review":
@@ -156,19 +151,9 @@ def read_timeline(gh: Gh, repo: str, number: int) -> dict[str, Any]:
             ready = when if ready is None or when > ready else ready
         elif kind == "committed" and event.get("sha"):
             shas.add(event["sha"])
-            tree = (event.get("tree") or {}).get("sha")
         elif kind in ("head_ref_force_pushed", "merged") and event.get("commit_id"):
             shas.add(event["commit_id"])
-    return {"ready": ready, "shas": shas, "tree": tree}
-
-
-def record_trees(gh: Gh, repo: str) -> set[str]:
-    """The trees that have an R1 record: refs `loop-gate/<tree>-<key>`, listed once."""
-    prefix = "refs/heads/loop-gate/"
-    refs = pages(
-        gh, f"repos/{repo}/git/matching-refs/heads/loop-gate"
-    )  # no trailing slash: the API refuses one
-    return {r["ref"][len(prefix) :].split("-", 1)[0] for r in refs if r["ref"].startswith(prefix)}
+    return {"ready": ready, "shas": shas}
 
 
 def red_nights(gh: Gh, repo: str, first: dt.date) -> list[dict[str, Any]]:
@@ -238,7 +223,6 @@ def collect(gh: Gh, repo: str, since: dt.date) -> dict[str, Any]:
         for number in share:
             minutes[number] += used / len(share)
             batched = True
-    trees = record_trees(gh, repo)
     nights = red_nights(gh, repo, since - dt.timedelta(days=7))
     rows = []
     for number, pr in prs.items():
@@ -250,7 +234,6 @@ def collect(gh: Gh, repo: str, since: dt.date) -> dict[str, Any]:
                 "seconds": (pr["merged"] - ready).total_seconds(),
                 "minutes": minutes[number],
                 "revert": pr["title"].lstrip().lower().startswith("revert"),
-                "no_record": timelines[number]["tree"] not in trees,
             }
         )
     return {"rows": rows, "batched": batched, "nights": nights, "merged_numbers": set(prs)}
@@ -263,15 +246,18 @@ def duration(seconds: float) -> str:
     return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
 
 
+NO_RECORD = "merged with no record: not measured yet (#2310)"
+
+
 def summary(rows: list[dict[str, Any]], red_nights: int) -> str:
-    quality = f"red-nights {red_nights}"
+    quality = f"{NO_RECORD}, red-nights {red_nights}"
     if not rows:
-        return f"merged 0, no-record 0, reverts 0, {quality}"
+        return f"merged 0, reverts 0, {quality}"
     median = duration(statistics.median(r["seconds"] for r in rows))
     per_pr = sum(r["minutes"] for r in rows) / len(rows)
     return (
         f"merged {len(rows)}, median ready->merged {median}, runner-min/PR {per_pr:.1f}, "
-        f"no-record {sum(r['no_record'] for r in rows)}, reverts {sum(r['revert'] for r in rows)}, {quality}"
+        f"reverts {sum(r['revert'] for r in rows)}, {quality}"
     )
 
 

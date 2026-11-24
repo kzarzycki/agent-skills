@@ -68,8 +68,6 @@ def committed(sha: str, tree: str) -> dict[str, Any]:
 # #5: merged the week before, one 4-minute job on its head (and an incomplete job that counts nothing).
 # #6: merged on the week's first day. #7: merged on the next week's first day. A search item with no merge date.
 # #10: created months before the lookback reaches: its run of that day is never listed, its recent one (4) is.
-# Refs: T1 and T2, the trees of heads whose record `land` has not deleted (a merge of the last day); the others
-# merged through `land`, which deletes a landed tree's record, so they read as no record (see the script's CAVEAT).
 RECORDED: dict[str, Any] = {
     "repos/acme/widgets/actions/workflows": {"total_count": 1},
     "search/issues|is:pr is:merged": {
@@ -101,11 +99,6 @@ RECORDED: dict[str, Any] = {
             {"number": 72, "created_at": "2026-11-13T03:00:00Z", "body": "Merges: #5"},
         ]
     },
-    "repos/acme/widgets/git/matching-refs/heads/loop-gate": [
-        {"ref": "refs/heads/loop-gate/T1-abc"},
-        {"ref": "refs/heads/loop-gate/T2-ghi"},
-        {"ref": "refs/heads/loop-gate/T7-def"},
-    ],
     "repos/acme/widgets/issues/1/timeline": [
         {"event": "ready_for_review", "created_at": "2026-11-18T09:00:00Z"},
         {"event": "ready_for_review", "created_at": "2026-11-18T11:00:00Z"},
@@ -189,12 +182,11 @@ def test_week_line_counts_median_minutes_and_the_week_before() -> None:
     # week: #1 1h from its last ready event, #2 1h from creation, #3 and #4 2h, #6 30m (merged on the first day),
     # #10 merged 09:00 and created months ago, no draft: far over 2h. Median of six: 1h30m (#7 is next week's).
     # minutes: #1 10, #2 26, #3 and #4 (12+8)/2 = 10 each, #6 0, #10 4: 60 / 6 = 10.0
-    # no-record: #1 (T1) and #2 (last commit T2, not its first T0) have a ref, T7 is next week's; #3, #4, #10 and #6 (no commit) have none: 4
     assert text.startswith(
-        f"{REPO} 2026-11-17..2026-11-23: merged 6, median ready->merged 1h30m, runner-min/PR 10.0, no-record 4, reverts 1, red-nights 1"
+        f"{REPO} 2026-11-17..2026-11-23: merged 6, median ready->merged 1h30m, runner-min/PR 10.0, reverts 1, merged with no record: not measured yet (#2310), red-nights 1"
     )
     assert (
-        "| week before 2026-11-10..2026-11-16: merged 1, median ready->merged 1h00m, runner-min/PR 4.0, no-record 1, reverts 0, red-nights 1"
+        "| week before 2026-11-10..2026-11-16: merged 1, median ready->merged 1h00m, runner-min/PR 4.0, reverts 0, merged with no record: not measured yet (#2310), red-nights 1"
         in text
     )
     assert "batch minutes split evenly across each queue batch's PRs" in text
@@ -217,7 +209,9 @@ def test_runs_are_listed_by_day_in_bulk_and_jobs_once_per_attributed_run() -> No
         f"repos/acme/widgets/actions/runs/{n}/jobs" for n in (11, 12, 13, 14, 16, 17, 18, 21)
     ]  # run 15 is nobody's, 20 is never listed
     assert len([c for c in gh.calls if "/timeline" in c]) == 8
-    assert len([c for c in gh.calls if "matching-refs" in c]) == 1  # one listing of the record refs
+    assert not [
+        c for c in gh.calls if "matching-refs" in c or "loop-gate" in c
+    ]  # no record ref is read
     assert (
         len([c for c in gh.calls if "is:issue" in unquote(c)]) == 1
     )  # one search for the red nights
@@ -255,18 +249,20 @@ def test_a_week_with_no_merges_prints_zero() -> None:
             "search/issues|is:pr is:merged": {"items": []},
             "search/issues|head:mergify/merge-queue/": {"items": []},
             "search/issues|is:issue": {"items": []},
-            "repos/acme/widgets/git/matching-refs/heads/loop-gate": [],
         }
     )
-    assert "merged 0, no-record 0, reverts 0, red-nights 0 | week before" in loop_metrics.line(
-        gh, REPO, SINCE
+    assert (
+        "merged 0, reverts 0, merged with no record: not measured yet (#2310), red-nights 0 | week before"
+        in loop_metrics.line(gh, REPO, SINCE)
     )
 
 
-def test_a_failed_refs_listing_is_an_error_not_an_empty_record_set(capsys) -> None:
-    recorded = {k: v for k, v in RECORDED.items() if "matching-refs" not in k}
-    assert loop_metrics.main([REPO, "--since", "2026-11-17"], FakeGh(recorded)) == 1
-    assert "matching-refs" in capsys.readouterr().err
+def test_the_no_record_field_prints_its_replacement_for_both_weeks() -> None:
+    text = loop_metrics.line(FakeGh(RECORDED), REPO, SINCE)
+    assert (
+        text.count("merged with no record: not measured yet (#2310)") == 2
+    )  # the week and the week before
+    assert "no-record" not in text
 
 
 def test_a_server_error_or_cut_output_is_retried_and_a_client_error_is_not(monkeypatch) -> None:
