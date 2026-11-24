@@ -129,3 +129,18 @@ def test_skill_text_points_to_the_rule_and_names_the_forge_read():
     skill = (SKILL / "SKILL.md").read_text()
     nightly = skill[skill.index("**Nightly.**") :][:1800]
     assert "last green" in nightly and "moved since" in nightly and HEADING in nightly
+
+
+def test_push_asks_only_for_successful_runs_and_reads_the_next_page():
+    asked: list[str] = []
+    full = [run("feature", OTHER, n) for n in range(100)]
+    base = forge("t1")
+
+    def api(path: str):
+        asked.append(path)
+        if "/runs?" in path:
+            return runs(*full) if "page=1" in path else runs(run("mergify/merge-queue/x", BATCH, 7))
+        return base(path)
+
+    assert tested_tree.tested_by_batch(api, "o/r", "ci.yml", MAIN)["id"] == 7
+    assert all("status=success" in p for p in asked if "/runs?" in p)
