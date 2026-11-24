@@ -13,10 +13,12 @@ from typing import Any
 import pytest
 from approvals_harness import (  # noqa: F401
     HEAD,
+    LABELED,
     TREE,
     approvals,
     gating,
     git_in,
+    issue,
     judged_pr,
     judging,
     loop_md,
@@ -689,3 +691,73 @@ def test_verdict_warns_as_report_does_and_still_posts(
     assert approvals.main(["verdict", "7", str(report_file(tmp_path, "high — a gate change"))]) == 0
     assert "names no `Rerun: <commit>`" in capsys.readouterr().err
     assert any(call[0] == "review" for call in reviewing)
+
+
+# --- fix round 2: check rerun writes nothing (C6) ---
+
+
+def owners_label_after_the_edit() -> dict[str, Any]:
+    """A spec carrying `needs-owner` and the owner's `approved:spec`, added after its last edit: adopted() records it."""
+    spec = issue(1, "kind:enhancement", "area:web", "size:S", "needs-owner", "approved:spec")
+    spec["timelineItems"] = {
+        "nodes": [
+            {
+                "__typename": "LabeledEvent",
+                "createdAt": LABELED,
+                "actor": {"__typename": "User", "login": "octocat"},
+                "label": {"name": "approved:spec"},
+            }
+        ]
+    }
+    return spec
+
+
+def test_check_rerun_records_no_approval_and_still_answers(
+    gating: Gate,
+    forge: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under the workflow's read-only token an approval record is refused: `check rerun` never tries it, and prints
+    its `rerun:` line."""
+    state, comments = gating
+    policy(GATES + "loop:\n  owner: octocat\n")
+    tried: list[tuple[Any, ...]] = []
+
+    def refused(*args: Any) -> None:
+        tried.append(args)
+        raise subprocess.CalledProcessError(
+            1, "gh", stderr="Resource not accessible by integration (HTTP 403)"
+        )
+
+    monkeypatch.setattr(approvals, "approve", refused)
+    spec = owners_label_after_the_edit()
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    pr = judged_pr(judging("low — fine"), labels=("risk:high",))
+    pr["closingIssuesReferences"] = {"nodes": [spec]}
+    state["pull"] = pr
+    assert approvals.main(["check", "rerun", "7"]) == 0
+    assert capsys.readouterr().out == "PR #7: rerun: needed (rated high)\n"
+    assert (tried, comments) == ([], [])
+
+
+def test_the_read_only_adoption_is_the_same_decision_without_the_write(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    loop = loop_md("loop:\n  owner: octocat\n")
+    recorded: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(approvals, "approve", lambda *args: recorded.append(args))
+    spec = owners_label_after_the_edit()
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    [read] = approvals.adopting([spec], loop, record=False)
+    assert (recorded, capsys.readouterr().out) == ([], "")
+    assert approvals.names(read) == {"kind:enhancement", "area:web", "size:S", "approved:spec"}
+    assert "needs-owner" in approvals.names(spec)  # the issue read is left as it was
+    approvals.adopted([spec], loop)
+    assert [args[:2] for args in recorded] == [("spec", 1)]
+    # the owner's label from before the edit: nothing to record either way, and the read-only form says nothing
+    spec["timelineItems"]["nodes"][0]["createdAt"] = "2000-01-01T00:00:00Z"
+    recorded.clear()
+    capsys.readouterr()
+    assert approvals.adopting([spec], loop, record=False) == [spec]
+    assert (recorded, capsys.readouterr().out) == ([], "")

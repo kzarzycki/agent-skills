@@ -2059,7 +2059,7 @@ def rerun_state(pull: dict[str, Any]) -> int:
     revert, _ = reverts(pull)
     issues = rated_issues(pull)
     level = rating(pull, issues, loop).level
-    waived = incubation(pull, [] if revert else adopted(issues, loop), loop)[0]
+    waived = incubation(pull, [] if revert else adopting(issues, loop, record=False), loop)[0]
     if why := unowed(pull, loop, revert, waived):
         state = f"not needed ({why})"
     elif not levels(loop)[level].get("rerun"):
@@ -5698,10 +5698,18 @@ def moved() -> None:
 
 
 def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, Any]]:
+    """adopting, recording: the issues after each owner's label it finds is recorded as their approval."""
+    return adopting(issues, loop, record=True)
+
+
+def adopting(issues: list[dict[str, Any]], loop: str | None, record: bool) -> list[dict[str, Any]]:
     """The issues, each read again after recording an `approved:<point>` label the owner (gatekeeper.md's `owner`) added
     after the spec's or plan's last edit as their approval (approve), which also removes `needs-owner`, printing a line
     for each; a label the owner added before that edit gets a line saying so and changes nothing, nor does anyone
-    else's. Without `owner` nothing is read, since only the owner's own label is their word."""
+    else's. Without `owner` nothing is read, since only the owner's own label is their word. Without `record`, the
+    same decision read-only, for a command that writes nothing (rerun_state, under a CI token that can't write): no
+    approval is recorded and nothing printed, and each issue it would record comes back as the record leaves its
+    labels, `needs-owner` gone."""
     owner = settings(loop).get("owner")
     if not owner:
         return issues
@@ -5728,6 +5736,8 @@ def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, An
             ):
                 continue
             if added[-1]["createdAt"] <= last_change(holder):
+                if not record:
+                    continue
                 print(
                     f"#{number}: the owner's `{name}` was added before the {point}'s last edit ({version(holder)}): the"
                     " owner adds it again"
@@ -5736,6 +5746,12 @@ def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, An
                     f" REST API gives no edit time and the {point} changed at {last_change(holder)}, after it: the owner"
                     f" records it with `approve {point} {number} --by owner`, or the check runs where GraphQL answers"
                 )
+                continue
+            if not record:
+                labels = [
+                    label for label in issue["labels"]["nodes"] if label["name"] != NEEDS_OWNER
+                ]
+                issue = {**issue, "labels": {**issue["labels"], "nodes": labels}}
                 continue
             approve(point, number, value)
             recorded = True
