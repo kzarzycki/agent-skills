@@ -132,6 +132,15 @@ def test_a_missing_or_broken_policy_reader_gives_todays_wording(
     assert omnigent_agent.lead_delegation(None, str(work)) == ""
 
 
+def test_a_gatekeeper_that_exits_on_import_reads_as_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # gatekeeper.py calls sys.exit when PyYAML is missing; the start goes on with today's wording
+    (tmp_path / "gatekeeper.py").write_text("import sys\nsys.exit('needs PyYAML')\n")
+    monkeypatch.setattr(omnigent_agent, "installed", lambda skill: tmp_path)
+    assert omnigent_agent._load_gatekeeper() is None
+
+
 BASE_FILES = {
     "docs/agents/gatekeeper.md": policy_with("loop:\n  delegate: all\n"),
     "docs/agents/loop.md": "# Loop facts\n",

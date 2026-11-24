@@ -1,0 +1,113 @@
+name: Independent rerun
+
+# A head the gatekeeper rates at a level whose `rerun` is on (gatekeeper.md's `levels`; by default high and critical)
+# merges only on a rerun of its selection where the worker has no control (gatekeeper's policy.md, Independent
+# rerun): this workflow is that rerun in this repo. The PR's code runs only in `rerun`, whose token can't write; `push`
+# holds the write token, checks out nothing of the PR and runs none of its code, and pushes one `loop-gate/` branch
+# only after checking it is a record of the PR's head. The gatekeeper counts that push because an app made it.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
+  # a verifier pass whose `Risk: high` raises the rating
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+
+concurrency:
+  group: rerun-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ref: ${{ steps.record.outputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+      # the one cheap step on a head no level asks a rerun of, or one that has it: `rerun: needed|done|no`
+      - id: rating
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          said=$(uv run gatekeeper/skills/gatekeeper/scripts/gatekeeper.py check rerun "$PR")
+          echo "$said"
+          case "$said" in
+            *"rerun: needed"*) echo "needed=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "needed=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - if: steps.rating.outputs.needed == 'true'
+        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          version: 2026.9.2
+          install: false
+      - if: steps.rating.outputs.needed == 'true'
+        run: mise install
+      - if: steps.rating.outputs.needed == 'true'
+        run: uv sync --frozen
+      # the selection, rerun with nothing reused; the record is kept as a local branch, since this token can't push
+      - id: record
+        if: steps.rating.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          out=$(uv run gatekeeper/skills/gatekeeper/scripts/approvals.py local-ci --record --rerun --no-push 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          kept=$(printf '%s\n' "$out" | sed -n 's/^rerun record kept, not pushed: //p' | tail -1)
+          test -n "$kept"
+          ref=${kept% *}
+          git bundle create "$RUNNER_TEMP/rerun.bundle" "$ref" "^$HEAD_SHA"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - if: steps.record.outputs.ref != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rerun-record
+          path: ${{ runner.temp }}/rerun.bundle
+
+  push:
+    needs: rerun
+    if: needs.rerun.result == 'success' && needs.rerun.outputs.ref != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Fork PR
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: echo "a fork's PR gets no write token, so its rerun record is not pushed; the verifier's Rerun line is its route"
+      - if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rerun-record
+          path: ${{ runner.temp }}/record
+      # git alone, on objects: the PR's head is fetched, never checked out, and nothing of it runs
+      - name: Push the record branch
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          git init -q "$RUNNER_TEMP/push" && cd "$RUNNER_TEMP/push"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "$HEAD_SHA"
+          heads=$(git bundle unbundle "$RUNNER_TEMP/record/rerun.bundle")
+          test "$(printf '%s\n' "$heads" | wc -l)" -eq 1 || { echo "refused: the bundle holds more than one branch"; exit 1; }
+          commit=${heads%% *}
+          ref=${heads#* }
+          tree=$(git rev-parse "$HEAD_SHA^{tree}")
+          # only a record branch of the head's own tree, a commit holding that tree whose one parent is the head
+          printf '%s\n' "$ref" | grep -Eqx "refs/heads/loop-gate/${tree}-[0-9a-f]{12}" || { echo "refused: $ref is no record branch of the head's tree"; exit 1; }
+          test "$(git rev-list --parents -n 1 "$commit")" = "$commit $HEAD_SHA" || { echo "refused: $commit's one parent is not the head"; exit 1; }
+          test "$(git rev-parse "$commit^{tree}")" = "$tree" || { echo "refused: $commit holds another tree than the head"; exit 1; }
+          git push -q origin "$commit:$ref"
+          echo "pushed $ref at $commit"

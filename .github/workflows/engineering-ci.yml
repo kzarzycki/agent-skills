@@ -23,21 +23,34 @@ on:
 
 permissions:
   contents: read
+  actions: read # nightly.py moved reads the batch run and the last green from the forge
 
 jobs:
   qualify:
     runs-on: ubuntu-latest
+    outputs:
+      selection: ${{ steps.selection.outputs.selection }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+      # R7 (#2179): main's push run and the nightly run nothing for a tree a batch tested, or a head the last green ran;
+      # the answer and the run it names go to the step summary. Every later step of those two events checks `skip`.
+      - id: tested
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 loop/skills/engineering-loop/scripts/nightly.py moved ${{ github.event_name }}
+      - if: steps.tested.outputs.skip != 'true'
+        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
         with:
           version: 2026.9.2
           install: false
-      - run: mise install
-      - run: uv sync --frozen
+      - if: steps.tested.outputs.skip != 'true'
+        run: mise install
+      - if: steps.tested.outputs.skip != 'true'
+        run: uv sync --frozen
       # The test map (tools/affected_tests.py): the newest the nightly saved. Missing, the selector falls back to the name match.
       - if: startsWith(github.head_ref, 'mergify/merge-queue/')
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -45,8 +58,17 @@ jobs:
           path: .test-map
           key: test-map-restore
           restore-keys: test-map-
+      # A ready PR's head whose tree a worker already passed through `local-ci --record` runs nothing again (R1): the
+      # record is for the head's tree, not the test merge commit this job checked out. `qualify` still reports success.
+      - id: record
+        if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'mergify/merge-queue/')
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/pr_head_record.py "$HEAD_SHA"
       # A PR or a push runs the cheap checks: vendor check, lint, config and repo checks.
-      - if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+      - if: >-
+          github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+          && steps.tested.outputs.skip != 'true' && steps.record.outputs.recorded != 'true'
         run: mise run check-fast
       # A release PR (the Release workflow's `release/` branch) is exactly the fold of its branch point, `cli
       # cut-release` rerun there, or it fails: a hand edit beyond the fold never lands without a verifier (#1861).
@@ -56,24 +78,29 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: uv run python -m tools.capability_pack.cli release-verify --base "$BASE_SHA" --head "$HEAD_SHA"
-      # Only a Mergify batch's draft PR runs the tests, the ones the batch touches against main (#1821). A step-level
+      # Only a Mergify batch's draft PR runs the tests, what R6 selects against main (test-batch). A step-level
       # `if`, never a job-level one: a PR head's `qualify` must still run and report success, or Mergify never queues it.
       # The prefix is `.mergify.yml`'s `queue_branch_prefix`.
-      - if: startsWith(github.head_ref, 'mergify/merge-queue/')
+      - id: batch
+        if: startsWith(github.head_ref, 'mergify/merge-queue/')
         env:
           GATE_BASE: ${{ github.event.pull_request.base.sha }}
           # one file per run: a check that starts several pytest runs keeps the last one's
           PYTEST_ADDOPTS: --junitxml=.qualify/junit.xml
         run: mise run test-batch
+      # what the queue-run job below reads: set only when the batch's test step ran its selection and passed
+      - id: selection
+        if: steps.batch.outcome == 'success'
+        run: echo selection=ran >> "$GITHUB_OUTPUT"
       - if: github.event_name == 'workflow_dispatch' && inputs.tests != ''
         env:
           TESTS: ${{ inputs.tests }}
         run: uv run pytest -q $TESTS --junitxml=.qualify/junit.xml
-      - if: github.event_name == 'schedule'
+      - if: github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'
         run: |
           mkdir -p .test-map
           git rev-parse HEAD > .test-map/sha
-      - if: github.event_name == 'schedule'
+      - if: github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'
         env:
           COVERAGE_FILE: .test-map/coverage
           # the tests it skips, which leave no coverage context (tools/test_map_plugin.py)
@@ -82,7 +109,7 @@ jobs:
           PYTEST_ADDOPTS: -n 0 --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
         run: mise run check
       # Only a green run: the map names the lines every test ran, which a failed run leaves incomplete.
-      - if: github.event_name == 'schedule'
+      - if: github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .test-map
@@ -98,8 +125,23 @@ jobs:
           name: failed-tests
           path: .qualify/failed-tests.json
       - name: Check changed-file whitespace
-        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        # Not skipped on a record: `check-fast`, the command the record proves, never runs `git diff --check`.
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && steps.tested.outputs.skip != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           git diff --check "$BASE_SHA"...HEAD
+
+  # R6's refusal: `.mergify.yml` merges a batch only on this check's success, which needs the batch step above to have
+  # run its selection (tools/cross_change_tests.py). A path that skips it leaves this skipped or red, so nothing merges
+  # untested (#2169, #2121). Not a required check of the base: a job-level `if` is safe here, unlike on `qualify`.
+  queue-run:
+    needs: qualify
+    if: startsWith(github.head_ref, 'mergify/merge-queue/')
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          SELECTION: ${{ needs.qualify.outputs.selection }}
+        run: |
+          [ "$SELECTION" = ran ] || { echo "queue-run: the batch's test step did not run its selection, so the batch does not merge" >&2; exit 1; }
+          echo "queue-run: the batch's test step ran its selection"

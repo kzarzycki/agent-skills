@@ -342,7 +342,8 @@ def batch_wait(
     monkeypatch.setattr(approvals, "QUEUE_POLL", approvals.POLL)
     # a CI wait whose checks never move runs its round again only after FULL (#1915): a round each poll, as before
     monkeypatch.setattr(approvals, "FULL", approvals.POLL)
-    monkeypatch.setattr(approvals, "CEILING", 6 * approvals.POLL)  # a few rounds, not the 2 hours
+    # a few rounds, not the 2 hours the policy's `timeouts` derive (#2228)
+    monkeypatch.setattr(approvals, "land_wait", lambda: 6 * approvals.POLL)
     lands["open"](7, {"7.txt": "7\n"})
     lands["open"](8, {"8.txt": "8\n"})
     monkeypatch.setattr(approvals, "landing_here", lambda named, *_a, **_k: round_of(named))
@@ -362,7 +363,7 @@ def test_land_batch_wait_keeps_the_owners_question_of_a_pr_that_ended(
     events_pushed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With PR 7 held for the owner's go and PR 8 waiting on CI, the wait's beat rewrites 8 only: 7's event stays
-    `needs-owner` at every sleep (the ceiling asks for both)."""
+    `needs-owner` at every sleep (the ceiling leaves 8 `waiting`, a PR still waiting on CI, and 7's question)."""
     lands = events_pushed
 
     def one_round(named: list[dict[str, Any]]) -> tuple[int, bool]:
@@ -371,7 +372,9 @@ def test_land_batch_wait_keeps_the_owners_question_of_a_pr_that_ended(
 
     seen = batch_wait(lands, monkeypatch, one_round)
     assert seen and {state for _, state in seen} == {"needs-owner"}, seen
-    assert (events_of(lands, 8) or {}).get("state") == "needs-owner"  # the ceiling
+    # the ceiling leaves 8, still waiting on CI, `waiting`, and 7's question as it was
+    assert (events_of(lands, 8) or {}).get("state") == "waiting"
+    assert (events_of(lands, 7) or {}).get("state") == "needs-owner"
 
 
 def test_land_batch_wait_keeps_the_ok_of_a_pr_that_merged(
@@ -395,7 +398,7 @@ def test_land_batch_wait_keeps_the_ok_of_a_pr_that_merged(
     assert len(calls) > 2  # the rounds went on, with 8 alone once 7 was merged
     assert (events_of(lands, 8) or {}).get(
         "state"
-    ) == "needs-owner"  # the ceiling asks for the PR still open
+    ) == "waiting"  # the ceiling leaves the PR still open, waiting on CI, `waiting`
     event = events_of(lands, 7)
     assert event and (event["state"], event["seq"]) == ("ok", 1)  # and leaves the one that merged
 

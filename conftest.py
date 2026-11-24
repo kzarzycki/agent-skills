@@ -35,6 +35,7 @@ from approvals_harness import (  # noqa: F401
     graphql_answers,
     hub,
     merging,
+    reran,
     others_open,
     pushed,
     refs,
@@ -258,6 +259,20 @@ def _no_loop_events_read(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
         monkeypatch.setattr(module, "read_loop_events", lambda cwd=None: None)
 
 
+# The one module that runs land's `own-pr` start for real, against a fake script.
+STARTS_OWN_PR = {"test_approvals_own_prs"}
+
+
+@pytest.fixture(autouse=True)
+def _no_own_pr_start(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """land starts omnigent_agent.py `own-pr` for each PR it names (#2161): a test of land starts none."""
+    if request.module.__name__ in STARTS_OWN_PR:
+        return
+    from approvals_harness import approvals
+
+    monkeypatch.setattr(approvals, "own_prs", lambda pulls: None)
+
+
 @pytest.fixture(autouse=True)
 def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests run as if outside an Omnigent session; one that needs a session sets it."""
@@ -326,6 +341,15 @@ def _status_follows_the_pull(
     if module.__name__.startswith("test_approvals") and hasattr(module, "approvals"):
         approvals = module.approvals
         monkeypatch.setattr(approvals, "pull_status", lambda n: approvals.pull_request(n))
+
+
+@pytest.fixture(autouse=True)
+def _land_heads_recorded(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The local queue's land refuses a head with no pass record on origin (head_recorded, R6): its other tests have no
+    origin holding one, so every head reads recorded there. test_approvals_land_record.py runs the real read."""
+    module = request.module
+    if module.__name__ != "test_approvals_land_record" and hasattr(module, "approvals"):
+        monkeypatch.setattr(module.approvals, "head_recorded", lambda _pull: True)
 
 
 @pytest.fixture(autouse=True)

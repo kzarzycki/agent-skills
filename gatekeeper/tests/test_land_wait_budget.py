@@ -15,7 +15,7 @@ import time
 from typing import Any
 
 import pytest
-from approvals_harness import approvals
+from approvals_harness import LOOP, add, approvals
 
 github = approvals.github
 
@@ -128,6 +128,9 @@ def wait(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(approvals, "git", origin)
     monkeypatch.setattr(approvals, "land_event", lambda pull, s, *a, **k: state["events"].append(s))
     monkeypatch.setattr(approvals, "CEILING", 1800)
+    # the wait's own ceiling, derived from `timeouts.run` (twice it), matches the patched lock staleness (#2228)
+    monkeypatch.setitem(approvals.TIMEOUTS, "run", "15m")
+    monkeypatch.setattr(approvals, "project", lambda: (None, None))
     return state
 
 
@@ -353,3 +356,91 @@ def test_locked_records_a_round_that_other_lands_kept_beating_to_the_lock(
     monkeypatch.setitem(approvals.watched, "deferred", False)
     assert approvals.locked("main", [], 7) is False
     assert approvals.watched["deferred"] is True
+
+
+def configured(wait: dict[str, Any], monkeypatch: pytest.MonkeyPatch, given: str | None) -> None:
+    """The project's policy, which `land.wait` is read from: `given`, or no setting."""
+    land = {} if given is None else {"wait": given}
+    monkeypatch.setattr(approvals, "project", lambda: (None, "policy"))
+    monkeypatch.setattr(approvals, "settings", lambda _loop: {"land": land})
+
+
+@pytest.mark.parametrize(
+    ("given", "ends"), [(None, 1800), ("1h", 3600), ("45m", 2700), ("1h30m", 5400)]
+)
+def test_the_wait_ends_at_the_projects_land_wait_and_by_default_at_the_ceiling(
+    wait: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    given: str | None,
+    ends: int,
+) -> None:
+    """With nothing set the wait ends at twice `timeouts.run` (here 15m, so 1800); `land.wait`, deprecated, still moves
+    only the wait, and CEILING stays the landing lock's staleness (#2228)."""
+    configured(wait, monkeypatch, given)
+    assert approvals.land(7, wait=True) == approvals.WAITING
+    assert ends - approvals.POLL <= wait["now"] <= ends
+    stopped = [line for line in capsys.readouterr().out.splitlines() if "stopped after" in line]
+    assert stopped == [f"land --wait stopped after {approvals.said_span(ends)}, still waiting"]
+    assert approvals.CEILING == 1800
+
+
+@pytest.mark.parametrize(
+    ("text", "seconds"), [("2h", 7200), ("4h30m", 16200), ("1d", 86400), ("30m", 1800)]
+)
+def test_a_duration_is_days_hours_and_minutes_in_that_order(text: str, seconds: int) -> None:
+    found = approvals.span(text)
+    assert found is not None and found.total_seconds() == seconds
+    assert (
+        approvals.said_span(seconds)
+        == {
+            7200: "2 hours",
+            16200: "4 hours 30 minutes",
+            86400: "24 hours",
+            1800: "30 minutes",
+        }[seconds]
+    )
+
+
+@pytest.mark.parametrize("text", ["soon", "30m4h", "0h", "-2h", "2 hours", ""])
+def test_a_malformed_land_wait_is_refused(text: str) -> None:
+    with pytest.raises(approvals.Refused, match="land.wait"):
+        approvals.settings(add(LOOP, "land", f"wait: '{text}'\n"))
+
+
+@pytest.mark.parametrize(("held", "last"), [(False, "waiting"), (True, "needs-owner")])
+def test_the_ceiling_leaves_a_pr_waiting_on_its_checks_waiting_and_asks_the_owner_for_one_nothing_moves(
+    wait: dict[str, Any], monkeypatch: pytest.MonkeyPatch, held: bool, last: str
+) -> None:
+    """A round that waited on CI leaves the event `waiting`; one that waited on another land's lock asks the owner."""
+    wait["held"] = held
+    monkeypatch.setattr(
+        approvals,
+        "pull_request",
+        lambda n: {"number": n, "state": "OPEN", "headRefName": "feature"},
+    )
+    assert approvals.land(7, wait=True) == approvals.WAITING
+    # the beat is `waiting` too: what the ceiling writes last tells the two apart
+    assert wait["events"][-1] == last
+    assert ("needs-owner" in wait["events"]) is (last == "needs-owner")
+
+
+def test_the_ceiling_leaves_a_pr_a_queue_holds_waiting(
+    wait: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wait["held"] = True
+    monkeypatch.setattr(
+        approvals,
+        "pull_request",
+        lambda n: {"number": n, "state": "OPEN", "headRefName": "feature"},
+    )
+    landing = approvals.landing
+
+    def queued(pr: Any, only: bool = False) -> tuple[int, bool]:
+        code = landing(pr, only)
+        approvals.watched["queued"][7] = approvals.MERGIFY
+        return code
+
+    monkeypatch.setattr(approvals, "landing", queued)
+    approvals.land(7, wait=True)
+    assert wait["events"][-1] == "waiting" and "needs-owner" not in wait["events"]
