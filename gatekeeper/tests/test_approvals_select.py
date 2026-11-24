@@ -163,13 +163,14 @@ def test_classify_names_inputs_and_dedupes_checks() -> None:
     assert approvals.classify(["docs/x.md"], {}) == (["docs/x.md"], [])
 
 
-def test_select_must_name_build_inputs(tmp_path: Path) -> None:
-    policy = approvals.Policy(gatekeeper_md("select:\n  checks:\n    - {paths: [a], command: x}\n"))
-    with pytest.raises(approvals.Refused, match="build_inputs"):
-        approvals.settings(policy)
-
-
-# --- the narrowed gate (local-ci --record --base), the recorded run on a head, cuts the same way ---
+def test_select_without_build_inputs_cuts_nothing_and_keeps_unkeyed() -> None:
+    """`select.unkeyed` (#2183) shares the section: without `build_inputs` every file is a build input, as before."""
+    policy = approvals.Policy(gatekeeper_md("select:\n  unkeyed: [lint]\n"))
+    select = approvals.settings(policy)["select"]
+    assert select == {"unkeyed": ["lint"]}
+    assert approvals.classify(["docs/x.md", "apm.yml"], select) == (["docs/x.md", "apm.yml"], [])
+    both = approvals.Policy(gatekeeper_md("select:\n  build_inputs: [src/*]\n  unkeyed: [lint]\n"))
+    assert approvals.settings(both)["select"] == {"build_inputs": ["src/*"], "unkeyed": ["lint"]}
 
 
 def base_of_work() -> str:

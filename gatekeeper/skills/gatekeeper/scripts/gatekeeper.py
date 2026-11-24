@@ -921,7 +921,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
     },
     "mutate": {"inconclusive_exit": int},
     # the checks whose pass is never reused (unkeyed): each a gate step's name or command, or `gate`'s command
-    "select": {"unkeyed": list},
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
     "risk": {
@@ -967,7 +966,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "select": Table(
         build_inputs=list,
         checks=Rows(paths=list, command=str, unique=("command",)),
-        optional=("checks",),
+        unkeyed=list,  # the gate_steps that always run, keyed on no paths (#2183)
+        optional=("build_inputs", "checks", "unkeyed"),
     ),
     # the break-glass land's proof windows (breakglass_settings); every key is optional
     "breakglass": Table(
@@ -9368,7 +9368,13 @@ def narrowed_gate(
     if (cut := selected(base)) is not None and not cut[0]:
         # no build input changed (select): the run is affected-tests' own cut, keyed by the checks it runs
         said = shlex.join(["select.checks:", *cut[1]] if cut[1] else ["select.checks:", "none"])
-        words = [sys.executable, str(Path(__file__).with_name("gatekeeper.py")), "affected-tests", "--base", base]
+        words = [
+            sys.executable,
+            str(Path(__file__).with_name("gatekeeper.py")),
+            "affected-tests",
+            "--base",
+            base,
+        ]
         return f"{variable}={base} {said}{NARROWED}", words, {}
     _, words, sets = command_line(written, "Affected tests", passed)
     sets = {variable: base, **{name: value for name, value in sets.items() if name != variable}}
@@ -9419,7 +9425,9 @@ def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[
     `checks` commands the rest touch. A file is a build input when it matches `build_inputs`, is the selection's own
     policy (SELECTION_FILES), or matches neither NON_PRODUCT nor a check's `paths`: a path whose effect on the build
     is unclear tests. Without `select` every file is one, as before the setting."""
-    if not select:
+    if "build_inputs" not in (
+        select or {}
+    ):  # no declaration: every file tests, as before the setting
         return list(files), []
     checks = select.get("checks", [])
     inputs, commands = [], []
