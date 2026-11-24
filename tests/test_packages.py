@@ -264,3 +264,56 @@ def test_the_package_packs_and_installs_for_claude_and_codex(name: str, tmp_path
     lock = (consumer / "apm.lock.yaml").read_text()
     _run(["apm", "install", "--frozen"], cwd=consumer, env=env)
     assert (consumer / "apm.lock.yaml").read_text() == lock
+
+
+# The first apm that deploys a Claude-format plugin whole to `.agents/plugins/<name>/` (project scope) instead of
+# into the one skills directory, which puts a skill's dependency out of its sibling folder's reach (#2284).
+NATIVE_PLUGIN_APM = "0.38.1"
+
+
+@pytest.fixture(scope="session")
+def native_plugin_apm(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A bin folder holding an apm that installs plugins natively, whatever apm the host pins for its own use."""
+    tools = tmp_path_factory.mktemp("apm-tool")
+    env = {**os.environ, "UV_TOOL_DIR": str(tools / "tools"), "UV_TOOL_BIN_DIR": str(tools / "bin")}
+    _run(["uv", "tool", "install", f"apm-cli=={NATIVE_PLUGIN_APM}"], cwd=tools, env=env)
+    return tools / "bin"
+
+
+@pytest.mark.needs_tool("uv")
+@pytest.mark.parametrize("name", ("loop", "engineering"))
+def test_the_deployed_loop_scripts_find_gatekeeper_when_apm_installs_it_as_a_plugin(
+    name: str, tmp_path: Path, native_plugin_apm: Path
+) -> None:
+    """In a repo `apm install`ed with `targets: [claude]`, gatekeeper lands in `.agents/plugins/gatekeeper/`, not beside
+    engineering-loop: every script deployed for engineering-loop still runs."""
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{native_plugin_apm}{os.pathsep}{env['PATH']}"
+    source = tmp_path / "source"
+    _copy_package(source)
+    _publish(tmp_path, env, source)
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    version = manifests(name)[0]["version"]
+    _write_manifest(consumer / "apm.yml", {"git": f"{SLUG}/{name}", "ref": f"^{version}"})
+    manifest = yaml.safe_load((consumer / "apm.yml").read_text())
+    manifest["targets"] = ["claude"]
+    (consumer / "apm.yml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+    _run(["apm", "install"], cwd=consumer, env=env)
+
+    assert (consumer / ".agents" / "plugins" / "gatekeeper" / "skills" / "gatekeeper").is_dir()
+    scripts = sorted((consumer / ".claude" / "skills" / "engineering-loop" / "scripts").glob("*.py"))
+    assert scripts
+    failed = {}
+    for script in scripts:
+        run = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            cwd=consumer,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if run.returncode:
+            failed[script.name] = run.stderr.strip().splitlines()[-1:]
+    assert failed == {}
