@@ -368,7 +368,9 @@ def test_a_mapped_package_script_whose_changed_lines_no_test_ran_selects_the_pac
     monkeypatch.setattr(a, "MAP", tmp_path / ".map")
     a.MAP.mkdir()
     (a.MAP / "sha").write_text(git("rev-parse", "HEAD"))
-    (a.MAP / "skipped").write_text("")  # a map with a skip list: no test is picked by name beside it
+    (a.MAP / "skipped").write_text(
+        ""
+    )  # a map with a skip list: no test is picked by name beside it
     data = CoverageData(basename=str(a.MAP / "coverage"))
     data.set_context("omnigent/tests/test_other.py::test_x|run")
     data.add_lines({SCRIPT_UNDER_PACKAGE: [1]})
