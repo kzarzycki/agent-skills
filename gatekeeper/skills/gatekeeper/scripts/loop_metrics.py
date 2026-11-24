@@ -36,6 +36,7 @@ import datetime as dt
 import json
 import re
 import statistics
+from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import sys
 from typing import Any, Callable
@@ -127,7 +128,8 @@ def collect(gh: Gh, repo: str, since: dt.date) -> dict[str, Any]:
     first, last = since - dt.timedelta(days=7), since + dt.timedelta(days=6)
     prs = merged_prs(gh, repo, first, last)
     batch_prs = batches(gh, repo, first)
-    timelines = {n: read_timeline(gh, repo, n) for n in prs}
+    with ThreadPoolExecutor(8) as pool:  # the same calls, 8 at a time
+        timelines = dict(zip(prs, pool.map(lambda n: read_timeline(gh, repo, n), prs)))
     owner_of_sha: dict[str, set[int]] = {}
     for number, timeline in timelines.items():
         for sha in timeline["shas"]:
