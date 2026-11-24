@@ -8,4 +8,5 @@ exec uv run pytest -q -p no:cacheprovider -n0 \
   "gatekeeper/tests/test_approvals_timeouts.py::test_affected_tests_over_the_budget_says_so_in_one_line" \
   "gatekeeper/tests/test_approvals_timeouts.py::test_a_github_queue_group_red_only_by_a_timeout_counts_for_nothing" \
   "gatekeeper/tests/test_approvals_timeouts.py::test_a_github_queue_group_with_a_real_failure_beside_a_timeout_still_counts" \
+  "gatekeeper/tests/test_approvals_timeouts.py::test_a_group_is_timeout_only_when_every_failed_required_check_timed_out" \
   "gatekeeper/tests/test_approvals_timeouts.py::test_a_mergify_dequeue_on_a_timeout_queues_the_pr_again_and_evicts_no_one"

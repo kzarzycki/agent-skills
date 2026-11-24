@@ -293,3 +293,21 @@ def test_a_mergify_dequeue_on_a_timeout_queues_the_pr_again_and_evicts_no_one(
     assert [
         body for n, body in mergify.get("raw", []) if n == 7 and body.startswith(approvals.REQUEUE)
     ]
+
+
+@pytest.mark.parametrize(
+    ("conclusions", "only"),
+    [
+        ({"qualify": "TIMED_OUT", "e2e": "SUCCESS"}, True),
+        ({"qualify": "FAILURE", "e2e": "TIMED_OUT"}, False),
+        ({"qualify": "FAILURE", "e2e": "SUCCESS"}, False),
+        ({"qualify": "SUCCESS", "e2e": "SUCCESS"}, False),
+    ],
+)
+def test_a_group_is_timeout_only_when_every_failed_required_check_timed_out(
+    monkeypatch: pytest.MonkeyPatch, conclusions: dict[str, str], only: bool
+) -> None:
+    """A real failure beside a timeout still counts against the PR."""
+    checks = {name: {"conclusion": done} for name, done in conclusions.items()}
+    monkeypatch.setattr(approvals, "commit_checks", lambda ref: checks)
+    assert approvals.timed_out_only("g1", {"qualify", "e2e"}) is only
