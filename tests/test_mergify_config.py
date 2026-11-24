@@ -107,7 +107,7 @@ def test_a_pr_head_runs_only_cheap_checks_and_the_batch_runs_the_tests() -> None
     [cheap] = runs("mise run check-fast")
     assert cheap["if"] == (
         "github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'"
-        " && steps.tested.outputs.skip != 'true'"
+        " && steps.tested.outputs.skip != 'true' && steps.record.outputs.recorded != 'true'"
     )
     tasks = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]
     assert (
