@@ -29,21 +29,11 @@ from engineering.tests.test_consumer_e2e import (
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 PACKAGES = ("gatekeeper", "loop", "github", "chief-of-staff", "omnigent")
-# The copies of loop.py's resolver for a skill another package ships: each script must run alone, so none imports it.
+# The inline copies of the resolver for a skill another package ships: each script that holds one must run alone, so
+# none imports it. engineering-loop's scripts share `_installed.py` instead, one copy per package (SHARED).
 RESOLVER = {
     "gatekeeper": [],
-    "loop": [
-        "skills/engineering-loop/scripts/loop.py",
-        *(f"skills/engineering-loop/scripts/{name}.py" for name in ("approvals", "gatekeeper")),
-        *(
-            f"skills/engineering-loop/scripts/{name}.py"
-            for name in ("board", "labels", "browse", "acceptance", "events", "rulesets")
-        ),
-        *(
-            f"skills/engineering-loop/scripts/{name}.py"
-            for name in ("cloud_verifier", "nightly", "mutate")
-        ),
-    ],
+    "loop": [],
     "github": ["skills/github-tracker/scripts/board.py", "skills/github-tracker/scripts/labels.py"],
     "chief-of-staff": ["skills/chief-of-staff/scripts/cos_page.py"],
     "omnigent": [],
@@ -164,6 +154,7 @@ def resolver(path: Path) -> str:
 
 
 COPIES = [f"{name}/{script}" for name, scripts in RESOLVER.items() for script in scripts]
+SHARED = [f"{name}/skills/engineering-loop/scripts/_installed.py" for name in ("loop", "engineering")]
 
 
 def test_every_copy_of_the_resolver_is_the_same() -> None:
@@ -171,7 +162,11 @@ def test_every_copy_of_the_resolver_is_the_same() -> None:
     assert len(set(copies.values())) == 1, sorted(copies)
 
 
-@pytest.mark.parametrize("copy", COPIES)
+def test_the_shared_resolver_is_one_file_in_both_packages() -> None:
+    assert len({(REPOSITORY / copy).read_text() for copy in SHARED}) == 1
+
+
+@pytest.mark.parametrize("copy", [*COPIES, *SHARED])
 def test_the_resolver_finds_a_skill_in_claude_codes_cache(copy: str, tmp_path: Path) -> None:
     """Claude Code installs each plugin at `<marketplace>/<plugin>/<version>/` in its cache and marks a version an
     update replaced with `.orphaned_at`: the newest version that isn't orphaned wins, and with none the script exits

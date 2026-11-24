@@ -224,8 +224,7 @@ says `engineering-loop's github.md` means the same file). A
 installs the skill it is under the install, such as
 `.agents/skills/engineering-loop/scripts/loop.py`. `<gatekeeper>`, `<github-tracker>` and
 `<browsing>` stand for those skills' folders: the first two come in packages the loop's package
-pulls in, `browsing` in `engineering`, and each sits wherever the host installed it (`.agents/skills/<skill>/` under APM,
-`skills/<skill>/` in its plugin under Claude Code). A Claude cloud VM holds only the checkout, whose vendored copy
+pulls in, `browsing` in `engineering`, and each sits wherever the host installed it (`.agents/skills/<skill>/` or, when APM deploys a plugin whole, `.agents/plugins/<plugin>/skills/<skill>/`; `skills/<skill>/` in its plugin under Claude Code). `scripts/_installed.py` is the one lookup every script here uses to find them: read it to add a layout, since a script's own copy would drift. A Claude cloud VM holds only the checkout, whose vendored copy
 its pin may keep releases old: there, run the pack's scripts from a clone of its latest release tag, resolved in the
 VM at run time (`git ls-remote --tags --refs https://github.com/kzarzycki/agent-skills 'engineering-v*'`, sorted
 as versions, which costs no API quota), or of the tag the brief pins on purpose with a `Pack: engineering-vX.Y.Z` line, never a
