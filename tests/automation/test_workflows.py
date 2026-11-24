@@ -40,7 +40,7 @@ def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
     # a `tests` dispatch (the break-glass proof's re-run alone) runs those tests instead
     assert fast["if"] == (
         "github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'"
-        " && steps.tested.outputs.skip != 'true'"
+        " && steps.tested.outputs.skip != 'true' && steps.record.outputs.recorded != 'true'"
     )
     # one test run per tree (#1821): only a Mergify batch's draft PR runs the tests, against its base, and only it
     # reads the test map; a PR head runs the cheap checks alone

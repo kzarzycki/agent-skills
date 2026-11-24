@@ -785,12 +785,14 @@ CLOUD_RUN_LINE = (
     " and a foreground call there is cut short: start it detached as engineering-loop's verifier.md's recipe says (its"
     " log, pid and exit in files), then wait on it with one wake: one `omnigent_agent.py wait-for --log <log>"
     " --pid <pid> --budget <the run's expected length>` started as a background call your harness tracks"
-    " (Claude Code: Bash `run_in_background`, which keeps running across turns and wakes you when it"
-    " exits), never a short `wait-for`, `until grep` or `sleep` loop, since each return re-reads your"
-    " whole context. Before the run has ended and its result is posted, end a turn only on that tracked"
-    " wait, naming its task id. The lead waits on the completion signal you post (the PR comment or a"
-    " status file), not on your turn, so a `STILL WORKING` that names only your own detached run is not"
-    " a valid ending."
+    " (Claude Code: Bash `run_in_background`), never a short `wait-for`, `until grep` or `sleep` loop,"
+    " since each return re-reads your whole context. Before the run has ended and its result is posted,"
+    " end a turn only on that tracked wait, naming its task id. A turn the run wakes never reaches the"
+    " host (it sees a cloud turn only once it sends the next message), so the host checks in every 5"
+    " minutes while you wait: answer each check-in with your report once the run has ended, in full"
+    " even if a woken turn already gave it, else end the turn again naming the task id. The lead waits"
+    " on the completion signal you post (the PR comment or a status file), not on your turn, so a"
+    " `STILL WORKING` that names only your own detached run is not a valid ending."
 )
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
@@ -1084,6 +1086,28 @@ CLOUD_NUDGE = (
     f" line `{CLOUD_QUESTION_LINE}` and your question: your files stay in the cloud VM, which the"
     " host never reads."
 )
+# What a cloud child idle on its own background run (``pending_runs``) gets every
+# CLOUD_CHECK_IN_SECONDS: a turn that run wakes never reaches the host (kzarzycki/omnigent#472, the
+# bridge mirrors a missed turn only on the next message), so the check-in is that message (#959).
+# ponytail: a fixed interval, ceiling one extra turn per 5 min of a long run; once the bridge
+# forwards a woken turn, drop the check-in and keep only the no-fail rule.
+CLOUD_CHECK_IN_SECONDS = 300.0
+CLOUD_CHECK_IN = (
+    "Host check-in on your background run {runs}: a turn it wakes never reaches the host. If it has"
+    " ended, give your report now as your brief says, in this reply and in full even if a turn it"
+    " woke already wrote it, since the host never saw that turn (a report already posted as a PR"
+    " comment: reply with its link). If it is still going, end your turn again naming its task id."
+)
+# The line the claude-cloud bridge opens each turn's output with; when the turn's first output is its
+# reply, the two share one message (#959), so the reply's marker is not its first line.
+BRIDGE_LINE = re.compile(r"\s*cloud session: https://claude\.ai/code/session_\S+\s*")
+
+
+def unprefixed(text: str) -> str:
+    """``text`` stripped, without the bridge's opening ``cloud session: <url>`` line."""
+    return text[m.end() :].strip() if (m := BRIDGE_LINE.match(text)) else text.strip()
+
+
 # A lead's cloud report opens with the ending line LEAD_PREAMBLE names.
 CLOUD_LEAD_ENDING = re.compile(r"[\s*_#>-]*(DONE|USER NEEDED|STILL WORKING|PARKED):")
 
@@ -1212,7 +1236,7 @@ def cloud_reply(items: list[dict], verdict: bool = False) -> tuple[str, str] | N
     last = last_message(items)
     if not last or last.get("role") != "assistant":
         return None
-    text = text_of(last).strip()
+    text = unprefixed(text_of(last))
     first, _, rest = text.partition("\n")
     if CLOUD_LEAD_ENDING.match(first):
         return None if verdict and not VERDICT.search(text) else ("report", text + "\n")
@@ -2484,6 +2508,47 @@ def archived_note(og: Omnigent, sid: str, info: dict) -> str:
     return (
         f"session {sid} is archived (title {info.get('title') or '?'!r}, status"
         f" {info.get('status') or '?'}{work}); {where}; `relay --unarchive` resumes it with its history"
+    )
+
+
+# Claude Code's reply to a Bash ``run_in_background`` call, in a cloud session's history (#959)
+BACKGROUND_LAUNCH = re.compile(r"Command running in background with ID: ([A-Za-z0-9_-]+)")
+
+
+def pending_runs(items: list[dict]) -> list[str]:
+    """The task ids of the background runs a cloud session's idle turn waits on: each launched in
+    its last turn (the items after the last user message), or launched earlier and named by its
+    last assistant message. Omnigent's record shows none of a cloud session's tasks
+    (``background_tasks`` stays null), so the history is the only place they show."""
+    start = next(
+        (
+            n
+            for n in range(len(items) - 1, -1, -1)
+            if items[n].get("type") == "message" and items[n].get("role") == "user"
+        ),
+        -1,
+    )
+    said = last_said(items)
+    runs: list[str] = []
+    for n, item in enumerate(items):
+        if item.get("type") != "function_call_output":
+            continue
+        for run in BACKGROUND_LAUNCH.findall(str(item.get("output") or "")):
+            if run not in runs and (n > start or re.search(rf"\b{re.escape(run)}\b", said)):
+                runs.append(run)
+    return runs
+
+
+def on_own_run(items: list[dict]) -> bool:
+    """Whether a cloud session's last message is a ``STILL WORKING`` ending that names one of its
+    own ``pending_runs``: no report yet, though ``cloud_reply`` reads a lead's ending line as one,
+    since the run's result is still to come (#959)."""
+    said = last_said(items)
+    first = unprefixed(said).partition("\n")[0]
+    return bool(
+        (m := CLOUD_LEAD_ENDING.match(first))
+        and m[1] == "STILL WORKING"
+        and any(re.search(rf"\b{re.escape(run)}\b", said) for run in pending_runs(items))
     )
 
 
@@ -5167,11 +5232,16 @@ def wait(
     host), one ending on a marked question has it written to ``<report>.question`` and raises
     ``Asked``, and any other gets the nudge; a file already there never counts, as with ``pr``.
     With ``home`` (a cloud ``run --host``, whose caller reads it) that reply is written here instead.
+    An ``acp:claude-cloud`` child (with or without ``pr``) whose idle turn waits on its own
+    background run (``pending_runs``) is working: no nudge and no fail, a ``CLOUD_CHECK_IN`` every
+    ``CLOUD_CHECK_IN_SECONDS`` instead, and a fail only at ``timeout``, naming the runs (#959).
     """
     deadline = time.monotonic() + timeout
     far = False  # on another host (no ``pr``): its files are read through its file API, not here
     cloud = False  # an acp:claude-cloud child without ``pr``: its last message is the report
     idle_since, nudged = None, False
+    told: list[str] = []  # the background runs last named as what an idle cloud child waits on
+    checked = 0.0  # when the idle cloud child was last checked in on (or first seen pending)
     recovered: dict[str, str] = {}  # what each recovery so far did, by its kind
     continued: float | None = None  # when the stalled session was told to continue
     ended: dict[str, float] = {}
@@ -5200,7 +5270,9 @@ def wait(
     while True:
         info = og.info(sid)
         far = not pr and elsewhere(og, info)
-        cloud = not pr and cloud_session(og, info)
+        on_cloud = cloud_session(og, info)
+        cloud = not pr and on_cloud
+        runs: list[str] = []
         if stamp(question) is not None:
             raise Asked(str(question))
         status = str(info.get("status"))
@@ -5270,7 +5342,13 @@ def wait(
             report.write_text(body)
             carry_files(body, report)
             break  # the turn has ended on the comment's URL: nothing rewrites it now
-        if turn_ended and cloud and status != "failed" and (reply := cloud_reply(items, verdict)):
+        if (
+            turn_ended
+            and cloud
+            and status != "failed"
+            and (reply := cloud_reply(items, verdict))
+            and not on_own_run(items)
+        ):
             kind, body = reply
             path = question if kind == "question" else report
             there = far and not home
@@ -5310,7 +5388,24 @@ def wait(
                     )
                 idle_since = None
                 continue
-            if not nudged:  # often a turn ended on a background command: one reminder
+            runs = pending_runs(items) if on_cloud else []
+            if runs:  # working on its own run, not failed: no nudge, no fail until the deadline
+                now = time.monotonic()
+                if runs != told:
+                    print(
+                        f"session {sid} is idle on its own background run {', '.join(runs)}:"
+                        " waiting for its report",
+                        file=sys.stderr,
+                    )
+                    told, checked = runs, checked or now
+                if now - checked >= CLOUD_CHECK_IN_SECONDS and now < deadline:
+                    check = CLOUD_CHECK_IN.format(runs=", ".join(runs))
+                    send_to_confirm(og, sid, check)
+                    # else its old last message reads as this turn's
+                    delivered(og, sid, check, 60.0)
+                    checked, idle_since = time.monotonic(), None
+                    continue
+            elif not nudged:  # often a turn ended on a background command: one reminder
                 nudge = (
                     (HELD_NUDGE if os.environ.get(DENY_LIST) else PR_NUDGE).format(
                         pr=pr, unposted=UNPOSTED
@@ -5328,10 +5423,14 @@ def wait(
                 delivered(og, sid, nudge, 60.0)  # else its old last message ends the wait at once
                 idle_since, nudged = None, True
                 continue
-            raise Fail(f"session {sid} ended ({status}) without {missing}\nlast message: {said}")
+            else:
+                raise Fail(
+                    f"session {sid} ended ({status}) without {missing}\nlast message: {said}"
+                )
         if time.monotonic() >= deadline:
+            on = f", still idle on its own background run {', '.join(runs)}" if runs else ""
             raise Fail(
-                f"session {sid} gave no {'verdict' if verdict else 'report'} after {timeout:.0f}s\nlast message: {said}"
+                f"session {sid} gave no {'verdict' if verdict else 'report'} after {timeout:.0f}s{on}\nlast message: {said}"
             )
         time.sleep(POLL_SECONDS)
     workspace = info.get("workspace")
@@ -7562,8 +7661,9 @@ def offline(og: Omnigent, sid: str, path: Path) -> Fail:
 
 def apply_route(args: argparse.Namespace) -> None:
     """Point a verifier start at its fallback route, the one switch: `gemini` runs agy's Gemini (bypass mode, which
-    agy needs to run unattended) and `claude` a fresh Claude session of another model than the author's, marked
-    same-family. Refused where the route can't run, naming the fix, since a verifier started wrong costs a pass."""
+    agy needs to run unattended) and `claude` a fresh Claude session of any model, the author's own included, marked
+    same-family: a fresh session given only the code and the spec is what makes a verifier independent. Refused where
+    the route can't run, naming the fix, since a verifier started wrong costs a pass."""
     if args.verifier_route == "gemini":
         if not args.host:
             raise Fail(
@@ -7574,16 +7674,6 @@ def apply_route(args: argparse.Namespace) -> None:
         return
     args.agent = "claude"
     args.same_family = True
-    if not args.model or not args.author_model:
-        raise Fail(
-            "--verifier-route claude names its model and the author's: pass --model and"
-            " --author-model, which differ"
-        )
-    if args.model == args.author_model:
-        raise Fail(
-            f"--verifier-route claude would verify {args.author_model}'s diff with the same model:"
-            " pass a different --model"
-        )
 
 
 def reviews(role: str | None) -> bool:
@@ -11348,12 +11438,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             default=None,
             help="which verifier a verifier start runs (default: $OMNIGENT_VERIFIER_ROUTE, else codex): codex is the"
             " agent as named; gemini replaces it with agy's Gemini (experimental, needs --host on a host with agy"
-            " logged in); claude with a fresh Claude session of another model than --author-model (same-family)."
+            " logged in); claude with a fresh Claude session of any --model (same-family)."
             " The two fallbacks are for a Codex refusal",
         )
         p.add_argument(
             "--author-model",
-            help="the model that wrote the diff: --verifier-route claude refuses to verify it with the same one",
+            help="the model that wrote the diff; not checked, since --verifier-route claude verifies with any --model",
         )
         p.add_argument(
             "--same-family",

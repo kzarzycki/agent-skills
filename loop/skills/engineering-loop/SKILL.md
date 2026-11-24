@@ -19,7 +19,7 @@ it (the `gatekeeper` skill's policy.md, Opting out); no step runs for their chan
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
 | **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
 | **Build.** Workers, or the lead when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
-| **Gates.** On each head, the worker runs only the tests the PR affects: loop.md's `Affected tests:` selection (`approvals.py affected-tests`; lint ran in the commit hook), else `mise run test:changed` (worker.md, Gates and push), behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot). No gate of record, CI gate or full suite runs on the PR: without a merge queue the verifier's e2e proof is the last run before the merge; with one, the queue's batch check runs after it, on the merged tree, and only the tests the batch's PRs affect. The nightly runs the full suite (Merge model). | a broken change |
+| **Gates.** On each head, the worker runs only the tests the PR affects: loop.md's `Affected tests:` selection (`approvals.py affected-tests`; lint ran in the commit hook), else `mise run test:changed` (worker.md, Gates and push), behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot). No full suite runs on the PR, and no gate of record but the worker's one `local-ci --record` on its final head, which the PR's CI and the verifier read instead of running that command again (A check runs only if it can fail because of the change, R1): without a merge queue the verifier's e2e proof is the last run before the merge; with one, the queue's batch check runs after it, on the merged tree, and only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change). The nightly runs the full suite (Merge model). | a broken change |
 | **Proof.** The spec's Before merge list on the PR branch before review, then its After merge list (checks that need the merged default branch or a deployed environment) after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
@@ -72,7 +72,7 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 - `mise.toml` tasks: the `check:`, `lint:`, `test:`, `ci:`, `loop:`, `setup:` and `agent:`
   groups, with the old names as aliases;
 - `.pre-commit-config.yaml`: the git hooks, each one a caller of a mise task;
-- `.github/workflows/`: CI, which runs every `check:` part, and the `loop:approvals`
+- `.github/workflows/`: CI, which runs every `check:` part on a head whose tree has no pass record, says which record it found on one that has, and still reports success (SKILL.md, A check runs only if it can fail because of the change, R1), and the `loop:approvals`
   workflow, which turns `mise run loop:approvals merge`'s exit into the `loop:approvals`
   commit status on the head (0 success, 1 failure, 3 pending, since a job's own result can't
   hold a merge as pending), runs again when CI completes, and removes `approved:merge` on a
@@ -85,7 +85,7 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   `merge_queue` rule it is the local merge queue: `land` merges each PR on its satisfied
   verdict within one call, with no gate step. With one it is the GitHub merge queue: `land`
   enqueues each landable PR, and the queue's `merge_group` check, the one test run on the
-  merged tree, runs only the tests the batch's PRs affect and merges it, so nothing heavy runs
+  merged tree, runs only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change) and merges it, so nothing heavy runs
   on a laptop and no test runs twice. It suits a project that has code built around the queue.
   CI then needs `merge_group` triggers and `loop:approvals` success on the queue's commit. A private repo on
   GitHub's free plan has no rulesets, branch protection or auto-merge, so the ruleset can't be
@@ -123,7 +123,7 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 
 Hooks are git hooks, installed by `mise run setup:dev`; no check runs from a coding agent's
 harness hook. A commit runs the `lint:` tasks on the staged files, and a push runs
-`test:changed` and `check:secrets`. The proofs stay off the push, because a push is
+`check:secrets` and the worker's one affected-test run (`approvals.py affected-tests`, else `test:changed`: worker.md, Gates and push), which the worker doesn't run a second time. The proofs stay off the push, because a push is
 reversible and a draft can't merge: `loop:approvals build` runs when the branch is cut, and
 `loop:approvals merge` on ready PRs in CI.
 
@@ -142,7 +142,7 @@ Merge-queue (`merge_group`) runs have no draft.
 A check can fail again on inputs that look identical when it reads something outside them. Each of these breaks the "known" claim, and the rule says what happens instead:
 
 - **The base moved and the check reads it.** The inputs changed, so the check is not known; it runs on what the base's new commits can reach (R6), not in full.
-- **Flaky or time-dependent tests** (timeouts under load, the clock, test order). A pass on identical inputs is still reused, since running it again only adds a chance of a red that says nothing about the change. A red is retried once, failed tests only (Rules for every role, Flaky tests).
+- **Flaky or time-dependent tests** (timeouts under load, the clock, test order). A pass on identical inputs is still reused, since running it again only adds a chance of a red that says nothing about the change. A red is retried once, by R5 (Rules for every role, Flaky tests).
 - **Environment-dependent checks** (a host's load, an installed tool that no pin covers). The project either adds the input to the key (`local_ci_env`, a pin) or lists the check as unkeyed.
 - **Secrets and network** (a live service, a credential that expires or rotates). Their result depends on the outside world, so a check that reads them is unkeyed: it runs every time its step requires it, and its pass is never reused.
 
@@ -156,21 +156,22 @@ Each derived rule follows from the one above.
 - **R2. Scope by what the change touches.** A diff that cannot reach the product (agentic layer, skills, docs, CI config outside the gating job) runs no product suite; it runs the checks of the layer it touches (the `checks` entries of `select`). An unclassified file counts as a build input. Where: worker, PR CI, queue, the verifier's pass on an instructions change.
 - **R3. Affected tests only, selected by what a test executes.** The selector picks tests whose executed files or functions changed, from a per-test map the nightly builds; name matching is the fallback where there is no map. It diffs against the right base (the merge commit's first parent on a PR run). Where: worker, queue, nightly-built map.
 - **R4. A fix round runs only what the round's diff reaches.** A test or proof that passed on the previous head and whose inputs the round didn't change is known. The selection for a fix round diffs against the last head its run passed on, not the PR's base. Where: worker fix rounds, the lead's stale-proof check before a pass, the verifier's later passes (acceptance checks and repros the delta reaches, plus every repro still `NOT FIXED`).
-- **R5. A red run reruns only what failed, and only once the cause is fixed or shown unrelated.** Fixed: the failed tests plus what the fix reaches (R4). Shown unrelated (a test the change can't reach, a known flake with its `Flaky:` issue, an infrastructure fault): the failed tests alone, once. Never the whole set again on the same head, and never before the cause is known. Where: CI job reruns, the merge queue's red entry, `land`, the verifier, the flaky retry.
-- **R6. The merge queue runs only the cross-change check.** A test that only the PR's diff reaches passed on the PR's head with the same inputs; a test only the base's new commits reach is the base's, not this PR's. The queue runs the tests that the PR's diff and the rest of the merge (the base's commits since the PR's tested base, the other PRs in the group) both reach. Without a per-test map it falls back to the batch's affected tests. Where: GitHub's and Mergify's queue batch check. The local queue runs no test today and stays so.
+- **R5. A red run reruns once, and only after it is read.** A fix since the red: the failed tests plus what the fix reaches (R4), where the changes since the red reselect every failed test. No change since the red (a flake candidate, an infrastructure fault), or a change that misses a failed test: the red run's own selection once, in the same order and environment, since a test that fails only after others passes alone and would look like a flake. A failed test that passes there is a flake: open or update its `Flaky:` issue and count the run green. Red again: the change caused it, and the PR leaves the queue. Never the whole suite again on the same head, never the failed tests alone on an unchanged tree, and never a rerun before the red is read. `approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]` takes the red run's failed test ids, its head and its base, recomputes the selection from them and runs it, saying in one line which case and why. The command is the red head's own `Affected tests:` line, never the base's, since a head behind its base may lack what the base's line names. A rerun that ran no test (the command can't start, the red head has no `Affected tests:` line, or the line names a `mise` task the head lacks) prints `rerun did not run` and exits 75, never "red again", since it says nothing about the change. Neither the rerun nor a fix adds a sleep, a wait loop or a retry to the test itself, since a retry hidden in the test turns the one-rerun exception into a permanent mask: a flaky test is fixed under [#1482](https://github.com/kzarzycki/agent-skills/issues/1482), or skipped at its third occurrence (Flaky tests). Where: CI job reruns, the merge queue's red entry, `land`, the nightly's red, the verifier, the flaky retry.
+- **R6. The merge queue runs only the cross-change check.** A test that only the PR's diff reaches passed on the PR's head with the same inputs; a test only the base's new commits reach is the base's, not this PR's. The queue runs the `select.unkeyed` checks and the tests that the PR's diff and the rest of the merge (the base's commits since the PR's tested base, the other PRs in the entry) both reach. The floor: a PR in the entry with no record for its tree (R1) of loop.md's `Affected tests:` command, a run of its selected tests (the worker's `affected-tests --record` on its final head), adds its own affected tests (a record of the gate alone proves no test, and without that line every PR's own tests run), so an empty set passes only when every PR has a record. The refusal: a queue run that would run nothing on a PR with no record is refused, the queue merges only on a check its test step sets once it ran its selection, so a path that skips that step merges nothing and says why, and the local queue's `land`, which no queue run tests, refuses a head with no record of that same `Affected tests:` run (`gate-record <head> -- <the narrowed command>`), naming the `affected-tests --record` that makes one; a project with no narrowed run (no `Affected tests:` line, `Gate: full`, `gate_steps`) reads its gate's record (`local-ci --record`) there, since its gate is the run that tests the PR. Without a per-test map it falls back to the entry's affected tests, saying so and why. Batch size, wait time or one PR per entry are the project's, in gatekeeper.md's `land` block (`batch_size`, `batch_wait_seconds`), from which the pack renders the queue's config (`approvals.py queue-config`). Where: GitHub's and Mergify's queue batch check, which runs the commands `approvals.py queue-select [<base>]` prints for the batch checked out at HEAD, one per line, each to pass: the unkeyed checks, then the floor, so a project whose selection is a command rather than a per-test map runs R6 as shipped; it exits 1 with the reason under the refusal above. The local queue runs no test today and stays so.
 - **R7. After the merge, only a tree nobody tested runs.** The push run on main skips a commit whose tree the queue already tested; the nightly runs only when main moved since its last green, and then runs the full suite, which stays the guard against what the selector misses. Where: step 9's read of main's push run, the nightly.
 
 **Merge model.** Each role runs its tests under the rule above (A check runs only if it can fail because of the change):
 
-- The worker runs only the tests the PR affects, on each head it pushes, never the whole suite and never a gate
-  of record, and writes the e2e tests that prove the change (worker.md, Gates and push).
+- The worker runs only the tests the PR affects, on each head it pushes, never the whole suite, and no gate of
+  record but its one `local-ci --record` on its final head, and writes the e2e tests that prove the change
+  (worker.md, Gates and push).
 - The verifier reviews as always, and proves the change with those e2e tests, running no full suite (verifier.md,
   Run the checks yourself).
-- Without a merge queue, `land` merges the PR on the verifier's satisfied record, with no gate step: no gate of
-  record, no CI check on the head, no full-suite run and no rerun at land.
-- With a merge queue (GitHub's, or Mergify's under `land.queue: mergify`), the PR head still gets no CI check. The
-  queue's batch check is the one run on the merged tree, and it runs only the tests the batch's PRs affect
-  (`affected-tests --base <the base tip the batch merges onto>`). Nothing else reruns at land.
+- Without a merge queue, `land` merges the PR on the verifier's satisfied record and its head's pass record (R6), with no gate step: no
+  full-suite run and no rerun at land. The head's CI reads the worker's record for its tree and runs its checks only without one.
+- With a merge queue (GitHub's, or Mergify's under `land.queue: mergify`), the PR head's CI still runs only where
+  the head's tree has no record. The queue's batch check is the one run on the merged tree, and it runs only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change;
+  the fallback, `affected-tests --base <the base tip the batch merges onto>`). Nothing else reruns at land.
 - The nightly runs the full suite (Nightly). Main may stay broken until it does, since a break shows within a day
   and costs less than a full run on every PR. A red nightly becomes an issue, a bisect and a fix or revert PR
   through the loop.
@@ -181,7 +182,7 @@ Narrowed mode is loop.md's `Affected tests: <command>` line without the opt-out 
 
 The risk of this model is a main that breaks between nightlies: a test the selector misses (a data file, config, a script run as a subprocess), or two PRs each green alone that break together where no queue tests them together. Its guard is the nightly's full suite: on red, `nightly.py red` opens one issue naming the merges since the last green (Nightly), from which a lead bisects and lands a fix or a revert through the loop. Without the `Affected tests:` line, the worker runs `mise run test:changed`, and `approvals.py check build` says in one line that the line is missing (not under `Gate: full`, which chose it).
 
-`approvals.py local-ci --record` records a gate pass by tree, for the cases a project still asks one for (a configured `head_proof`, a `host` step of `gate_steps`, the deprecated `check queue`: Where heavy steps run); the loop runs it on a PR head only in those cases, never as a gate, under `ci: false` too. It runs the merge check, gatekeeper.md's `gate`
+`approvals.py local-ci --record` records a gate pass by tree, for the cases a project still asks one for (a configured `head_proof`, a `host` step of `gate_steps`, the deprecated `check queue`: Where heavy steps run); the loop runs it on a PR head only in those cases and for the one run a worker makes on its head (worker.md, Report), never as a gate, under `ci: false` too; a ready PR's CI reads that record by the head's tree, not the test merge commit's (the project's CI looks it up with `gate-record <head>`). It runs the merge check, gatekeeper.md's `gate`
 (default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and pushes it
 to the base repo as the branch `loop-gate/<tree>-<key>`, named by its tree and command, so `local-ci <pr>` at landing
 posts that pass rather than running the check again (with no usable pass it refuses, naming the head, tree, record branch and what was wrong with a record found; `--run` runs the check on this host): in this clone for any commit with the same tree and gate
@@ -579,8 +580,8 @@ organisation-owned repo can have. `land` judges each candidate as above, then po
 status on its head (`Queued for Mergify at <sha>`) and adds `loop:queued`, and exits: no lock, no
 gate, nothing merged, and every call REST. The repo's `.mergify.yml` takes a PR in only with that
 label and `land` green on its head, and no CI check on the head; it tests each batch as a draft PR
-on top of the base, with a batch check that runs only the tests the batch's PRs affect, retries a red
-one once and squash-merges on green. A push leaves the new head without `land`, so it no longer qualifies; a PR Mergify
+on top of the base, with a batch check that runs only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change), retries a red
+one once (the whole check: the same gap against R5 as the GitHub queue's, below) and squash-merges on green. A push leaves the new head without `land`, so it no longer qualifies; a PR Mergify
 dequeues gets `loop:dequeued`, and the next `land` turns it back to draft with `land` `error` on its
 head and an `Evicted from the merge queue` comment. A bare `land` writes the `Landed` comment
 (`Gate: Mergify merge queue`) on each merged PR still carrying `loop:queued`. The local merge
@@ -588,8 +589,12 @@ queue above, with no test step, stays the path for a project with no queue.
 
 The GitHub merge queue takes no lock and runs no local gate: `land` enqueues each candidate,
 oldest first, pinned to the head its proofs judged, and GitHub orders, groups and merges them,
-its `merge_group` check running only the tests the batch's PRs affect. An entry the queue removes for a red check gets a comment with that check's log tail and
-goes in once more; a second red on the same head turns it back to draft. A red main counts
+its `merge_group` check running only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change). An entry the queue removes for a red check gets a comment with that check's log tail and
+goes in once more; a second red on the same head turns it back to draft. That second run repeats the
+whole check, which R5 rules out (A check runs only if it can fail because of the change): a red reruns by
+`approvals.py rerun-tests`, once, after its log is read. `land`'s once-more enqueue and Mergify's retry of a red batch
+don't call it yet and rerun the whole check, until [kzarzycki/agent-skills#1400](https://github.com/kzarzycki/agent-skills/issues/1400)
+(no once-more rerun in `land`) and [kzarzycki/agent-skills#1794](https://github.com/kzarzycki/agent-skills/issues/1794) (CI reruns by that verb) land. A red main counts
 nothing and evicts nobody, nor does a red group built on a main commit where a required check
 failed, a conflict gets the local queue's conflict comment while GitHub still reports one (and
 waits while GitHub works it out), and a lost `merge_group`
@@ -686,7 +691,7 @@ A brief that names a host worktree for a test run says where the code is, not wh
 
 Where the orchestration backend is native (no Omnigent), a heavy run's cloud route is orchestrating-agents' `scripts/claude_cloud.py start <task file>`, which pushes the branch and starts the cloud session from any agent's Bash, since a bare `claude --cloud` needs a terminal a subagent lacks. The lead or subagent then waits on the session's results through the branch's PR (`gh pr view`, `gh pr checks`). Where the project's cloud environment is missing, `start` prints one line naming `claude-cloud:setup` and exits 2: the step then runs locally, and the report says so in one line that names `claude-cloud:setup`, since the colleague who has not run it is the one who can fix it.
 
-With a cloud worker, a host makes no gate pass, since the worker's VM already holds the checkout and build and the host's cores run the sessions. No head gets a gate or a CI check before it merges (Merge model), `ci: false` included, so start no cloud session per head to make a record. A head gets a record only in three cases: a configured `head_proof`, by `local-ci --record --head-proof`, since plain `--record` publishes no proof status and `land` stops at the missing proof before it reads CI; the deprecated `check queue`, which needs a reusable pass or an admitted head proof whether or not CI runs (`queueable()`); and a `host` step of `gate_steps`, which a cloud worker never runs. For the first two, when `local-ci <pr>` on a host finds no pass for the head, have the worker run the command above on that head and push its record, then run `local-ci <pr>` again; never `--run` it, or `--record` it, on the host. A `host` step has its own follow-up, since the worker's retry can't make its pass: `local-ci --record` in the VM leaves it unrun and exits 0 with no pass on the whole gate, so pass the step on a host on that head. A `head_proof` in a project with a host step needs both: `local-ci --record --head-proof` returns with the host step left, before it publishes the proof, and `land` stops at the missing proof before it builds a batch, so neither recovers it. Get the host pass on the PR head first, then publish the proof by running `local-ci --record --head-proof` on that head from a host that can run the steps, since only then does it see no step left. One step stays on the host because no cloud pass can cover it: a `host` step of `gate_steps`. A lead that reaches a host step over SSH runs it through orchestrating-agents' `omnigent_agent.py ssh <host> --why <purpose> -- <command>` and posts the card it prints when the host's SSH check asks the owner to approve (its Omnigent backend, Host steps over SSH).
+With a cloud worker, a host makes no gate pass, since the worker's VM already holds the checkout and build and the host's cores run the sessions. No head gets a gate or a CI check before it merges (Merge model), `ci: false` included, so start no cloud session per head just to make a record. The worker's own session makes one on its final head, the run CI then reads instead of running its checks (worker.md, Report). Beyond that run, a head gets a record only in three cases: a configured `head_proof`, by `local-ci --record --head-proof`, since plain `--record` publishes no proof status and `land` stops at the missing proof before it reads CI; the deprecated `check queue`, which needs a reusable pass or an admitted head proof whether or not CI runs (`queueable()`); and a `host` step of `gate_steps`, which a cloud worker never runs. For the first two, when `local-ci <pr>` on a host finds no pass for the head, have the worker run the command above on that head and push its record, then run `local-ci <pr>` again; never `--run` it, or `--record` it, on the host. A `host` step has its own follow-up, since the worker's retry can't make its pass: `local-ci --record` in the VM leaves it unrun and exits 0 with no pass on the whole gate, so pass the step on a host on that head. A `head_proof` in a project with a host step needs both: `local-ci --record --head-proof` returns with the host step left, before it publishes the proof, and `land` stops at the missing proof before it builds a batch, so neither recovers it. Get the host pass on the PR head first, then publish the proof by running `local-ci --record --head-proof` on that head from a host that can run the steps, since only then does it see no step left. One step stays on the host because no cloud pass can cover it: a `host` step of `gate_steps`. A lead that reaches a host step over SSH runs it through orchestrating-agents' `omnigent_agent.py ssh <host> --why <purpose> -- <command>` and posts the card it prints when the host's SSH check asks the owner to approve (its Omnigent backend, Host steps over SSH).
 
 ## Cloud worker
 
@@ -713,7 +718,7 @@ or the owner's private network.
   triage, the fetch and merge (or fast-forward) of each worker's reported branch into the
   PR branch, the instance, the verdict's post, thread
   resolution, `land` and acceptance. The worker's affected-test run (worker.md, Gates and push; on a fix round too)
-  runs in the worker's VM, on its checkout and build; `Placement:` never moves it, since that line places the verifier only; a `local-ci --record` pass it makes where a record is needed (Where heavy steps run: a `head_proof`, `check queue`, a `host` step) is reused by the host's
+  runs in the worker's VM, on its checkout and build; `Placement:` never moves it, since that line places the verifier only; a `local-ci --record` pass it makes (its one run on its final head, worker.md, Report, and where Where heavy steps run needs one: a `head_proof`, `check queue`, a `host` step) is reused by the host's
   `local-ci <pr>`, `check merge` and `land`, while `affected-tests` records nothing. The worker codes and compiles, runs `mise run <task>`,
   its affected tests (what the VM can run: compile, unit tests, headless web tests on its
   Chromium), before each push, and pushes to the `claude/…` branch its session was given,
@@ -744,7 +749,7 @@ or the owner's private network.
   else as a fresh `run --pr`. Nothing in
   the cloud calls the host, through MCP or otherwise, since such a tool can drop mid-run and
   stall the work, and nothing new watches the PR.
-- **Wait on the signal, not the turn.** A cloud worker's gate (only where a record is needed: Where heavy steps run; no other head gets one) and verifier post their own
+- **Wait on the signal, not the turn.** A cloud worker's gate (its one run on its final head, and where Where heavy steps run needs a record) and verifier post their own
   end on the PR, so wait on that rather than on the worker's turn, which may end before its run
   does: orchestrating-agents' `omnigent_agent.py wait-for --pr <n> --until gate` settles when
   the PR's current head has a pass (the record branch `local-ci --record` pushes, or a green
@@ -926,9 +931,9 @@ or the owner's private network.
   retry is a full-context turn.
 - **Flaky tests.** The rule's exception for flaky tests (A check runs only if it can fail because of the change). A project's test task retries a failed test once, with its runner's own
   retry option, and prints each test that passed only on the retry; the run is then green.
-  Without one, rerun only the failed tests once, never the whole run, whose minutes each
-  flake would otherwise cost again; all green, the run is green, and the report gives each
-  command with its exit code. Each test that passed on the retry has one open
+  Without one, rerun once by R5 (A check runs only if it can fail because of the change): `approvals.py rerun-tests`
+  gives the selection, never the whole run again nor the failed tests alone; all green, the run is green, and the report gives each
+  command with its exit code. A runner's own retry of a failed test right after it fails, in the same process, stays. Each test that passed on the retry has one open
   `kind:bug` issue titled `Flaky: <test id>`: search the open issues for the id before
   filing, and comment each occurrence on it (head SHA, PR, run, failure line), so two leads find
   the same issue and its comments count the occurrences. An occurrence is its head SHA plus
@@ -936,7 +941,8 @@ or the owner's private network.
   the issue already has is that occurrence again, not a new one, since two leads reading one
   run would otherwise count it twice toward the third. The third occurrence gets a PR
   from main that skips the test, citing the issue, which stays open
-  for the fix. A test red on both tries is a real failure: run it on main before blaming
+  for the fix ([#1482](https://github.com/kzarzycki/agent-skills/issues/1482)). Neither the rerun nor that fix adds a
+  sleep, a wait loop or a retry to the test itself (R5). A test red on both tries is a real failure: run it on main before blaming
   the PR.
 - **Known-red tests.** A test red for a reason the PR's diff doesn't explain (it fails the same
   on main, or in a file the change doesn't touch) is skipped, not waived and not listed as an
@@ -1003,7 +1009,7 @@ or the owner's private network.
   in the dismissal. A human review follows the same pattern. The PR is marked ready once no core finding (blocker or major)
   is open, or at the cap only majors under the lead's `Cap:` line (The cap), and squashed on merge. The PR keeps a public trail of what was found, fixed and
   iterated, and the project's CI skips draft PRs, so it doesn't run on half-done work:
-  the worker's `Affected tests:` selection (`approvals.py affected-tests`, else `mise run test:changed`) on each pushed head is the check while a PR is a draft, and no gate of record runs on any head (Merge model).
+  the worker's `Affected tests:` selection (`approvals.py affected-tests`, else `mise run test:changed`) on each pushed head is the check while a PR is a draft, and no gate of record runs on a head but the worker's one on its final head (Merge model).
 - **Remove, don't append.** Remove a thing as if it never existed. Edit and compress
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds

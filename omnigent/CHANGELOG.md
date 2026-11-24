@@ -5,6 +5,27 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.11 - 2026-11-24
+
+- `start --verifier-route claude` accepts any `--model`, the author's own included, and no longer needs `--author-model`; the session is still marked same-family. A fresh session given only the code and the spec is what makes a verifier independent, so the same-model refusal only pushed verifiers onto models nobody chose (#2297).
+
+## 0.1.10 - 2026-11-24
+
+- `wait`, and with it `run` and `claude-cloud-run`, reads a claude-cloud child idle on its own background run as working: it finds the run in the session's history (Omnigent's record shows no cloud task), sends a check-in every 5 minutes instead of a nudge, and fails only at `--timeout`, naming the run. A `STILL WORKING` ending naming that run is no report, and a reply sharing the bridge's opening `cloud session:` line is still read (#959).
+
+## 0.1.9 - 2026-11-24
+
+- The supervisor reads a registered PR wait through ETag reads (the pull, its check runs and its combined status), so a poll of an unchanged PR answers 304 and spends no quota, and a restart's backfill reads each PR once however many waits name it. Part of #2068.
+- `omnigent_agent.py supervise` wakes the notified session only for turn ends it must act on: a `DONE` whose result the lead sent to that session (a send carrying the result's first line) or whose session it already archived is told to the leads waiting on it but queues no `act` line, a turn end showing only progress or a named wait stays recorded, and the "no progress (quota)" line is said once until GitHub's quota resets (#2090).
+- `wait-until` refuses a command that polls one PR through `gh` (exit 2) and names `wait-for --pr <n>`, whose ETag reads spend no quota while the PR doesn't move (#2115).
+- `supervise` reads a turn's ending as its first line that opens with `DONE`, `USER NEEDED`, `PARKED` or `STILL WORKING` (`USER NEEDED` anywhere still wins), so a manager's status block that opens `STILL WORKING` and lists a `DONE:` section no longer routes as a delivered `done`; a new `Waits: own supervisor` footer (`wait-on own`) says a manager's own supervisor wakes it, and routes `record` (#2135).
+- `omnigent-agents start` on `claude-cloud` now sends no permission mode unless `--permission-mode` names one, so update the Omnigent server to one with agent default modes first; the client-side "start refused … bypassPermissions" message is gone (#2148).
+- `supervise` raises one `deadline` per declared wait: a wait that names sessions is keyed by its text and the sessions it names, so a reply that restates it starts no new chain, a changed wait does, and a wait still stuck after 4x `DEADLINE_SECONDS` fires once more. No `deadline` while every session the wait names ended its turn `PARKED`; its news line still tells the waiter (#2150).
+- `supervise` routes a `USER NEEDED` turn end with no card open (`unasked`) to its manager as `act`, never to the owner and without the small model: the manager asks on its own card a question that spans projects, or sends the lead to its card. The lead preamble tells a lead to ask on its own card (#2170).
+- `supervise` says a lead's question card still unanswered 4 hours after it first saw it (`CARD_REMIND_SECONDS`) to the lead's manager once, as a `card-waiting` event routed `act`, so a manager the owner told to act in their name can answer it; a lead the owner drives directly records it (#2170).
+- The `loop.delegate: all` lead brief no longer says never to run `approve spec`: once the owner approves on the lead's own card, the lead records it with `--by owner`, as lead.md step 1 says (#2170).
+- The chief of staff's console adopts a live top-level lead that no registry holds: it writes the lead a `follow` line and posts one `adopted` event, so a lead started without a registry no longer stalls unseen. `start --top-level --role lead` with no registry now exits 2 before any session exists (#2181).
+
 ## 0.1.8 - 2026-11-23
 
 - The supervisor no longer reports a PR the merge queue holds as stalled. A `check stalled` line is checked against the PR's live state before it goes out, and dropped when the PR merged, closed, moved to a new head or is held by the queue since the sweep read it, which may be 15 minutes earlier. A PR carrying `loop:queued` whose queue check on its head is still running is waiting, not a `pr-stall`, however long the queue takes (#2100).

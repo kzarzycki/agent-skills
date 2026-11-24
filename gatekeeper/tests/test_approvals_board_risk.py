@@ -137,6 +137,24 @@ def test_the_verifiers_risk_line_sets_the_field(
     assert "board" not in capsys.readouterr().out
 
 
+def test_a_low_pr_the_board_refuses_names_the_verifiers_line_not_the_label(
+    gating: tuple[dict[str, Any], list[tuple[int, str]]],
+    board_risks: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refused(*_args: Any, **_kwargs: Any) -> None:
+        raise approvals.subprocess.CalledProcessError(1, "gh", stderr="HTTP 502\n")
+
+    monkeypatch.setattr(approvals.board(), "set_field", refused)
+    state, _ = gating
+    state["pull"] = judged_pr(judging("low — a doc fix"))
+    approvals.main(["check", "merge", "7"])
+    out = capsys.readouterr().out
+    assert "field to `Low` (HTTP 502); the verifier's `Risk:` line alone shows the risk" in out
+    assert "risk:high" not in out
+
+
 def test_without_a_verifier_pass_on_the_head_a_low_pr_leaves_the_field(
     board_risks: dict[str, Any],
 ) -> None:
