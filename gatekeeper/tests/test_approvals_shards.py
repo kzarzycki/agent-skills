@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -341,3 +342,32 @@ def test_a_shard_that_moves_head_records_nothing(
     argv = ["shards", "--suite", "suite", "--command", f"{sys.executable} {mover}"]
     assert approvals.main([*argv, "--record", clone["head"], "--shard", "1"]) == 1
     assert "HEAD moved" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("limit", "parts"), [("10m", 2), ("15m", 1), ("20m", 1)])
+def test_a_selection_whose_estimate_is_over_timeouts_run_is_split(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    limit: str,
+    parts: int,
+) -> None:
+    """Three of nine items, 300 s each, is 900 s and narrow by count: over a 10 m limit it splits, at 15 m and under
+    20 m it does not."""
+    policy_of(monkeypatch, f"select:\n  shards: 2\ntimeouts:\n  run: {limit}\n")
+    durations = json.dumps({item: 300 for item in SUITE})
+    run(tmp_path, selection=SUITE[:3], durations=durations)
+    out = capsys.readouterr().out
+    if parts == 1:
+        assert out == "t1\nt2\nt3\n"
+    else:
+        assert len(printed_from(out)) == parts
+
+
+def test_an_estimate_needs_recorded_durations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With nothing recorded there is no estimate, so a narrow selection stays one, however short the limit."""
+    policy_of(monkeypatch, "select:\n  shards: 2\ntimeouts:\n  run: 1s\n")
+    run(tmp_path, selection=SUITE[:3])
+    assert capsys.readouterr().out == "t1\nt2\nt3\n"

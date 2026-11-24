@@ -9981,20 +9981,26 @@ def shard_selections(
     count: int,
     durations: dict[str, float] | None = None,
     whole: bool = False,
+    limit: float | None = None,
 ) -> list[list[str]]:
     """`selection` (items of `suite`, one test target each) as `count` disjoint shards whose union is the selection,
     balanced by `durations` (seconds per item, from the last full run): each item, longest first, goes to the
     shard with the least time so far; an item with no recorded duration counts as the mean of the recorded ones (all
     equal, so an even split by count, with none recorded), so it still lands in exactly one shard. Only a whole-suite
-    selection splits: `whole` (a build input changed, or the nightly) or one over half of `suite`; a narrow selection,
-    `count` 1 or less, or an empty one is returned as the one selection, unchanged. `count` is capped at the number of
+    selection splits: `whole` (a build input changed, or the nightly), one over half of `suite`, or one whose estimate (the
+    sum of its items' seconds, an unrecorded item at the mean; none with no durations) is over `limit` (`timeouts.run`,
+    in seconds). A narrow selection (none of those), `count` 1 or less, or an empty one is returned as the one selection, unchanged. `count` is capped at the number of
     items, so no shard is empty. Each shard keeps the selection's order."""
     chosen = list(dict.fromkeys(selection))
-    if count <= 1 or not chosen or not (whole or len(chosen) * 2 > len(set(suite))):
+    if count <= 1 or not chosen:
         return [selection]
-    count = min(count, len(chosen))
     known = {item: durations[item] for item in chosen if durations and item in durations}
     fallback = sum(known.values()) / len(known) if known else 1.0
+    estimate = sum(known.get(item, fallback) for item in chosen) if known else None
+    over = limit is not None and estimate is not None and estimate > limit
+    if not (whole or over or len(chosen) * 2 > len(set(suite))):
+        return [selection]
+    count = min(count, len(chosen))
     load, shards = [0.0] * count, [[] for _ in range(count)]
     order = sorted(range(len(chosen)), key=lambda i: (-known.get(chosen[i], fallback), i))
     for at in order:
@@ -10047,7 +10053,14 @@ def sharded(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
     wanted = shard_count()
-    shards = shard_selections(selection, suite, wanted, durations, args.whole or not args.selection)
+    shards = shard_selections(
+        selection,
+        suite,
+        wanted,
+        durations,
+        args.whole or not args.selection,
+        timeouts(project()[1])["run"],
+    )
     if 1 < len(shards) < wanted:
         print(
             f"shards: {wanted} shards asked, but {len(shards)} items: {len(shards)} shards",
