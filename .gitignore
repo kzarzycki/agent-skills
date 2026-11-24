@@ -27,3 +27,6 @@ apm_modules/
 artifacts/engineering-deltas/
 .test-map/
 *.orig
+
+# the JUnit report test-batch writes (loop.md, Test report:), which an untracked file would make a checkout with changes
+.qualify/
