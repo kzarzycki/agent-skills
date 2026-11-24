@@ -61,6 +61,7 @@ sys.path.insert(0, str(installed("gatekeeper")))
 from gatekeeper import (  # the label names, defined once
     BUG,
     EPIC,
+    HOLD,
     MERGE_LABEL,
     NEEDS_OWNER,
     POINTS,
@@ -94,6 +95,10 @@ LOOP_LABELS = {
     QUEUED: (
         "fbca04",
         "land put it in GitHub's merge queue; off once its Landed comment is written or it merged elsewhere",
+    ),
+    HOLD: (
+        "b60205",
+        "Held by the loop: Mergify and land leave it alone; the hold comment says who and why",
     ),
     EPIC: ("8250df", "An outcome the owner tracks; its work items are sub-issues"),
     BUG: ("d73a4a", "Something a user or the pipeline hits is wrong"),
