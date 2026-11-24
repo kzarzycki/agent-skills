@@ -53,6 +53,7 @@ import re
 import statistics
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
@@ -64,10 +65,16 @@ Gh = Callable[[str], Any]
 
 
 def real_gh(path: str) -> Any:
-    out = subprocess.run(["gh", "api", path], capture_output=True, text=True, check=False)
-    if out.returncode != 0:
-        raise RuntimeError(f"gh api {path}: {out.stderr.strip() or out.stdout.strip()}")
-    return json.loads(out.stdout)
+    """`gh api <path>` as JSON; a server error (HTTP 5xx) is retried twice, anything else raises at once."""
+    for attempt in range(3):
+        out = subprocess.run(["gh", "api", path], capture_output=True, text=True, check=False)
+        if out.returncode == 0:
+            return json.loads(out.stdout)
+        message = out.stderr.strip() or out.stdout.strip()
+        if attempt == 2 or "HTTP 5" not in message:
+            raise RuntimeError(f"gh api {path}: {message}")
+        time.sleep(2 * (attempt + 1))
+    raise AssertionError("unreachable")
 
 
 def parse_time(text: str) -> dt.datetime:

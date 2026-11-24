@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -264,3 +265,29 @@ def test_a_failed_refs_listing_is_an_error_not_an_empty_record_set(capsys) -> No
     recorded = {k: v for k, v in RECORDED.items() if "matching-refs" not in k}
     assert loop_metrics.main([REPO, "--since", "2026-11-17"], FakeGh(recorded)) == 1
     assert "matching-refs" in capsys.readouterr().err
+
+
+def test_a_server_error_is_retried_and_a_client_error_is_not(monkeypatch) -> None:
+    answers = [
+        (1, "", "gh: Server Error (HTTP 502)"),
+        (1, "", "gh: Server Error (HTTP 502)"),
+        (0, '{"ok": 1}', ""),
+    ]
+    calls: list[str] = []
+
+    def fake_run(args, **_kw):
+        calls.append(args[-1])
+        code, out, err = answers[len(calls) - 1]
+        return subprocess.CompletedProcess(args, code, out, err)
+
+    monkeypatch.setattr(loop_metrics.subprocess, "run", fake_run)
+    monkeypatch.setattr(loop_metrics.time, "sleep", lambda _s: None)
+    assert loop_metrics.real_gh("x") == {"ok": 1}
+    assert len(calls) == 3
+    calls.clear()
+    answers[:] = [(1, "", "gh: Not Found (HTTP 404)")]
+    try:
+        loop_metrics.real_gh("y")
+    except RuntimeError as error:
+        assert "404" in str(error)
+    assert calls == ["y"]
