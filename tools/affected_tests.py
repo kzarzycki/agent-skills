@@ -177,6 +177,18 @@ def node_files(ids: set[str]) -> set[str]:
     return out
 
 
+PACKAGE_CODE = re.compile(r"^([^/]+)/(?:[^/]+/)*(?:scripts|src)/[^/]+\.py$")
+
+
+def package_tests(path: str, tests: list[Path]) -> list[str]:
+    """Every test file of the package whose `scripts/` or `src/` holds `path`, else none: the fallback when no test
+    is found for a changed script, since a change nothing names or ran is not one nothing depends on (#2157)."""
+    m = PACKAGE_CODE.match(path)
+    if not m or f"{m[1]}/tests" not in ALL:
+        return []
+    return [str(t) for t in tests if t.as_posix().startswith(f"{m[1]}/tests/")]
+
+
 def say(line: str) -> None:
     """One line on stderr naming the rule that picked a target, so a slow run's log shows why it ran what it did."""
     print(f"affected-tests: {line}", file=sys.stderr)
@@ -231,13 +243,24 @@ def targets(files: list[str] | None, base: str | None = None) -> list[str]:
                 ran |= by_run
                 # the name match stays the floor where the map is blind: a test the map has not seen (new or
                 # changed on main since it) and a test the nightly may skip (it has no context)
-                picked.update(
+                floor = {
                     str(t)
                     for t, text in named.items()
                     if str(t) in moved or (skips is None and SKIPS.search(text))
-                )
+                }
+                picked.update(floor)
+                skipped_here = set()
                 if skips is not None:  # the tests of these files the map's run skipped, by node id
-                    ran |= {n for n in skips if n.split("::")[0] in {str(t) for t in named}}
+                    skipped_here = {n for n in skips if n.split("::")[0] in {str(t) for t in named}}
+                    ran |= skipped_here
+                if (
+                    not by_run
+                    and not floor
+                    and not skipped_here
+                    and (pkg := package_tests(f, tests))
+                ):
+                    say(f"{f}: no test ran it: the package's {len(pkg)} test files")
+                    picked.update(pkg)
                 continue
             if mapped and path.suffix == ".py":
                 why = (
@@ -249,6 +272,9 @@ def targets(files: list[str] | None, base: str | None = None) -> list[str]:
             else:
                 say(f"{f}: {len(named)} test files name it")
             picked.update(str(t) for t in named)
+            if not named and (pkg := package_tests(f, tests)):
+                say(f"{f}: no test names it: the package's {len(pkg)} test files")
+                picked.update(pkg)
     picked.update(n for n in node_files(ran) if n.split("::")[0] not in picked)
     return sorted(picked)
 

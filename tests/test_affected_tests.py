@@ -324,3 +324,55 @@ def test_the_cheap_checks_and_a_changed_e2e_file_are_picked_as_they_are(
     picked = a.targets(["tool.py", "tests/e2e/test_live.py"])
     named = [f"tests/test_{n:02}.py" for n in range(10)]
     assert picked == sorted([*named, "tests/test_skill_x.py", "tests/e2e/test_live.py"])
+
+
+SCRIPT_UNDER_PACKAGE = "omnigent/skills/omnigent-agents/scripts/omnigent_agent.py"
+WAKE_TEST = "omnigent/tests/test_omnigent_agent_wake.py"
+
+
+def test_a_package_script_nothing_names_selects_the_packages_whole_test_dir(
+    monkeypatch, tmp_path
+) -> None:
+    """#2157: a changed script under a package's `scripts/` that no test names or ran falls back to that package's tests."""
+    monkeypatch.chdir(tmp_path)
+    for name in (
+        "omnigent/skills/s/scripts/lonely.py",
+        "omnigent/tests/test_a.py",
+        "omnigent/tests/test_b.py",
+    ):
+        Path(name).parent.mkdir(parents=True, exist_ok=True)
+        Path(name).write_text("")
+    monkeypatch.setattr(a, "ALL", ["omnigent/tests"])
+    assert a.targets(["omnigent/skills/s/scripts/lonely.py"]) == sorted(
+        [*a.CHEAP, "omnigent/tests/test_a.py", "omnigent/tests/test_b.py"]
+    )
+
+
+def test_a_script_outside_scripts_and_src_gets_no_package_fallback(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    for name in ("omnigent/skills/s/lonely.py", "omnigent/tests/test_a.py"):
+        Path(name).parent.mkdir(parents=True, exist_ok=True)
+        Path(name).write_text("")
+    monkeypatch.setattr(a, "ALL", ["omnigent/tests"])
+    assert a.targets(["omnigent/skills/s/lonely.py"]) == a.CHEAP
+
+
+def test_a_change_to_omnigent_agent_selects_the_wake_test() -> None:
+    assert WAKE_TEST in a.targets([SCRIPT_UNDER_PACKAGE])
+
+
+def test_a_mapped_package_script_whose_changed_lines_no_test_ran_selects_the_packages_tests(
+    monkeypatch, tmp_path
+) -> None:
+    """The map measures the script but no test ran the changed line: the package's tests run, wake test included."""
+    monkeypatch.setattr(a, "MAP", tmp_path / ".map")
+    a.MAP.mkdir()
+    (a.MAP / "sha").write_text(git("rev-parse", "HEAD"))
+    (a.MAP / "skipped").write_text("")  # a map with a skip list: no test is picked by name beside it
+    data = CoverageData(basename=str(a.MAP / "coverage"))
+    data.set_context("omnigent/tests/test_other.py::test_x|run")
+    data.add_lines({SCRIPT_UNDER_PACKAGE: [1]})
+    data.write()
+    monkeypatch.setattr(a, "load_map", lambda: (git("rev-parse", "HEAD"), data))
+    monkeypatch.setattr(a, "executed_by", lambda *args: set())
+    assert WAKE_TEST in a.targets([SCRIPT_UNDER_PACKAGE])
