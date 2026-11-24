@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.10 - 2026-11-24
+
+- `wait`, and with it `run` and `claude-cloud-run`, reads a claude-cloud child idle on its own background run as working: it finds the run in the session's history (Omnigent's record shows no cloud task), sends a check-in every 5 minutes instead of a nudge, and fails only at `--timeout`, naming the run. A `STILL WORKING` ending naming that run is no report, and a reply sharing the bridge's opening `cloud session:` line is still read (#959).
+
 ## 0.1.9 - 2026-11-24
 
 - The supervisor reads a registered PR wait through ETag reads (the pull, its check runs and its combined status), so a poll of an unchanged PR answers 304 and spends no quota, and a restart's backfill reads each PR once however many waits name it. Part of #2068.
