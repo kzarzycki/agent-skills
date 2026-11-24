@@ -34,6 +34,7 @@ from test_approvals_github_queue import (  # noqa: F401
     run,
 )
 from test_approvals_mergify_queue import land_statuses, mergify  # noqa: F401
+from test_approvals_status_refused import handed, refused  # noqa: F401
 
 TEMPLATE = Path(approvals.__file__).resolve().parent.parent / "mergify.yml"
 
@@ -630,3 +631,56 @@ def test_a_dequeue_whose_timeout_text_is_older_than_the_first_record_is_evicted(
     code, lines = mergify["land"]("7")
     assert code == 1, lines
     assert not any("timed out twice" in each for each in lines)
+
+
+def test_an_old_timed_out_check_after_a_ready_again_is_no_new_first_timeout(
+    mergify: dict[str, Any],
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    assert mergify["land"]("7")[0] == 0
+    for each in mergify["checks"][head]:
+        each["completed_at"] = "2026-09-01T00:00:00Z"
+    mark_ready_again(mergify, "2999-01-01T00:00:00Z")
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    code, lines = mergify["land"]("7")
+    assert code == 1, lines
+    assert len(requeues(mergify)) == 1
+
+
+def test_a_lifted_stop_in_a_cloud_session_hands_over_again_and_a_red_dequeue_evicts(
+    refused: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """The `land` status write is refused: the hand-over record is what the land-status workflow answers. The stop ends
+    that hand-over as an eviction does, so the re-land after a ready-again posts a new record, and the head is then
+    queued here, so Mergify's next dequeue is read, not skipped."""
+    head = refused["opened"](7)
+    assert refused["land"]("7")[0] == 0
+
+    def workflow_posts(at: str) -> None:
+        hub[head] = [
+            {
+                "context": "land",
+                "state": "success",
+                "description": f"Queued for Mergify at {head}",
+                "created_at": at,
+            }
+        ]
+
+    workflow_posts("2026-10-01T09:30:00Z")
+    dequeued_with(refused, head, queue_check("failure", summary="The checks have timed out"))
+    assert refused["land"]("7")[0] == 0
+    refused["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    assert refused["land"]("7")[0] == approvals.WAITING
+    stamp_stop_later(refused)
+    mark_ready_again(refused, "2026-10-02T14:00:00Z")
+    code, lines = refused["land"]("7")
+    assert code == 0, lines
+    assert len(handed(refused, 7)) == 2
+    workflow_posts("2026-10-03T00:00:00Z")
+    dequeued_with(refused, head, queue_check("failure", title="Merge queue", summary="red"))
+    refused["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    code, lines = refused["land"]("7")
+    assert code == 1, lines
+    assert any("evicted" in each for each in lines), lines

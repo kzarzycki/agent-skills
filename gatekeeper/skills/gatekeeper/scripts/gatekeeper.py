@@ -8398,13 +8398,9 @@ def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
         if DEQUEUED in labels:
             found = mergify_timeout(head) if ours else None
             first = timeout_notes(pull, head, TIMED_OUT_ONCE, budget)
-            if (
-                found
-                and first
-                and found[1]
-                and found[1] < max(n.get("createdAt") or "" for n in first)
-            ):
-                # the check run's timeout text is older than the first timeout's record: this dequeue is another's
+            if found and found[1] and found[1] < timeout_recorded_at(pull, head):
+                # the check run's timeout text is older than the head's newest timeout record, under whatever budget
+                # and before whatever ready: this dequeue is another's
                 found = None
             if found:
                 timeout = found[0]
@@ -8492,7 +8488,7 @@ def handed_by_record(pull: dict[str, Any]) -> None:
             continue
         if first == [HANDED]:
             standing = True
-        elif first == [QUEUE_EVICTED]:
+        elif first in ([QUEUE_EVICTED], [TIMED_OUT_TWICE]):
             standing = False
     if standing:
         print(
@@ -8624,6 +8620,21 @@ def timeout_stop_lifted_at(pull: dict[str, Any], head: str, budget: int) -> str:
             if machine(note["body"]).strip().splitlines()[:1] == [TIMED_OUT_TWICE]
             and fields(note["body"]).get("head", "").lower() == head.lower()
             and fields(note["body"]).get("run") != said_span(budget)
+        ),
+        default="",
+    )
+
+
+def timeout_recorded_at(pull: dict[str, Any], head: str) -> str:
+    """When land last recorded a timeout at `head` (a `Timed out` or `Timed out twice` comment, whatever its budget and
+    ready), else "": a timed-out queue check that completed before it is a dequeue's older one."""
+    return max(
+        (
+            note.get("createdAt") or ""
+            for title in (TIMED_OUT_ONCE, TIMED_OUT_TWICE)
+            for note in notes(pull)
+            if machine(note["body"]).strip().splitlines()[:1] == [title]
+            and fields(note["body"]).get("head", "").lower() == head.lower()
         ),
         default="",
     )
