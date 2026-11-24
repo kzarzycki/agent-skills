@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.11 - 2026-11-24
+
+- gatekeeper: a migration row's spec is credited to its approved parent story, whatever `spec.auto` says. A closing issue nothing else covers needs no approval of its own when it is a GitHub sub-issue whose body opens with `Part of #<parent> (row <name>)` naming that parent, the parent's spec carries `approved:spec` and a current record (checked as a direct link's, so a stale parent approval covers nothing), its author can write to the repo, and neither `risk:high` on the issue or the PR, the risk rule nor `risk.critical_paths` holds. `check` prints `#141: covered by #140's approved spec (row "pack pin")` for a credited row and names the missing piece for one it doesn't. The `sub-issue` kind and the row rule share one parent check (`parent_gaps`), and no forge call is added (#2266).
+
 ## 0.1.10 - 2026-11-24
 
 - gatekeeper: `land.batch_size` sets the Mergify queue's PRs per batch (1: one PR per entry), and `approvals.py queue-config` renders `.mergify.yml` from the pack's mergify.yml with it and `batch_wait_seconds`. The template merges a batch only on `check-success = queue-run`, a CI job that passes once the batch's test step ran its selection, so a path that skips that step merges nothing (#2178). On the local queue, `land` refuses a head with no record of loop.md's `Affected tests:` run against its merge base (the record `affected-tests --record` writes and the batch floor reads, one key builder for both), naming that record and `affected-tests --record`; without an `Affected tests:` line, or under `Gate: full` or `gate_steps`, it reads the gate's record and names `local-ci --record`. A break-glass PR is not held (#2178). `affected-tests --record` records a passing narrowed run as `local-ci --record` records one, pushed as its `loop-gate/` branch, and `gate-record <head> -- <narrowed command>` reads it; a failing run, or one that can't tell, records nothing (#2178).
