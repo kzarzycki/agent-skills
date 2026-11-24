@@ -23,6 +23,7 @@
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
+    uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
     uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
@@ -947,6 +948,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         merge_queue=bool,
         merge_commit_heads=list,
         batch_wait_seconds=int,
+        batch_size=int,
         wait=str,
         queue=Choice(("mergify", "github")),
         together=("signed_squash_to", "allowed_signers"),
@@ -958,6 +960,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "merge_queue",
             "merge_commit_heads",
             "batch_wait_seconds",
+            "batch_size",
             "wait",
             "queue",
         ),
@@ -1158,6 +1161,8 @@ def settings(loop: str | None) -> dict[str, Any]:
                 raise Refused(
                     f"{file}'s `land.batch_wait_seconds` must be a whole number, 0 or more"
                 )
+            if data[name].get("batch_size", 1) < 1:
+                raise Refused(f"{file}'s `land.batch_size` must be a whole number, 1 or more")
             if "wait" in data[name] and name == "land" and span(str(data[name]["wait"])) is None:
                 raise Refused(
                     f"{file}'s `land.wait` is {data[name]['wait']!r}: write it as `2h` or `4h30m`"
@@ -10516,6 +10521,47 @@ def finished(head: str, code: int, command: str | None = None) -> None:
     os.replace(partial, exit_file)
 
 
+# the Mergify config the pack ships, which queue_config renders with the policy's `land` batching keys
+MERGIFY_TEMPLATE = Path(__file__).resolve().parents[1] / "mergify.yml"
+
+
+def duration(seconds: int) -> str:
+    """`seconds` as a Mergify duration: whole hours or minutes where it divides, else seconds."""
+    size, unit = next(
+        (s, u) for s, u in ((3600, "hour"), (60, "minute"), (1, "second")) if seconds % s == 0
+    )
+    count = seconds // size
+    return f"{count} {unit}{'' if count == 1 else 's'}"
+
+
+def queue_config(policy: str | None = None) -> str:
+    """`queue-config`: the Mergify config a repo under `land.queue: mergify` commits as `.mergify.yml`, the pack's
+    template (mergify.yml) with gatekeeper.md's `land` batching: `batch_size` (1 is one PR per entry) as the queue
+    rule's `batch_size`, `batch_wait_seconds` as its `batch_max_wait_time`; a key the policy leaves out keeps the
+    template's value. The policy is the checkout's own (gatekeeper.md, else loop.md's `## Settings`), not the base's,
+    since the file it renders is the checkout's too."""
+    if policy is None:
+        root = toplevel()
+        files = [root / path for path in (LOOP, POLICY)]
+        policy = chosen(*(read(path) if path.exists() else None for path in files))
+    land = settings(policy).get("land") or {}
+    text = MERGIFY_TEMPLATE.read_text()
+    for key, value in (
+        ("batch_size", land.get("batch_size")),
+        (
+            "batch_max_wait_time",
+            None if "batch_wait_seconds" not in land else duration(land["batch_wait_seconds"]),
+        ),
+    ):
+        if value is not None:
+            text, found = re.subn(
+                rf"^(\s+{key}:) .*$", rf"\g<1> {value}", text, count=1, flags=re.MULTILINE
+            )
+            if not found:
+                raise Refused(f"{MERGIFY_TEMPLATE} has no `{key}` line to render")
+    return text
+
+
 def gate_record(head: str, words: list[str]) -> int:
     """`gate-record <head> [-- <command>]`: whether origin holds a pass record (record_ref) of the gate, each step of
     `gate_steps` (gate_plan), or of `<command>`, on `head`'s tree, so the verifier reads it instead of running the
@@ -11555,6 +11601,7 @@ def main(argv: list[str]) -> int:
     graduating.add_argument("--pr", type=int, required=True)
     # --base: the commit to select against (a PR's base SHA, a push's previous tip), over the merge base
     commands.add_parser("affected-tests").add_argument("--base", metavar="REV")
+    commands.add_parser("queue-config")
     recording_read = commands.add_parser("gate-record")
     recording_read.add_argument("head")
     recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
@@ -11589,6 +11636,11 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return report_json(args.report) if args.json else report_check(args.report)
     if args.command == "affected-tests":
         return affected_tests(args.base)
+    if (
+        args.command == "queue-config"
+    ):  # the checkout's own policy, so a PR's change to `land` renders with it
+        print(queue_config(), end="")
+        return 0
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
         if args.plan and args.words:
             raise Refused(
