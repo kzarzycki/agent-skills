@@ -30,7 +30,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
-2. **Gates and push.** A check runs only if it can fail because of the change (SKILL.md, A check runs only if it can fail because of the change): run nothing whose result a passed run on the same inputs already gives. Iterate on the narrowest check that covers the change: an incremental build of the touched
+2. **Gates and push.** A check runs only if it can fail because of the change (SKILL.md, A check runs only if it can fail because of the change): run nothing whose result a passed run on the same inputs already gives, and the push hook's run is the run you report: don't run the affected tests a second time beside it, since the hook runs the same selection on the same head. Iterate on the narrowest check that covers the change: an incremental build of the touched
    target, then the tests of the module you changed, since a whole-suite run can take twenty minutes to show a compile
    error a build shows in one. The run you report is the tests the PR affects, on every head you push, a fix
    round's too, and never the whole suite: where loop.md has an `Affected tests:` line, `uv run
@@ -88,8 +88,9 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    That SHA is the whole provenance: a checksum manifest or digest exchange adds nothing a
    commit does not already pin. A fix that changes code a proof exercises reruns that proof
    before the report, which lists each proof log with the SHA it names.
-   Run the acceptance command on the head (SKILL.md, Acceptance checks) into a log stamped
-   that way and hand it over as the spec's proof. Just before the report, run `git status
+   Run the acceptance command on the head (SKILL.md, Acceptance checks) once, through `local-ci --record` (or
+   `--head-proof` for the PR's acceptance classes), into a log stamped
+   that way and hand it over as the spec's proof: its record, keyed by tree and command, is what the verifier and CI read, so neither runs it again on this tree. Just before the report, run `git status
    --porcelain` and commit or remove what it lists, and the report carries the line `git status
    --porcelain: empty`, since the verifier may review in that tree and an uncommitted check
    proves nothing on the head.

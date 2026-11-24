@@ -72,7 +72,7 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 - `mise.toml` tasks: the `check:`, `lint:`, `test:`, `ci:`, `loop:`, `setup:` and `agent:`
   groups, with the old names as aliases;
 - `.pre-commit-config.yaml`: the git hooks, each one a caller of a mise task;
-- `.github/workflows/`: CI, which runs every `check:` part, and the `loop:approvals`
+- `.github/workflows/`: CI, which runs every `check:` part on a head whose tree has no pass record, says which record it found on one that has, and still reports success (SKILL.md, A check runs only if it can fail because of the change, R1), and the `loop:approvals`
   workflow, which turns `mise run loop:approvals merge`'s exit into the `loop:approvals`
   commit status on the head (0 success, 1 failure, 3 pending, since a job's own result can't
   hold a merge as pending), runs again when CI completes, and removes `approved:merge` on a
@@ -123,7 +123,7 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 
 Hooks are git hooks, installed by `mise run setup:dev`; no check runs from a coding agent's
 harness hook. A commit runs the `lint:` tasks on the staged files, and a push runs
-`test:changed` and `check:secrets`. The proofs stay off the push, because a push is
+`check:secrets` and the worker's one affected-test run (`approvals.py affected-tests`, else `test:changed`: worker.md, Gates and push), which the worker doesn't run a second time. The proofs stay off the push, because a push is
 reversible and a draft can't merge: `loop:approvals build` runs when the branch is cut, and
 `loop:approvals merge` on ready PRs in CI.
 
@@ -181,7 +181,7 @@ Narrowed mode is loop.md's `Affected tests: <command>` line without the opt-out 
 
 The risk of this model is a main that breaks between nightlies: a test the selector misses (a data file, config, a script run as a subprocess), or two PRs each green alone that break together where no queue tests them together. Its guard is the nightly's full suite: on red, `nightly.py red` opens one issue naming the merges since the last green (Nightly), from which a lead bisects and lands a fix or a revert through the loop. Without the `Affected tests:` line, the worker runs `mise run test:changed`, and `approvals.py check build` says in one line that the line is missing (not under `Gate: full`, which chose it).
 
-`approvals.py local-ci --record` records a gate pass by tree, for the cases a project still asks one for (a configured `head_proof`, a `host` step of `gate_steps`, the deprecated `check queue`: Where heavy steps run); the loop runs it on a PR head only in those cases, never as a gate, under `ci: false` too. It runs the merge check, gatekeeper.md's `gate`
+`approvals.py local-ci --record` records a gate pass by tree, for the cases a project still asks one for (a configured `head_proof`, a `host` step of `gate_steps`, the deprecated `check queue`: Where heavy steps run); the loop runs it on a PR head only in those cases and for the one run a worker makes on its head (worker.md, Report), never as a gate, under `ci: false` too; a ready PR's CI reads that record by the head's tree, not the test merge commit's (`tools/pr_head_record.py` in this repo). It runs the merge check, gatekeeper.md's `gate`
 (default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and pushes it
 to the base repo as the branch `loop-gate/<tree>-<key>`, named by its tree and command, so `local-ci <pr>` at landing
 posts that pass rather than running the check again (with no usable pass it refuses, naming the head, tree, record branch and what was wrong with a record found; `--run` runs the check on this host): in this clone for any commit with the same tree and gate
