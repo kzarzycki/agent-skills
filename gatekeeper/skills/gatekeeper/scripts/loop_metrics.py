@@ -24,6 +24,10 @@ One line per repo for the 7 days from `--since`, with the 7 days before it besid
 - no-record: merged PRs whose head (the tree of its last commit) had no R1 record, a ref
   `loop-gate/<tree>-<key>`, so nothing but the unkeyed CI checks or a break-glass land verified them. One listing
   of the record refs (a page per 100), never a call per PR; the tree comes from the timeline already read.
+  CAVEAT (open, #2143's owner decides): `land` deletes a landed tree's record ref (`drop_records`), so for a
+  merge made through `land` the ref is gone by the time this runs, and the count reads the refs still standing
+  (a merge of the last day, a head landed another way), not what verified the week. No other source outlives the
+  merge today: `land` asks no R1 record of a head unless loop.md sets `head_proof`.
 - reverts: merged PRs titled `Revert`, counted from the merged-PR search already made.
 - red-nights: red-nightly issues (`Nightly red since ...`, one search) created in the week whose body names the
   number of a merged PR (`#<n>`).
@@ -32,8 +36,12 @@ A repo with no Actions workflows is skipped with a line that says so.
 
 Quota, per repo: one search for the two weeks' merged PRs (a page per 100), one search for the queue-batch
 PRs, one for the red-nightly issues, one refs listing, one `timeline` call per merged PR (the only source of its ready events, heads and merge commit; never
-per job), the runs listing once in bulk (a page per 100 runs, indexed here by `head_sha`), and one jobs
-listing per attributed run (`filter=all`, so every attempt). Needs `gh`, nothing else.
+per job), the runs listing in bulk, one day at a time (`created=<d>..<d>`, a page per 100 runs, indexed here by
+`head_sha`; from the oldest merged PR's creation, at most 14 days before the two weeks, to the day after the
+week's end), and one jobs listing per attributed run (`filter=all`, so every attempt). The runs listing serves
+1000 results at most for a query and then answers empty pages without an error: a day with more runs than were
+paged exits 1 naming the day, never a figure that is too low. A failed API call exits 1 naming the call.
+Needs `gh`, nothing else.
 """
 
 from __future__ import annotations
@@ -49,7 +57,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 BATCH_PREFIX = "mergify/merge-queue/"
-BATCH_PRS = re.compile(r"#(\d+)")
+PR_NUMBER = re.compile(r"#(\d+)")
+RUNS_CAP = 1000  # what the runs listing serves for one query, however many pages are asked
+LOOKBACK_DAYS = 14  # how far before the two weeks a PR's earlier heads are searched for runs
 Gh = Callable[[str], Any]
 
 
@@ -79,10 +89,27 @@ def pages(gh: Gh, path: str, key: str | None = None) -> list[Any]:
 
 
 def has_actions(gh: Gh, repo: str) -> bool:
-    try:
-        return gh(f"repos/{repo}/actions/workflows?per_page=1").get("total_count", 0) > 0
-    except RuntimeError:
-        return False
+    """Whether the repo has Actions workflows. An API error raises: only a real empty answer is "no Actions"."""
+    return gh(f"repos/{repo}/actions/workflows?per_page=1").get("total_count", 0) > 0
+
+
+def runs_of_day(gh: Gh, repo: str, day: dt.date) -> list[dict[str, Any]]:
+    """Every run created on `day`. The listing serves at most RUNS_CAP results for a query and then answers empty
+    pages without an error, so a day whose `total_count` passes what was paged raises, naming the day."""
+    runs: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        body = gh(f"repos/{repo}/actions/runs?created={day}..{day}&per_page=100&page={page}")
+        runs.extend(body["workflow_runs"])
+        if len(body["workflow_runs"]) < 100:
+            break
+        page += 1
+    if body.get("total_count", len(runs)) > len(runs):
+        raise RuntimeError(
+            f"runs created on {day}: {body['total_count']} exist but the listing serves {len(runs)} "
+            f"(its cap is {RUNS_CAP}), so the runner-minutes would be too low; narrow the window"
+        )
+    return runs
 
 
 def merged_prs(gh: Gh, repo: str, first: dt.date, last: dt.date) -> dict[int, dict[str, Any]]:
@@ -105,7 +132,7 @@ def batches(gh: Gh, repo: str, first: dt.date) -> dict[int, list[int]]:
     found = pages(gh, "search/issues?q=" + query.replace(" ", "+"), "items")
     return {
         item["number"]: sorted(
-            {int(n) for n in BATCH_PRS.findall(item.get("body") or "")} - {item["number"]}
+            {int(n) for n in PR_NUMBER.findall(item.get("body") or "")} - {item["number"]}
         )
         for item in found
     }
@@ -143,7 +170,7 @@ def red_nights(gh: Gh, repo: str, first: dt.date) -> list[dict[str, Any]]:
     return [
         {
             "created": parse_time(i["created_at"]),
-            "names": {int(n) for n in BATCH_PRS.findall(i.get("body") or "")},
+            "names": {int(n) for n in PR_NUMBER.findall(i.get("body") or "")},
         }
         for i in found
     ]
@@ -170,11 +197,18 @@ def collect(gh: Gh, repo: str, since: dt.date) -> dict[str, Any]:
     for number, timeline in timelines.items():
         for sha in timeline["shas"]:
             owner_of_sha.setdefault(sha, set()).add(number)
-    since_created = min((p["created"] for p in prs.values()), default=None)
     runs: list[dict[str, Any]] = []
-    if since_created is not None:
-        floor = (since_created - dt.timedelta(days=1)).strftime("%Y-%m-%d")
-        runs = pages(gh, f"repos/{repo}/actions/runs?created=%3E%3D{floor}", "workflow_runs")
+    if prs:
+        # a day at a time, from the oldest merged PR's creation (at most LOOKBACK_DAYS before the two weeks) to the
+        # day after the week's end, when its merge commit's push run still lands
+        floor = max(
+            min(p["created"] for p in prs.values()).date() - dt.timedelta(days=1),
+            first - dt.timedelta(days=LOOKBACK_DAYS),
+        )
+        day = floor
+        while day <= last + dt.timedelta(days=1):
+            runs += runs_of_day(gh, repo, day)
+            day += dt.timedelta(days=1)
     minutes = {n: 0.0 for n in prs}
     batched = False
     for run in runs:
@@ -237,7 +271,7 @@ def line(gh: Gh, repo: str, since: dt.date) -> str:
     data = collect(gh, repo, since)
     week = [r for r in data["rows"] if since <= r["merged"].date() < since + dt.timedelta(days=7)]
     before = [r for r in data["rows"] if since - dt.timedelta(days=7) <= r["merged"].date() < since]
-    start = since - dt.timedelta(days=7)
+    prior = since - dt.timedelta(days=7)
 
     def nights(first: dt.date, end: dt.date) -> int:
         return sum(
@@ -247,10 +281,9 @@ def line(gh: Gh, repo: str, since: dt.date) -> str:
         )
 
     one = since + dt.timedelta(days=6)
-    prior = since - dt.timedelta(days=7)
     text = f"{repo} {since}..{one}: " + summary(week, nights(since, since + dt.timedelta(days=7)))
     text += f" | week before {prior}..{since - dt.timedelta(days=1)}: " + summary(
-        before, nights(start, since)
+        before, nights(prior, since)
     )
     if data["batched"]:
         text += " (batch minutes split evenly across each queue batch's PRs)"
