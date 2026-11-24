@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -207,7 +211,50 @@ def test_qualify_rerun_attempt_calls_rerun_tests_never_the_failed_tests_alone() 
         st for st in steps if st.get("with", {}).get("path") == ".qualify/failed-tests.json"
     )
     assert upload["with"]["overwrite"] == "true"
-    # V3: a rerun passes only when it ran every test the red attempt failed
-    assert "failed_tests.py .qualify/junit.xml .qualify/rerun.json" in rerun["run"]
-    assert 'red = json.load(open(".qualify/red/failed-tests.json"))["failed"]' in rerun["run"]
-    assert "if test not in ran" in rerun["run"] and "raise SystemExit" in rerun["run"]
+
+
+def _rerun_check(tmp_path: Path, red: list[str], ran: list[tuple[str, str]] | None):
+    """Run the `rerun` step's lines after `rerun-tests` (the missing-id check) under `bash -e`, as Actions does, in a
+    scratch checkout holding the red attempt's failed ids and, when `ran` is given, a JUnit file of the tests that ran."""
+    step = next(st for st in _steps(_workflow("engineering-ci.yml")) if st.get("id") == "rerun")
+    lines = step["run"].splitlines()
+    after = lines[next(n for n, line in enumerate(lines) if "rerun-tests" in line) + 1 :]
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "failed_tests.py").write_text(
+        (ROOT / "tools" / "failed_tests.py").read_text()
+    )
+    (tmp_path / ".qualify" / "red").mkdir(parents=True)
+    (tmp_path / ".qualify" / "red" / "failed-tests.json").write_text(json.dumps({"failed": red}))
+    if ran is not None:
+        cases = "".join(f'<testcase classname="{c}" name="{n}"/>' for c, n in ran)
+        (tmp_path / ".qualify" / "junit.xml").write_text(
+            f"<testsuites><testsuite>{cases}</testsuite></testsuites>"
+        )
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "python3").symlink_to(
+        sys.executable
+    )  # the repo's python, as mise puts it on PATH in CI
+    return subprocess.run(
+        ["bash", "-e", "-c", "\n".join(after)],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_a_rerun_passes_only_when_it_ran_every_test_the_red_attempt_failed(tmp_path: Path) -> None:
+    (tmp_path / "ok").mkdir()
+    ran = [("a.b", "t1"), ("a.b", "t[x y]"), ("a.b", "t3")]
+    ok = _rerun_check(tmp_path / "ok", ["a.b::t1", "a.b::t[x y]"], ran)
+    assert ok.returncode == 0, ok.stderr
+    (tmp_path / "missing").mkdir()
+    gone = _rerun_check(tmp_path / "missing", ["a.b::t1", "a.b::t2"], [("a.b", "t1")])
+    assert gone.returncode != 0 and "a.b::t2" in gone.stderr
+    (tmp_path / "none").mkdir()
+    assert (
+        _rerun_check(tmp_path / "none", ["a.b::t1"], None).returncode != 0
+    )  # no JUnit: nothing ran
+    (tmp_path / "empty").mkdir()
+    assert _rerun_check(tmp_path / "empty", ["a.b::t1"], []).returncode != 0
