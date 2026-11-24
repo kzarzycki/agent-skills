@@ -49,3 +49,13 @@ def test_no_line_reruns_the_failed_tests_alone():
     skill = (SKILL / "SKILL.md").read_text()
     fallback = skill[skill.index("- **Flaky tests.**") :][:900]
     assert "rerun once by R5" in fallback and "approvals.py rerun-tests" in fallback
+
+
+def test_no_rerun_or_fix_hides_a_retry_in_the_test():
+    """#2177: a sleep, wait loop or retry inside the test would turn the one-rerun exception into a permanent mask."""
+    skill = (SKILL / "SKILL.md").read_text()
+    rule = next(line for line in skill.splitlines() if line.startswith("- **R5."))
+    flaky = skill[skill.index("- **Flaky tests.**") :][:2000]
+    for text in (rule, flaky):
+        assert "adds a sleep, a wait loop or a retry to the test itself" in text.replace("\n  ", " ")
+        assert "kzarzycki/agent-skills/issues/1482" in text
