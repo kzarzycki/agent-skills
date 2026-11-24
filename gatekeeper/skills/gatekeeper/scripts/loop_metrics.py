@@ -21,10 +21,17 @@ One line per repo for the 7 days from `--since`, with the 7 days before it besid
   the batch's PRs that merged in the two weeks, and a line that holds such minutes says
   `batch minutes split evenly`.
 
+- no-record: merged PRs whose head (the tree of its last commit) had no R1 record, a ref
+  `loop-gate/<tree>-<key>`, so nothing but the unkeyed CI checks or a break-glass land verified them. One listing
+  of the record refs (a page per 100), never a call per PR; the tree comes from the timeline already read.
+- reverts: merged PRs titled `Revert`, counted from the merged-PR search already made.
+- red-nights: red-nightly issues (`Nightly red since ...`, one search) created in the week whose body names the
+  number of a merged PR (`#<n>`).
+
 A repo with no Actions workflows is skipped with a line that says so.
 
 Quota, per repo: one search for the two weeks' merged PRs (a page per 100), one search for the queue-batch
-PRs, one `timeline` call per merged PR (the only source of its ready events, heads and merge commit; never
+PRs, one for the red-nightly issues, one refs listing, one `timeline` call per merged PR (the only source of its ready events, heads and merge commit; never
 per job), the runs listing once in bulk (a page per 100 runs, indexed here by `head_sha`), and one jobs
 listing per attributed run (`filter=all`, so every attempt). Needs `gh`, nothing else.
 """
@@ -83,6 +90,7 @@ def merged_prs(gh: Gh, repo: str, first: dt.date, last: dt.date) -> dict[int, di
     found = pages(gh, "search/issues?q=" + query.replace(" ", "+"), "items")
     return {
         item["number"]: {
+            "title": item.get("title") or "",
             "created": parse_time(item["created_at"]),
             "merged": parse_time(item["pull_request"]["merged_at"]),
         }
@@ -106,6 +114,7 @@ def batches(gh: Gh, repo: str, first: dt.date) -> dict[int, list[int]]:
 def read_timeline(gh: Gh, repo: str, number: int) -> dict[str, Any]:
     ready = None
     shas: set[str] = set()
+    tree = None
     for event in pages(gh, f"repos/{repo}/issues/{number}/timeline"):
         kind = event.get("event")
         if kind == "ready_for_review":
@@ -113,9 +122,32 @@ def read_timeline(gh: Gh, repo: str, number: int) -> dict[str, Any]:
             ready = when if ready is None or when > ready else ready
         elif kind == "committed" and event.get("sha"):
             shas.add(event["sha"])
+            tree = (event.get("tree") or {}).get("sha") or tree
         elif kind in ("head_ref_force_pushed", "merged") and event.get("commit_id"):
             shas.add(event["commit_id"])
-    return {"ready": ready, "shas": shas}
+    return {"ready": ready, "shas": shas, "tree": tree}
+
+
+def record_trees(gh: Gh, repo: str) -> set[str]:
+    """The trees that have an R1 record: refs `loop-gate/<tree>-<key>`, listed once."""
+    prefix = "refs/heads/loop-gate/"
+    try:
+        refs = pages(gh, f"repos/{repo}/git/matching-refs/heads/loop-gate/")
+    except RuntimeError:
+        return set()
+    return {r["ref"][len(prefix) :].split("-", 1)[0] for r in refs if r["ref"].startswith(prefix)}
+
+
+def red_nights(gh: Gh, repo: str, first: dt.date) -> list[dict[str, Any]]:
+    query = f'repo:{repo} is:issue "Nightly red since" in:title created:>={first}'
+    found = pages(gh, "search/issues?q=" + query.replace(" ", "+"), "items")
+    return [
+        {
+            "created": parse_time(i["created_at"]),
+            "names": {int(n) for n in BATCH_PRS.findall(i.get("body") or "")},
+        }
+        for i in found
+    ]
 
 
 def job_minutes(gh: Gh, repo: str, run_id: int) -> float:
@@ -163,6 +195,8 @@ def collect(gh: Gh, repo: str, since: dt.date) -> dict[str, Any]:
         for number in set(share):
             minutes[number] += spent / len(set(share))
             batched = True
+    trees = record_trees(gh, repo)
+    nights = red_nights(gh, repo, since - dt.timedelta(days=7))
     rows = []
     for number, pr in prs.items():
         ready = timelines[number]["ready"] or pr["created"]
@@ -172,9 +206,11 @@ def collect(gh: Gh, repo: str, since: dt.date) -> dict[str, Any]:
                 "merged": pr["merged"],
                 "seconds": (pr["merged"] - ready).total_seconds(),
                 "minutes": minutes[number],
+                "revert": pr["title"].lstrip().lower().startswith("revert"),
+                "no_record": timelines[number]["tree"] not in trees,
             }
         )
-    return {"rows": rows, "batched": batched}
+    return {"rows": rows, "batched": batched, "nights": nights, "merged_numbers": set(prs)}
 
 
 def duration(seconds: float) -> str:
@@ -184,12 +220,16 @@ def duration(seconds: float) -> str:
     return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
 
 
-def summary(rows: list[dict[str, Any]]) -> str:
+def summary(rows: list[dict[str, Any]], red_nights: int) -> str:
+    quality = f"red-nights {red_nights}"
     if not rows:
-        return "merged 0"
+        return f"merged 0, no-record 0, reverts 0, {quality}"
     median = duration(statistics.median(r["seconds"] for r in rows))
     per_pr = sum(r["minutes"] for r in rows) / len(rows)
-    return f"merged {len(rows)}, median ready->merged {median}, runner-min/PR {per_pr:.1f}"
+    return (
+        f"merged {len(rows)}, median ready->merged {median}, runner-min/PR {per_pr:.1f}, "
+        f"no-record {sum(r['no_record'] for r in rows)}, reverts {sum(r['revert'] for r in rows)}, {quality}"
+    )
 
 
 def line(gh: Gh, repo: str, since: dt.date) -> str:
@@ -198,10 +238,21 @@ def line(gh: Gh, repo: str, since: dt.date) -> str:
     data = collect(gh, repo, since)
     week = [r for r in data["rows"] if since <= r["merged"].date() < since + dt.timedelta(days=7)]
     before = [r for r in data["rows"] if since - dt.timedelta(days=7) <= r["merged"].date() < since]
+    start = since - dt.timedelta(days=7)
+
+    def nights(first: dt.date, end: dt.date) -> int:
+        return sum(
+            1
+            for n in data["nights"]
+            if first <= n["created"].date() < end and n["names"] & data["merged_numbers"]
+        )
+
     one = since + dt.timedelta(days=6)
     prior = since - dt.timedelta(days=7)
-    text = f"{repo} {since}..{one}: " + summary(week)
-    text += f" | week before {prior}..{since - dt.timedelta(days=1)}: " + summary(before)
+    text = f"{repo} {since}..{one}: " + summary(week, nights(since, since + dt.timedelta(days=7)))
+    text += f" | week before {prior}..{since - dt.timedelta(days=1)}: " + summary(
+        before, nights(start, since)
+    )
     if data["batched"]:
         text += " (batch minutes split evenly across each queue batch's PRs)"
     return text

@@ -31,11 +31,11 @@ def job(minutes: int, start: str = "2026-11-18T10:00:00Z") -> dict[str, str]:
     }
 
 
-def search_item(number: int, created: str, merged: str, body: str = "") -> dict[str, Any]:
+def search_item(number: int, created: str, merged: str, title: str = "") -> dict[str, Any]:
     return {
         "number": number,
         "created_at": created,
-        "body": body,
+        "title": title,
         "pull_request": {"merged_at": merged},
     }
 
@@ -51,7 +51,7 @@ RECORDED: dict[str, Any] = {
             search_item(1, "2026-11-17T08:00:00Z", "2026-11-18T12:00:00Z"),
             search_item(2, "2026-11-19T09:00:00Z", "2026-11-19T10:00:00Z"),
             search_item(3, "2026-11-20T08:00:00Z", "2026-11-20T10:00:00Z"),
-            search_item(4, "2026-11-20T08:00:00Z", "2026-11-20T10:00:00Z"),
+            search_item(4, "2026-11-20T08:00:00Z", "2026-11-20T10:00:00Z", 'Revert "add widgets"'),
             search_item(6, "2026-11-17T08:30:00Z", "2026-11-17T09:00:00Z"),
             search_item(5, "2026-11-12T08:00:00Z", "2026-11-12T09:00:00Z"),
         ]
@@ -66,16 +66,40 @@ RECORDED: dict[str, Any] = {
             },
         ]
     },
+    "search/issues|is:issue": {
+        "items": [
+            {"number": 70, "created_at": "2026-11-21T03:00:00Z", "body": "Merges: #3 and #4"},
+            {
+                "number": 71,
+                "created_at": "2026-11-22T03:00:00Z",
+                "body": "Merges: #999, a PR that is not in the set",
+            },
+            {"number": 72, "created_at": "2026-11-13T03:00:00Z", "body": "Merges: #5"},
+        ]
+    },
+    "repos/acme/widgets/git/matching-refs/heads/loop-gate/": [
+        {"ref": "refs/heads/loop-gate/T1-abc"},
+        {"ref": "refs/heads/loop-gate/T2-abc"},
+        {"ref": "refs/heads/loop-gate/T2-def"},
+    ],
     "repos/acme/widgets/issues/1/timeline": [
         {"event": "ready_for_review", "created_at": "2026-11-18T09:00:00Z"},
         {"event": "ready_for_review", "created_at": "2026-11-18T11:00:00Z"},
-        {"event": "committed", "sha": "aaa"},
+        {"event": "committed", "sha": "aaa", "tree": {"sha": "T1"}},
     ],
-    "repos/acme/widgets/issues/2/timeline": [{"event": "committed", "sha": "bbb"}],
-    "repos/acme/widgets/issues/3/timeline": [{"event": "committed", "sha": "ccc"}],
-    "repos/acme/widgets/issues/4/timeline": [{"event": "committed", "sha": "ddd"}],
+    "repos/acme/widgets/issues/2/timeline": [
+        {"event": "committed", "sha": "bbb", "tree": {"sha": "T2"}}
+    ],
+    "repos/acme/widgets/issues/3/timeline": [
+        {"event": "committed", "sha": "ccc", "tree": {"sha": "T3"}}
+    ],
+    "repos/acme/widgets/issues/4/timeline": [
+        {"event": "committed", "sha": "ddd", "tree": {"sha": "T4"}}
+    ],
     "repos/acme/widgets/issues/6/timeline": [],
-    "repos/acme/widgets/issues/5/timeline": [{"event": "committed", "sha": "eee"}],
+    "repos/acme/widgets/issues/5/timeline": [
+        {"event": "committed", "sha": "eee", "tree": {"sha": "T5"}}
+    ],
     "repos/acme/widgets/actions/runs": {
         "workflow_runs": [
             {"id": 11, "head_sha": "aaa", "pull_requests": []},
@@ -125,10 +149,10 @@ def test_week_line_counts_median_minutes_and_the_week_before() -> None:
     # week: #1 1h from its last ready event, #2 1h from creation, #3 and #4 2h, #6 (merged on the first day) 30m: median 1h
     # minutes: #1 10, #2 16 (both attempts), #3 and #4 (12+8)/2 = 10 each: (10+16+10+10+0)/5 = 9.2
     assert text.startswith(
-        f"{REPO} 2026-11-17..2026-11-23: merged 5, median ready->merged 1h00m, runner-min/PR 9.2"
+        f"{REPO} 2026-11-17..2026-11-23: merged 5, median ready->merged 1h00m, runner-min/PR 9.2, no-record 3, reverts 1, red-nights 1"
     )
     assert (
-        "| week before 2026-11-10..2026-11-16: merged 1, median ready->merged 1h00m, runner-min/PR 4.0"
+        "| week before 2026-11-10..2026-11-16: merged 1, median ready->merged 1h00m, runner-min/PR 4.0, no-record 1, reverts 0, red-nights 1"
         in text
     )
     assert "batch minutes split evenly across each queue batch's PRs" in text
@@ -147,6 +171,10 @@ def test_runs_are_listed_in_bulk_and_jobs_once_per_attributed_run() -> None:
         f"repos/acme/widgets/actions/runs/{n}/jobs" for n in (11, 12, 13, 14)
     ]  # run 15 is nobody's
     assert len([c for c in gh.calls if "/timeline" in c]) == 6
+    assert len([c for c in gh.calls if "matching-refs" in c]) == 1  # one listing of the record refs
+    assert (
+        len([c for c in gh.calls if "is:issue" in unquote(c)]) == 1
+    )  # one search for the red nights
 
 
 def test_a_repo_with_no_actions_is_skipped_with_a_line_saying_so() -> None:
@@ -166,7 +194,10 @@ def test_a_week_with_no_merges_prints_zero() -> None:
             "repos/acme/widgets/actions/workflows": {"total_count": 1},
             "search/issues|is:pr is:merged": {"items": []},
             "search/issues|head:mergify": {"items": []},
+            "search/issues|is:issue": {"items": []},
         }
     )
     gh.recorded["search/issues|head:mergify/merge-queue/"] = {"items": []}
-    assert "merged 0 | week before" in loop_metrics.line(gh, REPO, SINCE)
+    assert "merged 0, no-record 0, reverts 0, red-nights 0 | week before" in loop_metrics.line(
+        gh, REPO, SINCE
+    )
