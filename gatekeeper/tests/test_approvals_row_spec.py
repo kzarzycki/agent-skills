@@ -175,3 +175,21 @@ def test_a_row_whose_pr_carries_risk_high_is_the_owners(writers: list[str]) -> N
 
 def test_without_a_policy_file_a_row_gets_no_credit_line(writers: list[str]) -> None:
     assert approvals.holds(pull(files=("app.py",)), [child(parent=story())], None) == []
+
+
+def test_under_spec_auto_true_a_row_the_rating_leaves_to_the_owner_is_credited_not_held(
+    writers: list[str],
+) -> None:
+    """`levels.low.spec: owner` leaves every spec to the owner under `spec.auto: true`; a row's parent approval is the
+    owner's, so `check` credits the row instead of saying its spec is the owner's to approve."""
+    policy = loop_md("spec:\n  auto: true\nlevels:\n  low:\n    spec: owner\n    merge: gates\n")
+    pr, spec = pull(files=("app.py",)), child(parent=story())
+    assert approvals.proofs("build", pr, [spec], policy) == []
+    assert approvals.holds(pr, [spec], policy) == [
+        '#1: covered by #9\'s approved spec (row "pack pin")'
+    ]
+    held = (
+        "#1: its spec is the owner's to approve under `spec.auto: true`, since nothing rates it above low, and"
+        " `levels.low.spec` is `owner`"
+    )
+    assert approvals.holds(pr, [child("Replace the pin.\n", story())], policy) == [held]
