@@ -5811,6 +5811,10 @@ class Fleet:
         self.pages = 0  # history pages read back
         self.host_id = "h"  # this host
         self.harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS}  # an agent's, by its name
+        self.rows: list[dict] = []  # the server's session listing, as ``listing`` returns it
+
+    def listing(self) -> list[dict]:
+        return self.rows
 
     def harness(self, agent: str) -> str:
         if agent not in self.harnesses:

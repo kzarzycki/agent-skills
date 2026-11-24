@@ -485,7 +485,9 @@ as an `unasked` event, which tells its waiter to post a card or act under the de
 open it is reported as any turn end. How it asks and where
 it parks a question is its role's (`--role`; under the engineering loop, `lead.md`). `run --top-level` exits 1, since a lead writes no
 question for `run` to return: follow it with `watch <session>`, and once its report is in,
-archive it with `reap <session>`.
+archive it with `reap <session>`. `start --top-level --role lead` with neither `--registry` nor
+`$OMNIGENT_SUPERVISE_REGISTRY` exits 2 before any session exists, since no supervisor would follow it
+and a stalled turn would go unseen.
 
 A cloud session started without `--pr` (`claude-cloud`, a lead or not) keeps its report file
 in its VM, which no file API here reaches, so its preamble has it reply with the full report as
@@ -793,6 +795,14 @@ only drops the line it already settled, and a followed lead's failure or prompt 
 one event per occurrence (`occurrences` in the state counts each entry into one), so the same
 error again after a recovery is news and the one a restart finds again is not.
 
+The chief of staff's console (not a manager's `<repo>-leads.registry` one) also adopts leads no
+registry holds, since a lead started without one stalls unseen: each poll it reads the server's
+session listing and follows every live, unarchived, top-level session labelled `omni.role=lead`
+that is on neither its own registry, nor any `*.registry` beside it, nor a `leads=` file its lines
+name, and that no followed lead created (`omni.created_by`, as above). It writes the session a
+`follow` line and posts one `adopted` event, routed to `act`: the lead is followed from then on,
+and the waiter fixes whatever started it unwatched.
+
 A followed lead also has a progress deadline, since a lead that reads running for good, or goes
 quiet a second time with the same last message, makes none of those events. Its progress,
 `progress_at`, is the latest of its own history (any item but a message to it, so a nudge is
@@ -851,6 +861,7 @@ offline while idle raises nothing.
 | a PR or session a lead's wait names settled, or a session it started reached a final state | rule | tell that lead within a minute, read from GitHub and the session; a set tells on its first failure or its last end |
 | `stalled`: a PR `check stalled` lists, once per head | rule | act: the chief of staff lands it (`land N --only`) or flags it |
 | `archived` | rule | its line and state entry dropped; no post |
+| `adopted`: a live top-level lead no registry held, read from the server's listing (#2181) | rule | act: followed from now on; fix what started it unwatched |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a `STILL WORKING` that hands back to its manager: a `Handback: #<n> <what>` line, else prose saying a PR is ready (`#12 READY`, `READY FOR VERIFY`) or a PR's step is the manager's (`#12 ... is yours`, `#12 ... over to you`) (#1753) | rule | act, to the session it notifies, with what it hands back; an exact repeat: recorded |
 | a `STILL WORKING` whose wait does not wake it (#1753): a wait word and a pid, a pid file or a log, output or pid path anywhere in it, naming no `--notify` or `LOOP_NOTIFY`, no child or CI; or, in a cloud session, a background subagent; no `Waits:` line either way | rule | the untracked-wait nudge (`LEAD_UNTRACKED`: wait on it in the turn, or restart it as a harness-tracked background task or detached with `LOOP_NOTIFY`); the same wait again after it: act |
