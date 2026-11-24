@@ -164,7 +164,7 @@ command, and its only other mode skips them all, so `start` refuses it a `--role
 `--permission-mode bypassPermissions` (or the variable) opts into that, which it launches with
 `--dangerously-skip-permissions`. Antigravity's effort is the user's configuration: agy names it
 in the model of its own settings (`Gemini 3.8 Flash (Low)`), which Omnigent copies into each
-session, so the launcher passes none. On another host agy takes the brief as a file there too, written through the host's file API: the render check it makes of a pasted first line fails on a long inline paste, which scrolls the line away. `--verifier-route gemini` (or `$OMNIGENT_VERIFIER_ROUTE`) on a verifier start picks this agent in bypass mode, and `--verifier-route claude` a same-family Claude of another `--model` than the required `--author-model`: engineering-loop's lead.md, Verifier route, says when. An unknown name fails before a session is created. The flag without `--role <skills>/engineering-loop/verifier.md` is refused the same way, since the route would otherwise be dropped silently; `$OMNIGENT_VERIFIER_ROUTE` alone is not refused, as a host may export it for every start.
+session, so the launcher passes none. On another host agy takes the brief as a file there too, written through the host's file API: the render check it makes of a pasted first line fails on a long inline paste, which scrolls the line away. `--verifier-route gemini` (or `$OMNIGENT_VERIFIER_ROUTE`) on a verifier start picks this agent in bypass mode, and `--verifier-route claude` a same-family Claude of any `--model`: engineering-loop's lead.md, Verifier route, says when. An unknown name fails before a session is created. The flag without `--role <skills>/engineering-loop/verifier.md` is refused the same way, since the route would otherwise be dropped silently; `$OMNIGENT_VERIFIER_ROUTE` alone is not refused, as a host may export it for every start.
 
 **Cloud workers.** A worker whose tools run in a cloud VM can't write a file on this host,
 so `run` and `start` take `--pr <n>` (or `--pr owner/repo#<n>` from a directory that isn't a checkout; a bare `<n>` reads a checkout `--workspace`, else the current directory, and an unresolvable repository is refused before any session exists; `wait`, `send` and `reap --pr` take the same form): the preamble then has it post its report as one comment
@@ -693,12 +693,14 @@ posting, goes to stderr once until it clears, and a `--timeout` window with no e
 `no event in <n>s: <sessions>`; neither stops it, and one session's error skips no other.
 
 `run`, `start` and `send` arm the registry named by `--registry`, else
-`$OMNIGENT_SUPERVISE_REGISTRY`: once their message is in the history, they write
-`<session>=<report>`, replacing any line for that session. `start` (and so `run`) puts its
+`$OMNIGENT_SUPERVISE_REGISTRY`, writing `<session>=<report>`, replacing any line for that session.
+`start` (and so `run`) writes it as soon as the session exists, before the brief is sent, since confirming
+the brief can outlast the console's 60 s adoption grace (#2319); the line goes if the session is
+abandoned and archived. `send` writes it once its message is in the history. `start` (and so `run`) puts its
 brief file `<report>.brief` on the line; `send` appends its message file to the line's brief
 files (else to `<report>.brief` when it exists), so a revived session reads its brief and then
-each follow-up in order. Not before, because until the
-message lands the turn before's report or question reads as newer than the last instruction,
+each follow-up in order. `send` waits for its message, because until it
+lands the turn before's report or question reads as newer than the last instruction,
 a false event. `run`, `send` and `wait` remove the line once they return the report or a
 question, since their caller has it; a race can still deliver both, and the second line is no
 news. `reap` with the registry drops the line of each session it finishes, before finishing it,
@@ -857,7 +859,7 @@ offline while idle raises nothing.
 | a PR or session a lead's wait names settled, or a session it started reached a final state | rule | tell that lead within a minute, read from GitHub and the session; a set tells on its first failure or its last end |
 | `stalled`: a PR `check stalled` lists, once per head | rule | act: the chief of staff lands it (`land N --only`) or flags it |
 | `archived` | rule | its line and state entry dropped; no post |
-| `adopted`: a live top-level lead no registry held, read from the server's listing (#2181) | rule | act: followed from now on; fix what started it unwatched |
+| `adopted`: a live top-level lead no registry held, read from the server's listing, and at least 60 seconds old so its launcher has written its registry (#2181, #2313) | rule | act: followed from now on; fix what started it unwatched |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a `STILL WORKING` that hands back to its manager: a `Handback: #<n> <what>` line, else prose saying a PR is ready (`#12 READY`, `READY FOR VERIFY`) or a PR's step is the manager's (`#12 ... is yours`, `#12 ... over to you`) (#1753) | rule | act, to the session it notifies, with what it hands back; an exact repeat: recorded |
 | a `STILL WORKING` whose wait does not wake it (#1753): a wait word and a pid, a pid file or a log, output or pid path anywhere in it, naming no `--notify` or `LOOP_NOTIFY`, no child or CI; or, in a cloud session, a background subagent; no `Waits:` line either way | rule | the untracked-wait nudge (`LEAD_UNTRACKED`: wait on it in the turn, or restart it as a harness-tracked background task or detached with `LOOP_NOTIFY`); the same wait again after it: act |
@@ -865,6 +867,7 @@ offline while idle raises nothing.
 | a quiet end again with no progress since the nudge | rule | act |
 | `deadline` | rule | a named wait: act, or with no live runner (nothing can end its wait) the revive, which acts only when it fails; unknown: the nudge, then act at the deadline after it; parked: none |
 | failed | rule | the first time a revive, after it act; a transient provider error (`authentication_failed`, a Cloudflare `Attention Required` page, any 5xx such as a cloud create's 503, `overloaded`: one table, `TRANSIENT_ERRORS`) instead a revive after a backoff of 2, 5, 10, 20 minutes, then every 20, and act once the next revive would fall more than 2 hours after the chain's first failure (`rate_limit` with no reset time too); a usage limit (`hit your … limit`, `usage limit`: `USAGE_LIMIT_ERRORS`, or a `rate_limit` printing its reset) is account-wide, so it parks instead: one post `usage limit: N sessions parked, resets <time>` (or `resets unknown`) for every lead parked on it, later ones joining unreported; one parked lead revived as a probe after the same backoff, or at once at the printed reset (`resets Nov 16, 6am (UTC)`, any IANA zone); one probe runs at a time; a probe failing on the limit again parks once more, and once a parked lead ends any other way (its turn ends, a prompt, another failure, which then routes as any other) every parked lead is revived and one post says how many resumed; act once an hour past the printed reset has passed (the reset is read once, when first parked), or with none once the next probe would fall 2 hours after the chain's first failure, and no parked lead is probed after. The parked state is each lead's `retrying` (`limit`, `resets`, `told`, `probe`), so a restart keeps it |
+| `DONE` with no result on its line (a bare `DONE`, even below prose), from a followed session that has its own leads registry, a manager (#2309) | rule | `done`, but the notified session is not woken: only the leads waiting on it are told, and the session stays followed. A manager with a result ends `DONE: <result>`; a turn that reports nothing may end on a bare `DONE` |
 | `DONE` | rule | act, and each lead registered `after=` it is told `Supervisor: <lead>, the lead you wait on, ended: <its first line>` |
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
 | `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over, with no question card open (`unasked`) | rule | act, with or without `--decisions`: the manager puts a question that spans projects on its own card, or sends the lead back to its card; with a card open, nothing is posted |
@@ -1013,7 +1016,7 @@ each and `already archived` for one finished before, and prints which it kept. I
 labels the session `omni.pr=<owner>/<name>#<n>` (a start whose label fails archives the session and fails), and
 `reap` looks the PR up in that repository, never the caller's checkout; a PR it can't read keeps the worker. A verifier
 started with `--pr` carries the same label, so its spend groups by PR, but neither `reap` nor `reap --merged` holds or finds one
-on it: a verifier ends with its verdict. A
+on it: a verifier ends with its verdict. A lead's own `omni.pr` label may list several PRs, comma-joined: `python3 scripts/omnigent_agent.py own-pr <owner>/<name>#<n> [--session <id>]` adds them, in one write, to this session's (or the named one's), once, and `approvals.py land` starts it detached for each PR it names, so a merge-queue dequeue of a PR the lead lands or took over reaches it. `reap` holds a labelled session until every PR it lists is merged or closed. `own-pr` checks the ref's format only, with no GitHub call per ref, so a mistyped PR number keeps the session held by `reap` until the label is fixed. A
 verdict does not release a worker, since the landing gate alone judges a verdict. `reap --merged [--pr <n>]` also
 finishes every live `--pr` worker whose PR is merged or closed, leaving an open PR's; `approvals.py land` starts it
 detached for each PR it merged, so a slow server never holds the land, and the outcome goes to a log it names. A finish that fails is printed and the rest still run, and

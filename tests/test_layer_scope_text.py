@@ -23,10 +23,10 @@ def test_instructions_pass_runs_the_layers_checks_not_the_product_suite() -> Non
     assert f"{RULE}, R2" in text
 
 
-def test_ci_runs_no_layers_tests() -> None:
+def test_ci_line_is_r1s_and_the_rule_section_holds_r2() -> None:
     text = flat("SKILL.md")
-    assert "which runs every `check:` part" not in text
-    assert f"CI, which runs no layer's tests ({RULE}, R2)" in text
+    assert f"{RULE}, R1" in text
+    assert "runs no product suite; it runs the checks of the layer it touches" in text
 
 
 def test_unclassified_file_runs_the_products_affected_tests() -> None:
