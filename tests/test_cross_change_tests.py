@@ -367,7 +367,7 @@ def test_with_gate_steps_affected_tests_record_records_nothing_and_says_so(
         "# Gatekeeper\n\n## Policy\n\n```yaml\nloop:\n  gate_steps:\n"
         "    - name: fast\n      command: 'true'\n      where: any\n```\n"
     )
-    point, head = affected("true")
+    _point, head = affected("true")
     assert g.main(["affected-tests", "--record"]) == 0
     assert "the gate has `gate_steps`" in capsys.readouterr().err
     assert g.main(["gate-record", head, "--", "true"]) == 1
