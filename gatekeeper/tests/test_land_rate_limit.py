@@ -26,6 +26,9 @@ def refuse(stderr: str) -> subprocess.CalledProcessError:
 def poll_unstretched(monkeypatch: pytest.MonkeyPatch) -> None:
     """The quota read is a `gh` call: tests of the wait loop poll at POLL without it."""
     monkeypatch.setattr(approvals, "poll_seconds", lambda *_: approvals.POLL)
+    monkeypatch.setattr(
+        approvals, "project", lambda: (None, None)
+    )  # the wait's length is the default
 
 
 @pytest.fixture
