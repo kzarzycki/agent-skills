@@ -71,13 +71,17 @@ def test_push_ignores_runs_that_are_not_a_merge_queue_batch():
 
 
 def test_nightly_skips_when_main_is_the_last_green_commit():
-    api = Forge({"/repos/o/r/actions/workflows/ci.yml/runs": runs(run("main", MAIN, 5, "schedule"))})
+    api = Forge(
+        {"/repos/o/r/actions/workflows/ci.yml/runs": runs(run("main", MAIN, 5, "schedule"))}
+    )
     found = tested_tree.last_green_is(api, "o/r", "ci.yml", "main", MAIN)
     assert found and found["html_url"] == "https://example.test/runs/5"
 
 
 def test_nightly_runs_when_main_moved_or_has_no_green():
-    moved = Forge({"/repos/o/r/actions/workflows/ci.yml/runs": runs(run("main", OTHER, 5, "schedule"))})
+    moved = Forge(
+        {"/repos/o/r/actions/workflows/ci.yml/runs": runs(run("main", OTHER, 5, "schedule"))}
+    )
     assert tested_tree.last_green_is(moved, "o/r", "ci.yml", "main", MAIN) is None
     none = Forge({"/repos/o/r/actions/workflows/ci.yml/runs": runs()})
     assert tested_tree.last_green_is(none, "o/r", "ci.yml", "main", MAIN) is None
@@ -87,7 +91,9 @@ def test_main_writes_the_output_and_the_summary_naming_the_run(tmp_path, monkeyp
     out, summary = tmp_path / "out", tmp_path / "summary"
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-    code = tested_tree.report("push", tested_tree.tested_by_batch(forge("t1"), "o/r", "ci.yml", MAIN))
+    code = tested_tree.report(
+        "push", tested_tree.tested_by_batch(forge("t1"), "o/r", "ci.yml", MAIN)
+    )
     assert code == 0
     assert "skip=true" in out.read_text()
     assert "https://example.test/runs/7" in summary.read_text()
@@ -103,13 +109,17 @@ def steps() -> list[dict]:
 def test_workflow_reads_the_forge_and_skips_with_step_level_ifs_only():
     doc = yaml.safe_load(WORKFLOW.read_text())
     assert doc["permissions"]["actions"] == "read"
-    assert "if" not in doc["jobs"]["qualify"], "`qualify` is a required check: it must report on every PR"
+    assert "if" not in doc["jobs"]["qualify"], (
+        "`qualify` is a required check: it must report on every PR"
+    )
     lookup = [s for s in steps() if s.get("id") == "tested"]
     assert len(lookup) == 1 and "tools/tested_tree.py" in lookup[0]["run"]
     guarded = [s for s in steps() if "steps.tested.outputs.skip" in str(s.get("if", ""))]
-    runs_ = " ".join(s.get("run", "") for s in guarded)
-    assert "mise run check-fast" in runs_ and "mise run check\n" in runs_ + "\n"
-    assert any("cache/save" in s.get("uses", "") for s in guarded), "the test-map save is skipped with the run"
+    commands = [s.get("run", "").strip() for s in guarded]
+    assert "mise run check-fast" in commands and "mise run check" in commands
+    assert any("cache/save" in s.get("uses", "") for s in guarded), (
+        "the test-map save is skipped with the run"
+    )
 
 
 def test_skill_text_points_to_the_rule_and_names_the_forge_read():
@@ -118,5 +128,4 @@ def test_skill_text_points_to_the_rule_and_names_the_forge_read():
     assert "tested" in step9 and f"SKILL.md, {HEADING}" in step9
     skill = (SKILL / "SKILL.md").read_text()
     nightly = skill[skill.index("**Nightly.**") :][:1800]
-    assert "last green" in nightly and f"SKILL.md, {HEADING}" not in nightly or "moved" in nightly
-    assert "unmoved" in nightly or "moved since" in nightly
+    assert "last green" in nightly and "moved since" in nightly and HEADING in nightly

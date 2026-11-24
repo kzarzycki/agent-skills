@@ -256,7 +256,9 @@ budget is a signal, not a gate.
 
 **Nightly.** After a merge nothing reruns a spec's checks but the project's nightly, and
 nothing else runs the full suite at all (Merge model), so the
-nightly runs the project's full suite, which holds every spec's acceptance checks, plus
+nightly runs the project's full suite, only when the default branch moved since its last green (the newest
+scheduled run that passed, read from the forge; an unmoved branch skips and says so with that run's link:
+A check runs only if it can fail because of the change), which holds every spec's acceptance checks, plus
 `uv run <gatekeeper>/scripts/acceptance.py --all` where the project uses the
 `acceptance/<issue>/` folders; the workflow itself (its schedule, where it runs) is the
 project's. When it ends red, it calls `uv run <this skill's folder>/scripts/nightly.py red
