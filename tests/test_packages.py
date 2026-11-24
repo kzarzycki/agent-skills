@@ -148,7 +148,7 @@ def test_every_scripts_folder_with_python_has_a_pycache_file(name: str) -> None:
 
 
 def resolver(path: Path) -> str:
-    found = re.search(r"^def installed\(.*?(?=^\S)", path.read_text(), re.MULTILINE | re.DOTALL)
+    found = re.search(r"^def installed\(.*?(?=^\S|\Z)", path.read_text(), re.MULTILINE | re.DOTALL)
     assert found, f"{path}: no installed()"
     return found.group()
 
