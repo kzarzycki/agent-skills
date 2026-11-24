@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,11 @@ def worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setenv(approvals.WORKING_TREE_POLICY, "1")
     monkeypatch.setattr(approvals, "open_pulls", list)
 
-    def start(policy: str | None, release_exit: int = 0) -> None:
+    (tools / "mise").write_text('#!/bin/sh\necho "mise $*" >> "$(dirname "$0")/ran.log"\n')
+    (tools / "mise").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
+
+    def start(policy: str | None, release_exit: int = 0, selector: bool = True) -> None:
         git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
         git_in(tmp_path, "clone", "-q", str(origin), str(repo))
         git_in(repo, "config", "user.email", "loop@example.com")
@@ -55,9 +60,8 @@ def worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         git_in(repo, "checkout", "-q", "-b", "main")
         agents = repo / "docs" / "agents"
         agents.mkdir(parents=True)
-        (agents / "loop.md").write_text(
-            f"# Loop\n\nAffected tests: {sys.executable} {tools / 'selector.py'}\n"
-        )
+        line = f"Affected tests: {sys.executable} {tools / 'selector.py'}\n" if selector else ""
+        (agents / "loop.md").write_text(f"# Loop\n\n{line}")
         if policy is not None:
             (agents / "gatekeeper.md").write_text(
                 gatekeeper_md(policy.format(check=check, release_exit=release_exit))
@@ -88,12 +92,12 @@ def worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     }
 
 
-def test_a_docs_only_change_runs_nothing(worker: dict[str, Any], capsys: Any) -> None:
+def test_a_docs_only_change_selects_zero_and_says_so(worker: dict[str, Any], capsys: Any) -> None:
     worker["start"](SELECT)
     worker["commit"]("docs/guide.md", "README.md")
     assert approvals.main(["affected-tests"]) == 0
     assert worker["ran"]() == []
-    assert "no build input changed and no check applies" in capsys.readouterr().err
+    assert "affected-tests: 0 selected: non-product" in capsys.readouterr().err
 
 
 def test_a_pack_bump_runs_only_its_check(worker: dict[str, Any]) -> None:
@@ -214,3 +218,53 @@ def test_the_narrowed_gate_of_a_build_input_runs_the_selector(worker: dict[str, 
         assert "select.checks" not in approvals.narrowed_gate()[0]
     assert approvals.main(["local-ci", "--record", "--base", base]) == 0
     assert worker["ran"]() == ["selector"]
+
+
+# --- #2217: the narrowest set affected-tests can name, with no `Affected tests:` line or no base ---
+
+
+@pytest.mark.parametrize(
+    ("paths", "ran"),
+    [
+        (["docs/guide.md", "README.md"], []),  # every path non-product: zero
+        (["apm.yml", ".claude/skills/demo/SKILL.md"], ["agent-sync"]),  # only the check it touches
+        (["docs/guide.md", "src/app.py"], ["mise run check"]),  # a build input: the full check
+        (
+            ["tests/conftest.py"],
+            ["mise run check"],
+        ),  # test setup, which no check names: unclear, so it tests
+        (
+            ["tools/lonely.sh"],
+            ["mise run check"],
+        ),  # a file nothing names: the full check, never nothing
+    ],
+)
+def test_without_the_line_the_select_cut_runs_then_the_full_check(
+    worker: dict[str, Any], paths: list[str], ran: list[str]
+) -> None:
+    worker["start"](SELECT, selector=False)
+    worker["commit"](*paths)
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ran
+
+
+def test_a_non_product_change_without_the_line_selects_zero_and_says_so(
+    worker: dict[str, Any], capsys: Any
+) -> None:
+    worker["start"](SELECT, selector=False)
+    worker["commit"]("docs/guide.md")
+    assert approvals.main(["affected-tests"]) == 0
+    said = capsys.readouterr().err
+    assert "affected-tests: 0 selected: non-product" in said and "full check" not in said
+
+
+def test_a_base_git_cant_resolve_cuts_the_change_since_the_merge_base(
+    worker: dict[str, Any], capsys: Any
+) -> None:
+    """#2217: an all-zeros base falls back to the merge base, so `select` still cuts a docs change to zero."""
+    worker["start"](SELECT)
+    worker["commit"]("docs/guide.md")
+    assert approvals.main(["affected-tests", "--base", "0" * 40]) == 0
+    assert worker["ran"]() == []
+    said = capsys.readouterr().err
+    assert "it selects against the merge base" in said and "0 selected: non-product" in said

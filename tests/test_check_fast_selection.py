@@ -40,11 +40,11 @@ def test_a_failed_selection_fails_without_running_pytest(tmp_path: Path) -> None
     assert not (tmp_path / "ran.log").exists()
 
 
-def test_an_empty_selection_runs_nothing_says_so_and_passes(tmp_path: Path) -> None:
-    """#1872: a selector that can't tell runs nothing, never the whole suite."""
+def test_an_empty_selection_runs_no_pytest_says_so_and_passes(tmp_path: Path) -> None:
+    """#2217: a selector prints nothing only for a change of non-product paths."""
     done = run_step(tmp_path, "exit 0")
     assert done.returncode == 0, done.stderr
-    assert "selected nothing, so no tests run" in done.stderr
+    assert "0 selected: non-product, so no pytest runs" in done.stderr
     assert not (tmp_path / "ran.log").exists()
 
 

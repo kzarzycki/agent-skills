@@ -39,8 +39,8 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    <gatekeeper>/scripts/approvals.py affected-tests`, which runs that selection against `git merge-base origin/<base>
    HEAD` on a first push (the base of the branch's open PR, else the default branch; a shallow clone is deepened) in the variable
    `Gate base:` names (else `GATE_BASE`), under the host gate slot; without the line, `mise run test:changed`. A
-   selector that can't tell which tests a change touches runs nothing and says so: report that line as it is, and
-   never fall back to the whole suite. You run no gate of record, no full `mise run check` and no `local-ci`, with
+   selector that can't tell exactly which tests a change touches runs the narrowest set it can still name (SKILL.md,
+   A check runs only if it can fail because of the change): report its line as it is. You run no gate of record, no full `mise run check` and no `local-ci`, with
    `ci: false` too: no gate runs on the PR before it merges, and the nightly runs the full suite (SKILL.md, Merge
    model). Lint runs at commit, in the hook's `lint:` tasks on the staged files.
    Write the e2e tests that prove the change works, in the PR, and name them in the report: the verifier proves

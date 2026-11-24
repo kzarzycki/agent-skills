@@ -23,7 +23,7 @@
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
-    uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`
+    uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
@@ -416,9 +416,11 @@ Which tests prove a change is the project's rule (the PR's own acceptance tests)
 Narrowed mode: loop.md's line `Affected tests: <command>` without the line `Gate: full`, the opt-out (narrowing). Its
 command is the whole narrowed check: the project's selector plus its cheap whole-repo lint and type checks, reading the
 base from the variable `Gate base:` names, else `GATE_BASE`. `affected-tests` runs it against `--base <rev>` (a PR's
-base SHA, a push's previous tip), else the merge base with the branch's base. Where it can't tell what a change
-affects, a `<rev>` git can't resolve (all zeros, a new branch) or a loop.md without the line, it runs nothing and says
-so in one line, never the whole suite, which the nightly runs (#1872); only the opt-out runs `mise run check`. Under
+base SHA, a push's previous tip), else the merge base with the branch's base. Where it can't tell exactly, it runs
+the narrowest set it can still name (#2217): a `<rev>` git can't resolve (all zeros, a new branch) selects against the
+merge base, and a loop.md without the line runs the `select` cut, then `mise run check` for a change the cut can't
+settle; zero runs only for a change of non-product paths, saying `0 selected: non-product`. The opt-out runs `mise run
+check`. Under
 `ci: false`, `local-ci --record` runs it against `--base`, else the merge base, and `local-ci <pr>` posts that pass on
 the head's tree, against the merge base of the head and the PR's base; `check merge` reads no local-ci pass (#1872). A
 narrowed pass's command is the variable's assignment, the command, then ` (narrowed)`, which no gate command can hold,
@@ -9481,10 +9483,7 @@ def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
         )
         return None
     if not commands:
-        print(
-            "affected-tests: no build input changed and no check applies: nothing to run",
-            file=sys.stderr,
-        )
+        print("affected-tests: 0 selected: non-product", file=sys.stderr)
         return 0
     for command in commands:
         _, words, sets = command_line(command, "select.checks")
@@ -9507,40 +9506,40 @@ def affected_tests(given: str | None = None) -> int:
     """`affected-tests [--base <rev>]`: the worker's test run on a head, from loop.md's line `Affected tests:
     <command>` (the command selects and runs the tests a change affects against the base it reads from the variable
     the line `Gate base:` names, else `GATE_BASE`). The base is `<rev>`, else the merge base (selection_base). Where it
-    can't tell what the change affects, it runs nothing, says so in one line and exits 0, never the whole suite, which
-    the nightly runs (#1872): a loop.md without the line names no selector, and a `<rev>` git can't resolve names no
-    base. Only the opt-out `Gate: full` (narrowing), the project's own choice, runs `mise run check`, with the
-    variable unset. Either runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its exit
-    passes through: a selector that selects nothing exits 0 itself. gate_env clears the variable from `land`'s and
-    `local-ci`'s environment, apart from a head proof's own `env` names: they set it themselves in narrowed mode
-    (narrowed_gate)."""
+    can't tell exactly, it runs the narrowest set it can still name (#2217): a `<rev>` git can't resolve (all zeros, a
+    new branch) selects against the merge base instead, and a loop.md without the line runs gatekeeper.md's `select`
+    cut (non_product_run), then, for a change that cut can't settle, the project's full check, `mise run check`. Zero
+    runs only for a change `select` finds only non-product paths in, saying `0 selected: non-product`. The opt-out
+    `Gate: full` (narrowing), the project's own choice, runs `mise run check` too, with the variable unset. Either
+    runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its exit passes through: a
+    selector that selects nothing exits 0 itself. gate_env clears the variable from `land`'s and `local-ci`'s
+    environment, apart from a head proof's own `env` names: they set it themselves in narrowed mode (narrowed_gate)."""
     root = toplevel()
     written = narrowing()
     variable = gate_base_variable()
     env = {name: value for name, value in os.environ.items() if name != variable}
     words, sets = [*LOCAL_CI[:-1], "check"], {}
-    if written is None and not FULL_GATE.search(loop_md()):
-        print(
-            "affected-tests: nothing: loop.md names no `Affected tests:` selector, so it can't tell what the change"
-            " affects; the nightly runs the full suite",
-            file=sys.stderr,
-        )
-        return 0
-    if written is not None and (base := selection_base(given)) is None:
-        print(
-            "affected-tests: nothing: no base to select against, so it can't tell what the change affects; the"
-            " nightly runs the full suite",
-            file=sys.stderr,
-        )
-        return 0
-    if written is not None and base is not None:
+    if not FULL_GATE.search(loop_md()):
+        if (base := selection_base(given)) is None:
+            print(
+                f"affected-tests: the base {given} is no commit here: it selects against the merge base",
+                file=sys.stderr,
+            )
+            base = selection_base(None)
         if (code := non_product_run(base, root, env)) is not None:
             return code
-        _, words, sets = command_line(written, "Affected tests")
-        sets = {
-            name: value for name, value in sets.items() if name != variable
-        }  # the base is the run's, not the line's
-        env[variable] = base
+        if written is None:
+            print(
+                "affected-tests: loop.md names no `Affected tests:` selector, so it can't narrow the change: the"
+                " project's full check runs",
+                file=sys.stderr,
+            )
+        else:
+            _, words, sets = command_line(written, "Affected tests")
+            sets = {
+                name: value for name, value in sets.items() if name != variable
+            }  # the base is the run's, not the line's
+            env[variable] = base
     print(f"affected-tests: {shlex.join(words)}", file=sys.stderr, flush=True)
     try:
         with heavy_slot("affected-tests") as (slot, _):
