@@ -272,7 +272,6 @@ import fcntl
 import hashlib
 import http.client
 import importlib.util
-import itertools
 import json
 import os
 import plistlib
@@ -5905,20 +5904,29 @@ def rest_if_changed(path: str, timeout: float = HTTP_SECONDS) -> tuple[bool, Any
     return True, found
 
 
+# the most pages rest_pages reads of one list (5,000 items), whatever the endpoint answers
+REST_PAGES_MAX = 50
+
+
 def rest_pages(path: str, key: str = "", timeout: float = HTTP_SECONDS) -> list:
     """Every item of the paged REST list at ``path`` (``repos/...``; the items under ``key`` when the body is an object,
     as a check-runs list is), each page read with its last ETag (``rest_if_changed``), so a poll of a list where nothing
     moved costs a 304 per page, which spends no quota (#2070). The supervisor's every list poll goes through here, so
     one function is where a push of GitHub events would replace the polling."""
     items: list = []
+    last: list | None = None
     base = path if "per_page=" in path else path + ("&" if "?" in path else "?") + "per_page=100"
-    for page in itertools.count(1):
+    for page in range(1, REST_PAGES_MAX + 1):
         body = rest_if_changed(f"{base}&page={page}", timeout)[1]
         got = (body.get(key) if key else body) or []
+        # an endpoint that ignores page= (git/matching-refs) answers the same page again (#2343)
+        if got == last:
+            return items
         items += got
         if len(got) < 100:
             return items
-    return items  # unreachable: the count never ends
+        last = got
+    return items  # the backstop: no list the loop reads runs to this many pages
 
 
 def etags_load(path: Path) -> None:
