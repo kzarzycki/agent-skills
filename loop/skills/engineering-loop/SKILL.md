@@ -142,7 +142,7 @@ Merge-queue (`merge_group`) runs have no draft.
 A check can fail again on inputs that look identical when it reads something outside them. Each of these breaks the "known" claim, and the rule says what happens instead:
 
 - **The base moved and the check reads it.** The inputs changed, so the check is not known; it runs on what the base's new commits can reach (R6), not in full.
-- **Flaky or time-dependent tests** (timeouts under load, the clock, test order). A pass on identical inputs is still reused, since running it again only adds a chance of a red that says nothing about the change. A red is retried once, failed tests only (Rules for every role, Flaky tests).
+- **Flaky or time-dependent tests** (timeouts under load, the clock, test order). A pass on identical inputs is still reused, since running it again only adds a chance of a red that says nothing about the change. A red is retried once, by R5 (Rules for every role, Flaky tests).
 - **Environment-dependent checks** (a host's load, an installed tool that no pin covers). The project either adds the input to the key (`local_ci_env`, a pin) or lists the check as unkeyed.
 - **Secrets and network** (a live service, a credential that expires or rotates). Their result depends on the outside world, so a check that reads them is unkeyed: it runs every time its step requires it, and its pass is never reused.
 
@@ -156,7 +156,7 @@ Each derived rule follows from the one above.
 - **R2. Scope by what the change touches.** A diff that cannot reach the product (agentic layer, skills, docs, CI config outside the gating job) runs no product suite; it runs the checks of the layer it touches (the `checks` entries of `select`). An unclassified file counts as a build input. Where: worker, PR CI, queue, the verifier's pass on an instructions change.
 - **R3. Affected tests only, selected by what a test executes.** The selector picks tests whose executed files or functions changed, from a per-test map the nightly builds; name matching is the fallback where there is no map. It diffs against the right base (the merge commit's first parent on a PR run). Where: worker, queue, nightly-built map.
 - **R4. A fix round runs only what the round's diff reaches.** A test or proof that passed on the previous head and whose inputs the round didn't change is known. The selection for a fix round diffs against the last head its run passed on, not the PR's base. Where: worker fix rounds, the lead's stale-proof check before a pass, the verifier's later passes (acceptance checks and repros the delta reaches, plus every repro still `NOT FIXED`).
-- **R5. A red run reruns only what failed, and only once the cause is fixed or shown unrelated.** Fixed: the failed tests plus what the fix reaches (R4). Shown unrelated (a test the change can't reach, a known flake with its `Flaky:` issue, an infrastructure fault): the failed tests alone, once. Never the whole set again on the same head, and never before the cause is known. Where: CI job reruns, the merge queue's red entry, `land`, the verifier, the flaky retry.
+- **R5. A red run reruns once, and only after it is read.** A fix since the red: the failed tests plus what the fix reaches (R4), where the changes since the red reselect every failed test. No change since the red (a flake candidate, an infrastructure fault), or a change that misses a failed test: the red run's own selection once, in the same order and environment, since a test that fails only after others passes alone and would look like a flake. A failed test that passes there is a flake: open or update its `Flaky:` issue and count the run green. Red again: the change caused it, and the PR leaves the queue. Never the whole suite again on the same head, never the failed tests alone on an unchanged tree, and never a rerun before the red is read. `approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]` takes the red run's failed test ids, its head and its base, recomputes the selection from them and runs it, saying in one line which case and why. Where: CI job reruns, the merge queue's red entry, `land`, the verifier, the flaky retry.
 - **R6. The merge queue runs only the cross-change check.** A test that only the PR's diff reaches passed on the PR's head with the same inputs; a test only the base's new commits reach is the base's, not this PR's. The queue runs the tests that the PR's diff and the rest of the merge (the base's commits since the PR's tested base, the other PRs in the group) both reach. Without a per-test map it falls back to the batch's affected tests. Where: GitHub's and Mergify's queue batch check. The local queue runs no test today and stays so.
 - **R7. After the merge, only a tree nobody tested runs.** The push run on main skips a commit whose tree the queue already tested; the nightly runs only when main moved since its last green, and then runs the full suite, which stays the guard against what the selector misses. Where: step 9's read of main's push run, the nightly.
 
@@ -590,10 +590,10 @@ The GitHub merge queue takes no lock and runs no local gate: `land` enqueues eac
 oldest first, pinned to the head its proofs judged, and GitHub orders, groups and merges them,
 its `merge_group` check running only the tests the batch's PRs affect. An entry the queue removes for a red check gets a comment with that check's log tail and
 goes in once more; a second red on the same head turns it back to draft. That second run repeats the
-whole check, which R5 rules out (A check runs only if it can fail because of the change): a red reruns
-only its failed tests, once its cause is fixed or shown unrelated. The tools don't do that yet: `land`'s
-once-more enqueue and Mergify's retry of a red batch both rerun the whole check, until [kzarzycki/agent-skills#1400](https://github.com/kzarzycki/agent-skills/issues/1400)
-(no once-more rerun in `land`) and [kzarzycki/agent-skills#1794](https://github.com/kzarzycki/agent-skills/issues/1794) (CI reruns only the failed tests) land. A red main counts
+whole check, which R5 rules out (A check runs only if it can fail because of the change): a red reruns by
+`approvals.py rerun-tests`, once, after its log is read. `land`'s once-more enqueue and Mergify's retry of a red batch
+don't call it yet and rerun the whole check, until [kzarzycki/agent-skills#1400](https://github.com/kzarzycki/agent-skills/issues/1400)
+(no once-more rerun in `land`) and [kzarzycki/agent-skills#1794](https://github.com/kzarzycki/agent-skills/issues/1794) (CI reruns by that verb) land. A red main counts
 nothing and evicts nobody, nor does a red group built on a main commit where a required check
 failed, a conflict gets the local queue's conflict comment while GitHub still reports one (and
 waits while GitHub works it out), and a lost `merge_group`
@@ -930,9 +930,9 @@ or the owner's private network.
   retry is a full-context turn.
 - **Flaky tests.** The rule's exception for flaky tests (A check runs only if it can fail because of the change). A project's test task retries a failed test once, with its runner's own
   retry option, and prints each test that passed only on the retry; the run is then green.
-  Without one, rerun only the failed tests once, never the whole run, whose minutes each
-  flake would otherwise cost again; all green, the run is green, and the report gives each
-  command with its exit code. Each test that passed on the retry has one open
+  Without one, rerun once by R5 (A check runs only if it can fail because of the change): `approvals.py rerun-tests`
+  gives the selection, never the whole run again nor the failed tests alone; all green, the run is green, and the report gives each
+  command with its exit code. A runner's own retry of a failed test right after it fails, in the same process, stays. Each test that passed on the retry has one open
   `kind:bug` issue titled `Flaky: <test id>`: search the open issues for the id before
   filing, and comment each occurrence on it (head SHA, PR, run, failure line), so two leads find
   the same issue and its comments count the occurrences. An occurrence is its head SHA plus
