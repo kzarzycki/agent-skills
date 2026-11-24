@@ -23,6 +23,7 @@
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
+    uv run scripts/approvals.py queue-select [<base>]      # a merge queue's batch check (R6): one command per line to run on the batch, the select.unkeyed checks and `affected-tests --base <point>` for each PR with no record; exit 1 when that is nothing while a PR has no record
     uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`; --record: its pass pushed as `local-ci --record` pushes a narrowed one
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
@@ -9769,6 +9770,144 @@ def record_shard(head: str, shard: int | None, shards: list[list[str]], command:
     return 0
 
 
+# the subject of a queue's merge commit for one PR: Mergify's batch draft (`Merge of PR <n>`) and GitHub's merge queue
+# with the merge method (`Merge pull request #<n> from …`)
+QUEUE_MERGE = re.compile(r"Merge (?:of PR |pull request #)(\d+)\b")
+
+
+class QueuePull(NamedTuple):
+    """One PR of a queue's batch: `#<n>` (else its merge commit's first 12), its branch point (the merge base of the
+    merge commit's parents) and its head (the merge commit's second parent)."""
+
+    name: str
+    point: str
+    head: str
+
+
+def queue_say(line: str) -> None:
+    print(f"queue-select: {line}", file=sys.stderr)
+
+
+def queue_pulls(base: str) -> list[QueuePull] | str:
+    """Each PR of the batch checked out at HEAD, from its first-parent commits on `base..HEAD`, one merge commit per
+    PR whose second parent is the PR's head; else why `base..HEAD` doesn't split into PRs (a squash or rebase queue)."""
+
+    def soft(*args: str) -> str | None:
+        try:
+            return git(*args).strip()
+        except subprocess.CalledProcessError:
+            return None
+
+    commits = (soft("rev-list", "--first-parent", "--reverse", f"{base}..HEAD") or "").split()
+    if not commits:
+        return f"no commits on {base}..HEAD"
+    pulls = []
+    for commit in commits:
+        parents = (soft("rev-list", "--parents", "-n1", commit) or "").split()[1:]
+        if len(parents) != 2:
+            return f"{commit[:12]} is not a merge of one PR onto the batch"
+        if (point := soft("merge-base", *parents)) is None:
+            return f"{commit[:12]}'s parents have no merge base"
+        number = QUEUE_MERGE.match(soft("log", "-1", "--format=%s", commit) or "")
+        pulls.append(QueuePull(f"#{number[1]}" if number else commit[:12], point, parents[1]))
+    return pulls
+
+
+def queue_recorded(head: str, point: str) -> tuple[bool, str]:
+    """Whether origin holds the pass record of loop.md's `Affected tests:` command on `head`'s tree, narrowed against
+    `point` (the PR's branch point, the merge base `affected-tests --record` selects against), read as `gate-record
+    <head> -- <that command>` reads it (tests_record_words: one key builder for land and the queue); and why. Any
+    failure to read it is no record, said, so the PR's own tests run."""
+    said = io.StringIO()
+    try:
+        if narrowing() is None:
+            return (
+                False,
+                "loop.md has no `Affected tests:` line, so no record of a PR's tests exists",
+            )
+        if (words := tests_record_words(point)) is None:
+            return False, "the gate has `gate_steps`, which never run the `Affected tests:` command"
+        with contextlib.redirect_stdout(said):
+            code = gate_record(head, words)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"the record could not be read: {exc}"
+    return code == 0, " ".join(said.getvalue().split())[:300]
+
+
+def queue_unkeyed() -> list[str]:
+    """The commands of the gate's steps gatekeeper.md's `select.unkeyed` lists (gate_plan): their pass is never
+    reused, so every batch runs them."""
+    return [step["command"] for step in gate_plan() if step["unkeyed"]]
+
+
+def queue_refusal(selected: bool, missing: list[QueuePull], split: str | None = None) -> str | None:
+    """Why a batch that would run nothing (`selected` false: no unkeyed check, no test) may not merge, else None: a
+    PR with no record (or, where the commits don't split into PRs (`split`), no record readable at all) means a merge
+    with neither a queue run that ran its selection nor a record per PR (R6)."""
+    if selected:
+        return None
+    if split is not None:
+        return f"nothing to run, and no PR's record can be read since the commits don't split into PRs ({split})"
+    if missing:
+        names = ", ".join(pull.name for pull in missing)
+        return f"nothing to run, and {names} has no record for its head's tree: no test of it ran"
+    return None
+
+
+def queue_select(
+    base: str,
+    record: Callable[[str, str], tuple[bool, str]] | None = None,
+    unkeyed: Callable[[], list[str]] | None = None,
+) -> int:
+    """`queue-select [<base>]`: what a merge queue's batch check runs on the batch checked out at HEAD (R6), one shell
+    command per line on stdout, each to pass: the `select.unkeyed` checks, then the floor, `affected-tests --base
+    <point>` for each PR with no record of its `Affected tests:` run (queue_recorded) at that PR's branch point. A PR
+    with a record runs nothing: its own tests passed on its head. Where the commits don't split into PRs, the batch's
+    `affected-tests --base <base>`. Without an `Affected tests:` line (and no `Gate: full`) a floor selects nothing, so
+    none is printed. Refused (exit 1, queue_refusal) when that is nothing while a PR has no record; nothing to run with
+    a record for every PR passes and says so. Each step's reason goes to stderr, prefixed `queue-select:`.
+
+    ponytail: a floor runs in the batch's checkout, so it selects against everything since the PR's branch point, the
+    other PRs and the base's newer commits included: a superset of the PR's own tests, run on the merged tree. A
+    project with a per-test map narrows the batch to the tests two changes both reach (this repo's
+    tools/cross_change_tests.py, which reads queue_pulls, queue_recorded and queue_refusal)."""
+    record, unkeyed = record or queue_recorded, unkeyed or queue_unkeyed
+    checks = unkeyed()
+    queue_say(
+        f"{len(checks)} unkeyed checks (select.unkeyed){': ' if checks else ''}{'; '.join(checks)}"
+    )
+    selects = narrowing() is not None or bool(FULL_GATE.search(loop_md()))
+    floor = [sys.executable, str(Path(__file__).resolve()), "affected-tests", "--base"]
+    pulls = queue_pulls(base)
+    runs: list[str] = []
+    missing: list[QueuePull] = []
+    if isinstance(pulls, str):
+        queue_say(f"the batch's affected tests: the commits don't split into PRs ({pulls})")
+        runs = [shlex.join([*floor, base])] if selects else []
+    else:
+        for pull in pulls:
+            found, line = record(pull.head, pull.point)
+            queue_say(
+                f"PR {pull.name} (head {pull.head[:12]}): record {'found' if found else 'none'}: {line}"
+            )
+            if not found:
+                missing.append(pull)
+                if selects and (run := shlex.join([*floor, pull.point])) not in runs:
+                    queue_say(
+                        f"PR {pull.name}: no record, so its own affected tests run (the floor)"
+                    )
+                    runs.append(run)
+    if why := queue_refusal(
+        bool(checks or runs), missing, pulls if isinstance(pulls, str) else None
+    ):
+        queue_say(f"refused: {why}")
+        return 1
+    if not checks and not runs:
+        queue_say("nothing to run: every PR has a record")
+    print("".join(f"{line}\n" for line in [*checks, *runs]), end="")
+    return 0
+
+
 def failed_tests_of(path: str) -> list[str]:
     """The test ids a red run wrote (`{"failed": [...]}`, as tools/failed_tests.py writes it): the run's own output,
     read before any rerun. Refused for a file that is not there or not that JSON, since a rerun before the red is read
@@ -12105,6 +12244,9 @@ def main(argv: list[str]) -> int:
     # --record: a pass is recorded and pushed as narrowed `local-ci --record` records one (the worker's final head)
     selecting.add_argument("--record", action="store_true")
     commands.add_parser("queue-config")
+    # the batch's base: the queue's target branch tip the batch merges onto
+    queueing = commands.add_parser("queue-select")
+    queueing.add_argument("base", nargs="?", default="origin/main")
     rerunning = commands.add_parser("rerun-tests")
     rerunning.add_argument("failed", metavar="failed-tests.json")
     rerunning.add_argument("--red", required=True, metavar="HEAD")
@@ -12161,6 +12303,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return 0
     if args.command == "rerun-tests":
         return rerun_tests(args.failed, args.red, args.base)
+    if args.command == "queue-select":
+        return queue_select(args.base)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
         if args.plan and args.words:
             raise Refused(

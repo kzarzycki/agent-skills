@@ -15,8 +15,11 @@ stdout is one pytest target per line; `--unkeyed-out` gets one command per line,
   A record of the `gate` alone proves no test, so it never counts, and without an `Affected tests:` line no PR has a
   record, so every PR's own tests run.
 
-The PRs are the batch draft's first-parent commits on `base..HEAD`: Mergify builds the draft from `main` with one
-`Merge of PR <n>` commit per PR, its second parent the PR's head (seen on this repo's batch drafts). The per-test map
+The PR split, the record read, the unkeyed checks and the refusal are the pack's (`approvals.py queue-select`, which
+any project's queue job runs: gatekeeper.py queue_pulls, queue_recorded, queue_unkeyed, queue_refusal); this module
+adds only the narrowing to the tests two changes both reach, which needs a per-test map. The PRs are the batch
+draft's first-parent commits on `base..HEAD`: Mergify builds the draft from `main` with one `Merge of PR <n>`
+commit per PR, its second parent the PR's head (seen on this repo's batch drafts). The per-test map
 is tools/affected_tests.py's (`.test-map/`, the nightly's). Without one, the batch runs its affected tests (the
 fallback, which holds every PR's own tests), and so it does where the commits don't split into PRs; either way one
 line says so and why.
@@ -30,35 +33,18 @@ set where every PR has a record passes and says so. Every line of the selection 
 from __future__ import annotations
 
 import argparse
-import contextlib
-import io
-import re
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 
 from tools import affected_tests as a
 
 GATEKEEPER = Path(__file__).resolve().parents[1] / "gatekeeper/skills/gatekeeper/scripts"
-MERGE = re.compile(r"Merge of PR (\d+)\b")
 
 
 class Refused(Exception):
     """The batch would run nothing on a merge some PR of which has no record."""
-
-
-@dataclass(frozen=True)
-class Pull:
-    name: str  # `#<n>`, else the merge commit's first 12
-    point: str  # the PR's branch point: the merge base of the merge commit's parents
-    head: str
-
-
-def git(*args: str) -> str | None:
-    done = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
-    return done.stdout.strip() if done.returncode == 0 else None
 
 
 def say(line: str) -> None:
@@ -66,29 +52,18 @@ def say(line: str) -> None:
 
 
 def files_between(old: str, new: str) -> list[str]:
-    out = git("diff", "--name-only", "--no-renames", old, new)
-    return sorted(set(out.split())) if out else []
-
-
-def pull_requests(base: str) -> list[Pull] | str:
-    """Each PR of the batch, or why `base..HEAD` doesn't split into PRs."""
-    commits = (git("rev-list", "--first-parent", "--reverse", f"{base}..HEAD") or "").split()
-    if not commits:
-        return f"no commits on {base}..HEAD"
-    pulls = []
-    for commit in commits:
-        parents = (git("rev-list", "--parents", "-n1", commit) or "").split()[1:]
-        if len(parents) != 2:
-            return f"{commit[:12]} is not a merge of one PR onto the batch"
-        point = git("merge-base", *parents)
-        if point is None:
-            return f"{commit[:12]}'s parents have no merge base"
-        number = MERGE.match(git("log", "-1", "--format=%s", commit) or "")
-        pulls.append(Pull(f"#{number[1]}" if number else commit[:12], point, parents[1]))
-    return pulls
+    done = subprocess.run(
+        ["git", "diff", "--name-only", "--no-renames", old, new],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return sorted(set(done.stdout.split())) if done.returncode == 0 else []
 
 
 def gatekeeper():
+    """The pack's gatekeeper, whose `queue-select` is the batch selection any project runs (R6): this module adds only
+    the narrowing to the tests two changes both reach, which needs this repo's per-test map."""
     sys.path.insert(0, str(GATEKEEPER))
     import approvals
 
@@ -96,30 +71,16 @@ def gatekeeper():
 
 
 def recorded(head: str, point: str) -> tuple[bool, str]:
-    """Whether origin holds the gatekeeper's pass record of loop.md's `Affected tests:` command on `head`'s tree,
-    narrowed against `point` (the PR's branch point, the merge base `affected-tests --record` selects against), read
-    as `gate-record <head> -- <that command>` reads it; and why. A gatekeeper that fails to answer is no record."""
-    g = gatekeeper()
-    said = io.StringIO()
-    # any failure to read the record (an import, a refusal, git) is no record, said, so the PR's tests run
+    """The pack's queue_recorded: a pass record of loop.md's `Affected tests:` run on `head`'s tree against `point`."""
     try:
-        if g.narrowing() is None:
-            return (
-                False,
-                "loop.md has no `Affected tests:` line, so no record of a PR's tests exists",
-            )
-        if (words := g.tests_record_words(point)) is None:
-            return False, "the gate has `gate_steps`, which never run the `Affected tests:` command"
-        with contextlib.redirect_stdout(said):
-            code = g.gate_record(head, words)
-    except Exception as exc:  # noqa: BLE001
+        return gatekeeper().queue_recorded(head, point)
+    except Exception as exc:  # noqa: BLE001 -- a gatekeeper that won't load is no record, so the PR's tests run
         return False, f"the record could not be read: {exc}"
-    return code == 0, " ".join(said.getvalue().split())[:300]
 
 
 def unkeyed_checks() -> list[str]:
-    """The commands of the gate's steps gatekeeper.md's `select.unkeyed` lists (gate_plan)."""
-    return [step["command"] for step in gatekeeper().gate_plan() if step["unkeyed"]]
+    """The pack's queue_unkeyed: the gate's steps gatekeeper.md's `select.unkeyed` lists."""
+    return gatekeeper().queue_unkeyed()
 
 
 def select(
@@ -130,14 +91,13 @@ def select(
     """The batch's unkeyed checks and its test targets; Refused when both are empty and a PR has no record."""
     checks = unkeyed()
     say(f"{len(checks)} unkeyed checks (select.unkeyed){': ' if checks else ''}{'; '.join(checks)}")
-    pulls = pull_requests(base)
+    g = gatekeeper()
+    pulls = g.queue_pulls(base)
     if isinstance(pulls, str):
         say(f"fallback to the batch's affected tests: the commits don't split into PRs ({pulls})")
         picked = a.targets(a.changed(base), base)
-        if not checks and not picked:
-            raise Refused(
-                f"nothing to run, and no PR's record can be read since the commits don't split into PRs ({pulls})"
-            )
+        if why := g.queue_refusal(bool(checks or picked), [], pulls):
+            raise Refused(why)
         return checks, picked
     missing = []
     for pull in pulls:
@@ -173,12 +133,9 @@ def select(
                 chosen |= floor
         picked = sorted(chosen)
         say(f"map of {mapped[0][:12]}: {len(picked)} tests")
+    if why := g.queue_refusal(bool(checks or picked), missing):
+        raise Refused(why)
     if not checks and not picked:
-        if missing:
-            names = ", ".join(pull.name for pull in missing)
-            raise Refused(
-                f"nothing to run, and {names} has no record for its head's tree: no test of it ran"
-            )
         say("nothing to run: every PR has a record and no test is reached by two changes")
     return checks, picked
 
