@@ -251,3 +251,22 @@ def test_push_asks_only_for_successful_runs_and_reads_the_next_page():
 
     assert nightly.tested_by_batch(api, "o/r", "ci.yml", MAIN, "mergify")["id"] == 7
     assert all("status=success" in p for p in asked if "/runs?" in p)
+
+
+@pytest.mark.parametrize("kind", ["mergify", "github"])
+def test_an_unset_queue_reads_the_batches_of_both(kind):
+    api = forge("t1", batches=[queue_run(kind)])
+    assert nightly.tested_by_batch(api, "o/r", "ci.yml", MAIN, None)
+
+
+def test_the_nightly_asks_only_for_successful_scheduled_runs_on_the_branch():
+    asked: list[str] = []
+
+    def api(path: str):
+        asked.append(path)
+        return runs()
+
+    nightly.last_green_is(api, "o/r", "ci.yml", "main", MAIN)
+    assert (
+        "event=schedule" in asked[0] and "status=success" in asked[0] and "branch=main" in asked[0]
+    )
