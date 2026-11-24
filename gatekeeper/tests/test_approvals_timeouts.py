@@ -477,7 +477,7 @@ def test_a_mergify_head_timing_out_twice_stays_out_of_the_queue_and_names_the_bu
     assert len(requeues(mergify)) == 1
     assert labels_of(mergify, 7) & {"loop:queued", "loop:dequeued"} == set()
     assert notes_on(mergify, 7, "Evicted from the merge queue") == []
-    # the next land holds it out, and raising `timeouts.run` lets it go in again
+    # the next land holds it out
     code, lines = mergify["land"]("7")
     assert code == approvals.WAITING, lines
     assert any("timed out twice" in each for each in lines)
@@ -506,19 +506,100 @@ def test_a_refused_requeue_after_a_first_timeout_is_no_second_timeout(
     assert len(requeues(mergify)) == 1
 
 
-def test_a_raised_budget_gives_the_head_a_fresh_first_timeout(mergify: dict[str, Any]) -> None:
+def test_a_raised_budget_gives_the_head_a_fresh_first_timeout(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
     head = mergify["opened"](7)
     assert mergify["land"]("7")[0] == 0
     dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
     assert mergify["land"]("7")[0] == 0
     mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
     assert mergify["land"]("7")[0] == approvals.WAITING
-    stopped = approvals.run_budget
-    approvals.run_budget = lambda: 2 * stopped()
-    try:
-        mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
-        code, lines = mergify["land"]("7")
-    finally:
-        approvals.run_budget = stopped
+    monkeypatch.setattr(approvals, "timeouts", lambda loop: {"test": 60, "run": 7200})
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    code, lines = mergify["land"]("7")
     assert code == 0, lines
     assert not any("timed out twice" in each for each in lines)
+
+
+def test_a_refused_label_removal_after_a_first_timeout_is_no_second_timeout(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    with monkeypatch.context() as patch:
+
+        def refused(number: int, name: str, add: bool) -> None:
+            raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
+
+        patch.setattr(approvals, "label", refused)
+        assert mergify["land"]("7")[0] == 1
+    code, lines = mergify["land"]("7")
+    assert code == 0, lines
+    assert not any("timed out twice" in each for each in lines)
+
+
+def mark_ready_again(state: dict[str, Any], at: str) -> None:
+    state["pulls"][7]["timelineItems"]["nodes"].append(
+        {"__typename": "ReadyForReviewEvent", "createdAt": at}
+    )
+
+
+def test_a_mergify_pr_marked_ready_again_counts_its_timeouts_anew(
+    mergify: dict[str, Any],
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    assert mergify["land"]("7")[0] == 0
+    mark_ready_again(mergify, "2999-01-01T00:00:00Z")
+    assert mergify["land"]("7")[0] == 0
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    code, lines = mergify["land"]("7")
+    assert code == 0, lines
+    assert not any("timed out twice" in each for each in lines)
+
+
+def stopped_github_queue(queue: dict[str, Any]) -> str:
+    head = queue["opened"](7)
+    queue["checks"]["g1"] = [run("qualify", "timed_out", 410)]
+    queue["checks"]["g2"] = [run("qualify", "timed_out", 420)]
+    queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
+    queue["remove"](7, approvals.FAILED_CHECKS, at=AGAIN_AT, group="g2")
+    assert queue["land"]("7")[0] == approvals.WAITING
+    assert len(notes_on(queue, 7, approvals.TIMED_OUT_TWICE)) == 1
+    # the fake stamps every comment alike: the stop record follows the removals it answers
+    for node in queue["pulls"][7]["comments"]["nodes"]:
+        if node["body"].startswith(approvals.TIMED_OUT_TWICE):
+            node["createdAt"] = "2026-10-02T13:00:00Z"
+    return head
+
+
+def test_a_github_queue_stop_is_recorded_once_and_holds_on_later_lands(
+    queue: dict[str, Any],
+) -> None:
+    stopped_github_queue(queue)
+    assert queue["land"]("7")[0] == approvals.WAITING
+    assert len(notes_on(queue, 7, approvals.TIMED_OUT_TWICE)) == 1
+    assert queue["enqueued"] == []
+
+
+def test_a_github_queue_pr_marked_ready_again_counts_its_timeouts_anew(
+    queue: dict[str, Any],
+) -> None:
+    head = stopped_github_queue(queue)
+    mark_ready_again(queue, "2999-01-01T00:00:00Z")
+    code, lines = queue["land"]("7")
+    assert code == 0, lines
+    assert queue["enqueued"] == [(7, head)]
+
+
+def test_a_raised_budget_lifts_a_github_queue_stop(
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = stopped_github_queue(queue)
+    monkeypatch.setattr(approvals, "timeouts", lambda loop: {"test": 60, "run": 7200})
+    code, lines = queue["land"]("7")
+    assert code == 0, lines
+    assert queue["enqueued"] == [(7, head)]
