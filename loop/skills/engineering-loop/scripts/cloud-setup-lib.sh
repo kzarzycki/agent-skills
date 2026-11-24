@@ -40,14 +40,19 @@ version_ok() {
 }
 
 # setup_requires <skills dir>...: each `metadata.requires` entry (`tool` or `tool>=version`) of every installed
-# skill, resolved on PATH at that version, else installed through mise (`mise use -g`); each logs its seconds
+# skill, resolved on PATH at that version, else installed through mise (`mise use -g`), else apt (the registry lacks lsof; the proxy's 403 on the API fails
+# a github tool); each logs its seconds
 setup_requires() {
-  local entry tool want
+  local entry tool want s rc
   for entry in $(cat "$@" 2>/dev/null | sed -n 's/^  requires: "\(.*\)"$/\1/p' | tr ' ' '\n' | sort -u); do
     tool=${entry%%>=*} want=""; [ "$tool" = "$entry" ] || want=${entry#*>=}
     version_ok "$tool" "$want" && { echo "requires $entry: present" >> "$log"; continue; }
-    step "requires $entry" env MISE_HTTP_TIMEOUT=10s MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=10s mise use -g "$tool${want:+@latest}"
-    version_ok "$tool" "$want" || { echo "FAILED: requires $entry" >> "$log"; }
+    s=$(date +%s)
+    { env MISE_HTTP_TIMEOUT=10s MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=10s mise use -g "$tool${want:+@latest}" \
+      || apt-get install -y -qq "$tool"; } >>"$log.out" 2>&1
+    if version_ok "$tool" "$want"; then rc=ok; else rc=FAILED; fi
+    echo "requires $entry: $rc, $(( $(date +%s) - s )) s" >> "$log"
+    [ "$rc" = ok ] || echo "FAILED: requires $entry" >> "$log"
   done
 }
 

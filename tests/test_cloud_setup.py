@@ -294,12 +294,13 @@ def test_requires_resolve_and_log(tmp_path: Path) -> None:
     tools = {
         "gh": "echo gh version 2.0.0",  # older than the skill wants
         "uv": "echo uv 0.13.4",
+        "apt-get": "exit 1",
         "mise": f'[ "$3" = vhs ] && exit 1; {new_gh}; exit 0',
     }
     log, _ = lib(tmp_path, "setup_requires skills/*/SKILL.md", tools)
-    assert re.search(r"^requires gh>=2.99.0: exit 0, \d+ s$", log, re.MULTILINE), log
+    assert re.search(r"^requires gh>=2.99.0: ok, \d+ s$", log, re.MULTILINE), log
     assert "requires uv: present" in log
-    assert re.search(r"^requires vhs: exit 1, \d+ s$", log, re.MULTILINE), log
+    assert re.search(r"^requires vhs: FAILED, \d+ s$", log, re.MULTILINE), log
     assert "FAILED: requires vhs\n" in log and "FAILED: requires gh" not in log
 
 
