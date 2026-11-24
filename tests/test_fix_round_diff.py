@@ -50,7 +50,7 @@ def test_acceptance_budget_stays_with_run_time_as_its_reason():
     skill = text("SKILL.md")
     assert "Acceptance budget: <spec minutes>, <nightly minutes>" in skill
     assert "reruns them on every pass" not in skill
-    assert re.search(r"since the spec's and the nightly's run time", skill)
+    assert re.search(r"adds to the spec's and the nightly's run time", skill)
 
 
 def test_old_path_copies_match():

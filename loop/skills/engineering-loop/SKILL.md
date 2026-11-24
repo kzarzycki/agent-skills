@@ -249,8 +249,8 @@ exits 0 when all pass, 1 when one fails and 2 when there is nothing to run, so "
 never read as "passed"; `--all` runs every `acceptance/*/` folder, for a nightly. The worker runs
 it on the head before its report (worker.md, Report), and its docstring has the line formats.
 One spec's checks finish within 10 min on the gate's machine and the `--all` run within 90, or
-the minutes of loop.md's `Acceptance budget: <spec minutes>, <nightly minutes>`, since the
-spec's and the nightly's run time: a longer check is split or moves to the nightly. Over the
+the minutes of loop.md's `Acceptance budget: <spec minutes>, <nightly minutes>`, since each
+minute adds to the spec's and the nightly's run time: a longer check is split or moves to the nightly. Over the
 budget the runner prints one line saying so and still exits on the checks' result, since the
 budget is a signal, not a gate.
 
