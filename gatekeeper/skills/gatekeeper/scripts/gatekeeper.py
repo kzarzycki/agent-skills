@@ -2517,8 +2517,13 @@ def closed(pull: dict[str, Any], repo: str, loop: str | None) -> set[int]:
     return named | {
         issue["number"]
         for issue in pull["closingIssuesReferences"]["nodes"]
-        if issue["repository"]["nameWithOwner"].lower() == repo.lower()
+        if in_repo(issue, repo)
     }
+
+
+def in_repo(issue: dict[str, Any], repo: str) -> bool:
+    """Whether a closing reference's issue is `repo`'s: names compare without case, since GitHub spells them either way."""
+    return bool(issue["repository"]["nameWithOwner"].lower() == repo.lower())
 
 
 # how many open PRs duplicates() reads, in one call; a list that long may have left one out
@@ -4870,9 +4875,13 @@ def denied(text: str) -> None:
 
 
 def closing_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
-    """GitHub's closing references plus every `#n` after a closing keyword, `Part of` or `Implements` in the body: GitHub sometimes
-    never links a closing line, and has no API to set the link."""
-    issues: list[dict[str, Any]] = pull["closingIssuesReferences"]["nodes"]
+    """GitHub's closing references into the PR's own repo plus every `#n` after a closing keyword, `Part of` or `Implements`
+    in the body: GitHub sometimes never links a closing line, and has no API to set the link. A reference to another
+    repo's issue is a different issue, whatever its number (closed()), and stays out of every gate."""
+    repo = pull["baseRepository"]["nameWithOwner"]
+    issues: list[dict[str, Any]] = [
+        issue for issue in pull["closingIssuesReferences"]["nodes"] if in_repo(issue, repo)
+    ]
     unlinked = sorted(set(named(pull["body"] or "")) - {issue["number"] for issue in issues})
     if unlinked:  # a `#n` that is a pull request is left out
         issues = issues + issues_of(unlinked)
