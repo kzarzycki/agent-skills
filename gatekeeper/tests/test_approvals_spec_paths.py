@@ -356,6 +356,6 @@ def test_a_spec_outside_its_paths_passes_on_the_owners_approval(writers: list[st
     )
     spec = by("worker", approved)
     assert approvals.proofs("build", pull(files=("app.py",)), [spec], SCOPED) == []
-    assert approvals.proofs("build", pull(files=("app.py",)), [tooling()], SCOPED)[0].startswith(
-        "#1: its spec is the owner's to approve, though it carries `spec:paths`"
+    assert approvals.proofs("build", pull(files=("app.py",)), [tooling()], SCOPED) == owners(
+        "the PR changes `app.py`, outside `spec.auto`'s `paths`"
     )
