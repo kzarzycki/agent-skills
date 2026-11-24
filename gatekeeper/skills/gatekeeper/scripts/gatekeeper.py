@@ -9817,14 +9817,14 @@ def selected(base: str, head: str | None = None) -> tuple[list[str], list[str]] 
 
 def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
     """affected-tests' cut by `select` (selected): None when the change since `base` holds a build input, or the cut
-    can't tell, so the `Affected tests:` command runs; else the exit of the `checks` the change touches, each run in
+    can't tell, so the caller's run goes ahead (the `Affected tests:` command, else the full check); else the exit of the `checks` the change touches, each run in
     turn under the gate slot, the first that fails ending the run, 0 when none applies."""
     if (cut := selected(base)) is None:
         return None
     inputs, commands = cut
     if inputs:
         print(
-            f"affected-tests: build input {inputs[0]}: the `Affected tests:` command runs",
+            f"affected-tests: build input {inputs[0]}: the cut can't settle it",
             file=sys.stderr,
         )
         return None

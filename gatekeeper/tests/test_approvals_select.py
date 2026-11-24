@@ -535,6 +535,21 @@ def test_without_the_line_the_select_cut_runs_then_the_full_check(
     assert worker["ran"]() == ran
 
 
+def test_a_build_input_without_the_line_says_the_full_check_runs(
+    worker: dict[str, Any], capsys: Any
+) -> None:
+    """With no `Affected tests:` line, the build input's line names no command that isn't there."""
+    worker["start"](SELECT, selector=False)
+    worker["commit"]("src/app.py")
+    assert approvals.main(["affected-tests"]) == 0
+    said = capsys.readouterr().err
+    assert (
+        "build input src/app.py: the cut can't settle it" in said
+        and "the project's full check runs" in said
+    )
+    assert "the `Affected tests:` command runs" not in said
+
+
 def test_a_non_product_change_without_the_line_selects_zero_and_says_so(
     worker: dict[str, Any], capsys: Any
 ) -> None:
