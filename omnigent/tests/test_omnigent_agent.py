@@ -14680,6 +14680,28 @@ def test_a_done_of_a_session_the_notified_session_already_archived_gets_no_act_l
     assert acts_of(lead_done(tmp_path, monkeypatch, None, archived=True), COS) == []
 
 
+def test_a_followed_sessions_leads_registry_makes_its_bare_done_no_act_line_2309(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``leads=`` field of a registry line reaches ``route`` as ``coordinator``: a manager's bare ``DONE`` raises
+    nothing, the same turn from a followed lead with no registry is told."""
+    text = "Nothing to do on #667. It isn't my PR.\n\nDONE"
+
+    def run(sub: str, extra: str) -> list[str]:
+        base = tmp_path / sub
+        base.mkdir()
+        (base / "leads.registry").write_text("")
+        registry = base / "registry"
+        registry.write_text(f"a={base / 'a.md'}\t{base / 'a.md.brief'}\tfollow{extra}\n")
+        og = Lead(told("brief", 900), ending("working", 600), ending(text, 400))
+        og.snap = {"status": "idle"}
+        supervised(og, registry, monkeypatch, 2, notify=COS, console=True)
+        return acts_of(og, COS)
+
+    assert run("lead", "")  # the control: a lead's bare DONE is told
+    assert run("manager", f"\tleads={tmp_path / 'manager' / 'leads.registry'}") == []
+
+
 def test_a_send_that_is_not_the_result_leaves_the_done_an_act_line_2090(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
