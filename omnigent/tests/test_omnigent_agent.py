@@ -341,13 +341,6 @@ def this_repo(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def no_loop_events(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No loop events on origin: the supervisor's `ls-remote` is a real git call whose time would move these tests'
-    clocks (#1377; test_omnigent_agent_events.py reads a bare remote)."""
-    monkeypatch.setattr(omnigent_agent, "read_loop_events", lambda cwd=None: None)
-
-
-@pytest.fixture(autouse=True)
 def no_model(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The small model faked: never a real call. Each event it is asked about is recorded, and
     it answers ``none`` (mid-work)."""
@@ -3689,8 +3682,6 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     og = FakeOmnigent()
     og.fail.add("create")  # the lookup after a failed create is the top-level one too
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    # the checkout's own policy delegates (#1551): the plain wording is what a policy without it gets
-    monkeypatch.setattr(omnigent_agent, "lead_delegation", lambda *_: "")
     sid, _ = omnigent_agent.start(
         og, "claude", "t", "do X", tmp_path / "r.md", None, 0, top_level=True
     )
