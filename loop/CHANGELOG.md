@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.7 - 2026-11-24
+
+- engineering-loop: lead.md's `claude` verifier route no longer asks for a `--model` other than the author's (#2297).
+
 ## 0.1.6 - 2026-11-24
 
 - engineering-loop: R6 names the pack's `approvals.py queue-select [<base>]` as what a queue's batch check runs: the commands it prints for the batch at HEAD, one per line, each to pass (#2279).
