@@ -77,7 +77,7 @@ RECORDED: dict[str, Any] = {
             {"number": 72, "created_at": "2026-11-13T03:00:00Z", "body": "Merges: #5"},
         ]
     },
-    "repos/acme/widgets/git/matching-refs/heads/loop-gate/": [
+    "repos/acme/widgets/git/matching-refs/heads/loop-gate": [
         {"ref": "refs/heads/loop-gate/T1-abc"},
         {"ref": "refs/heads/loop-gate/T2-abc"},
         {"ref": "refs/heads/loop-gate/T2-def"},
@@ -202,3 +202,9 @@ def test_a_week_with_no_merges_prints_zero() -> None:
     assert "merged 0, no-record 0, reverts 0, red-nights 0 | week before" in loop_metrics.line(
         gh, REPO, SINCE
     )
+
+
+def test_a_failed_refs_listing_is_an_error_not_an_empty_record_set(capsys) -> None:
+    recorded = {k: v for k, v in RECORDED.items() if "matching-refs" not in k}
+    assert loop_metrics.main([REPO, "--since", "2026-11-17"], FakeGh(recorded)) == 1
+    assert "matching-refs" in capsys.readouterr().err

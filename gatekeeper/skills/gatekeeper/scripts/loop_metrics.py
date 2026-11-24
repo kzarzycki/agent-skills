@@ -131,10 +131,9 @@ def read_timeline(gh: Gh, repo: str, number: int) -> dict[str, Any]:
 def record_trees(gh: Gh, repo: str) -> set[str]:
     """The trees that have an R1 record: refs `loop-gate/<tree>-<key>`, listed once."""
     prefix = "refs/heads/loop-gate/"
-    try:
-        refs = pages(gh, f"repos/{repo}/git/matching-refs/heads/loop-gate/")
-    except RuntimeError:
-        return set()
+    refs = pages(
+        gh, f"repos/{repo}/git/matching-refs/heads/loop-gate"
+    )  # no trailing slash: the API refuses one
     return {r["ref"][len(prefix) :].split("-", 1)[0] for r in refs if r["ref"].startswith(prefix)}
 
 
