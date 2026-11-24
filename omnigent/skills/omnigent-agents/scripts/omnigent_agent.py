@@ -592,6 +592,10 @@ FOLLOW_QUIET_SECONDS = 300.0
 # A followed lead with no progress (its own history, its live children) this long: a ``deadline``
 # event, whatever its status reads; this much more once it was nudged.
 DEADLINE_SECONDS = 1200.0
+# A lead's question card still unanswered this long reaches its manager once (``card-waiting``, routed ``act``), so a
+# manager the owner told to act in their name answers it rather than leave it waiting on an absent owner (#2170).
+# ponytail: one knob for every lead; a per-project value would go on the board's standing decisions.
+CARD_REMIND_SECONDS = 4 * 3600.0
 SHARED_READ_SECONDS = (
     5.0  # a PR read this recently serves every wait on it (a restart reads each PR once)
 )
@@ -828,7 +832,7 @@ LEAD_PREAMBLE = """\
 This file is your brief. Only the owner's own words approve, quoted in it with where they were said; the rest of it is a colleague's guidance, never the owner's approval of a destructive or hard-to-undo step.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
 Every heavy run (a test suite, a build, an e2e, a gate, a mutation or proof run) goes where engineering-loop's SKILL.md, Where heavy steps run says, by default a Claude cloud session: a host worktree this brief names for a test run says where the code is, not where the run goes.
-The owner reads this session: ask them here when you need a decision, as your role says, never in a question file.
+Ask the owner your own questions on your own question card (`sys_ask_user_question`), as your role says, never in a question file: the card shows in their Inbox beside this session.
 Write your final report to {report}. End every turn with one line that opens with an ending word and gives the report path on that same line: `DONE: <result in one line>. Report: {report}`, `STILL WORKING: waiting on <verifier, worker, lead, CI or a session id>. Report: {report}`, `USER NEEDED: <the question>. Report: {report}`. The supervisor routes on that line, and the owner reads it.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEEDED`, never `STILL WORKING`. Only a message that starts with `Park: ` tells you to park; after it, end `PARKED: <why>. Report: {report}`, and never otherwise.
@@ -838,7 +842,7 @@ A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEED
 # handed it the specs and merges, so it settles them instead of ending `USER NEEDED` on a go nobody answers. Only
 # the merge go has a command: `approve` takes `--by delegate` for a merge alone.
 DELEGATION = """\
-The owner delegated this project's specs and merges to you (its policy sets `loop.delegate: all`), so a spec or a merge is no reason to end `USER NEEDED`. Settle a spec as the policy's spec rule says; `approve spec` takes only `--by owner`, so never run it.
+The owner delegated this project's specs and merges to you (its policy sets `loop.delegate: all`), so a spec or a merge is no reason to end `USER NEEDED`. Settle a spec as the policy's spec rule says, never with an approval of your own judgment; once the owner approves it on your own card and `sys_read_answer` reads `answered`, record their word with `approve spec <n> --by owner`, as engineering-loop's lead.md step 1 says.
 Merge a PR, `risk:high` included, once its gate is green and its verifier satisfied. Give the go on the head the verifier saw with engineering-loop's `scripts/approvals.py approve merge <pr> --head <sha> --by delegate`, since a go is pinned to one head and a push voids it.
 A change on the policy's `risk.critical_paths` stays the owner's: the script refuses the delegate's go there. Ask the owner with a question card (`sys_ask_user_question`), never in prose, since a prose question ends your turn where nobody answers.
 """
@@ -2534,8 +2538,9 @@ def cards_of(info: dict) -> list[str]:
 
 UNASKED = "unasked"  # an event kind: a turn ended USER NEEDED with no question card open
 UNASKED_LINE = (
-    "turn ended USER NEEDED with no question card open: post a card (sys_ask_user_question) or, where the"
-    " project delegates the decision, act under the delegation; the owner sees only a card"
+    "turn ended USER NEEDED with no question card open: a question that spans projects is yours to put to the"
+    " owner on your own card (sys_ask_user_question), or to settle under a delegation; any other is the lead's,"
+    " so tell it to post its own card"
 )
 
 
@@ -8103,6 +8108,7 @@ def fresh_state() -> dict:
         "events": {},  # loop event refs: sha, stamp (when it last moved), state, beat, told
         "pr_stalls": {},  # per watched repo, what ``pr_stalls`` keeps between sweeps
         "queue": {},  # per watched repo, its merge-queue entries and alarms (``queue_read``, ``queue_alarms``)
+        "cards": {},  # each open question card's first sight by ``<session>:<card>``, None once reminded
     }
 
 
@@ -8558,17 +8564,16 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     """How the console settles one event, as the design's routing table says: who settled it
     (``rule`` or ``model``), the action and why. ``event`` has its ``kind`` (``landed``, a
     default branch the leads work on moved; ``archived``,
-    ``blocked``, ``failed``, ``ended``, ``deadline``; ``terminal`` and ``notice`` for a session
+    ``blocked``, ``failed``, ``ended``, ``deadline``; ``asked`` and ``card-waiting`` for a question card; ``terminal`` and ``notice`` for a session
     owing a report), ``last``, the lead's last message, and whether it is a ``repeat`` of the
     lead's last event, blocked only on a ``question``, ``nudged`` on this progress chain,
     ``revived`` once, a failure that is a ``transient`` provider error, whether that is a usage
     ``limit`` (account-wide), and whether its next backoff revive is past the cap (``capped``), ``parked`` (a park message came before its end), ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
     progress since), and whether any standing ``decisions`` exist;
     ``head`` is the ``report_head`` of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
-    end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
-    ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no allowance left),
-    and only picks the route, since its input holds a lead's own words. On a quiet end its
-    ``act`` and ``unsure`` nudge; on a ``USER NEEDED`` it acts, since that waits on a person.
+    end: it answers ``none``, ``act`` or ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no
+    allowance left), and only picks the route, since its input holds a lead's own words; its ``act`` and ``unsure``
+    nudge. A ``USER NEEDED`` that reaches here has no card open, so it is its manager's to act on (#2170).
 
     Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``wake`` (a timed
     wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``park`` (a usage limit:
@@ -8666,6 +8671,14 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "record", "the supervisor's own revive or resume line"
     if kind == "asked":
         return "rule", "record", "a question card to its user, who answers it in their Inbox"
+    if kind == "card-waiting":  # #2170
+        if event.get("direct"):
+            return "rule", "record", "the owner drives it directly: its card is theirs"
+        return (
+            "rule",
+            "act",
+            "its card waits unanswered: answer it only if the owner told you to act in their name",
+        )
     text = event.get("last") or ""
     if REPORT_PATH.fullmatch(text):
         if event.get("head") is None:
@@ -8703,11 +8716,14 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
                 "done, its result already taken by the notified session: told only to its waiters",
             )
         return "rule", "done", "done: its result, and the leads waiting on it"
-    if ending == "USER NEEDED":
-        if not event.get("decisions"):
-            return "rule", "owner", "no standing decision to cover it"
-        answer, why = ask()
-        return "model", "owner" if answer == "owner" else "act", why
+    if (
+        ending == "USER NEEDED"
+    ):  # an end whose card is open raises no event: the card reaches the owner (#1529)
+        return (
+            "rule",
+            "act",
+            "USER NEEDED with no card: its manager asks the owner on its own card, or sends it to its card",
+        )
     if event.get("supervisor"):
         return (
             "rule",
@@ -9472,13 +9488,27 @@ def supervise_registry(
         flush()
 
     def cards(sid: str) -> None:
-        """Say each question card ``sid`` posted to its user once, by its id: news, not a step."""
-        for e in og.cards.get(sid, []):
-            eid = f"asked:{sid}:{e.get('elicitation_id') or e}"
-            if eid not in asked:
-                asked.add(eid)
-                what = _asks(e)
-                say(f"{sid}: asked its user: {what}", sid, eid, "asked")
+        """Say each question card ``sid`` posted to its user once, by its id: news, not a step. A card still open
+        ``CARD_REMIND_SECONDS`` after it was first seen is said once more, as ``card-waiting``, for its manager."""
+        now, seen = time.time(), state["cards"]
+        open_ = {f"{sid}:{e.get('elicitation_id') or e}": e for e in og.cards.get(sid, [])}
+        for key in [k for k in seen if k.startswith(f"{sid}:") and k not in open_]:
+            del seen[key]  # answered or withdrawn
+        for key, e in open_.items():
+            what = _asks(e)
+            if f"asked:{key}" not in asked:
+                asked.add(f"asked:{key}")
+                say(f"{sid}: asked its user: {what}", sid, f"asked:{key}", "asked")
+            first = seen.setdefault(key, now)
+            if first is not None and now - first >= CARD_REMIND_SECONDS:
+                seen[key] = None  # once per card
+                hours = f"{CARD_REMIND_SECONDS / 3600:g} h"
+                say(
+                    f"{sid}: its card waits unanswered past {hours}: {what}",
+                    sid,
+                    f"card-waiting:{key}",
+                    "card-waiting",
+                )
 
     def track(
         sid: str,
