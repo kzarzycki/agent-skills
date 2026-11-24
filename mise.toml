@@ -124,7 +124,7 @@ description = "ruff check and format check over the repo's Python"
 run = """uv run ruff check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent"""
 
 [tasks.check-fast]
-description = "The PR head's check (`qualify`): vendor check, lint and the Mergify config drift check, no tests. The tests run once per tree, on the batch (test-batch)."
+description = "The PR head's check (`qualify`): vendor check, lint and the Mergify config drift check (the pack template rendered with gatekeeper.md's `land` and `timeouts`), no tests. The tests run once per tree, on the batch (test-batch)."
 run = """mise run vendor-engineering-check
 mise run lint
 uv run gatekeeper/skills/gatekeeper/scripts/approvals.py queue-config | cmp - .mergify.yml || { echo 'error: .mergify.yml drifted from `approvals.py queue-config`, the pack template rendered with gatekeeper.md'"'"'s land block: write its output to .mergify.yml' >&2; exit 1; }"""

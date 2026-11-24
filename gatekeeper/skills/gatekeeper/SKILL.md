@@ -23,6 +23,7 @@ it exits with one line saying so. It needs Python 3.9 or later and `gh`, logged 
 | `land [--wait]` | every merge proof, then marks the PR ready and merges it, pinned to the head |
 | `report [--json]` | reads a verifier report as the gatekeeper does; `--json` prints its facts |
 | `delegate` | the delegated approver's `approved:merge`, feature branch only |
+| `timeouts [--json\|--mergify\|--check]` | every time limit the policy's `timeouts` derive; `--mergify` renders `.mergify.yml`, `--check` exits 1 where it is out of step |
 
 Exit codes, for every verb: `0` allowed or done; `1` refused, with one line per missing
 proof; `3` waiting (pending checks, a forge state not computed yet): run it again. The
