@@ -100,3 +100,20 @@ def test_a_record_of_the_affected_tests_run_lands(
     code, lines = lands["land"]("7")
     assert code == 0, lines
     assert lands["merged"]() == ["7"]
+
+
+def test_a_head_with_no_merge_base_is_refused_since_its_record_cant_be_found(
+    lands: dict[str, Any], records: dict[str, set[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `Affected tests:` record is keyed by the merge base: without one, no record is found, so nothing lands."""
+    affected_line(lands)
+    head = lands["open"](7, {"7.txt": "7\n"})
+    records[head] = {GATE, narrowed(lands, head)}
+    monkeypatch.setattr(approvals, "merge_base_of", lambda _base, _head: None)
+    code, lines = lands["land"]("7")
+    assert code == 1, lines
+    assert lands["merged"]() == []
+    assert any(
+        "no merge base with origin/main, so no `Affected tests:` record is found" in line
+        for line in lines
+    )
