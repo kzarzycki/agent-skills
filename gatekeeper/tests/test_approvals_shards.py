@@ -128,3 +128,7 @@ def test_the_run_passes_only_when_every_shard_has_a_record_keyed_by_its_command(
     assert asked == keyed
     held.add(keyed[2])
     assert approvals.main(args) == 0
+
+
+def test_one_shard_is_recorded_under_the_command_itself() -> None:
+    assert approvals.shard_command("run all", 1, 1, SUITE) == "run all"
