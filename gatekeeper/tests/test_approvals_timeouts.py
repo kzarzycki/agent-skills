@@ -179,6 +179,28 @@ def test_check_setup_names_a_checks_timeout_out_of_step(
     assert "`checks_timeout` is '1 hour'" in capsys.readouterr().out
 
 
+def test_check_setup_reads_only_the_timeout_line(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A consumer's other edits of .mergify.yml are no `check setup` problem; `timeouts --check` reads the whole file."""
+    (checkout / ".mergify.yml").write_text(
+        TEMPLATE.read_text().replace("batch_size: 3", "batch_size: 5")
+    )
+    monkeypatch.setattr(approvals, "toplevel", lambda: checkout)
+    monkeypatch.setattr(approvals, "project", lambda **_: (None, None))
+    monkeypatch.setattr(approvals, "setup_problems", lambda root: [])
+    assert approvals.setup() == 0
+    assert "mergify" not in capsys.readouterr().out.lower()
+
+
+def test_the_verb_labels_a_land_wait_override_as_such(checkout: Path) -> None:
+    gatekeeper = checkout / "docs" / "agents" / "gatekeeper.md"
+    gatekeeper.write_text(policy_md("timeouts:\n  run: 4h\n"))
+    assert "land --wait: 8 hours (the queue's checks timeout plus one more run)" in verb()[1]
+    gatekeeper.write_text(policy_md("timeouts:\n  run: 4h\nland:\n  wait: 3h\n"))
+    assert "land --wait: 3 hours (land.wait, deprecated)" in verb()[1]
+
+
 def test_the_verb_prints_every_derived_limit(checkout: Path) -> None:
     (checkout / "docs" / "agents" / "gatekeeper.md").write_text(policy_md("timeouts:\n  run: 4h\n"))
     code, out = verb("--json")
@@ -236,11 +258,29 @@ def test_affected_tests_over_the_budget_says_so_in_one_line(
     monkeypatch.setitem(approvals.TIMEOUTS, "run", "1s")
     assert approvals.main(["affected-tests"]) == approvals.TIMED_OUT
     [line] = [each for each in capsys.readouterr().err.splitlines() if "timed out" in each]
+    # the verb can't count what the project's selector picks: it says so, and gives the changed files
     assert line.startswith(
-        "affected-tests: timed out after `timeouts.run` (1 second) running the tests 3 changed"
+        "affected-tests: timed out after `timeouts.run` (1 second) running a selection of unknown size"
+        " (3 changed files against "
     )
     assert "unsharded (no `select.shards`)" in line
     assert "a timeout, not a test failure" in line
+
+
+def test_a_full_run_over_the_budget_names_the_whole_suite(
+    worker: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`Gate: full` runs the whole suite with no base: the line says so."""
+    mise = worker["repo"].parent / "tools" / "mise"
+    mise.write_text("#!/bin/sh\nsleep 30\n")
+    worker["set_loop"](f"# Loop\n\nAffected tests: {sys.executable} x.py\nGate: full\n")
+    worker["commit"]("app.py", "value = 2\n")
+    monkeypatch.setitem(approvals.TIMEOUTS, "run", "1s")
+    assert approvals.main(["affected-tests"]) == approvals.TIMED_OUT
+    [line] = [each for each in capsys.readouterr().err.splitlines() if "timed out" in each]
+    assert "running the whole suite (`Gate: full`), unsharded" in line
 
 
 # --- a queue's timeout is no red
@@ -270,19 +310,44 @@ def test_a_github_queue_group_with_a_real_failure_beside_a_timeout_still_counts(
     assert len(notes_on(queue, 7, approvals.QUEUE_RED)) == 1
 
 
+MERGIFY_WORDINGS = [
+    {"summary": "The checks have timed out after 1 hour."},
+    # Mergify's own wording (its changelog, 2026-06-11)
+    {"summary": "the checks did not pass within the checks timeout of 45 minutes"},
+    {"title": "Checks timeout"},
+]
+
+
+def dequeued_with(state: dict[str, Any], head: str, *runs: dict[str, Any]) -> None:
+    """Mergify dequeued PR #7 at `head`, labelling it, with `runs` as the head's check runs."""
+    state["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    state["checks"][head] = [run("qualify", "success", 550), *runs]
+
+
+def queue_check(conclusion: str, **output: str) -> dict[str, Any]:
+    found = run("Mergify Merge Queue", conclusion, 551)
+    found["output"] = {
+        "title": "The pull request has been removed from the queue `default`",
+        **output,
+    }
+    return found
+
+
+def requeues(state: dict[str, Any]) -> list[str]:
+    return [
+        body for n, body in state.get("raw", []) if n == 7 and body.startswith(approvals.REQUEUE)
+    ]
+
+
+@pytest.mark.parametrize("output", MERGIFY_WORDINGS)
 def test_a_mergify_dequeue_on_a_timeout_queues_the_pr_again_and_evicts_no_one(
     mergify: dict[str, Any],
     hub: dict[str, list[dict[str, Any]]],
+    output: dict[str, str],
 ) -> None:
     head = mergify["opened"](7)
     assert mergify["land"]("7")[0] == 0
-    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
-    dequeued = run("Mergify Merge Queue", "failure", 551)
-    dequeued["output"] = {
-        "title": "The pull request has been removed from the queue `default`",
-        "summary": "The checks have timed out after 1 hour.",
-    }
-    mergify["checks"][head] = [run("qualify", "success", 550), dequeued]
+    dequeued_with(mergify, head, queue_check("failure", **output))
     code, lines = mergify["land"]("7")
     assert code == 0, lines
     assert any("on a timeout" in line and "not evicted" in line for line in lines), lines
@@ -290,9 +355,60 @@ def test_a_mergify_dequeue_on_a_timeout_queues_the_pr_again_and_evicts_no_one(
     assert labels_of(mergify, 7) & {"loop:queued", "loop:dequeued"} == {"loop:queued"}
     assert mergify["pulls"][7]["isDraft"] is False
     assert notes_on(mergify, 7, "Evicted from the merge queue") == []
-    assert [
-        body for n, body in mergify.get("raw", []) if n == 7 and body.startswith(approvals.REQUEUE)
-    ]
+    assert len(requeues(mergify)) == 1
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        # the queue's own check is green or still running: its text decides nothing
+        [queue_check("success", summary="The checks have timed out")],
+        [queue_check("", summary="The checks have timed out")],
+        # a red test job whose title says timeout is the PR's red, not the queue's timeout
+        [
+            queue_check("failure"),
+            {**run("test (timeout tests)", "failure", 552), "output": {"title": "timeout"}},
+        ],
+    ],
+    ids=["green-queue-check", "running-queue-check", "red-test-job-titled-timeout"],
+)
+def test_a_mergify_dequeue_that_is_no_queue_timeout_is_evicted(
+    mergify: dict[str, Any], runs: list[dict[str, Any]]
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, *runs)
+    code, lines = mergify["land"]("7")
+    assert code == 1, lines
+    assert f"PR #7 was dequeued by Mergify at {head}: evicted" in lines
+    assert requeues(mergify) == []
+
+
+def test_a_stale_dequeued_label_with_timeout_text_only_comes_off(mergify: dict[str, Any]) -> None:
+    """A label at a head land never queued is stale, timeout text or not: no queue command is posted."""
+    head = mergify["opened"](7)
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    code, lines = mergify["land"]("7")
+    assert code == 0, lines
+    assert "loop:dequeued" not in labels_of(mergify, 7)
+    assert lines[-1] == f"PR #7 queued for Mergify at {head}"
+    assert requeues(mergify) == []
+
+
+def test_a_refused_queue_command_leaves_the_dequeued_label_for_the_next_land(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+
+    def refused(number: int, body: str) -> None:
+        raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
+
+    monkeypatch.setattr(approvals, "comment", refused)
+    code, lines = mergify["land"]("7")
+    assert code == 1, lines
+    assert "loop:dequeued" in labels_of(mergify, 7)
 
 
 @pytest.mark.parametrize(
@@ -311,3 +427,13 @@ def test_a_group_is_timeout_only_when_every_failed_required_check_timed_out(
     checks = {name: {"conclusion": done} for name, done in conclusions.items()}
     monkeypatch.setattr(approvals, "commit_checks", lambda ref: checks)
     assert approvals.timed_out_only("g1", {"qualify", "e2e"}) is only
+
+
+def test_a_group_github_cannot_read_is_no_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unreadable, the group's red still counts against the PR."""
+
+    def unreadable(ref: str) -> dict[str, Any]:
+        raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
+
+    monkeypatch.setattr(approvals, "commit_checks", unreadable)
+    assert approvals.timed_out_only("g1", {"qualify"}) is False

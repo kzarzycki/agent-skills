@@ -8,5 +8,7 @@ uv run pytest -q -p no:cacheprovider -n0 \
   "gatekeeper/tests/test_approvals_timeouts.py::test_land_wait_waits_until_the_derived_ceiling" \
   "gatekeeper/tests/test_approvals_timeouts.py::test_a_land_wait_set_before_the_derivation_still_wins_with_a_deprecation_line" \
   "gatekeeper/tests/test_approvals_timeouts.py::test_the_check_passes_in_step_and_fails_once_the_run_moves" \
+  "gatekeeper/tests/test_approvals_timeouts.py::test_check_setup_reads_only_the_timeout_line" \
+  "gatekeeper/tests/test_approvals_timeouts.py::test_the_verb_labels_a_land_wait_override_as_such" \
   tests/test_mergify_config.py
 exec uv run gatekeeper/skills/gatekeeper/scripts/gatekeeper.py timeouts --check

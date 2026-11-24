@@ -6084,9 +6084,9 @@ def timeouts_verb(render: bool, check_only: bool, as_json: bool) -> int:
     )
     print(f"queue checks_timeout: {derived['checks_timeout']}")
     print(f"job timeout-minutes: {derived['job_timeout_minutes']}")
-    print(
-        f"land --wait: {said_span(derived['land_wait'])} (the queue's checks timeout plus one more run)"
-    )
+    overridden = "wait" in settings(loop).get("land", {})
+    why = "land.wait, deprecated" if overridden else "the queue's checks timeout plus one more run"
+    print(f"land --wait: {said_span(derived['land_wait'])} ({why})")
     return 0
 
 
@@ -8231,8 +8231,9 @@ def mergify_step(pull: dict[str, Any]) -> int:
         if DEQUEUED in labels:
             if ours and (timeout := mergify_timeout(head)):
                 # a timeout is no test's failure (#2228): queue it again later, evict no one
-                label(number, DEQUEUED, add=False)
+                # the command first: refused, the label stays for the next land to try again
                 comment(number, REQUEUE + "\n")
+                label(number, DEQUEUED, add=False)
                 print(
                     f"{where}: Mergify dequeued it at {head} on a timeout ({timeout}): queued again, not evicted"
                 )
@@ -9652,18 +9653,20 @@ def run_budget() -> int:
 
 
 def over_budget(budget: int, root: Path, base: str | None) -> str:
-    """The one line of a selection run stopped at `timeouts.run`: the budget, the selection's size (the files the
-    change touches against `base`, the selector's input; the whole suite without one), and that it ran unsharded,
-    since no `select.shards` splits a selection yet (#2229)."""
+    """The one line of a selection run stopped at `timeouts.run`: the budget, the selection's size as far as the verb
+    knows it (the whole suite under `Gate: full`; else unknown, since the project's own command selects, with the
+    count of files the change touches against `base`, the selector's input), and that it ran unsharded, since no
+    `select.shards` splits a selection yet (#2229)."""
     if base is None:
-        size = "the whole suite"
+        size = "the whole suite (`Gate: full`)"
     else:
         try:
             count = str(len(git("-C", str(root), "diff", "--name-only", base, "HEAD").split()))
         except subprocess.CalledProcessError:
             count = "an unknown number of"
         size = (
-            f"the tests {count} changed file{'' if count == '1' else 's'} against {base[:12]} reach"
+            f"a selection of unknown size ({count} changed file{'' if count == '1' else 's'} against"
+            f" {base[:12]})"
         )
     return (
         f"affected-tests: timed out after `timeouts.run` ({said_span(budget)}) running {size}, unsharded (no"
