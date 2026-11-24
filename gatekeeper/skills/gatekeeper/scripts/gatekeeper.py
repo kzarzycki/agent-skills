@@ -23,7 +23,8 @@
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
-    uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`
+    uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
+    uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`; --record: its pass pushed as `local-ci --record` pushes a narrowed one
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
@@ -146,7 +147,11 @@ policy: the GitHub merge queue where the rules carry a `merge_queue` rule, else 
 the policy says a queue does. All take the
 same candidates (step 2). A queue gates each group it merges in CI (GitHub's `merge_group` run, Mergify's batch
 check); the local merge queue runs no gate at all: a PR merges on the verifier's record on its head, with the checks
-the base requires green there, and nothing reruns at land (#1872). One `land` runs one of them, never a mix. The local
+the base requires green there, and nothing reruns at land (#1872). Since no queue run tests that merge, a head with no
+record on origin of loop.md's `Affected tests:` run against its merge base (`gate-record <head> -- <the narrowed
+command>` exit 1; the gate's record where the project has no narrowed run) is not landed, and `land` says which record
+is missing and that `affected-tests --record` (else `local-ci --record`) on that head makes it (head_recorded, R6); a
+break-glass PR, which the owner merges, is not held. One `land` runs one of them, never a mix. The local
 merge queue lands its candidates as one batch:
 1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
 pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
@@ -423,7 +428,9 @@ so in one line, never the whole suite, which the nightly runs (#1872); only the 
 `ci: false`, `local-ci --record` runs it against `--base`, else the merge base, and `local-ci <pr>` posts that pass on
 the head's tree, against the merge base of the head and the PR's base; `check merge` reads no local-ci pass (#1872). A
 narrowed pass's command is the variable's assignment, the command, then ` (narrowed)`, which no gate command can hold,
-so its record and key never equal a full pass's, and nothing that wants a full pass takes it. Its `gate` status and record branch say `narrowed vs <base>`, and `local-ci --status` says `narrowed against <base>`. A project with
+so its record and key never equal a full pass's, and nothing that wants a full pass takes it. `affected-tests
+--record` records its pass the same way (local_ci under narrowed_to its base), and `gate-record <head> -- <the narrowed
+command>` reads it, its last word `(narrowed)`. Its `gate` status and record branch say `narrowed vs <base>`, and `local-ci --status` says `narrowed against <base>`. A project with
 `gate_steps` keeps its steps everywhere, since each narrows by its `paths`. Without the `Affected tests:` line, `check
 build` says in one line that every gate runs the full check (not with the opt-out, which chose it).
 Deprecated: with loop.md's `carry_over_main` section (`except: <globs>`), merges of the base into a PR head H keep H's proofs:
@@ -948,6 +955,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         merge_queue=bool,
         merge_commit_heads=list,
         batch_wait_seconds=int,
+        batch_size=int,
         wait=str,
         queue=Choice(("mergify", "github")),
         together=("signed_squash_to", "allowed_signers"),
@@ -959,6 +967,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "merge_queue",
             "merge_commit_heads",
             "batch_wait_seconds",
+            "batch_size",
             "wait",
             "queue",
         ),
@@ -1159,6 +1168,8 @@ def settings(loop: str | None) -> dict[str, Any]:
                 raise Refused(
                     f"{file}'s `land.batch_wait_seconds` must be a whole number, 0 or more"
                 )
+            if data[name].get("batch_size", 1) < 1:
+                raise Refused(f"{file}'s `land.batch_size` must be a whole number, 1 or more")
             if "wait" in data[name] and name == "land" and span(str(data[name]["wait"])) is None:
                 raise Refused(
                     f"{file}'s `land.wait` is {data[name]['wait']!r}: write it as `2h` or `4h30m`"
@@ -7341,8 +7352,10 @@ def local_queue(
     """The local merge queue, under the lock (`held`, its commits): merge every candidate's head onto `base` locally,
     oldest PR first, leaving out a PR that conflicts or that `pre_land` refuses, move the lock to name the last PR to
     land (repointed), and merge each through GitHub in that order. No gate runs: the verifier's record on each head is
-    the proof, beside the checks the base requires green on it (landable), so nothing reruns at land (#1872)."""
+    the proof, beside the checks the base requires green on it (landable), so nothing reruns at land (#1872). With no
+    queue run to test the merge, a candidate whose head has no pass record (head_recorded) is refused (R6)."""
     candidates, waits, issues = candidates_of(named, base, tracker, loop, required, only)
+    candidates = [pull for pull in candidates if head_recorded(pull)]
     waited = ""
     if (
         candidates
@@ -7381,6 +7394,49 @@ def local_queue(
     # each named PR's exit: its wait's, else 0 when it merged, else 1
     done = {pull["number"] for pull, *_ in landed} - failed
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
+
+
+def tests_record_words(point: str) -> list[str] | None:
+    """The words `gate-record <head> -- <words>` takes for the record of a run of a PR's tests: loop.md's `Affected
+    tests:` command narrowed against `point` (narrowed_gate under narrowed_to: the PR's merge base with its base
+    branch, the base `affected-tests --record` selects against and keys its record by), its last word `(narrowed)`;
+    None where no narrowed run exists (no `Affected tests:` line, `Gate: full`, `gate_steps`). The one builder of that
+    key for `land` (head_recorded) and the merge queue's floor (the project's batch selector), so neither drifts from
+    the writer."""
+    with narrowed_to(point):
+        narrowed = narrowed_gate()
+    return None if narrowed is None else shlex.split(narrowed[0])
+
+
+def head_recorded(pull: dict[str, Any]) -> bool:
+    """Whether origin holds the record of a run of the PR's tests on its head (gate_record): the local queue runs no
+    test, so a merge with neither a queue run nor a record of each PR is refused (engineering-loop SKILL.md, R6),
+    naming the missing record and the command that makes it; a named PR left out exits 1 (outcome). The record is the
+    one `affected-tests --record` writes (tests_record_words), so a record of the gate alone, which may run no test,
+    lands nothing. A project with no narrowed run (no `Affected tests:` line, `Gate: full`, `gate_steps`) has no such
+    record, and its gate is the run that tests the PR, so there the gate's record (`local-ci --record`) is read, as
+    before. A break-glass PR never gets here: landable holds it for the owner's own merge."""
+    head = pull["headRefOid"]
+    where = f"PR #{pull['number']}: not landed: no pass record on its head {head[:12]}"
+    words, writer = [], "local-ci --record"
+    if narrowing() is not None:
+        if (point := merge_base_of(pull["baseRefName"], head)) is None:
+            print(
+                f"{where}: no merge base with origin/{pull['baseRefName']}, so no `Affected tests:` record is found"
+            )
+            return False
+        if (narrowed := tests_record_words(point)) is not None:
+            words, writer = narrowed, "affected-tests --record"
+    said = io.StringIO()
+    with contextlib.redirect_stdout(said):
+        code = gate_record(head, words)
+    if code == 0:
+        return True
+    print(
+        f"{where} ({' '.join(said.getvalue().split())}); run `approvals.py {writer}` on that head, which records one,"
+        " then land again"
+    )
+    return False
 
 
 def check_never_comes(pull: dict[str, Any], required: set[str]) -> bool:
@@ -9397,7 +9453,7 @@ def selection_base(given: str | None) -> str | None:
         ) from exc
 
 
-def affected_tests(given: str | None = None) -> int:
+def affected_tests(given: str | None = None, record: bool = False) -> int:
     """`affected-tests [--base <rev>]`: the worker's test run on a head, from loop.md's line `Affected tests:
     <command>` (the command selects and runs the tests a change affects against the base it reads from the variable
     the line `Gate base:` names, else `GATE_BASE`). The base is `<rev>`, else the merge base (selection_base). Where it
@@ -9407,7 +9463,16 @@ def affected_tests(given: str | None = None) -> int:
     variable unset. Either runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its exit
     passes through: a selector that selects nothing exits 0 itself. gate_env clears the variable from `land`'s and
     `local-ci`'s environment, apart from a head proof's own `env` names: they set it themselves in narrowed mode
-    (narrowed_gate)."""
+    (narrowed_gate).
+
+    With `record`, a narrowed run is the narrowed gate against that base, run and recorded by local_ci as `local-ci
+    --record` runs one (run_local_ci: a clean checkout, a pass recorded by tree and command, pushed as its
+    `loop-gate/<tree>-<key>` branch, publish), so its record is the one record kind, read by `gate-record <head> --
+    <command>` and by the merge queue's floor (engineering-loop SKILL.md, R6), and a pass already recorded on the tree
+    is reused, not run again (R1). A run that can't tell (no line, no base) or fails records nothing, and so does the
+    opt-out's full check and a gate with `gate_steps` (whose steps narrow by their `paths`, so the narrowed gate never
+    runs): each says so. Off by default, as `local-ci` records only with `--record`: a record is a pushed branch, and only the
+    worker's final head needs one, not each head the push hook runs."""
     root = toplevel()
     written = narrowing()
     variable = gate_base_variable()
@@ -9427,6 +9492,16 @@ def affected_tests(given: str | None = None) -> int:
             file=sys.stderr,
         )
         return 0
+    if record and written is not None and base is not None:
+        if settings(project()[1]).get("gate_steps"):
+            print(
+                "affected-tests --record: the gate has `gate_steps`, whose steps narrow by their `paths`, so the narrowed"
+                " gate never runs: nothing recorded, and `local-ci --record` records the steps",
+                file=sys.stderr,
+            )
+        else:
+            with narrowed_to(base):
+                return local_ci(None, None, False, None)
     if written is not None and base is not None:
         _, words, sets = command_line(written, "Affected tests")
         sets = {
@@ -10627,6 +10702,47 @@ def finished(head: str, code: int, command: str | None = None) -> None:
     os.replace(partial, exit_file)
 
 
+# the Mergify config the pack ships, which queue_config renders with the policy's `land` batching keys
+MERGIFY_TEMPLATE = Path(__file__).resolve().parents[1] / "mergify.yml"
+
+
+def duration(seconds: int) -> str:
+    """`seconds` as a Mergify duration: whole hours or minutes where it divides, else seconds."""
+    size, unit = next(
+        (s, u) for s, u in ((3600, "hour"), (60, "minute"), (1, "second")) if seconds % s == 0
+    )
+    count = seconds // size
+    return f"{count} {unit}{'' if count == 1 else 's'}"
+
+
+def queue_config(policy: str | None = None) -> str:
+    """`queue-config`: the Mergify config a repo under `land.queue: mergify` commits as `.mergify.yml`, the pack's
+    template (mergify.yml) with gatekeeper.md's `land` batching: `batch_size` (1 is one PR per entry) as the queue
+    rule's `batch_size`, `batch_wait_seconds` as its `batch_max_wait_time`; a key the policy leaves out keeps the
+    template's value. The policy is the checkout's own (gatekeeper.md, else loop.md's `## Settings`), not the base's,
+    since the file it renders is the checkout's too."""
+    if policy is None:
+        root = toplevel()
+        files = [root / path for path in (LOOP, POLICY)]
+        policy = chosen(*(read(path) if path.exists() else None for path in files))
+    land = settings(policy).get("land") or {}
+    text = MERGIFY_TEMPLATE.read_text()
+    for key, value in (
+        ("batch_size", land.get("batch_size")),
+        (
+            "batch_max_wait_time",
+            None if "batch_wait_seconds" not in land else duration(land["batch_wait_seconds"]),
+        ),
+    ):
+        if value is not None:
+            text, found = re.subn(
+                rf"^(\s+{key}:) .*$", rf"\g<1> {value}", text, count=1, flags=re.MULTILINE
+            )
+            if not found:
+                raise Refused(f"{MERGIFY_TEMPLATE} has no `{key}` line to render")
+    return text
+
+
 def gate_record(head: str, words: list[str]) -> int:
     """`gate-record <head> [-- <command>]`: whether origin holds a pass record (record_ref) of the gate, each step of
     `gate_steps` (gate_plan), or of `<command>`, on `head`'s tree, so the verifier reads it instead of running the
@@ -10643,7 +10759,11 @@ def gate_record(head: str, words: list[str]) -> int:
     # a command the gate's steps (gate_plan) name is read as that step, so one keyed by its inputs (inputs_key) is
     # found by that key on any tree (origin_input_pass); any other command is keyed by the tree alone
     steps = {step["command"]: step for step in gate_plan()}
-    commands = [shlex.join(words)] if words else list(steps)
+    # a narrowed command (narrowed_gate) is the words of its run, then NARROWED, which shlex.join would quote
+    if words[-1:] == [NARROWED.strip()]:
+        commands = [shlex.join(words[:-1]) + NARROWED]
+    else:
+        commands = [shlex.join(words)] if words else list(steps)
     missing = 0
     for command in commands:
         why: list[str] = []
@@ -10665,7 +10785,8 @@ def gate_record(head: str, words: list[str]) -> int:
                     f" at {record['time']}, reused on tree {held}, inputs key {key}"
                 )
             continue
-        record = record_ref(held, command, command_line(command, "gate")[2], why)
+        written = command[: -len(NARROWED)] if narrowed_base(command) is not None else command
+        record = record_ref(held, command, command_line(written, "gate")[2], why)
         if record is None:
             missing += 1
             reason = (
@@ -11665,7 +11786,11 @@ def main(argv: list[str]) -> int:
     graduating.add_argument("epic", type=int)
     graduating.add_argument("--pr", type=int, required=True)
     # --base: the commit to select against (a PR's base SHA, a push's previous tip), over the merge base
-    commands.add_parser("affected-tests").add_argument("--base", metavar="REV")
+    selecting = commands.add_parser("affected-tests")
+    selecting.add_argument("--base", metavar="REV")
+    # --record: a pass is recorded and pushed as narrowed `local-ci --record` records one (the worker's final head)
+    selecting.add_argument("--record", action="store_true")
+    commands.add_parser("queue-config")
     rerunning = commands.add_parser("rerun-tests")
     rerunning.add_argument("failed", metavar="failed-tests.json")
     rerunning.add_argument("--red", required=True, metavar="HEAD")
@@ -11703,7 +11828,12 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "report":  # reads a local file only, so no remote needs choosing
         return report_json(args.report) if args.json else report_check(args.report)
     if args.command == "affected-tests":
-        return affected_tests(args.base)
+        return affected_tests(args.base, args.record)
+    if (
+        args.command == "queue-config"
+    ):  # the checkout's own policy, so a PR's change to `land` renders with it
+        print(queue_config(), end="")
+        return 0
     if args.command == "rerun-tests":
         return rerun_tests(args.failed, args.red, args.base)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
