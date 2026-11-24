@@ -159,7 +159,10 @@ what its rules can't settle, and posts what needs the notified session or the ow
 minutes (an owner item it already raised for that session, same text, goes as ``[info]``, which wakes no
 one; a new or changed item raises ``[owner]``), for a lead marked ``direct`` nothing but a failed turn
 that lost its runner, which the owner can't see in its session; ``--fyi post`` posts every line as without it too,
-``--decisions`` names the owner's standing decisions for the small model. Without it, it writes none of these and posts every line.
+``--decisions`` names the owner's standing decisions for the small model. The chief of staff's console (not a manager's) also
+follows each live top-level session labelled ``omni.role=lead`` that no registry holds (none beside its own, nor a ``leads=``
+one), with a ``follow`` line and one ``adopted`` event, unless a followed lead created it, so a lead started with no
+registry is supervised all the same. Without it, it writes none of these and posts every line.
 A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
 a user service running that same command line less ``--install`` and ``--log`` (a systemd user unit
 ``omnigent-supervise-<hash>`` with ``Restart=always`` on Linux, a launchd agent
@@ -173,7 +176,8 @@ removes it.
 ``$OMNIGENT_SUPERVISE_REGISTRY``, once their message is in the history (``start`` with its brief
 file, ``send`` appending its message file, each marking a verifier's line as ``wait`` would
 count its report; a ``start --top-level`` run from a lead the registry follows, or from its
-child, arms nothing and subscribes that lead, since its helper is the lead's to hear); ``run``, ``send`` and ``wait`` disarm it when they
+child, arms nothing and subscribes that lead, since its helper is the lead's to hear; ``start --top-level --role lead``
+with neither exits 2 before any session exists, since no supervisor would follow it); ``run``, ``send`` and ``wait`` disarm it when they
 return the report or a question; ``reap`` drops the line of each session it finishes, before
 finishing it, so the supervisor posts no ``archived`` for a finish its notified session ran.
 ``run``, ``wait``, ``reap`` and the supervisor (a child's relayed ``DONE`` report or failure; a followed lead's ``DONE`` once a lead waiting on it (``--after``) is told; a lead a followed lead started is reaped by its starter) all finish a session through
@@ -2083,11 +2087,10 @@ class Omnigent:
         turn end was lost stays busy for good."""
         return max(self.kin(sid).values(), default=0.0)
 
-    def creations(self, sid: str) -> list[str]:
-        """The live sessions ``sid`` created (``created_by_session_id``) that are not its children:
-        its ``--top-level`` ones, whose prompts Omnigent mirrors onto no session, since it mirrors
-        a child's onto its parent alone. One listing of every session serves every caller for
-        ``CREATED_SECONDS``: a supervisor asks it of each lead at every poll."""
+    def listing(self) -> list[dict]:
+        """Every session on the server, archived ones included, as the listing's rows. One
+        listing serves every caller for ``CREATED_SECONDS``: a supervisor asks ``creations`` of
+        each lead at every poll."""
         cache = self.__dict__.setdefault("_created", [float("-inf"), []])
         if time.monotonic() - cache[0] >= CREATED_SECONDS:
             path, rows, after = "/v1/sessions?kind=any&limit=1000", [], ""
@@ -2098,9 +2101,15 @@ class Omnigent:
                     break
                 after = str(page["last_id"])
             cache[:] = [time.monotonic(), rows]
+        return cache[1]
+
+    def creations(self, sid: str) -> list[str]:
+        """The live sessions ``sid`` created (``created_by_session_id``) that are not its children:
+        its ``--top-level`` ones, whose prompts Omnigent mirrors onto no session, since it mirrors
+        a child's onto its parent alone."""
         return [
             str(s["id"])
-            for s in cache[1]
+            for s in self.listing()
             if sid in creators(s)
             and str(s.get("parent_session_id") or "") != sid
             and str(s.get("id")) != sid
@@ -8611,6 +8620,12 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         )
     if kind == "queue-flake":
         return "rule", "act", "a test fails unrelated PRs' queue runs: skip it as known-red"
+    if kind == "adopted":  # read from the server's listing, never from a lead's words
+        return (
+            "rule",
+            "act",
+            "a lead no registry followed, followed now: fix what started it unwatched",
+        )
     if kind == "archived":
         return "rule", "absorb", "archived: drop its row"
     error = event.get("line", "").partition("\n")[0]  # the status line, not the lead's own words
@@ -10743,6 +10758,46 @@ def supervise_registry(
         print(stamp(f"{retrying['event']}: rule: revive ({why})"), flush=True)
         act_on(retrying["event"], [(sid, "revive", LEAD_REVIVE)])
 
+    def adopt() -> None:
+        """On the chief of staff's console (not a manager's ``<repo>-leads.registry``), follow each live top-level
+        session labelled ``omni.role=lead`` that no registry holds: a ``follow`` line on ``registry`` and one
+        ``adopted`` event, so a lead started with no registry (#2181) is supervised from this poll on. A registry
+        holds it when it is on any ``*.registry`` beside ``registry`` or on a ``leads=`` registry one of its lines
+        names; a lead whose creator a registry follows is that lead's to hear, as ``start`` arms it. The server
+        is listed at most once per ``CREATED_SECONDS`` (``Omnigent.listing``)."""
+        if not console or registry.name.endswith("-leads.registry"):
+            return
+        rows = og.listing()
+        mine = registered(registry)[0]
+        paths = {*registry.parent.glob("*.registry"), *(Path(o[6]) for o in mine.values() if o[6])}
+        watched, followed = set(mine), {s for s, o in mine.items() if o[3]}
+        for path in paths - {registry}:
+            other = registered(path)[0]
+            watched |= set(other)
+            followed |= {s for s, o in other.items() if o[3]}
+        for row in rows:
+            sid, labels = str(row.get("id") or ""), row.get("labels") or {}
+            if (
+                not sid
+                or sid in watched
+                or row.get("archived")
+                or row.get("parent_session_id")
+                or labels.get("omni.role") != "lead"
+                or creators(row) & followed
+                or og.info(sid).get("archived")  # the listing may be 30 s old
+            ):
+                continue
+            # ponytail: the lead's real report is unknown; follow reads none, and a path in its workspace costs nothing.
+            # Upgrade: read it from the lead's brief (its preamble names the report path) if a followed lead ever owes one.
+            arm(registry, sid, Path(f"tmp/loop/{sid}.report.md"), followed=True)
+            head = f"{sid} {row.get('title') or ''}".rstrip()
+            say(
+                f"{head}: a lead on no registry, followed from now on",
+                sid,
+                f"adopted:{sid}",
+                "adopted",
+            )
+
     while True:
         flush()
         waits = [w for w, n in (("lines to post", outbox), ("events to settle", retry)) if n]
@@ -10770,6 +10825,12 @@ def supervise_registry(
             for again in retry[:]:
                 retry.remove(again)
                 say(*again)
+        try:
+            adopt()
+        except Exception as e:  # noqa: BLE001 - never fatal; swept again next poll
+            log("adopt", f"unregistered leads not swept: {reason(e)}")
+        else:
+            log("adopt", None)
         try:
             owed, bad = registered(registry)
         except Exception as e:  # noqa: BLE001 - never fatal
@@ -11788,6 +11849,20 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             raise Fail(
                 "--direct needs --top-level and a registry: it marks the lead's registry line"
             )
+        if (
+            args.cmd == "start"
+            and args.top_level
+            and args.role
+            and Path(args.role).stem == "lead"
+            and not registry
+        ):
+            # a lead nobody follows stalls unseen (#2181); run waits on its session itself
+            usage = Fail(
+                "start --top-level of a lead needs --registry or $OMNIGENT_SUPERVISE_REGISTRY:"
+                " without one no supervisor follows it"
+            )
+            usage.code = 2
+            raise usage
         if args.cmd == "direct":
             if not registry:
                 raise Fail("direct needs --registry or $OMNIGENT_SUPERVISE_REGISTRY")
