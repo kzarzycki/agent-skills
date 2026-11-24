@@ -124,3 +124,36 @@ def test_cloud_env_on_another_host_is_refused_before_any_session(
     assert start(launch, "far", "--cloud-env", "widget-code-mode", "--host", "other") != 0
     assert "--cloud-env" in capsys.readouterr().err
     assert og.sessions == {}
+
+
+def test_a_cloud_env_worktree_whose_main_checkout_pins_another_environment_is_refused(
+    og: FakeOmnigent, project: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`claude --cloud` in a linked worktree takes its main checkout's pin, so a worktree pinned to the variant
+    under a main checkout pinned to the project's environment would run the project's."""
+    work, _ = project
+    assert start(work, "plain") == 0 and pin(work) == "env_x"
+    tree = work.parent / "tree"
+    git("worktree", "add", "-q", str(tree), cwd=work)
+    (tree / ".claude").mkdir(exist_ok=True)
+    (tree / ".claude" / "settings.local.json").write_text(
+        '{"remote": {"defaultEnvironmentId": "env_xcm"}}'
+    )
+    assert start(tree, "code-mode", "--cloud-env", "widget-code-mode") != 0
+    assert "launch-dir --clone" in capsys.readouterr().err
+    assert len(og.sessions) == 1  # the plain start's only
+
+
+def test_a_cloud_env_start_stays_on_this_host_with_its_launch_dir(
+    og: FakeOmnigent, project: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cloud start with --workspace goes to the host with the most memory (#838), in a workspace of that host's;
+    the launch dir --cloud-env checked is here, so the start stays here."""
+    _, launch = project
+    og.host_names = {"h2": "other"}
+    monkeypatch.setattr(
+        omnigent_agent, "pick_cloud_host", lambda og, workspace: ("h2", Path("/far/ws"))
+    )
+    assert start(launch, "code-mode", "--cloud-env", "widget-code-mode") == 0
+    assert og.workspaces[-1] == str(launch.resolve())
+    assert og.hosts_of[next(iter(og.sessions))] == og.host_id
