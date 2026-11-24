@@ -33,7 +33,6 @@ import argparse
 import contextlib
 import io
 import re
-import shlex
 import subprocess
 import sys
 from collections.abc import Callable
@@ -109,11 +108,8 @@ def recorded(head: str, point: str) -> tuple[bool, str]:
                 False,
                 "loop.md has no `Affected tests:` line, so no record of a PR's tests exists",
             )
-        with g.narrowed_to(point):
-            narrowed = g.narrowed_gate()
-        if narrowed is None:
+        if (words := g.tests_record_words(point)) is None:
             return False, "the gate has `gate_steps`, which never run the `Affected tests:` command"
-        words = shlex.split(narrowed[0])  # its words, then `(narrowed)`, as gate-record takes them
         with contextlib.redirect_stdout(said):
             code = g.gate_record(head, words)
     except Exception as exc:  # noqa: BLE001

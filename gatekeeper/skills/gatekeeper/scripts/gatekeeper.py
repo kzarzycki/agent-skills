@@ -148,8 +148,10 @@ the policy says a queue does. All take the
 same candidates (step 2). A queue gates each group it merges in CI (GitHub's `merge_group` run, Mergify's batch
 check); the local merge queue runs no gate at all: a PR merges on the verifier's record on its head, with the checks
 the base requires green there, and nothing reruns at land (#1872). Since no queue run tests that merge, a head with no
-pass record on origin (`gate-record <head>` exit 1) is not landed, and `land` says which record is missing and that
-`local-ci --record` on that head makes it (head_recorded, R6); a break-glass PR, which the owner merges, is not held. One `land` runs one of them, never a mix. The local
+record on origin of loop.md's `Affected tests:` run against its merge base (`gate-record <head> -- <the narrowed
+command>` exit 1; the gate's record where the project has no narrowed run) is not landed, and `land` says which record
+is missing and that `affected-tests --record` (else `local-ci --record`) on that head makes it (head_recorded, R6); a
+break-glass PR, which the owner merges, is not held. One `land` runs one of them, never a mix. The local
 merge queue lands its candidates as one batch:
 1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
 pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
@@ -7394,21 +7396,45 @@ def local_queue(
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
 
 
+def tests_record_words(point: str) -> list[str] | None:
+    """The words `gate-record <head> -- <words>` takes for the record of a run of a PR's tests: loop.md's `Affected
+    tests:` command narrowed against `point` (narrowed_gate under narrowed_to: the PR's merge base with its base
+    branch, the base `affected-tests --record` selects against and keys its record by), its last word `(narrowed)`;
+    None where no narrowed run exists (no `Affected tests:` line, `Gate: full`, `gate_steps`). The one builder of that
+    key for `land` (head_recorded) and the merge queue's floor (the project's batch selector), so neither drifts from
+    the writer."""
+    with narrowed_to(point):
+        narrowed = narrowed_gate()
+    return None if narrowed is None else shlex.split(narrowed[0])
+
+
 def head_recorded(pull: dict[str, Any]) -> bool:
-    """Whether origin holds a pass record of the gate on the PR's head (gate_record, `gate-record <head>` exit 0): the
-    local queue runs no test, so a merge with neither a queue run nor a record of each PR is refused (engineering-loop
-    SKILL.md, R6), naming the missing record and the command that makes it; a named PR left out exits 1 (outcome). A
-    break-glass PR never gets here: landable holds it for the owner's own merge."""
+    """Whether origin holds the record of a run of the PR's tests on its head (gate_record): the local queue runs no
+    test, so a merge with neither a queue run nor a record of each PR is refused (engineering-loop SKILL.md, R6),
+    naming the missing record and the command that makes it; a named PR left out exits 1 (outcome). The record is the
+    one `affected-tests --record` writes (tests_record_words), so a record of the gate alone, which may run no test,
+    lands nothing. A project with no narrowed run (no `Affected tests:` line, `Gate: full`, `gate_steps`) has no such
+    record, and its gate is the run that tests the PR, so there the gate's record (`local-ci --record`) is read, as
+    before. A break-glass PR never gets here: landable holds it for the owner's own merge."""
     head = pull["headRefOid"]
+    where = f"PR #{pull['number']}: not landed: no pass record on its head {head[:12]}"
+    words, writer = [], "local-ci --record"
+    if narrowing() is not None:
+        if (point := merge_base_of(pull["baseRefName"], head)) is None:
+            print(
+                f"{where}: no merge base with origin/{pull['baseRefName']}, so no `Affected tests:` record is found"
+            )
+            return False
+        if (narrowed := tests_record_words(point)) is not None:
+            words, writer = narrowed, "affected-tests --record"
     said = io.StringIO()
     with contextlib.redirect_stdout(said):
-        code = gate_record(head, [])
+        code = gate_record(head, words)
     if code == 0:
         return True
     print(
-        f"PR #{pull['number']}: not landed: no pass record on its head {head[:12]}"
-        f" ({' '.join(said.getvalue().split())}); run `approvals.py local-ci --record` on that head, which records"
-        " one, then land again"
+        f"{where} ({' '.join(said.getvalue().split())}); run `approvals.py {writer}` on that head, which records one,"
+        " then land again"
     )
     return False
 
