@@ -12,8 +12,7 @@ from the test map the nightly builds (below), else every test file that names it
 its file name); a file no test names runs its package's tests, else the tests of its nearest directory that has some
 (home_tests). A skill's prose, which the repo-wide checks `tests/test_skill_*.py` read, runs those. Zero tests run only
 when every changed path is non-product (NON_PRODUCT) and no test reads it, and the run says `0 selected: non-product`.
-A selection of over half the test files runs the whole suite (#1799), since the gate runs it on its parallel workers
-in less time than a near-whole selection.
+A selection of over half the test files runs as picked (#1872): only the nightly runs the whole suite.
 
 The test map is `.test-map/` (env `TEST_MAP`): `coverage`, the nightly suite's coverage data with one context per test
 (`pytest --cov-context=test`), and `sha`, the commit it ran on. A changed line of a script is looked up at its old
@@ -59,7 +58,6 @@ NON_PRODUCT = (
     "apm.yml",
     "apm.lock.yaml",
 )
-WHOLE_FROM = 20  # test files a suite needs before an over-half selection runs whole: below it the two cost the same
 MAP = Path(os.environ.get("TEST_MAP", ".test-map"))
 SKIPS = re.compile(r"needs_tool|skipif|pytest\.skip|importorskip")
 CHEAP = sorted(str(p) for p in Path("tests").glob("test_skill_*.py"))
@@ -384,11 +382,6 @@ def targets(files: list[str], base: str | None = None) -> list[str]:
         return []
     picked.update(CHEAP)
     picked.update(n for n in node_files(ran) if n.split("::")[0] not in picked)
-    counted = {n.split("::")[0] for n in picked} & {str(t) for t in tests} - set(CHEAP)
-    if len(tests) >= WHOLE_FROM and len(counted) * 2 > len(tests):
-        # a near-whole selection pays the per-target cost and runs worse spread over workers than the suite
-        say(f"the whole suite: {len(counted)} of {len(tests)} test files picked, over half")
-        return list(ALL)
     return sorted(picked)
 
 

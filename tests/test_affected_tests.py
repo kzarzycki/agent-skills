@@ -381,29 +381,13 @@ def suite(root, names: int, naming: int) -> None:
     (root / "tool.py").write_text("")
 
 
-def test_a_selection_of_over_half_the_test_files_runs_the_whole_suite(
-    monkeypatch, tmp_path, capsys
-) -> None:
-    """#1799, kept by #2217: past half the files the gate runs the whole suite, which its parallel workers finish
-    sooner than a near-whole selection."""
-    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2 + 1)
+def test_a_selection_of_over_half_the_test_files_runs_only_them(monkeypatch, tmp_path) -> None:
+    """#1872, kept by #2217: a near-whole selection runs as picked, never as the whole suite, which only the nightly runs."""
+    suite(tmp_path, 20, 11)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(a, "ALL", ["tests"])
     monkeypatch.setattr(a, "CHEAP", [])
-    assert a.targets(["tool.py"]) == ["tests"]
-    assert "the whole suite: 11 of 20 test files picked, over half" in capsys.readouterr().err
-
-
-def test_half_the_test_files_or_a_small_suite_runs_as_picked(monkeypatch, tmp_path) -> None:
-    suite(tmp_path, a.WHOLE_FROM, a.WHOLE_FROM // 2)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(a, "ALL", ["tests"])
-    monkeypatch.setattr(a, "CHEAP", [])
-    assert a.targets(["tool.py"]) == [f"tests/test_{n:02}.py" for n in range(a.WHOLE_FROM // 2)]
-    for n in range(a.WHOLE_FROM // 2, a.WHOLE_FROM - 1):
-        Path(f"tests/test_{n:02}.py").write_text("# uses tool\n")
-    Path(f"tests/test_{a.WHOLE_FROM - 1:02}.py").unlink()  # 19 files, all named: below WHOLE_FROM
-    assert len(a.targets(["tool.py"])) == a.WHOLE_FROM - 1
+    assert a.targets(["tool.py"]) == [f"tests/test_{n:02}.py" for n in range(11)]
 
 
 def test_the_cheap_checks_and_a_changed_e2e_file_are_picked_as_they_are(
