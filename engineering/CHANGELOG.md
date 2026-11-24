@@ -5,6 +5,12 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.7 - 2026-11-24
+
+- loop: lead.md says a lead holds a PR it must not land with `loop:hold` and a PR comment naming who holds it and why, and removes the label before landing; `loop:dequeued` is no hold (#2162).
+- loop: lead.md step 1 says a lead asks the owner its own questions on its own question card (`sys_ask_user_question`), acts only on an `answered` read, and ends `USER NEEDED` with the card open; a question that spans projects goes to the session that started it with no card; while the card is open the lead keeps working on its recommended answer, holding back only what is hard to undo or reaches outside the project (#2170).
+- loop: once the owner approves a spec, plan or merge on the lead's own card (`answered`), the lead records it with `approvals.py approve … --by owner` instead of asking the owner to add the label by hand (#2170).
+
 ## 0.35.6 - 2026-11-23
 
 - agent-hygiene: a run reads each repo's closed and merged PRs once (`gh pr list --state closed`, GraphQL, newest 1000) and matches branch and detached-HEAD worktrees in memory, so its GitHub calls no longer grow with the worktree count (it was a call per branch worktree and a REST call per detached one) (#2081).
