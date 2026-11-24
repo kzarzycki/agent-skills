@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.3 - 2026-11-24
+
+- github-tracker: `labels.py` knows `loop:hold`, so label sync creates it and no longer deletes it when nothing carries it (#2162).
+
 ## 0.1.2 - 2026-11-23
 
 - gh-quota: a cloud environment's setup script can install the shim for all its sessions; this repo's `.claude/cloud-setup.sh` does, from a pinned commit with both files' sums checked (#2049).

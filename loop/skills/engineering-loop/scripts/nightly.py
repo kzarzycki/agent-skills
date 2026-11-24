@@ -4,7 +4,7 @@
 # dependencies = []
 # ///
 """Nightly (engineering-loop): a red nightly opens one issue listing the merges that could have caused it, and
-`moved` says whether a run on the default branch has anything to run.
+`moved push|schedule|tag` says whether a CI run has anything to run (R7, #2179, #2261, #2264).
 
     uv run scripts/nightly.py red --last-green <sha> --red <sha> --run <url> [--repo <owner/name>] [--dry-run]
 
@@ -31,6 +31,12 @@ variable names that can't be read refuses too. `--dry-run` prints the body it wo
 
 The repository is `--repo`, else `GITHUB_REPOSITORY` (set in GitHub Actions), else the `origin` remote's GitHub slug.
 It needs only git and gh (REST calls through `gh api`, so a token that may read pull requests and write issues).
+
+    python3 scripts/nightly.py moved push|schedule|tag
+
+`moved` is the other verb: a project's CI calls it as its first step to learn whether the run has anything to run
+(R7), and it writes `skip=true|false` to `GITHUB_OUTPUT`; the comment above the verb has the three modes, the
+`land.queue` it reads and its environment. It needs only python3 and the job's token (`actions: read`).
 
 On success it prints the issue's or the comment's URL. Exit codes: 0 posted (or printed, with `--dry-run`, which still reads GitHub to choose between issue and comment); 1 refused
 by the deny list, or a gh call failed; 2 a usage error, a commit git can't find, or a last green commit that is not an
@@ -346,7 +352,7 @@ def red(args: argparse.Namespace) -> int:
 
 
 # --- moved: does a run on the default branch have anything to run (R7, #2179, #2261) ---------------------------------
-# The docstring's `moved` section: `python3 scripts/nightly.py moved push|schedule`, stdlib only, which a consumer's job
+# `python3 scripts/nightly.py moved push|schedule|tag`, stdlib only, which a consumer's job
 # runs with the job's token (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_API_URL`, `GITHUB_SHA`, `GITHUB_WORKFLOW_REF`;
 # `actions: read`), never local state or an authenticated gh. It writes `skip=true|false` to `GITHUB_OUTPUT` and, with
 # the run that did the work (`Skipped: ... <link>`), to the step summary and the log:
@@ -356,13 +362,18 @@ def red(args: argparse.Namespace) -> int:
 #             `pull_request` run), `github` batches are `gh-readonly-queue/*` refs (a `merge_group` run). Unset or
 #             unreadable, both are read: GitHub's queue is chosen by the base's rules, not by the policy, which an
 #             Actions token can't read, and a batch run of either queue that tested this tree tested it.
-#   schedule  skip when the newest successful scheduled run on the default branch ran `GITHUB_SHA` itself.
+#   schedule  skip when the newest successful scheduled run on the default branch (`GITHUB_REF_NAME`, else `main`)
+#             ran `GITHUB_SHA` itself.
+#   tag       skip when any successful scheduled run of the nightly workflow (`GITHUB_WORKFLOW_REF` names the tag
+#             check's workflow there, so the nightly is named: `engineering-ci.yml`) ran `GITHUB_SHA`, the tagged commit
+#             (#2264): one runs call filtered by `event=schedule`, `status=success` and `head_sha`, checked again here.
 # Any forge or API failure reads as "nothing found": the run goes ahead.
 BATCHES = {  # land.queue -> (the batch branches' prefix, the event of the run that tests them)
     "mergify": ("mergify/merge-queue/", "pull_request"),
     "github": ("gh-readonly-queue/", "merge_group"),
 }
 RUN_PAGES = 3
+NIGHTLY = "engineering-ci.yml"
 FORGE_ERRORS = (OSError, KeyError, ValueError)  # network and HTTP errors, a missing token, bad JSON
 
 Api = Callable[[str], object]
@@ -445,20 +456,34 @@ def last_green_is(api: Api, repo: str, workflow: str, branch: str, sha: str) -> 
     return found[0] if found and found[0]["head_sha"] == sha else None
 
 
+def nightly_ran(api: Api, repo: str, workflow: str, sha: str) -> dict | None:
+    """A successful scheduled run of `workflow` that ran `sha`, else None."""
+    found = api(  # type: ignore[index]
+        f"/repos/{repo}/actions/workflows/{workflow}/runs?event=schedule&status=success&head_sha={sha}&per_page=1"
+    )["workflow_runs"]
+    # the forge filters on head_sha; the check here keeps a filter it ignored from reading as a match
+    return next((item for item in found if item["head_sha"] == sha), None)
+
+
+LINES = {
+    "push": (
+        "Skipped: this tree was tested by the merge queue's batch run ",
+        "Running: no batch run tested this tree.",
+    ),
+    "schedule": (
+        "Skipped: the default branch's head is the commit of the last green scheduled run ",
+        "Running: the default branch moved since the last green.",
+    ),
+    "tag": (
+        "Skipped test and test-slow: the nightly passed on the tagged commit in ",
+        "Running: no green nightly ran the tagged commit.",
+    ),
+}
+
+
 def moved_report(mode: str, found: dict | None, note: str = "") -> None:
     skip = found is not None
-    if mode == "push":
-        line = (
-            "Skipped: this tree was tested by the merge queue's batch run "
-            if skip
-            else "Running: no batch run tested this tree."
-        )
-    else:
-        line = (
-            "Skipped: the default branch's head is the commit of the last green scheduled run "
-            if skip
-            else "Running: the default branch moved since the last green."
-        )
+    line = LINES[mode][0 if skip else 1]
     if skip:
         line += found["html_url"]  # type: ignore[index]
     if note:
@@ -481,11 +506,14 @@ def moved(args: argparse.Namespace, api: Api = forge) -> int:
     )
     queue, note = land_queue() if args.mode == "push" else (None, "")
     try:
-        found = (
-            tested_by_batch(api, repo, workflow, sha, queue)
-            if args.mode == "push"
-            else last_green_is(api, repo, workflow, "main", sha)
-        )
+        if args.mode == "push":
+            found = tested_by_batch(api, repo, workflow, sha, queue)
+        elif args.mode == "schedule":
+            found = last_green_is(
+                api, repo, workflow, os.environ.get("GITHUB_REF_NAME") or "main", sha
+            )
+        else:
+            found = nightly_ran(api, repo, NIGHTLY, sha)
     except FORGE_ERRORS as error:
         print(f"nightly: forge read failed ({error}); running as usual", file=sys.stderr)
         found = None
@@ -495,7 +523,7 @@ def moved(args: argparse.Namespace, api: Api = forge) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Nightly: open or extend the issue of a red nightly."
+        description="Nightly: open or extend the issue of a red nightly (red); say whether a run has anything to run (moved)."
     )
     verbs = parser.add_subparsers(dest="verb", required=True)
     verb = verbs.add_parser(
@@ -512,9 +540,9 @@ def main(argv: list[str] | None = None) -> int:
     verb.add_argument("--dry-run", action="store_true", help="print the body, post nothing")
     skipping = verbs.add_parser(
         "moved",
-        help="skip=true|false to GITHUB_OUTPUT: has a push or scheduled run anything to run",
+        help="skip=true|false to GITHUB_OUTPUT: has a push, scheduled or tag-check run anything to run",
     )
-    skipping.add_argument("mode", choices=("push", "schedule"))
+    skipping.add_argument("mode", choices=tuple(LINES))
     args = parser.parse_args(argv)
     try:
         return moved(args) if args.verb == "moved" else red(args)

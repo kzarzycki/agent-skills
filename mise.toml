@@ -123,18 +123,11 @@ run = """uv run python tools/gate_slot.py pytest -q -m 'slow and not live_agent'
 description = "ruff check and format check over the repo's Python"
 run = """uv run ruff check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent"""
 
-[tasks.check-land]
-description = "The landing gate: vendor check and lint, nothing else, about a minute."
-# ponytail: a landing runs no tests, so a break reaches main until the Mergify batch's tests (test-batch) or the nightly
-# full suite catch it; fix it forward. Interim until the approvals tests run in seconds; then check-fast is the gate again.
-run = """mise run vendor-engineering-check
-mise run lint"""
-
 [tasks.check-fast]
-description = "The PR head's check (`qualify`): vendor check, lint and the Mergify template drift check, no tests. The tests run once per tree, on the batch (test-batch)."
+description = "The PR head's check (`qualify`): vendor check, lint and the Mergify config drift check, no tests. The tests run once per tree, on the batch (test-batch)."
 run = """mise run vendor-engineering-check
 mise run lint
-cmp .mergify.yml gatekeeper/skills/gatekeeper/mergify.yml || { echo 'error: .mergify.yml drifted from the pack template gatekeeper/skills/gatekeeper/mergify.yml' >&2; exit 1; }"""
+uv run gatekeeper/skills/gatekeeper/scripts/approvals.py queue-config | cmp - .mergify.yml || { echo 'error: .mergify.yml drifted from `approvals.py queue-config`, the pack template rendered with gatekeeper.md'"'"'s land block: write its output to .mergify.yml' >&2; exit 1; }"""
 
 [tasks.check-affected]
 description = "loop.md's `Affected tests:` run on a PR head: check-fast, then the tests tools/affected_tests.py selects against GATE_BASE (test-batch), so the worker's recorded run proves the PR's tests"
@@ -142,11 +135,13 @@ run = """mise run check-fast
 mise run test-batch"""
 
 [tasks.test-batch]
-description = "The tests `qualify` runs on a Mergify batch's draft PR: only the ones the batch touches against GATE_BASE (tools/affected_tests.py), never the whole suite"
-# A selector that fails fails the step. One that selects nothing runs no pytest and passes, saying so: pytest given no
-# targets would run the whole suite (#1609), which no PR's run does (#1872).
-run = """targets=$(uv run python tools/affected_tests.py "${GATE_BASE:-origin/main}") || { echo 'error: tools/affected_tests.py failed' >&2; exit 1; }
-[ -n "$targets" ] || { echo 'test-batch: tools/affected_tests.py selected nothing, so no tests run, never the whole suite' >&2; exit 0; }
+description = "What `qualify` runs on a Mergify batch's draft PR against GATE_BASE (tools/cross_change_tests.py: R6): the select.unkeyed checks, the cross-change tests and the affected tests of a PR with no record, else the batch's affected tests; never the whole suite"
+# A selector that fails or refuses (nothing to run on a PR with no record) fails the step. One that selects no test
+# runs no pytest and passes, saying so: pytest given no targets would run the whole suite (#1609).
+run = """unkeyed=$(mktemp)
+targets=$(uv run python -m tools.cross_change_tests --unkeyed-out "$unkeyed" "${GATE_BASE:-origin/main}") || { echo 'error: tools/cross_change_tests.py failed or refused' >&2; exit 1; }
+while IFS= read -r check; do sh -c "$check" || { echo "error: the unkeyed check failed: $check" >&2; exit 1; }; done < "$unkeyed"
+[ -n "$targets" ] || { echo 'test-batch: tools/cross_change_tests.py selected nothing, so no tests run, never the whole suite' >&2; exit 0; }
 uv run python tools/gate_slot.py pytest -q -m 'not live_agent and not slow' -p tools.gate_workers -n auto --dist loadfile $targets"""
 
 [tasks.check]
