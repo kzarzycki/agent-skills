@@ -26,6 +26,7 @@ from approvals_harness import (
 from test_approvals_affected_tests import worker  # noqa: F401
 from test_approvals_cloud_queue import cloud_queue  # noqa: F401
 from test_approvals_github_queue import (  # noqa: F401
+    AGAIN_AT,
     RED_AT,
     labels_of,
     notes_on,
@@ -33,6 +34,7 @@ from test_approvals_github_queue import (  # noqa: F401
     run,
 )
 from test_approvals_mergify_queue import land_statuses, mergify  # noqa: F401
+from test_approvals_status_refused import handed, refused  # noqa: F401
 
 TEMPLATE = Path(approvals.__file__).resolve().parent.parent / "mergify.yml"
 
@@ -310,6 +312,25 @@ def test_a_github_queue_group_with_a_real_failure_beside_a_timeout_still_counts(
     assert len(notes_on(queue, 7, approvals.QUEUE_RED)) == 1
 
 
+def test_a_github_queue_head_timing_out_twice_stops_requeueing_and_names_the_budget(
+    queue: dict[str, Any],
+) -> None:
+    head = queue["opened"](7)
+    queue["checks"]["g1"] = [run("qualify", "timed_out", 410)]
+    queue["checks"]["g2"] = [run("qualify", "timed_out", 420)]
+    queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
+    code, lines = queue["land"]("7")
+    assert code == 0, lines
+    assert queue["enqueued"] == [(7, head)]
+    queue["remove"](7, approvals.FAILED_CHECKS, at=AGAIN_AT, group="g2")
+    code, lines = queue["land"]("7")
+    assert code == approvals.WAITING, lines
+    assert queue["enqueued"] == [(7, head)]
+    [line] = [each for each in lines if "timed out twice" in each]
+    assert "`timeouts.run` (1 hour)" in line
+    assert not queue["pulls"][7]["isDraft"]
+
+
 MERGIFY_WORDINGS = [
     {"summary": "The checks have timed out after 1 hour."},
     # Mergify's own wording (its changelog, 2026-06-11)
@@ -437,3 +458,229 @@ def test_a_group_github_cannot_read_is_no_timeout(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(approvals, "commit_checks", unreadable)
     assert approvals.timed_out_only("g1", {"qualify"}) is False
+
+
+def test_a_mergify_head_timing_out_twice_stays_out_of_the_queue_and_names_the_budget(
+    mergify: dict[str, Any],
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    assert mergify["land"]("7")[0] == 0
+    assert len(requeues(mergify)) == 1
+    # Mergify takes it in again and times out a second time at the same head
+    assert mergify["land"]("7")[0] == 0
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    code, lines = mergify["land"]("7")
+    assert code == approvals.WAITING, lines
+    [line] = [each for each in lines if "timed out twice" in each]
+    assert "`timeouts.run` (1 hour)" in line
+    assert len(requeues(mergify)) == 1
+    assert labels_of(mergify, 7) & {"loop:queued", "loop:dequeued"} == set()
+    assert notes_on(mergify, 7, "Evicted from the merge queue") == []
+    # the next land holds it out
+    code, lines = mergify["land"]("7")
+    assert code == approvals.WAITING, lines
+    assert any("timed out twice" in each for each in lines)
+    assert len(requeues(mergify)) == 1
+
+
+def test_a_refused_requeue_after_a_first_timeout_is_no_second_timeout(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    posted = approvals.comment
+
+    def refuse_requeue(number: int, body: str) -> Any:
+        if body.startswith(approvals.REQUEUE):
+            raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
+        return posted(number, body)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(approvals, "comment", refuse_requeue)
+        assert mergify["land"]("7")[0] == 1
+    code, lines = mergify["land"]("7")
+    assert code == 0, lines
+    assert not any("timed out twice" in each for each in lines)
+    assert len(requeues(mergify)) == 1
+
+
+def test_a_raised_budget_gives_the_head_a_fresh_first_timeout(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    assert mergify["land"]("7")[0] == 0
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    assert mergify["land"]("7")[0] == approvals.WAITING
+    stamp_stop_later(mergify)
+    monkeypatch.setattr(approvals, "timeouts", lambda loop: {"test": 60, "run": 7200})
+    code, lines = mergify["land"]("7")
+    assert code == 0, lines
+    assert not any("timed out twice" in each for each in lines)
+    # the head goes back into Mergify's queue: its queue action does not re-embark a dequeued head by itself
+    assert len(requeues(mergify)) == 2
+
+
+def test_a_refused_label_removal_after_a_first_timeout_is_no_second_timeout(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    with monkeypatch.context() as patch:
+
+        def refused(number: int, name: str, add: bool) -> None:
+            raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
+
+        patch.setattr(approvals, "label", refused)
+        assert mergify["land"]("7")[0] == 1
+    code, lines = mergify["land"]("7")
+    assert code == 0, lines
+    assert not any("timed out twice" in each for each in lines)
+
+
+def stamp_stop_later(state: dict[str, Any]) -> None:
+    """The fake stamps every comment alike: the stop record follows the comments it answers."""
+    for node in state["pulls"][7]["comments"]["nodes"]:
+        if node["body"].startswith(approvals.TIMED_OUT_TWICE):
+            node["createdAt"] = "2026-10-02T13:00:00Z"
+
+
+def mark_ready_again(state: dict[str, Any], at: str) -> None:
+    state["pulls"][7]["timelineItems"]["nodes"].append(
+        {"__typename": "ReadyForReviewEvent", "createdAt": at}
+    )
+
+
+def test_a_mergify_pr_marked_ready_again_counts_its_timeouts_anew(
+    mergify: dict[str, Any],
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    assert mergify["land"]("7")[0] == 0
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    assert mergify["land"]("7")[0] == approvals.WAITING
+    stamp_stop_later(mergify)
+    mark_ready_again(mergify, "2999-01-01T00:00:00Z")
+    code, lines = mergify["land"]("7")
+    assert code == 0, lines
+    assert not any("timed out twice" in each for each in lines)
+    assert len(requeues(mergify)) == 2
+
+
+def stopped_github_queue(queue: dict[str, Any]) -> str:
+    head = queue["opened"](7)
+    queue["checks"]["g1"] = [run("qualify", "timed_out", 410)]
+    queue["checks"]["g2"] = [run("qualify", "timed_out", 420)]
+    queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
+    queue["remove"](7, approvals.FAILED_CHECKS, at=AGAIN_AT, group="g2")
+    assert queue["land"]("7")[0] == approvals.WAITING
+    assert len(notes_on(queue, 7, approvals.TIMED_OUT_TWICE)) == 1
+    # the fake stamps every comment alike: the stop record follows the removals it answers
+    for node in queue["pulls"][7]["comments"]["nodes"]:
+        if node["body"].startswith(approvals.TIMED_OUT_TWICE):
+            node["createdAt"] = "2026-10-02T13:00:00Z"
+    return head
+
+
+def test_a_github_queue_stop_is_recorded_once_and_holds_on_later_lands(
+    queue: dict[str, Any],
+) -> None:
+    stopped_github_queue(queue)
+    assert queue["land"]("7")[0] == approvals.WAITING
+    assert len(notes_on(queue, 7, approvals.TIMED_OUT_TWICE)) == 1
+    assert queue["enqueued"] == []
+
+
+def test_a_github_queue_pr_marked_ready_again_counts_its_timeouts_anew(
+    queue: dict[str, Any],
+) -> None:
+    head = stopped_github_queue(queue)
+    mark_ready_again(queue, "2999-01-01T00:00:00Z")
+    code, lines = queue["land"]("7")
+    assert code == 0, lines
+    assert queue["enqueued"] == [(7, head)]
+
+
+def test_a_raised_budget_lifts_a_github_queue_stop(
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = stopped_github_queue(queue)
+    monkeypatch.setattr(approvals, "timeouts", lambda loop: {"test": 60, "run": 7200})
+    code, lines = queue["land"]("7")
+    assert code == 0, lines
+    assert queue["enqueued"] == [(7, head)]
+
+
+def test_a_dequeue_whose_timeout_text_is_older_than_the_first_record_is_evicted(
+    mergify: dict[str, Any],
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    assert mergify["land"]("7")[0] == 0
+    # Mergify dequeues again for another reason and leaves its old check run, a timeout's, as it was
+    for each in mergify["checks"][head]:
+        each["completed_at"] = "2026-09-01T00:00:00Z"
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    code, lines = mergify["land"]("7")
+    assert code == 1, lines
+    assert not any("timed out twice" in each for each in lines)
+
+
+def test_an_old_timed_out_check_after_a_ready_again_is_no_new_first_timeout(
+    mergify: dict[str, Any],
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    assert mergify["land"]("7")[0] == 0
+    for each in mergify["checks"][head]:
+        each["completed_at"] = "2026-09-01T00:00:00Z"
+    mark_ready_again(mergify, "2999-01-01T00:00:00Z")
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    code, lines = mergify["land"]("7")
+    assert code == 1, lines
+    assert len(requeues(mergify)) == 1
+
+
+def test_a_lifted_stop_in_a_cloud_session_hands_over_again_and_a_red_dequeue_evicts(
+    refused: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """The `land` status write is refused: the hand-over record is what the land-status workflow answers. The stop ends
+    that hand-over as an eviction does, so the re-land after a ready-again posts a new record, and the head is then
+    queued here, so Mergify's next dequeue is read, not skipped."""
+    head = refused["opened"](7)
+    assert refused["land"]("7")[0] == 0
+
+    def workflow_posts(at: str) -> None:
+        hub[head] = [
+            {
+                "context": "land",
+                "state": "success",
+                "description": f"Queued for Mergify at {head}",
+                "created_at": at,
+            }
+        ]
+
+    workflow_posts("2026-10-01T09:30:00Z")
+    dequeued_with(refused, head, queue_check("failure", summary="The checks have timed out"))
+    assert refused["land"]("7")[0] == 0
+    refused["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    assert refused["land"]("7")[0] == approvals.WAITING
+    stamp_stop_later(refused)
+    mark_ready_again(refused, "2026-10-02T14:00:00Z")
+    code, lines = refused["land"]("7")
+    assert code == 0, lines
+    assert len(handed(refused, 7)) == 2
+    workflow_posts("2026-10-03T00:00:00Z")
+    dequeued_with(refused, head, queue_check("failure", title="Merge queue", summary="red"))
+    refused["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    code, lines = refused["land"]("7")
+    assert code == 1, lines
+    assert any("evicted" in each for each in lines), lines
