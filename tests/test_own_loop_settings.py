@@ -77,6 +77,8 @@ def test_every_plugin_has_a_component() -> None:
     approvals = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(approvals)
     tracker = (REPOSITORY / "docs/agents/issue-tracker.md").read_text()
-    components = {name.removeprefix("area:") for name in approvals.label_names(tracker)["component"]}
+    components = {
+        name.removeprefix("area:") for name in approvals.label_names(tracker)["component"]
+    }
     plugins = {path.parent.parent.name for path in REPOSITORY.glob("*/.claude-plugin/plugin.json")}
     assert plugins <= components, f"no component for: {sorted(plugins - components)}"
