@@ -51,6 +51,12 @@ def test_lookup_reports_a_record_and_treats_any_failure_as_none(monkeypatch):
     )
     assert pr_head_record.lookup("abc")[0] is False
     monkeypatch.setattr(
+        pr_head_record.subprocess, "run", fake(1, "recorded: one step passed, another has none\n")
+    )
+    assert (
+        pr_head_record.lookup("abc")[0] is False
+    )  # a failed exit is no record whatever it printed
+    monkeypatch.setattr(
         pr_head_record.subprocess, "run", fake(0, "no tree for abc: run the tests\n")
     )
     assert pr_head_record.lookup("abc")[0] is False
@@ -70,6 +76,10 @@ def test_main_writes_the_step_outputs_and_exits_zero(tmp_path, monkeypatch):
     )
     assert pr_head_record.main(["abc"]) == 0
     assert out.read_text() == "recorded=true\nrecord=recorded: T as loop-gate/T-k\n"
+    out.unlink()
+    monkeypatch.setattr(pr_head_record, "lookup", lambda head: (False, "no record"))
+    assert pr_head_record.main(["abc"]) == 0
+    assert out.read_text() == "recorded=false\nrecord=no record\n"
 
 
 def read(name: str) -> str:
