@@ -13,6 +13,7 @@ from approvals_harness import (
 )
 
 HELD = "#7 waits for the owner (needs-owner)"
+HOLD = "#7 is held (loop:hold): see the hold comment on the PR"
 
 
 def test_a_ready_pr_carrying_needs_owner_is_no_candidate_for_land_and_check_merge_says_why(
@@ -79,3 +80,40 @@ def test_needs_owner_on_the_pr_holds_its_merge_never_its_build(lands: dict[str, 
     tracker, loop = approvals.project()
     assert HELD in approvals.gated("merge", pr, tracker, loop)[0]
     assert HELD not in approvals.gated("build", pr, tracker, loop)[0]
+
+
+def test_a_ready_pr_carrying_loop_hold_is_no_candidate_for_land_and_removing_it_lets_it_land(
+    lands: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"}, labels=("loop:hold",))
+    lands["open"](8, {"8.txt": "8\n"})
+    # a bare land: the batch takes #8, skips the held #7 and writes nothing to it
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert HOLD in lines
+    assert lands["merged"]() == ["8"]
+    assert [node["name"] for node in lands["pulls"][7]["labels"]["nodes"]] == ["loop:hold"]
+    assert not lands["pulls"][7]["comments"]["nodes"]
+    assert all("7" not in args for args in lands["calls"])
+    # `--only` on the held PR itself lands nothing and names the label
+    code, lines = lands["land"]("7", "--only")
+    assert code == 1
+    assert HOLD in lines
+    assert lands["merged"]() == ["8"]
+    assert approvals.main(["check", "merge", "7"]) == 1
+    assert HOLD in capsys.readouterr().out.splitlines()
+    # removing the label lets it land
+    nodes = lands["pulls"][7]["labels"]["nodes"]
+    nodes[:] = [node for node in nodes if node["name"] != "loop:hold"]
+    code, lines = lands["land"]("7", "--only")
+    assert code == 0, lines
+    assert HOLD not in lines
+    assert lands["merged"]() == ["8", "7"]
+
+
+def test_loop_hold_on_the_pr_holds_its_merge_never_its_build(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"}, labels=("loop:hold",))
+    pr = lands["pulls"][7]
+    tracker, loop = approvals.project()
+    assert HOLD in approvals.gated("merge", pr, tracker, loop)[0]
+    assert HOLD not in approvals.gated("build", pr, tracker, loop)[0]

@@ -3702,7 +3702,7 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
         + omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="")
         + "do X"
     )
-    assert "owner's own words" in text and "ask them here" in text
+    assert "owner's own words" in text and "your own question card" in text  # #2170
     assert "needs-owner" not in text
     assert (
         LONG_RUN_POINTER in text
@@ -8399,29 +8399,17 @@ ROUTES = [
         None,
         ("rule", "act"),
     ),
-    (
-        "user needed, covered",
-        {"kind": "ended", "last": "USER NEEDED: merge?", "decisions": True},
-        "act",
-        ("model", "act"),
-    ),
-    (
-        "user needed, not covered",
+    (  # a USER NEEDED with no card is its manager's, whatever the decisions say (#2170)
+        "user needed, standing decisions",
         {"kind": "ended", "last": "USER NEEDED: delete prod?", "decisions": True},
-        "owner",
-        ("model", "owner"),
-    ),
-    (
-        "user needed, the model unsure",
-        {"kind": "ended", "last": "USER NEEDED: x", "decisions": True},
-        "none",
-        ("model", "act"),
+        None,
+        ("rule", "act"),
     ),
     (
         "user needed, no standing decisions",
         {"kind": "ended", "last": "USER NEEDED: x"},
         None,
-        ("rule", "owner"),
+        ("rule", "act"),
     ),
     ("approval prompt", {"kind": "blocked"}, None, ("rule", "owner")),
     ("question", {"kind": "blocked", "question": True}, None, ("rule", "act")),
@@ -8518,19 +8506,15 @@ def test_the_small_model_is_one_headless_call_with_the_event_cut_on_stdin(
         "missing",
     ],
 )
-def test_an_unparseable_failed_or_timed_out_model_answer_routes_a_question_to_act_and_a_quiet_end_to_a_nudge(
+def test_an_unparseable_failed_or_timed_out_model_answer_routes_a_quiet_end_to_a_nudge(
     monkeypatch: pytest.MonkeyPatch, answer: object
 ) -> None:
     model_answers(monkeypatch, answer)
     route, why = REAL_TRIAGE("an event", "")
     assert route == "unsure" and why
     ask = lambda: REAL_TRIAGE("an event", "d")
-    for last, action in (
-        ("USER NEEDED: x", "act"),
-        ("on it", "nudge"),
-    ):  # a quiet end posts nothing
-        event = {"kind": "ended", "last": last, "decisions": True}
-        assert omnigent_agent.route(event, ask)[:2] == ("model", action)
+    event = {"kind": "ended", "last": "on it", "decisions": True}
+    assert omnigent_agent.route(event, ask)[:2] == ("model", "nudge")
 
 
 def test_standing_decisions_are_their_section_else_the_whole_file_else_none(
@@ -9024,15 +9008,19 @@ def test_a_restart_inside_the_model_window_keeps_it(
     og = Leads(a=[told("brief", 60)], b=[told("brief", 60)])
     supervised(og, registry, monkeypatch, 1, console=True, decisions=board)
     state = state_of(registry)
-    state["rate"]["model_calls"] = [time.time() - 3500] * 30  # the hour's calls, spent
+    state["rate"]["model_calls"] = [time.time() - 3000] * 30  # the hour's calls, spent
     registry.with_suffix(".state.json").write_text(json.dumps(state))
-    og.histories["a"].append(ending("USER NEEDED: merge it?", 0))
-    supervised(og, registry, monkeypatch, 1, console=True, decisions=board)  # the restart
+    # a quiet end, the one event the small model reads (#2170): news once it stays quiet past FOLLOW_QUIET_SECONDS
+    quiet = lambda base: lambda poll: offset.__setitem__(0, base + 301.0 * poll)
+    og.histories["a"].append(ending("paused for now", 0))
+    supervised(
+        og, registry, monkeypatch, 2, quiet(0.0), console=True, decisions=board
+    )  # the restart
     assert no_model == []
     assert events_of(registry)[-1]["why"] == "over 30 small-model calls an hour"
-    offset[0] = 101.0  # the oldest calls are past the hour
-    og.histories["b"].append(ending("USER NEEDED: merge it?", 0))
-    supervised(og, registry, monkeypatch, 1, console=True, decisions=board)
+    offset[0] = 700.0  # the oldest calls are past the hour
+    og.histories["b"].append(ending("paused for now", 0))
+    supervised(og, registry, monkeypatch, 2, quiet(700.0), console=True, decisions=board)
     assert len(no_model) == 1 and len(state_of(registry)["rate"]["model_calls"]) == 1
 
 
@@ -9878,7 +9866,7 @@ def test_a_write_failing_after_the_model_answered_keeps_the_spent_call_and_its_a
     assert len(state_of(registry)["rate"]["model_calls"]) == 30
 
 
-def test_an_ask_after_a_done_line_is_the_ending_and_goes_to_the_owner() -> None:
+def test_an_ask_after_a_done_line_is_the_ending_and_goes_to_the_manager() -> None:
     text = "DONE: #271 merged.\nUSER NEEDED: pick option A or B"
     assert omnigent_agent.ending_of(text) == "USER NEEDED"
     assert omnigent_agent.ending_of("DONE: merged\nPARKED: later") == "DONE"
@@ -9887,11 +9875,7 @@ def test_an_ask_after_a_done_line_is_the_ending_and_goes_to_the_owner() -> None:
         omnigent_agent.lead_status({"status": "idle"}, [ending(text, 0)])["ending"] == "USER NEEDED"
     )
     event = {"kind": "ended", "last": text}
-    assert omnigent_agent.route(event, lambda: ("none", "x")) == (
-        "rule",
-        "owner",
-        "no standing decision to cover it",
-    )
+    assert omnigent_agent.route(event, lambda: ("none", "x"))[:2] == ("rule", "act")
 
 
 def _agent_server(monkeypatch: pytest.MonkeyPatch, pages: dict[str, object]) -> list[tuple]:
@@ -10130,6 +10114,7 @@ def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_w
     og.harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS}
     monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")
     omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0)
+    assert "OMNIGENT_PERMISSION_MODE=bypassPermissions is not applied" in capsys.readouterr().err
     omnigent_agent.start(
         og, "claude-cloud", "t2", "do X", tmp_path / "r.md", None, 0, permission_mode="auto"
     )
@@ -10139,7 +10124,7 @@ def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_w
     )  # the variable alone never sets a cloud mode
     omnigent_agent.start(og, "claude-cloud", "t3", "do X", tmp_path / "r.md", None, 0)
     assert "OMNIGENT_PERMISSION_MODE=plan is not applied" in capsys.readouterr().err
-    assert og.modes["s2"] == "bypassPermissions"
+    assert og.modes["s2"] is None
     calls = _agent_server(monkeypatch, {"/v1/projects": {"data": []}, "/v1/sessions": {"id": "s1"}})
     harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS, "custom": "acp:other"}
     monkeypatch.setattr(
@@ -10158,18 +10143,18 @@ def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_w
     for agent, mode in (("claude-cloud", None), ("claude-cloud", "plan"), ("custom", "auto")):
         body = sent(agent, mode)
         assert "permission_mode" not in body and "terminal_launch_args" not in body
-    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")  # the env gives it too
-    assert sent("claude-cloud", None)["permission_mode"] == "bypassPermissions"
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")  # the env never gives it
+    assert "permission_mode" not in sent("claude-cloud", None)
 
 
-def test_a_claude_cloud_start_defaults_to_bypass_permissions_unless_told_otherwise(
+def test_a_claude_cloud_start_sends_no_permission_mode_unless_told(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
     og = FakeOmnigent()
     og.harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS}
     omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0)
-    assert og.modes["s0"] == "bypassPermissions"
+    assert og.modes["s0"] is None
     omnigent_agent.start(
         og, "claude-cloud", "t2", "do X", tmp_path / "r.md", None, 0, permission_mode="auto"
     )
@@ -13134,7 +13119,7 @@ def prompt_look(n: int, title: str, queued: int) -> tuple[dict, str]:
     [
         pytest.param(
             [({}, "USER NEEDED: approve A"), ({}, "USER NEEDED: approve B")],
-            ["owner", "owner"],
+            ["act", "act"],  # no card open: the manager's to act on (#2170)
             id="two-different-requests",
         ),
         pytest.param(
@@ -13143,7 +13128,11 @@ def prompt_look(n: int, title: str, queued: int) -> tuple[dict, str]:
                 ({}, "DONE: step one"),
                 ({}, "USER NEEDED: approve A"),
             ],
-            ["owner", "act", "info"],
+            [
+                "act",
+                "act",
+                "act",
+            ],  # only an owner item is kept once; a cardless ask is the manager's (#2170)
             id="one-request-twice",
         ),
         pytest.param(
@@ -13261,6 +13250,80 @@ def test_a_quiet_waiter_is_not_stalled_while_a_session_its_line_names_progresses
         )  # the stall notice; the known wait then adds an act rule
     else:
         assert stalls(og) == [] and deadlines(registry) == []
+
+
+def named_wait_deadlines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replies: list[tuple[float, str]],
+    first: str = "",
+) -> Leads:
+    """A manager quiet on a wait that names one of its leads and then, at each clock offset in
+    ``replies``, replying with the wait given there; the ``no progress`` lines it raised."""
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    first = first or f"STILL WORKING: waiting on {LEAD}. Report: m.md"
+    snaps = {LEAD: gone, "x": gone, "y": gone}
+    registry, og = manager(tmp_path, first, m={"status": "idle"}, **snaps)
+    offset = skewed(monkeypatch)
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")  # the first
+    for at, wait in replies:
+        offset[0] = at
+        og.histories["m"].append(
+            {**ending(wait, 0), "id": f"reply{at}"}
+        )  # a reply at ``at``, new progress
+        offset[0] = at + omnigent_agent.DEADLINE_SECONDS + 100  # quiet again
+        supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    return og
+
+
+def test_a_reply_that_restates_its_wait_starts_no_new_deadline_until_four_times_the_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = omnigent_agent.DEADLINE_SECONDS
+    same = f"STILL WORKING: waiting on {LEAD}. Report: m.md"
+    og = named_wait_deadlines(tmp_path, monkeypatch, [(100.0, same), (2 * d, same)])
+    assert len(stalls(og)) == 1  # once, though the reply was progress
+    second = tmp_path / "late"
+    second.mkdir()
+    og = named_wait_deadlines(second, monkeypatch, [(100.0, same), (5 * d, same)])
+    assert len(stalls(og)) == 2  # still stuck after 4x: one more
+
+
+def test_a_wait_on_a_group_is_keyed_on_its_text_and_fires_once_more_when_stuck(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = omnigent_agent.DEADLINE_SECONDS
+    group = "STILL WORKING: waiting on my leads. Report: m.md"
+    og = named_wait_deadlines(tmp_path, monkeypatch, [(100.0, group), (2 * d, group)], group)
+    assert len(stalls(og)) == 1
+    second = tmp_path / "late"
+    second.mkdir()
+    og = named_wait_deadlines(second, monkeypatch, [(100.0, group), (5 * d, group)], group)
+    assert len(stalls(og)) == 2
+
+
+def test_a_changed_wait_starts_a_new_deadline_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = omnigent_agent.DEADLINE_SECONDS
+    first = f"STILL WORKING: waiting on {LEAD}. Report: m.md"
+    other = "STILL WORKING: waiting on x. Report: m.md"
+    og = named_wait_deadlines(
+        tmp_path, monkeypatch, [(100.0, first), (2 * d, first), (4 * d, other)]
+    )
+    assert len(stalls(og)) == 2  # the first wait once, the changed one a new chain
+
+
+def test_a_wait_on_a_parked_session_raises_no_deadline_but_its_news(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wait = f"STILL WORKING: waiting on {LEAD}. Report: m.md"
+    gone = {"status": "idle", "updated_at": time.time() - 1300}
+    registry, og = manager(tmp_path, wait, m={"status": "idle"}, **{LEAD: gone})
+    og.histories[LEAD] = [ending("PARKED: the host is full. Report: o.md", 1300)]
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == []
+    assert any(f"{LEAD} ended PARKED" in t and "your wait still names it" in t for _, t in og.inbox)
 
 
 @pytest.mark.parametrize(
@@ -13466,8 +13529,8 @@ def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
     # Another harness's child never inherits: Codex takes no mode, claude-cloud and agy keep
     # their own opt-in.
     assert child("codex", bypass) == (None, "")
-    mode, err = child("claude-cloud", bypass)  # its own default, bypass, not the starter's
-    assert mode == "bypassPermissions" and "inherited" not in err and "not applied" not in err
+    mode, err = child("claude-cloud", bypass)  # sends none, not the starter's
+    assert mode is None and "inherited" not in err and "not applied" not in err
     with pytest.raises(omnigent_agent.Fail, match="a --role child blocks unattended"):
         Starter.launch = bypass
         omnigent_agent.start(og, "agy", "t-agy", "x", tmp_path / "r.md", "worker.md", 0)

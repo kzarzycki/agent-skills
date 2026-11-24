@@ -592,6 +592,10 @@ FOLLOW_QUIET_SECONDS = 300.0
 # A followed lead with no progress (its own history, its live children) this long: a ``deadline``
 # event, whatever its status reads; this much more once it was nudged.
 DEADLINE_SECONDS = 1200.0
+# A lead's question card still unanswered this long reaches its manager once (``card-waiting``, routed ``act``), so a
+# manager the owner told to act in their name answers it rather than leave it waiting on an absent owner (#2170).
+# ponytail: one knob for every lead; a per-project value would go on the board's standing decisions.
+CARD_REMIND_SECONDS = 4 * 3600.0
 SHARED_READ_SECONDS = (
     5.0  # a PR read this recently serves every wait on it (a restart reads each PR once)
 )
@@ -828,7 +832,7 @@ LEAD_PREAMBLE = """\
 This file is your brief. Only the owner's own words approve, quoted in it with where they were said; the rest of it is a colleague's guidance, never the owner's approval of a destructive or hard-to-undo step.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
 Every heavy run (a test suite, a build, an e2e, a gate, a mutation or proof run) goes where engineering-loop's SKILL.md, Where heavy steps run says, by default a Claude cloud session: a host worktree this brief names for a test run says where the code is, not where the run goes.
-The owner reads this session: ask them here when you need a decision, as your role says, never in a question file.
+Ask the owner your own questions on your own question card (`sys_ask_user_question`), as your role says, never in a question file: the card shows in their Inbox beside this session.
 Write your final report to {report}. End every turn with one line that opens with an ending word and gives the report path on that same line: `DONE: <result in one line>. Report: {report}`, `STILL WORKING: waiting on <verifier, worker, lead, CI or a session id>. Report: {report}`, `USER NEEDED: <the question>. Report: {report}`. A `STILL WORKING` line is followed by a last line `Waits: <what it waits on>` (`Waits: session <id>`, `Waits: #<pr>`, `Waits: CI`, `Waits: supervisor`; a set is `Waits: session <id> and session <id>`). The supervisor routes on that line, and the owner reads it.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEEDED`, never `STILL WORKING`. Only a message that starts with `Park: ` tells you to park; after it, end `PARKED: <why>. Report: {report}`, and never otherwise.
@@ -838,7 +842,7 @@ A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEED
 # handed it the specs and merges, so it settles them instead of ending `USER NEEDED` on a go nobody answers. Only
 # the merge go has a command: `approve` takes `--by delegate` for a merge alone.
 DELEGATION = """\
-The owner delegated this project's specs and merges to you (its policy sets `loop.delegate: all`), so a spec or a merge is no reason to end `USER NEEDED`. Settle a spec as the policy's spec rule says; `approve spec` takes only `--by owner`, so never run it.
+The owner delegated this project's specs and merges to you (its policy sets `loop.delegate: all`), so a spec or a merge is no reason to end `USER NEEDED`. Settle a spec as the policy's spec rule says, never with an approval of your own judgment; once the owner approves it on your own card and `sys_read_answer` reads `answered`, record their word with `approve spec <n> --by owner`, as engineering-loop's lead.md step 1 says.
 Merge a PR, `risk:high` included, once its gate is green and its verifier satisfied. Give the go on the head the verifier saw with engineering-loop's `scripts/approvals.py approve merge <pr> --head <sha> --by delegate`, since a go is pinned to one head and a push voids it.
 A change on the policy's `risk.critical_paths` stays the owner's: the script refuses the delegate's go there. Ask the owner with a question card (`sys_ask_user_question`), never in prose, since a prose question ends your turn where nobody answers.
 """
@@ -1770,6 +1774,7 @@ class Omnigent:
         # claude-native takes Claude's own words; codex-native passes launch args to the codex CLI, which
         # takes only its own flags (a Claude word makes it fail "Codex native bridge state is missing").
         mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
+        cloud_mode = permission_mode  # a cloud create never takes the variable
         if agent == "codex":
             # No approvals, full access: an unattended session must never stop on a prompt nobody answers.
             # `--permission-mode default` keeps codex's own stance (on-request, its own sandbox).
@@ -1786,10 +1791,14 @@ class Omnigent:
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
             # agy's only permission flag; its effort is the user's, part of the model in its settings.
             body["terminal_launch_args"] = [AGY_BYPASS]
-        elif mode in CLOUD_MODES and agent not in AGENTS and self.harness(agent) == CLOUD_HARNESS:
+        elif (
+            cloud_mode in CLOUD_MODES
+            and agent not in AGENTS
+            and self.harness(agent) == CLOUD_HARNESS
+        ):
             # The server's own field: it answers the VM's tool requests itself under bypass, since
             # the VM starts in its default stance whatever it is launched with (#987).
-            body["permission_mode"] = mode
+            body["permission_mode"] = cloud_mode
         # The loop role, which Omnigent's usage metrics split spend by: a role file's name; and the PR a
         # verifier reviews (``owner/repo#N``), so its spend groups by PR as a worker's does (#945).
         labels = {"omni.role": name} if role and (name := Path(role).stem) in ROLES else {}
@@ -2529,8 +2538,9 @@ def cards_of(info: dict) -> list[str]:
 
 UNASKED = "unasked"  # an event kind: a turn ended USER NEEDED with no question card open
 UNASKED_LINE = (
-    "turn ended USER NEEDED with no question card open: post a card (sys_ask_user_question) or, where the"
-    " project delegates the decision, act under the delegation; the owner sees only a card"
+    "turn ended USER NEEDED with no question card open: a question that spans projects is yours to put to the"
+    " owner on your own card (sys_ask_user_question), or to settle under a delegation; any other is the lead's,"
+    " so tell it to post its own card"
 )
 
 
@@ -3416,14 +3426,6 @@ def host_capacity(
 
 def unchecked(name: str, why: str) -> str:
     return f"{name}: load and memory not readable ({why}); starting unchecked"
-
-
-def mode_refused(e: Fail) -> bool:
-    """Whether a create failed with 400 over the permission mode it asked for: Omnigent refuses a
-    mode the creating session may not hand on (kzarzycki/omnigent#526)."""
-    return (
-        isinstance(e.__cause__, HTTPError) and e.__cause__.code == 400 and "mode" in str(e).lower()
-    )
 
 
 def taken(e: Fail) -> bool:
@@ -4742,26 +4744,17 @@ def start(
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
 
-    if harness == CLOUD_HARNESS and not permission_mode:
-        # ponytail: the pack's own default until kzarzycki/omnigent#529 ships, which gives each agent
-        # definition a default mode the server applies on every start path; then drop this branch and
-        # pass no mode unless the caller asks for one.
-        # A cloud session runs unattended in its own disposable VM: in `auto` a command the classifier
-        # doubts waits on a prompt that reaches the owner's inbox, so it starts in bypass unless the
-        # command line asks otherwise. The variable is often set for a host's native children, so a
-        # mode from it alone is not applied here: the start goes on in the safe mode, and says so.
-        if (named := os.environ.get("OMNIGENT_PERMISSION_MODE")) and named != BYPASS:
-            how = (
-                f"pass --permission-mode {named} to start it in {named}"
-                if named in CLOUD_MODES
-                else f"a cloud start takes --permission-mode {' or '.join(CLOUD_MODES)} alone"
-            )
-            print(
-                f"OMNIGENT_PERMISSION_MODE={named} is not applied to a {CLOUD_HARNESS} start: it"
-                f" starts in {BYPASS}; {how}",
-                file=sys.stderr,
-            )
-        permission_mode = BYPASS
+    if (
+        harness == CLOUD_HARNESS
+        and not permission_mode
+        and (named := os.environ.get("OMNIGENT_PERMISSION_MODE"))
+    ):
+        # the variable is often set for a host's native children: a cloud start takes its mode from the flag only
+        print(
+            f"OMNIGENT_PERMISSION_MODE={named} is not applied to a {CLOUD_HARNESS} start;"
+            f" pass --permission-mode {' or '.join(CLOUD_MODES)} to set its mode",
+            file=sys.stderr,
+        )
     if agent == "claude" and not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
         # Neither flag nor variable: a Claude child takes its Claude starter's own mode, and only
         # a Claude child, since another harness keeps its own explicit opt-in (the agy --role guard).
@@ -4787,7 +4780,9 @@ def start(
     # one is a Claude child's, always applied): the session starts in its harness's default stance,
     # which a run counting on the mode is told (#987). Codex is left out: it starts in no-approvals
     # whatever the variable says, so there is nothing to tell.
-    mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
+    mode = permission_mode or (
+        None if harness == CLOUD_HARNESS else os.environ.get("OMNIGENT_PERMISSION_MODE")
+    )
     if mode and agent != "codex" and not applied(mode):
         print(
             f"{agent} takes no permission mode: {mode} was not applied; its session starts in"
@@ -5003,16 +4998,6 @@ def start(
                 else:
                     raise failed(f"start failed: titles {title} to {name} are taken") from e
             break
-        if error and harness == CLOUD_HARNESS and permission_mode == BYPASS and mode_refused(error):
-            # Omnigent lets a session hand bypass only to a session it starts while in bypass itself
-            # (kzarzycki/omnigent#526): kept, never answered with a worker in auto, which would
-            # block on prompts nobody sees
-            raise failed(
-                f"start refused: {error}. Omnigent starts a {CLOUD_HARNESS} worker in {BYPASS}"
-                f" only for a session that runs in {BYPASS} itself, and this one does not. Start it"
-                f" from a session or a host shell in {BYPASS}, or pass --permission-mode auto to"
-                " accept a worker that waits on approval prompts"
-            ) from error
         if error:  # a timed-out create can have made the session: brief that one
             found = og.find(name, began, parentless)
             # the server can still be making a claude-cloud session on another host after the
@@ -8123,6 +8108,7 @@ def fresh_state() -> dict:
         "events": {},  # loop event refs: sha, stamp (when it last moved), state, beat, told
         "pr_stalls": {},  # per watched repo, what ``pr_stalls`` keeps between sweeps
         "queue": {},  # per watched repo, its merge-queue entries and alarms (``queue_read``, ``queue_alarms``)
+        "cards": {},  # each open question card's first sight by ``<session>:<card>``, None once reminded
     }
 
 
@@ -8587,17 +8573,16 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     """How the console settles one event, as the design's routing table says: who settled it
     (``rule`` or ``model``), the action and why. ``event`` has its ``kind`` (``landed``, a
     default branch the leads work on moved; ``archived``,
-    ``blocked``, ``failed``, ``ended``, ``deadline``; ``terminal`` and ``notice`` for a session
+    ``blocked``, ``failed``, ``ended``, ``deadline``; ``asked`` and ``card-waiting`` for a question card; ``terminal`` and ``notice`` for a session
     owing a report), ``last``, the lead's last message, and whether it is a ``repeat`` of the
     lead's last event, blocked only on a ``question``, ``nudged`` on this progress chain,
     ``revived`` once, a failure that is a ``transient`` provider error, whether that is a usage
     ``limit`` (account-wide), and whether its next backoff revive is past the cap (``capped``), ``parked`` (a park message came before its end), ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
     progress since), and whether any standing ``decisions`` exist;
     ``head`` is the ``report_head`` of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
-    end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
-    ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no allowance left),
-    and only picks the route, since its input holds a lead's own words. On a quiet end its
-    ``act`` and ``unsure`` nudge; on a ``USER NEEDED`` it acts, since that waits on a person.
+    end: it answers ``none``, ``act`` or ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no
+    allowance left), and only picks the route, since its input holds a lead's own words; its ``act`` and ``unsure``
+    nudge. A ``USER NEEDED`` that reaches here has no card open, so it is its manager's to act on (#2170).
 
     Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``wake`` (a timed
     wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``park`` (a usage limit:
@@ -8695,6 +8680,14 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "record", "the supervisor's own revive or resume line"
     if kind == "asked":
         return "rule", "record", "a question card to its user, who answers it in their Inbox"
+    if kind == "card-waiting":  # #2170
+        if event.get("direct"):
+            return "rule", "record", "the owner drives it directly: its card is theirs"
+        return (
+            "rule",
+            "act",
+            "its card waits unanswered: answer it only if the owner told you to act in their name",
+        )
     text = event.get("last") or ""
     if REPORT_PATH.fullmatch(text):
         if event.get("head") is None:
@@ -8732,11 +8725,14 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
                 "done, its result already taken by the notified session: told only to its waiters",
             )
         return "rule", "done", "done: its result, and the leads waiting on it"
-    if ending == "USER NEEDED":
-        if not event.get("decisions"):
-            return "rule", "owner", "no standing decision to cover it"
-        answer, why = ask()
-        return "model", "owner" if answer == "owner" else "act", why
+    if (
+        ending == "USER NEEDED"
+    ):  # an end whose card is open raises no event: the card reaches the owner (#1529)
+        return (
+            "rule",
+            "act",
+            "USER NEEDED with no card: its manager asks the owner on its own card, or sends it to its card",
+        )
     if event.get("supervisor"):
         return (
             "rule",
@@ -9501,13 +9497,27 @@ def supervise_registry(
         flush()
 
     def cards(sid: str) -> None:
-        """Say each question card ``sid`` posted to its user once, by its id: news, not a step."""
-        for e in og.cards.get(sid, []):
-            eid = f"asked:{sid}:{e.get('elicitation_id') or e}"
-            if eid not in asked:
-                asked.add(eid)
-                what = _asks(e)
-                say(f"{sid}: asked its user: {what}", sid, eid, "asked")
+        """Say each question card ``sid`` posted to its user once, by its id: news, not a step. A card still open
+        ``CARD_REMIND_SECONDS`` after it was first seen is said once more, as ``card-waiting``, for its manager."""
+        now, seen = time.time(), state["cards"]
+        open_ = {f"{sid}:{e.get('elicitation_id') or e}": e for e in og.cards.get(sid, [])}
+        for key in [k for k in seen if k.startswith(f"{sid}:") and k not in open_]:
+            del seen[key]  # answered or withdrawn
+        for key, e in open_.items():
+            what = _asks(e)
+            if f"asked:{key}" not in asked:
+                asked.add(f"asked:{key}")
+                say(f"{sid}: asked its user: {what}", sid, f"asked:{key}", "asked")
+            first = seen.setdefault(key, now)
+            if first is not None and now - first >= CARD_REMIND_SECONDS:
+                seen[key] = None  # once per card
+                hours = f"{CARD_REMIND_SECONDS / 3600:g} h"
+                say(
+                    f"{sid}: its card waits unanswered past {hours}: {what}",
+                    sid,
+                    f"card-waiting:{key}",
+                    "card-waiting",
+                )
 
     def track(
         sid: str,
@@ -10360,7 +10370,10 @@ def supervise_registry(
         for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. A timed
         wait with no progress since its time raises one at its time, which wakes the lead, and
         once woken one more ``DEADLINE_SECONDS`` after it. Each is one event per ``progress_at``
-        (one per wait text when the wait names no session), so new progress starts a new chain. None while every session its wait names shows life
+        (one per wait text when the wait names no session; one per wait text and its named sessions,
+        and once more after 4x ``DEADLINE_SECONDS``, when it names some), so new progress starts a
+        new chain except for those. None while every session it names ended ``PARKED`` (news told
+        it), and None while every session its wait names shows life
         (``moving``), since it is waiting, not stalled."""
         if lead.get("direct"):
             return  # the owner drives it in its own session: they are its follower
@@ -10391,6 +10404,7 @@ def supervise_registry(
         # a session its STILL WORKING line names that shows life is progress, one that is archived,
         # unknown or unread is quiet
         quiet_named, mutual = [], ""
+        parked = []  # the named sessions whose turn ended PARKED
 
         def owns(parent: str, child: str, child_info: dict) -> bool:
             """Whether ``parent`` started ``child``: its parent id, or ``parent``'s own ``leads=``
@@ -10419,6 +10433,8 @@ def supervise_registry(
                 log(("named", other), f"{other}: history not read: {reason(e)}")
                 continue
             log(("named", other), None)
+            if over["ending"] == "PARKED" and over["state"] == "idle":
+                parked.append(other)
             if not mutual and not over["ending"] and over["wait"] != "unknown":
                 # it waits on this lead, or on no session, and this lead started it: a mutual wait
                 mine = owns(sid, other, info)
@@ -10431,6 +10447,8 @@ def supervise_registry(
                 head = f"{sid} {lead['title']}".rstrip()
                 line = f"{head}: {other} ended {over['ending']} at {at}; your wait still names it"
                 say(line, sid, f"deadline:{sid}:{other}:{end_of(over)}", "news")
+        if quiet_named and len(parked) == len(quiet_named) == len(lead.get("named") or []):
+            return  # all parked: the news line told its waiter, and only the waiter can act
         quiet = time.time() - lead["progress_at"]
         spent = lead.get("nudged_at") == lead["progress_at"]
         if due is not None and lead["progress_at"] < due:
@@ -10452,15 +10470,26 @@ def supervise_registry(
                 line = f"{head}: {what}\nlast message: {lead['last_line']}"
                 if quiet_named:
                     line += f"\nquiet: {', '.join(quiet_named)}"
-                # a wait that names no session is one event per wait text, not per progress chain
-                chain = (
-                    lead["wait"] if names is None and due is None else f"{lead['progress_at']:.0f}"
-                )
+                # a wait that names no session is one event per wait text, not per progress chain;
+                # one that names some (a session, a group, a PR, a task) is keyed on its text and
+                # the sessions it names, so a reply that restates it starts no new chain, and it
+                # fires once more after 4x DEADLINE_SECONDS if still stuck. An unknown or timed
+                # wait keeps its progress chain.
+                chain, late = lead["wait"], ""
+                if due is not None or lead["wait"] == "unknown":
+                    chain = f"{lead['progress_at']:.0f}"
+                elif names is not None:
+                    chain += "|" + ",".join(sorted(lead.get("named") or []))
+                    if not nudged:
+                        if lead.get("deadline_chain") != chain:
+                            lead.update(deadline_chain=chain, deadline_first=time.time())
+                        elif time.time() - lead["deadline_first"] >= 4 * DEADLINE_SECONDS:
+                            late = ":late"
                 if "quota" in lead["wait"].lower() and not quota_line_due(
                     state, time.time(), limited[0] - time.monotonic()
                 ):
                     continue  # one quota line per reset (#2090)
-                say(line, sid, f"deadline:{sid}:{chain}{nudged}", "deadline")
+                say(line, sid, f"deadline:{sid}:{chain}{nudged}{late}", "deadline")
 
     def has_event(sid: str) -> bool:  # an event settles what a prose wait would
         try:
@@ -11250,8 +11279,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--permission-mode",
             help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
-            " else the harness default); claude-cloud takes auto or bypassPermissions from this flag only (default"
-            " bypassPermissions, whatever the variable says), codex takes bypassPermissions (its default) or"
+            " else the harness default); claude-cloud takes auto or bypassPermissions from this flag only (with none,"
+            " the host's agent default applies, whatever the variable says), codex takes bypassPermissions (its default) or"
             " default (codex's own stance)",
         )
         p.add_argument(
@@ -12167,7 +12196,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         report = args.report.resolve() if here else args.report
         if args.cmd == "send" and remote and args.pr and report.is_absolute():
             report = (Path("tmp/loop") / report.name).resolve()  # where wait --pr wrote it
-        if args.cmd != "send" and args.host and not args.top_level and not placed:
+        # a child runs on its parent's runner, so --host naming that runner's own host is no move
+        if args.cmd != "send" and remote and not args.top_level and not placed:
             raise Fail(
                 "--host needs --top-level, or a cloud agent: Omnigent runs a child on its"
                 " parent's runner"

@@ -18,7 +18,13 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "gatekeeper" / "skills" / "gatekeeper" / "mergify.yml"
-HANDED_OVER = ["base = main", "-draft", "label = loop:queued", "check-success = land"]
+HANDED_OVER = [
+    "base = main",
+    "-draft",
+    "label = loop:queued",
+    "-label = loop:hold",
+    "check-success = land",
+]
 
 
 def config() -> dict[str, Any]:
@@ -52,7 +58,9 @@ def test_one_squash_queue_takes_in_only_what_land_handed_over() -> None:
     [rule] = config()["queue_rules"]
     assert rule["merge_method"] == "squash"
     assert rule["queue_conditions"] == HANDED_OVER
-    assert "merge_conditions" not in rule
+    assert "check-success" not in " ".join(rule["queue_conditions"]).replace(
+        "check-success = land", ""
+    )
 
 
 def test_a_red_batch_is_retried_once_and_a_dropped_pr_labelled_for_eviction() -> None:
@@ -71,12 +79,24 @@ def test_a_red_batch_is_split_until_only_the_failing_pr_leaves() -> None:
 
 
 def test_every_batch_is_tested_on_a_draft_pr_from_the_prefix_ci_tests() -> None:
-    """A retry rules out Mergify's in-place check of a batch of one, which would test it on the PR's own branch, where
-    `qualify` runs no tests; the prefix is the one the test step matches."""
+    """The prefix is the one the test step matches."""
     [rule] = config()["queue_rules"]
     assert rule["max_checks_retries"] >= 1
     [tests] = runs("mise run test-batch")
     assert tests["if"] == f"startsWith(github.head_ref, '{rule['queue_branch_prefix']}')"
+
+
+def test_the_queue_never_checks_a_pr_in_place() -> None:
+    """#2157: Mergify checks a PR on its own branch, where `qualify` runs no tests, unless its CI is two-step. It
+    computes that (`allow_inplace_checks` is deprecated), so the one key that forbids it is `merge_conditions` that
+    are not empty and differ from `queue_conditions`; set the setting back and #2151 and #2134 merge untested again."""
+    [rule] = config()["queue_rules"]
+    assert rule.get("allow_inplace_checks") is not True
+    assert rule["merge_conditions"], (
+        "empty merge_conditions are single-step: Mergify may check in place"
+    )
+    assert rule["merge_conditions"] != rule["queue_conditions"]
+    assert rule["merge_method"] != "merge-batch"
 
 
 def test_a_pr_head_runs_only_cheap_checks_and_the_batch_runs_the_tests() -> None:

@@ -602,6 +602,8 @@ except ImportError:  # run as `python3 approvals.py` where PyYAML isn't installe
 
 # the ready state: an approved spec (board: Ready); waiting for the owner
 READY, NEEDS_OWNER = "approved:spec", "needs-owner"
+# a hold put on a PR by its lead, or a claim by another coordinator: land skips it, and Mergify takes none carrying it
+HOLD = "loop:hold"
 BUG, EPIC = "kind:bug", "epic"
 # the lead's claim that a spec's change stays inside `spec.auto`'s `paths`, which the policy then approves (scoped)
 SCOPED = "spec:paths"
@@ -2515,8 +2517,13 @@ def closed(pull: dict[str, Any], repo: str, loop: str | None) -> set[int]:
     return named | {
         issue["number"]
         for issue in pull["closingIssuesReferences"]["nodes"]
-        if issue["repository"]["nameWithOwner"].lower() == repo.lower()
+        if in_repo(issue, repo)
     }
+
+
+def in_repo(issue: dict[str, Any], repo: str) -> bool:
+    """Whether a closing reference's issue is `repo`'s: names compare without case, since GitHub spells them either way."""
+    return bool(issue["repository"]["nameWithOwner"].lower() == repo.lower())
 
 
 # how many open PRs duplicates() reads, in one call; a list that long may have left one out
@@ -4868,9 +4875,13 @@ def denied(text: str) -> None:
 
 
 def closing_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
-    """GitHub's closing references plus every `#n` after a closing keyword, `Part of` or `Implements` in the body: GitHub sometimes
-    never links a closing line, and has no API to set the link."""
-    issues: list[dict[str, Any]] = pull["closingIssuesReferences"]["nodes"]
+    """GitHub's closing references into the PR's own repo plus every `#n` after a closing keyword, `Part of` or `Implements`
+    in the body: GitHub sometimes never links a closing line, and has no API to set the link. A reference to another
+    repo's issue is a different issue, whatever its number (closed()), and stays out of every gate."""
+    repo = pull["baseRepository"]["nameWithOwner"]
+    issues: list[dict[str, Any]] = [
+        issue for issue in pull["closingIssuesReferences"]["nodes"] if in_repo(issue, repo)
+    ]
     unlinked = sorted(set(named(pull["body"] or "")) - {issue["number"] for issue in issues})
     if unlinked:  # a `#n` that is a pull request is left out
         issues = issues + issues_of(unlinked)
@@ -5427,10 +5438,15 @@ def gated(
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Every missing proof at `point`, and the issues the PR names (none for an exact revert, which needs no spec: risk()
     reads its issues from `named` and the reverted PR's risk from `reverted` instead). At merge, a PR that itself carries
-    `needs-owner` waits for the owner, so no batch takes a PR held for their go."""
+    `needs-owner` waits for the owner, and one that carries `loop:hold` is held by its lead or another coordinator, so no
+    batch takes either."""
     held = (
         [f"#{pull['number']} waits for the owner ({NEEDS_OWNER})"]
         if point == "merge" and NEEDS_OWNER in names(pull)
+        else []
+    ) + (
+        [f"#{pull['number']} is held ({HOLD}): see the hold comment on the PR"]
+        if point == "merge" and HOLD in names(pull)
         else []
     )
     revert, found = reverts(pull)

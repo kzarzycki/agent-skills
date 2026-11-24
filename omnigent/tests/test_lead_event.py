@@ -72,7 +72,8 @@ def test_needs_owner_carries_the_whole_question(
     og = Workspace(clone, base.told("brief", 60), base.ending(line, 1))
     base.supervised(og, base.following(tmp_path), monkeypatch, 3, notify="cos", console=True)
     [post] = base.posted(og)
-    assert "[owner]" in post and text.strip() in post  # all 2,000 characters reach the owner
+    # no card is open, so the question is the manager's to act on (#2170); all 2,000 characters reach it
+    assert "[act]" in post and text.strip() in post
 
 
 def test_event_beats_cos_footer(clone: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -195,7 +196,7 @@ def test_a_later_hand_written_user_needed_does_not_carry_the_old_question(
     [post] = settled(
         clone, tmp_path, monkeypatch, "USER NEEDED: Approve the second step? Report: r.md"
     )
-    assert "[owner]" in post and "OLD-QUESTION-BODY" not in post
+    assert "[act]" in post and "OLD-QUESTION-BODY" not in post  # no card: the manager's (#2170)
 
 
 def test_a_later_hand_written_done_does_not_carry_the_old_question(

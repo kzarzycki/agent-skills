@@ -76,6 +76,21 @@ def test_gemini_route_without_a_host_is_refused_by_the_start(
     assert "pass --host" in capsys.readouterr().err
 
 
+def test_gemini_route_on_the_callers_own_host_starts_a_child(
+    tmp_path: Path, role_file: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    og.harnesses = {"antigravity-native-ui": "antigravity-native"}
+    og.host = lambda n: {"host": og.host_id}[n]  # type: ignore[method-assign]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("review")
+    argv = ["start", "codex", "t", "b.md", str(tmp_path / "r.md")]
+    argv += ["--role", role_file("verifier.md"), "--verifier-route", "gemini", "--host", "host"]
+    assert omnigent_agent.main(argv) == 0
+    assert list(og.sessions) == ["s0"]
+
+
 def test_agy_on_another_host_reads_its_brief_from_a_file_there(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
