@@ -9336,7 +9336,9 @@ def supervise_registry(
             > RETRY_CAP_SECONDS,
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
-            "coordinator": bool(lead.get("leads")),  # it follows leads of its own: a manager (#2309)
+            "coordinator": bool(
+                lead.get("leads")
+            ),  # it follows leads of its own: a manager (#2309)
             "parked": parked_before(og, sid, items, said[-1] if said else None),
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
