@@ -9947,8 +9947,9 @@ def run_budget() -> int:
 def over_budget(budget: int, root: Path, base: str | None) -> str:
     """The one line of a selection run stopped at `timeouts.run`: the budget, the selection's size as far as the verb
     knows it (the whole suite under `Gate: full`; else unknown, since the project's own command selects, with the
-    count of files the change touches against `base`, the selector's input), and that it ran unsharded, since no
-    `select.shards` splits a selection yet (#2229)."""
+    count of files the change touches against `base`, the selector's input), and that it ran unsharded: this verb runs
+    the project's one command, so with `select.shards` above 1 the line names the `shards` verb that splits a selection
+    (#2229)."""
     if base is None:
         size = "the whole suite (`Gate: full`)"
     else:
@@ -9960,9 +9961,18 @@ def over_budget(budget: int, root: Path, base: str | None) -> str:
             f"a selection of unknown size ({count} changed file{'' if count == '1' else 's'} against"
             f" {base[:12]})"
         )
+    try:
+        shards = shard_count()
+    except Refused:
+        shards = 1
+    unsharded = (
+        "unsharded (no `select.shards`)"
+        if shards == 1
+        else f"unsharded (`select.shards` is {shards}: split the selection with `approvals.py shards`)"
+    )
     return (
-        f"affected-tests: timed out after `timeouts.run` ({said_span(budget)}) running {size}, unsharded (no"
-        f" `select.shards`): a timeout, not a test failure; raise `timeouts.run` in gatekeeper.md or narrow the run"
+        f"affected-tests: timed out after `timeouts.run` ({said_span(budget)}) running {size}, {unsharded}: a"
+        f" timeout, not a test failure; raise `timeouts.run` in gatekeeper.md or narrow the run"
     )
 
 
@@ -10013,9 +10023,8 @@ def shard_selections(
 def shard_command(command: str, shard: int, count: int, items: list[str]) -> str:
     """The command a shard's pass is recorded under: `command` with `GATE_SHARD=<shard>/<count>:<digest of the
     shard's items>` set in front, so R1's record (record_name: tree and command) holds one pass per shard, and a
-    shard whose selection changed is another record. `count` 1 is the command itself."""
-    if count <= 1:
-        return command
+    shard whose selection changed is another record. A single shard is keyed the same way, by its items: a run of some
+    of the tests must never stand on record for the command's full run."""
     return f"GATE_SHARD={shard_key(shard, count, items)} {command}"
 
 
@@ -10108,7 +10117,9 @@ def record_shard(head: str, shard: int | None, shards: list[list[str]], command:
     tree = git("rev-parse", "HEAD^{tree}").strip()
     items = shards[shard - 1]
     keyed = shard_command(command, shard, len(shards), items)
-    _, words, env = command_line(keyed, "shards --command")
+    recorded, words, env = command_line(
+        keyed, "shards --command"
+    )  # `recorded`: the form `gate()` records
     words = [*words, *items]
     try:
         with heavy_slot("shards") as (slot, waited):
@@ -10132,7 +10143,7 @@ def record_shard(head: str, shard: int | None, shards: list[list[str]], command:
         {
             "head": before[0],
             "tree": tree,
-            "command": keyed,
+            "command": recorded,
             "exit": 0,
             "env": env,
             "time": now(),

@@ -112,8 +112,12 @@ def test_a_shards_value_below_one_or_not_a_number_is_refused(
         approvals.shard_count()
 
 
-def test_one_shard_is_recorded_under_the_command_itself() -> None:
-    assert approvals.shard_command("run all", 1, 1, SUITE) == "run all"
+def test_one_shard_is_keyed_by_its_items_never_the_bare_command() -> None:
+    """A run of some of the tests must not stand on record for the command's full run."""
+    assert approvals.shard_command("run all", 1, 1, SUITE).startswith("GATE_SHARD=1/1:")
+    assert approvals.shard_command("run all", 1, 1, SUITE) != approvals.shard_command(
+        "run all", 1, 1, SUITE[:2]
+    )
 
 
 def test_each_shard_has_its_own_key_and_a_changed_split_is_another_record() -> None:
@@ -381,3 +385,48 @@ def test_an_unrecorded_item_counts_at_the_mean_in_the_estimate(
     policy_of(monkeypatch, "select:\n  shards: 2\ntimeouts:\n  run: 10m\n")
     run(tmp_path, selection=SUITE[:3], durations=json.dumps({"t1": 300, "t2": 300}))
     assert len(printed_from(capsys.readouterr().out)) == 2
+
+
+def test_a_double_quoted_command_recorded_is_found_by_passed(clone: dict[str, Any]) -> None:
+    """A CI file writes `--command` with quotes: the record holds the form `gate()` records (command_line), which is
+    the one `--passed` reads."""
+    head = clone["head"]
+    argv = ["shards", "--suite", "suite", "--command", f'{sys.executable} -c "import sys"']
+    for shard in (1, 2, 3):
+        assert approvals.main([*argv, "--record", head, "--shard", str(shard)]) == 0
+    assert approvals.main([*argv, "--passed", head]) == 0
+
+
+@pytest.mark.parametrize("policy", ["select:\n  shards: 3\n", ""])
+def test_a_one_shard_record_is_no_pass_of_the_bare_command(
+    clone: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    policy: str,
+) -> None:
+    """A narrow selection is one shard, with and without `select.shards`: its record is found by `--passed` for the
+    same selection, and `gate-record` of the bare command finds nothing."""
+    policy_of(monkeypatch, policy)
+    head = clone["head"]
+    (tmp_path / "sel").write_text("t1\n")
+    argv = ["shards", "--suite", "suite", "--selection", str(tmp_path / "sel")]
+    argv += ["--command", clone["command"]]
+    assert approvals.main([*argv, "--record", head, "--shard", "1"]) == 0
+    assert approvals.main([*argv, "--passed", head]) == 0
+    capsys.readouterr()
+    assert approvals.main(["gate-record", head, "--", *clone["command"].split()]) != 0
+    assert "no record of" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("policy", "said"),
+    [("", "(no `select.shards`)"), ("select:\n  shards: 3\n", "`approvals.py shards`")],
+)
+def test_the_over_budget_line_says_unsharded_and_names_the_shards_verb_when_it_is_set(
+    monkeypatch: pytest.MonkeyPatch, policy: str, said: str
+) -> None:
+    policy_of(monkeypatch, policy)
+    line = approvals.over_budget(60, Path("."), None)
+    assert "unsharded" in line and said in line
+    assert ("select.shards` is 3" in line) == bool(policy)
