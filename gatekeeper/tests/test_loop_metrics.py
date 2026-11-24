@@ -196,6 +196,7 @@ def test_a_week_with_no_merges_prints_zero() -> None:
             "search/issues|is:pr is:merged": {"items": []},
             "search/issues|head:mergify": {"items": []},
             "search/issues|is:issue": {"items": []},
+            "repos/acme/widgets/git/matching-refs/heads/loop-gate": [],
         }
     )
     gh.recorded["search/issues|head:mergify/merge-queue/"] = {"items": []}
