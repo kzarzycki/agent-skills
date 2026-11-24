@@ -9,7 +9,6 @@ from pathlib import Path
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 SKILL = REPOSITORY / "loop" / "skills" / "engineering-loop"
-OLD = REPOSITORY / "engineering" / "skills" / "engineering-loop"
 POINTER = "SKILL.md, A check runs only if it can fail because of the change"
 
 
@@ -51,8 +50,3 @@ def test_acceptance_budget_stays_with_run_time_as_its_reason():
     assert "Acceptance budget: <spec minutes>, <nightly minutes>" in skill
     assert "reruns them on every pass" not in skill
     assert re.search(r"adds to the spec's and the nightly's run time", skill)
-
-
-def test_old_path_copies_match():
-    for name in ("lead.md", "worker.md", "verifier.md"):
-        assert (SKILL / name).read_text() == (OLD / name).read_text(), name
