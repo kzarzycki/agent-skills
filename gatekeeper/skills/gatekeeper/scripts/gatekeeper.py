@@ -9988,7 +9988,7 @@ def shard_selections(
     shard with the least time so far; an item with no recorded duration counts as the mean of the recorded ones (all
     equal, so an even split by count, with none recorded), so it still lands in exactly one shard. Only a whole-suite
     selection splits: `whole` (a build input changed, or the nightly), one over half of `suite`, or one whose estimate (the
-    sum of its items' seconds, an unrecorded item at the mean; none with no durations) is over `limit` (`timeouts.run`,
+    sum of its items' seconds, an unrecorded item at the mean; 0 with no durations) is over `limit` (`timeouts.run`,
     in seconds). A narrow selection (none of those), `count` 1 or less, or an empty one is returned as the one selection, unchanged. `count` is capped at the number of
     items, so no shard is empty. Each shard keeps the selection's order."""
     chosen = list(dict.fromkeys(selection))
@@ -9996,8 +9996,8 @@ def shard_selections(
         return [selection]
     known = {item: durations[item] for item in chosen if durations and item in durations}
     fallback = sum(known.values()) / len(known) if known else 1.0
-    estimate = sum(known.get(item, fallback) for item in chosen) if known else None
-    over = limit is not None and estimate is not None and estimate > limit
+    estimate = sum(known.get(item, fallback) for item in chosen) if known else 0.0
+    over = limit is not None and estimate > limit
     if not (whole or over or len(chosen) * 2 > len(set(suite))):
         return [selection]
     count = min(count, len(chosen))

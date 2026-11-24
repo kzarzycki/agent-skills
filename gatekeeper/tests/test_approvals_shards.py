@@ -371,3 +371,13 @@ def test_an_estimate_needs_recorded_durations(
     policy_of(monkeypatch, "select:\n  shards: 2\ntimeouts:\n  run: 1s\n")
     run(tmp_path, selection=SUITE[:3])
     assert capsys.readouterr().out == "t1\nt2\nt3\n"
+
+
+def test_an_unrecorded_item_counts_at_the_mean_in_the_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two recorded items at 300 s and one unrecorded (the mean, 300 s) is 900 s, over a 10 m limit; counting only
+    the recorded ones, 600 s, would be at it."""
+    policy_of(monkeypatch, "select:\n  shards: 2\ntimeouts:\n  run: 10m\n")
+    run(tmp_path, selection=SUITE[:3], durations=json.dumps({"t1": 300, "t2": 300}))
+    assert len(printed_from(capsys.readouterr().out)) == 2
