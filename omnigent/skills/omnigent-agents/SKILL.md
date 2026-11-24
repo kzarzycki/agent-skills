@@ -465,8 +465,8 @@ claude.ai events API (the VM has no route to the server), so a cloud lead passes
 the repo's project: the owner opens it from the sidebar and talks to it, its own children
 report to it, and archiving it ends only its own runner. Its brief opens with the lead
 preamble: only the owner's own words, quoted with where they were said, approve, the rest
-of the brief is a colleague's guidance, the lead asks the owner in its own session rather
-than in a question file, and it writes its final report to the path. Where the base policy
+of the brief is a colleague's guidance, the lead asks the owner its own questions on its own
+question card rather than in a question file, and it writes its final report to the path. Where the base policy
 of its workspace's checkout (`origin/<default branch>`'s policy file, read by engineering-loop's
 `base_policy` and `delegation`) sets `loop.delegate: all`, the preamble adds the delegation: the
 lead settles specs and gives the merge go itself (`approve merge <pr> --head <sha> --by delegate`,
@@ -475,9 +475,10 @@ question card only for a change on `risk.critical_paths`. Without that setting, 
 engineering-loop skill, the wording is unchanged. A workspace on another host has no git to ask: its `.git/config` is read through the host's file API for the
 `origin` repo, and `gatekeeper.md` and `loop.md` come from that repo's default branch on GitHub (`gh`; a 404 means the file
 is absent), chosen by gatekeeper's `chosen`, so it follows the base's policy as a local lead does. A read that fails keeps
-today's wording and prints one stderr line; a workspace outside a checkout keeps it silently. A followed lead whose turn ends `USER NEEDED` with no question card open is reported
-as an `unasked` event, which tells its waiter to post a card or act under the delegation; with a card
-open it is reported as any turn end. How it asks and where
+today's wording and prints one stderr line; a workspace outside a checkout keeps it silently. A followed lead whose turn ends `USER NEEDED` with a question card open posts nothing, since
+the card already reaches the owner; with no card open it is reported as an `unasked` event, routed `act`, which
+tells the session that started it to put a question that spans projects to the owner on its own card, or else to
+send the lead back to its card. How it asks and where
 it parks a question is its role's (`--role`; under the engineering loop, `lead.md`). `run --top-level` exits 1, since a lead writes no
 question for `run` to return: follow it with `watch <session>`, and once its report is in,
 archive it with `reap <session>`.
@@ -855,7 +856,9 @@ offline while idle raises nothing.
 | failed | rule | the first time a revive, after it act; a transient provider error (`authentication_failed`, a Cloudflare `Attention Required` page, any 5xx such as a cloud create's 503, `overloaded`: one table, `TRANSIENT_ERRORS`) instead a revive after a backoff of 2, 5, 10, 20 minutes, then every 20, and act once the next revive would fall more than 2 hours after the chain's first failure (`rate_limit` with no reset time too); a usage limit (`hit your … limit`, `usage limit`: `USAGE_LIMIT_ERRORS`, or a `rate_limit` printing its reset) is account-wide, so it parks instead: one post `usage limit: N sessions parked, resets <time>` (or `resets unknown`) for every lead parked on it, later ones joining unreported; one parked lead revived as a probe after the same backoff, or at once at the printed reset (`resets Nov 16, 6am (UTC)`, any IANA zone); one probe runs at a time; a probe failing on the limit again parks once more, and once a parked lead ends any other way (its turn ends, a prompt, another failure, which then routes as any other) every parked lead is revived and one post says how many resumed; act once an hour past the printed reset has passed (the reset is read once, when first parked), or with none once the next probe would fall 2 hours after the chain's first failure, and no parked lead is probed after. The parked state is each lead's `retrying` (`limit`, `resets`, `told`, `probe`), so a restart keeps it |
 | `DONE` | rule | act, and each lead registered `after=` it is told `Supervisor: <lead>, the lead you wait on, ended: <its first line>` |
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
-| `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
+| `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over, with no question card open (`unasked`) | rule | act, with or without `--decisions`: the manager puts a question that spans projects on its own card, or sends the lead back to its card; with a card open, nothing is posted |
+| a question card the lead posted (`asked`) | rule | recorded; the owner answers it in their Inbox |
+| a card still open `CARD_REMIND_SECONDS` (4 h) after the supervisor first saw it (`card-waiting`), once per card | rule | act, so a manager the owner told to act in their name can answer it; a lead the owner drives directly: recorded |
 | an approval prompt | rule | the owner; nothing in the supervisor approves |
 | a question | rule | act, for one `relay --answer` |
 | a session owing a report: its outcome; its revive or resume line | rule | act (a prompt: the owner); recorded |

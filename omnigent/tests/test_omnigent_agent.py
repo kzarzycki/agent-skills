@@ -3702,7 +3702,7 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
         + omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="")
         + "do X"
     )
-    assert "owner's own words" in text and "ask them here" in text
+    assert "owner's own words" in text and "your own question card" in text  # #2170
     assert "needs-owner" not in text
     assert (
         LONG_RUN_POINTER in text
@@ -8399,29 +8399,17 @@ ROUTES = [
         None,
         ("rule", "act"),
     ),
-    (
-        "user needed, covered",
-        {"kind": "ended", "last": "USER NEEDED: merge?", "decisions": True},
-        "act",
-        ("model", "act"),
-    ),
-    (
-        "user needed, not covered",
+    (  # a USER NEEDED with no card is its manager's, whatever the decisions say (#2170)
+        "user needed, standing decisions",
         {"kind": "ended", "last": "USER NEEDED: delete prod?", "decisions": True},
-        "owner",
-        ("model", "owner"),
-    ),
-    (
-        "user needed, the model unsure",
-        {"kind": "ended", "last": "USER NEEDED: x", "decisions": True},
-        "none",
-        ("model", "act"),
+        None,
+        ("rule", "act"),
     ),
     (
         "user needed, no standing decisions",
         {"kind": "ended", "last": "USER NEEDED: x"},
         None,
-        ("rule", "owner"),
+        ("rule", "act"),
     ),
     ("approval prompt", {"kind": "blocked"}, None, ("rule", "owner")),
     ("question", {"kind": "blocked", "question": True}, None, ("rule", "act")),
@@ -8518,19 +8506,15 @@ def test_the_small_model_is_one_headless_call_with_the_event_cut_on_stdin(
         "missing",
     ],
 )
-def test_an_unparseable_failed_or_timed_out_model_answer_routes_a_question_to_act_and_a_quiet_end_to_a_nudge(
+def test_an_unparseable_failed_or_timed_out_model_answer_routes_a_quiet_end_to_a_nudge(
     monkeypatch: pytest.MonkeyPatch, answer: object
 ) -> None:
     model_answers(monkeypatch, answer)
     route, why = REAL_TRIAGE("an event", "")
     assert route == "unsure" and why
     ask = lambda: REAL_TRIAGE("an event", "d")
-    for last, action in (
-        ("USER NEEDED: x", "act"),
-        ("on it", "nudge"),
-    ):  # a quiet end posts nothing
-        event = {"kind": "ended", "last": last, "decisions": True}
-        assert omnigent_agent.route(event, ask)[:2] == ("model", action)
+    event = {"kind": "ended", "last": "on it", "decisions": True}
+    assert omnigent_agent.route(event, ask)[:2] == ("model", "nudge")
 
 
 def test_standing_decisions_are_their_section_else_the_whole_file_else_none(
@@ -9024,15 +9008,19 @@ def test_a_restart_inside_the_model_window_keeps_it(
     og = Leads(a=[told("brief", 60)], b=[told("brief", 60)])
     supervised(og, registry, monkeypatch, 1, console=True, decisions=board)
     state = state_of(registry)
-    state["rate"]["model_calls"] = [time.time() - 3500] * 30  # the hour's calls, spent
+    state["rate"]["model_calls"] = [time.time() - 3000] * 30  # the hour's calls, spent
     registry.with_suffix(".state.json").write_text(json.dumps(state))
-    og.histories["a"].append(ending("USER NEEDED: merge it?", 0))
-    supervised(og, registry, monkeypatch, 1, console=True, decisions=board)  # the restart
+    # a quiet end, the one event the small model reads (#2170): news once it stays quiet past FOLLOW_QUIET_SECONDS
+    quiet = lambda base: lambda poll: offset.__setitem__(0, base + 301.0 * poll)
+    og.histories["a"].append(ending("paused for now", 0))
+    supervised(
+        og, registry, monkeypatch, 2, quiet(0.0), console=True, decisions=board
+    )  # the restart
     assert no_model == []
     assert events_of(registry)[-1]["why"] == "over 30 small-model calls an hour"
-    offset[0] = 101.0  # the oldest calls are past the hour
-    og.histories["b"].append(ending("USER NEEDED: merge it?", 0))
-    supervised(og, registry, monkeypatch, 1, console=True, decisions=board)
+    offset[0] = 700.0  # the oldest calls are past the hour
+    og.histories["b"].append(ending("paused for now", 0))
+    supervised(og, registry, monkeypatch, 2, quiet(700.0), console=True, decisions=board)
     assert len(no_model) == 1 and len(state_of(registry)["rate"]["model_calls"]) == 1
 
 
@@ -9878,7 +9866,7 @@ def test_a_write_failing_after_the_model_answered_keeps_the_spent_call_and_its_a
     assert len(state_of(registry)["rate"]["model_calls"]) == 30
 
 
-def test_an_ask_after_a_done_line_is_the_ending_and_goes_to_the_owner() -> None:
+def test_an_ask_after_a_done_line_is_the_ending_and_goes_to_the_manager() -> None:
     text = "DONE: #271 merged.\nUSER NEEDED: pick option A or B"
     assert omnigent_agent.ending_of(text) == "USER NEEDED"
     assert omnigent_agent.ending_of("DONE: merged\nPARKED: later") == "DONE"
@@ -9887,11 +9875,7 @@ def test_an_ask_after_a_done_line_is_the_ending_and_goes_to_the_owner() -> None:
         omnigent_agent.lead_status({"status": "idle"}, [ending(text, 0)])["ending"] == "USER NEEDED"
     )
     event = {"kind": "ended", "last": text}
-    assert omnigent_agent.route(event, lambda: ("none", "x")) == (
-        "rule",
-        "owner",
-        "no standing decision to cover it",
-    )
+    assert omnigent_agent.route(event, lambda: ("none", "x"))[:2] == ("rule", "act")
 
 
 def _agent_server(monkeypatch: pytest.MonkeyPatch, pages: dict[str, object]) -> list[tuple]:
@@ -13135,7 +13119,7 @@ def prompt_look(n: int, title: str, queued: int) -> tuple[dict, str]:
     [
         pytest.param(
             [({}, "USER NEEDED: approve A"), ({}, "USER NEEDED: approve B")],
-            ["owner", "owner"],
+            ["act", "act"],  # no card open: the manager's to act on (#2170)
             id="two-different-requests",
         ),
         pytest.param(
@@ -13144,7 +13128,11 @@ def prompt_look(n: int, title: str, queued: int) -> tuple[dict, str]:
                 ({}, "DONE: step one"),
                 ({}, "USER NEEDED: approve A"),
             ],
-            ["owner", "act", "info"],
+            [
+                "act",
+                "act",
+                "act",
+            ],  # only an owner item is kept once; a cardless ask is the manager's (#2170)
             id="one-request-twice",
         ),
         pytest.param(

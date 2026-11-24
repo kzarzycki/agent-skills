@@ -39,10 +39,10 @@ def test_a_first_line_done_still_routes_done() -> None:
     assert routed(text)[1] == "done"
 
 
-def test_user_needed_after_done_still_routes_to_the_owner() -> None:
+def test_user_needed_after_done_still_routes_as_a_user_needed() -> None:
     text = "DONE: built it.\n\nUSER NEEDED: which branch?"
     assert oa.ending_of(text) == "USER NEEDED"
-    assert routed(text)[1] == "owner"
+    assert routed(text)[1] == "act"  # no card: its manager's (#2170)
 
 
 def test_user_needed_after_a_still_working_block_wins() -> None:
