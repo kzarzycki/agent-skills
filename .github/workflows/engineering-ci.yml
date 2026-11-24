@@ -105,7 +105,8 @@ jobs:
           name: failed-tests
           path: .qualify/failed-tests.json
       - name: Check changed-file whitespace
-        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && steps.record.outputs.recorded != 'true'
+        # Not skipped on a record: `check-fast`, the command the record proves, never runs `git diff --check`.
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |

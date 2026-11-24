@@ -15,10 +15,6 @@ WORKFLOW = REPOSITORY / ".github" / "workflows" / "engineering-ci.yml"
 SKIP = "steps.record.outputs.recorded != 'true'"
 
 
-def steps() -> list[dict]:
-    return yaml.safe_load(WORKFLOW.read_text())["jobs"]["qualify"]["steps"]
-
-
 def test_pr_head_steps_skip_on_a_record_and_the_job_still_runs():
     job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["qualify"]
     assert "if" not in job  # qualify is required: it runs and reports on every PR
@@ -29,7 +25,9 @@ def test_pr_head_steps_skip_on_a_record_and_the_job_still_runs():
     assert "pr_head_record.py" in lookup["run"]
     fast = next(s for s in job["steps"] if s.get("run") == "mise run check-fast")
     whitespace = next(s for s in job["steps"] if s.get("name") == "Check changed-file whitespace")
-    assert SKIP in fast["if"] and SKIP in whitespace["if"]
+    assert SKIP in fast["if"]
+    # the record proves check-fast only, which never runs `git diff --check`: whitespace runs either way
+    assert "steps.record" not in whitespace["if"]
 
 
 def test_the_record_ci_reads_is_the_command_ci_would_run():
@@ -94,5 +92,8 @@ def test_loop_text_names_one_run_per_tree():
     assert "the push hook's run is the run you report" in worker
     assert "run `approvals.py local-ci --record` once" in worker
     # the record CI reads must be one the loop lets the worker make: no older line forbids it
-    assert "no `local-ci`" not in worker and "The worker's own session makes one on its final head" in skill
+    assert (
+        "no `local-ci`" not in worker
+        and "The worker's own session makes one on its final head" in skill
+    )
     assert "whose tree is the head's tree" in verifier and "run nothing again" in verifier
