@@ -316,8 +316,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      with `--wait`) once no local objection is left: the
      newest verifier review, satisfied with no core finding open (or at the cap, majors only under a `Cap:` line),
      covers the head, and every review thread is resolved (SKILL.md, Review trail on the PR). No gate step comes
-     between the verdict and the merge: no gate of record, no CI check on the head, no `check-fast`, no full suite
-     and no cloud session per head for a record (SKILL.md, Merge model). Without a merge queue `land` merges on the
+     between the verdict and the merge: no new gate of record, no `check-fast` run again (the head's CI reads the
+     worker's record for its tree), no full suite and no cloud session per head for a record (SKILL.md, Merge model). Without a merge queue `land` merges on the
      verdict; with one, the queue's batch check is the one test run on the merged tree, and it runs only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change). Start it as a background
      command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work
      on other items meanwhile. It lands every landable PR into main through main's merge
