@@ -37,7 +37,7 @@ def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
     batch = next(st for st in _steps(workflow) if st.get("run") == "mise run test-batch")
     full = next(st for st in _steps(workflow) if st.get("run") == "mise run check")
     test_map = next(st for st in _steps(workflow) if st.get("with", {}).get("path") == ".test-map")
-    # a `tests` dispatch (the break-glass proof's re-run alone) runs those tests instead
+    # a `tests` dispatch (the break-glass proof's rerun) runs rerun-tests on those ids instead
     assert fast["if"] == (
         "github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'"
         " && steps.tested.outputs.skip != 'true' && steps.record.outputs.recorded != 'true'"
@@ -46,7 +46,10 @@ def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
     # reads the test map; a PR head runs the cheap checks alone
     assert "env" not in fast
     on_a_batch = "startsWith(github.head_ref, 'mergify/merge-queue/')"
-    assert batch["if"] == test_map["if"] == on_a_batch
+    assert test_map["if"] == on_a_batch
+    assert (
+        batch["if"] == f"{on_a_batch} && steps.read.outputs.red != 'read'"
+    )  # a rerun's read of the red skips it
     assert batch["env"]["GATE_BASE"] == "${{ github.event.pull_request.base.sha }}"
     assert full["if"] == "github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'"
     for command in (
@@ -165,3 +168,34 @@ def test_qualify_holds_a_release_pr_to_the_fold() -> None:
     verify = next(st for st in steps if "release-verify" in st.get("run", ""))
     assert verify["if"] == "startsWith(github.head_ref, 'release/')"
     assert verify["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
+
+
+def test_qualify_rerun_attempt_calls_rerun_tests_never_the_failed_tests_alone() -> None:
+    """R5 (#1794): a rerun attempt of a red batch run reruns the red run's selection, never its failed ids alone."""
+    text = (WORKFLOWS / "engineering-ci.yml").read_text()
+    workflow = _workflow("engineering-ci.yml")
+    steps = _steps(workflow)
+    runs = [step.get("run", "") for step in steps]
+
+    assert workflow["permissions"]["actions"] == "read"
+    # the red attempt's artifact, read only on a later attempt of a batch run
+    red = next(st for st in steps if st.get("id") == "red")
+    assert "github.run_attempt != '1'" in red["if"]
+    assert red["with"]["name"] == "failed-tests"
+    assert red["continue-on-error"] == "true"
+    # one rerun-tests call per path, each handing it the failed-tests file and the head
+    reruns = [run for run in runs if "approvals.py rerun-tests" in run]
+    assert len(reruns) == 2
+    assert all(
+        "--red " in run and "failed-tests.json" in run or "dispatch.json" in run for run in reruns
+    )
+    # a pytest run on the failed ids alone is the shortcut R5 forbids
+    assert not any("pytest" in run and "TESTS" in run for run in runs)
+    assert "failed alone" not in text and "to run alone" not in text
+    # with a red read, the usual batch step is skipped and the rerun's pass counts as the selection
+    batch = next(st for st in steps if st.get("id") == "batch")
+    assert "steps.read.outputs.red != 'read'" in batch["if"]
+    rerun = next(st for st in steps if st.get("id") == "rerun")
+    assert rerun["if"] == "steps.read.outputs.red == 'read'"
+    selection = next(st for st in steps if st.get("id") == "selection")
+    assert "steps.rerun.outcome == 'success'" in selection["if"]
