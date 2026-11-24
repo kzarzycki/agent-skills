@@ -10777,7 +10777,8 @@ def supervise_registry(
                 or og.info(sid).get("archived")  # the listing may be 30 s old
             ):
                 continue
-            # ponytail: the lead's real report is unknown; follow reads none, and a path in its workspace costs nothing
+            # ponytail: the lead's real report is unknown; follow reads none, and a path in its workspace costs nothing.
+            # Upgrade: read it from the lead's brief (its preamble names the report path) if a followed lead ever owes one.
             arm(registry, sid, Path(f"tmp/loop/{sid}.report.md"), followed=True)
             head = f"{sid} {row.get('title') or ''}".rstrip()
             say(

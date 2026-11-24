@@ -60,6 +60,26 @@ def test_the_console_adopts_no_lead_someone_already_watches(
     assert adopted(registry) == []
 
 
+def test_a_lead_on_a_leads_registry_elsewhere_is_not_adopted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manager's own registry may sit in its repo, not beside the console's: its ``leads=``
+    field on the console's line names it."""
+    manager, theirs = "b" * 32, "e" * 32
+    elsewhere = tmp_path / "repo" / "tmp" / "loop" / "app-leads.registry"
+    elsewhere.parent.mkdir(parents=True)
+    elsewhere.write_text(f"{theirs}={tmp_path / 'e.md'}\tfollow\n")
+    console = tmp_path / "cos"
+    console.mkdir()
+    registry = console / "leads.registry"
+    line = f"{manager}={tmp_path / 'b.md'}\tfollow\tleads={elsewhere}\n"
+    registry.write_text(line)
+    og = base.Leads(**{manager: [base.told("brief", 60)], theirs: [base.told("brief", 60)]})
+    og.rows = [lead_row(manager), lead_row(theirs)]
+    base.supervised(og, registry, monkeypatch, 2, console=True)
+    assert theirs not in registry.read_text() and adopted(registry) == []
+
+
 def test_a_lead_archived_since_the_cached_listing_is_not_adopted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
