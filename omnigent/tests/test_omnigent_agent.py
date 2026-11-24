@@ -14821,3 +14821,15 @@ def test_send_unarchives_a_registry_listed_session_and_refuses_an_unlisted_one(
         == 0
     )
     assert forced not in og.archived
+    # the registry named by the environment lists a session as well as --registry
+    via_env = og.create("claude", "d")
+    og.archived.append(via_env)
+    registry.write_text(f"{via_env}=old.md\n")
+    monkeypatch.setenv("OMNIGENT_SUPERVISE_REGISTRY", str(registry))
+    assert (
+        omnigent_agent.main(
+            ["send", via_env, "fix.md", "tmp/loop/d.md", "--pr", "7", "--confirm-seconds", "0"]
+        )
+        == 0
+    )
+    assert via_env not in og.archived
