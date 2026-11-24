@@ -99,3 +99,19 @@ def test_advertised_package_gate_rejects_marketplace_mutation(
     assert "test_claude_marketplace_exposes_only_the_owned_engineering_package" in (
         result.stdout + result.stderr
     )
+
+
+def test_the_affected_tests_line_runs_the_selected_tests() -> None:
+    """#2232 row 1: the worker's recorded `Affected tests:` run proves the PR's tests, so the batch floor (#2178) may
+    drop them; a line naming check-fast alone proves lint only."""
+    line = re.search(
+        r"^Affected tests:[ \t]*(.+?)[ \t]*$",
+        (REPOSITORY / "docs" / "agents" / "loop.md").read_text(),
+        re.MULTILINE,
+    )
+    assert line and line[1] == "mise run check-affected"
+    tasks = tomllib.loads((REPOSITORY / "mise.toml").read_text())["tasks"]
+    assert tasks["check-affected"]["run"].splitlines() == [
+        "mise run check-fast",
+        "mise run test-batch",
+    ]

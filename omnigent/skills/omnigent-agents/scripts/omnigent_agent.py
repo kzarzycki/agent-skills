@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
-    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep|--no-keep] [--notify]
-    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--host NAME|ID (claude-cloud child)] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE|lead|worker|verifier] [--pr N] [--keep|--no-keep] [--notify]
+    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE|lead|worker|verifier] [--effort LEVEL] [--pr N] [--host NAME|ID (claude-cloud child)] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py claude-cloud-env <checkout>   # alias: cloud-env
     python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>
@@ -11,7 +11,7 @@
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
-    python3 scripts/omnigent_agent.py relay <session> <message-file>
+    python3 scripts/omnigent_agent.py relay <session> <message-file>   (send, relay: [--expires MINUTES])
     python3 scripts/omnigent_agent.py broadcast <message-file> [--stop | --decisions FILE] [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
     python3 scripts/omnigent_agent.py owner-said <session> <quote-file>
@@ -53,12 +53,16 @@ once the runner is online; exit 4 only when that revive fails, naming its reply.
 ``send`` exits 7 when the message was posted and a later read (the poll that confirms it) failed:
 it is out, delivery unconfirmed, and running ``send`` again is safe, since it finds the earlier
 copy before it posts; a failure before the post stays exit 1.
+``send`` and ``relay`` take ``--expires <minutes>`` (default 30, 0 = never): only these two tag a message; it carries its expiry and
+sender, so one still queued after its sender is gone is dropped and never lands out of context.
 ``relay`` posts a message that owes no report (an owner's words for a lead) and returns at once:
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
 one), or when only the session's running step holds it (``queued until the session's current step
 ends``, it lands then), 5 while an approval prompt or a question holds it, 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
-a later read failed (delivered, unconfirmed: run it again, it posts no second copy). An open
+a later read failed (delivered, unconfirmed: run it again, it posts no second copy), 8 when the
+session's host is offline (nothing sent, nothing kept: run it again once the host is back).
+``relay --unarchive`` unarchives an archived session first, so it resumes with its history. An open
 question card (``sys_ask_user_question``: elicitation id ``question_…``, not ``elicit_question_…``) holds
 nothing (``holds_input``): ``relay``, ``broadcast`` and ``watch`` treat the session as free and show
 ``card open: <question>``; a plain relay (or ``send``, which prints the same line before it waits) is
@@ -155,7 +159,10 @@ what its rules can't settle, and posts what needs the notified session or the ow
 minutes (an owner item it already raised for that session, same text, goes as ``[info]``, which wakes no
 one; a new or changed item raises ``[owner]``), for a lead marked ``direct`` nothing but a failed turn
 that lost its runner, which the owner can't see in its session; ``--fyi post`` posts every line as without it too,
-``--decisions`` names the owner's standing decisions for the small model. Without it, it writes none of these and posts every line.
+``--decisions`` names the owner's standing decisions for the small model. The chief of staff's console (not a manager's) also
+follows each live top-level session labelled ``omni.role=lead`` that no registry holds (none beside its own, nor a ``leads=``
+one), with a ``follow`` line and one ``adopted`` event, unless a followed lead created it or it is under ``ADOPT_GRACE_SECONDS`` old (its launcher may still be writing its registry line), so a lead started with no
+registry is supervised all the same. Without it, it writes none of these and posts every line.
 A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
 a user service running that same command line less ``--install`` and ``--log`` (a systemd user unit
 ``omnigent-supervise-<hash>`` with ``Restart=always`` on Linux, a launchd agent
@@ -169,12 +176,13 @@ removes it.
 ``$OMNIGENT_SUPERVISE_REGISTRY``, once their message is in the history (``start`` with its brief
 file, ``send`` appending its message file, each marking a verifier's line as ``wait`` would
 count its report; a ``start --top-level`` run from a lead the registry follows, or from its
-child, arms nothing and subscribes that lead, since its helper is the lead's to hear); ``run``, ``send`` and ``wait`` disarm it when they
+child, arms nothing and subscribes that lead, since its helper is the lead's to hear; ``start --top-level --role lead``
+with neither exits 2 before any session exists, since no supervisor would follow it); ``run``, ``send`` and ``wait`` disarm it when they
 return the report or a question; ``reap`` drops the line of each session it finishes, before
 finishing it, so the supervisor posts no ``archived`` for a finish its notified session ran.
 ``run``, ``wait``, ``reap`` and the supervisor (a child's relayed ``DONE`` report or failure; a followed lead's ``DONE`` once a lead waiting on it (``--after``) is told; a lead a followed lead started is reaped by its starter) all finish a session through
 ``finish_delivered``, the one place a taken result archives it: never one that asked a
-question, nor one given ``--keep`` (``run`` or ``start``, which labels it ``omni.keep``, so the supervisor leaves it open too), nor one with an open question card, a pending prompt or background work, nor a worker given ``--pr`` unless ``--no-keep`` (``--keep`` stays accepted):
+question, nor one given ``--keep`` (``run`` or ``start``, which labels it ``omni.keep``, so the supervisor leaves it open too), nor one with an open question card, a pending prompt or background work (a cloud worker, verifier or gate child's taken result ends its VM's background work with it, #2052), nor a worker given ``--pr`` unless ``--no-keep`` (``--keep`` stays accepted):
 a fix round or the next verifier pass reaches a kept worker with ``send``, warm, where a fresh one repeats its setup.
 ``start --pr`` labels the worker ``omni.pr=<owner/name>#<n>``, and fails, archiving the session, when it can't. A verifier for ``--pr`` carries the same label, so its spend groups by PR beside the worker's, but ``reap`` never holds a verifier on it. ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
 the rest, exiting 1 when a finish failed; it keeps a ``--pr`` worker, ``--force`` included, until its PR (looked up in the
@@ -204,7 +212,9 @@ the repository, else the account's ``Default``. A name the login has no environm
 ``env``, else the repository's name) from the checkout's committed ``.claude/claude-cloud-setup.sh`` (the older
 ``.claude/cloud-setup.sh`` is still read) and ``.claude/claude-cloud-environment.json``, or brings the one already
 there up to them (``POST /v1/environment_providers/<id>``, no ``kind``), leaving the variables they do not name as they
-are; it is ``claude_cloud.py setup`` without the secrets and the proof, sends no secret and prints none.
+are. A checkout that pins an environment (its ``.claude/settings.local.json``, else its main checkout's) must pin one of
+that name: another name, or a pin the login has no environment for, fails naming both before anything is made, never
+a second, empty environment beside the pinned one (#2078); it is ``claude_cloud.py setup`` without the secrets and the proof, sends no secret and prints none.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -232,8 +242,8 @@ can't be read (start any session on the host so a file can be read through it). 
 where the project's cloud sessions ran, pinned and trusted; with none, ``start`` refuses before the create, never a 412. A
 create that times out is looked up by title for a while and reused, never repeated. On a host other than this one ``--workspace`` and the
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
-its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report is the file ``wait --pr``
-writes here. A verifier (a ``--role`` whose file is engineering-loop's verifier.md) takes ``--pr`` as the PR it
+its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report ``wait --pr``
+writes here, under ``tmp/loop/`` by its name. A verifier (a ``--role`` whose file is engineering-loop's verifier.md) takes ``--pr`` as the PR it
 reviews, not a report channel, starts on another host's clone however many sessions hold it (it
 works in a worktree of its own), and runs on another host only when the project's loop.md has no
 ``Placement: hosts: <name>, <name>`` line (or the old ``Verifier hosts:`` one) or that line lists the host; ``--file`` writes a local
@@ -267,6 +277,7 @@ import os
 import plistlib
 import posixpath
 import pwd
+import random
 import re
 import shlex
 import shutil
@@ -275,6 +286,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -318,6 +330,9 @@ RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
 HTTP_SECONDS = 30.0
+# An archive of a claude-cloud session waits while its bridge archives the claude.ai session, which ends the VM: up to
+# about 65 s, so a slower return is no failure (#2052). It is a PATCH, never retried.
+ARCHIVE_SECONDS = 120.0
 START_CONFIRM_SECONDS = 300.0  # how long `start` waits for the brief to show in the history
 LATE_BRIEF_SECONDS = HTTP_SECONDS  # the grace a missed confirm gives a brief the server still holds
 ERROR_BODY_BYTES, ERROR_BODY_SECONDS = (
@@ -340,6 +355,11 @@ TURN_END_SECONDS = 30.0
 PROMPT_CONFIRM_SECONDS = 120.0
 # how long one listing of every session serves ``Omnigent.creations``: well inside the prompt's hold
 CREATED_SECONDS = 30.0
+# A PR with this label is parked on purpose and dropped from the merge queue by a rule (#2164): it raises no stall and no
+# dequeue for a manager to fix (#2316).
+HOLD_LABEL = "loop:hold"
+# A session younger than this is not adopted: its launcher may still be writing it to its own supervisor's registry (#2313).
+ADOPT_GRACE_SECONDS = 60.0
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
 # A loaded server times out reads the child never noticed; a GET is retried after each of these.
 RETRY_SECONDS = (2.0, 5.0, 15.0, 30.0, 60.0)  # a GET outlasts a server restart
@@ -580,11 +600,23 @@ FOLLOW_QUIET_SECONDS = 300.0
 # A followed lead with no progress (its own history, its live children) this long: a ``deadline``
 # event, whatever its status reads; this much more once it was nudged.
 DEADLINE_SECONDS = 1200.0
+# A lead's question card still unanswered this long reaches its manager once (``card-waiting``, routed ``act``), so a
+# manager the owner told to act in their name answers it rather than leave it waiting on an absent owner (#2170).
+# ponytail: one knob for every lead; a per-project value would go on the board's standing decisions.
+CARD_REMIND_SECONDS = 4 * 3600.0
+SHARED_READ_SECONDS = (
+    5.0  # a PR read this recently serves every wait on it (a restart reads each PR once)
+)
 PR_POLL_SECONDS = 60.0  # a lead's named PR is read from GitHub at most this often
-# A followed lead's PR whose newest verdict, on its current head, is this old with no push or go since: the lead is
-# woken, since a verdict wants a fix round or a go and `land`, and nothing else picks that up overnight
-VERDICT_STALL_SECONDS = 3600.0
-VERDICT_STALL_POLL = 600.0  # each such PR is read from GitHub at most this often
+# An open PR with no push, verdict, go or merge-queue step this long is stalled: the supervisor wakes the manager with
+# the blocker it finds (#1819), since nobody else notices a PR waiting behind a red check or a missing go overnight.
+# `supervise --stall-minutes` sets it per supervisor, 0 turns the watch off.
+PR_STALL_SECONDS = 3600.0
+PR_STALL_POLL = 900.0  # each watched repo's open PRs are listed at most this often
+# A check run's conclusion or a status's state that reads red
+RED = {"failure", "error", "timed_out", "cancelled", "action_required", "startup_failure"}
+# A status or check run of the merge queue (Mergify's `Queue: ...` and its batch checks): its moves are queue progress
+QUEUE_CHECK = re.compile(r"(?i)\bqueue\b|mergify")
 QUEUED_LABEL = "loop:queued"  # `land` hands a PR to the merge queue with it
 NUDGED_SECONDS = 600.0
 # What a lead's ``STILL WORKING`` message says it waits on, for its status and its deadline: the
@@ -607,7 +639,7 @@ RUN_URL = (
     r"https://github\.com/[\w.-]+/[\w.-]+/actions/runs/\d+"  # a GitHub Actions run: its end is news
 )
 ACCEPTED_WAITS = (
-    "supervisor, session <32-hex id>, #<pr> or owner/repo#<pr>, CI, until <YYYY-MM-DDTHH:MMZ>, "
+    "supervisor, own supervisor, session <32-hex id>, #<pr> or owner/repo#<pr>, CI, until <YYYY-MM-DDTHH:MMZ>, "
     "or a GitHub Actions run URL"
 )
 NAMED = re.compile(
@@ -618,6 +650,7 @@ NAMED = re.compile(
 )
 # What a report keeps for routing (``report_head``): an ending line, not one quoted in a code
 # fence, a ``>`` quote or backticks; and from its ``STILL WORKING`` this many characters, whole lines.
+STILL_OR_ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED|STILL WORKING)\b", re.MULTILINE)
 REPORT_ENDING = re.compile(r"^[\s*_#-]*(DONE|USER NEEDED|PARKED)\b")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1[^\n]*$", re.MULTILINE | re.DOTALL)
 REPORT_WAIT_CHARS = 600
@@ -634,7 +667,7 @@ WAIT_WORD = re.compile(r"\bwait(?:s|ing|ed)?\b", re.IGNORECASE)
 # one, or with a form this does not know.
 TRAILER = re.compile(r"^[\s*_>-]*Waits:[ \t]*(.+?)[\s*_]*$", re.MULTILINE | re.IGNORECASE)
 TRAILER_FORMS = re.compile(
-    rf"(?P<supervisor>supervisor)|session\s+`?(?P<session>[0-9a-f]{{32}})`?|"
+    rf"(?P<supervisor>supervisor)|(?P<own>own\s+supervisor)|session\s+`?(?P<session>[0-9a-f]{{32}})`?|"
     rf"(?P<ref>\[?{REF}\]?)|(?P<ci>CI)|(?P<run>{RUN_URL})|until\s+(?P<until>\d{{4}}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d)?)\s*(?:Z|UTC)?",
     re.IGNORECASE,
 )
@@ -677,9 +710,22 @@ LABEL_SECONDS = 60.0
 # every supervise on the host shares (N instances cost about one read): a landing is news within five
 # minutes, and a 60 s poll per instance drained the account's REST limit.
 HEAD_SECONDS = 300.0
+# Each followed repo's `check stalled` (the gatekeeper's: an approved, verified PR its queue never took) runs at most
+# this often, and is stopped past STALLED_TIMEOUT, so a hung GitHub read never holds the next one off.
+STALLED_SECONDS = 3600.0
+STALLED_TIMEOUT = 900.0
+# a landable PR its queue never took, or a verified one idle on a go or record it lacks (`... missing: go`)
+STALLED_LINE = re.compile(
+    r"PR #(\d+) has (?:its go and a satisfied verdict|a satisfied verdict|its pass \d+ verdict, at the cap,)"
+    r" at ([0-9a-f]{40}) .+"
+)
+UNJUDGED_LINE = re.compile(r"PR #(\d+) into \S+ is not judged here: (.+)")
+SKIPPED_LINE = re.compile(r"(\d+) of (\d+) open PRs not judged here")
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
+# a wait-until command that reads one PR through gh: wait-for --pr reads it through ETags, free while it doesn't move
+PR_POLL = re.compile(r"\bgh\s+(?:pr\s+(?:view|checks|status)\b|api\b[^;&|\n]*\bpulls/\d)")
 # wait-for's default budget, for a foreground call: under a 10-minute tool call with room for the call's own start
 # and exit. A wait the harness tracks in the background passes the run's expected length instead, so it wakes once.
 WAIT_FOR_BUDGET = 570.0
@@ -696,6 +742,8 @@ ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send fo
 # prompt or a question (one held only by the session's running step exits 0: it lands then)
 # send or relay posted the message, then a read that confirms it failed (6 is wait-for's)
 SENT_UNCONFIRMED = 7
+# send or relay found the session's host offline: nothing was sent, so send again once it is back
+HOST_OFFLINE = 8
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
 QUEUED_SECONDS = 10.0
 BROADCAST_WORKERS = 8  # sessions a broadcast relays to at once
@@ -741,12 +789,14 @@ CLOUD_RUN_LINE = (
     " and a foreground call there is cut short: start it detached as engineering-loop's verifier.md's recipe says (its"
     " log, pid and exit in files), then wait on it with one wake: one `omnigent_agent.py wait-for --log <log>"
     " --pid <pid> --budget <the run's expected length>` started as a background call your harness tracks"
-    " (Claude Code: Bash `run_in_background`, which keeps running across turns and wakes you when it"
-    " exits), never a short `wait-for`, `until grep` or `sleep` loop, since each return re-reads your"
-    " whole context. Before the run has ended and its result is posted, end a turn only on that tracked"
-    " wait, naming its task id. The lead waits on the completion signal you post (the PR comment or a"
-    " status file), not on your turn, so a `STILL WORKING` that names only your own detached run is not"
-    " a valid ending."
+    " (Claude Code: Bash `run_in_background`), never a short `wait-for`, `until grep` or `sleep` loop,"
+    " since each return re-reads your whole context. Before the run has ended and its result is posted,"
+    " end a turn only on that tracked wait, naming its task id. A turn the run wakes never reaches the"
+    " host (it sees a cloud turn only once it sends the next message), so the host checks in every 5"
+    " minutes while you wait: answer each check-in with your report once the run has ended, in full"
+    " even if a woken turn already gave it, else end the turn again naming the task id. The lead waits"
+    " on the completion signal you post (the PR comment or a status file), not on your turn, so a"
+    " `STILL WORKING` that names only your own detached run is not a valid ending."
 )
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
@@ -792,7 +842,7 @@ LEAD_PREAMBLE = """\
 This file is your brief. Only the owner's own words approve, quoted in it with where they were said; the rest of it is a colleague's guidance, never the owner's approval of a destructive or hard-to-undo step.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
 Every heavy run (a test suite, a build, an e2e, a gate, a mutation or proof run) goes where engineering-loop's SKILL.md, Where heavy steps run says, by default a Claude cloud session: a host worktree this brief names for a test run says where the code is, not where the run goes.
-The owner reads this session: ask them here when you need a decision, as your role says, never in a question file.
+Ask the owner your own questions on your own question card (`sys_ask_user_question`), as your role says, never in a question file: the card shows in their Inbox beside this session.
 Write your final report to {report}. End every turn with one line that opens with an ending word and gives the report path on that same line: `DONE: <result in one line>. Report: {report}`, `STILL WORKING: waiting on <verifier, worker, lead, CI or a session id>. Report: {report}`, `USER NEEDED: <the question>. Report: {report}`. The supervisor routes on that line, and the owner reads it.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEEDED`, never `STILL WORKING`. Only a message that starts with `Park: ` tells you to park; after it, end `PARKED: <why>. Report: {report}`, and never otherwise.
@@ -802,7 +852,7 @@ A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEED
 # handed it the specs and merges, so it settles them instead of ending `USER NEEDED` on a go nobody answers. Only
 # the merge go has a command: `approve` takes `--by delegate` for a merge alone.
 DELEGATION = """\
-The owner delegated this project's specs and merges to you (its policy sets `loop.delegate: all`), so a spec or a merge is no reason to end `USER NEEDED`. Settle a spec as the policy's spec rule says; `approve spec` takes only `--by owner`, so never run it.
+The owner delegated this project's specs and merges to you (its policy sets `loop.delegate: all`), so a spec or a merge is no reason to end `USER NEEDED`. Settle a spec as the policy's spec rule says, never with an approval of your own judgment; once the owner approves it on your own card and `sys_read_answer` reads `answered`, record their word with `approve spec <n> --by owner`, as engineering-loop's lead.md step 1 says.
 Merge a PR, `risk:high` included, once its gate is green and its verifier satisfied. Give the go on the head the verifier saw with engineering-loop's `scripts/approvals.py approve merge <pr> --head <sha> --by delegate`, since a go is pinned to one head and a push voids it.
 A change on the policy's `risk.critical_paths` stays the owner's: the script refuses the delegate's go there. Ask the owner with a question card (`sys_ask_user_question`), never in prose, since a prose question ends your turn where nobody answers.
 """
@@ -844,7 +894,9 @@ def _load_gatekeeper() -> Any:
             sys.modules.pop(spec.name, None)
             raise
         return module
-    except Exception:  # noqa: BLE001 - absent or broken: today's wording
+    # SystemExit too: gatekeeper.py exits on import where PyYAML is missing (a plain python3, or `uv run` outside
+    # a project that has it), which would end the start instead of falling back
+    except (Exception, SystemExit):  # noqa: BLE001 - absent or broken: today's wording
         return None
 
 
@@ -852,16 +904,10 @@ ORIGIN_URL = re.compile(r'\[remote "origin"\][^\[]*?^\s*url\s*=\s*(\S+)', re.MUL
 GITHUB_REPO = re.compile(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 
 
-def far_policy_texts(
-    og: Omnigent, workspace: str, host_id: str, gk: Any
-) -> tuple[str | None, str | None] | None:
-    """The default branch's ``docs/agents/loop.md`` and gatekeeper.md texts (None for one it lacks, as ``base_policy``
-    reads the base) of the checkout at ``workspace`` on host ``host_id``, which has no git to ask: its git config
-    (through a worktree's gitdir and commondir, as ``workspace_head`` resolves them) is read through the host's file API for the ``origin`` repo, and the files come from GitHub's default branch
-    through ``gh``. None when ``workspace`` is no checkout; a ``Fail`` when the origin or a file can't be read."""
-    root = far_checkout_root(og, host_id, workspace, str(gk.POLICY))
-    if root is None:
-        return None
+def far_origin_slug(og: Omnigent, host_id: str, root: Path, what: str) -> str:
+    """``owner/name`` of the GitHub ``origin`` of the checkout at ``root`` on host ``host_id``, which has no git to
+    ask: its git config (through a worktree's gitdir and commondir, as ``workspace_head`` resolves them) is read
+    through the host's file API. A ``Fail`` naming ``what`` when the config can't be read or has no GitHub origin."""
     try:
         top = read_on_host(og, host_id, f"{root}/.git")
     except (Gone, Fail):
@@ -878,8 +924,21 @@ def far_policy_texts(
     except Gone as e:
         raise Fail(f"{config}: not found on the host") from e
     if not (found and (repo := GITHUB_REPO.search(found.group(1)))):
-        raise Fail(f"{config}: no GitHub `origin` url to read the base policy from")
-    slug = f"{repo.group(1)}/{repo.group(2)}"
+        raise Fail(f"{config}: no GitHub `origin` url {what}")
+    return f"{repo.group(1)}/{repo.group(2)}"
+
+
+def far_policy_texts(
+    og: Omnigent, workspace: str, host_id: str, gk: Any
+) -> tuple[str | None, str | None] | None:
+    """The default branch's ``docs/agents/loop.md`` and gatekeeper.md texts (None for one it lacks, as ``base_policy``
+    reads the base) of the checkout at ``workspace`` on host ``host_id``, which has no git to ask: its git config
+    (through a worktree's gitdir and commondir, as ``workspace_head`` resolves them) is read through the host's file API for the ``origin`` repo, and the files come from GitHub's default branch
+    through ``gh``. None when ``workspace`` is no checkout; a ``Fail`` when the origin or a file can't be read."""
+    root = far_checkout_root(og, host_id, workspace, str(gk.POLICY))
+    if root is None:
+        return None
+    slug = far_origin_slug(og, host_id, root, "to read the base policy from")
     branch = json.loads(gh("api", f"repos/{slug}"))["default_branch"]
 
     def read(file: Path) -> str | None:
@@ -944,6 +1003,16 @@ CLOUD_NOTE = (
     " refuse `gh` beyond search, call any other REST endpoint the same way; never write under `.git/` (not even `.git/info/exclude`),"
     " since a write there waits on a permission prompt nobody in the cloud answers; `tmp/loop/` is"
     " scratch, ignored by the repo's `.gitignore`, and never committed.\n"
+)
+# Every acp:claude-cloud session's preamble: the owner's GitHub quota is one bucket every VM and host spends, so each
+# cloud session logs its own gh calls with gh-quota's shim and posts the tally, which no host can read in the VM.
+CLOUD_GH_QUOTA = (
+    "Before your first `gh` call, put gh-quota's logging shim ahead of the VM's gh: `python3"
+    ' "$HOME/pack/github/skills/gh-quota/scripts/gh_quota.py" install` (from the pack clone named below; in a'
+    " checkout of the pack's own repo, from the checkout). Your report then ends with the output of `gh_quota.py"
+    " counts --minutes <the minutes this session ran>`, or `gh-quota: not installed` when the file is missing or"
+    " the install failed, and one line counting the `curl` calls you made to `api.github.com`, which the shim does"
+    " not see.\n"
 )
 # Every acp:claude-cloud session's first prompt (#1485): a cloud session pushes only to the branch it
 # started on unless its first user message grants more, and a later relayed grant is refused, so a
@@ -1021,8 +1090,48 @@ CLOUD_NUDGE = (
     f" line `{CLOUD_QUESTION_LINE}` and your question: your files stay in the cloud VM, which the"
     " host never reads."
 )
+# What a cloud child idle on its own background run (``pending_runs``) gets every
+# CLOUD_CHECK_IN_SECONDS: a turn that run wakes never reaches the host (kzarzycki/omnigent#472, the
+# bridge mirrors a missed turn only on the next message), so the check-in is that message (#959).
+# ponytail: a fixed interval, ceiling one extra turn per 5 min of a long run; once the bridge
+# forwards a woken turn, drop the check-in and keep only the no-fail rule.
+CLOUD_CHECK_IN_SECONDS = 300.0
+CLOUD_CHECK_IN = (
+    "Host check-in on your background run {runs}: a turn it wakes never reaches the host. If it has"
+    " ended, give your report now as your brief says, in this reply and in full even if a turn it"
+    " woke already wrote it, since the host never saw that turn (a report already posted as a PR"
+    " comment: reply with its link). If it is still going, end your turn again naming its task id."
+)
+# The line the claude-cloud bridge opens each turn's output with; when the turn's first output is its
+# reply, the two share one message (#959), so the reply's marker is not its first line.
+BRIDGE_LINE = re.compile(r"\s*cloud session: https://claude\.ai/code/session_\S+\s*")
+
+
+def unprefixed(text: str) -> str:
+    """``text`` stripped, without the bridge's opening ``cloud session: <url>`` line."""
+    return text[m.end() :].strip() if (m := BRIDGE_LINE.match(text)) else text.strip()
+
+
 # A lead's cloud report opens with the ending line LEAD_PREAMBLE names.
 CLOUD_LEAD_ENDING = re.compile(r"[\s*_#>-]*(DONE|USER NEEDED|STILL WORKING|PARKED):")
+
+
+def resolve_role(role: str) -> str:
+    """``--role`` as a file path: a path that is a file stays; a bare role name (``worker``, ``verifier``,
+    ``lead``) names engineering-loop's role file, read from this checkout (a cloud child gets its text, so
+    its launch dir needs no copy). The pack sits beside this skill, or under ``loop/`` in the marketplace."""
+    if Path(role).is_file() or role not in ROLES:
+        return role
+    here = Path(__file__).resolve()
+    up = here.parents
+    pack = [up[4] / "loop" / "skills"] if len(up) > 4 else []
+    for skills in (up[2], *pack, Path.cwd() / ".claude" / "skills"):
+        found = skills / "engineering-loop" / f"{role}.md"
+        if found.is_file():
+            return str(found)
+    raise Fail(
+        f"--role {role}: engineering-loop's {role}.md is not beside this skill; pass its path"
+    )
 
 
 def role_line(role: str | None, cloud: bool) -> str:
@@ -1057,7 +1166,7 @@ def first_message(
     ):  # a lead's line on whose go may land a PR into the default branch (lead_delegation)
         preamble = preamble.removesuffix("\n") + delegation + "\n"
     if cloud:
-        preamble = cloud_preamble(preamble, pr)
+        preamble = cloud_preamble(preamble, pr, brief)
     elif not top_level:
         preamble = preamble.removesuffix("\n") + HOST_RUN_NOTE + "\n"
     return (
@@ -1066,9 +1175,44 @@ def first_message(
     )
 
 
-def cloud_preamble(preamble: str, pr: int | None) -> str:
+PACK_URL = "https://github.com/kzarzycki/agent-skills"  # the pack's repo, whose releases are PACK_RELEASE tags
+PACK_RELEASE = r"engineering-v\d+\.\d+\.\d+"
+# a brief's own pin of the pack: a line `Pack: engineering-vX.Y.Z`, written on purpose
+PACK_PIN = re.compile(rf"^Pack:[ \t]*`?({PACK_RELEASE})`?[ \t]*$", re.MULTILINE)
+
+
+def pack_latest() -> str:
+    """The shell that prints the pack's newest release tag (PACK_RELEASE) in the VM when it runs, sorted as versions:
+    `git ls-remote` reads git's refs, which costs no GitHub API quota."""
+    return (
+        f"\"$(git ls-remote --tags --refs {PACK_URL} 'engineering-v*'"
+        " | sed 's,.*refs/tags/,,' | sort -V | tail -1)\""
+    )
+
+
+def pack_line(brief: str) -> str:
+    """A cloud session's line on where the pack's scripts come from (#1987): a clone of the newest release, resolved
+    in the VM at run time, or of the release ``brief`` pins with a ``Pack:`` line; never the checkout's vendored copy,
+    which its pin may hold releases behind. The pack's own repo runs its plugin folders at the checked-out head."""
+    pin = PACK_PIN.search(brief)
+    ref, which = (
+        (pin[1], f"the release this brief pins, {pin[1]}")
+        if pin
+        else (pack_latest(), "its latest release")
+    )
+    return (
+        f"The pack's scripts (the loop's, its gate's, this driver's): run them from a clone of {which},"
+        f' `git clone -q --depth 1 --branch {ref} {PACK_URL} "$HOME/pack"`, each skill\'s from its folder there'
+        " (`$HOME/pack/<plugin>/skills/<skill>/scripts/`), never from the checkout's vendored `.agents/skills` or"
+        " `.claude/skills` copy, whose pin may be releases old. In a checkout of the pack's own repo, run its"
+        " plugin folders at the checkout instead.\n"
+    )
+
+
+def cloud_preamble(preamble: str, pr: int | None, brief: str = "") -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
-    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_HELPER``, ``CLOUD_BRANCHES`` and ``CLOUD_NO_PUSH`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_HELPER``, ``CLOUD_BRANCHES``, ``CLOUD_NO_PUSH``, ``CLOUD_GH_QUOTA`` and
+    ``pack_line(brief)`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
@@ -1079,6 +1223,8 @@ def cloud_preamble(preamble: str, pr: int | None) -> str:
         + CLOUD_HELPER
         + CLOUD_BRANCHES
         + CLOUD_NO_PUSH
+        + CLOUD_GH_QUOTA
+        + pack_line(brief).replace("{", "{{").replace("}", "}}")  # the preamble is format()ted
         + "\n"
     )
 
@@ -1094,7 +1240,7 @@ def cloud_reply(items: list[dict], verdict: bool = False) -> tuple[str, str] | N
     last = last_message(items)
     if not last or last.get("role") != "assistant":
         return None
-    text = text_of(last).strip()
+    text = unprefixed(text_of(last))
     first, _, rest = text.partition("\n")
     if CLOUD_LEAD_ENDING.match(first):
         return None if verdict and not VERDICT.search(text) else ("report", text + "\n")
@@ -1147,18 +1293,41 @@ def pr_ref(text: str) -> PrRef:
     return ref
 
 
-def pr_repo(pr: int, workspace: str | Path | None, local: bool = True) -> str:
+def pr_repo(
+    pr: int,
+    workspace: str | Path | None,
+    local: bool = True,
+    far: tuple[Any, str] | None = None,
+) -> str:
     """The repository of PR ``pr``: the slug it was named with, else that of ``workspace`` when it is a
-    local checkout on this host (``local``), else of the current directory. Refused, naming ``--pr owner/repo#N``, when none resolves."""
+    local checkout on this host (``local``), else, for a workspace on another host, its ``origin`` read through
+    that host's file API (``far``: the server and the host id). Never the current directory's repository for a
+    workspace on another host. Refused, naming ``--pr owner/repo#N``, when none resolves."""
     if repo := getattr(pr, "repo", ""):
         return repo
-    here = Path(workspace) if local and workspace and (Path(workspace) / ".git").exists() else None
     try:
+        if not local:
+            if not (far and workspace):
+                raise Fail("the workspace is on another host")
+            og, host_id = far
+            root = far_checkout_root(og, host_id, str(workspace), "the PR's repository")
+            if root is None:
+                raise Fail(f"{workspace} is no checkout on that host")
+            return far_origin_slug(og, host_id, root, "to name the PR's repository")
+        here = Path(workspace) if workspace and (Path(workspace) / ".git").exists() else None
         return repo_slug(here) if here else repo_slug()
     except Fail as e:
         raise Fail(
             f"--pr {pr}: no repository to read it from ({e}); name it as --pr owner/repo#{pr}"
         ) from e
+
+
+def pr_where(
+    og: Omnigent, pr: int, workspace: str | Path | None, host_id: str | None
+) -> tuple[int, str | Path | None, bool, tuple[Omnigent, str] | None]:
+    """``pr_repo``'s arguments for a start on ``host_id``: whether its workspace is on this host, and else where."""
+    local = not host_id or host_id == og.host_id
+    return pr, workspace, local, None if local else (og, str(host_id))
 
 
 def pr_slug(pr: int) -> str:
@@ -1231,9 +1400,17 @@ def write_failed(og: Omnigent, sid: str | None, report: Path, e: Fail) -> None:
         print(f"{report}: FAILED line not written: {reason(err)}", file=sys.stderr)
 
 
+RESET_JITTER = 180.0  # most seconds of random delay added to a wait for GitHub's rate-limit reset
+
+
 class RateLimited(Fail):
     """GitHub refused for its rate limit; ``wait`` is the seconds until the limit resets. A poller sleeps
     that long, since retrying early keeps the limit drained for every project on the account."""
+
+    def jittered(self) -> float:
+        """``wait`` plus up to RESET_JITTER random seconds, so the pollers that waited on one reset resume over a
+        few minutes, not all in its first second, when the burst would drain the fresh bucket at once."""
+        return self.wait + random.uniform(0, RESET_JITTER)
 
     def __init__(self, message: str, wait: float):
         super().__init__(message)
@@ -1242,6 +1419,13 @@ class RateLimited(Fail):
 
 class Gone(Fail):
     code = GONE
+
+
+class HostOffline(Gone):
+    """The session's host is offline and cannot be woken: nothing was sent, and Omnigent keeps
+    nothing for it, so the caller sends again once the host is back."""
+
+    code = HOST_OFFLINE
 
 
 class Undeleted(Fail):
@@ -1340,6 +1524,9 @@ def error_body(e: HTTPError) -> str:
 
 # The query that leaves a session record without its items and spawn-tree usage.
 SLIM = "?include_items=false&include_usage=false"
+
+
+EXPIRES_MINUTES = 30
 
 
 class Omnigent:
@@ -1621,6 +1808,7 @@ class Omnigent:
         # claude-native takes Claude's own words; codex-native passes launch args to the codex CLI, which
         # takes only its own flags (a Claude word makes it fail "Codex native bridge state is missing").
         mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
+        cloud_mode = permission_mode  # a cloud create never takes the variable
         if agent == "codex":
             # No approvals, full access: an unattended session must never stop on a prompt nobody answers.
             # `--permission-mode default` keeps codex's own stance (on-request, its own sandbox).
@@ -1637,10 +1825,14 @@ class Omnigent:
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
             # agy's only permission flag; its effort is the user's, part of the model in its settings.
             body["terminal_launch_args"] = [AGY_BYPASS]
-        elif mode in CLOUD_MODES and agent not in AGENTS and self.harness(agent) == CLOUD_HARNESS:
+        elif (
+            cloud_mode in CLOUD_MODES
+            and agent not in AGENTS
+            and self.harness(agent) == CLOUD_HARNESS
+        ):
             # The server's own field: it answers the VM's tool requests itself under bypass, since
             # the VM starts in its default stance whatever it is launched with (#987).
-            body["permission_mode"] = mode
+            body["permission_mode"] = cloud_mode
         # The loop role, which Omnigent's usage metrics split spend by: a role file's name; and the PR a
         # verifier reviews (``owner/repo#N``), so its spend groups by PR as a worker's does (#945).
         labels = {"omni.role": name} if role and (name := Path(role).stem) in ROLES else {}
@@ -1688,18 +1880,21 @@ class Omnigent:
         body = {"action": action, **({"content": content} if content else {})}
         self.call("POST", f"/v1/sessions/{sid}/elicitations/{eid}/resolve", body)
 
+    expires: float | None = (
+        None  # None: untagged; the send and relay commands set it (0 = no expiry)
+    )
+
     def send(self, sid: str, text: str) -> None:
-        self.call(
-            "POST",
-            f"/v1/sessions/{sid}/events",
-            {
-                "type": "message",
-                "data": {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": text}],
-                },
-            },
-        )
+        """Post ``text`` as a user message. Untagged unless ``self.expires`` is set (the send and
+        relay commands do): then it names the calling session as its sender, and expires
+        ``self.expires`` minutes on (0: never), so a message queued behind a busy turn is dropped,
+        and its sender told, once that sender is gone, instead of landing out of context."""
+        data: dict = {"role": "user", "content": [{"type": "input_text", "text": text}]}
+        if self.expires is not None and (sender := own_id()):
+            data["sender_session_id"] = sender
+        if self.expires:
+            data["expires_at"] = int(time.time() + self.expires * 60)
+        self.call("POST", f"/v1/sessions/{sid}/events", {"type": "message", "data": data})
 
     def items(self, sid: str) -> list[dict]:
         page = self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc")
@@ -1832,11 +2027,18 @@ class Omnigent:
         """Stop ``sid``'s running turn, as the owner's stop does."""
         self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt"})
 
+    def unarchive(self, sid: str) -> None:
+        """Bring archived ``sid`` back with its transcript: the next message relaunches its agent
+        on the same conversation (Claude's same transcript, Codex's same thread, a cloud
+        session's same claude.ai session)."""
+        self.call("PATCH", f"/v1/sessions/{sid}", {"archived": False})
+
     def archive(self, sid: str) -> None:
         """Finish ``sid``: archive it, which ends its agent process and keeps its transcript. Never
         DELETE, which erases the transcript. A sub-agent's archive leaves the runner it shares
-        with its parent up (kzarzycki/omnigent 4dd0af32)."""
-        self.call("PATCH", f"/v1/sessions/{sid}", {"archived": True})
+        with its parent up (kzarzycki/omnigent 4dd0af32). A cloud session's archive ends its VM through the bridge,
+        which can take about a minute, so it gets ``ARCHIVE_SECONDS``."""
+        self.call("PATCH", f"/v1/sessions/{sid}", {"archived": True}, timeout=ARCHIVE_SECONDS)
 
     def find(self, title: str, after: float, top_level: bool = False) -> str | None:
         """The parent's child called ``title`` created at or after ``after`` (epoch seconds): the
@@ -1915,11 +2117,10 @@ class Omnigent:
         turn end was lost stays busy for good."""
         return max(self.kin(sid).values(), default=0.0)
 
-    def creations(self, sid: str) -> list[str]:
-        """The live sessions ``sid`` created (``created_by_session_id``) that are not its children:
-        its ``--top-level`` ones, whose prompts Omnigent mirrors onto no session, since it mirrors
-        a child's onto its parent alone. One listing of every session serves every caller for
-        ``CREATED_SECONDS``: a supervisor asks it of each lead at every poll."""
+    def listing(self) -> list[dict]:
+        """Every session on the server, archived ones included, as the listing's rows. One
+        listing serves every caller for ``CREATED_SECONDS``: a supervisor asks ``creations`` of
+        each lead at every poll."""
         cache = self.__dict__.setdefault("_created", [float("-inf"), []])
         if time.monotonic() - cache[0] >= CREATED_SECONDS:
             path, rows, after = "/v1/sessions?kind=any&limit=1000", [], ""
@@ -1930,9 +2131,15 @@ class Omnigent:
                     break
                 after = str(page["last_id"])
             cache[:] = [time.monotonic(), rows]
+        return cache[1]
+
+    def creations(self, sid: str) -> list[str]:
+        """The live sessions ``sid`` created (``created_by_session_id``) that are not its children:
+        its ``--top-level`` ones, whose prompts Omnigent mirrors onto no session, since it mirrors
+        a child's onto its parent alone."""
         return [
             str(s["id"])
-            for s in cache[1]
+            for s in self.listing()
             if sid in creators(s)
             and str(s.get("parent_session_id") or "") != sid
             and str(s.get("id")) != sid
@@ -2304,7 +2511,48 @@ def archived_note(og: Omnigent, sid: str, info: dict) -> str:
     )
     return (
         f"session {sid} is archived (title {info.get('title') or '?'!r}, status"
-        f" {info.get('status') or '?'}{work}); {where}"
+        f" {info.get('status') or '?'}{work}); {where}; `relay --unarchive` resumes it with its history"
+    )
+
+
+# Claude Code's reply to a Bash ``run_in_background`` call, in a cloud session's history (#959)
+BACKGROUND_LAUNCH = re.compile(r"Command running in background with ID: ([A-Za-z0-9_-]+)")
+
+
+def pending_runs(items: list[dict]) -> list[str]:
+    """The task ids of the background runs a cloud session's idle turn waits on: each launched in
+    its last turn (the items after the last user message), or launched earlier and named by its
+    last assistant message. Omnigent's record shows none of a cloud session's tasks
+    (``background_tasks`` stays null), so the history is the only place they show."""
+    start = next(
+        (
+            n
+            for n in range(len(items) - 1, -1, -1)
+            if items[n].get("type") == "message" and items[n].get("role") == "user"
+        ),
+        -1,
+    )
+    said = last_said(items)
+    runs: list[str] = []
+    for n, item in enumerate(items):
+        if item.get("type") != "function_call_output":
+            continue
+        for run in BACKGROUND_LAUNCH.findall(str(item.get("output") or "")):
+            if run not in runs and (n > start or re.search(rf"\b{re.escape(run)}\b", said)):
+                runs.append(run)
+    return runs
+
+
+def on_own_run(items: list[dict]) -> bool:
+    """Whether a cloud session's last message is a ``STILL WORKING`` ending that names one of its
+    own ``pending_runs``: no report yet, though ``cloud_reply`` reads a lead's ending line as one,
+    since the run's result is still to come (#959)."""
+    said = last_said(items)
+    first = unprefixed(said).partition("\n")[0]
+    return bool(
+        (m := CLOUD_LEAD_ENDING.match(first))
+        and m[1] == "STILL WORKING"
+        and any(re.search(rf"\b{re.escape(run)}\b", said) for run in pending_runs(items))
     )
 
 
@@ -2370,8 +2618,9 @@ def cards_of(info: dict) -> list[str]:
 
 UNASKED = "unasked"  # an event kind: a turn ended USER NEEDED with no question card open
 UNASKED_LINE = (
-    "turn ended USER NEEDED with no question card open: post a card (sys_ask_user_question) or, where the"
-    " project delegates the decision, act under the delegation; the owner sees only a card"
+    "turn ended USER NEEDED with no question card open: a question that spans projects is yours to put to the"
+    " owner on your own card (sys_ask_user_question), or to settle under a delegation; any other is the lead's,"
+    " so tell it to post its own card"
 )
 
 
@@ -2475,11 +2724,13 @@ def send(
     confirm_seconds: float,
     queued_after: float | None = None,
     far: bool = False,
+    unarchive: bool = False,
 ) -> tuple[str, bool]:
     """Send a follow-up (an answer) to a session whose runner is still up, and wait until it lands:
     ``delivered``, or ``already`` when a copy had landed before, and whether this call posted. With ``queued_after`` (a relay),
     ``queued`` once the copy has been pending that long instead. ``far``: the session runs on
-    another host (``elsewhere``), where ``report`` and its question are.
+    another host (``elsewhere``), where ``report`` and its question are. ``unarchive``: an
+    archived session is unarchived first, so it resumes with its history; otherwise it is Gone.
 
     Omnigent hands a message to the harness at once, also mid-turn: that is steering (the web
     composer's queue and its "Always steer" live only in the browser). The session lists it under
@@ -2502,7 +2753,16 @@ def send(
     old = frozenset(str(i.get("id")) for i in items)
     info = og.info(sid)
     if info.get("archived"):
-        raise Gone(archived_note(og, sid, info))
+        if not unarchive:
+            raise Gone(archived_note(og, sid, info))
+        og.unarchive(sid)
+        print(f"session {sid} was archived; unarchived it", file=sys.stderr)
+    # host_online is None without a host binding; False is a confirmed host-down.
+    if info.get("host_online") is False and not info.get("host_resumable"):
+        raise HostOffline(
+            f"session {sid}: its host is offline, so nothing was sent and Omnigent keeps nothing"
+            " for it; send again once the host is back"
+        )
     if not info.get("runner_online", True):
         revive(og, sid)
 
@@ -2695,6 +2955,7 @@ def relay(
     source: str = "",
     by: str = "",
     skip: bool = False,
+    unarchive: bool = False,
 ) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered, or queued behind the
     session's running step (it lands when the step ends); raise ``Queued`` while a prompt or
@@ -2708,7 +2969,8 @@ def relay(
     any prompt pending (a question or an approval) is skipped instead, sent nothing. With a
     ``source`` (a task or an agent, not the owner) ``text`` goes after a ``RELAY_FROM`` line and
     never answers a question, even with ``answer``. With ``by`` (the relaying session) a message
-    sent, not an answer, opens with a ``RELAYED`` line."""
+    sent, not an answer, opens with a ``RELAYED`` line. With ``unarchive``, an archived session is
+    unarchived first and resumes with its history."""
     if source:
         text = f"{RELAY_FROM.format(source=source)}\n{text}"
     info = og.info(sid)
@@ -2728,7 +2990,9 @@ def relay(
         return f"session {sid}: answered its open question: {'; '.join(_asks(e) for e in asked)}"
     if by and not source:
         text = f"{RELAYED.format(who=by)}\n{text}"
-    outcome, posted = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
+    outcome, posted = send(
+        og, sid, text, None, confirm_seconds, QUEUED_SECONDS, unarchive=unarchive
+    )
     if outcome == "queued":
         try:
             info = og.info(sid)
@@ -3244,14 +3508,6 @@ def unchecked(name: str, why: str) -> str:
     return f"{name}: load and memory not readable ({why}); starting unchecked"
 
 
-def mode_refused(e: Fail) -> bool:
-    """Whether a create failed with 400 over the permission mode it asked for: Omnigent refuses a
-    mode the creating session may not hand on (kzarzycki/omnigent#526)."""
-    return (
-        isinstance(e.__cause__, HTTPError) and e.__cause__.code == 400 and "mode" in str(e).lower()
-    )
-
-
 def taken(e: Fail) -> bool:
     """Whether a create failed with 409: Omnigent refuses a title a sibling already holds."""
     return isinstance(e.__cause__, HTTPError) and e.__cause__.code == 409
@@ -3726,6 +3982,30 @@ def unmake_launch_dir(path: Path, main: Path | None) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
+def refuse_other_pin(root: Path, name: str, source: str) -> None:
+    """``cloud-env`` brings up the environment the checkout's cloud sessions run in, its pin (``SETTINGS``'s
+    ``remote.defaultEnvironmentId``, else its main checkout's): a pinned environment of another name than ``name``
+    (from ``source``) fails naming both, as does a pin this login has no environment for, where an apply by name
+    would make a second, empty environment beside the pinned one (#2078). No pin: nothing to check."""
+    pins = [
+        (p / SETTINGS, environment_pin(own_settings(p))) for p in (root, main_worktree(root)) if p
+    ]
+    where, pin = next(((w, e) for w, e in pins if e), (None, ""))
+    if where is None:
+        return
+    pinned = next((e for e in cloud_environments() if str(e.get("environment_id")) == pin), None)
+    if pinned is None:
+        raise Fail(
+            f"cloud-env: {where} pins environment {pin}, which this host's claude login has none of:"
+            f" repin it to {name!r}'s environment, or remove the pin to make {name!r}"
+        )
+    if (other := str(pinned.get("name") or "")) != name:
+        raise Fail(
+            f"cloud-env: {where} pins environment {other!r} ({pin}), but {source} names {name!r}:"
+            f" add `env {other}` to loop.md's Cloud worker line, or repin {where} to {name!r}'s environment"
+        )
+
+
 def cloud_env(checkout: Path) -> str:
     """Make the claude.ai environment ``checkout``'s cloud sessions run in, or bring it up to the committed
     ``.claude/claude-cloud-setup.sh`` (the older ``.claude/cloud-setup.sh`` is still read) and, when there is one,
@@ -3759,6 +4039,14 @@ def cloud_env(checkout: Path) -> str:
         raise Fail(
             f"cloud-env: {root} has no remote to name the environment after: add env <name> to loop.md's Cloud worker line"
         )
+    source = (
+        "loop.md's Cloud worker line"
+        if line and line.env
+        else f"{ENVS.DEFINITION}'s name"
+        if definition.get("name")
+        else "the repository's name"
+    )
+    refuse_other_pin(Path(root), name, source)
     try:
         action, env = ENVS.apply(
             ENVS.headers(), name, script, f"Cloud sessions of {name}, set up by {path}", definition
@@ -4512,6 +4800,7 @@ def start(
     allow_older_model: bool = False,
     about: int | None = None,
     keep: bool = False,
+    registered: Callable[[str, bool], None] | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
@@ -4521,7 +4810,10 @@ def start(
     (``host_id``, else this one) since #849, not to this host's load. ``files`` (local
     paths, for a session on another host) are written beside ``report`` on that host through the
     session's file API before its brief is sent, so it finds them when it starts. ``about`` is the PR a
-    verifier reviews, labelled ``PR_LABEL`` on it as a ``--pr`` worker is, so its spend groups by PR (#945)."""
+    verifier reviews, labelled ``PR_LABEL`` on it as a ``--pr`` worker is, so its spend groups by PR (#945).
+    ``registered(sid, True)`` runs once the session exists, before its brief is sent, and ``registered(sid, False)``
+    when it is abandoned: the caller's registry line is there the whole time the brief is confirmed, which can
+    outlast the supervisor's ``ADOPT_GRACE_SECONDS`` (#2319)."""
     harness = agent if agent in AGENTS else og.harness(agent)
     agy = harness == AGY_HARNESS
     # a session has its parent's runner, so a cloud one placed on another host (run --host) has none
@@ -4536,26 +4828,17 @@ def start(
             or (harness == CLOUD_HARNESS and mode in CLOUD_MODES)
         )
 
-    if harness == CLOUD_HARNESS and not permission_mode:
-        # ponytail: the pack's own default until kzarzycki/omnigent#529 ships, which gives each agent
-        # definition a default mode the server applies on every start path; then drop this branch and
-        # pass no mode unless the caller asks for one.
-        # A cloud session runs unattended in its own disposable VM: in `auto` a command the classifier
-        # doubts waits on a prompt that reaches the owner's inbox, so it starts in bypass unless the
-        # command line asks otherwise. The variable is often set for a host's native children, so a
-        # mode from it alone is not applied here: the start goes on in the safe mode, and says so.
-        if (named := os.environ.get("OMNIGENT_PERMISSION_MODE")) and named != BYPASS:
-            how = (
-                f"pass --permission-mode {named} to start it in {named}"
-                if named in CLOUD_MODES
-                else f"a cloud start takes --permission-mode {' or '.join(CLOUD_MODES)} alone"
-            )
-            print(
-                f"OMNIGENT_PERMISSION_MODE={named} is not applied to a {CLOUD_HARNESS} start: it"
-                f" starts in {BYPASS}; {how}",
-                file=sys.stderr,
-            )
-        permission_mode = BYPASS
+    if (
+        harness == CLOUD_HARNESS
+        and not permission_mode
+        and (named := os.environ.get("OMNIGENT_PERMISSION_MODE"))
+    ):
+        # the variable is often set for a host's native children: a cloud start takes its mode from the flag only
+        print(
+            f"OMNIGENT_PERMISSION_MODE={named} is not applied to a {CLOUD_HARNESS} start;"
+            f" pass --permission-mode {' or '.join(CLOUD_MODES)} to set its mode",
+            file=sys.stderr,
+        )
     if agent == "claude" and not permission_mode and not os.environ.get("OMNIGENT_PERMISSION_MODE"):
         # Neither flag nor variable: a Claude child takes its Claude starter's own mode, and only
         # a Claude child, since another harness keeps its own explicit opt-in (the agy --role guard).
@@ -4581,7 +4864,9 @@ def start(
     # one is a Claude child's, always applied): the session starts in its harness's default stance,
     # which a run counting on the mode is told (#987). Codex is left out: it starts in no-approvals
     # whatever the variable says, so there is nothing to tell.
-    mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
+    mode = permission_mode or (
+        None if harness == CLOUD_HARNESS else os.environ.get("OMNIGENT_PERMISSION_MODE")
+    )
     if mode and agent != "codex" and not applied(mode):
         print(
             f"{agent} takes no permission mode: {mode} was not applied; its session starts in"
@@ -4738,25 +5023,22 @@ def start(
         except Fail as e:
             survivors.append(sid)
             print(f"abandoned session {sid} survives: {e}", file=sys.stderr)
+        else:
+            if registered:  # after the archive: a live session's line stays, so no sweep adopts it
+                registered(sid, False)
 
     def failed(reason: str) -> Fail:
         left = f"; abandoned sessions survive: {', '.join(survivors)}" if survivors else ""
         return Fail(reason + left)
 
     # the PR's repository, before any session exists: a failure here leaves nothing to abandon (#1167)
-    slug = (
-        pr_repo(pr, workspace, not host_id or host_id == og.host_id)
-        if pr and not reviews(role)
-        else ""
-    )
+    slug = pr_repo(*pr_where(og, pr, workspace, host_id)) if pr and not reviews(role) else ""
     # a verifier's PR label, set at create: a repository that doesn't resolve leaves the bare number,
     # since on a verifier the label is telemetry only (reap holds no verifier) and never stops a start
     label = ""
     if about and reviews(role):
         try:
-            label = (
-                f"{pr_repo(about, workspace, not host_id or host_id == og.host_id)}#{int(about)}"
-            )
+            label = f"{pr_repo(*pr_where(og, about, workspace, host_id))}#{int(about)}"
         except Fail:
             label = f"#{int(about)}"
     # one running session per PR and role (#1806): a second worker or verifier started while the first runs repeats its
@@ -4803,16 +5085,6 @@ def start(
                 else:
                     raise failed(f"start failed: titles {title} to {name} are taken") from e
             break
-        if error and harness == CLOUD_HARNESS and permission_mode == BYPASS and mode_refused(error):
-            # Omnigent lets a session hand bypass only to a session it starts while in bypass itself
-            # (kzarzycki/omnigent#526): kept, never answered with a worker in auto, which would
-            # block on prompts nobody sees
-            raise failed(
-                f"start refused: {error}. Omnigent starts a {CLOUD_HARNESS} worker in {BYPASS}"
-                f" only for a session that runs in {BYPASS} itself, and this one does not. Start it"
-                f" from a session or a host shell in {BYPASS}, or pass --permission-mode auto to"
-                " accept a worker that waits on approval prompts"
-            ) from error
         if error:  # a timed-out create can have made the session: brief that one
             found = og.find(name, began, parentless)
             # the server can still be making a claude-cloud session on another host after the
@@ -4829,6 +5101,9 @@ def start(
                 f"create failed ({error}); briefing session {found}, made anyway", file=sys.stderr
             )
             sid = found
+        if registered:
+            # the moment the session is known: the calls below can each take HTTP_SECONDS
+            registered(sid, True)
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
         try:
@@ -4971,11 +5246,16 @@ def wait(
     host), one ending on a marked question has it written to ``<report>.question`` and raises
     ``Asked``, and any other gets the nudge; a file already there never counts, as with ``pr``.
     With ``home`` (a cloud ``run --host``, whose caller reads it) that reply is written here instead.
+    An ``acp:claude-cloud`` child (with or without ``pr``) whose idle turn waits on its own
+    background run (``pending_runs``) is working: no nudge and no fail, a ``CLOUD_CHECK_IN`` every
+    ``CLOUD_CHECK_IN_SECONDS`` instead, and a fail only at ``timeout``, naming the runs (#959).
     """
     deadline = time.monotonic() + timeout
     far = False  # on another host (no ``pr``): its files are read through its file API, not here
     cloud = False  # an acp:claude-cloud child without ``pr``: its last message is the report
     idle_since, nudged = None, False
+    told: list[str] = []  # the background runs last named as what an idle cloud child waits on
+    checked = 0.0  # when the idle cloud child was last checked in on (or first seen pending)
     recovered: dict[str, str] = {}  # what each recovery so far did, by its kind
     continued: float | None = None  # when the stalled session was told to continue
     ended: dict[str, float] = {}
@@ -5004,7 +5284,9 @@ def wait(
     while True:
         info = og.info(sid)
         far = not pr and elsewhere(og, info)
-        cloud = not pr and cloud_session(og, info)
+        on_cloud = cloud_session(og, info)
+        cloud = not pr and on_cloud
+        runs: list[str] = []
         if stamp(question) is not None:
             raise Asked(str(question))
         status = str(info.get("status"))
@@ -5074,7 +5356,13 @@ def wait(
             report.write_text(body)
             carry_files(body, report)
             break  # the turn has ended on the comment's URL: nothing rewrites it now
-        if turn_ended and cloud and status != "failed" and (reply := cloud_reply(items, verdict)):
+        if (
+            turn_ended
+            and cloud
+            and status != "failed"
+            and (reply := cloud_reply(items, verdict))
+            and not on_own_run(items)
+        ):
             kind, body = reply
             path = question if kind == "question" else report
             there = far and not home
@@ -5114,7 +5402,24 @@ def wait(
                     )
                 idle_since = None
                 continue
-            if not nudged:  # often a turn ended on a background command: one reminder
+            runs = pending_runs(items) if on_cloud else []
+            if runs:  # working on its own run, not failed: no nudge, no fail until the deadline
+                now = time.monotonic()
+                if runs != told:
+                    print(
+                        f"session {sid} is idle on its own background run {', '.join(runs)}:"
+                        " waiting for its report",
+                        file=sys.stderr,
+                    )
+                    told, checked = runs, checked or now
+                if now - checked >= CLOUD_CHECK_IN_SECONDS and now < deadline:
+                    check = CLOUD_CHECK_IN.format(runs=", ".join(runs))
+                    send_to_confirm(og, sid, check)
+                    # else its old last message reads as this turn's
+                    delivered(og, sid, check, 60.0)
+                    checked, idle_since = time.monotonic(), None
+                    continue
+            elif not nudged:  # often a turn ended on a background command: one reminder
                 nudge = (
                     (HELD_NUDGE if os.environ.get(DENY_LIST) else PR_NUDGE).format(
                         pr=pr, unposted=UNPOSTED
@@ -5132,10 +5437,14 @@ def wait(
                 delivered(og, sid, nudge, 60.0)  # else its old last message ends the wait at once
                 idle_since, nudged = None, True
                 continue
-            raise Fail(f"session {sid} ended ({status}) without {missing}\nlast message: {said}")
+            else:
+                raise Fail(
+                    f"session {sid} ended ({status}) without {missing}\nlast message: {said}"
+                )
         if time.monotonic() >= deadline:
+            on = f", still idle on its own background run {', '.join(runs)}" if runs else ""
             raise Fail(
-                f"session {sid} gave no {'verdict' if verdict else 'report'} after {timeout:.0f}s\nlast message: {said}"
+                f"session {sid} gave no {'verdict' if verdict else 'report'} after {timeout:.0f}s{on}\nlast message: {said}"
             )
         time.sleep(POLL_SECONDS)
     workspace = info.get("workspace")
@@ -5429,21 +5738,13 @@ PR_VIEWS: dict[
 
 
 def pr_view(pr: int, timeout: float, repo: str = "") -> dict:
-    """PR ``pr``'s state and checks from one ``gh pr view``, which gets ``timeout`` seconds."""
-    view = gh(
-        "pr",
-        "view",
-        str(pr),
-        *(["-R", repo] if repo else []),
-        "--json",
-        "state,statusCheckRollup,headRefOid,headRefName,baseRefName",
-        timeout=timeout,
-    )
-    data = json.loads(view)
-    if data.get(
-        "headRefName"
-    ):  # the supervisor maps a wait to its events' branch from this read, with no second one
-        PR_VIEWS[(repo, pr)] = (time.time(), data)
+    """PR ``pr``'s state and checks, in ``gh pr view``'s shape, from ETag reads (``pr_rest_view``): a poll where the PR
+    did not move answers 304, which costs no quota (#2068). The read gets ``timeout`` seconds."""
+    data = pr_rest_view(pr, "checks", timeout, repo)
+    PR_VIEWS[(repo, pr)] = (
+        time.time(),
+        data,
+    )  # the supervisor maps a wait to its events' branch from this read, with no second one
     return data
 
 
@@ -5533,9 +5834,9 @@ def required_pending(info: dict, repo: str = "") -> bool:
     """Whether a check the base branch requires is queued or running on the PR's head (``info`` from ``pr_info``).
     A required check no run has registered is not pending, so a check that never starts cannot hold a wait live for
     good. Needs no producer."""
-    # ponytail: `--cache` bounds the reads to one a minute per URL; an ETag read would spare the quota entirely
+    # ETag reads (rest_if_changed): an unchanged rule set or run list answers 304, which costs no quota (#1984)
     slug = repo or "{owner}/{repo}"
-    rules = json.loads(gh("api", "--cache", "1m", f"repos/{slug}/rules/branches/{info['base']}"))
+    rules = rest_if_changed(f"repos/{slug}/rules/branches/{info['base']}")[1]
     required = {
         c["context"]
         for rule in rules
@@ -5544,7 +5845,7 @@ def required_pending(info: dict, repo: str = "") -> bool:
     }
     if not required or info["state"] != "open":
         return False
-    runs = json.loads(gh("api", "--cache", "1m", f"repos/{slug}/commits/{info['sha']}/check-runs"))
+    runs = rest_if_changed(f"repos/{slug}/commits/{info['sha']}/check-runs")[1]
     return any(
         r.get("name") in required and r.get("status") != "completed"
         for r in runs.get("check_runs", [])
@@ -5617,21 +5918,134 @@ COMMITS: dict[
 ] = {}  # git/commits/<sha> answers, kept for the process: a sha's commit is immutable
 
 
+ETAGS: dict[
+    str, tuple[str, Any]
+] = {}  # rest_if_changed's last answer for each REST path: (its ETag, the parsed body)
+ETAGS_KEPT = 256  # the most paths ETAGS keeps; the oldest read goes first
+# a 304 as gh reports it: the status line `gh api -i` prints, or its error `gh: HTTP 304` where it exits 1 on one
+NOT_MODIFIED = re.compile(r"\bHTTP(?:/[\d.]+)? 304\b")
+
+
+def rest_if_changed(path: str, timeout: float = HTTP_SECONDS) -> tuple[bool, Any]:
+    """REST ``path`` (``repos/...``) read with the ETag of its last read (``If-None-Match``): (False, the kept answer) on
+    GitHub's 304, which costs no quota, else (True, the answer), keeping its ETag (#1984). The first read of a path is a
+    plain one."""
+    known = ETAGS.get(path)
+    args = ["api", "-i", *(["-H", f"If-None-Match: {known[0]}"] if known else []), path]
+    try:
+        out = gh(*args, timeout=timeout)
+    except Fail as e:
+        if known and NOT_MODIFIED.search(f"{getattr(e.__cause__, 'stdout', '') or ''}\n{e}"):
+            return False, known[1]
+        raise
+    out = out.replace("\r\n", "\n")
+    if not out.startswith(
+        "HTTP/"
+    ):  # no status line (a gh that prints no headers): the body alone, no ETag kept
+        return True, json.loads(out or "{}")
+    head, _, body = out.partition("\n\n")
+    if known and NOT_MODIFIED.search(head.split("\n", 1)[0]):
+        return False, known[1]
+    found = json.loads(body or "{}")
+    if tag := re.search(r"(?im)^etag:[ \t]*(\S[^\n]*?)[ \t]*$", head):
+        ETAGS.pop(path, None)  # newest last, so the oldest goes first
+        ETAGS[path] = (tag[1], found)
+        while len(ETAGS) > ETAGS_KEPT:  # a supervisor runs for days, one head after another
+            del ETAGS[next(iter(ETAGS))]
+    return True, found
+
+
+# the most pages rest_pages reads of one list (5,000 items), whatever the endpoint answers
+REST_PAGES_MAX = 50
+
+
+def rest_pages(path: str, key: str = "", timeout: float = HTTP_SECONDS) -> list:
+    """Every item of the paged REST list at ``path`` (``repos/...``; the items under ``key`` when the body is an object,
+    as a check-runs list is), each page read with its last ETag (``rest_if_changed``), so a poll of a list where nothing
+    moved costs a 304 per page, which spends no quota (#2070). The supervisor's every list poll goes through here, so
+    one function is where a push of GitHub events would replace the polling."""
+    items: list = []
+    last: list | None = None
+    base = path if "per_page=" in path else path + ("&" if "?" in path else "?") + "per_page=100"
+    for page in range(1, REST_PAGES_MAX + 1):
+        body = rest_if_changed(f"{base}&page={page}", timeout)[1]
+        got = (body.get(key) if key else body) or []
+        # an endpoint that ignores page= (git/matching-refs) answers the same page again (#2343)
+        if got == last:
+            return items
+        items += got
+        if len(got) < 100:
+            return items
+        last = got
+    return items  # the backstop: no list the loop reads runs to this many pages
+
+
+def etags_load(path: Path) -> None:
+    """Keep the ETag answers ``etags_save`` wrote to ``path`` (a restarted supervisor's first poll is then a 304 too);
+    missing or unreadable, none."""
+    try:
+        kept = json.loads(path.read_text())
+        for url, pair in kept.items():
+            ETAGS.setdefault(url, (str(pair[0]), pair[1]))
+    except (OSError, ValueError, TypeError, IndexError, AttributeError):
+        pass
+
+
+def etags_save(path: Path) -> None:
+    """Write the ETag answers kept so far to ``path``, atomically; a failure is no reason to stop a poll."""
+    try:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps({u: list(p) for u, p in ETAGS.items()}))
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def pr_rest_view(pr: int, until: str, timeout: float, repo: str = "") -> dict:
+    """PR ``pr``'s state and, for ``until`` ``checks``, its head's checks, in ``pr_view``'s shape, from ETag reads
+    (rest_if_changed) of the pull, its head's check runs and its combined status, so a round where none moved costs no
+    quota (#1984). The answer is GitHub's REST alone, never a second read that could trail it."""
+    slug = repo or "{owner}/{repo}"
+    pull = rest_if_changed(f"repos/{slug}/pulls/{pr}", timeout)[1]
+    state = "MERGED" if pull.get("merged") or pull.get("merged_at") else str(pull["state"]).upper()
+    data: dict = {
+        "state": state,
+        "headRefOid": pull["head"]["sha"],
+        "headRefName": pull["head"].get("ref"),
+        "baseRefName": (pull.get("base") or {}).get("ref"),
+    }
+    if until != "checks":
+        return data
+    head = pull["head"]["sha"]
+    runs = rest_if_changed(f"repos/{slug}/commits/{head}/check-runs?per_page=100", timeout)[1]
+    status = rest_if_changed(f"repos/{slug}/commits/{head}/status", timeout)[1]
+    data["statusCheckRollup"] = [
+        {
+            "name": r.get("name"),
+            "status": str(r.get("status") or "").upper(),
+            "conclusion": str(r.get("conclusion") or "").upper(),
+        }
+        for r in runs.get("check_runs") or []
+    ] + [
+        {"context": c.get("context"), "state": str(c.get("state") or "").upper()}
+        for c in status.get("statuses") or []
+    ]
+    return data
+
+
 def pr_rest(path: str, end: float, pages: bool = False) -> Any:
     """``repos/{owner}/{repo}/<path>`` through REST (``{owner}/{repo}`` from this clone, which a launch dir with no
-    working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list."""
+    working tree holds), cut at the monotonic ``end``; with ``pages``, every item of a paged list. A single read
+    carries its last ETag (rest_if_changed), so a poll of an unchanged path costs no quota."""
     timeout = max(0.01, min(HTTP_SECONDS, end - time.monotonic()))
     if not pages:
         if path in COMMITS:  # a commit never changes
             return COMMITS[path]
-        got = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/{path}", timeout=timeout))
+        got = rest_if_changed(f"repos/{{owner}}/{{repo}}/{path}", timeout)[1]
         if path.startswith("git/commits/"):
             COMMITS[path] = got
         return got
-    out = gh(
-        "api", "--paginate", f"repos/{{owner}}/{{repo}}/{path}", "--jq", ".[]", timeout=timeout
-    )
-    return [json.loads(line) for line in out.splitlines() if line.strip()]
+    return rest_pages(f"repos/{{owner}}/{{repo}}/{path}", timeout=timeout)
 
 
 def gate_outcome(pr: int, end: float, since: float | None = None) -> tuple[int, str] | None:
@@ -5715,56 +6129,503 @@ def _verdict(pr: int, head: str, end: float, since: float | None) -> tuple[int, 
     return None
 
 
-def verdict_stall(pr: int, repo: str = "") -> tuple[str, str] | None:
-    """``(head, line)`` when PR ``pr`` is open and its newest verifier report naming its current head (a comment or
-    review with that ``Head:`` and a ``SATISFIED:`` line) is over ``VERDICT_STALL_SECONDS`` old with no go since: no
-    push, since a push moves the head the report names, and, for a satisfied one, no green ``owner`` status (the go) or
-    ``land`` status on the head and no ``loop:queued`` label (the hand-over to the queue). None otherwise, through
-    REST alone."""
-    slug = repo or "{owner}/{repo}"
-
-    def pages(path: str) -> list[dict]:
-        out = gh("api", "--paginate", f"repos/{slug}/{path}", "--jq", ".[]", timeout=HTTP_SECONDS)
-        return [json.loads(line) for line in out.splitlines() if line.strip()]
-
-    view = json.loads(gh("api", f"repos/{slug}/pulls/{pr}", timeout=HTTP_SECONDS))
-    if view.get("state") != "open":
-        return None
-    head = view["head"]["sha"]
-    said = [(c["created_at"], c) for c in pages(f"issues/{pr}/comments?per_page=100")]
-    said += [
-        (r["submitted_at"], r)
-        for r in pages(f"pulls/{pr}/reviews?per_page=100")
-        if r.get("submitted_at")
+def pr_stall(facts: dict, threshold: float, now: float) -> tuple[float, str | None]:
+    """``(moved, line)``: when the open PR ``facts`` describes last moved toward landing, and a line when that is
+    ``threshold`` seconds or more ago (it is stalled), else None. Moving is a push (a commit, a force-push, a draft marked ready, the PR opened), a verifier report (a
+    comment or review with a ``SATISFIED:`` line), a go (a green ``owner`` or ``land`` status) or a merge-queue step
+    (``loop:queued``/``loop:dequeued`` added or removed, a queue status or check run). ``moved`` is the newest of these,
+    which names the stall; the line names the blockers found: a red required check, a conflict, a verdict without a go
+    (or a fix round asked with no push since), a card waiting (a loop event on the PR's branch at ``needs-owner``, a
+    verifier question newer than the last push). ``facts`` holds GitHub's own records: ``pr`` (the pull, with
+    ``mergeable``), ``timeline`` (the issue timeline), ``statuses`` (the head's, newest first), ``checks`` (its check
+    runs, re-runs included), ``required`` (the base's required check names, None when unread: then any red check counts) and ``cards``
+    (the needs-owner events' kinds)."""
+    pr, head = facts["pr"], facts["pr"]["head"]["sha"].lower()
+    # a plain push has no time of its own on GitHub (a ``committed`` event carries the commit's date, which a commit
+    # pushed an hour after it was made predates): the head is pushed no earlier than its first status or check run
+    # (CI starts on a push) or the sweep's first sight of it (``seen_at``)
+    shown = [stamp(s["created_at"]) for s in facts["statuses"] if s.get("created_at")]
+    shown += [stamp(c["started_at"]) for c in facts["checks"] if c.get("started_at")]
+    pushed = [
+        stamp(pr["created_at"]),
+        *([min(shown)] if shown else []),
+        facts.get("seen_at") or 0.0,
     ]
-    for when, item in sorted(said, key=lambda x: stamp(x[0]), reverse=True):
-        body = item.get("body") or ""
-        heads = {
-            l[len("Head:") :].strip().lower() for l in body.splitlines() if l.startswith("Head:")
+    verdicts: list[tuple[float, str, str]] = []  # (when, word, url) of a report naming the head
+    reported, questions, queued = [], [], []
+    for e in facts["timeline"]:
+        kind = e.get("event")
+        if kind == "committed":
+            pushed.append(stamp((e.get("committer") or {}).get("date") or pr["created_at"]))
+        elif kind in ("head_ref_force_pushed", "ready_for_review", "reopened"):
+            pushed.append(stamp(e["created_at"]))
+        elif kind in ("labeled", "unlabeled"):
+            if str((e.get("label") or {}).get("name")) in (QUEUED_LABEL, "loop:dequeued"):
+                queued.append(stamp(e["created_at"]))
+        elif kind in ("commented", "reviewed"):
+            when = e.get("submitted_at") or e.get("created_at")
+            body = e.get("body") or ""
+            if not when:
+                continue
+            if QUESTION.match(body):
+                questions.append((stamp(when), e.get("html_url") or ""))
+            if found := SATISFIED.search(body):
+                reported.append(stamp(when))
+                heads = {
+                    l[len("Head:") :].strip().lower()
+                    for l in body.splitlines()
+                    if l.startswith("Head:")
+                }
+                if head in heads:
+                    verdicts.append((stamp(when), found[1].lower(), e.get("html_url") or ""))
+    newest: dict[
+        str, dict
+    ] = {}  # GitHub lists a head's statuses newest first: a later one supersedes
+    for status in facts["statuses"]:
+        newest.setdefault(str(status.get("context")), status)
+    goes = [
+        stamp(s["created_at"])
+        for s in facts["statuses"]
+        if s.get("context") in ("owner", "land") and s.get("state") == "success"
+    ]
+    for s in facts["statuses"]:
+        if QUEUE_CHECK.search(str(s.get("context"))):
+            queued.append(stamp(s["created_at"]))
+    for c in facts["checks"]:
+        if QUEUE_CHECK.search(str(c.get("name"))):
+            queued += [stamp(c[k]) for k in ("started_at", "completed_at") if c.get(k)]
+    moved = max([*pushed, *reported, *goes, *queued])
+    if now - moved < threshold or queue_holds(pr, facts["checks"], facts["statuses"]):
+        return (
+            moved,
+            None,
+        )  # moving, or waiting in the queue, which makes no move while it holds the PR
+    last_push = max(pushed)
+    blockers = []
+    required = facts.get("required")
+    latest: dict[str, dict] = {}  # each check's newest run: a re-run supersedes the run before it
+    for c in facts["checks"]:
+        name, began = str(c.get("name")), c.get("started_at") or ""
+        if name not in latest or began > (latest[name].get("started_at") or ""):
+            latest[name] = c
+    red = sorted(
+        {
+            name
+            for name, state in [
+                *((n, str(s.get("state"))) for n, s in newest.items()),
+                *((n, str(c.get("conclusion"))) for n, c in latest.items()),
+            ]
+            if state in RED and (not required or name in required)
         }
-        if head.lower() in heads and (found := SATISFIED.search(body)):
-            word, url = found[1].lower(), item.get("html_url") or ""
-            break
-    else:
-        return None
-    age = time.time() - stamp(when)
-    if age < VERDICT_STALL_SECONDS:
-        return None
-    if word == "yes":
-        if QUEUED_LABEL in {str(l.get("name")) for l in view.get("labels") or []}:
-            return None
-        newest: dict[
-            str, str
-        ] = {}  # GitHub lists a head's statuses newest first: a later one supersedes
-        for status in pages(f"commits/{head}/statuses?per_page=100"):
-            newest.setdefault(str(status.get("context")), str(status.get("state")))
-        if "success" in (newest.get("owner"), newest.get("land")):
-            return None
-    step = "the go and `land`" if word == "yes" else "a fix round"
-    return head, (
-        f"PR #{pr}: the verdict on {head[:12]} (SATISFIED: {word}) is {age / 60:.0f}m old with no push or go"
-        f" since: it waits on {step} from you: {url}"
     )
+    if red:
+        blockers.append(f"a red {'required ' * bool(required)}check: {', '.join(red)}")
+    if pr.get("mergeable") is False or pr.get("mergeable_state") == "dirty":
+        blockers.append(f"a conflict with {pr['base']['ref']}")
+    if verdicts:
+        when, word, url = max(verdicts)
+        labels = {str(l.get("name")) for l in pr.get("labels") or []}
+        go = any(str(newest.get(c, {}).get("state")) == "success" for c in ("owner", "land"))
+        if word == "yes" and not go and QUEUED_LABEL not in labels:
+            blockers.append(
+                f"a verdict without a go (SATISFIED: yes, {(now - when) / 60:.0f}m old): {url}"
+            )
+        elif word != "yes" and when > last_push:
+            blockers.append(
+                f"a verdict asking a fix round (SATISFIED: {word}) with no push since: {url}"
+            )
+    cards = [f"a `{k}` loop event at needs-owner" for k in facts.get("cards") or []]
+    cards += [f"a verifier question: {url}" for when, url in questions if when > last_push]
+    if cards:
+        blockers.append(f"a card waiting: {'; '.join(cards)}")
+    what = "; ".join(blockers) or "none found on GitHub"
+    title = f" {pr.get('title') or ''}".rstrip()
+    return moved, (
+        f"PR #{pr['number']}{title}: no push, verdict, go or queue step for {(now - moved) / 60:.0f}m;"
+        f" blocker: {what}: {pr.get('html_url') or ''}"
+    ).rstrip(": ")
+
+
+def queue_holds(pr: dict, checks: list[dict], statuses: list[dict]) -> bool:
+    """Whether the merge queue holds PR ``pr`` (a REST pull) at its head: it carries ``QUEUED_LABEL`` and a queue check
+    (``QUEUE_CHECK``) on the head is still running by its newest run (``checks``, the head's check runs), or a queue
+    status there is pending by its newest (``statuses``, newest first). Both stall sweeps ask it, so a PR waiting in the
+    queue is never reported stalled (#2100). ponytail: from `land`'s label to Mergify's first check (about 40 s) the
+    queue holds a PR this misses; the gatekeeper's `queued_here` covers that window, at a run of it per PR."""
+    if QUEUED_LABEL not in {str(label.get("name")) for label in pr.get("labels") or []}:
+        return False
+    latest: dict[
+        str, dict
+    ] = {}  # each queue check's newest run: Mergify ends an earlier one `neutral`
+    for c in checks:
+        name = str(c.get("name"))
+        if QUEUE_CHECK.search(name) and (c.get("started_at") or "") >= (
+            latest.get(name, {}).get("started_at") or ""
+        ):
+            latest[name] = c
+    newest: dict[str, dict] = {}
+    for s in statuses:
+        newest.setdefault(str(s.get("context")), s)
+    return any(
+        c.get("status") != "completed" and not c.get("conclusion") for c in latest.values()
+    ) or any(QUEUE_CHECK.search(name) and s.get("state") == "pending" for name, s in newest.items())
+
+
+def stalled_gone(repo: str, number: str, head: str) -> str | None:
+    """Why `check stalled`'s line for PR ``number`` of GitHub repo ``repo`` at ``head`` no longer stands, read from
+    GitHub now, since a sweep's read of a PR may be 15 minutes old when its line is acted on (#2100): ``merged``,
+    ``closed``, ``moved to <sha>`` or ``held by the queue`` (``queue_holds``); None while it still stands."""
+    pull = rest_if_changed(f"repos/{repo}/pulls/{number}")[1]
+    if pull.get("merged") or pull.get("merged_at"):
+        return "merged"
+    if pull.get("state") != "open":
+        return "closed"
+    if (now := str(pull["head"]["sha"]).lower()) != head.lower():
+        return f"moved to {now[:12]}"
+    checks = rest_pages(f"repos/{repo}/commits/{head}/check-runs?filter=all", "check_runs")
+    statuses = rest_pages(f"repos/{repo}/commits/{head}/statuses")
+    return "held by the queue" if queue_holds(pull, checks, statuses) else None
+
+
+def pr_facts(repo: str, pr: dict, bases: dict, refs: dict) -> dict:
+    """What ``pr_stall`` judges open PR ``pr`` (a row of the repo's pulls listing) by, read from GitHub: its pull (for
+    ``mergeable``), timeline, head statuses and check runs, its base's required checks (read once per sweep into
+    ``bases``) and the loop events on its branch at ``needs-owner``, from ``refs`` (``loop_cards``)."""
+
+    def pages(path: str, key: str = "") -> list[dict]:
+        return rest_pages(f"repos/{repo}/{path}", key)
+
+    n, head, base = pr["number"], pr["head"]["sha"], pr["base"]["ref"]
+    if base not in bases:
+        try:
+            rules = pages(f"rules/branches/{base}")
+            bases[base] = {
+                str(c.get("context"))
+                for r in rules
+                if r.get("type") == "required_status_checks"
+                for c in (r.get("parameters") or {}).get("required_status_checks") or []
+            } or None
+        except RateLimited:
+            raise
+        except Fail:  # unread: any red check counts
+            bases[base] = None
+    return {
+        "pr": rest_if_changed(f"repos/{repo}/pulls/{n}")[1],
+        "timeline": pages(f"issues/{n}/timeline?per_page=100"),
+        "statuses": pages(f"commits/{head}/statuses?per_page=100"),
+        # every run, a re-run's first too: the first run of a check dates the push, a re-run is no move
+        "checks": pages(f"commits/{head}/check-runs?filter=all&per_page=100", "check_runs"),
+        "required": bases[base],
+        "cards": refs.get(pr["head"]["ref"], []),
+        "seen_at": 0.0,
+    }
+
+
+def loop_cards(repo: str, seen: dict) -> dict[str, list[str]]:
+    """The kinds of loop event (``refs/loop/<kind>/<branch>``, events.py's) at ``needs-owner`` on GitHub repo ``repo``,
+    by branch: one listing of the refs, and each event commit's subject (``loop event <kind> <branch>: <state>``) read
+    once, kept in ``seen`` by sha, since a commit never changes."""
+    found: dict[str, list[str]] = {}
+    for ref in rest_pages(f"repos/{repo}/git/matching-refs/loop/"):
+        kind, _, branch = str(ref.get("ref")).removeprefix("refs/loop/").partition("/")
+        sha = str((ref.get("object") or {}).get("sha"))
+        if not branch or kind in ("records", "landing"):
+            continue
+        if sha not in seen:
+            message = rest_if_changed(f"repos/{repo}/git/commits/{sha}")[1]["message"]
+            seen[sha] = (
+                message.splitlines()[0].rpartition(": ")[2].split()[0] if ": " in message else ""
+            )
+        if seen[sha] == "needs-owner":
+            found.setdefault(branch, []).append(kind)
+    return found
+
+
+def pr_stalls(
+    repo: str, threshold: float, memo: dict, now: float | None = None
+) -> list[tuple[str, str]]:
+    """``(id, line)`` for each open, non-draft PR of GitHub repo ``repo`` newly stalled (``pr_stall``): no move toward
+    landing for ``threshold`` seconds. ``memo`` is all it keeps between sweeps: per PR, its head and ``updated_at``
+    when last read, when it is next due (its last move plus ``threshold``, so a PR that moved costs no read until
+    then; one already reported is read again an hour on, or once its listing changes) and the stall it last reported,
+    so the same stall (the same newest move) wakes no one twice, and when it first saw its head (the sweep before,
+    since a plain push has no time on GitHub); when it last swept; and the event commits ``loop_cards`` read."""
+    now = time.time() if now is None else now
+    listed = rest_pages(f"repos/{repo}/pulls?state=open&per_page=100")
+    prs = memo.setdefault("prs", {})
+    open_ = {str(p["number"]) for p in listed}
+    for gone in [k for k in prs if k not in open_]:
+        del prs[gone]
+    bases: dict = {}
+    refs: dict | None = None
+    last = memo.get("swept", 0.0)  # the sweep before this one: a head new since was pushed after it
+    said = []
+    memo["held"] = sorted(  # ``queue_round`` tells no dequeue of these
+        p["number"]
+        for p in listed
+        if HOLD_LABEL in {str(x.get("name")) for x in p.get("labels") or []}
+    )
+    for row in sorted(listed, key=lambda p: p["number"]):
+        if row.get("draft"):
+            continue  # its lead is still building it: the lead's own deadline watches that
+        key = str(row["number"])
+        seen = prs.get(key) or {}
+        if row["number"] in memo["held"]:
+            # no read while held, but its head stays first-seen and it is due at once: it stalls as before when released
+            prs[key] = {
+                "head": row["head"]["sha"],
+                "updated": row.get("updated_at"),
+                "said": seen.get("said"),
+                "seen_at": seen.get("seen_at", 0.0)
+                if seen.get("head") == row["head"]["sha"]
+                else last,
+                "due": 0,
+            }
+            continue
+        same = seen.get("head") == row["head"]["sha"] and seen.get("updated") == row.get(
+            "updated_at"
+        )
+        if same and now < seen.get("due", 0):
+            continue
+        if refs is None:
+            refs = loop_cards(repo, memo.setdefault("events", {}))
+        facts = pr_facts(repo, row, bases, refs)
+        # a head first seen now was pushed since the last sweep: it moved no earlier than that sweep
+        seen_at = seen.get("seen_at", 0.0) if seen.get("head") == row["head"]["sha"] else last
+        facts["seen_at"] = seen_at
+        moved, line = pr_stall(facts, threshold, now)
+        entry = {
+            "head": row["head"]["sha"],
+            "updated": row.get("updated_at"),
+            "said": seen.get("said"),
+            "seen_at": seen_at,
+        }
+        # moving: due a threshold after its last move; stalled and told: read again a threshold on, for its blocker
+        entry["due"] = (now if line else moved) + threshold
+        if line:
+            stall = f"{moved:.0f}"
+            if seen.get("said") != stall:
+                entry["said"] = stall
+                said.append((f"pr-stall:{repo}#{key}:{stall}", f"{repo}: {line}"))
+        prs[key] = entry
+    memo["swept"] = now
+    return said
+
+
+# ponytail: one window, ceiling and floor for every repo the supervisor watches; the upgrade path is a per-repo setting
+QUEUE_WINDOW = (
+    7 * 86400.0
+)  # how far back queue entries count, and the first read of a repo's comments backfills
+QUEUE_REJECT_SHARE = (
+    0.2  # rejections over this share of the window's entries raise one queue-rejects event
+)
+QUEUE_REJECT_FLOOR = 5  # the fewest entries in the window a share is judged on
+QUEUE_FRESH = 1800.0  # a dequeue a repo's first read finds is relayed when it left the queue this recently: 2 PR polls
+MERGIFY_LOGIN = "mergify[bot]"
+MERGIFY_PAYLOAD = re.compile(
+    r"-\*- Mergify Payload -\*-\s*(\{.*?\})\s*-\*- Mergify Payload End -\*-", re.DOTALL
+)
+# a failing check's line under `Failing checks:`: its name and job URL, whose last number is the job id
+FAILING_CHECK = re.compile(r"^- \S+ \[`([^`]+)`\]\((https://github\.com/[^)\s]*/job/(\d+))\)")
+QUEUE_FAULT = re.compile(r"^\*\*The failure is in this pull request\.\*\*.*$", re.MULTILINE)
+# pytest's summary line for a failed test, behind the Actions log's timestamp
+PYTEST_FAILED = re.compile(r"^(?:\d{4}-\d\d-\d\dT[\d:.]+Z )?FAILED (\S+)", re.MULTILINE)
+
+
+def queue_comment(comment: dict) -> dict | None:
+    """One merge-queue entry from a Mergify status comment (a row of GitHub's issue comments): the PR, ``state``
+    (``merged``, ``dequeued``, or one not yet final), ``left_at`` (seconds, 0 while in the queue), the dequeue
+    ``code``, the ``checks`` under ``Failing checks:`` as ``[name, job URL, job id]`` and Mergify's ``fault`` line
+    when it named this PR as the failure, else empty. None for a comment not from Mergify or holding no payload."""
+    if str((comment.get("user") or {}).get("login")) != MERGIFY_LOGIN:
+        return None
+    body = str(comment.get("body") or "")
+    found = MERGIFY_PAYLOAD.search(body)
+    pr = re.search(r"/issues/(\d+)$", str(comment.get("issue_url") or ""))
+    if not found or not pr:
+        return None
+    try:
+        payload = json.loads(found[1])
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    reason_ = payload.get("dequeue_reason") or {}
+    _, _, failing = body.partition("\nFailing checks:\n")
+    checks = []
+    for line in failing.splitlines():
+        if not line.strip():
+            break  # the list ends at its blank line
+        if m := FAILING_CHECK.match(line.strip()):
+            checks.append([m[1], m[2], m[3]])
+    fault = QUEUE_FAULT.search(body)
+    return {
+        "pr": int(pr[1]),
+        "state": str(payload.get("state") or ""),
+        "left_at": stamp(payload["left_at"]) if payload.get("left_at") else 0.0,
+        "code": str(reason_.get("code") or "") if isinstance(reason_, dict) else "",
+        "checks": checks,
+        "fault": fault[0].replace("**", "") if fault else "",
+    }
+
+
+def failed_tests(log: str) -> list[str]:
+    """The test ids of pytest's ``FAILED <id>`` lines in an Actions job log, the timestamp each line opens with
+    stripped, once each, in order."""
+    return list(dict.fromkeys(PYTEST_FAILED.findall(log)))
+
+
+def queue_read(repo: str, memo: dict, now: float | None = None) -> list[str]:
+    """Read GitHub repo ``repo``'s issue comments updated since the last read (the first read: ``QUEUE_WINDOW`` back),
+    paged and ETag-guarded (``rest_pages``, its ``since`` moved only when a comment is new, so a poll where nothing
+    moved costs a 304), and keep each final Mergify entry (``queue_comment``) in ``memo["entries"]`` by comment id;
+    each ``CHECKS_*`` dequeue's failing tests come from one log read per failing job (``failed_tests``), made once.
+    Entries that left the queue over ``QUEUE_WINDOW`` ago are pruned. Returns the ids of the dequeues new to
+    ``memo``, oldest first. A ``RateLimited`` or failed listing raises with ``since`` unmoved, so the next poll reads
+    again and an entry kept before the failure is kept, never read twice."""
+    now = time.time() if now is None else now
+    entries = memo.setdefault("entries", {})
+    first = "since" not in memo
+    since = memo.get("since") or datetime.fromtimestamp(now - QUEUE_WINDOW, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    listed = rest_pages(
+        f"repos/{repo}/issues/comments?since={quote(since, safe=':')}&sort=updated&direction=asc"
+    )
+    new = []
+    for comment in listed:
+        cid = str(comment.get("id"))
+        entry = queue_comment(comment)
+        if cid in entries or not entry or entry["state"] not in ("merged", "dequeued"):
+            continue
+        if entry["left_at"] < now - QUEUE_WINDOW:
+            continue  # an old entry edited since (a requeue line): out of the window
+        entry["tests"] = []
+        if entry["state"] == "dequeued" and entry["code"].startswith("CHECKS_"):
+            for name, _, job in entry["checks"]:
+                try:
+                    log = gh("api", f"repos/{repo}/actions/jobs/{job}/logs")
+                except RateLimited:
+                    raise
+                except Fail as e:  # gone or unreadable: the check's name stands for it
+                    print(f"{repo}: job {job} ({name}) log not read: {e}", file=sys.stderr)
+                    continue
+                entry["tests"] += [t for t in failed_tests(log) if t not in entry["tests"]]
+        # the first read's backfill is counted, not relayed: a lead hears only of a dequeue since the poll before
+        entry["told"] = (
+            first and entry["state"] == "dequeued" and entry["left_at"] < now - QUEUE_FRESH
+        )
+        entries[cid] = entry
+        if entry["state"] == "dequeued" and not entry["told"]:
+            new.append(cid)
+    if listed:
+        memo["since"] = max(str(c.get("updated_at") or since) for c in listed)
+    else:
+        memo["since"] = since
+    for cid in [c for c, e in entries.items() if e["left_at"] < now - QUEUE_WINDOW]:
+        del entries[cid]
+    return sorted(new, key=lambda c: entries[c]["left_at"])
+
+
+def queue_counts(entries: dict, now: float | None = None) -> dict:
+    """The window's queue outcomes from ``entries`` (``queue_read``'s): ``entries`` (merged and dequeued),
+    ``flakes`` (each test id that failed dequeues of two or more different PRs, to those PRs), ``rejected`` (the
+    comment ids of the ``CHECKS_*`` dequeues not all of whose failing tests are known flakes: one with no test, its
+    check alone, is a rejection) and ``share`` (rejections over entries, 0 with none)."""
+    now = time.time() if now is None else now
+    kept = {c: e for c, e in entries.items() if e["left_at"] >= now - QUEUE_WINDOW}
+    failing = {
+        c: e
+        for c, e in kept.items()
+        if e["state"] == "dequeued" and e["code"].startswith("CHECKS_")
+    }
+    by_test: dict[str, set[int]] = {}
+    for e in failing.values():
+        for test in e.get("tests") or []:
+            by_test.setdefault(test, set()).add(e["pr"])
+    flakes = {t: sorted(prs) for t, prs in by_test.items() if len(prs) >= 2}
+    rejected = [
+        c
+        for c, e in failing.items()
+        if not e.get("tests") or any(t not in flakes for t in e["tests"])
+    ]
+    n = len(kept)
+    return {
+        "entries": n,
+        "flakes": flakes,
+        "rejected": rejected,
+        "share": len(rejected) / n if n else 0.0,
+    }
+
+
+def queue_alarms(repo: str, memo: dict, now: float | None = None) -> list[tuple[str, str, str]]:
+    """``(id, kind, line)`` for each queue event ``memo`` (``queue_read``'s) newly calls for: one ``queue-flake`` per
+    test newly known as a flake, and one ``queue-rejects`` when rejections pass ``QUEUE_REJECT_SHARE`` of at least
+    ``QUEUE_REJECT_FLOOR`` entries, raised again only once the share has dropped back to or below it."""
+    now = time.time() if now is None else now
+    counts, entries = queue_counts(memo.get("entries") or {}, now), memo.get("entries") or {}
+    said: list[tuple[str, str, str]] = []
+    told = set(memo.get("flakes_told") or [])
+    for test, prs in sorted(counts["flakes"].items()):
+        if test not in told:
+            named = ", ".join(f"#{n}" for n in prs)
+            said.append(
+                (
+                    f"queue-flake:{repo}:{hashlib.sha1(test.encode()).hexdigest()[:12]}",
+                    "queue-flake",
+                    (
+                        f"{repo}: `{test}` failed merge-queue runs of {named}: a known flake, not those PRs' fault;"
+                        " skip it with its issue linked under gatekeeper's Known-red tests rule"
+                    ),
+                )
+            )
+    # a flake that leaves the window is news again on its return
+    memo["flakes_told"] = sorted(counts["flakes"])
+    over = counts["entries"] >= QUEUE_REJECT_FLOOR and counts["share"] > QUEUE_REJECT_SHARE
+    if over and not memo.get("over"):
+        rejected = "; ".join(
+            f"#{entries[c]['pr']} ({', '.join(entries[c].get('tests') or [x[0] for x in entries[c]['checks']] or [entries[c]['code']])})"
+            for c in sorted(counts["rejected"], key=lambda c: entries[c]["left_at"])
+        )
+        flakes = "; ".join(
+            f"{t} ({', '.join(f'#{n}' for n in prs)})"
+            for t, prs in sorted(counts["flakes"].items())
+        )
+        days = QUEUE_WINDOW / 86400
+        said.append(
+            (
+                f"queue-rejects:{repo}:{now:.0f}",
+                "queue-rejects",
+                f"{repo}: the merge queue rejected {len(counts['rejected'])} of {counts['entries']} entries in"
+                f" {days:.0f} days ({counts['share']:.0%}, over {QUEUE_REJECT_SHARE:.0%}): {rejected}"
+                + (f"; known flakes, not counted: {flakes}" if flakes else ""),
+            )
+        )
+    if over or counts["share"] <= QUEUE_REJECT_SHARE:
+        memo["over"] = over  # re-armed only once the share is back at or under the ceiling
+    return said
+
+
+def dequeue_message(repo: str, entry: dict, flakes: dict) -> str:
+    """What a dequeue tells the lead that owns its PR: the PR, the code, each failing check with its job URL, the
+    failing tests with the known flakes among them named, Mergify's fault line, and the step to take."""
+    n = entry["pr"]
+    lines = [f"{repo}#{n} left the merge queue: {entry['code'] or 'dequeued'}."]
+    lines += [f"Failing check: {name} {url}" for name, url, _ in entry["checks"]]
+    tests = entry.get("tests") or []
+    if tests:
+        lines.append(
+            "Failing tests: " + ", ".join(f"{t}{' (a known flake)' * (t in flakes)}" for t in tests)
+        )
+        if all(t in flakes for t in tests):
+            lines.append(
+                "Every failing test is a known flake (it failed other PRs' queue runs too): the PR is still out"
+                " of the queue."
+            )
+    if entry.get("fault"):
+        lines.append(entry["fault"])
+    lines.append(f"Fix it, then run `land {n}` again.")
+    return "\n".join(lines)
 
 
 def stamp(when: str) -> float:
@@ -5845,7 +6706,10 @@ def wait_for(
                     extra = {"seen": seen} if until == "verdict" else {}
                     if outcome := settled(pr, time.monotonic() + left, since, **extra):
                         return outcome
-                elif outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
+                # REST alone, through ETags: a round where nothing moved costs no quota (#1984)
+                elif outcome := pr_outcome(
+                    pr, until, left, data=pr_rest_view(pr, until, min(HTTP_SECONDS, left))
+                ):
                     return outcome
             except RateLimited as e:  # retrying keeps the limit drained: sleep to its reset
                 print(
@@ -5853,7 +6717,7 @@ def wait_for(
                     file=sys.stderr,
                     flush=True,
                 )
-                time.sleep(min(e.wait, max(deadline - time.monotonic(), 0)))
+                time.sleep(min(e.jittered(), max(deadline - time.monotonic(), 0)))
                 continue
             except BLIPS:  # a GitHub blip: the next poll asks again
                 pass
@@ -6157,6 +7021,31 @@ def pr_label(label: object) -> tuple[str, int] | None:
     return (m[1], int(m[2])) if m else None
 
 
+def label_refs(label: object) -> list[str]:
+    """The ``owner/name#N`` entries of a ``PR_LABEL`` value: one, or several joined by commas (a lead that lands
+    several PRs, or took one over: ``own_pr`` adds each)."""
+    return [p.strip() for p in str(label).split(",") if p.strip()]
+
+
+def pr_labels(label: object) -> list[tuple[str, int]]:
+    """The repository and PR number of every PR a ``PR_LABEL`` value names, in order; none that does not parse."""
+    return [found for ref in label_refs(label) if (found := pr_label(ref))]
+
+
+def own_pr(og: Omnigent, sid: str, refs: list[str]) -> str:
+    """Add PRs ``refs`` (``owner/name#N``) to ``sid``'s ``PR_LABEL`` list in one write, so a dequeue of any reaches
+    ``sid``: what a lead's ``land`` and a takeover write. Idempotent; the labels it holds already are kept."""
+    for ref in refs:
+        if not pr_label(ref):
+            raise Fail(f"own-pr needs owner/name#N, not {ref!r}")
+    held = label_refs((og.info(sid).get("labels") or {}).get(PR_LABEL, ""))
+    added = [r for r in dict.fromkeys(refs) if r not in held]
+    if not added:
+        return f"{sid}: already owns {', '.join(refs)}"
+    og.label(sid, {PR_LABEL: ",".join([*held, *added])})
+    return f"{sid}: owns {', '.join(added)}"
+
+
 def pr_hold(repo: str, pr: int) -> str | None:
     """Why a worker of PR ``pr`` of ``repo`` is still held: the PR is open; None once it is merged
     or closed. A PR that can't be read holds the worker, saying so. The lookup names ``repo``, never
@@ -6251,7 +7140,7 @@ def running_twin(og: Omnigent, label: str, role: str) -> str:
         labels = s.get("labels") or {}
         if (
             not s.get("archived")
-            and str(labels.get(PR_LABEL, "")) == label
+            and label in label_refs(labels.get(PR_LABEL, ""))
             and labels.get("omni.role") == role
             and str(s.get("status")) in RUNNING
         ):
@@ -6311,12 +7200,14 @@ def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
     page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
     found = []
     for s in page.get("data", []):
-        label = pr_label(held_by(s))
+        labelled = pr_labels(held_by(s))
         named = getattr(pr, "repo", "")
         if (
             not s.get("archived")
-            and label
-            and (pr is None or (label[1] == pr and (not named or label[0] == named)))
+            and labelled
+            and (
+                pr is None or any(n == pr and (not named or repo == named) for repo, n in labelled)
+            )
         ):
             found.append(str(s["id"]))
     return found
@@ -6327,6 +7218,16 @@ RELAYED_END = re.compile(r": (report written: |failed: )")
 # A session's final states that end its run without a result: each counts as finished, as ``DONE`` does.
 FAILED_STATUSES = {"failed", "cancelled", "canceled", "errored", "error"}
 KEEP_LABEL = "omni.keep"  # set by ``start --keep``: the session stays open once its result is taken
+
+
+def cloud_child(og: Omnigent, info: dict) -> bool:
+    """Whether ``info`` is a cloud child whose VM ends with its result (#2052): an ``acp:claude-cloud`` worker or
+    verifier (``omni.role``), or a child session with no role (a ``claude-cloud-run`` gate). A lead, a manager (any
+    other role) and a top-level session with no role are none: they live past one result."""
+    role = str((info.get("labels") or {}).get("omni.role") or "")
+    if role not in ("", *LEAN_ROLES) or not (role or info.get("parent_session_id")):
+        return False
+    return cloud_session(og, info)
 
 
 def finish_delivered(
@@ -6353,7 +7254,8 @@ def finish_delivered(
     Kept, not archived: ``keep`` (the caller's ``--keep``) or a session labelled ``KEEP_LABEL``
     (``start --keep``); an open question card, whose answer needs the session; a worker whose PR
     is open or unreadable (``hold_pr``; a caller that decided with ``--no-keep`` passes False);
-    a pending approval prompt; background work still running. ``settled`` says the result was taken from
+    a pending approval prompt; background work still running, unless the session is a cloud child
+    (``cloud_child``) and ``settled``, since that work is what its VM keeps spending quota on. ``settled`` says the result was taken from
     the session itself (a report or verdict read, a ``DONE`` relayed), so a status still ``running``
     for a moment after it is no hold; ``reap``, which reads sessions it knows nothing of, passes
     False and keeps any running one or one with input pending. ``force`` stops a stuck running
@@ -6390,15 +7292,19 @@ def finish_delivered(
         and (label := held_by(info))
         and not (force and (twin_stop or replaced(og, sid, info)))
     ):
-        found = pr_label(label)
-        if found and found not in held:
-            held[found] = pr_hold(*found)
-        if why := held[found] if found else f"label {label!r} names no PR":
+        found = pr_labels(label)
+        for each in found:
+            if each not in held:
+                held[each] = pr_hold(*each)
+        if why := next((held[each] for each in found if held[each]), "") or (
+            "" if found else f"label {label!r} names no PR"
+        ):
             return f"{name}: kept ({why})", False
-        if found and found not in cleared and not elsewhere(og, info):
-            cleared.add(found)  # the PR is merged or closed: its steps' events are over
-            prune_demo_branch(*found)
-            clear_closed_pr_events(*found, info.get("workspace"))
+        for each in found:
+            if each not in cleared and not elsewhere(og, info):
+                cleared.add(each)  # the PR is merged or closed: its steps' events are over
+                prune_demo_branch(*each)
+                clear_closed_pr_events(*each, info.get("workspace"))
     # an open card is the owner's question: archiving ends its way back, --force too
     if cards := cards_of(info) or [_asks(e) for e in getattr(og, "cards", {}).get(sid) or []]:
         return f"{name}: kept (card open: {'; '.join(cards)})", False
@@ -6415,11 +7321,13 @@ def finish_delivered(
             f"{name}: archived ({'stuck' if stuck else 'stopped'}); check git status in"
             f" {info.get('workspace') or '(workspace unknown)'}"
         ), False
+    # a taken cloud child's background tasks are what its VM keeps spending quota on: they end with it
+    ended = live_tasks(info) if settled and live_tasks(info) and cloud_child(og, info) else []
     busy = (
         "blocked on a prompt"
         if prompts_of(info)
         else "background work"
-        if live_tasks(info)
+        if live_tasks(info) and not ended
         else status
         if not settled and status in RUNNING
         else "input pending"
@@ -6437,7 +7345,8 @@ def finish_delivered(
     except Fail as e:  # one refused finish leaves the rest to reap
         print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
         return f"{name}: finish failed: {e}", True
-    lines, bad = [f"{name}: archived ({status})"], False
+    gone = f"; {len(ended)} background task(s) ended with its VM" if ended else ""
+    lines, bad = [f"{name}: archived ({status}{gone})"], False
     try:
         kids = [k for k in og.children(sid) if k not in seen]
     except Fail:  # the children stay for a reap
@@ -6865,8 +7774,9 @@ def offline(og: Omnigent, sid: str, path: Path) -> Fail:
 
 def apply_route(args: argparse.Namespace) -> None:
     """Point a verifier start at its fallback route, the one switch: `gemini` runs agy's Gemini (bypass mode, which
-    agy needs to run unattended) and `claude` a fresh Claude session of another model than the author's, marked
-    same-family. Refused where the route can't run, naming the fix, since a verifier started wrong costs a pass."""
+    agy needs to run unattended) and `claude` a fresh Claude session of any model, the author's own included, marked
+    same-family: a fresh session given only the code and the spec is what makes a verifier independent. Refused where
+    the route can't run, naming the fix, since a verifier started wrong costs a pass."""
     if args.verifier_route == "gemini":
         if not args.host:
             raise Fail(
@@ -6877,16 +7787,6 @@ def apply_route(args: argparse.Namespace) -> None:
         return
     args.agent = "claude"
     args.same_family = True
-    if not args.model or not args.author_model:
-        raise Fail(
-            "--verifier-route claude names its model and the author's: pass --model and"
-            " --author-model, which differ"
-        )
-    if args.model == args.author_model:
-        raise Fail(
-            f"--verifier-route claude would verify {args.author_model}'s diff with the same model:"
-            " pass a different --model"
-        )
 
 
 def reviews(role: str | None) -> bool:
@@ -7417,7 +8317,12 @@ def fresh_state() -> dict:
         "rate": {"next_post_at": 0, "model_calls": []},
         "notify_label": {},
         "heads": {},
+        "stalled": {},  # each repo's PRs `check stalled` listed last, by number: the head it named
+        "stalled_blind": {},  # each repo whose last sweep judged none of its PRs: the first reason
         "events": {},  # loop event refs: sha, stamp (when it last moved), state, beat, told
+        "pr_stalls": {},  # per watched repo, what ``pr_stalls`` keeps between sweeps
+        "queue": {},  # per watched repo, its merge-queue entries and alarms (``queue_read``, ``queue_alarms``)
+        "cards": {},  # each open question card's first sight by ``<session>:<card>``, None once reminded
     }
 
 
@@ -7492,11 +8397,26 @@ def lead_status(info: dict, items: list[dict]) -> dict:
     }
 
 
+def done_result(text: str) -> str:
+    """What the first ``DONE`` line of ``text`` says after the word, less a ``Report:`` path and punctuation: empty for a
+    bare ``DONE``, which reports no result (#2309)."""
+    m = next((m for m in STILL_OR_ENDING.finditer(text) if m.group(1) == "DONE"), None)
+    if not m:
+        return ""
+    rest = text[m.end() :].partition("\n")[0]
+    return re.sub(r"\bReport:.*", "", rest, flags=re.IGNORECASE).strip(" \t:.-*_`")
+
+
 def ending_of(text: str) -> str | None:
     """The ending a message names: ``USER NEEDED`` when any line opens with it, since an ask
-    after a ``DONE`` line still needs its answer; else the first line's ``DONE`` or ``PARKED``."""
-    endings = [m.group(1) for m in ENDING.finditer(text)]
-    return "USER NEEDED" if "USER NEEDED" in endings else next(iter(endings), None)
+    after a ``DONE`` line still needs its answer; else the first line that opens with an ending word, so a
+    ``DONE`` section after a ``STILL WORKING`` block leaves the turn still working: ``None``, as for any ``STILL
+    WORKING`` message, which is no ending."""
+    endings = [m.group(1) for m in STILL_OR_ENDING.finditer(text)]
+    if "USER NEEDED" in endings:
+        return "USER NEEDED"
+    first = next(iter(endings), None)
+    return None if first == "STILL WORKING" else first
 
 
 # A cloud lead's ``STILL WORKING`` whose wait is its own background run and nothing else (#1002):
@@ -7544,7 +8464,7 @@ def own_run_only(text: str) -> bool:
 
 def trailer_items(text: str) -> list[tuple[str, str]]:
     """The forms the last ``Waits:`` line of a ``STILL WORKING`` message names, in order, each
-    ``(form, value)`` with the form ``supervisor``, ``session``, ``ref``, ``ci`` or ``until``. The
+    ``(form, value)`` with the form ``supervisor``, ``own`` (a manager's own supervisor wakes it: no wait on its parent), ``session``, ``ref``, ``ci`` or ``until``. The
     line is a set: items split by a comma or "and", all of which must be a form, else none count,
     since a line half read would wake a lead on a wrong thing. Empty when there is no such line."""
     if "STILL WORKING" not in text:
@@ -7589,12 +8509,17 @@ def wait_line(words: list[str]) -> str:
         "pr": f"#{rest.lstrip('#')}",
         "ci": "CI",
         "supervisor": "supervisor",
+        "own": "own supervisor",
         "run": rest,
     }.get(form, f"{form} {rest}".strip())
     m = TRAILER_FORMS.fullmatch(text)
-    if not m or (form in ("ci", "supervisor") and rest) or (form in ("pr", "run") and not rest):
+    if (
+        not m
+        or (form in ("ci", "supervisor", "own") and rest)
+        or (form in ("pr", "run") and not rest)
+    ):
         raise Fail(
-            "wait-on takes supervisor, session <32-hex id>, pr <n>, ci, run <actions run URL>, "
+            "wait-on takes supervisor, own, session <32-hex id>, pr <n>, ci, run <actions run URL>, "
             "or until <YYYY-MM-DDTHH:MMZ>"
         )
     if m.group("until"):
@@ -7761,6 +8686,43 @@ def report_head(text: str) -> str:
     return "\n".join(kept) or next(iter(lines), "")
 
 
+def quota_line_due(state: dict, now: float, until: float) -> bool:
+    """Whether a "no progress (quota)" line may be said ``now``, ``until`` seconds before GitHub's
+    quota resets (zero or less: no known reset, so as any deadline). One per reset: said, it is
+    kept in ``state`` and not said again until that reset has passed (#2090)."""
+    if until <= 0:
+        return True
+    if now < state.get("quota_said", 0.0):
+        return False
+    state["quota_said"] = now + until
+    return True
+
+
+SEND_TOOLS = re.compile(r"session_(send|message)|relay")
+
+
+def relayed_to(items: list[dict], notify: str | None, last: str = "") -> bool:
+    """Whether the session sent its result to ``notify`` in its last turn: a tool call naming it,
+    between the last two assistant messages, whose text carries the result's first line (``last``
+    up to its ``Report:`` path). Any other send (a progress note, a question) leaves the ``DONE``
+    news to ``notify``, so it still acts. Its turn end then repeats what ``notify`` holds (#2090)."""
+    said = [
+        n
+        for n, i in enumerate(items)
+        if i.get("type") == "message" and i.get("role") == "assistant"
+    ]
+    head = last.strip().split("Report:")[0].strip().splitlines()[0:1]
+    if not notify or not said or not head or not head[0]:
+        return False
+    return any(
+        i.get("type") == "function_call"
+        and SEND_TOOLS.search(str(i.get("name") or ""))
+        and notify in (sent := json.dumps(i.get("arguments") or ""))
+        and head[0] in sent
+        for i in items[(said[-2] if len(said) > 1 else -1) + 1 : said[-1]]
+    )
+
+
 def waits_on(text: str, lead: dict, notify: str | None, event: bool = False) -> bool:
     """Whether a lead's ``STILL WORKING`` wait names the session the supervisor notifies: a
     ``Waits: supervisor`` line, its full id, the words ``pm``, ``pm's``, ``manager``, ``you``,
@@ -7826,17 +8788,16 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     """How the console settles one event, as the design's routing table says: who settled it
     (``rule`` or ``model``), the action and why. ``event`` has its ``kind`` (``landed``, a
     default branch the leads work on moved; ``archived``,
-    ``blocked``, ``failed``, ``ended``, ``deadline``; ``terminal`` and ``notice`` for a session
+    ``blocked``, ``failed``, ``ended``, ``deadline``; ``asked`` and ``card-waiting`` for a question card; ``terminal`` and ``notice`` for a session
     owing a report), ``last``, the lead's last message, and whether it is a ``repeat`` of the
     lead's last event, blocked only on a ``question``, ``nudged`` on this progress chain,
     ``revived`` once, a failure that is a ``transient`` provider error, whether that is a usage
     ``limit`` (account-wide), and whether its next backoff revive is past the cap (``capped``), ``parked`` (a park message came before its end), ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
     progress since), and whether any standing ``decisions`` exist;
     ``head`` is the ``report_head`` of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
-    end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
-    ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no allowance left),
-    and only picks the route, since its input holds a lead's own words. On a quiet end its
-    ``act`` and ``unsure`` nudge; on a ``USER NEEDED`` it acts, since that waits on a person.
+    end: it answers ``none``, ``act`` or ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no
+    allowance left), and only picks the route, since its input holds a lead's own words; its ``act`` and ``unsure``
+    nudge. A ``USER NEEDED`` that reaches here has no card open, so it is its manager's to act on (#2170).
 
     Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``wake`` (a timed
     wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``park`` (a usage limit:
@@ -7850,6 +8811,36 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         kind = "ended"
     if kind == "landed":  # read from the repo, never from the lead's words
         return "rule", "act", "its default branch moved: a step owed after a landing"
+    if kind == "stalled":  # read from the repo's gatekeeper, never from the lead's words
+        return "rule", "act", "an approved, verified PR its queue never took: land it or flag it"
+    if kind == "pr-stall":  # read from GitHub, never from a lead's words
+        return "rule", "act", "a PR stalled: clear its blocker, or card the owner the fix"
+    if kind == "dequeued":  # a Mergify comment, raised on the lead that owns the PR, else on none
+        if event.get("session"):
+            return (
+                "rule",
+                "relay",
+                "the merge queue dequeued its PR: its lead fixes it with its own context",
+            )
+        return (
+            "rule",
+            "act",
+            "the merge queue dequeued a PR no lead owns: relay it to one, or fix it",
+        )
+    if kind == "queue-rejects":
+        return (
+            "rule",
+            "act",
+            "the merge queue rejects too many PRs: are agents handing over broken ones?",
+        )
+    if kind == "queue-flake":
+        return "rule", "act", "a test fails unrelated PRs' queue runs: skip it as known-red"
+    if kind == "adopted":  # read from the server's listing, never from a lead's words
+        return (
+            "rule",
+            "act",
+            "a lead no registry followed, followed now: fix what started it unwatched",
+        )
     if kind == "archived":
         return "rule", "absorb", "archived: drop its row"
     error = event.get("line", "").partition("\n")[0]  # the status line, not the lead's own words
@@ -7910,6 +8901,14 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "record", "the supervisor's own revive or resume line"
     if kind == "asked":
         return "rule", "record", "a question card to its user, who answers it in their Inbox"
+    if kind == "card-waiting":  # #2170
+        if event.get("direct"):
+            return "rule", "record", "the owner drives it directly: its card is theirs"
+        return (
+            "rule",
+            "act",
+            "its card waits unanswered: answer it only if the owner told you to act in their name",
+        )
     text = event.get("last") or ""
     if REPORT_PATH.fullmatch(text):
         if event.get("head") is None:
@@ -7939,13 +8938,29 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if not event.get("parked"):
             return "rule", "act", "ended PARKED with no park message before it"
         return "rule", "record", "parked: waits on host capacity"
+    if ending == "DONE" and event.get("coordinator") and not done_result(text):
+        # a manager's turn that says nothing and closes on a bare DONE has no result to deliver (#2309)
+        return (
+            "rule",
+            "done",
+            "a coordinator's DONE with no result on its line: told only to its waiters",
+        )
     if ending == "DONE":
+        if event.get("relayed"):  # it sent its result to the notified session itself (#2090)
+            return (
+                "rule",
+                "done",
+                "done, its result already taken by the notified session: told only to its waiters",
+            )
         return "rule", "done", "done: its result, and the leads waiting on it"
-    if ending == "USER NEEDED":
-        if not event.get("decisions"):
-            return "rule", "owner", "no standing decision to cover it"
-        answer, why = ask()
-        return "model", "owner" if answer == "owner" else "act", why
+    if (
+        ending == "USER NEEDED"
+    ):  # an end whose card is open raises no event: the card reaches the owner (#1529)
+        return (
+            "rule",
+            "act",
+            "USER NEEDED with no card: its manager asks the owner on its own card, or sends it to its card",
+        )
     if event.get("supervisor"):
         return (
             "rule",
@@ -8088,6 +9103,46 @@ def reloadable(script: Path, seen: dict[str, int]) -> bool:
     return True
 
 
+class Sweep:
+    """One `check stalled` run in the checkout at ``workspace``, through the installed gatekeeper (``installed``,
+    outside the checkout, so it judges by the base's code and policy), started detached so the supervisor's poll goes
+    on: ``done`` is its exit once it has ended, else None; ``output`` its stdout and stderr together; ``stop`` kills
+    it. A gatekeeper that is not installed, or no ``uv`` to run it, is a ``Fail`` at the start."""
+
+    def __init__(self, workspace: str) -> None:
+        folder = installed("gatekeeper")
+        if folder is None:
+            raise Fail("check stalled: the landing checks are not installed beside this skill")
+        self.out = tempfile.TemporaryFile()  # noqa: SIM115 - outlives this call: closed by output or stop
+        try:
+            self.proc = subprocess.Popen(
+                ["uv", "run", "-q", "--script", str(folder / "gatekeeper.py"), "check", "stalled"],
+                cwd=workspace,
+                stdin=subprocess.DEVNULL,
+                stdout=self.out,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except OSError as e:
+            self.out.close()
+            raise Fail(f"check stalled not started in {workspace}: {e}") from e
+
+    def done(self) -> int | None:
+        return self.proc.poll()
+
+    def output(self) -> str:
+        self.out.seek(0)
+        text = self.out.read().decode(errors="replace")
+        self.out.close()
+        return text
+
+    def stop(self) -> None:
+        with contextlib.suppress(OSError):
+            os.killpg(self.proc.pid, signal.SIGKILL)
+        self.proc.wait()
+        self.out.close()
+
+
 def supervise_registry(
     og: Omnigent,
     registry: Path,
@@ -8098,6 +9153,8 @@ def supervise_registry(
     fyi: str = "skip",
     decisions: Path | None = None,
     script: Path | None = None,
+    stall_after: float = PR_STALL_SECONDS,
+    stall_repos: tuple[str, ...] = (),
 ) -> NoReturn:
     """Run until stopped, checking each session ``registry`` lists as ``supervise`` does, re-read
     each poll. When ``script``, this file, is replaced on disk (``reloadable``: a skills sync
@@ -8124,11 +9181,17 @@ def supervise_registry(
     staff or the owner reaches ``notify``, combined into at most one post per ``POST_SECONDS``
     (``deliver``); with ``fyi`` ``post`` every line is posted as without it too. The standing
     decisions the small model weighs are ``decisions``' (``standing``).
+
+    Each open, non-draft PR of the repos it watches (``stall_repos``, and each repo a followed lead not marked
+    ``direct`` has its workspace in) that has not moved toward landing for ``stall_after`` seconds raises one
+    ``pr-stall`` event naming its blocker (``pr_stalls``), which wakes the notified session, the manager; ``stall_after``
+    0 turns the watch off.
     """
     og = Uncarded(og)
     rec = Recorded(og) if console else og
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
+    etags_path = registry.with_suffix(".etags.json")
     state = load_state(state_path) if console else fresh_state()
     if console and (me := parent_id()):
         # the chief of staff's registry is leads.registry; a project manager's is <repo>-leads.registry
@@ -8287,9 +9350,16 @@ def supervise_registry(
             try:
                 if prompts_of(og.info(sid)):  # the text would wait unread behind it
                     raise Fail("it waits on a prompt, which the supervisor never answers")
-                relay(og, sid, text, ACTION_SECONDS)
+                # a dequeue reaches an archived lead too: unarchived, it resumes with its history
+                relay(og, sid, text, ACTION_SECONDS, unarchive=action == "dequeued")
             except (Queued, SentUnconfirmed):
                 pass  # held behind a prompt or question, or out and unconfirmed: it lands or landed
+            except HostOffline as e:  # nothing sent: whoever raised the event sends it again
+                intent["status"] = "offline"
+                print(
+                    stamp(f"{intent['id']}: not sent, sent again next poll: {reason(e)}"),
+                    flush=True,
+                )
             except Exception as e:  # noqa: BLE001 - never fatal; the chief of staff is told
                 intent["status"] = "failed"
                 head = f"{sid} {state['leads'].get(sid, {}).get('title') or ''}".rstrip()
@@ -8383,13 +9453,27 @@ def supervise_registry(
             > RETRY_CAP_SECONDS,
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
+            "coordinator": bool(
+                lead.get("leads")
+            ),  # it follows leads of its own: a manager (#2309)
             "parked": parked_before(og, sid, items, said[-1] if said else None),
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
             "supervisor": notify if waits_on(parsed, lead, notify, bool(lead_ev)) else "",
             # a subagent's end re-invokes no cloud session (#1753): read only for a wait that names one
             "cloud": bool(SUBAGENT_WAIT.search(parsed or "")) and cloud_session(og, info),
+            "session": sid,
+            # its result already reached the notified session: it sent it, or archived the session after
+            # taking it (#2090)
+            "relayed": bool(info.get("archived")) or relayed_to(items, notify, last),
         }
+
+        # a coordinator's turn with nothing on its DONE line (#2309): its notified session is not woken for it
+        quiet = bool(
+            event["coordinator"]
+            and ending_of(parsed or "") == "DONE"
+            and not done_result(parsed or "")
+        )
 
         def ask() -> tuple[str, str]:
             if eid in answers:  # asked before a later write failed: the call is spent
@@ -8454,8 +9538,12 @@ def supervise_registry(
             }
         elif action == "tell":
             act_on(eid, [(sid, "tell", f"Supervisor: {line}")])
-        elif action in ("act", "owner") or action == "done" and not event["direct"]:
-            item = line if kind == "loop-owner" else line.splitlines()[0]
+        elif action == "relay":  # a dequeue to its PR's lead, which ``relay`` unarchives first
+            act_on(eid, [(sid, "dequeued", f"Supervisor: {line}")])
+        elif action in ("act", "owner") or (
+            action == "done" and not event["direct"] and not event["relayed"] and not quiet
+        ):
+            item = line if kind in ("loop-owner", "dequeued") else line.splitlines()[0]
             if asked := question_for(lead_ev, parsed):
                 item = f"{item}\n{asked}"  # the whole question, never cut
             to = "owner" if action == "owner" else "act"
@@ -8468,12 +9556,14 @@ def supervise_registry(
             for parked in state["leads"].values():
                 if (parked.get("retrying") or {}).get("limit"):
                     parked.pop("retrying")
-        if action == "done":
+        if (
+            action == "done"
+        ):  # ``quiet``: only its waiters are told, and it is no end of a followed session
             result = LEAD_TOLD.format(lead=head, line=lead.get("last_line") or "")
             waiters = [other for other, owes in owed.items() if owes[4] == sid]
             act_on(eid, [(other, "tell", result) for other in waiters])
             # a followed lead is taken once its follower is told
-            if waiters and not event["direct"]:
+            if waiters and not event["direct"] and not quiet:
                 finish_relayed(sid)
         logged_line = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind}
         logged_line.update(line=line, settled=by, action=action, why=why)
@@ -8647,13 +9737,27 @@ def supervise_registry(
         flush()
 
     def cards(sid: str) -> None:
-        """Say each question card ``sid`` posted to its user once, by its id: news, not a step."""
-        for e in og.cards.get(sid, []):
-            eid = f"asked:{sid}:{e.get('elicitation_id') or e}"
-            if eid not in asked:
-                asked.add(eid)
-                what = _asks(e)
-                say(f"{sid}: asked its user: {what}", sid, eid, "asked")
+        """Say each question card ``sid`` posted to its user once, by its id: news, not a step. A card still open
+        ``CARD_REMIND_SECONDS`` after it was first seen is said once more, as ``card-waiting``, for its manager."""
+        now, seen = time.time(), state["cards"]
+        open_ = {f"{sid}:{e.get('elicitation_id') or e}": e for e in og.cards.get(sid, [])}
+        for key in [k for k in seen if k.startswith(f"{sid}:") and k not in open_]:
+            del seen[key]  # answered or withdrawn
+        for key, e in open_.items():
+            what = _asks(e)
+            if f"asked:{key}" not in asked:
+                asked.add(f"asked:{key}")
+                say(f"{sid}: asked its user: {what}", sid, f"asked:{key}", "asked")
+            first = seen.setdefault(key, now)
+            if first is not None and now - first >= CARD_REMIND_SECONDS:
+                seen[key] = None  # once per card
+                hours = f"{CARD_REMIND_SECONDS / 3600:g} h"
+                say(
+                    f"{sid}: its card waits unanswered past {hours}: {what}",
+                    sid,
+                    f"card-waiting:{key}",
+                    "card-waiting",
+                )
 
     def track(
         sid: str,
@@ -8851,7 +9955,7 @@ def supervise_registry(
             try:
                 sha = default_head(repo)
             except RateLimited as e:
-                limited[0] = time.monotonic() + e.wait
+                limited[0] = time.monotonic() + e.jittered()
                 headed.pop(repo, None)
                 log(
                     ("head", repo),
@@ -8873,7 +9977,7 @@ def supervise_registry(
                 told_any = False
                 for lead_sid in owed:
                     lead = state["leads"].get(lead_sid) or {}
-                    own = pr_label(
+                    own = pr_labels(
                         (looks.get(lead_sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, "")
                     )
                     named = {  # a wait is a set, and may share it with the supervisor: each PR it names
@@ -8883,7 +9987,7 @@ def supervise_registry(
                         and m[1] in (None, repo)
                     }
                     if repos.get(lead_sid) == repo and (
-                        merged_prs & (named | ({own[1]} if own and own[0] == repo else set()))
+                        merged_prs & (named | {n for r, n in own if r == repo})
                     ):
                         head = f"{lead_sid} {lead.get('title') or ''}".rstrip()
                         # a lead waiting on the supervisor has no one else to tell it
@@ -8899,6 +10003,276 @@ def supervise_registry(
                         flush=True,
                     )
             heads[repo] = sha
+
+    sweeps: dict[
+        str, tuple[Sweep, float, str]
+    ] = {}  # each repo's `check stalled` still running: began, lead
+    stalled_swept: dict[str, float] = {}  # when each repo's last `check stalled` began (monotonic)
+
+    def stalled_sweep() -> None:
+        """Run `check stalled` (``Sweep``) at most once per ``STALLED_SECONDS`` for each repo a followed lead not
+        marked ``direct`` works in, as ``landings`` reads them, in the first such lead's workspace that is a
+        checkout on this host (its info read only when a sweep is due); never while GitHub's rate limit holds. It
+        runs detached: each poll looks whether it has ended, and stops it past ``STALLED_TIMEOUT``. Each PR it lists
+        is said once per head and kind of line (idle on a go or record, or landable) as a ``stalled`` event on that lead (the repo's PRs listed last time are kept in the
+        state's ``stalled``), so an hourly sweep reports a stuck PR once, and again only after it left the listing or
+        its head moved. Before a line is said, its PR is read again (``stalled_gone``), since the sweep may have read it
+        15 minutes before: one merged, closed, moved or held by the queue since is logged and not said, nor kept as
+        said, and a failed read says the line as the sweep read it. A PR it could not judge keeps what was listed for
+        it, so a sweep that skips it says it
+        again only at a new head. A PR it could not judge, and a sweep that failed, are logged, once until they
+        clear; a sweep that judged none of the repo's open PRs (its last line, ``<n> of <n> open PRs not judged
+        here``) is said once, as a ``stalled`` event naming the first reason, since its silence would read as
+        nothing stalled (the state's ``stalled_blind``, cleared once a sweep judges again)."""
+        known = state.setdefault("stalled", {})
+        for repo, (sweep, began, sid) in list(sweeps.items()):
+            if (code := sweep.done()) is None:
+                if time.monotonic() - began > STALLED_TIMEOUT:
+                    sweep.stop()
+                    del sweeps[repo]
+                    log(
+                        ("stalled", repo),
+                        f"{repo}: check stalled ran past {STALLED_TIMEOUT:.0f}s: stopped",
+                    )
+                continue
+            del sweeps[repo]
+            out = [line.strip() for line in sweep.output().splitlines() if line.strip()]
+            if code not in (0, 1):
+                last = out[-1] if out else "no output"
+                log(("stalled", repo), f"{repo}: check stalled exited {code}: {last}")
+                continue
+            log(("stalled", repo), None)
+            # each PR by its head and the kind of its line: on one head a go turns an idle line (`missing: go`)
+            # into a landable one, which is news, while the idle line's hours growing is not
+            listed = {
+                m[1]: (f"{m[2]}:{'idle' if ': missing: ' in line else 'landable'}", line)
+                for line in out
+                if (m := STALLED_LINE.fullmatch(line))
+            }
+            unjudged = {m[1]: m[2] for line in out if (m := UNJUDGED_LINE.fullmatch(line))}
+            for number, why in unjudged.items():
+                log(("unjudged", repo, number), f"{repo}: PR #{number} is not judged here: {why}")
+            before = known.get(repo) or {}
+            blind = state.setdefault("stalled_blind", {})
+            count = next((m for line in out if (m := SKIPPED_LINE.fullmatch(line))), None)
+            if count and count[1] == count[2] and unjudged:
+                why = next(iter(unjudged.values()))
+                if blind.get(repo) != why:
+                    blind[repo] = why
+                    say(
+                        f"{repo}: check stalled judged none of its {count[2]} open PRs: {why}",
+                        sid,
+                        f"stalled-blind:{repo}:{hashlib.sha1(why.encode()).hexdigest()[:12]}",
+                        "stalled",
+                    )
+            else:
+                blind.pop(repo, None)
+            known[repo] = {number: seen for number, (seen, _) in listed.items()} | {
+                number: before[number] for number in unjudged if number in before
+            }
+            for number, (seen, line) in listed.items():
+                if before.get(number) != seen:
+                    gone = None  # said as the sweep read it, under GitHub's account-wide limit too
+                    try:
+                        if time.monotonic() >= limited[0]:
+                            gone = stalled_gone(repo, number, seen.split(":")[0])
+                    except Exception as e:  # noqa: BLE001 - a hiccup never hides a stall
+                        if isinstance(e, RateLimited):
+                            limited[0] = time.monotonic() + e.jittered()
+                        log(
+                            ("stalled", repo, number),
+                            f"{repo}: PR #{number} not read again: {reason(e)}",
+                        )
+                    if gone:
+                        # not kept as said: a later sweep that lists it again (dequeued, stuck) says it then
+                        known[repo].pop(number)
+                        log(
+                            ("stalled", repo, number),
+                            f"{repo}: PR #{number} {gone} since the sweep read it",
+                        )
+                        continue
+                    step = (
+                        "ask its approver for what it is missing"
+                        if ": missing: " in line
+                        else f"land it (`land {number} --only`) or flag it"
+                    )
+                    say(
+                        f"{repo}: {line}: {step}",
+                        sid,
+                        f"stalled:{repo}#{number}:{seen}",
+                        "stalled",
+                    )
+        if time.monotonic() < limited[0]:  # GitHub's limit is account-wide
+            return
+        for sid, owes in owed.items():
+            repo = repos.get(sid)
+            if not owes[3] or owes[5] or not repo or repo in sweeps:
+                continue
+            if time.monotonic() - stalled_swept.get(repo, -STALLED_SECONDS) < STALLED_SECONDS:
+                continue
+            try:
+                info = looks[sid][0] if sid in looks else og.info(sid)
+            except Exception as e:  # noqa: BLE001 - read again next poll
+                log(
+                    ("stalled", repo),
+                    f"{repo}: check stalled not started: {sid} not read: {reason(e)}",
+                )
+                continue
+            workspace = str(info.get("workspace") or "")
+            if not workspace or elsewhere(og, info) or not Path(workspace).is_dir():
+                continue  # no checkout here: the repo's next lead may have one
+            stalled_swept[repo] = time.monotonic()
+            try:
+                sweeps[repo] = (Sweep(workspace), time.monotonic(), sid)
+            except Exception as e:  # noqa: BLE001 - started again at the next STALLED_SECONDS
+                log(("stalled", repo), f"{repo}: check stalled not started: {reason(e)}")
+            else:
+                log(("stalled", repo), None)
+
+    swept: dict[str, float] = {}  # when each watched repo's open PRs were last listed
+
+    def stalls() -> None:
+        """Sweep each watched repo's open PRs for a stall (``pr_stalls``) at most once per ``PR_STALL_POLL``: each new
+        one is a ``pr-stall`` event for the manager, raised on the repo's first followed lead (or none)."""
+        if not stall_after:
+            return
+        first: dict[str, str] = {r: "" for r in stall_repos}
+        for sid, owes in owed.items():
+            if owes[3] and not owes[5] and repos.get(sid) and not first.get(repos[sid]):
+                first[repos[sid]] = sid
+        for repo, sid in sorted(first.items()):
+            if time.monotonic() - swept.get(repo, -PR_STALL_POLL) < PR_STALL_POLL:
+                continue
+            if time.monotonic() < limited[0]:  # GitHub's limit is account-wide
+                continue
+            swept[repo] = time.monotonic()
+            try:
+                etags_load(etags_path)
+                found = pr_stalls(repo, stall_after, state["pr_stalls"].setdefault(repo, {}))
+            except RateLimited as e:
+                limited[0] = time.monotonic() + e.jittered()
+                swept.pop(repo, None)
+                log(("pr-stall", repo), f"GitHub rate limit: open PRs not read for {e.wait:.0f}s")
+                continue
+            except Exception as e:  # noqa: BLE001 - read again at the next PR_STALL_POLL
+                log(("pr-stall", repo), f"{repo}: open PRs not read: {reason(e)}")
+            else:
+                log(("pr-stall", repo), None)
+                etags_save(etags_path)
+                for eid, line in found:
+                    say(line, sid, eid, "pr-stall")
+            queue_round(repo, sid)
+
+    def queue_round(repo: str, sid: str) -> None:
+        """At the PR poll: read ``repo``'s new Mergify queue entries (``queue_read``), send each new dequeue to the
+        lead that owns its PR (``pr_lead``) as a ``dequeued`` event, else raise it for the manager, and raise the
+        repo's ``queue-flake`` and ``queue-rejects`` events (``queue_alarms``) on ``sid``, its first followed lead (or
+        none). A rate limit, a failed read or an unread session list is logged and keeps the state: the next poll
+        reads again, and a dequeue not yet sent is sent then."""
+        memo = state["queue"].setdefault(repo, {})
+        try:
+            queue_read(repo, memo)
+        except RateLimited as e:
+            limited[0] = time.monotonic() + e.jittered()
+            swept.pop(repo, None)
+            log(("queue", repo), f"GitHub rate limit: queue comments not read for {e.wait:.0f}s")
+            return
+        except Exception as e:  # noqa: BLE001 - read again at the next PR_STALL_POLL
+            log(("queue", repo), f"{repo}: queue comments not read: {reason(e)}")
+            return
+        log(("queue", repo), None)
+        etags_save(etags_path)
+        entries = memo["entries"]
+        flakes = queue_counts(entries)["flakes"]
+        sessions: list[dict] | None = None
+        for cid, entry in sorted(entries.items(), key=lambda x: x[1]["left_at"]):
+            if entry["state"] != "dequeued" or entry.get("told"):
+                continue
+            if entry["pr"] in (state["pr_stalls"].get(repo) or {}).get("held", []):
+                entry["told"] = True  # parked on purpose: its drop is no news (#2316)
+                continue
+            if sessions is None:
+                try:
+                    sessions = every_session()
+                except Exception as e:  # noqa: BLE001 - sent at the next poll, once sessions read
+                    log(
+                        ("queue-sessions", repo),
+                        f"{repo}: sessions not read, dequeues wait: {reason(e)}",
+                    )
+                    return
+                log(("queue-sessions", repo), None)
+            ties.pop((repo, entry["pr"]), None)
+            lead = pr_lead(repo, entry["pr"], sessions)
+            entry["told"] = True  # on disk with the event it raises: each comment is sent once
+            tries = entry.get(
+                "tries", 0
+            )  # each try its own event: a settled id is never settled again
+            eid = f"dequeued:{repo}:{cid}" + (f":{tries}" if tries else "")
+            text = dequeue_message(repo, entry, flakes)
+            if not lead and (both := ties.get((repo, entry["pr"]))):
+                text += f"\nFollowed leads whose reports name it: {', '.join(both)}; tell the one that owns it."
+            say(text, lead, eid, "dequeued")
+            if any(
+                i["id"] == f"dequeued:{lead}:{eid}" and i["status"] == "offline"
+                for i in state["intents"]
+            ):  # its lead's host is offline: next poll again
+                entry.update(told=False, tries=tries + 1)
+        for eid, kind, line in queue_alarms(repo, memo):
+            say(line, sid, eid, kind)
+
+    def every_session() -> list[dict]:
+        """Every session the supervisor sees, archived ones included, each with its labels and parent."""
+        path, rows, after = "/v1/sessions?kind=any&include_archived=true&limit=1000", [], ""
+        while True:
+            page = og.call("GET", path + (f"&after={after}" if after else ""))
+            rows += page.get("data") or []
+            if not (page.get("has_more") and page.get("last_id")):
+                return rows
+            after = str(page["last_id"])
+
+    def pr_lead(repo: str, pr: int, sessions: list[dict]) -> str:
+        """The lead that owns PR ``pr`` of ``repo``, else empty: a lead (followed, or any ``omni.role`` lead, archived
+        too) whose own ``PR_LABEL`` names it; else the lead that started a session labelled with it (a ``start --pr``
+        worker, archived too), found up its ``parent_session_id`` chain; else a followed lead whose wait names it, or whose report head names ``owner/name#N`` or its URL."""
+        label = f"{repo}#{pr}"
+        followed = [s for s, owes in owed.items() if owes[3]]
+        by_id = {str(s.get("id")): s for s in sessions}
+
+        def labels(sid: str) -> dict:
+            if sid in looks:
+                return looks[sid][0].get("labels") or {}
+            return by_id.get(sid, {}).get("labels") or {}
+
+        def is_lead(sid: str) -> bool:
+            return sid in followed or labels(sid).get("omni.role") == "lead"
+
+        for sid in [*followed, *by_id]:
+            if is_lead(sid) and label in label_refs(labels(sid).get(PR_LABEL, "")):
+                return sid
+        for start in [s for s in by_id if label in label_refs(labels(s).get(PR_LABEL, ""))]:
+            sid, seen = start, set()
+            while sid and sid not in seen:  # the list holds every session, so each parent is in it
+                seen.add(sid)
+                if is_lead(sid):
+                    return sid
+                sid = str(by_id.get(sid, {}).get("parent_session_id") or "")
+        for sid in followed:
+            lead = state["leads"].get(sid) or {}
+            for ref in [*(lead.get("refs") or []), *(lead.get("wait") or "").split(", ")]:
+                m = re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", ref.strip())
+                if m and int(m[2]) == pr and (m[1] == repo or not m[1] and repos.get(sid) == repo):
+                    return sid
+        url = rf"github\.com/{re.escape(repo)}/pull/{pr}(?!\d)"
+        named = []  # a lead that took the PR over, or lands it with others: its report head names it
+        for sid in followed:
+            head = report_head((state["leads"].get(sid) or {}).get("last_text") or "")
+            if re.search(rf"(?<![\w/.-]){re.escape(label)}(?!\d)|{url}", head):
+                named.append(sid)
+        if len(named) == 1:  # a label owner won above; two leads naming it is no owner
+            return named[0]
+        if named:
+            ties[(repo, pr)] = named  # the coordinator sees the dequeue, with both leads named
+        return ""
 
     def alive(other: str, info: dict) -> bool:
         """Whether session ``other`` (its ``info``) shows life: not archived or failed, no
@@ -8920,9 +10294,9 @@ def supervise_registry(
         then reads this directory's, and its refusal is the reason shown."""
         if named:
             return named
-        label = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
+        label = pr_labels((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
         if label:
-            return label[0]
+            return label[0][0]
         if sid not in repos:
             try:
                 repos[sid] = workspace_repo(og, sid)
@@ -8930,12 +10304,24 @@ def supervise_registry(
                 return ""
         return repos[sid]
 
+    ties: dict[
+        tuple[str, int], list[str]
+    ] = {}  # PR -> the followed leads whose heads both name it (pr_lead)
+    pr_shared: dict[str, list] = {}  # key -> the last read, whichever lead made it
+
     def settled(lead: dict, pr: int, repo: str, fresh: bool = False, run: bool = False):
         """``pr_settled`` (``run_settled`` for an Actions run) for ``lead``, read at most once per
         ``PR_POLL_SECONDS`` unless ``fresh``, so the overdue check and the news check share one
         GitHub read."""
         seen = lead.setdefault("pr_seen", {})
         key = f"{'run ' if run else ''}{repo}#{pr}"
+        if (shared := pr_shared.get(key)) and time.time() - shared[0] < SHARED_READ_SECONDS:
+            seen[key] = list(
+                shared
+            )  # another wait on this PR read it a moment ago (a restart's backfill): it serves this one
+            if len(shared) > 2:
+                raise Fail(shared[2])
+            return shared[1] and tuple(shared[1])
         if not fresh and key in seen and time.time() - seen[key][0] < PR_POLL_SECONDS:
             if len(seen[key]) > 2:  # a failed read counts as a read: GitHub is asked once a minute
                 raise Fail(seen[key][2])
@@ -8943,9 +10329,9 @@ def supervise_registry(
         try:
             found = run_settled(pr, repo) if run else pr_settled(pr, repo)
         except Exception as e:
-            seen[key] = [time.time(), None, reason(e)]
+            seen[key] = pr_shared[key] = [time.time(), None, reason(e)]
             raise
-        seen[key] = [time.time(), found]
+        seen[key] = pr_shared[key] = [time.time(), found]
         return found
 
     def moving(sid: str, lead: dict, wait: str = "") -> bool | None:
@@ -9113,8 +10499,7 @@ def supervise_registry(
     def lead_branches(sid: str, lead: dict) -> set[str]:
         """The head branches of the PRs ``lead``'s wait names and of its own (its ``PR_LABEL``) in its own repository:
         its events' branches. A PR of another repository has its events there, which are not read."""
-        own = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
-        found = {(own[0], own[1])} if own else set()
+        found = set(pr_labels((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, "")))
         for item in (lead.get("wait") or "").split(", "):
             if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", item.strip()):
                 found.add((m[1] or "", int(m[2])))
@@ -9244,7 +10629,10 @@ def supervise_registry(
         for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. A timed
         wait with no progress since its time raises one at its time, which wakes the lead, and
         once woken one more ``DEADLINE_SECONDS`` after it. Each is one event per ``progress_at``
-        (one per wait text when the wait names no session), so new progress starts a new chain. None while every session its wait names shows life
+        (one per wait text when the wait names no session; one per wait text and its named sessions,
+        and once more after 4x ``DEADLINE_SECONDS``, when it names some), so new progress starts a
+        new chain except for those. None while every session it names ended ``PARKED`` (news told
+        it), and None while every session its wait names shows life
         (``moving``), since it is waiting, not stalled."""
         if lead.get("direct"):
             return  # the owner drives it in its own session: they are its follower
@@ -9275,6 +10663,7 @@ def supervise_registry(
         # a session its STILL WORKING line names that shows life is progress, one that is archived,
         # unknown or unread is quiet
         quiet_named, mutual = [], ""
+        parked = []  # the named sessions whose turn ended PARKED
 
         def owns(parent: str, child: str, child_info: dict) -> bool:
             """Whether ``parent`` started ``child``: its parent id, or ``parent``'s own ``leads=``
@@ -9303,6 +10692,8 @@ def supervise_registry(
                 log(("named", other), f"{other}: history not read: {reason(e)}")
                 continue
             log(("named", other), None)
+            if over["ending"] == "PARKED" and over["state"] == "idle":
+                parked.append(other)
             if not mutual and not over["ending"] and over["wait"] != "unknown":
                 # it waits on this lead, or on no session, and this lead started it: a mutual wait
                 mine = owns(sid, other, info)
@@ -9315,6 +10706,8 @@ def supervise_registry(
                 head = f"{sid} {lead['title']}".rstrip()
                 line = f"{head}: {other} ended {over['ending']} at {at}; your wait still names it"
                 say(line, sid, f"deadline:{sid}:{other}:{end_of(over)}", "news")
+        if quiet_named and len(parked) == len(quiet_named) == len(lead.get("named") or []):
+            return  # all parked: the news line told its waiter, and only the waiter can act
         quiet = time.time() - lead["progress_at"]
         spent = lead.get("nudged_at") == lead["progress_at"]
         if due is not None and lead["progress_at"] < due:
@@ -9336,48 +10729,26 @@ def supervise_registry(
                 line = f"{head}: {what}\nlast message: {lead['last_line']}"
                 if quiet_named:
                     line += f"\nquiet: {', '.join(quiet_named)}"
-                # a wait that names no session is one event per wait text, not per progress chain
-                chain = (
-                    lead["wait"] if names is None and due is None else f"{lead['progress_at']:.0f}"
-                )
-                say(line, sid, f"deadline:{sid}:{chain}{nudged}", "deadline")
-
-    stall_read: dict[
-        tuple[str, int], float
-    ] = {}  # each followed PR's last verdict_stall read (wall clock)
-
-    def stalled_verdicts(sid: str, lead: dict) -> None:
-        """Wake a followed lead whose own PR (its ``omni.pr`` label) or a PR its wait names has a verdict on its
-        current head ``VERDICT_STALL_SECONDS`` old with no push or go since (``verdict_stall``): one ``news`` event per
-        PR and head, which tells the lead itself. Only for a lead quiet that long, so a working lead costs no read; not
-        while its turn runs, nor for a lead the owner drives."""
-        if lead.get("direct") or lead["state"] in RUNNING:
-            return
-        if time.time() - lead["progress_at"] < VERDICT_STALL_SECONDS:
-            return
-        own = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
-        refs = {(own[0], own[1])} if own else set()
-        for r in [*(lead.get("refs") or []), *(lead.get("wait") or "").split(", ")]:
-            if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", r.strip()):
-                refs.add((wait_repo(sid, m[1] or ""), int(m[2])))
-        for repo, pr in sorted(refs):
-            if time.time() - stall_read.get((repo, pr), -VERDICT_STALL_POLL) < VERDICT_STALL_POLL:
-                continue
-            stall_read[(repo, pr)] = time.time()
-            try:
-                found = verdict_stall(pr, repo)
-            except Exception as e:  # noqa: BLE001 - read again at the next VERDICT_STALL_POLL
-                log(("stall", repo, pr), f"PR #{pr} verdict not read: {reason(e)}")
-                continue
-            log(("stall", repo, pr), None)
-            if found:
-                head, line = found
-                say(
-                    f"{sid} {lead['title']}".rstrip() + f": {line}",
-                    sid,
-                    f"stall:{sid}:{repo}#{pr}:{head}",
-                    "news",
-                )
+                # a wait that names no session is one event per wait text, not per progress chain;
+                # one that names some (a session, a group, a PR, a task) is keyed on its text and
+                # the sessions it names, so a reply that restates it starts no new chain, and it
+                # fires once more after 4x DEADLINE_SECONDS if still stuck. An unknown or timed
+                # wait keeps its progress chain.
+                chain, late = lead["wait"], ""
+                if due is not None or lead["wait"] == "unknown":
+                    chain = f"{lead['progress_at']:.0f}"
+                elif names is not None:
+                    chain += "|" + ",".join(sorted(lead.get("named") or []))
+                    if not nudged:
+                        if lead.get("deadline_chain") != chain:
+                            lead.update(deadline_chain=chain, deadline_first=time.time())
+                        elif time.time() - lead["deadline_first"] >= 4 * DEADLINE_SECONDS:
+                            late = ":late"
+                if "quota" in lead["wait"].lower() and not quota_line_due(
+                    state, time.time(), limited[0] - time.monotonic()
+                ):
+                    continue  # one quota line per reset (#2090)
+                say(line, sid, f"deadline:{sid}:{chain}{nudged}{late}", "deadline")
 
     def has_event(sid: str) -> bool:  # an event settles what a prose wait would
         try:
@@ -9469,7 +10840,10 @@ def supervise_registry(
                     found = settled(lead, int(m[2]), wait_repo(sid, m[1] or ""), fresh=True)
                 except Exception as e:  # noqa: BLE001 - GitHub unread: the deadline is the net
                     log(("pr", sid), f"{sid}: PR #{m[2]} not read: {reason(e)}")
-                    if "Could not resolve" in str(e) and not m[1] and (own := wait_repo(sid, "")):
+                    gone = any(w in str(e) for w in ("Could not resolve", "Not Found", "HTTP 404"))
+                    if (
+                        gone and not m[1] and (own := wait_repo(sid, ""))
+                    ):  # REST says 404 where GraphQL said "resolve"
                         try:  # told only when the lead's repo is known and has no such PR or issue
                             gh("api", f"repos/{own}/issues/{m[2]}")
                         except Fail as no:
@@ -9637,6 +11011,53 @@ def supervise_registry(
         print(stamp(f"{retrying['event']}: rule: revive ({why})"), flush=True)
         act_on(retrying["event"], [(sid, "revive", LEAD_REVIVE)])
 
+    def adopt() -> None:
+        """On the chief of staff's console (not a manager's ``<repo>-leads.registry``), follow each live top-level
+        session labelled ``omni.role=lead`` that no registry holds: a ``follow`` line on ``registry`` and one
+        ``adopted`` event, so a lead started with no registry (#2181) is supervised from this poll on. A registry
+        holds it when it is on any ``*.registry`` beside ``registry`` or on a ``leads=`` registry one of its lines
+        names; a lead whose creator a registry follows is that lead's to hear, as ``start`` arms it. The server
+        is listed at most once per ``CREATED_SECONDS`` (``Omnigent.listing``)."""
+        if not console or registry.name.endswith("-leads.registry"):
+            return
+        rows = og.listing()
+        mine = registered(registry)[0]
+        paths = {*registry.parent.glob("*.registry"), *(Path(o[6]) for o in mine.values() if o[6])}
+        watched, followed = set(mine), {s for s, o in mine.items() if o[3]}
+        for path in paths - {registry}:
+            other = registered(path)[0]
+            watched |= set(other)
+            followed |= {s for s, o in other.items() if o[3]}
+        for row in rows:
+            sid, labels = str(row.get("id") or ""), row.get("labels") or {}
+            if (
+                not sid
+                or sid in watched
+                or row.get("archived")
+                or row.get("parent_session_id")
+                or labels.get("omni.role") != "lead"
+                or creators(row) & followed
+                or og.info(sid).get("archived")  # the listing may be 30 s old
+            ):
+                continue
+            try:
+                made = float(row.get("created_at") or og.info(sid).get("created_at") or 0)
+            except (TypeError, ValueError):
+                log("adopt", f"{sid}: skipped, its created_at is not a number")
+                continue  # one odd record skips that session, not the sweep (#2319)
+            if made and time.time() - made < ADOPT_GRACE_SECONDS:
+                continue  # its launcher may not have written its registry line yet: a later poll adopts it (#2313)
+            # ponytail: the lead's real report is unknown; follow reads none, and a path in its workspace costs nothing.
+            # Upgrade: read it from the lead's brief (its preamble names the report path) if a followed lead ever owes one.
+            arm(registry, sid, Path(f"tmp/loop/{sid}.report.md"), followed=True)
+            head = f"{sid} {row.get('title') or ''}".rstrip()
+            say(
+                f"{head}: a lead on no registry, followed from now on",
+                sid,
+                f"adopted:{sid}",
+                "adopted",
+            )
+
     while True:
         flush()
         waits = [w for w, n in (("lines to post", outbox), ("events to settle", retry)) if n]
@@ -9664,6 +11085,12 @@ def supervise_registry(
             for again in retry[:]:
                 retry.remove(again)
                 say(*again)
+        try:
+            adopt()
+        except Exception as e:  # noqa: BLE001 - never fatal; swept again next poll
+            log("adopt", f"unregistered leads not swept: {reason(e)}")
+        else:
+            log("adopt", None)
         try:
             owed, bad = registered(registry)
         except Exception as e:  # noqa: BLE001 - never fatal
@@ -9710,7 +11137,6 @@ def supervise_registry(
                         if console:
                             wait_news(sid, lead)
                             overdue(sid, lead)
-                            stalled_verdicts(sid, lead)
                             due(sid, lead)
                         continue
                 else:
@@ -9739,6 +11165,11 @@ def supervise_registry(
             except Exception as e:  # noqa: BLE001 - never fatal; told again next poll
                 log("events-news", f"loop events not told: {reason(e)}")
         landings()
+        try:
+            stalled_sweep()
+        except Exception as e:  # noqa: BLE001 - never fatal; swept again next poll
+            log("stalled", f"check stalled not swept: {reason(e)}")
+        stalls()
         if console:
             if read:  # a session gone from the registry leaves the state with it
                 for part in ("leads", "settled"):
@@ -10106,6 +11537,12 @@ def cover(og: Omnigent, sid: str, ended: dict[str, str]) -> None:
         pass
 
 
+EXPIRES_HELP = (
+    f"minutes the message stays deliverable (default {EXPIRES_MINUTES}; 0 = never): a message queued"
+    " behind a busy turn is dropped once it expires, and never lands out of context after its sender is gone"
+)
+
+
 def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -10131,7 +11568,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument("title")
         p.add_argument("brief", help="the task specifics: a file, or the text itself")
         p.add_argument("report", type=Path)
-        p.add_argument("--role", help="worker/verifier role file the child reads first")
+        p.add_argument(
+            "--role",
+            help="worker/verifier role file the child reads first, or lead|worker|verifier for the pack's own",
+        )
         p.add_argument("--confirm-seconds", type=float, default=START_CONFIRM_SECONDS)
         p.add_argument(
             "--model",
@@ -10151,8 +11591,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--permission-mode",
             help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
-            " else the harness default); claude-cloud takes auto or bypassPermissions from this flag only (default"
-            " bypassPermissions, whatever the variable says), codex takes bypassPermissions (its default) or"
+            " else the harness default); claude-cloud takes auto or bypassPermissions from this flag only (with none,"
+            " the host's agent default applies, whatever the variable says), codex takes bypassPermissions (its default) or"
             " default (codex's own stance)",
         )
         p.add_argument(
@@ -10166,12 +11606,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             default=None,
             help="which verifier a verifier start runs (default: $OMNIGENT_VERIFIER_ROUTE, else codex): codex is the"
             " agent as named; gemini replaces it with agy's Gemini (experimental, needs --host on a host with agy"
-            " logged in); claude with a fresh Claude session of another model than --author-model (same-family)."
+            " logged in); claude with a fresh Claude session of any --model (same-family)."
             " The two fallbacks are for a Codex refusal",
         )
         p.add_argument(
             "--author-model",
-            help="the model that wrote the diff: --verifier-route claude refuses to verify it with the same one",
+            help="the model that wrote the diff; not checked, since --verifier-route claude verifies with any --model",
         )
         p.add_argument(
             "--same-family",
@@ -10226,6 +11666,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("brief", help="the answer or follow-up: a file, or the text itself")
     p.add_argument("report", type=Path)
     p.add_argument("--confirm-seconds", type=float, default=60.0)
+    p.add_argument(
+        "--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP
+    )
     p = sub.add_parser("relay")
     p.add_argument("session")
     p.add_argument("message", help="the message, a file or the text itself; it owes no report")
@@ -10244,7 +11687,16 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         " session waiting on a question holds the message behind it (exit 5); one held only"
         " by the session's running step exits 0 with the queued line",
     )
+    p.add_argument(
+        "--unarchive",
+        action="store_true",
+        help="unarchive an archived session first, so it resumes with its history; without it,"
+        " an archived session exits 4",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
+    p.add_argument(
+        "--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP
+    )
     p = sub.add_parser("broadcast", description="relay one message file to many sessions at once")
     p.add_argument("message", help="the message, a file or the text itself; it owes no report")
     p.add_argument(
@@ -10374,6 +11826,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p = sub.add_parser("approve")
     p.add_argument("session")
     p.add_argument("--decline", action="store_true", help="decline instead of accept")
+    p = sub.add_parser(
+        "own-pr",
+        description="add a PR (owner/name#N) to this session's `omni.pr` label list, so the merge queue's"
+        " dequeue of it reaches this lead: what `land` and a takeover write",
+    )
+    p.add_argument("pr", nargs="+", help="owner/name#N, each")
+    p.add_argument("--session", default="", help="the session to label; default: this one")
     p = sub.add_parser("status")
     p.add_argument("sessions", nargs="+")
     p = sub.add_parser(
@@ -10443,6 +11902,20 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         type=float,
         default=1800.0,
         help="no history item for this long: one resume line, then given up (default 1800)",
+    )
+    p.add_argument(
+        "--stall-minutes",
+        type=float,
+        default=PR_STALL_SECONDS / 60,
+        help="with --registry, an open PR with no push, verdict, go or queue step this long wakes the notified"
+        " session with its blocker (default 60; 0 turns the watch off)",
+    )
+    p.add_argument(
+        "--stall-repo",
+        action="append",
+        default=[],
+        metavar="OWNER/NAME",
+        help="with --registry, also watch this repo's open PRs for a stall, beside each followed lead's",
     )
     service = p.add_mutually_exclusive_group()
     service.add_argument(
@@ -10643,6 +12116,20 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             raise Fail(
                 "--direct needs --top-level and a registry: it marks the lead's registry line"
             )
+        if (
+            args.cmd == "start"
+            and args.top_level
+            and args.role
+            and Path(args.role).stem == "lead"
+            and not registry
+        ):
+            # a lead nobody follows stalls unseen (#2181); run waits on its session itself
+            usage = Fail(
+                "start --top-level of a lead needs --registry or $OMNIGENT_SUPERVISE_REGISTRY:"
+                " without one no supervisor follows it"
+            )
+            usage.code = 2
+            raise usage
         if args.cmd == "direct":
             if not registry:
                 raise Fail("direct needs --registry or $OMNIGENT_SUPERVISE_REGISTRY")
@@ -10688,6 +12175,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             cmd = args.until[1:] if args.until[:1] == ["--"] else args.until
             if not cmd or not 0 < args.every <= EVERY_MAX:
                 usage = Fail(f"wait-until needs -- CMD and 0 < --every <= {EVERY_MAX:.0f}")
+                usage.code = 2
+                raise usage
+            if PR_POLL.search(" ".join(cmd)):
+                usage = Fail(
+                    "wait-until: a PR poll through gh spends a GitHub call every round; run "
+                    "`wait-for --pr <n> --until checks|merged|closed`, whose ETag reads cost nothing while the PR doesn't move"
+                )
                 usage.code = 2
                 raise usage
             return wait_until(cmd, args.every, args.limit)
@@ -10747,6 +12241,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             print(line)
             return 0 if ok else 1
         if args.cmd in ("run", "start", "brief") and args.role is not None:
+            args.role = resolve_role(args.role)
             role_file = Path(args.role)
             if not (role_file.is_file() and os.access(role_file, os.R_OK)):
                 raise Fail(f"--role {args.role}: not a readable file; the child reads it first")
@@ -10754,7 +12249,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # the body only: start adds its signature, lock and title lines once a session exists
             pr = report_pr(args.role, args.cloud, args.pr)
             # as start's: a path on another host is neither resolved nor checked here
-            report = args.report.resolve() if not args.remote or pr else args.report
+            report = args.report if args.remote else args.report.resolve()
             # ponytail: a lead's delegation line is read from this checkout, never another host's (start reads that
             # through the server, which brief does not reach)
             delegation = lead_delegation(None, None) if args.top_level and not pr else ""
@@ -10770,6 +12265,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             sys.stdout.write(body)
             return 0
         og = Omnigent(args.server) if args.server else Omnigent()
+        if args.cmd in ("send", "relay"):
+            og.expires = args.expires
         if args.cmd == "capacity":
             target = og.host(args.host)
             name = host_name(og, target)
@@ -10842,6 +12339,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     answer=args.answer,
                     source=args.source,
                     by=own_id() or "an agent",
+                    unarchive=args.unarchive,
                 )
             )
             return 0
@@ -10877,6 +12375,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             lines, failed = approve(og, args.session, args.decline)
             print("\n".join(lines))
             return 1 if failed else 0
+        if args.cmd == "own-pr":
+            print(own_pr(og, args.session or own_id(), args.pr))
+            return 0
         if args.cmd == "status":
             # a snapshot: an idle look reads as a turn ended, which a notice has confirmed
             print("\n".join(observe(og, s, {}, baseline=True)[1] for s in args.sessions))
@@ -10909,6 +12410,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     args.console,
                     args.fyi or "skip",
                     args.decisions,
+                    stall_after=args.stall_minutes * 60,
+                    stall_repos=tuple(args.stall_repo),
                 )
             supervise(og, owed, args.silent_seconds, args.timeout)  # it prints each line
             return 0
@@ -10918,6 +12421,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # a path on the session's host, which this one neither resolves nor reads (as start's)
             far = not args.pr and elsewhere(og, og.info(args.session))
             report = args.report if far else args.report.resolve()
+            if args.pr and args.report.is_absolute() and elsewhere(og, og.info(args.session)):
+                # the comment's body comes here, where bring_home puts a path on that host's
+                report = (Path("tmp/loop") / args.report.name).resolve()
             try:
                 # --pr reads a comment, not a file
                 since = (
@@ -11012,7 +12518,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         host = og.host(args.host) if getattr(args, "host", None) else og.host_id
         # paths on another host: neither resolved nor checked here
         remote = elsewhere(og, session) or host != og.host_id
-        here = not remote or bool(args.pr)  # with --pr the report is the file wait writes here
+        here = not remote  # on another host the report is a path there, with --pr or without
         # a cloud agent's run on another host: no parent, so placed where --host says, and its
         # report comes home, since the caller reads it (claude-cloud-run from any host)
         placed = (
@@ -11024,7 +12530,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         )
         here = here or placed
         report = args.report.resolve() if here else args.report
-        if args.cmd != "send" and args.host and not args.top_level and not placed:
+        if args.cmd == "send" and remote and args.pr and report.is_absolute():
+            report = (Path("tmp/loop") / report.name).resolve()  # where wait --pr wrote it
+        # a child runs on its parent's runner, so --host naming that runner's own host is no move
+        if args.cmd != "send" and remote and not args.top_level and not placed:
             raise Fail(
                 "--host needs --top-level, or a cloud agent: Omnigent runs a child on its"
                 " parent's runner"
@@ -11087,9 +12596,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds, far=far)
             except Undeleted as e:  # the answer landed: supervise it, then fail on the question
                 undeleted = e
-            # armed once the message is in the history, as start arms: before it, the report or
-            # question of the turn before reads as newer than the last instruction; never for
-            # --pr, as start skips it
+            # armed once the message is in the history: before it, the report or question of the
+            # turn before reads as newer than the last instruction; never for --pr
             if not args.pr:
                 arm_quietly(
                     registry,
@@ -11208,6 +12716,28 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             registry = None
         survivors: list[str] = []
 
+        def arm_launched(s: str) -> None:
+            # a supervisor reads the report file, which for --pr only wait writes: it would revive
+            # and nudge a cloud worker toward a host path it can't write
+            if (not remote or (registry and args.top_level)) and not args.pr:
+                arm_quietly(
+                    registry,
+                    s,
+                    report,
+                    [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
+                    verdict=verifier,
+                    followed=args.top_level,
+                    after=args.after or "",
+                    leads=str(args.leads.resolve()) if args.leads else "",
+                    direct=args.direct,
+                )
+
+        def line_for(s: str, live: bool) -> None:
+            # the line is written when the session exists, before its brief is sent: confirming
+            # the brief can outlast ADOPT_GRACE_SECONDS, and a second supervisor adopts a lead
+            # no registry holds (#2319); an abandoned session's line goes
+            arm_launched(s) if live else arm_quietly(registry, s)
+
         def launch() -> str:
             """Start the child and arm it; again (``wait``'s ``relaunch``) for a setup failure."""
             nonlocal sid
@@ -11235,22 +12765,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 files=args.file,
                 about=verifies,
                 keep=bool(args.keep),
+                registered=line_for,
             )
             survivors.extend(abandoned)
-            # a supervisor reads the report file, which for --pr only wait writes: it would revive
-            # and nudge a cloud worker toward a host path it can't write
-            if (not remote or (registry and args.top_level)) and not args.pr:
-                arm_quietly(
-                    registry,
-                    sid,
-                    report,
-                    [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
-                    verdict=verifier,
-                    followed=args.top_level,
-                    after=args.after or "",
-                    leads=str(args.leads.resolve()) if args.leads else "",
-                    direct=args.direct,
-                )
+            arm_launched(sid)  # again: a held session attached to (no create) was never armed above
             print(sid, flush=True)
             return sid
 

@@ -15,6 +15,8 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 import pytest
 
+from tools.gh_trap import install_trap, without_trap
+
 # the gatekeeper's test harness, whose fixtures every package's tests run under, and the Omnigent driver's tests
 for package in (
     "gatekeeper",
@@ -33,12 +35,37 @@ from approvals_harness import (  # noqa: F401
     graphql_answers,
     hub,
     merging,
+    reran,
     others_open,
     pushed,
     refs,
     repo_template,
     required,
 )
+
+# No test reaches GitHub through the real `gh` (tools/gh_trap.py, #2035); the trap folder this process made is removed
+# when its run ends, and an xdist worker reuses its controller's (inherited through GH_NO_GITHUB_TRAP)
+_made_trap: list[Path] = []
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if made := install_trap(os.environ):
+        _made_trap.append(made)
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    for made in _made_trap:
+        shutil.rmtree(made, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _real_gh_for_live_agents(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `live_agent` test drives a real harness against the real forge: it gets PATH without the trap."""
+    trap = os.environ.get("GH_NO_GITHUB_TRAP")
+    if trap and request.node.get_closest_marker("live_agent"):
+        monkeypatch.setenv("PATH", without_trap(os.environ["PATH"], trap))
 
 
 @pytest.fixture
@@ -232,6 +259,20 @@ def _no_loop_events_read(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
         monkeypatch.setattr(module, "read_loop_events", lambda cwd=None: None)
 
 
+# The one module that runs land's `own-pr` start for real, against a fake script.
+STARTS_OWN_PR = {"test_approvals_own_prs"}
+
+
+@pytest.fixture(autouse=True)
+def _no_own_pr_start(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """land starts omnigent_agent.py `own-pr` for each PR it names (#2161): a test of land starts none."""
+    if request.module.__name__ in STARTS_OWN_PR:
+        return
+    from approvals_harness import approvals
+
+    monkeypatch.setattr(approvals, "own_prs", lambda pulls: None)
+
+
 @pytest.fixture(autouse=True)
 def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests run as if outside an Omnigent session; one that needs a session sets it."""
@@ -300,6 +341,15 @@ def _status_follows_the_pull(
     if module.__name__.startswith("test_approvals") and hasattr(module, "approvals"):
         approvals = module.approvals
         monkeypatch.setattr(approvals, "pull_status", lambda n: approvals.pull_request(n))
+
+
+@pytest.fixture(autouse=True)
+def _land_heads_recorded(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The local queue's land refuses a head with no pass record on origin (head_recorded, R6): its other tests have no
+    origin holding one, so every head reads recorded there. test_approvals_land_record.py runs the real read."""
+    module = request.module
+    if module.__name__ != "test_approvals_land_record" and hasattr(module, "approvals"):
+        monkeypatch.setattr(module.approvals, "head_recorded", lambda _pull: True)
 
 
 @pytest.fixture(autouse=True)

@@ -56,6 +56,8 @@ class Hub:
             return json.dumps({"check_suite_id": 1, "name": "ci", "status": self.runs})
         if path.endswith("/status?per_page=100"):
             return json.dumps({"statuses": [], "total_count": 0})
+        if args[:2] == ("api", "repos/{owner}/{repo}/statuses/" + HEAD):  # a status write
+            return "{}"
         raise AssertionError(args)
 
     def api(self) -> list[tuple[str, ...]]:
@@ -73,7 +75,9 @@ def hub(monkeypatch: pytest.MonkeyPatch) -> Hub:
 
 def one_pass() -> None:
     """What a pass of land asks, as often as it asks it: the rules several times, a writer per trusted login, the
-    head's checks."""
+    head's checks. Passes are POLL apart, past READ_TTL, so the run's read cache (`reads`) never answers one pass
+    from another: it starts each pass empty."""
+    github.reads.clear()
     for _ in range(3):
         assert github.required_checks("main") == {"check", "qualify"}
     assert github.writer("worker") and github.writer("worker")
@@ -239,3 +243,55 @@ def test_land_wait_naps_back_off_while_the_state_holds_and_reset_when_it_changes
     )  # the wait is over: a later gh() in this process is not guarded
     gaps = [b - a for a, b in itertools.pairwise(ran)]
     assert gaps == [300, 480, 480, 300, 480]
+
+
+def test_a_nearly_spent_bucket_inside_a_tight_ceiling_waits_with_the_jitter_cut_to_fit(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slept: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        hub.bucket = 5000
+
+    monkeypatch.setattr(github.time, "sleep", sleep)
+    monkeypatch.setattr(github.random, "randint", lambda low, high: high)
+    monkeypatch.setattr(github, "wait_until", time.monotonic() + 121 + 50)
+    hub.bucket = github.QUOTA_FLOOR - 1
+    github.required_checks(
+        "main"
+    )  # the reset falls inside the ceiling: it waits, never stops on the jitter
+    assert 120 <= sum(slept) <= 121 + 50
+
+
+def test_a_run_reads_a_path_once_until_it_writes(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One run (`approve merge`, `record verdict`) read the same PR three or four times, about 40 REST calls; a repeat of
+    a plain `gh api` read within READ_TTL is answered from `reads`, and a write empties it, so the run never reads
+    back what it wrote stale."""
+    github.reads.clear()
+    for _ in range(3):
+        github.rest_checks(HEAD)
+    status_reads = [call for call in hub.api() if call[-1].endswith("/status?per_page=100")]
+    assert len(status_reads) == 1
+    github.gh("api", "repos/{owner}/{repo}/statuses/" + HEAD, "-f", "state=success")  # a write
+    github.rest_checks(HEAD)
+    assert len([call for call in hub.api() if call[-1].endswith("/status?per_page=100")]) == 2
+
+
+@pytest.mark.parametrize(
+    ("args", "kept"),
+    [
+        (("api", "repos/o/r/pulls/1"), True),
+        (("api", "--paginate", "repos/o/r/pulls/1/files?per_page=100", "--jq", ".[]"), True),
+        (("api", "-X", "GET", "repos/o/r/pulls"), True),
+        (("api", "-X", "POST", "repos/o/r/issues/1/comments"), False),
+        (("api", "--method=PATCH", "repos/o/r/pulls/1"), False),
+        (("api", "repos/o/r/issues/1/labels", "-f", "labels[]=x"), False),
+        (("api", "repos/o/r/issues/1/comments", "-F", "body=@-"), False),
+        (("api", "-i", "repos/o/r/pulls/1"), False),
+        (("api", "rate_limit"), False),
+        (("pr", "view", "1"), False),
+    ],
+)
+def test_only_a_plain_api_get_is_kept(args: tuple[str, ...], kept: bool) -> None:
+    assert github.plain_read(args) is kept

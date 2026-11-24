@@ -45,8 +45,8 @@ def test_a_land_that_merges_posts_land_on_the_head_before_the_merge_call(
 def test_a_land_that_does_not_merge_posts_no_land_status(
     lands: dict[str, Any], posted: list[tuple[Any, ...]]
 ) -> None:
-    lands["open"](7, {"7.txt": "7\n", "red.txt": ""})
-    code, lines = lands["land"]()
+    lands["open"](7, {"7.txt": "7\n"}, reviews=())
+    code, lines = lands["land"]("7")
     assert code == 1, lines
     assert not any(call[:2] == ("pr", "merge") for call in lands["calls"])
     assert [p for p in posted if p[1] == "land"] == []
@@ -62,19 +62,38 @@ def test_a_merge_github_refuses_turns_the_land_status_to_an_error(
     assert [(p[0], p[3]) for p in posted if p[1] == "land"] == [(head, "success"), (head, "error")]
 
 
-def test_a_land_status_that_cannot_be_posted_stops_the_merge(
+def test_a_land_status_that_fails_to_post_stops_the_merge(
     lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A failure that is no refusal (GitHub unreachable, a 5xx) stops the land before its merge call."""
     lands["open"](7, {"7.txt": "7\n"})
 
     def post(head: str, context: str, description: str, state: str = "success") -> None:
         if context == "land":
-            raise subprocess.CalledProcessError(1, ("gh",), stderr="HTTP 403")
+            raise subprocess.CalledProcessError(1, ("gh",), stderr="HTTP 502")
 
     monkeypatch.setattr(approvals, "post_status", post)
     code, lines = lands["land"]()
     assert code == 1, lines
     assert not any(call[:2] == ("pr", "merge") for call in lands["calls"])
+
+
+def test_a_land_status_github_refuses_still_merges(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused write (a 403, as a cloud session's proxy answers) is printed as not written and the PR merges all
+    the same (#1917)."""
+    head = lands["open"](7, {"7.txt": "7\n"})
+
+    def post(sha: str, context: str, description: str, state: str = "success") -> None:
+        if context == "land":
+            raise subprocess.CalledProcessError(1, ("gh",), stderr="HTTP 403")
+
+    monkeypatch.setattr(approvals, "post_status", post)
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert any(call[:2] == ("pr", "merge") for call in lands["calls"])
+    assert any(f"the `land` status on {head} was not written" in line for line in lines), lines
 
 
 def refuse_merges(monkeypatch: pytest.MonkeyPatch, stderr: str) -> None:

@@ -192,7 +192,8 @@ post that reaches you has already been through that, so the rows below that say 
 |---|---|
 | Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Send each lead that waits on this one, and was started without `start --after` (or under a supervisor without `--console`), a line of yours naming its result, the merge or that it ended without one, since nothing else wakes it; a lead started with `--after` is told by the supervisor, and a second line of yours would wake it twice. Then archive the lead once its report says it cleaned up (`reap <session>` with the registry, which drops its line first, so the supervisor posts no `archived` for it). |
 | `landed` (a repo's default branch moved) | Do the step owed after the landing (a restart, a rebuild, a board update) and tell no lead: each lead reads the new base on its next fetch, a lead waiting on that PR hears from its owner's `DONE` row, and every notice wakes a lead holding its whole context, about 150k tokens. |
-| Turn ended, `USER NEEDED` | When a standing decision delegates that kind of question and the answer is reversible, decide it as Authority says: `relay` your answer quoting the standing decision it rests on, and report it to the owner in one line. Otherwise put its question to the owner in one line, linked to the lead's session, and never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
+| Turn ended, `USER NEEDED` (reaches you only with no card open: a lead that asks on its own card raises no event, since the card is already in the owner's Inbox and the page shows the lead red) | When a standing decision delegates that kind of question and the answer is reversible, decide it as Authority says: `relay` your answer quoting the standing decision it rests on, and report it to the owner in one line. Otherwise, a question about the lead's own project goes back to the lead: `relay` it a line to ask on its own card (`sys_ask_user_question`), quoting the rule (lead.md step 1: your own project's question goes on your own card), and never put it to the owner yourself, since a second copy splits the discussion between two places. A question that spans projects, or needs context only you have, you ask on your own card, linked to the lead's session, and `relay` the answer once `sys_read_answer` reads it `answered`; never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
+| Card waits unanswered past 4 h (`card-waiting`: a lead's question card still open, said once per card) | Answer it only under a standing decision that lets you act in the owner's name (Answering the owner's cards), and only when it is not one that stays on the card; else send nothing, since the card is already in the owner's Inbox and a reminder of yours would be a second copy. |
 | Turn ended, `STILL WORKING`, with something pending | Send nothing, since the state file records what it waits on (Handover, Follow): its own worker, verifier or CI wakes it, another lead's merge reaches it through that lead's `DONE`, and a timed wait (`until <UTC time>`) raises no deadline before its time, then gets the supervisor's wake (`--console`, see above) or, without it, a `relay` from you once its time has passed. Tell the owner only when the turn changes the task, in one line naming the block or the new scope: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
 | Turn ended, `PARKED` after your `Park: ` message | Send nothing (the state file records it as parked, and its last message holds the next step): it is no stall and spends no nudge. Once the host has room, `relay` it a line to resume, one lead at a time. |
 | Turn ended, `STILL WORKING` with nothing pending (its message names no wait), no ending, or cancelled | A stall: send it one nudge to carry on to its next step (under `--console` the supervisor sent it: see above). A second stall without progress goes to the owner. |
@@ -256,9 +257,12 @@ it quoted.
   the words are not the owner's own message in your session: never relay them as an approval.
 - **What you may record.** For an approval the owner gave you, add its label (such as
   `approved:spec`) with a comment quoting their words and the `owner-said` citation.
-  The written approval record a gate checks (the loop's `approve --by owner`) is the owner's
-  own to make. When a gate still waits on it, put the exact command or click the owner must
-  give on the attention list; never retry a write a tool refused as self-approval.
+  The written approval record a gate checks (the loop's `approve --by owner`) for an approval
+  given to you is the owner's own to make. When a gate still waits on it, put the exact command or click the owner must
+  give on the attention list; never retry a write a tool refused as self-approval. An approval
+  the owner gives on a lead's own card is recorded by that lead (`approve <kind> <n> --by owner`
+  once `sys_read_answer` reads `answered`: engineering-loop's lead.md step 1), so a brief of yours
+  never tells a lead not to run `approve` or `record approval`, since a lead that reads it waits for a label the owner already gave.
 - **Delegated decisions.** Where the owner's standing decisions delegate a kind of
   decision, a question you would put to them becomes options, your recommendation and the
   action taken, reported in one line they can reverse. Only a step that is hard to undo
@@ -271,6 +275,67 @@ it quoted.
   repeats, propose what removes it through the loop as an issue: a line of project policy, a
   script, a clearer brief. An approval only the owner may give stays theirs; how much they
   delegate is their standing decision on the board, never a line in this skill.
+
+## Answering the owner's cards (optional delegation)
+
+An optional mode, for an owner who wants work to run while they are away: their coordinators
+answer the owner's question cards as the owner would.
+
+- **On and off.** The owner turns it on with a standing decision on the root board (Handover),
+  and it lasts until they record it off there; nobody else turns it on, extends it or widens it.
+  Nothing changes in the loop or in briefs: leads and workers post cards as usual and carry no
+  approval, so turning it on or off needs no relay.
+- **Who answers.** Each project manager answers its own project's sessions' cards, from its own
+  session; the chief of staff answers its own leads' cards and cross-project ones.
+- **Finding cards.** A session in your lead registry with a pending elicitation (a count above
+  0: `status <session>` names the card), each supervisor `blocked on a prompt` event, and each
+  `card-waiting` event (a lead's card still unanswered 4 hours after the supervisor first saw it).
+- **Answering.** Through the card itself, so the lead sees an answered card: resolve it with
+  action accept and the chosen answer (Omnigent's `sys_resolve_question`, action `answer`, on
+  a descendant session's card, else `POST /v1/sessions/<id>/elicitations/<question id>/resolve`
+  with `accept` and the answer); a harness-parked question takes `relay --answer`. Each answer opens by saying it is
+  delegated and names the standing decision it rests on, and goes in the decision log with its
+  undo (A tree of coordinators). A card asking for a spec, plan or merge go is answered with
+  the delegate's record (`approve … --by delegate`, which the gate counts only under
+  `loop.delegate: all`), never the owner's (Authority). A card settled some other way (a relay, a decision elsewhere)
+  is withdrawn at once (`withdraw <session> <question id>`, which resolves it with action cancel),
+  so the owner never answers a moot one. An approval prompt (a tool call) stays the owner's, as
+  above.
+- **What stays on the card.** Leave the card open for the owner when it touches money,
+  secrets, tokens or 2FA, sudo, a send outside the project, an irreversible delete, a production
+  order or trading path, merging a long-lived feature branch into the default branch, a path on
+  the policy's `risk.critical_paths` (the gate refuses the delegate's go there), or anything on
+  the owner's own list on their board. Unsure which side a card is on, it stays.
+- **A project's opt-out.** A project keeps specs and plans with the owner through its gatekeeper
+  policy: `loop.delegate_spec: false` beside `loop.delegate: all` makes the gate refuse a
+  delegate's spec or plan approval and count none, while the delegate's merge go still counts.
+  Its cards for a spec or plan stay on the card.
+
+## A tree of coordinators
+
+A home of your own can serve several projects as a tree: you at its root and a project
+manager per project, each a node.
+
+- **Nodes.** One folder per node, holding its instructions and its board; a session's role
+  comes from the folder it starts in, so it survives a compaction or a harness change. A
+  project repo holds no coordinator instructions, since every session there reads them.
+- **Hand it down.** You coordinate and never do: a thread goes to the manager that owns it, with
+  the context it lacks, and an item spanning projects gets a lead of its own.
+- **One writer per board**, its node. Standing decisions pass down: a node reads its parent's
+  board, never copies it, since a copy goes stale; a decision for one project stays on that
+  project's board.
+- **One owner conversation per topic.** The node the owner talks to about it answers; nobody
+  relays or re-drafts it.
+- **The inbox is the channel.** Every owner question is a card (Speaking to the owner); no node
+  above reports, relays or counts one, since the owner already sees it, and a moot one is
+  withdrawn.
+- **Asks down, reports up**, and up only what changes the parent's work. Managers message each
+  other directly about a bug that crosses their projects.
+- **Leads.** Each manager's leads are in its own registry, followed by its own supervisor
+  (Follow).
+- **Decision log.** While the owner is away, each decision taken for them goes in the node's
+  decision log with how to undo it. A morning digest is drafted from it and the board's
+  `## Needs the owner`, and sent by hand, never by a scheduled send.
 
 ## Speaking to the owner
 
@@ -326,7 +391,9 @@ buys nothing, but a lead missing from the board is one a successor never finds:
     any lead followed by a `watch` or a subscription instead, with its command.
 
   It holds no history: finished work lives on its PR, issue or report, and the file links
-  it. A journal grows past what a successor can read cheaply and buries the live state.
+  it. A journal grows past what a successor can read cheaply and buries the live state. A
+  finished item leaves for a dated archive file beside it in the same commit, and a board commit
+  names its files, since another node's edits may sit in the same tree.
 - **When.** Rewrite it in the turn that changes what it holds, before you reply to the
   owner: a lead started, relayed, reporting, failing or closed, a standing decision, a
   takeover. State that is only in chat is lost at the next switch.

@@ -110,10 +110,36 @@ def test_the_base_goes_in_the_variable_the_gate_base_line_names(
     assert worker["ran"]() == ["selected app.py"]
 
 
-def test_without_the_line_the_fallback_is_check_with_no_base_set(
+def test_without_the_line_the_full_check_runs(
+    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#2217: no selector, and no `select` cut to narrow by: the project's full check runs, never nothing."""
+    worker["set_loop"]("# Loop\n\nNo selector here.\n")
+    worker["commit"]("app.py", "x = 1\n")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["mise run check base=unset"]
+    assert (
+        "affected-tests: loop.md names no `Affected tests:` selector, so it can't narrow the change: the"
+        " project's full check runs" in capsys.readouterr().err
+    )
+
+
+def test_a_base_git_cant_resolve_selects_against_the_merge_base(
+    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#2217: a push of a new branch (an all-zeros base) selects against the merge base with the default branch."""
+    worker["set_loop"](f"# Loop\n\nAffected tests: {worker['selector']}\n")
+    worker["commit"]("app.py", "value = 2\n")
+    assert approvals.main(["affected-tests", "--base", "0" * 40]) == 0
+    assert worker["ran"]() == ["selected app.py"]
+    assert "it selects against the merge base" in capsys.readouterr().err
+
+
+def test_the_opt_out_runs_check_with_no_base_set(
     worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    worker["set_loop"]("# Loop\n\nNo selector here.\n")
+    """`Gate: full` is the project's own choice of the full check, so it still runs it."""
+    worker["set_loop"](f"# Loop\n\nAffected tests: {sys.executable} x.py\nGate: full\n")
     worker["commit"]("docs/guide.md", "words\n")
     monkeypatch.setenv("GATE_BASE", "abc")  # a caller's selection never leaks into the full run
     assert approvals.main(["affected-tests"]) == 0
@@ -203,7 +229,7 @@ def test_the_selection_and_the_fallback_run_under_the_host_gate_slot(
     probe = f"{sys.executable} -c 'import os, sys; sys.exit(0 if os.environ.get(\"LOOP_GATE_SLOT_HELD\") else 9)'"
     worker["set_loop"](f"# Loop\n\nAffected tests: {probe}\n")
     assert approvals.main(["affected-tests"]) == 0
-    worker["set_loop"]("# Loop\n")
+    worker["set_loop"](f"# Loop\n\nAffected tests: {probe}\nGate: full\n")
     held: list[str | None] = []
     real = approvals.run_heavy
     monkeypatch.setattr(

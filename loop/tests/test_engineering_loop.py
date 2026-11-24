@@ -163,11 +163,11 @@ def test_placement_is_stated_once_and_the_role_files_point_to_it() -> None:
 
 
 def test_a_lead_runs_no_test_suite() -> None:
-    """A lead and its verifier both ran the suite on the same two heads (waste audit, finding 9): the worker's gate
-    and the verifier's runs are the runs of record, so the lead reads their logs."""
+    """A lead and its verifier both ran the suite on the same two heads (waste audit, finding 9): the worker's
+    affected-test run and the verifier's e2e proof are the only runs on a head, so the lead reads their logs (#1872)."""
     lead = " ".join((LOOP / "lead.md").read_text().split())
     assert (
-        "You run no test suite: the worker's gate and the verifier's runs are the runs of record"
+        "You run no test suite: the worker's affected-test run and the verifier's e2e proof are the only runs on a head"
         in lead
     )
     assert "a suite to sort failures" not in lead and "Your own test or check run" not in lead
@@ -195,7 +195,14 @@ def test_the_verifier_waits_with_one_wake_and_reruns_repros_together() -> None:
     assert "--budget <its expected length>`" in lead
     assert "which blocks close to the tool limit and prints only the outcome" not in lead
     assert "waited on as a detached run is" in verifier  # the bare gate too
-    assert "Rerun all of its repros from one script" in verifier
+    # a fix round reruns what its diff reaches and every repro still NOT FIXED (R4), together from one script
+    assert (
+        "Rerun the acceptance checks and repros the round's diff reaches, plus every repro still `NOT FIXED`"
+        in verifier
+    )
+    assert (
+        "Run them from one script that prints each one's command, result and exit code" in verifier
+    )
     assert "the diff since its head and the files it touches" in verifier
 
 
@@ -211,7 +218,8 @@ def test_owner_questions_end_the_turn_rather_than_wait_in_a_tool() -> None:
     assert "Ask as text at the end of your turn" in cos
     assert "as text that ends your turn `USER NEEDED`" in lead
     for text in (cos, lead):
-        assert "never through a tool that waits for the answer" in text
+        # lead.md says "Never ask through …"
+        assert "through a tool that waits for the answer" in text
         assert "(Claude Code's AskUserQuestion, Codex's requestUserInput)" in text
 
 
@@ -243,7 +251,7 @@ def test_the_verifier_runs_tests_through_the_project_s_test_task() -> None:
     verifier = " ".join((LOOP / "verifier.md").read_text().split())
     assert "only through the project's test task" in verifier
     assert "never a bare runner such as `pytest`" in verifier
+    assert "never the whole suite: never widen that selection into a whole-suite run" in verifier
     assert (
-        "A selection of more than half the suite runs as the whole suite through that task"
-        in verifier
-    )
+        "A selection of more than half the suite runs as the whole suite" not in verifier
+    )  # #1872

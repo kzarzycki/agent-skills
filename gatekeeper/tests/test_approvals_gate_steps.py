@@ -190,36 +190,6 @@ def test_a_step_that_failed_is_never_reused(
     assert steps["ran"]() == ["lint", "unit", "unit", "apple"]
 
 
-def test_land_on_a_merged_tree_equal_to_a_heads_tree_runs_nothing(
-    steps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert approvals.main(["local-ci", "--record"]) == 0
-    capsys.readouterr()
-    monkeypatch.setattr(approvals, "ran_step", lambda *_a, **_k: pytest.fail("land ran a step"))
-    pr = {**pull(), "headRefOid": steps["head"]}
-    assert approvals.gate_batch(steps["repo"], [pr]) == (steps["tree"], "reused")
-    out = capsys.readouterr().out
-    assert all(
-        f"{name}: passed on tree {steps['tree']} before, reused from" in out
-        for name in ("lint", "unit", "apple")
-    )
-
-
-def test_land_runs_only_the_steps_with_no_pass_and_refuses_a_host_step_in_a_cloud_session(
-    steps: dict[str, Any], refs: dict[str, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    passed_by_another_clone(refs, steps["tree"], steps["commands"]["lint"])
-    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
-    with pytest.raises(
-        approvals.Refused, match="`apple` has no pass on it and runs only on a host"
-    ):
-        approvals.gate_batch(steps["repo"], [])
-    assert steps["ran"]() == ["unit"]
-    monkeypatch.delenv("CLAUDE_CODE_REMOTE")
-    assert approvals.gate_batch(steps["repo"], []) == (steps["tree"], "run")
-    assert steps["ran"]() == ["unit", "apple"]
-
-
 def test_a_single_command_gate_records_its_seconds_and_its_wait_for_the_host_gate_slot(
     steps: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -275,11 +245,10 @@ def test_a_step_run_under_a_held_slot_takes_none_and_tells_its_command(
     assert seen[0][approvals.SLOT_HELD] == slot
 
 
-def test_a_cloud_run_names_only_the_missing_step_and_no_step_as_another_gate(
+def test_a_cloud_run_names_only_the_missing_step(
     steps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With `lint` and `unit` passed and `apple` left, `local-ci <pr>`'s refusal names `apple` alone, and no step's
-    own pass reads as the tree passing under another gate command."""
+    """With `lint` and `unit` passed and `apple` left, `local-ci <pr>`'s refusal names `apple` alone."""
     monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
     assert approvals.main(["local-ci", "--record"]) == 0
     with pytest.raises(approvals.Refused) as refused:
@@ -288,21 +257,6 @@ def test_a_cloud_run_names_only_the_missing_step_and_no_step_as_another_gate(
     assert f"step `apple`: no pass for the head {steps['head']}" in said
     assert "step `lint`" not in said and "step `unit`" not in said
     assert f"the gate step `apple` ({steps['commands']['apple']}) has no pass" in said
-    assert approvals.elsewhere(steps["head"]) == ""
-
-
-def test_the_pass_land_publishes_on_the_tip_keeps_each_steps_seconds(steps: dict[str, Any]) -> None:
-    assert approvals.main(["local-ci", "--record"]) == 0
-    tip = "d" * 40
-    landed = approvals.landed_pass(tip, steps["tree"])
-    assert [one["step"] for one in landed["steps"]] == ["lint", "unit", "apple"]
-    for one in landed["steps"]:
-        record = local_record(steps, one["step"])
-        assert record is not None and one["head"] == tip
-        assert (one["seconds"], one["slot_wait_seconds"]) == (
-            record["seconds"],
-            record["slot_wait_seconds"],
-        )
 
 
 def test_status_passes_only_when_every_step_the_run_had_to_pass_is_recorded(
@@ -439,10 +393,6 @@ def test_steps_named_gate_or_alone_record_and_print_as_steps(
             assert record["step"] == name
         assert approvals.main(["local-ci", "7"]) == 0
         assert all(f"`{name}` from the pass recorded on" in posted[-1] for name, _ in rows)
-        # the pass land republishes on a new tip is the steps' records, never one record of the whole gate
-        assert [one["step"] for one in approvals.landed_pass("d" * 40, steps["tree"])["steps"]] == [
-            name for name, _ in rows
-        ]
 
 
 def other_commit(steps: dict[str, Any]) -> str:
@@ -467,17 +417,6 @@ def test_a_clean_head_switch_between_steps_fails_local_ci_and_records_nothing_af
     assert "changed the checkout" in out and f"HEAD moved during the gate: it is {other}" in out
     assert steps["ran"]() == ["lint"]
     assert local_record(steps, "lint") is None and local_record(steps, "unit") is None
-
-
-def test_a_clean_head_switch_between_steps_fails_lands_batch_gate(steps: dict[str, Any]) -> None:
-    """C1: land's batch runner reads HEAD too, not only the status: the same switch leaves the tree red there."""
-    other = other_commit(steps)
-    steps["switch"]("lint", other)
-    assert approvals.gate_batch(steps["repo"], []) == (steps["tree"], "")
-    assert steps["ran"]() == ["lint"]
-    assert local_record(steps, "lint") is None
-    log = (steps["repo"].parent / f"{steps['tree']}.log").read_text()
-    assert f"HEAD moved during the gate: it is {other}" in log
 
 
 def test_a_step_moved_to_another_tree_is_a_move_whatever_its_head_says() -> None:

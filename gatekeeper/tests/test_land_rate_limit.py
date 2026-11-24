@@ -26,6 +26,9 @@ def refuse(stderr: str) -> subprocess.CalledProcessError:
 def poll_unstretched(monkeypatch: pytest.MonkeyPatch) -> None:
     """The quota read is a `gh` call: tests of the wait loop poll at POLL without it."""
     monkeypatch.setattr(approvals, "poll_seconds", lambda *_: approvals.POLL)
+    monkeypatch.setattr(
+        approvals, "project", lambda: (None, None)
+    )  # the wait's length is the default
 
 
 @pytest.fixture
@@ -295,7 +298,7 @@ def test_a_failed_quota_read_keeps_the_poll(monkeypatch: pytest.MonkeyPatch) -> 
     assert real_poll_seconds() == max(approvals.POLL, approvals.QUEUE_POLL)
 
 
-@pytest.mark.parametrize("site", ["batch", "merges", "base_branch", "settled_head"])
+@pytest.mark.parametrize("site", ["merges", "base_branch", "settled_head"])
 def test_a_status_only_read_asks_pull_status_not_the_whole_pull(site: str) -> None:
     """The conftest fake answers pull_status from pull_request, so no behaviour test tells the two apart; the
     function's own calls do (#1271)."""
@@ -308,3 +311,14 @@ def test_a_status_only_read_asks_pull_status_not_the_whole_pull(site: str) -> No
     }
     assert "pull_status" in calls
     assert "pull_request" not in calls
+
+
+def test_a_reset_inside_a_tight_ceiling_waits_with_the_jitter_cut_to_fit(
+    calls: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the bucket resets in 120 s and the ceiling has 50 s beyond it: the most jitter (JITTER) would pass the ceiling
+    monkeypatch.setattr(github.random, "randint", lambda low, high: high)
+    monkeypatch.setattr(github, "wait_until", time.monotonic() + 121 + 50)
+    calls["replies"] = [refuse("gh: API rate limit exceeded (HTTP 403)"), "ok"]
+    assert github.gh("api", "x") == "ok"  # it waits, never stops on the jitter alone
+    assert 121 <= sum(calls["sleeps"]) <= 121 + 50

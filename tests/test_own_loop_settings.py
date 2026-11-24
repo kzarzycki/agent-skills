@@ -43,12 +43,12 @@ def test_this_repos_policy_and_tracker_settings_parse(copy: str, monkeypatch) ->
             pytest.skip(f"the installed pack predates a setting the docs use: {refusal}")
         raise
     assert approvals.settings(policy)["risk"]["paths"]
-    # settings() takes any string for `gate`; gate() is what land and local-ci refuse a malformed one with
+    # settings() takes any string for `gate`; gate() is what local-ci refuses a malformed one with
     assert approvals.gate()[1]
     assert approvals.tracker_settings(tracker)
     assert approvals.label_names(tracker)["component"]
     # qualify's QUALIFY_TIMEOUT exit (tools/capability_pack/cli.py), so a gate timed out on a loaded host is a
-    # machine fault that land reruns and then stops on, never an eviction (#851)
+    # machine fault local-ci refuses, never a red gate (#851)
     assert approvals.settings(policy).get("machine_exit") == 78
 
 
@@ -67,3 +67,35 @@ def test_hook_script_the_settings_name_is_tracked() -> None:
     assert ignored.returncode == 1, (
         ".claude/hooks/ is git-ignored: a later hook would miss a fresh checkout"
     )
+
+
+def test_every_plugin_has_a_component() -> None:
+    """`check build` refuses an issue with no listed `area:` label, so a plugin missing from `components` blocks
+    every issue that touches only it (#2185)."""
+    spec = importlib.util.spec_from_file_location("approvals_components", COPIES["shipped"])
+    assert spec and spec.loader
+    approvals = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(approvals)
+    tracker = (REPOSITORY / "docs/agents/issue-tracker.md").read_text()
+    components = {
+        name.removeprefix("area:") for name in approvals.label_names(tracker)["component"]
+    }
+    plugins = {path.parent.parent.name for path in REPOSITORY.glob("*/.claude-plugin/plugin.json")}
+    assert plugins <= components, f"no component for: {sorted(plugins - components)}"
+
+
+def test_breakglass_smoke_is_the_gate_and_check_land_is_gone() -> None:
+    """Break-glass's smoke is the `gate` command (check-fast), so the worker's gate record already proves the head
+    builds; `check-land` duplicated check-fast minus the Mergify drift check and is gone (#2260)."""
+    import tomllib
+
+    spec = importlib.util.spec_from_file_location("approvals_smoke", COPIES["shipped"])
+    assert spec and spec.loader
+    approvals = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(approvals)
+    # this checkout's file, not project()'s origin/main copy, so the test judges the change it ships with
+    policy = approvals.Policy((REPOSITORY / "docs" / "agents" / "gatekeeper.md").read_text())
+    assert approvals.breakglass_settings(policy)["smoke"] == approvals.settings(policy)["gate"]
+    assert "mise run check-fast" in approvals.settings(policy)["gate"]
+    tasks = tomllib.loads((REPOSITORY / "mise.toml").read_text())["tasks"]
+    assert "check-land" not in tasks

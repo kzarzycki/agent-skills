@@ -64,6 +64,7 @@ class Memory:
             "close_issue": lambda n: None,
             "pull_request": lambda n: self.pulls[n],
             "pull_status": lambda n: self.pulls[n],
+            "queue_watch": lambda numbers: {n: self.pulls[n] for n in numbers},
             "current_pr": lambda: None,
             "pr_changes": lambda n: [],
             "merged_pull": lambda n: None,
@@ -97,6 +98,7 @@ class Memory:
             "repo_tags": lambda repo: {},
             "tag_tree": lambda repo, tag: None,
             "file_at": lambda ref, path, repo=None: None,
+            "pusher": lambda ref: None,
             "statuses": lambda sha: self.statuses.get(sha, []),
             "post_status": lambda sha, context, description, state="success": None,
             "post_review": lambda pr, review: None,
@@ -205,6 +207,7 @@ def test_report_json_gives_the_reports_facts(
         "risk": {"level": "low", "reason": "a test fixture"},
         "logic_change": None,
         "scope": None,
+        "rerun": None,
         "findings": [
             {
                 "id": "C1",
