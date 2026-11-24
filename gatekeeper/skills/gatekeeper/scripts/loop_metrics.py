@@ -122,7 +122,7 @@ def read_timeline(gh: Gh, repo: str, number: int) -> dict[str, Any]:
             ready = when if ready is None or when > ready else ready
         elif kind == "committed" and event.get("sha"):
             shas.add(event["sha"])
-            tree = (event.get("tree") or {}).get("sha") or tree
+            tree = (event.get("tree") or {}).get("sha")
         elif kind in ("head_ref_force_pushed", "merged") and event.get("commit_id"):
             shas.add(event["commit_id"])
     return {"ready": ready, "shas": shas, "tree": tree}

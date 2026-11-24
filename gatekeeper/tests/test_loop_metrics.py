@@ -88,7 +88,8 @@ RECORDED: dict[str, Any] = {
         {"event": "committed", "sha": "aaa", "tree": {"sha": "T1"}},
     ],
     "repos/acme/widgets/issues/2/timeline": [
-        {"event": "committed", "sha": "bbb", "tree": {"sha": "T2"}}
+        {"event": "committed", "sha": "bbb0", "tree": {"sha": "T0"}},
+        {"event": "committed", "sha": "bbb", "tree": {"sha": "T2"}},
     ],
     "repos/acme/widgets/issues/3/timeline": [
         {"event": "committed", "sha": "ccc", "tree": {"sha": "T3"}}
