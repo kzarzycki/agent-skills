@@ -2,7 +2,7 @@
 # #1601 Acceptance line 1: lead.md has one Cloud lead section of seven points, each holding its own load-bearing terms, and its opening paragraph points to it.
 # Usage: 01-cloud-lead-section.sh [lead.md]   (default: the real file)
 set -euo pipefail
-f=${1:-engineering/skills/engineering-loop/lead.md}
+f=${1:-loop/skills/engineering-loop/lead.md}
 fail=0
 miss() { echo "$1" >&2; fail=1; }
 

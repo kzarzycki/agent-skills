@@ -30,6 +30,7 @@
     uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1 when .mergify.yml is out of step
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
+    uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
@@ -1024,7 +1025,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
         checks=Rows(paths=list, command=str, unique=("command",)),
         # the checks whose pass is never reused (#2183): each a gate step's name or command, or `gate`'s command
         unkeyed=list,
-        optional=("build_inputs", "checks", "unkeyed"),
+        # how many shards a whole-suite selection splits into (shard_selections), 1 or absent is one
+        shards=int,
+        optional=("build_inputs", "checks", "unkeyed", "shards"),
     ),
     # every time limit of a run (timeouts): one test, and one selection run, the queue's check included (#2228)
     "timeouts": Table(test=str, run=str, optional=("test", "run")),
@@ -2949,7 +2952,9 @@ def proofs(
             if READY not in labels:
                 found.append(f"{where} lacks the `{READY}` label")
             continue
-        covered, unrowed = bump or policy_covers(pull, issue, loop), None
+        # why a row line or `spec:paths` didn't cover the spec: said only beside a missing approval, since the
+        # owner's approval covers the spec whatever the row or the paths say
+        covered, unrowed, uncovered = bump or policy_covers(pull, issue, loop), None, []
         if not covered and (claimed := row(issue)):
             unrowed = row_gap(pull, issue, claimed, loop)
             covered = unrowed is None
@@ -2957,16 +2962,18 @@ def proofs(
             why = scoped(pull, issue, loop)
             covered = why is None
             if why:
-                found.append(
+                uncovered.append(
                     f"{where}: its spec is the owner's to approve, though it carries `{SCOPED}`, since {why}"
                 )
-        if not covered:
-            if unrowed:
-                found.append(
-                    f"{where}: its spec is the owner's to approve, though its body names row"
-                    f' "{claimed[1]}" of #{claimed[0]}, since {unrowed}'
-                )
-            found += approvals(where, issue, "spec", spec_holder(issue), pull, loop)
+        if not covered and unrowed:
+            uncovered.append(
+                f"{where}: its spec is the owner's to approve, though its body names row"
+                f' "{claimed[1]}" of #{claimed[0]}, since {unrowed}'
+            )
+        if not covered and (
+            lacking := approvals(where, issue, "spec", spec_holder(issue), pull, loop)
+        ):
+            found += uncovered + lacking
         plan = headed(issue, "## Plan")
         if plan is not None:
             if matches(rule.get("plan", {}), labels, None):
@@ -10379,8 +10386,9 @@ def run_budget() -> int:
 def over_budget(budget: int, root: Path, base: str | None) -> str:
     """The one line of a selection run stopped at `timeouts.run`: the budget, the selection's size as far as the verb
     knows it (the whole suite under `Gate: full`; else unknown, since the project's own command selects, with the
-    count of files the change touches against `base`, the selector's input), and that it ran unsharded, since no
-    `select.shards` splits a selection yet (#2229)."""
+    count of files the change touches against `base`, the selector's input), and that it ran unsharded: this verb runs
+    the project's one command, so with `select.shards` above 1 the line names the `shards` verb that splits a selection
+    (#2229)."""
     if base is None:
         size = "the whole suite (`Gate: full`)"
     else:
@@ -10392,10 +10400,198 @@ def over_budget(budget: int, root: Path, base: str | None) -> str:
             f"a selection of unknown size ({count} changed file{'' if count == '1' else 's'} against"
             f" {base[:12]})"
         )
-    return (
-        f"affected-tests: timed out after `timeouts.run` ({said_span(budget)}) running {size}, unsharded (no"
-        f" `select.shards`): a timeout, not a test failure; raise `timeouts.run` in gatekeeper.md or narrow the run"
+    try:
+        shards = shard_count()
+    except Refused:
+        shards = 1
+    unsharded = (
+        "unsharded (no `select.shards`)"
+        if shards == 1
+        else f"unsharded (`select.shards` is {shards}: split the selection with `approvals.py shards`)"
     )
+    return (
+        f"affected-tests: timed out after `timeouts.run` ({said_span(budget)}) running {size}, {unsharded}: a"
+        f" timeout, not a test failure; raise `timeouts.run` in gatekeeper.md or narrow the run"
+    )
+
+
+def shard_count() -> int:
+    """`select.shards` from gatekeeper.md: how many shards a whole-suite selection splits into; 1 when absent. A value
+    below 1 is refused, since there is no run with no shard."""
+    count = settings(project()[1]).get("select", {}).get("shards", 1)
+    if count < 1:  # the schema has refused a value that is no whole number
+        raise Refused(f"gatekeeper.md's select.shards must be at least 1, not {count}")
+    return count
+
+
+def shard_selections(
+    selection: list[str],
+    suite: list[str],
+    count: int,
+    durations: dict[str, float] | None = None,
+    whole: bool = False,
+    limit: float | None = None,
+) -> list[list[str]]:
+    """`selection` (items of `suite`, one test target each) as `count` disjoint shards whose union is the selection,
+    balanced by `durations` (seconds per item, from the last full run): each item, longest first, goes to the
+    shard with the least time so far; an item with no recorded duration counts as the mean of the recorded ones (all
+    equal, so an even split by count, with none recorded), so it still lands in exactly one shard. Only a whole-suite
+    selection splits: `whole` (a build input changed, or the nightly), one over half of `suite`, or one whose estimate (the
+    sum of its items' seconds, an unrecorded item at the mean; 0 with no durations) is over `limit` (`timeouts.run`,
+    in seconds). A narrow selection (none of those), `count` 1 or less, or an empty one is returned as the one selection, unchanged. `count` is capped at the number of
+    items, so no shard is empty. Each shard keeps the selection's order."""
+    chosen = list(dict.fromkeys(selection))
+    if count <= 1 or not chosen:
+        return [selection]
+    known = {item: durations[item] for item in chosen if durations and item in durations}
+    fallback = sum(known.values()) / len(known) if known else 1.0
+    estimate = sum(known.get(item, fallback) for item in chosen) if known else 0.0
+    over = limit is not None and estimate > limit
+    if not (whole or over or len(chosen) * 2 > len(set(suite))):
+        return [selection]
+    count = min(count, len(chosen))
+    load, shards = [0.0] * count, [[] for _ in range(count)]
+    order = sorted(range(len(chosen)), key=lambda i: (-known.get(chosen[i], fallback), i))
+    for at in order:
+        lightest = min(range(count), key=lambda shard: (load[shard], shard))
+        shards[lightest].append(at)
+        load[lightest] += known.get(chosen[at], fallback)
+    return [[chosen[at] for at in sorted(held)] for held in shards]
+
+
+def shard_command(command: str, shard: int, count: int, items: list[str]) -> str:
+    """The command a shard's pass is recorded under: `command` with `GATE_SHARD=<shard>/<count>:<digest of the
+    shard's items>` set in front, so R1's record (record_name: tree and command) holds one pass per shard, and a
+    shard whose selection changed is another record. A single shard is keyed the same way, by its items: a run of some
+    of the tests must never stand on record for the command's full run."""
+    return f"GATE_SHARD={shard_key(shard, count, items)} {command}"
+
+
+def shard_key(shard: int, count: int, items: list[str]) -> str:
+    """`<shard>/<count>:<digest of the shard's items>`: the value of `GATE_SHARD` that a shard's record names (its
+    env) and its command sets, so a split that changed (new durations, a changed suite) is another record."""
+    return f"{shard}/{count}:{hashlib.sha256(chr(10).join(items).encode()).hexdigest()[:12]}"
+
+
+def sharded(args: argparse.Namespace) -> int:
+    """`shards --suite <file> [--selection <file>] [--whole] [--durations <file>]` prints the selection (default: the
+    whole suite) split by `select.shards` (shard_count, shard_selections). With one shard it prints the selection as it
+    is; with more it prints, for each shard, a `# shard i/n <key>` line and its items. `--durations` is a JSON file of
+    seconds per item; one that is missing or unreadable is said on stderr, and the split is even by count. A count
+    above the number of items is capped at it, said on stderr.
+
+    `--command <cmd>` names the check the shards run. With `--passed <head>` it prints, for each shard (gate_record),
+    the record branch found or the line `no record of ...: run it`, and exits 0 when every shard has a pass of the
+    command on <head>'s tree (origin's record), else 1. With `--record <head> --shard <i>` it runs shard <i>: `<cmd>`
+    with the shard's items as its last arguments and `GATE_SHARD` set to the shard's key (shard_key), under the host
+    gate slot, in this checkout, which must be at <head>; on exit 0 it pushes R1's record of that run (push_record,
+    keyed by the tree and the shard's command, the env `GATE_SHARD`) and exits 0, else it records nothing and exits
+    with the command's exit."""
+    suite = Path(args.suite).read_text().split()
+    selection = Path(args.selection).read_text().split() if args.selection else suite
+    durations: dict[str, float] | None = None
+    if args.durations:
+        try:
+            durations = {
+                k: float(v) for k, v in json.loads(Path(args.durations).read_text()).items()
+            }
+        except (OSError, ValueError, AttributeError, TypeError) as exc:
+            print(
+                f"shards: no durations from {args.durations} ({exc}): even split by count",
+                file=sys.stderr,
+            )
+    wanted = shard_count()
+    shards = shard_selections(
+        selection,
+        suite,
+        wanted,
+        durations,
+        args.whole or not args.selection,
+        timeouts(project()[1])["run"],
+    )
+    if 1 < len(shards) < wanted:
+        print(
+            f"shards: {wanted} shards asked, but {len(shards)} items: {len(shards)} shards",
+            file=sys.stderr,
+        )
+    if (args.passed or args.record) and not args.gate_command:
+        raise Refused("shards --passed and --record take the --command whose shards they read")
+    if args.passed:
+        missing = sum(
+            gate_record(
+                args.passed, shlex.split(shard_command(args.gate_command, at, len(shards), items))
+            )
+            != 0
+            for at, items in enumerate(shards, 1)
+        )
+        return 1 if missing else 0
+    if args.record:
+        return record_shard(args.record, args.shard, shards, args.gate_command)
+    if len(shards) == 1:
+        print("\n".join(shards[0]))
+        return 0
+    for at, items in enumerate(shards, 1):
+        print(f"# shard {at}/{len(shards)} {shard_command('', at, len(shards), items).strip()}")
+        print("\n".join(items))
+    return 0
+
+
+def record_shard(head: str, shard: int | None, shards: list[list[str]], command: str) -> int:
+    """`shards --record <head> --shard <i>`: run shard <i> of `shards` and, when it passes, push R1's record of it
+    (see sharded), under the guards `local-ci --record` has (run_local_ci): the checkout must be at `head` and clean
+    before the run (checkout_state), and a run that changes it, or moves HEAD (head_moved), records nothing. `command`
+    is read as loop.md's gate is (command_line: variables to set, then one command), and runs in gate_env's
+    environment, with the variables it sets and `GATE_SHARD`, so the record's env is what `--passed` keys it by."""
+    if shard is None or not 1 <= shard <= len(shards):
+        raise Refused(f"shards --record takes --shard 1 to {len(shards)}")
+    before = checkout_state()
+    try:
+        at_head = before[0] == git("rev-parse", "--verify", f"{head}^{{commit}}").strip()
+    except subprocess.CalledProcessError:  # a head this clone has no commit for
+        at_head = False
+    if not at_head:
+        raise Refused(f"shards --record runs on {head}: this checkout is at another commit")
+    if before[1]:
+        raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
+    tree = git("rev-parse", "HEAD^{tree}").strip()
+    items = shards[shard - 1]
+    keyed = shard_command(command, shard, len(shards), items)
+    recorded, words, env = command_line(
+        keyed, "shards --command"
+    )  # `recorded`: the form `gate()` records
+    words = [*words, *items]
+    try:
+        with heavy_slot("shards") as (slot, waited):
+            began = time.monotonic()
+            code = run_heavy(
+                words, env=gate_env({"sets": env}) | {SLOT_HELD: slot}, cwd=toplevel()
+            )[0]
+    except OSError as exc:
+        raise Refused(f"`{words[0]}` can't run: {exc}") from None
+    if code != 0:
+        print(f"shard {shard}/{len(shards)} exited {code}: nothing recorded")
+        return code
+    now_state = checkout_state()
+    if moved := head_moved(
+        before[0], tree, now_state[0], git("rev-parse", "HEAD^{tree}").strip()
+    ) or ("" if now_state == before else now_state[1]):
+        raise Refused(
+            f"the shard changed the checkout, so it did not run on the head as pushed:\n{moved}"
+        )
+    ref = push_record(
+        {
+            "head": before[0],
+            "tree": tree,
+            "command": recorded,
+            "exit": 0,
+            "env": env,
+            "time": now(),
+            "seconds": round(time.monotonic() - began),
+            "slot_wait_seconds": waited,
+        }
+    )
+    print(f"shard {shard}/{len(shards)} passed: published in origin as the record branch {ref}")
+    return 0
 
 
 # the subject of a queue's merge commit for one PR: Mergify's batch draft (`Merge of PR <n>`) and GitHub's merge queue
@@ -12927,6 +13123,15 @@ def main(argv: list[str]) -> int:
     rerunning.add_argument("failed", metavar="failed-tests.json")
     rerunning.add_argument("--red", required=True, metavar="HEAD")
     rerunning.add_argument("--base", metavar="REV")
+    sharding = commands.add_parser("shards")
+    sharding.add_argument("--suite", required=True)
+    sharding.add_argument("--selection")
+    sharding.add_argument("--whole", action="store_true")
+    sharding.add_argument("--durations")
+    sharding.add_argument("--passed", metavar="HEAD")
+    sharding.add_argument("--command", dest="gate_command")
+    sharding.add_argument("--record", metavar="HEAD")
+    sharding.add_argument("--shard", type=int)
     recording_read = commands.add_parser("gate-record")
     recording_read.add_argument("head")
     recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
@@ -12972,6 +13177,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return report_json(args.report) if args.json else report_check(args.report)
     if args.command == "affected-tests":
         return affected_tests(args.base, args.record)
+    if args.command == "shards":
+        return sharded(args)
     if (
         args.command == "queue-config"
     ):  # the checkout's own policy, so a PR's change to `land` renders with it
