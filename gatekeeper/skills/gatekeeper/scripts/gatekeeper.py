@@ -955,8 +955,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "stalled_after_hours": int,
     },
     "mutate": {"inconclusive_exit": int},
-    # the checks whose pass is never reused (unkeyed): each a gate step's name or command, or `gate`'s command
-    "select": {"unkeyed": list},
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
     "risk": {
@@ -1000,6 +998,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
         ),
     ),
     "carry_over_main": Table({"except": list}),
+    # the narrowed gate's first cut (classify): the project's build inputs, and the checks a non-product path still gets
+    "select": Table(
+        build_inputs=list,
+        checks=Rows(paths=list, command=str, unique=("command",)),
+        # the checks whose pass is never reused (#2183): each a gate step's name or command, or `gate`'s command
+        unkeyed=list,
+        optional=("build_inputs", "checks", "unkeyed"),
+    ),
     # every time limit of a run (timeouts): one test, and one selection run, the queue's check included (#2228)
     "timeouts": Table(test=str, run=str, optional=("test", "run")),
     # the break-glass land's proof windows (breakglass_settings); every key is optional
@@ -7628,14 +7634,14 @@ def local_queue(
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
 
 
-def tests_record_words(point: str) -> list[str] | None:
+def tests_record_words(point: str, head: str | None = None) -> list[str] | None:
     """The words `gate-record <head> -- <words>` takes for the record of a run of a PR's tests: loop.md's `Affected
     tests:` command narrowed against `point` (narrowed_gate under narrowed_to: the PR's merge base with its base
     branch, the base `affected-tests --record` selects against and keys its record by), its last word `(narrowed)`;
     None where no narrowed run exists (no `Affected tests:` line, `Gate: full`, `gate_steps`). The one builder of that
     key for `land` (head_recorded) and the merge queue's floor (the project's batch selector), so neither drifts from
-    the writer."""
-    with narrowed_to(point):
+    the writer. `head` is the PR's head, so the cut (selected) classifies the PR's change, not the checkout's."""
+    with narrowed_to(point, head):
         narrowed = narrowed_gate()
     return None if narrowed is None else shlex.split(narrowed[0])
 
@@ -7657,7 +7663,7 @@ def head_recorded(pull: dict[str, Any]) -> bool:
                 f"{where}: no merge base with origin/{pull['baseRefName']}, so no `Affected tests:` record is found"
             )
             return False
-        if (narrowed := tests_record_words(point)) is not None:
+        if (narrowed := tests_record_words(point, head)) is not None:
             words, writer = narrowed, "affected-tests --record"
     said = io.StringIO()
     with contextlib.redirect_stdout(said):
@@ -9785,6 +9791,10 @@ NARROWED = " (narrowed)"
 NARROW_BASE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "NARROW_BASE", default=None
 )
+# the head a narrowed gate is of, set by narrowed_to: a PR's head read from any checkout; None is the checkout itself
+NARROW_HEAD: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "NARROW_HEAD", default=None
+)
 
 
 def loop_md() -> str:
@@ -9807,12 +9817,14 @@ def narrowing(text: str | None = None) -> str | None:
 
 
 @contextlib.contextmanager
-def narrowed_to(base: str | None) -> Any:
-    """Within the block, gate() and gate_plan() are the narrowed gate against `base` (narrowed_gate); None: full."""
-    token = NARROW_BASE.set(base)
+def narrowed_to(base: str | None, head: str | None = None) -> Any:
+    """Within the block, gate() and gate_plan() are the narrowed gate against `base` (narrowed_gate); None: full.
+    `head` is the commit the gate is of, when it is not the checkout (a PR's head, from a checkout anywhere)."""
+    token, head_token = NARROW_BASE.set(base), NARROW_HEAD.set(head)
     try:
         yield
     finally:
+        NARROW_HEAD.reset(head_token)
         NARROW_BASE.reset(token)
 
 
@@ -9823,14 +9835,28 @@ def narrowed_gate(
     `paths`): the `Affected tests:` command (with `passed`, as gate() reads them), with the `Gate base:` variable
     (gate_base_variable) set to the base, as gate() returns a gate; else None. Its command is that variable's
     assignment first, then the rest, then NARROWED, so a record of it is keyed by the command and the base and never
-    stands for a full pass."""
+    stands for a full pass. A change gatekeeper.md's `select` finds no build input in (selected) runs `affected-tests
+    --base <base>` instead, which runs only the checks it touches, and its command names those checks (`select.checks:
+    <command>...`, or `none`), so a docs or pack-bump head's record is keyed by what ran."""
     base = NARROW_BASE.get()
     if base is None or settings(project()[1]).get("gate_steps"):
         return None
     if (written := narrowing()) is None:
         return None
-    _, words, sets = command_line(written, "Affected tests", passed)
     variable = gate_base_variable()
+    if (cut := selected(base, NARROW_HEAD.get())) is not None and not cut[0]:
+        # no build input changed (select): the run is affected-tests' own cut, keyed by the checks it runs
+        said = shlex.join(["select.checks:", *cut[1]] if cut[1] else ["select.checks:", "none"])
+        words = [
+            sys.executable,
+            str(Path(__file__).with_name("gatekeeper.py")),
+            "affected-tests",
+            "--base",
+            base,
+        ]
+        # the env is the command's own assignment, as gate_record reads it back from the key (command_line)
+        return f"{variable}={base} {said}{NARROWED}", words, {variable: base}
+    _, words, sets = command_line(written, "Affected tests", passed)
     sets = {variable: base, **{name: value for name, value in sets.items() if name != variable}}
     command = shlex.join([*(f"{name}={value}" for name, value in sets.items()), *words])
     return command + NARROWED, words, sets
@@ -9865,6 +9891,101 @@ def selection_base(given: str | None) -> str | None:
         raise Refused(
             f"no merge base of origin/{base} and HEAD: fetch origin/{base} deeper"
         ) from exc
+
+
+# what is never a build input, whatever a project declares (select.build_inputs): docs, prose, an agent's config and
+# vendored skills, the pack's own pin. fnmatch's `*` crosses `/`, so `docs/*` is the whole tree under docs.
+NON_PRODUCT = ("docs/*", "*.md", ".agents/*", ".claude/*", "apm.yml", "apm.lock.yaml")
+# the policy the selection reads: a change to it is a build input, since the base's rule can't judge its own edit
+SELECTION_FILES = (str(POLICY), str(LOOP))
+
+
+def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """The narrowed gate's first cut, by gatekeeper.md's `select`: the changed `files` that are build inputs, and the
+    `checks` commands the rest touch. A file is a build input when it matches `build_inputs`, is the selection's own
+    policy (SELECTION_FILES), or matches neither NON_PRODUCT nor a check's `paths`: a path whose effect on the build
+    is unclear tests. Without `select` every file is one, as before the setting."""
+    if "build_inputs" not in (
+        select or {}
+    ):  # no declaration: every file tests, as before the setting
+        return list(files), []
+    checks = select.get("checks", [])
+    inputs, commands = [], []
+    for path in files:
+        hit = [
+            check["command"]
+            for check in checks
+            if any(fnmatch.fnmatch(path, g) for g in check["paths"])
+        ]
+        if (
+            path in SELECTION_FILES
+            or any(fnmatch.fnmatch(path, glob) for glob in select["build_inputs"])
+            or not (hit or any(fnmatch.fnmatch(path, glob) for glob in NON_PRODUCT))
+        ):
+            inputs.append(path)
+        commands += [command for command in hit if command not in commands]
+    return inputs, commands
+
+
+def changed_since(base: str, head: str | None = None) -> list[str] | None:
+    """The files `head` (else the checkout's HEAD) changes since `base` (a moved file both names), None when git
+    can't tell: a diff git can't list, or, for the checkout, uncommitted or untracked changes, which no commit holds."""
+    if head is None and checkout_state()[1]:
+        return None
+    try:
+        found = git("diff", "--name-only", "--no-renames", "-z", f"{base}...{head or 'HEAD'}")
+    except subprocess.CalledProcessError:
+        return None
+    return found.split("\0")[:-1]
+
+
+def selected(base: str, head: str | None = None) -> tuple[list[str], list[str]] | None:
+    """classify() of the change from `base` to `head` (else the checkout, changed_since) by gatekeeper.md's `select`:
+    (its build inputs, the checks the rest touch); None without `select.build_inputs`, under a policy that can't be
+    read, or when git can't list the change, since the `Affected tests:` command then tests everything it would have."""
+    select = None
+    with contextlib.suppress(Refused):
+        select = settings(project()[1]).get("select")
+    if not select or "build_inputs" not in select:
+        return None
+    files = changed_since(base, head)
+    return None if files is None else classify(files, select)
+
+
+def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
+    """affected-tests' cut by `select` (selected): None when the change since `base` holds a build input, or the cut
+    can't tell, so the `Affected tests:` command runs; else the exit of the `checks` the change touches, each run in
+    turn under the gate slot, the first that fails ending the run, 0 when none applies."""
+    if (cut := selected(base)) is None:
+        return None
+    inputs, commands = cut
+    if inputs:
+        print(
+            f"affected-tests: build input {inputs[0]}: the `Affected tests:` command runs",
+            file=sys.stderr,
+        )
+        return None
+    if not commands:
+        print(
+            "affected-tests: no build input changed and no check applies: nothing to run",
+            file=sys.stderr,
+        )
+        return 0
+    for command in commands:
+        _, words, sets = command_line(command, "select.checks")
+        print(
+            f"affected-tests: no build input changed: {shlex.join(words)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            with heavy_slot("affected-tests") as (slot, _):
+                code = run_heavy(words, env=env | sets | {SLOT_HELD: slot}, cwd=root)[0]
+        except OSError as exc:
+            raise Refused(f"`{words[0]}` can't run: {exc}") from None
+        if code:
+            return code
+    return 0
 
 
 def affected_tests(given: str | None = None, record: bool = False, text: str | None = None) -> int:
@@ -9923,6 +10044,8 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
             with narrowed_to(base):
                 return local_ci(None, None, False, None)
     if written is not None and base is not None:
+        if (code := non_product_run(base, root, env)) is not None:
+            return code
         _, words, sets = command_line(written, "Affected tests")
         sets = {
             name: value for name, value in sets.items() if name != variable
@@ -10034,7 +10157,7 @@ def queue_recorded(head: str, point: str) -> tuple[bool, str]:
                 False,
                 "loop.md has no `Affected tests:` line, so no record of a PR's tests exists",
             )
-        if (words := tests_record_words(point)) is None:
+        if (words := tests_record_words(point, head)) is None:
             return False, "the gate has `gate_steps`, which never run the `Affected tests:` command"
         with contextlib.redirect_stdout(said):
             code = gate_record(head, words)
@@ -12190,7 +12313,7 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
         and not reusable(head, passed)
         and (base := merge_base_of(pull_status(pr)["baseRefName"], head)) is not None
     ):
-        with narrowed_to(base):
+        with narrowed_to(base, head):
             if narrowed_gate(passed) is not None:
                 return pr_local_ci(pr, run, want)
     if record := reusable(head, passed, why=why):

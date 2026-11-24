@@ -9,6 +9,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from approvals_harness import approvals, git_in
+from test_approvals_select import (  # noqa: F401  (the fixture, by name)
+    SELECT,
+    base_of_work,
+    head_of,
+    worker,
+)
 
 from tools import affected_tests as a
 from tools import cross_change_tests as c
@@ -368,3 +375,31 @@ def test_with_gate_steps_affected_tests_record_records_nothing_and_says_so(
     assert g.main(["affected-tests", "--record"]) == 0
     assert "the gate has `gate_steps`" in capsys.readouterr().err
     assert g.main(["gate-record", head, "--", "true"]) == 1
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [["docs/guide.md"], ["apm.yml", "apm.lock.yaml"], ["src/app.py"]],
+    ids=["docs", "pack-bump", "build-input"],
+)
+def test_the_floor_finds_a_select_prs_record_from_a_batch_checkout(
+    worker: dict,
+    paths: list[str],
+) -> None:
+    """Under gatekeeper.md's `select`, the floor keys a PR's record by the PR's head, not by the batch: the batch
+    holds another PR's code change, so its diff has a build input that a docs or pack-bump PR's record doesn't."""
+    worker["start"](SELECT)
+    worker["commit"](*paths)
+    point = base_of_work()
+    assert approvals.main(["affected-tests", "--record"]) == 0
+    head = head_of()
+    repo = Path.cwd()
+    git_in(repo, "checkout", "-q", "-b", "other", "main")
+    (repo / "src" / "other.py").write_text("value = 4\n")
+    git_in(repo, "add", "-A")
+    git_in(repo, "commit", "-qm", "other")
+    git_in(repo, "checkout", "-q", "-b", "batch", "main")
+    git_in(repo, "merge", "-q", "--no-ff", "-m", "Merge of PR 8", "other")
+    git_in(repo, "merge", "-q", "--no-ff", "-m", "Merge of PR 7", "work")
+    found, line = c.recorded(head, point)
+    assert found, line
