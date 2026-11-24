@@ -9463,13 +9463,15 @@ def blob_of(rev: str, name: str) -> str | None:
 
 
 def fix_since(red: str, base: str | None) -> set[str]:
-    """The files the PR's own change differs in between the red run's head `red` (against the red run's `base`) and
-    HEAD (against its merge base now): a file the base moved and nobody on the PR touched is no fix, so a requeue onto
-    a newer base is no change. Without a `base`, every file that differs between `red` and HEAD."""
+    """The files the PR's own change differs in between the red run's head `red` (against the red's own base, its
+    merge base with `base`) and HEAD (against its merge base now): a file the base moved and nobody on the PR touched
+    is no fix, so a requeue onto a newer base is no change, whether `base` names the red's base or the newer one.
+    Without a `base`, every file that differs between `red` and HEAD."""
     here = selection_base(None) if base else None
     if base is None or here is None:
         return set(git("diff", "--name-only", red, "HEAD").splitlines())
-    touched = set(git("diff", "--name-only", base, red).splitlines()) | set(
+    red_base = git("merge-base", base, red).strip()
+    touched = set(git("diff", "--name-only", red_base, red).splitlines()) | set(
         git("diff", "--name-only", here, "HEAD").splitlines()
     )
     return {name for name in touched if blob_of(red, name) != blob_of("HEAD", name)}

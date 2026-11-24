@@ -138,10 +138,12 @@ def test_a_change_that_misses_the_failed_test_reruns_the_whole_selection(
     assert code == 0 and worker["ran"]() == ["selected app.py other.py"]
 
 
+@pytest.mark.parametrize("given", ["main", "newer"])
 def test_a_base_moved_since_the_red_is_no_change(
-    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+    worker: dict[str, Any], capsys: pytest.CaptureFixture[str], given: str
 ) -> None:
-    """A requeue onto a newer base: the file the base moved is not the PR's fix, so the whole selection runs."""
+    """A requeue onto a newer base: the file the base moved is not the PR's fix, so the whole selection runs, whether
+    `--base` names the red's base (`main`) or the base the PR was rebased onto (`newer`)."""
     red = red_head(worker)
     repo = worker["repo"]
     Path(worker["failed"]).write_text(
@@ -152,7 +154,7 @@ def test_a_base_moved_since_the_red_is_no_change(
     git_in(repo, "push", "-q", "origin", "newer:main")
     git_in(repo, "checkout", "-q", "work")
     git_in(repo, "rebase", "-q", "newer")
-    code = approvals.main(["rerun-tests", worker["failed"], "--red", red, "--base", "main"])
+    code = approvals.main(["rerun-tests", worker["failed"], "--red", red, "--base", given])
     assert code == 0
     assert "nothing changed reselects" in capsys.readouterr().err
 
