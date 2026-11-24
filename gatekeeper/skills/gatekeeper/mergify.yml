@@ -61,6 +61,7 @@ queue_rules:
       - base = main
       - -draft
       - label = loop:queued
+      - -label = loop:hold
       - check-success = land
 
 pull_request_rules:
@@ -69,6 +70,7 @@ pull_request_rules:
       - base = main
       - -draft
       - label = loop:queued
+      - -label = loop:hold
       - check-success = land
     actions:
       queue:

@@ -347,6 +347,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge
      go on a head), which the owner's `approve merge --by owner` removes: a question card
      alone holds nothing, since `land` batches every PR that is ready.
+   - A lead holds a PR it must not land (its own pause, or another coordinator's claim) with `loop:hold` and a PR
+     comment naming who holds it and why, never only in its report, and removes the label before landing: `land` and
+     `check merge` refuse a held PR and Mergify takes none. `loop:dequeued` is no hold.
    - A check red after ready (a merge queue's batch check): `gh pr ready --undo`, then start a worker in the same worktree
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
      runs the affected tests of worker.md step 2 and pushes; a fresh verifier (step 7) reviews only the change
