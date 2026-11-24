@@ -675,3 +675,17 @@ def test_the_skills_state_the_option_its_defaults_and_the_report_line() -> None:
     assert "## Independent rerun" in policy_md
     gate_skill = flat("gatekeeper/skills/gatekeeper/SKILL.md")
     assert "after the `Head:` line, a line `Rerun: <commit>`" in gate_skill
+
+
+def test_verdict_warns_as_report_does_and_still_posts(
+    reviewing: list[tuple[Any, ...]],
+    gating: Gate,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state, _ = gating
+    policy("loop:\n  ci: false\n")
+    state["pull"] = judged_pr()
+    assert approvals.main(["verdict", "7", str(report_file(tmp_path, "high — a gate change"))]) == 0
+    assert "names no `Rerun: <commit>`" in capsys.readouterr().err
+    assert any(call[0] == "review" for call in reviewing)
