@@ -2952,7 +2952,9 @@ def proofs(
             if READY not in labels:
                 found.append(f"{where} lacks the `{READY}` label")
             continue
-        covered, unrowed = bump or policy_covers(pull, issue, loop), None
+        # why a row line or `spec:paths` didn't cover the spec: said only beside a missing approval, since the
+        # owner's approval covers the spec whatever the row or the paths say
+        covered, unrowed, uncovered = bump or policy_covers(pull, issue, loop), None, []
         if not covered and (claimed := row(issue)):
             unrowed = row_gap(pull, issue, claimed, loop)
             covered = unrowed is None
@@ -2960,16 +2962,18 @@ def proofs(
             why = scoped(pull, issue, loop)
             covered = why is None
             if why:
-                found.append(
+                uncovered.append(
                     f"{where}: its spec is the owner's to approve, though it carries `{SCOPED}`, since {why}"
                 )
-        if not covered:
-            if unrowed:
-                found.append(
-                    f"{where}: its spec is the owner's to approve, though its body names row"
-                    f' "{claimed[1]}" of #{claimed[0]}, since {unrowed}'
-                )
-            found += approvals(where, issue, "spec", spec_holder(issue), pull, loop)
+        if not covered and unrowed:
+            uncovered.append(
+                f"{where}: its spec is the owner's to approve, though its body names row"
+                f' "{claimed[1]}" of #{claimed[0]}, since {unrowed}'
+            )
+        if not covered and (
+            lacking := approvals(where, issue, "spec", spec_holder(issue), pull, loop)
+        ):
+            found += uncovered + lacking
         plan = headed(issue, "## Plan")
         if plan is not None:
             if matches(rule.get("plan", {}), labels, None):
