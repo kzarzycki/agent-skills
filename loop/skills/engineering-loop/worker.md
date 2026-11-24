@@ -93,7 +93,10 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    On the final head, run `approvals.py local-ci --record` once (`--record --head-proof` where loop.md configures a
    head proof, which covers the PR's acceptance classes): it runs the gate and pushes its pass as a record keyed by
    tree and command, which a ready PR's CI and the verifier read, so neither runs it again on this tree (SKILL.md, A
-   check runs only if it can fail because of the change, R1). Run the acceptance command on the head (SKILL.md,
+   check runs only if it can fail because of the change, R1). Your affected-test run on that final head is
+   `approvals.py affected-tests --record`, your one recorded test run: it pushes its pass the same way, keyed by the
+   tree and the narrowed command, which the merge queue's batch floor reads to leave this PR's own tests out (R6,
+   #2178); a run that fails or can't tell records nothing. Run the acceptance command on the head (SKILL.md,
    Acceptance checks) once, into a log stamped that way, and hand it over as the spec's proof. Just before the report, run `git status
    --porcelain` and commit or remove what it lists, and the report carries the line `git status
    --porcelain: empty`, since the verifier may review in that tree and an uncommitted check
