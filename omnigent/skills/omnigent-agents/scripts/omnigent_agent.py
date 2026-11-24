@@ -10115,7 +10115,7 @@ def supervise_registry(
     def pr_lead(repo: str, pr: int, sessions: list[dict]) -> str:
         """The lead that owns PR ``pr`` of ``repo``, else empty: a lead (followed, or any ``omni.role`` lead, archived
         too) whose own ``PR_LABEL`` names it; else the lead that started a session labelled with it (a ``start --pr``
-        worker, archived too), found up its ``parent_session_id`` chain; else a followed lead whose wait names it."""
+        worker, archived too), found up its ``parent_session_id`` chain; else a followed lead whose wait names it, or whose report head names ``owner/name#N`` or its URL."""
         label = f"{repo}#{pr}"
         followed = [s for s, owes in owed.items() if owes[3]]
         by_id = {str(s.get("id")): s for s in sessions}
@@ -10128,10 +10128,14 @@ def supervise_registry(
         def is_lead(sid: str) -> bool:
             return sid in followed or labels(sid).get("omni.role") == "lead"
 
+        def owns(sid: str) -> bool:
+            """Whether ``sid``'s ``PR_LABEL`` names the PR: one ``owner/name#N``, or several joined by commas."""
+            return label in [p.strip() for p in str(labels(sid).get(PR_LABEL, "")).split(",")]
+
         for sid in [*followed, *by_id]:
-            if is_lead(sid) and str(labels(sid).get(PR_LABEL, "")) == label:
+            if is_lead(sid) and owns(sid):
                 return sid
-        for start in [s for s in by_id if str(labels(s).get(PR_LABEL, "")) == label]:
+        for start in [s for s in by_id if owns(s)]:
             sid, seen = start, set()
             while sid and sid not in seen:  # the list holds every session, so each parent is in it
                 seen.add(sid)
@@ -10144,6 +10148,11 @@ def supervise_registry(
                 m = re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", ref.strip())
                 if m and int(m[2]) == pr and (m[1] == repo or not m[1] and repos.get(sid) == repo):
                     return sid
+        url = rf"github\.com/{re.escape(repo)}/pull/{pr}(?!\d)"
+        for sid in followed:  # a lead that took the PR over, or lands it with others: its report head names it
+            head = report_head((state["leads"].get(sid) or {}).get("last_text") or "")
+            if re.search(rf"(?<![\w/.-]){re.escape(label)}(?!\d)|{url}", head):
+                return sid
         return ""
 
     def alive(other: str, info: dict) -> bool:
