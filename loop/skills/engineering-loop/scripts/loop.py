@@ -183,7 +183,11 @@ def brief(
     for n in issues:
         try:
             host = host_lines(gatekeeper.issue_node(n)["body"] or "")
-        except (gatekeeper.Refused, subprocess.CalledProcessError, KeyError):  # a closing PR or a missing spec
+        except (
+            gatekeeper.Refused,
+            subprocess.CalledProcessError,
+            KeyError,
+        ):  # a closing PR or a missing spec
             continue
         lines += [f"- Host-only line of #{n}, a host runs it, not this VM: {line}" for line in host]
     if far:

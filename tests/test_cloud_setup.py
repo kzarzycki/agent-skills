@@ -260,8 +260,11 @@ def lib(tmp_path: Path, script: str, tools: dict[str, str]) -> tuple[str, Path]:
     log = tmp_path / "setup.log"
     env = {"HOME": str(home), "PATH": f"{home}/.local/bin:{bin_}:/usr/bin:/bin:/sbin"}
     subprocess.run(
-        ["bash", "-c", f'log={log}; . {LIB}; cd {tmp_path}; {script}'],
-        env=env, check=True, capture_output=True, timeout=60,
+        ["bash", "-c", f"log={log}; . {LIB}; cd {tmp_path}; {script}"],
+        env=env,
+        check=True,
+        capture_output=True,
+        timeout=60,
     )
     return log.read_text(), calls
 
@@ -271,7 +274,10 @@ def test_mise_comes_from_npm(tmp_path: Path) -> None:
     npm = f'printf "#!/bin/sh\\necho mise \\"\\$@\\" >> {tmp_path}/calls\\n" > {tmp_path}/bin/mise; chmod +x {tmp_path}/bin/mise'
     log, calls = lib(tmp_path, "setup_mise", {"npm": npm})
     seen = calls.read_text()
-    assert "npm install -g -s @jdxcode/mise" in seen and "mise settings set prefer_offline true" in seen
+    assert (
+        "npm install -g -s @jdxcode/mise" in seen
+        and "mise settings set prefer_offline true" in seen
+    )
     for host in ("mise.run", "mise-versions.jdx.dev", "api.github.com", "curl"):
         assert host not in seen, seen
     assert "FAILED" not in log, log
@@ -281,7 +287,9 @@ def test_requires_resolve_and_log(tmp_path: Path) -> None:
     """Each installed skill's requires entry is resolved or installed, with its seconds logged, FAILED where mise can't."""
     skill = tmp_path / "skills" / "a"
     skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text('---\nname: a\nmetadata:\n  requires: "gh>=2.99.0 uv vhs"\n---\n')
+    (skill / "SKILL.md").write_text(
+        '---\nname: a\nmetadata:\n  requires: "gh>=2.99.0 uv vhs"\n---\n'
+    )
     new_gh = f'printf "#!/bin/sh\\necho gh version 3.0.0\\n" > {tmp_path}/bin/gh'
     tools = {
         "gh": "echo gh version 2.0.0",  # older than the skill wants
