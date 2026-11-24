@@ -578,7 +578,7 @@ status on its head (`Queued for Mergify at <sha>`) and adds `loop:queued`, and e
 gate, nothing merged, and every call REST. The repo's `.mergify.yml` takes a PR in only with that
 label and `land` green on its head, and no CI check on the head; it tests each batch as a draft PR
 on top of the base, with a batch check that runs only the tests the batch's PRs affect, retries a red
-one once and squash-merges on green. A push leaves the new head without `land`, so it no longer qualifies; a PR Mergify
+one once (the whole check: the same gap against R5 as the GitHub queue's, below) and squash-merges on green. A push leaves the new head without `land`, so it no longer qualifies; a PR Mergify
 dequeues gets `loop:dequeued`, and the next `land` turns it back to draft with `land` `error` on its
 head and an `Evicted from the merge queue` comment. A bare `land` writes the `Landed` comment
 (`Gate: Mergify merge queue`) on each merged PR still carrying `loop:queued`. The local merge
@@ -587,7 +587,11 @@ queue above, with no test step, stays the path for a project with no queue.
 The GitHub merge queue takes no lock and runs no local gate: `land` enqueues each candidate,
 oldest first, pinned to the head its proofs judged, and GitHub orders, groups and merges them,
 its `merge_group` check running only the tests the batch's PRs affect. An entry the queue removes for a red check gets a comment with that check's log tail and
-goes in once more; a second red on the same head turns it back to draft. A red main counts
+goes in once more; a second red on the same head turns it back to draft. That second run repeats the
+whole check, which R5 rules out (A check runs only if it can fail because of the change): a red reruns
+only its failed tests, once its cause is fixed or shown unrelated. The tools don't do that yet: `land`'s
+once-more enqueue and Mergify's retry of a red batch both rerun the whole check, until [kzarzycki/agent-skills#1400](https://github.com/kzarzycki/agent-skills/issues/1400)
+(no once-more rerun in `land`) and [kzarzycki/agent-skills#1794](https://github.com/kzarzycki/agent-skills/issues/1794) (CI reruns only the failed tests) land. A red main counts
 nothing and evicts nobody, nor does a red group built on a main commit where a required check
 failed, a conflict gets the local queue's conflict comment while GitHub still reports one (and
 waits while GitHub works it out), and a lost `merge_group`
