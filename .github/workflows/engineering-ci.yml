@@ -40,12 +40,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 tools/tested_tree.py ${{ github.event_name }}
-      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+      - if: steps.tested.outputs.skip != 'true'
+        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
         with:
           version: 2026.9.2
           install: false
-      - run: mise install
-      - run: uv sync --frozen
+      - if: steps.tested.outputs.skip != 'true'
+        run: mise install
+      - if: steps.tested.outputs.skip != 'true'
+        run: uv sync --frozen
       # The test map (tools/affected_tests.py): the newest the nightly saved. Missing, the selector falls back to the name match.
       - if: startsWith(github.head_ref, 'mergify/merge-queue/')
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

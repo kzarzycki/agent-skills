@@ -117,6 +117,8 @@ def test_workflow_reads_the_forge_and_skips_with_step_level_ifs_only():
     guarded = [s for s in steps() if "steps.tested.outputs.skip" in str(s.get("if", ""))]
     commands = [s.get("run", "").strip() for s in guarded]
     assert "mise run check-fast" in commands and "mise run check" in commands
+    assert {"mise install", "uv sync --frozen"} <= set(commands), "a skipped run installs nothing"
+    assert any("mise-action" in s.get("uses", "") for s in guarded)
     assert any("cache/save" in s.get("uses", "") for s in guarded), (
         "the test-map save is skipped with the run"
     )
