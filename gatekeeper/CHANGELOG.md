@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.10 - 2026-11-24
+
+- gatekeeper: `land.batch_size` sets the Mergify queue's PRs per batch (1: one PR per entry), and `approvals.py queue-config` renders `.mergify.yml` from the pack's mergify.yml with it and `batch_wait_seconds`. The template merges a batch only on `check-success = queue-run`, a CI job that passes once the batch's test step ran its selection, so a path that skips that step merges nothing (#2178). On the local queue, `land` refuses a head with no record of loop.md's `Affected tests:` run against its merge base (the record `affected-tests --record` writes and the batch floor reads, one key builder for both), naming that record and `affected-tests --record`; without an `Affected tests:` line, or under `Gate: full` or `gate_steps`, it reads the gate's record and names `local-ci --record`. A break-glass PR is not held (#2178). `affected-tests --record` records a passing narrowed run as `local-ci --record` records one, pushed as its `loop-gate/` branch, and `gate-record <head> -- <narrowed command>` reads it; a failing run, or one that can't tell, records nothing (#2178).
+
 ## 0.1.9 - 2026-11-24
 
 - gatekeeper: `land <pr> --wait` on a PR in GitHub's merge queue, or queued for Mergify, waits until the queue merges it (exit 0) or takes it out, instead of exiting 0 once it is queued, which left a lead re-running `land` until the merge, each run re-reading the login, the permission, the rules and the merged high-risk PRs. Between rounds it reads only the PR's state, head, queue entry and labels, one GraphQL call a minute (two ETag reads on REST). A refused `gh api user` is kept for the process, and a REST read GitHub refused or rate-limited is not asked again within its round (#2101).
