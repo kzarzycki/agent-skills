@@ -5,6 +5,11 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.12 - 2026-11-24
+
+- gatekeeper: `approvals.py rerun-tests` runs the red head's own `docs/agents/loop.md` `Affected tests:` line, never the base's, so a head behind its base no longer runs a `mise` task its tree lacks. A rerun that ran no test (the command can't start, the red head has no `Affected tests:` line, or a red exit whose `mise run <task>` mise doesn't define) prints `rerun did not run: <why>` and exits 75, never "red again: the change caused it" (#2275).
+- gatekeeper: `approvals.py queue-select [<base>]` ships R6's batch selection for a consumer's merge-queue job. Run on the batch checked out at HEAD, it splits the batch into PRs (Mergify's `Merge of PR <n>` and GitHub's `Merge pull request #<n>` commits), reads each PR's record of its `Affected tests:` run, and prints one command per line for the job to run, each to pass: the `select.unkeyed` checks, then `affected-tests --base <branch point>` for each PR with no record, so a PR with a record runs nothing. Where the commits don't split into PRs it prints the batch's `affected-tests --base <base>`. It exits 1 with `queue-select: refused: <why>` when that is nothing to run while a PR has no record. A project whose selection is a command rather than a per-test map needs nothing else; this repo's `test-batch` narrows the same split and records with its pytest map (#2279).
+
 ## 0.1.11 - 2026-11-24
 
 - gatekeeper: a migration row's spec is credited to its approved parent story, whatever `spec.auto` says. A closing issue nothing else covers needs no approval of its own when it is a GitHub sub-issue whose body opens with `Part of #<parent> (row <name>)` naming that parent, the parent's spec carries `approved:spec` and a current record (checked as a direct link's, so a stale parent approval covers nothing), its author can write to the repo, and neither `risk:high` on the issue or the PR, the risk rule nor `risk.critical_paths` holds. `check` prints `#141: covered by #140's approved spec (row "pack pin")` for a credited row and names the missing piece for one it doesn't. The `sub-issue` kind and the row rule share one parent check (`parent_gaps`), and no forge call is added (#2266).
