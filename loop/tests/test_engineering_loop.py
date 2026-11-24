@@ -195,7 +195,7 @@ def test_the_verifier_waits_with_one_wake_and_reruns_repros_together() -> None:
     assert "--budget <its expected length>`" in lead
     assert "which blocks close to the tool limit and prints only the outcome" not in lead
     assert "waited on as a detached run is" in verifier  # the bare gate too
-    assert "Rerun all of its repros from one script" in verifier
+    assert "Run them from one script" in verifier  # R4 (#2176): the repros the round reaches, together
     assert "the diff since its head and the files it touches" in verifier
 
 
