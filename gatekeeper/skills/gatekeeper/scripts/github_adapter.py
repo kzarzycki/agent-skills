@@ -1729,6 +1729,7 @@ def commit_checks(ref: str) -> dict[str, dict[str, Any]]:
             "id": run.get("id"),
             "title": (run.get("output") or {}).get("title") or "",
             "summary": (run.get("output") or {}).get("summary") or "",
+            "completed_at": run.get("completed_at") or "",
         }
         for run in runs
     }
