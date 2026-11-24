@@ -18,7 +18,13 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "gatekeeper" / "skills" / "gatekeeper" / "mergify.yml"
-HANDED_OVER = ["base = main", "-draft", "label = loop:queued", "check-success = land"]
+HANDED_OVER = [
+    "base = main",
+    "-draft",
+    "label = loop:queued",
+    "-label = loop:hold",
+    "check-success = land",
+]
 
 
 def config() -> dict[str, Any]:

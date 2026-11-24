@@ -602,6 +602,8 @@ except ImportError:  # run as `python3 approvals.py` where PyYAML isn't installe
 
 # the ready state: an approved spec (board: Ready); waiting for the owner
 READY, NEEDS_OWNER = "approved:spec", "needs-owner"
+# a hold put on a PR by its lead, or a claim by another coordinator: land skips it, and Mergify takes none carrying it
+HOLD = "loop:hold"
 BUG, EPIC = "kind:bug", "epic"
 # the lead's claim that a spec's change stays inside `spec.auto`'s `paths`, which the policy then approves (scoped)
 SCOPED = "spec:paths"
@@ -5427,10 +5429,15 @@ def gated(
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Every missing proof at `point`, and the issues the PR names (none for an exact revert, which needs no spec: risk()
     reads its issues from `named` and the reverted PR's risk from `reverted` instead). At merge, a PR that itself carries
-    `needs-owner` waits for the owner, so no batch takes a PR held for their go."""
+    `needs-owner` waits for the owner, and one that carries `loop:hold` is held by its lead or another coordinator, so no
+    batch takes either."""
     held = (
         [f"#{pull['number']} waits for the owner ({NEEDS_OWNER})"]
         if point == "merge" and NEEDS_OWNER in names(pull)
+        else []
+    ) + (
+        [f"#{pull['number']} is held ({HOLD}): see the hold comment on the PR"]
+        if point == "merge" and HOLD in names(pull)
         else []
     )
     revert, found = reverts(pull)
