@@ -236,3 +236,8 @@ def test_only_the_followed_leads_own_branch_is_read(
         clone, tmp_path, monkeypatch, "USER NEEDED: Should the epic split into two? Report: r.md"
     )
     assert "OLD-QUESTION-BODY" not in post
+
+
+def test_a_supervisor_test_reads_no_origin_events() -> None:
+    # conftest.no_loop_events reaches modules that never import it: a real read here hung CI to the 60 s timeout
+    assert oa.read_loop_events() is None
