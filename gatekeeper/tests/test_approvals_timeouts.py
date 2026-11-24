@@ -26,6 +26,7 @@ from approvals_harness import (
 from test_approvals_affected_tests import worker  # noqa: F401
 from test_approvals_cloud_queue import cloud_queue  # noqa: F401
 from test_approvals_github_queue import (  # noqa: F401
+    AGAIN_AT,
     RED_AT,
     labels_of,
     notes_on,
@@ -310,6 +311,25 @@ def test_a_github_queue_group_with_a_real_failure_beside_a_timeout_still_counts(
     assert len(notes_on(queue, 7, approvals.QUEUE_RED)) == 1
 
 
+def test_a_github_queue_head_timing_out_twice_stops_requeueing_and_names_the_budget(
+    queue: dict[str, Any],
+) -> None:
+    head = queue["opened"](7)
+    queue["checks"]["g1"] = [run("qualify", "timed_out", 410)]
+    queue["checks"]["g2"] = [run("qualify", "timed_out", 420)]
+    queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
+    code, lines = queue["land"]("7")
+    assert code == 0, lines
+    assert queue["enqueued"] == [(7, head)]
+    queue["remove"](7, approvals.FAILED_CHECKS, at=AGAIN_AT, group="g2")
+    code, lines = queue["land"]("7")
+    assert code == approvals.WAITING, lines
+    assert queue["enqueued"] == [(7, head)]
+    [line] = [each for each in lines if "timed out twice" in each]
+    assert "`timeouts.run` (1 hour)" in line
+    assert not queue["pulls"][7]["isDraft"]
+
+
 MERGIFY_WORDINGS = [
     {"summary": "The checks have timed out after 1 hour."},
     # Mergify's own wording (its changelog, 2026-06-11)
@@ -437,3 +457,28 @@ def test_a_group_github_cannot_read_is_no_timeout(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(approvals, "commit_checks", unreadable)
     assert approvals.timed_out_only("g1", {"qualify"}) is False
+
+
+def test_a_mergify_head_timing_out_twice_stays_out_of_the_queue_and_names_the_budget(
+    mergify: dict[str, Any],
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    assert mergify["land"]("7")[0] == 0
+    assert len(requeues(mergify)) == 1
+    # Mergify takes it in again and times out a second time at the same head
+    assert mergify["land"]("7")[0] == 0
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    code, lines = mergify["land"]("7")
+    assert code == approvals.WAITING, lines
+    [line] = [each for each in lines if "timed out twice" in each]
+    assert "`timeouts.run` (1 hour)" in line
+    assert len(requeues(mergify)) == 1
+    assert labels_of(mergify, 7) & {"loop:queued", "loop:dequeued"} == set()
+    assert notes_on(mergify, 7, "Evicted from the merge queue") == []
+    # the next land holds it out, and raising `timeouts.run` lets it go in again
+    code, lines = mergify["land"]("7")
+    assert code == approvals.WAITING, lines
+    assert any("timed out twice" in each for each in lines)
+    assert len(requeues(mergify)) == 1
