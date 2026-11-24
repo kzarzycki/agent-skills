@@ -10149,7 +10149,9 @@ def supervise_registry(
                 if m and int(m[2]) == pr and (m[1] == repo or not m[1] and repos.get(sid) == repo):
                     return sid
         url = rf"github\.com/{re.escape(repo)}/pull/{pr}(?!\d)"
-        for sid in followed:  # a lead that took the PR over, or lands it with others: its report head names it
+        for sid in (
+            followed
+        ):  # a lead that took the PR over, or lands it with others: its report head names it
             head = report_head((state["leads"].get(sid) or {}).get("last_text") or "")
             if re.search(rf"(?<![\w/.-]){re.escape(label)}(?!\d)|{url}", head):
                 return sid

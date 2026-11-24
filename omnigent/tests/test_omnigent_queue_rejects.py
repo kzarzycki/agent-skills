@@ -234,6 +234,7 @@ def test_dequeue_relays_to_labelled_lead(tmp_path, monkeypatch) -> None:
 def test_dequeue_relays_to_a_lead_owning_two_prs(tmp_path, monkeypatch) -> None:
     """A lead's label may hold several PRs, comma-joined: the dequeue of either reaches it."""
     for pr in (12, 13):
+        (tmp_path / str(pr)).mkdir()
         registry, og = fleet(tmp_path / str(pr))
         og.snaps["a"] = {"labels": {"omni.pr": "o/r#12,o/r#13", "omni.role": "lead"}}
         gh = GitHub(monkeypatch)
@@ -246,9 +247,11 @@ def test_dequeue_relays_to_a_lead_owning_two_prs(tmp_path, monkeypatch) -> None:
 def test_dequeue_relays_to_a_lead_that_took_the_pr_over(tmp_path, monkeypatch) -> None:
     """No label and no worker: the followed lead's report head names the PR, as ``o/r#12`` or its URL."""
     for pr, named in ((12, "o/r#12"), (13, "https://github.com/o/r/pull/13")):
-        tmp = tmp_path / str(pr)
-        registry, og = fleet(tmp)
-        og.histories["a"][-1] = ending(f"STILL WORKING: re-landing {named}, its land run is going\nWaits: CI", 8000)
+        (tmp_path / str(pr)).mkdir()
+        registry, og = fleet(tmp_path / str(pr))
+        og.histories["a"][-1] = ending(
+            f"STILL WORKING: re-landing {named}, its land run is going\nWaits: CI", 8000
+        )
         gh = GitHub(monkeypatch)
         gh.comments.append(comment(100, pr, jobs=(7,)))
         run(og, registry, monkeypatch, 2)
