@@ -2,7 +2,8 @@
 # #2384: no omnigent test reaches a real remote. Every test runs with a `git` shim on PATH that allows only the
 # file transport (GIT_ALLOW_PROTOCOL=file), so a call to https, ssh or git:// is refused instead of reaching the
 # network, and logs each refused call. Git applies `insteadOf` before the check, so a test that names a GitHub URL
-# but maps it to its own bare remote is allowed. The check fails on any logged call, or on a red suite.
+# but maps it to its own bare remote is allowed. Git runs under LC_ALL=C, so the refusal the shim greps is in English
+# on any host locale. The check fails on any logged call, or on a red suite.
 set -u
 root=$(git rev-parse --show-toplevel)
 cd "$root" || exit 1
@@ -13,7 +14,7 @@ log="$shim/calls.tsv"
 cat > "$shim/git" <<SHIM
 #!/bin/sh
 err=\$(mktemp)
-GIT_ALLOW_PROTOCOL=file "$real" "\$@" 2> "\$err"
+LC_ALL=C GIT_ALLOW_PROTOCOL=file "$real" "\$@" 2> "\$err"
 rc=\$?
 cat "\$err" >&2
 if grep -q "transport '.*' not allowed" "\$err"; then
