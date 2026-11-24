@@ -2059,10 +2059,12 @@ def boarded(
             return []
         except (ValueError, LookupError, TypeError, OSError, subprocess.CalledProcessError) as exc:
             why = (getattr(exc, "stderr", "") or "").strip() or str(exc)
+    # a Low PR has no label, so the verifier's line is what still shows its risk
+    shows = f"`{RISK_LABEL}` label" if option == "High" else "verifier's `Risk:` line"
     return [
         (
             f"PR #{pull['number']}: could not set the board's `{BOARD_RISK}` field to `{option}` ({why}); the"
-            f" `{RISK_LABEL}` label alone shows the risk"
+            f" {shows} alone shows the risk"
         )
     ]
 
