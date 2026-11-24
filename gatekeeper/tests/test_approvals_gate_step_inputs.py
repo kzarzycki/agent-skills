@@ -33,13 +33,13 @@ PATHS: dict[str, list[str] | None] = {"lint": ["app.py"], "unit": None, "apple":
 WHERE = {"lint": "any", "unit": "any", "apple": "host"}
 
 
-def policy(commands: dict[str, str], paths: dict[str, list[str] | None]) -> str:
+def policy(commands: dict[str, str], paths: dict[str, list[str] | None], extra: str = "") -> str:
     rows = "".join(
         f"    - name: {name}\n      command: {command}\n      where: {WHERE[name]}\n"
         + (f"      paths: {json.dumps(paths[name])}\n" if paths[name] is not None else "")
         for name, command in commands.items()
     )
-    return gatekeeper_md(f"loop:\n  gate_steps:\n{rows}")
+    return gatekeeper_md(f"loop:\n  gate_steps:\n{rows}{extra}")
 
 
 @pytest.fixture
@@ -423,3 +423,17 @@ def test_gate_record_finds_a_step_by_its_inputs_on_another_tree(
         in capsys.readouterr().out
     )
     assert approvals.main(["gate-record", inputs["head"]()]) == 1
+
+
+def test_a_step_select_unkeyed_lists_runs_on_a_tree_with_its_pass(
+    inputs: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`select.unkeyed` names `lint` by name and `apple` by command: both run again on the very tree they passed on,
+    while `unit`, unlisted, is reused (#2180)."""
+    listed = json.dumps(["lint", inputs["commands"]["apple"]])
+    inputs["commit"]({POLICY: policy(inputs["commands"], PATHS, f"select:\n  unkeyed: {listed}\n")})
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert inputs["ran"]() == ["lint", "unit", "apple", "lint", "apple"]
+    assert approvals.reusable(inputs["head"]()) is None
+    assert "`select.unkeyed` lists it" in approvals.no_pass(inputs["head"]())
