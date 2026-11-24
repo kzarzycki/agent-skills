@@ -8284,6 +8284,16 @@ def lead_status(info: dict, items: list[dict]) -> dict:
     }
 
 
+def done_result(text: str) -> str:
+    """What the first ``DONE`` line of ``text`` says after the word, less a ``Report:`` path and punctuation: empty for a
+    bare ``DONE``, which reports no result (#2309)."""
+    m = next((m for m in STILL_OR_ENDING.finditer(text) if m.group(1) == "DONE"), None)
+    if not m:
+        return ""
+    rest = text[m.end() :].partition("\n")[0]
+    return re.sub(r"\bReport:.*", "", rest, flags=re.IGNORECASE).strip(" \t:.-*_`")
+
+
 def ending_of(text: str) -> str | None:
     """The ending a message names: ``USER NEEDED`` when any line opens with it, since an ask
     after a ``DONE`` line still needs its answer; else the first line that opens with an ending word, so a
@@ -8815,6 +8825,9 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if not event.get("parked"):
             return "rule", "act", "ended PARKED with no park message before it"
         return "rule", "record", "parked: waits on host capacity"
+    if ending == "DONE" and event.get("coordinator") and not done_result(text):
+        # a manager's turn that says nothing and closes on a bare DONE has no result to deliver (#2309)
+        return "rule", "record", "a coordinator's DONE with no result: nothing to deliver"
     if ending == "DONE":
         if event.get("relayed"):  # it sent its result to the notified session itself (#2090)
             return (
@@ -9323,6 +9336,7 @@ def supervise_registry(
             > RETRY_CAP_SECONDS,
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
+            "coordinator": bool(lead.get("leads")),  # it follows leads of its own: a manager (#2309)
             "parked": parked_before(og, sid, items, said[-1] if said else None),
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
