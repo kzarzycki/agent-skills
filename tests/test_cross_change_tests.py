@@ -164,3 +164,42 @@ def test_the_command_writes_the_unkeyed_checks_and_prints_the_targets(
     assert c.main(["--unkeyed-out", str(out), tip]) == 0
     assert out.read_text() == "sh live.sh\n"
     assert capsys.readouterr().out == "t_y\n"
+
+
+class FakeGatekeeper:
+    """approvals' gate_record and gate_plan, as the defaults call them."""
+
+    def __init__(self, code: int | None) -> None:
+        self.code = code
+
+    def gate_record(self, head, words):
+        if self.code is None:
+            raise RuntimeError("origin unreachable")
+        print("recorded: Tree t on h" if self.code == 0 else f"no record of the gate on {head}")
+        return self.code
+
+    def gate_plan(self):
+        return [
+            {"command": "sh live.sh", "unkeyed": True},
+            {"command": "mise run lint", "unkeyed": False},
+        ]
+
+
+@pytest.mark.parametrize(
+    ("code", "found", "line"),
+    [
+        (0, True, "recorded: Tree t on h"),
+        (1, False, "no record of the gate on h1"),
+        (None, False, "gate-record failed: origin unreachable"),
+    ],
+)
+def test_a_record_is_the_gatekeepers_gate_record_and_a_failure_is_none(
+    monkeypatch, code, found, line
+) -> None:
+    monkeypatch.setattr(c, "gatekeeper", lambda: FakeGatekeeper(code))
+    assert c.recorded("h1") == (found, line)
+
+
+def test_the_unkeyed_checks_are_the_gate_steps_select_unkeyed_lists(monkeypatch) -> None:
+    monkeypatch.setattr(c, "gatekeeper", lambda: FakeGatekeeper(0))
+    assert c.unkeyed_checks() == ["sh live.sh"]
