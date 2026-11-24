@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.10 - 2026-11-24
+
+- R5 and loop.md's settings name the `Test report:` line: a rerun whose report shows zero tests, where the red run had some, did not run (#2277).
+
 ## 0.1.9 - 2026-11-24
 
 - loop: SKILL.md and worker.md say an affected-test selector that can't tell exactly which tests a change touches runs the narrowest set it can still name, never nothing: a coarser selection for a selector that can't run, the tests under a test-setup file's directory, the tests that read a file by path, a file's package or directory tests when no test names it, and the whole suite for a build input; zero only for a change of non-product paths, saying `0 selected: <layer>` (#2217).
