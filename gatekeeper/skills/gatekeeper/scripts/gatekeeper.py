@@ -267,7 +267,8 @@ the queue, `land` printing one line that names `timeouts.run` and its length and
 the budget or shard the suite), and a Mergify dequeue its check run calls a timeout does the same on its second at one
 head, from the `Timed out in the merge queue` records land comments (#2308). Either queue's stop lifts with a new
 head, a ready-again (as its reds' count does) or a changed `timeouts.run`, which the `Timed out twice in the merge
-queue` record each leaves at the head names (`Run:`). The count lives in GitHub's timeline, so any land applies it and `land` keeps no
+queue` record each leaves at the head names (`Run:`). Mergify records its first timeout too, so a budget raised between
+the two makes the next a fresh first; the GitHub queue records only its stop, so both timeouts count. The count lives in GitHub's timeline, so any land applies it and `land` keeps no
 state. A PR enqueued or already queued exits 0, naming its queue position and head, and `land` ends. `land <pr> --wait`
 waits on instead until the queue merges it (exit 0, after its `Landed` comment) or takes it out, whose removal the
 next round reads as above (#2101): between rounds it reads, each QUEUE_WATCH seconds (60), only the PR's state, head and
@@ -8198,11 +8199,12 @@ def queued_here(pull: dict[str, Any]) -> bool:
 
 def evicted_at(pull: dict[str, Any], head: str) -> str | None:
     """When land last evicted the PR from Mergify's queue at `head`: its newest QUEUE_EVICTED comment naming that head,
-    which is written even where the `land` `error` status is refused."""
+    which is written even where the `land` `error` status is refused. A `Timed out twice` stop (#2308) leaves the head
+    out of the queue as an eviction does, so a hand-over after it asks Mergify to queue the head again."""
     times = [
         note.get("createdAt") or ""
         for note in notes(pull)
-        if machine(note["body"]).strip().splitlines()[:1] == [QUEUE_EVICTED]
+        if machine(note["body"]).strip().splitlines()[:1] in ([QUEUE_EVICTED], [TIMED_OUT_TWICE])
         and fields(note["body"]).get("head", "").lower() == head.lower()
     ]
     return max(times) if times else None
@@ -8394,8 +8396,19 @@ def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
             return WAITING
         ours = queued_here(pull)
         if DEQUEUED in labels:
-            if ours and (timeout := mergify_timeout(head)):
-                if timeout_notes(pull, head, TIMED_OUT_ONCE, budget):
+            found = mergify_timeout(head) if ours else None
+            first = timeout_notes(pull, head, TIMED_OUT_ONCE, budget)
+            if (
+                found
+                and first
+                and found[1]
+                and found[1] < max(n.get("createdAt") or "" for n in first)
+            ):
+                # the check run's timeout text is older than the first timeout's record: this dequeue is another's
+                found = None
+            if found:
+                timeout = found[0]
+                if first:
                     # the second timeout at this head: stop requeueing, one line, a wait on a person (#2308)
                     unwritten(head, LAND, "Timed out twice in the Mergify merge queue", "error")
                     comment(
@@ -8546,9 +8559,10 @@ def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
 TIMEOUT_TEXT = re.compile(r"\btim(?:ed|e)[ -]?out\b|\btimeout\b", re.IGNORECASE)
 
 
-def mergify_timeout(head: str) -> str | None:
+def mergify_timeout(head: str) -> tuple[str, str] | None:
     """Mergify's queue check run on `head`, when it says the dequeue was a timeout (TIMEOUT_TEXT in its title or
-    summary): its name and title; None for any other dequeue, or a head GitHub can't read."""
+    summary): its name and title, and when it completed ("" where GitHub gives no time); None for any other dequeue,
+    or a head GitHub can't read."""
     try:
         checks = commit_checks(head)
     except subprocess.CalledProcessError:
@@ -8559,7 +8573,8 @@ def mergify_timeout(head: str) -> str | None:
             and run["conclusion"] not in ("SUCCESS", "NEUTRAL", "")
             and TIMEOUT_TEXT.search(f"{run.get('title', '')}\n{run.get('summary', '')}")
         ):
-            return f"`{name}`: {run.get('title') or run['conclusion'].lower()}"
+            title = run.get("title") or run["conclusion"].lower()
+            return f"`{name}`: {title}", run.get("completed_at") or ""
     return None
 
 

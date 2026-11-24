@@ -515,11 +515,13 @@ def test_a_raised_budget_gives_the_head_a_fresh_first_timeout(
     assert mergify["land"]("7")[0] == 0
     mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
     assert mergify["land"]("7")[0] == approvals.WAITING
+    stamp_stop_later(mergify)
     monkeypatch.setattr(approvals, "timeouts", lambda loop: {"test": 60, "run": 7200})
-    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
     code, lines = mergify["land"]("7")
     assert code == 0, lines
     assert not any("timed out twice" in each for each in lines)
+    # the head goes back into Mergify's queue: its queue action does not re-embark a dequeued head by itself
+    assert len(requeues(mergify)) == 2
 
 
 def test_a_refused_label_removal_after_a_first_timeout_is_no_second_timeout(
@@ -540,6 +542,13 @@ def test_a_refused_label_removal_after_a_first_timeout_is_no_second_timeout(
     assert not any("timed out twice" in each for each in lines)
 
 
+def stamp_stop_later(state: dict[str, Any]) -> None:
+    """The fake stamps every comment alike: the stop record follows the comments it answers."""
+    for node in state["pulls"][7]["comments"]["nodes"]:
+        if node["body"].startswith(approvals.TIMED_OUT_TWICE):
+            node["createdAt"] = "2026-10-02T13:00:00Z"
+
+
 def mark_ready_again(state: dict[str, Any], at: str) -> None:
     state["pulls"][7]["timelineItems"]["nodes"].append(
         {"__typename": "ReadyForReviewEvent", "createdAt": at}
@@ -553,12 +562,14 @@ def test_a_mergify_pr_marked_ready_again_counts_its_timeouts_anew(
     assert mergify["land"]("7")[0] == 0
     dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
     assert mergify["land"]("7")[0] == 0
-    mark_ready_again(mergify, "2999-01-01T00:00:00Z")
-    assert mergify["land"]("7")[0] == 0
     mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    assert mergify["land"]("7")[0] == approvals.WAITING
+    stamp_stop_later(mergify)
+    mark_ready_again(mergify, "2999-01-01T00:00:00Z")
     code, lines = mergify["land"]("7")
     assert code == 0, lines
     assert not any("timed out twice" in each for each in lines)
+    assert len(requeues(mergify)) == 2
 
 
 def stopped_github_queue(queue: dict[str, Any]) -> str:
@@ -603,3 +614,19 @@ def test_a_raised_budget_lifts_a_github_queue_stop(
     code, lines = queue["land"]("7")
     assert code == 0, lines
     assert queue["enqueued"] == [(7, head)]
+
+
+def test_a_dequeue_whose_timeout_text_is_older_than_the_first_record_is_evicted(
+    mergify: dict[str, Any],
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    assert mergify["land"]("7")[0] == 0
+    # Mergify dequeues again for another reason and leaves its old check run, a timeout's, as it was
+    for each in mergify["checks"][head]:
+        each["completed_at"] = "2026-09-01T00:00:00Z"
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    code, lines = mergify["land"]("7")
+    assert code == 1, lines
+    assert not any("timed out twice" in each for each in lines)
