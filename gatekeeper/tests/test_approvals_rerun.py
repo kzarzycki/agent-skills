@@ -69,9 +69,11 @@ def test_a_high_risk_head_with_only_the_workers_record_is_refused(
     code, out = check_merge(capsys)
     assert code == 1
     assert out == [
-        f"{ASKED} origin holds no rerun record on tree {TREE}. Where the repo has CI, a CI run on the head runs"
-        " `local-ci --record --rerun` and pushes its record; with no CI, the verifier starts a fresh session that"
-        " runs it on the head and names the record's commit on a `Rerun: <commit>` line of its report"
+        (
+            f"{ASKED} origin holds no rerun record on tree {TREE}. Where the repo has CI, a CI run on the head runs"
+            " `local-ci --record --rerun` and pushes its record; with no CI, the verifier starts a fresh session that"
+            " runs it on the head and names the record's commit on a `Rerun: <commit>` line of its report"
+        )
     ]
 
 
@@ -161,7 +163,7 @@ def test_rerun_is_a_boolean_per_level() -> None:
 
 
 def test_a_rerun_runs_again_whatever_is_recorded_and_records_apart(
-    repo: dict[str, Any],  # noqa: F811
+    repo: dict[str, Any],
     refs: dict[str, dict[str, Any]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -171,7 +173,9 @@ def test_a_rerun_runs_again_whatever_is_recorded_and_records_apart(
     repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
     base = git_in(repo["work"], "merge-base", "origin/main", "HEAD").strip()
     assert approvals.main(["local-ci", "--record", "--base", base]) == 0
-    assert approvals.main(["local-ci", "--record", "--base", base]) == 0  # the worker's pass, reused
+    assert (
+        approvals.main(["local-ci", "--record", "--base", base]) == 0
+    )  # the worker's pass, reused
     assert len(repo["ran"]()) == 1
     assert approvals.main(["local-ci", "--record", "--rerun"]) == 0
     assert repo["ran"]() == [f"selected app.py docs/agents/loop.md against {base}"] * 2
@@ -199,7 +203,7 @@ def test_rerun_goes_with_record_alone(
 
 
 def test_reruns_lists_only_the_rerun_records_on_origin(
-    repo: dict[str, Any],  # noqa: F811
+    repo: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pushed for real: the worker's record of the same tree and a rerun record; only the rerun's is listed, and
@@ -240,8 +244,7 @@ def test_pusher_reads_the_newest_push_and_whether_an_app_made_it(
         "app": True,
     }
     assert asked == [
-        "repos/{owner}/{repo}/activity?ref=refs%2Fheads%2Floop-gate%2F"
-        f"{TREE}-111111111111&per_page=1"
+        f"repos/{{owner}}/{{repo}}/activity?ref=refs%2Fheads%2Floop-gate%2F{TREE}-111111111111&per_page=1"
     ]
     monkeypatch.setattr(approvals.github, "rest", lambda _path: [])
     assert approvals.github.pusher(RERUN_REF) is None

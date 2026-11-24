@@ -1933,9 +1933,7 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
     if not levels(loop)[level].get("rerun"):
         return None
     where, head = f"PR #{pull['number']}", pull["headRefOid"].lower()
-    asked = (
-        f"{where} is rated {level}, and `levels.{level}.rerun` asks an independent rerun of its selection on its head:"
-    )
+    asked = f"{where} is rated {level}, and `levels.{level}.rerun` asks an independent rerun of its selection on its head:"
     if (held := tree_of(head)) is None:
         return f"{asked} the tree of {head} can't be read here, so no record of it can be"
     found = reruns(held)

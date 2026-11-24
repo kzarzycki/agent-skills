@@ -1794,7 +1794,9 @@ def pusher(ref: str) -> dict[str, Any] | None:
     """The newest push to the branch `ref` (`refs/heads/<name>`), from the repository's activity: `after`, the commit
     it set the branch to, `login`, the account that pushed, and `app`, true where that account is an app's (GitHub's
     actor type `Bot`, as a workflow's token pushes), which no person's token can act as; None when it lists none."""
-    found = rest(f"repos/{{owner}}/{{repo}}/activity?ref={urllib.parse.quote(ref, safe='')}&per_page=1")
+    found = rest(
+        f"repos/{{owner}}/{{repo}}/activity?ref={urllib.parse.quote(ref, safe='')}&per_page=1"
+    )
     if not found:
         return None
     who = found[0].get("actor") or {}
