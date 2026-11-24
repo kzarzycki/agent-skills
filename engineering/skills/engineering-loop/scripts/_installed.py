@@ -1,6 +1,8 @@
-"""Where a skill that another package ships is installed: the one `installed()` every script of engineering-loop
-uses, so the layouts it knows cannot drift between copies. A script loads it by path from its own folder, since a
-script may be imported from anywhere and a forwarder runs before anything of its own."""
+"""Where a skill that another package ships is installed: the `installed()` the old-path forwarders beside this file
+use to find their target. This folder only forwards to another skill's script (loop's engineering-loop ships the
+real ones), so this helper is held to the same rule as them (tests/test_one_package_per_skill_name.py) and carries
+the same body as loop's copy (tests/test_packages.py). It is loaded by path from its own folder, since a forwarder
+runs before anything of its own."""
 
 import sys
 from pathlib import Path

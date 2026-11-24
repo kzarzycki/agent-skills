@@ -166,8 +166,9 @@ def test_every_copy_of_the_resolver_is_the_same() -> None:
     assert len(set(copies.values())) == 1, sorted(copies)
 
 
-def test_the_shared_resolver_is_one_file_in_both_packages() -> None:
-    assert len({(REPOSITORY / copy).read_text() for copy in SHARED}) == 1
+def test_the_shared_resolver_is_one_file_in_every_package() -> None:
+    # past the module docstring, which says what the folder is for: engineering's holds only forwarders
+    assert len({(REPOSITORY / copy).read_text().split('"""', 2)[2] for copy in SHARED}) == 1
 
 
 @pytest.mark.parametrize("copy", [*COPIES, *SHARED])
