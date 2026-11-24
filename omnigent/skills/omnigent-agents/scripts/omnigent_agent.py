@@ -6959,6 +6959,31 @@ def pr_label(label: object) -> tuple[str, int] | None:
     return (m[1], int(m[2])) if m else None
 
 
+def label_refs(label: object) -> list[str]:
+    """The ``owner/name#N`` entries of a ``PR_LABEL`` value: one, or several joined by commas (a lead that lands
+    several PRs, or took one over: ``own_pr`` adds each)."""
+    return [p.strip() for p in str(label).split(",") if p.strip()]
+
+
+def pr_labels(label: object) -> list[tuple[str, int]]:
+    """The repository and PR number of every PR a ``PR_LABEL`` value names, in order; none that does not parse."""
+    return [found for ref in label_refs(label) if (found := pr_label(ref))]
+
+
+def own_pr(og: Omnigent, sid: str, refs: list[str]) -> str:
+    """Add PRs ``refs`` (``owner/name#N``) to ``sid``'s ``PR_LABEL`` list in one write, so a dequeue of any reaches
+    ``sid``: what a lead's ``land`` and a takeover write. Idempotent; the labels it holds already are kept."""
+    for ref in refs:
+        if not pr_label(ref):
+            raise Fail(f"own-pr needs owner/name#N, not {ref!r}")
+    held = label_refs((og.info(sid).get("labels") or {}).get(PR_LABEL, ""))
+    added = [r for r in dict.fromkeys(refs) if r not in held]
+    if not added:
+        return f"{sid}: already owns {', '.join(refs)}"
+    og.label(sid, {PR_LABEL: ",".join([*held, *added])})
+    return f"{sid}: owns {', '.join(added)}"
+
+
 def pr_hold(repo: str, pr: int) -> str | None:
     """Why a worker of PR ``pr`` of ``repo`` is still held: the PR is open; None once it is merged
     or closed. A PR that can't be read holds the worker, saying so. The lookup names ``repo``, never
@@ -7053,7 +7078,7 @@ def running_twin(og: Omnigent, label: str, role: str) -> str:
         labels = s.get("labels") or {}
         if (
             not s.get("archived")
-            and str(labels.get(PR_LABEL, "")) == label
+            and label in label_refs(labels.get(PR_LABEL, ""))
             and labels.get("omni.role") == role
             and str(s.get("status")) in RUNNING
         ):
@@ -7113,12 +7138,14 @@ def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
     page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
     found = []
     for s in page.get("data", []):
-        label = pr_label(held_by(s))
+        labelled = pr_labels(held_by(s))
         named = getattr(pr, "repo", "")
         if (
             not s.get("archived")
-            and label
-            and (pr is None or (label[1] == pr and (not named or label[0] == named)))
+            and labelled
+            and (
+                pr is None or any(n == pr and (not named or repo == named) for repo, n in labelled)
+            )
         ):
             found.append(str(s["id"]))
     return found
@@ -7203,15 +7230,19 @@ def finish_delivered(
         and (label := held_by(info))
         and not (force and (twin_stop or replaced(og, sid, info)))
     ):
-        found = pr_label(label)
-        if found and found not in held:
-            held[found] = pr_hold(*found)
-        if why := held[found] if found else f"label {label!r} names no PR":
+        found = pr_labels(label)
+        for each in found:
+            if each not in held:
+                held[each] = pr_hold(*each)
+        if why := next((held[each] for each in found if held[each]), "") or (
+            "" if found else f"label {label!r} names no PR"
+        ):
             return f"{name}: kept ({why})", False
-        if found and found not in cleared and not elsewhere(og, info):
-            cleared.add(found)  # the PR is merged or closed: its steps' events are over
-            prune_demo_branch(*found)
-            clear_closed_pr_events(*found, info.get("workspace"))
+        for each in found:
+            if each not in cleared and not elsewhere(og, info):
+                cleared.add(each)  # the PR is merged or closed: its steps' events are over
+                prune_demo_branch(*each)
+                clear_closed_pr_events(*each, info.get("workspace"))
     # an open card is the owner's question: archiving ends its way back, --force too
     if cards := cards_of(info) or [_asks(e) for e in getattr(og, "cards", {}).get(sid) or []]:
         return f"{name}: kept (card open: {'; '.join(cards)})", False
@@ -9884,7 +9915,7 @@ def supervise_registry(
                 told_any = False
                 for lead_sid in owed:
                     lead = state["leads"].get(lead_sid) or {}
-                    own = pr_label(
+                    own = pr_labels(
                         (looks.get(lead_sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, "")
                     )
                     named = {  # a wait is a set, and may share it with the supervisor: each PR it names
@@ -9894,7 +9925,7 @@ def supervise_registry(
                         and m[1] in (None, repo)
                     }
                     if repos.get(lead_sid) == repo and (
-                        merged_prs & (named | ({own[1]} if own and own[0] == repo else set()))
+                        merged_prs & (named | {n for r, n in own if r == repo})
                     ):
                         head = f"{lead_sid} {lead.get('title') or ''}".rstrip()
                         # a lead waiting on the supervisor has no one else to tell it
@@ -10105,13 +10136,17 @@ def supervise_registry(
                     )
                     return
                 log(("queue-sessions", repo), None)
+            ties.pop((repo, entry["pr"]), None)
             lead = pr_lead(repo, entry["pr"], sessions)
             entry["told"] = True  # on disk with the event it raises: each comment is sent once
             tries = entry.get(
                 "tries", 0
             )  # each try its own event: a settled id is never settled again
             eid = f"dequeued:{repo}:{cid}" + (f":{tries}" if tries else "")
-            say(dequeue_message(repo, entry, flakes), lead, eid, "dequeued")
+            text = dequeue_message(repo, entry, flakes)
+            if not lead and (both := ties.get((repo, entry["pr"]))):
+                text += f"\nFollowed leads whose reports name it: {', '.join(both)}; tell the one that owns it."
+            say(text, lead, eid, "dequeued")
             if any(
                 i["id"] == f"dequeued:{lead}:{eid}" and i["status"] == "offline"
                 for i in state["intents"]
@@ -10133,7 +10168,7 @@ def supervise_registry(
     def pr_lead(repo: str, pr: int, sessions: list[dict]) -> str:
         """The lead that owns PR ``pr`` of ``repo``, else empty: a lead (followed, or any ``omni.role`` lead, archived
         too) whose own ``PR_LABEL`` names it; else the lead that started a session labelled with it (a ``start --pr``
-        worker, archived too), found up its ``parent_session_id`` chain; else a followed lead whose wait names it."""
+        worker, archived too), found up its ``parent_session_id`` chain; else a followed lead whose wait names it, or whose report head names ``owner/name#N`` or its URL."""
         label = f"{repo}#{pr}"
         followed = [s for s, owes in owed.items() if owes[3]]
         by_id = {str(s.get("id")): s for s in sessions}
@@ -10147,9 +10182,9 @@ def supervise_registry(
             return sid in followed or labels(sid).get("omni.role") == "lead"
 
         for sid in [*followed, *by_id]:
-            if is_lead(sid) and str(labels(sid).get(PR_LABEL, "")) == label:
+            if is_lead(sid) and label in label_refs(labels(sid).get(PR_LABEL, "")):
                 return sid
-        for start in [s for s in by_id if str(labels(s).get(PR_LABEL, "")) == label]:
+        for start in [s for s in by_id if label in label_refs(labels(s).get(PR_LABEL, ""))]:
             sid, seen = start, set()
             while sid and sid not in seen:  # the list holds every session, so each parent is in it
                 seen.add(sid)
@@ -10162,6 +10197,16 @@ def supervise_registry(
                 m = re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", ref.strip())
                 if m and int(m[2]) == pr and (m[1] == repo or not m[1] and repos.get(sid) == repo):
                     return sid
+        url = rf"github\.com/{re.escape(repo)}/pull/{pr}(?!\d)"
+        named = []  # a lead that took the PR over, or lands it with others: its report head names it
+        for sid in followed:
+            head = report_head((state["leads"].get(sid) or {}).get("last_text") or "")
+            if re.search(rf"(?<![\w/.-]){re.escape(label)}(?!\d)|{url}", head):
+                named.append(sid)
+        if len(named) == 1:  # a label owner won above; two leads naming it is no owner
+            return named[0]
+        if named:
+            ties[(repo, pr)] = named  # the coordinator sees the dequeue, with both leads named
         return ""
 
     def alive(other: str, info: dict) -> bool:
@@ -10184,9 +10229,9 @@ def supervise_registry(
         then reads this directory's, and its refusal is the reason shown."""
         if named:
             return named
-        label = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
+        label = pr_labels((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
         if label:
-            return label[0]
+            return label[0][0]
         if sid not in repos:
             try:
                 repos[sid] = workspace_repo(og, sid)
@@ -10194,6 +10239,9 @@ def supervise_registry(
                 return ""
         return repos[sid]
 
+    ties: dict[
+        tuple[str, int], list[str]
+    ] = {}  # PR -> the followed leads whose heads both name it (pr_lead)
     pr_shared: dict[str, list] = {}  # key -> the last read, whichever lead made it
 
     def settled(lead: dict, pr: int, repo: str, fresh: bool = False, run: bool = False):
@@ -10386,8 +10434,7 @@ def supervise_registry(
     def lead_branches(sid: str, lead: dict) -> set[str]:
         """The head branches of the PRs ``lead``'s wait names and of its own (its ``PR_LABEL``) in its own repository:
         its events' branches. A PR of another repository has its events there, which are not read."""
-        own = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
-        found = {(own[0], own[1])} if own else set()
+        found = set(pr_labels((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, "")))
         for item in (lead.get("wait") or "").split(", "):
             if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", item.strip()):
                 found.add((m[1] or "", int(m[2])))
@@ -11714,6 +11761,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p = sub.add_parser("approve")
     p.add_argument("session")
     p.add_argument("--decline", action="store_true", help="decline instead of accept")
+    p = sub.add_parser(
+        "own-pr",
+        description="add a PR (owner/name#N) to this session's `omni.pr` label list, so the merge queue's"
+        " dequeue of it reaches this lead: what `land` and a takeover write",
+    )
+    p.add_argument("pr", nargs="+", help="owner/name#N, each")
+    p.add_argument("--session", default="", help="the session to label; default: this one")
     p = sub.add_parser("status")
     p.add_argument("sessions", nargs="+")
     p = sub.add_parser(
@@ -12256,6 +12310,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             lines, failed = approve(og, args.session, args.decline)
             print("\n".join(lines))
             return 1 if failed else 0
+        if args.cmd == "own-pr":
+            print(own_pr(og, args.session or own_id(), args.pr))
+            return 0
         if args.cmd == "status":
             # a snapshot: an idle look reads as a turn ended, which a notice has confirmed
             print("\n".join(observe(og, s, {}, baseline=True)[1] for s in args.sessions))
