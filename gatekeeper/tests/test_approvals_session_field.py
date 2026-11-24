@@ -91,10 +91,11 @@ def test_an_account_without_the_field_claims_for_one_lookup_and_one_line(
     lines = approvals.claim(pull(), [free(1), free(2)])
     assert lines == [
         (
-            "no issue's `Session` field set (the account has no `Session` issue field); the `Assigned:` record names"
-            " the session"
+            "no issue's `Session` field set (the account has no `Session` issue field); the `Assigned:` record"
+            f" names the session. {approvals.SESSION_STEPS}"
         )
     ]
+    assert "Field name `Session`, Field type Text" in approvals.SESSION_STEPS
     assert session_fields == [
         ("lookup", 1, "Session")
     ]  # one lookup a run, no write, whatever the issues
@@ -126,14 +127,79 @@ def test_check_build_exits_0_where_the_account_lacks_the_field(
 
 
 @pytest.mark.usefixtures("omnigent")
-def test_where_graphql_is_refused_the_field_is_skipped_without_a_call(
+def test_where_graphql_is_refused_rest_finds_the_field_once_and_writes_it(
     monkeypatch: pytest.MonkeyPatch, session_fields: list[tuple[Any, ...]]
 ) -> None:
     monkeypatch.setattr(approvals.github, "_rest_only", True)
-    assert approvals.claim(pull(), [free(1)]) == [
-        "no issue's `Session` field set (GitHub refuses GraphQL here); the `Assigned:` record names the session"
+    assert approvals.claim(pull(), [free(1), free(2)]) == []
+    assert session_fields == [
+        ("rest exists", "Session"),
+        ("rest id", "Session"),
+        ("rest set", 1, 42, LINK),
+        ("rest set", 2, 42, LINK),
     ]
-    assert session_fields == []
+
+
+@pytest.mark.usefixtures("omnigent")
+def test_a_graphql_refusal_mid_run_falls_back_to_rest(
+    monkeypatch: pytest.MonkeyPatch, session_fields: list[tuple[Any, ...]]
+) -> None:
+    def refuse(number: int, name: str) -> tuple[str | None, str]:
+        raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403: Forbidden")
+
+    monkeypatch.setattr(approvals, "issue_field", refuse)
+    assert approvals.claim(pull(), [free(1)]) == []
+    assert session_fields[-1] == ("rest set", 1, 42, LINK)
+
+
+@pytest.mark.usefixtures("omnigent")
+def test_over_rest_an_account_without_the_field_pays_one_lookup(
+    monkeypatch: pytest.MonkeyPatch, session_fields: list[tuple[Any, ...]]
+) -> None:
+    monkeypatch.setattr(approvals.github, "_rest_only", True)
+    monkeypatch.setattr(
+        approvals,
+        "rest_has_issue_field",
+        lambda name: session_fields.append(("rest exists", name)) and False,
+    )
+    [line] = approvals.claim(pull(), [free(1), free(2)])
+    assert line.startswith(
+        "no issue's `Session` field set (the account has no `Session` issue field)"
+    )
+    assert session_fields == [("rest exists", "Session")]
+
+
+@pytest.mark.usefixtures("omnigent")
+def test_over_rest_a_field_no_issue_carries_yet_is_one_line(
+    monkeypatch: pytest.MonkeyPatch, session_fields: list[tuple[Any, ...]]
+) -> None:
+    monkeypatch.setattr(approvals.github, "_rest_only", True)
+    monkeypatch.setattr(approvals, "rest_issue_field_id", lambda name: None)
+    [line] = approvals.claim(pull(), [free(1), free(2)])
+    assert "REST names the `Session` field's id only once an issue carries a value" in line
+    assert [call for call in session_fields if call[0] == "rest set"] == []
+
+
+def test_check_setup_names_a_missing_field_with_github_s_steps_and_exits_0(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(approvals, "setup_problems", lambda _root: [])
+    monkeypatch.setattr(approvals, "project", lambda: (None, ""))
+    monkeypatch.setattr(approvals, "mergify_drift", lambda *_a, **_k: None)
+    monkeypatch.setattr(approvals, "tree_policy", lambda _root: "")
+    monkeypatch.setattr(approvals, "rest_has_issue_field", lambda name: False)
+    assert approvals.setup() == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[1:] == [
+        (
+            "setup: the account has no `Session` issue field (optional), so a claim's `Assigned:` record alone"
+            " names the lead's Omnigent session."
+        ),
+        approvals.SESSION_STEPS,
+    ]
+    monkeypatch.setattr(approvals, "rest_has_issue_field", lambda name: True)
+    assert approvals.setup() == 0
+    assert "Session" not in capsys.readouterr().out
 
 
 @pytest.mark.usefixtures("omnigent")
@@ -163,6 +229,36 @@ def test_the_session_line_leaves_the_record_the_loop_s_own() -> None:
         events=(assigned_event("ann", "2099-01-01T00:00:00Z"),),
     )
     assert approvals.assigned_by_loop(issue, "ann")
+
+
+def test_the_rest_adapter_checks_finds_and_writes_the_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], str | None]] = []
+    issues = [
+        {"issue_field_values": []},
+        {"issue_field_values": [{"issue_field_id": 7, "issue_field_name": "Session"}]},
+    ]
+
+    def gh(*args: str, data: str | None = None) -> str:
+        calls.append((args, data))
+        if "issue_field_values=session:-" in args:
+            return "[]"
+        if "issue_field_values=nothing-here:-" in args:
+            raise subprocess.CalledProcessError(1, "gh", stderr="gh: Validation Failed (HTTP 422)")
+        return json.dumps(issues)
+
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    assert approvals.github.rest_has_issue_field("Session")
+    assert not approvals.github.rest_has_issue_field("Nothing here")
+    assert approvals.github.rest_issue_field_id("Session") == 7
+    assert approvals.github.rest_issue_field_id("Owner") is None
+    approvals.github.rest_set_issue_field(1, 7, LINK)
+    args, data = calls[-1]
+    assert ("-X", "POST") == args[
+        1:3
+    ] and "repos/{owner}/{repo}/issues/1/issue-field-values" in args
+    assert json.loads(data or "") == {"issue_field_values": [{"field_id": 7, "value": LINK}]}
 
 
 def test_the_adapter_reads_the_field_and_the_issue_in_one_query_and_writes_its_text(

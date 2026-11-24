@@ -38,6 +38,10 @@ through the issue it closes, leads to its lead and the lead's children. The fiel
 creates it once, as a text field, in the account's issue settings, since the loop's token can't. An account without
 it uses the gatekeeper unchanged: every command works, the record still carries the link, and the missing field costs
 one lookup and one informational line a run, never an error or a non-zero exit. Outside Omnigent neither is written.
+Where GitHub refuses GraphQL, REST checks the field exists and sets it, reading the field's id off an issue that
+already carries a value, since no REST route lists a personal account's fields: until one does, the run says so in its
+one line. `check setup` reports a missing field in one line, with the steps to create it on GitHub (Settings >
+Planning > Issue fields > New field, name `Session`, type Text), and exits as it would without it.
 
 ## Files
 

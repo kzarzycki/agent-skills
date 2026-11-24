@@ -78,8 +78,9 @@ unless someone assigned them again after it, and keeps every other: a claim a pe
 Under Omnigent (`OMNIGENT_RUNNER_PRIMARY_SESSION_ID` and `RUNNER_SERVER_URL` set) the record's details add `Session:
 <server>/c/<lead's session id>`, which names the lead from inside its workers and verifiers too, and the issue's `Session`
 issue field is set to the same link. The field is optional: the account's owner creates it (a text field); without it,
-or where GitHub refuses GraphQL, the run says so in one line after one lookup, the record still carries the link, and the
-claim and the exit code are unchanged. A refused write is a line too.
+the run says so in one line after one lookup, the record still carries the link, and the claim and the exit code are
+unchanged. A refused write is a line too. Where GitHub refuses GraphQL, REST sets it, with the field's id read off an
+issue already carrying a value. `check setup` prints one line and GitHub's steps when the account lacks the field.
 A repo without docs/agents/gatekeeper.md or loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
 `check merge` also fails a PR that itself carries `needs-owner` (`#<n> waits for the owner (needs-owner)`), so `land`
@@ -2368,31 +2369,94 @@ def set_issue_field(issue: str, field: str, text: str) -> None:
     github.set_issue_field(issue, field, text)
 
 
+def rest_has_issue_field(name: str) -> bool:
+    found: bool = github.rest_has_issue_field(name)
+    return found
+
+
+def rest_issue_field_id(name: str) -> int | None:
+    found: int | None = github.rest_issue_field_id(name)
+    return found
+
+
+def rest_set_issue_field(number: int, field: int, text: str) -> None:
+    github.rest_set_issue_field(number, field, text)
+
+
+# the `Session` field's REST id once a run where GitHub refuses GraphQL found it, so later claims write unasked
+rest_field: int | None = None
+# what `check setup` and a claim print where the account lacks the field: GitHub's steps to create it
+SESSION_STEPS = (
+    f"To add it, on GitHub: your profile picture (or the organization) > Settings > Planning > Issue fields > New field;"
+    f" Field name `{SESSION_FIELD}`, Field type Text; Create."
+)
+
+
 def session_field(number: int, link: str) -> str | None:
     """Set issue `number`'s `Session` field to `link`: None once set, else the line saying why not. Best effort, like a
-    board move, since the claim's record carries the link too. A field the account lacks, or GraphQL refused, is said
-    once a run and asked no more (unfielded), so an account without the field pays one lookup."""
+    board move, since the claim's record carries the link too. GraphQL reads the field and the issue's id in one call
+    and sets it; where GitHub refuses GraphQL, REST checks the field exists, reads its id once a run and sets it. A
+    field the account lacks, or one no lookup can read, is said once a run and asked no more (unfielded), so an account
+    without the field pays one lookup."""
     global unfielded
     if unfielded is not None or port("tracker") is not github.tracker:
         return None
-    if github._rest_only:
-        unfielded = "GitHub refuses GraphQL here"
+    missing = f"the account has no `{SESSION_FIELD}` issue field"
+
+    def graphql() -> Callable[[], None] | None:
+        field, node = issue_field(number, SESSION_FIELD)
+        return None if field is None else lambda: set_issue_field(node, field, link)
+
+    def rest() -> Callable[[], None] | None:
+        global rest_field
+        if rest_field is None:
+            if not rest_has_issue_field(SESSION_FIELD):
+                return None
+            rest_field = rest_issue_field_id(SESSION_FIELD)
+            if rest_field is None:
+                raise LookupError(
+                    f"GitHub refuses GraphQL here, and REST names the `{SESSION_FIELD}` field's id only once an issue"
+                    " carries a value: set it on one issue by hand"
+                )
+        field = rest_field
+        return lambda: rest_set_issue_field(number, field, link)
+
+    try:
+        write = github.fast(graphql, rest)
+    except (subprocess.CalledProcessError, LookupError, KeyError, TypeError, ValueError) as exc:
+        unfielded = (getattr(exc, "stderr", "") or "").strip() or str(exc)
     else:
-        try:
-            field, node = issue_field(number, SESSION_FIELD)
-        except (subprocess.CalledProcessError, KeyError, TypeError, ValueError) as exc:
-            unfielded = (getattr(exc, "stderr", "") or "").strip() or str(exc)
+        if write is None:
+            unfielded = missing
         else:
-            if field is None:
-                unfielded = f"the account has no `{SESSION_FIELD}` issue field"
-            else:
-                try:
-                    set_issue_field(node, field, link)
-                    return None
-                except subprocess.CalledProcessError as exc:
-                    why = (exc.stderr or "").strip() or str(exc)
-                    return f"#{number}: could not set the `{SESSION_FIELD}` field ({why}); its `Assigned:` record names the session"
-    return f"no issue's `{SESSION_FIELD}` field set ({unfielded}); the `Assigned:` record names the session"
+            try:
+                write()
+                return None
+            except subprocess.CalledProcessError as exc:
+                why = (exc.stderr or "").strip() or str(exc)
+                return f"#{number}: could not set the `{SESSION_FIELD}` field ({why}); its `Assigned:` record names the session"
+    said = f"no issue's `{SESSION_FIELD}` field set ({unfielded}); the `Assigned:` record names the session"
+    return f"{said}. {SESSION_STEPS}" if unfielded == missing else said
+
+
+def session_notice() -> list[str]:
+    """`check setup`'s note on the optional `Session` issue field: one line and GitHub's steps when the account lacks
+    it, a line when GitHub can't say, nothing when it has it. Informational: it changes no exit code."""
+    try:
+        if rest_has_issue_field(SESSION_FIELD):
+            return []
+    except (subprocess.CalledProcessError, Refused, OSError) as exc:
+        why = (getattr(exc, "stderr", "") or "").strip() or str(exc)
+        return [
+            f"setup: could not tell whether the account has a `{SESSION_FIELD}` issue field ({why})"
+        ]
+    return [
+        (
+            f"setup: the account has no `{SESSION_FIELD}` issue field (optional), so a claim's `Assigned:` record"
+            " alone names the lead's Omnigent session."
+        ),
+        SESSION_STEPS,
+    ]
 
 
 def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
@@ -6052,6 +6116,8 @@ def setup() -> int:
         print(line)
     if not problems:
         print("setup: the policy parses and the repo's loop steps run the pack's scripts with uv")
+    for line in session_notice():  # advice, never a problem: the field is optional
+        print(line)
     return 1 if problems else 0
 
 
