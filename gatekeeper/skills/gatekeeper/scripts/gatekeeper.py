@@ -6009,7 +6009,9 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
             print(f"land --wait stopped after {said_for}, still waiting")
             # a PR a queue holds or whose checks run is being moved: it needs no owner, only a land run again
             moving = [n for n in numbers_of(pr) if in_flight(n)]
-            land_event_of(moving, "waiting")
+            land_event_of(
+                moving, "waiting", unless_ended=True
+            )  # one that asked the owner keeps its question
             land_event_of(
                 [n for n in numbers_of(pr) if n not in moving],
                 "needs-owner",
