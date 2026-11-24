@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read # tools/tested_tree.py reads the nightly's runs from the forge
+      actions: read # nightly.py moved reads the nightly's runs from the forge
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -23,7 +23,7 @@ jobs:
       - id: tested
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 tools/tested_tree.py tag
+        run: python3 loop/skills/engineering-loop/scripts/nightly.py moved tag
       - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
         with:
           version: 2026.9.2

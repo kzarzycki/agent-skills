@@ -20,7 +20,7 @@ RULES = (
     "R2. Scope by what the change touches.",
     "R3. Affected tests only, selected by what a test executes.",
     "R4. A fix round runs only what the round's diff reaches.",
-    "R5. A red run reruns only what failed, and only once the cause is fixed or shown unrelated.",
+    "R5. A red run reruns once, and only after it is read.",
     "R6. The merge queue runs only the cross-change check.",
     "R7. After the merge, only a tree nobody tested runs.",
 )

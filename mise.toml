@@ -128,7 +128,7 @@ description = "ruff check and format check over the repo's Python"
 run = """uv run ruff check tools vendoring tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools vendoring tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent"""
 
 [tasks.check-fast]
-description = "The PR head's check (`qualify`): vendor check, lint and the Mergify config drift check, no tests. The tests run once per tree, on the batch (test-batch)."
+description = "The PR head's check (`qualify`): vendor check, lint and the Mergify config drift check (the pack template rendered with gatekeeper.md's `land` and `timeouts`), no tests. The tests run once per tree, on the batch (test-batch)."
 run = """mise run vendor-engineering-check
 mise run lint
 uv run gatekeeper/skills/gatekeeper/scripts/approvals.py queue-config | cmp - .mergify.yml || { echo 'error: .mergify.yml drifted from `approvals.py queue-config`, the pack template rendered with gatekeeper.md'"'"'s land block: write its output to .mergify.yml' >&2; exit 1; }"""
@@ -139,7 +139,7 @@ run = """mise run check-fast
 mise run test-batch"""
 
 [tasks.test-batch]
-description = "What `qualify` runs on a Mergify batch's draft PR against GATE_BASE (tools/cross_change_tests.py: R6): the select.unkeyed checks, the cross-change tests and the affected tests of a PR with no record, else the batch's affected tests; never the whole suite"
+description = "What `qualify` runs on a Mergify batch's draft PR against GATE_BASE (tools/cross_change_tests.py, the per-test map's narrowing over the pack's `queue-select` split, record read and refusal: R6): the select.unkeyed checks, the cross-change tests and the affected tests of a PR with no record, else the batch's affected tests; never the whole suite"
 # A selector that fails or refuses (nothing to run on a PR with no record) fails the step. One that selects no test
 # runs no pytest and passes, saying so: pytest given no targets would run the whole suite (#1609).
 run = """unkeyed=$(mktemp)

@@ -31,27 +31,18 @@ from engineering.tests.test_consumer_e2e import (
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 PACKAGES = ("gatekeeper", "loop", "github", "chief-of-staff", "omnigent", "vendoring")
-# The copies of loop.py's resolver for a skill another package ships: each script must run alone, so none imports it.
+# The inline copies of the resolver for a skill another package ships: each script that holds one must run alone, so
+# none imports it. engineering-loop's scripts share `_installed.py` instead, one copy per package (SHARED).
 RESOLVER = {
     "gatekeeper": [],
-    "loop": [
-        "skills/engineering-loop/scripts/loop.py",
-        *(f"skills/engineering-loop/scripts/{name}.py" for name in ("approvals", "gatekeeper")),
-        *(
-            f"skills/engineering-loop/scripts/{name}.py"
-            for name in ("board", "labels", "browse", "acceptance", "events", "rulesets")
-        ),
-        *(
-            f"skills/engineering-loop/scripts/{name}.py"
-            for name in ("cloud_verifier", "nightly", "mutate")
-        ),
-    ],
-    "github": ["skills/github-tracker/scripts/board.py", "skills/github-tracker/scripts/labels.py"],
+    "loop": [],
+    "github": [],
     "chief-of-staff": ["skills/chief-of-staff/scripts/cos_page.py"],
     "omnigent": [],
     "engineering": [
         "skills/orchestrating-agents/scripts/omnigent_agent.py",
         "skills/orchestrating-agents/scripts/claude_cloud.py",
+        "skills/orchestrating-agents/scripts/claude_environments.py",
     ],
 }
 # Each script path engineering 0.25.0 shipped that moved, an unchanged consumer command on it, and the script it now
@@ -160,20 +151,28 @@ def test_every_scripts_folder_with_python_has_a_pycache_file(name: str) -> None:
 
 
 def resolver(path: Path) -> str:
-    found = re.search(r"^def installed\(.*?(?=^\S)", path.read_text(), re.MULTILINE | re.DOTALL)
+    found = re.search(r"^def installed\(.*?(?=^\S|\Z)", path.read_text(), re.MULTILINE | re.DOTALL)
     assert found, f"{path}: no installed()"
-    return found.group()
+    return found.group().rstrip()
 
 
 COPIES = [f"{name}/{script}" for name, scripts in RESOLVER.items() for script in scripts]
+SHARED = [
+    f"{name}/skills/engineering-loop/scripts/_installed.py" for name in ("loop", "engineering")
+]
+SHARED.append("github/skills/github-tracker/scripts/_installed.py")
 
 
 def test_every_copy_of_the_resolver_is_the_same() -> None:
-    copies = {copy: resolver(REPOSITORY / copy) for copy in COPIES}
+    copies = {copy: resolver(REPOSITORY / copy) for copy in [*COPIES, *SHARED]}
     assert len(set(copies.values())) == 1, sorted(copies)
 
 
-@pytest.mark.parametrize("copy", COPIES)
+def test_the_shared_resolver_is_one_file_in_both_packages() -> None:
+    assert len({(REPOSITORY / copy).read_text() for copy in SHARED}) == 1
+
+
+@pytest.mark.parametrize("copy", [*COPIES, *SHARED])
 def test_the_resolver_finds_a_skill_in_claude_codes_cache(copy: str, tmp_path: Path) -> None:
     """Claude Code installs each plugin at `<marketplace>/<plugin>/<version>/` in its cache and marks a version an
     update replaced with `.orphaned_at`: the newest version that isn't orphaned wins, and with none the script exits
@@ -281,3 +280,107 @@ def test_every_local_plugin_has_an_area_component() -> None:
     tracker = (REPOSITORY / "docs" / "agents" / "issue-tracker.md").read_text()
     settings = yaml.safe_load(re.search(r"```yaml\n(.*?)```", tracker, re.DOTALL).group(1))
     assert set(settings["components"]) == plugins | {"ci"}
+
+
+# The first apm that deploys a Claude-format plugin whole to `.agents/plugins/<name>/` (project scope) instead of
+# into the one skills directory, which puts a skill's dependency out of its sibling folder's reach (#2284).
+NATIVE_PLUGIN_APM = "0.38.1"
+
+
+@pytest.fixture(scope="session")
+def native_plugin_apm(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A bin folder holding an apm that installs plugins natively, whatever apm the host pins for its own use."""
+    tools = tmp_path_factory.mktemp("apm-tool")
+    env = {**os.environ, "UV_TOOL_DIR": str(tools / "tools"), "UV_TOOL_BIN_DIR": str(tools / "bin")}
+    _run(["uv", "tool", "install", f"apm-cli=={NATIVE_PLUGIN_APM}"], cwd=tools, env=env)
+    return tools / "bin"
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(300)
+@pytest.mark.needs_tool("uv")
+def test_the_deployed_loop_scripts_find_gatekeeper_when_apm_installs_it_as_a_plugin(
+    tmp_path: Path, native_plugin_apm: Path
+) -> None:
+    """In a repo `apm install`ed with `targets: [claude]`, gatekeeper lands in `.agents/plugins/gatekeeper/`, not beside
+    engineering-loop: every script deployed for engineering-loop still runs."""
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{native_plugin_apm}{os.pathsep}{env['PATH']}"
+    source = tmp_path / "source"
+    _copy_package(source)
+    _publish(tmp_path, env, source)
+    # in its own folder: the cache layout's glob reads the consumer's parent, which must not hold `source`
+    consumer = tmp_path / "work" / "consumer"
+    consumer.mkdir(parents=True)
+    version = manifests("engineering")[0]["version"]
+    _write_manifest(consumer / "apm.yml", {"git": f"{SLUG}/engineering", "ref": f"^{version}"})
+    manifest = yaml.safe_load((consumer / "apm.yml").read_text())
+    manifest["targets"] = ["claude"]
+    (consumer / "apm.yml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+    _run(["apm", "install"], cwd=consumer, env=env)
+
+    assert (consumer / ".agents" / "plugins" / "gatekeeper" / "skills" / "gatekeeper").is_dir()
+    # every deployed script, not engineering-loop's alone: github-tracker's and the agents' find their skills the same way
+    scripts = sorted(
+        path
+        for path in (consumer / ".claude" / "skills").glob("*/scripts/*.py")
+        if "installed"
+        in path.read_text()  # the scripts that look for another skill; others take no `--help`
+    )
+    assert scripts
+    failed = {}
+    for script in scripts:
+        run = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            cwd=consumer,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # a script may refuse `--help` (board.py exits 2 with its usage); a missing skill or a crash is this test's failure
+        if "needs the `" in run.stderr or "Traceback" in run.stderr:
+            failed[f"{script.parent.parent.name}/{script.name}"] = run.stderr.strip().splitlines()[
+                -1:
+            ]
+    assert failed == {}
+
+
+@pytest.mark.parametrize("forwarder", ["loop", "engineering"])
+def test_a_forwarded_script_loads_its_own_packages_resolver(forwarder: str, tmp_path: Path) -> None:
+    """A consumer can hold loop and github from different releases, so the target's `_installed.py` may differ
+    from the forwarder's: the target must run with its own."""
+    skills = tmp_path / "skills"
+    here = skills / "engineering-loop" / "scripts"
+    there = skills / "github-tracker" / "scripts"
+    here.mkdir(parents=True)
+    there.mkdir(parents=True)
+    source = REPOSITORY / forwarder / "skills" / "engineering-loop" / "scripts"
+    (here / "board.py").write_text((source / "board.py").read_text())
+    (here / "_installed.py").write_text((source / "_installed.py").read_text())
+    (skills / "github-tracker" / "SKILL.md").write_text("---\nname: github-tracker\n---\n")
+    (there / "_installed.py").write_text("OWN = 'target'\n")
+    (there / "board.py").write_text("import _installed\nprint(_installed.OWN)\n")
+    done = subprocess.run(
+        [sys.executable, str(here / "board.py")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.stdout.strip() == "target", done.stderr
+
+
+@pytest.mark.parametrize("package", ["loop", "engineering"])
+def test_every_forwarder_drops_its_resolver_before_running_its_target(package: str) -> None:
+    """The behaviour is pinned in the test above for one forwarder; the lines are the same in all of them."""
+    scripts = REPOSITORY / package / "skills" / "engineering-loop" / "scripts"
+    forwarders = [
+        path for path in sorted(scripts.glob("*.py")) if "runpy.run_path" in path.read_text()
+    ]
+    assert forwarders
+    for path in forwarders:
+        text = path.read_text()
+        assert (
+            0 <= text.find('sys.modules.pop("_installed", None)') < text.find("runpy.run_path(")
+        ), path.name

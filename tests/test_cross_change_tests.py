@@ -266,25 +266,22 @@ def test_a_gatekeeper_that_fails_to_answer_is_no_record(monkeypatch) -> None:
     monkeypatch.setattr(c, "gatekeeper", broken)
     with pytest.raises(RuntimeError):
         c.unkeyed_checks()
-    monkeypatch.setattr(c, "gatekeeper", lambda: FakeGatekeeper())
+    assert c.recorded("h1", "p1") == (False, "the record could not be read: no gatekeeper")
+
+    def unreachable():
+        raise RuntimeError("origin unreachable")
+
+    monkeypatch.undo()
+    monkeypatch.setattr(c.gatekeeper(), "narrowing", unreachable)
     assert c.recorded("h1", "p1") == (False, "the record could not be read: origin unreachable")
 
 
-class FakeGatekeeper:
-    """approvals' gate_plan, and a narrowing() that fails, as the defaults call them."""
-
-    def narrowing(self):
-        raise RuntimeError("origin unreachable")
-
-    def gate_plan(self):
-        return [
-            {"command": "sh live.sh", "unkeyed": True},
-            {"command": "mise run lint", "unkeyed": False},
-        ]
-
-
 def test_the_unkeyed_checks_are_the_gate_steps_select_unkeyed_lists(monkeypatch) -> None:
-    monkeypatch.setattr(c, "gatekeeper", lambda: FakeGatekeeper())
+    steps = [
+        {"command": "sh live.sh", "unkeyed": True},
+        {"command": "mise run lint", "unkeyed": False},
+    ]
+    monkeypatch.setattr(c.gatekeeper(), "gate_plan", lambda: steps)
     assert c.unkeyed_checks() == ["sh live.sh"]
 
 
