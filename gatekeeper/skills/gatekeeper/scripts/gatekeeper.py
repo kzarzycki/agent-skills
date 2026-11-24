@@ -1940,6 +1940,7 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
     on_head = head_passes(pull, loop)
     named = (
         set()
+        # a pass whose proofs the head only carries (head_passes) reviewed another tree than the record must hold
         if isinstance(on_head, str) or on_head[0] != head
         else {lines.get(RERUN_LINE, "").split(" ")[0].lower() for _, lines in on_head[1]} - {""}
     )
