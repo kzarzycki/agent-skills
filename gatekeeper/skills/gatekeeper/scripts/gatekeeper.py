@@ -24,6 +24,7 @@
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
     uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`
+    uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
@@ -9440,6 +9441,114 @@ def affected_tests(given: str | None = None) -> int:
         raise Refused(f"`{words[0]}` can't run: {exc}") from None
 
 
+def failed_tests_of(path: str) -> list[str]:
+    """The test ids a red run wrote (`{"failed": [...]}`, as tools/failed_tests.py writes it): the run's own output,
+    read before any rerun. Refused for a file that is not there or not that JSON, since a rerun before the red is read
+    is never run."""
+    try:
+        failed = json.loads(Path(path).read_text())["failed"]
+        if not isinstance(failed, list) or not all(isinstance(item, str) for item in failed):
+            raise ValueError("`failed` is not a list of test ids")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise Refused(f"rerun-tests: {path} holds no red run's failed tests: {exc}") from None
+    return failed
+
+
+def blob_of(rev: str, name: str) -> str | None:
+    """The object id of `name` at `rev`, None where it is absent there."""
+    try:
+        return git("rev-parse", "--verify", "--quiet", f"{rev}:{name}").strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
+def fix_since(red: str, base: str | None) -> set[str]:
+    """The files the PR's own change differs in between the red run's head `red` (against the red's own base, its
+    merge base with `base`) and HEAD (against its merge base now): a file the base moved and nobody on the PR touched
+    is no fix, so a requeue onto a newer base is no change, whether `base` names the red's base or the newer one.
+    Without a `base`, every file that differs between `red` and HEAD."""
+    here = selection_base(None) if base else None
+    if base is None or here is None:
+        return set(git("diff", "--name-only", red, "HEAD").splitlines())
+    try:
+        red_base = git("merge-base", base, red).strip()
+    except subprocess.CalledProcessError:
+        raise Refused(
+            f"rerun-tests: {red} and the base {base} share no history here: fetch the red run's head with its history"
+        ) from None
+    touched = set(git("diff", "--name-only", red_base, red).splitlines()) | set(
+        git("diff", "--name-only", here, "HEAD").splitlines()
+    )
+    return {name for name in touched if blob_of(red, name) != blob_of("HEAD", name)}
+
+
+def reselected(test: str, changed: set[str]) -> bool:
+    """Whether a changed file is the failed test's own: the id's part before `::` is that path, or the path with
+    its extension dropped and `.` for `/`, itself or followed by a class (`pkg.module.Class`)."""
+    owner = test.split("::", 1)[0]
+    return any(
+        owner == name
+        or owner == (dotted := name.rsplit(".", 1)[0].replace("/", "."))
+        or owner.startswith(f"{dotted}.")
+        for name in changed
+    )
+
+
+def rerun_plan(failed: list[str], changed: set[str]) -> tuple[bool, list[str]]:
+    """What a red reruns: (True, []) when the change since the red reselects every failed test, so the rerun is those
+    tests plus what the change reaches; else (False, the flake candidates), the failed tests nothing reselects, and the
+    rerun is the red run's whole selection, in its order. A red with no test id (its tests never started) has
+    nothing to reselect: the whole selection."""
+    stuck = [test for test in failed if not reselected(test, changed)]
+    return (bool(failed) and not stuck), (stuck or list(failed))
+
+
+def rerun_tests(path: str, red: str, given: str | None) -> int:
+    """`rerun-tests <failed.json> --red <head> [--base <rev>]`: the one rerun of a red run, from the red run's own
+    output (failed_tests_of), its head `red` and its base (`--base`, else the merge base now), recomputing the
+    selection from those inputs: nothing is stored. Under the project's `Affected tests:` line (affected_tests),
+    which gives the same selection in the same order on the same base:
+    - the change since the red reselects every failed test (rerun_plan): the selection against `red`, the failed tests
+      plus what the change reaches;
+    - otherwise (nothing changed, or a change that misses a failed test): the selection against HEAD's own base now,
+      the red run's whole selection (after a rebase, its PR files on the newer base, not the files the base moved). A failed test that passes there is a flake (a `Flaky:` issue, the run counted green),
+      and one that is red again stays red: the change caused it. Never the failed tests alone, and never the whole
+      suite. One line says which and why; the exit is the run's."""
+    failed = failed_tests_of(path)
+    try:
+        git("rev-parse", "--verify", "--quiet", f"{red}^{{commit}}")
+    except subprocess.CalledProcessError:
+        raise Refused(f"rerun-tests: no commit {red} here: fetch the red run's head") from None
+    base = selection_base(given)
+    fixed, candidates = rerun_plan(failed, fix_since(red, base))
+    # HEAD's own base now, past any rebase: the whole selection is the PR's files, not the ones the base moved
+    here = selection_base(None) if given is not None else base
+    if fixed:
+        print(
+            f"rerun-tests: the change since the red reselects {len(failed)} failed test(s), so those and what it"
+            " reaches run",
+            file=sys.stderr,
+        )
+        return affected_tests(red)
+    for test in candidates:
+        print(f"rerun-tests: flake candidate: {test}", file=sys.stderr)
+    print(
+        f"rerun-tests: nothing changed reselects {len(candidates)} failed test(s), so the red run's whole selection"
+        " runs: alone, a test that fails only after others would pass",
+        file=sys.stderr,
+    )
+    code = affected_tests(here or base)
+    if code == 0 and candidates:
+        print(
+            "rerun-tests: green: a flake candidate that passed is a flake: open or update its `Flaky:` issue and"
+            " count the run green",
+            file=sys.stderr,
+        )
+    elif code:
+        print("rerun-tests: red again on the same selection: the change caused it", file=sys.stderr)
+    return code
+
+
 def ran_step(
     step: dict[str, Any],
     cwd: Path | None = None,
@@ -11557,6 +11666,10 @@ def main(argv: list[str]) -> int:
     graduating.add_argument("--pr", type=int, required=True)
     # --base: the commit to select against (a PR's base SHA, a push's previous tip), over the merge base
     commands.add_parser("affected-tests").add_argument("--base", metavar="REV")
+    rerunning = commands.add_parser("rerun-tests")
+    rerunning.add_argument("failed", metavar="failed-tests.json")
+    rerunning.add_argument("--red", required=True, metavar="HEAD")
+    rerunning.add_argument("--base", metavar="REV")
     recording_read = commands.add_parser("gate-record")
     recording_read.add_argument("head")
     recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
@@ -11591,6 +11704,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return report_json(args.report) if args.json else report_check(args.report)
     if args.command == "affected-tests":
         return affected_tests(args.base)
+    if args.command == "rerun-tests":
+        return rerun_tests(args.failed, args.red, args.base)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
         if args.plan and args.words:
             raise Refused(
