@@ -40,6 +40,7 @@ RESOLVER = {
     "engineering": [
         "skills/orchestrating-agents/scripts/omnigent_agent.py",
         "skills/orchestrating-agents/scripts/claude_cloud.py",
+        "skills/orchestrating-agents/scripts/claude_environments.py",
     ],
 }
 # Each script path engineering 0.25.0 shipped that moved, an unchanged consumer command on it, and the script it now
@@ -150,16 +151,18 @@ def test_every_scripts_folder_with_python_has_a_pycache_file(name: str) -> None:
 def resolver(path: Path) -> str:
     found = re.search(r"^def installed\(.*?(?=^\S|\Z)", path.read_text(), re.MULTILINE | re.DOTALL)
     assert found, f"{path}: no installed()"
-    return found.group()
+    return found.group().rstrip()
 
 
 COPIES = [f"{name}/{script}" for name, scripts in RESOLVER.items() for script in scripts]
-SHARED = [f"{name}/skills/engineering-loop/scripts/_installed.py" for name in ("loop", "engineering")]
+SHARED = [
+    f"{name}/skills/engineering-loop/scripts/_installed.py" for name in ("loop", "engineering")
+]
 SHARED.append("github/skills/github-tracker/scripts/_installed.py")
 
 
 def test_every_copy_of_the_resolver_is_the_same() -> None:
-    copies = {copy: resolver(REPOSITORY / copy) for copy in COPIES}
+    copies = {copy: resolver(REPOSITORY / copy) for copy in [*COPIES, *SHARED]}
     assert len(set(copies.values())) == 1, sorted(copies)
 
 
@@ -298,7 +301,13 @@ def test_the_deployed_loop_scripts_find_gatekeeper_when_apm_installs_it_as_a_plu
     _run(["apm", "install"], cwd=consumer, env=env)
 
     assert (consumer / ".agents" / "plugins" / "gatekeeper" / "skills" / "gatekeeper").is_dir()
-    scripts = sorted((consumer / ".claude" / "skills" / "engineering-loop" / "scripts").glob("*.py"))
+    # every deployed script, not engineering-loop's alone: github-tracker's and the agents' find their skills the same way
+    scripts = sorted(
+        path
+        for path in (consumer / ".claude" / "skills").glob("*/scripts/*.py")
+        if "installed"
+        in path.read_text()  # the scripts that look for another skill; others take no `--help`
+    )
     assert scripts
     failed = {}
     for script in scripts:
@@ -310,7 +319,9 @@ def test_the_deployed_loop_scripts_find_gatekeeper_when_apm_installs_it_as_a_plu
             text=True,
             check=False,
         )
-        # a script may refuse `--help` (board.py exits 2 with its usage); only a missing skill is this test's failure
-        if "needs the `" in run.stderr:
-            failed[script.name] = run.stderr.strip().splitlines()[-1:]
+        # a script may refuse `--help` (board.py exits 2 with its usage); a missing skill or a crash is this test's failure
+        if "needs the `" in run.stderr or "Traceback" in run.stderr:
+            failed[f"{script.parent.parent.name}/{script.name}"] = run.stderr.strip().splitlines()[
+                -1:
+            ]
     assert failed == {}

@@ -25,7 +25,7 @@ from types import ModuleType
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _installed import installed  # noqa: E402
+from _installed import installed
 
 
 def load(skill: str, name: str) -> ModuleType:

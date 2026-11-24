@@ -128,7 +128,7 @@ def slot_path(name: str = SHORT) -> str:
     return approvals().slot_file(name)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _installed import installed  # noqa: E402
+from _installed import installed
 
 
 def approvals() -> Any:

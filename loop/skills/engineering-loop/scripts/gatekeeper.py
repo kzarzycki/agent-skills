@@ -16,8 +16,7 @@ from pathlib import Path
 if __name__ != "__main__":
     raise ImportError(f"{__file__} only forwards to another skill's script: import that script")
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _installed import installed  # noqa: E402
+from _installed import installed
 
 # `brief` and `release` decide nothing, so they left the gatekeeper for the loop's own script
 skill = "engineering-loop" if sys.argv[1:2] in (["brief"], ["release"]) else "gatekeeper"
