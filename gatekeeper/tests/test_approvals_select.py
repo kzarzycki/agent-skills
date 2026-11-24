@@ -167,3 +167,49 @@ def test_select_must_name_build_inputs(tmp_path: Path) -> None:
     policy = approvals.Policy(gatekeeper_md("select:\n  checks:\n    - {paths: [a], command: x}\n"))
     with pytest.raises(approvals.Refused, match="build_inputs"):
         approvals.settings(policy)
+
+
+# --- the narrowed gate (local-ci --record --base), the recorded run on a head, cuts the same way ---
+
+
+def base_of_work() -> str:
+    return git_in(Path.cwd(), "merge-base", "origin/main", "HEAD").strip()
+
+
+def test_the_narrowed_gate_of_a_pack_bump_runs_and_records_only_its_check(
+    worker: dict[str, Any],
+) -> None:
+    worker["start"](SELECT)
+    worker["commit"]("apm.yml", ".claude/skills/demo/SKILL.md")
+    base = base_of_work()
+    with approvals.narrowed_to(base):
+        command = approvals.narrowed_gate()[0]
+    assert command.endswith(" agent-sync' (narrowed)") and "select.checks:" in command
+    assert approvals.narrowed_base(command) == base
+    assert approvals.main(["local-ci", "--record", "--base", base]) == 0
+    assert worker["ran"]() == ["agent-sync"]
+    # the pass is reused by tree: a second record runs nothing
+    assert approvals.main(["local-ci", "--record", "--base", base]) == 0
+    assert worker["ran"]() == ["agent-sync"]
+
+
+def test_the_narrowed_gate_of_a_docs_change_runs_nothing_and_says_none(
+    worker: dict[str, Any],
+) -> None:
+    worker["start"](SELECT)
+    worker["commit"]("docs/guide.md")
+    base = base_of_work()
+    with approvals.narrowed_to(base):
+        assert approvals.narrowed_gate()[0] == f"GATE_BASE={base} select.checks: none (narrowed)"
+    assert approvals.main(["local-ci", "--record", "--base", base]) == 0
+    assert worker["ran"]() == []
+
+
+def test_the_narrowed_gate_of_a_build_input_runs_the_selector(worker: dict[str, Any]) -> None:
+    worker["start"](SELECT)
+    worker["commit"]("docs/guide.md", "src/app.py")
+    base = base_of_work()
+    with approvals.narrowed_to(base):
+        assert "select.checks" not in approvals.narrowed_gate()[0]
+    assert approvals.main(["local-ci", "--record", "--base", base]) == 0
+    assert worker["ran"]() == ["selector"]

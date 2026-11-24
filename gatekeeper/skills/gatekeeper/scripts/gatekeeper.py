@@ -9356,14 +9356,21 @@ def narrowed_gate(
     `paths`): the `Affected tests:` command (with `passed`, as gate() reads them), with the `Gate base:` variable
     (gate_base_variable) set to the base, as gate() returns a gate; else None. Its command is that variable's
     assignment first, then the rest, then NARROWED, so a record of it is keyed by the command and the base and never
-    stands for a full pass."""
+    stands for a full pass. A change gatekeeper.md's `select` finds no build input in (selected) runs `affected-tests
+    --base <base>` instead, which runs only the checks it touches, and its command names those checks (`select.checks:
+    <command>...`, or `none`), so a docs or pack-bump head's record is keyed by what ran."""
     base = NARROW_BASE.get()
     if base is None or settings(project()[1]).get("gate_steps"):
         return None
     if (written := narrowing()) is None:
         return None
-    _, words, sets = command_line(written, "Affected tests", passed)
     variable = gate_base_variable()
+    if (cut := selected(base)) is not None and not cut[0]:
+        # no build input changed (select): the run is affected-tests' own cut, keyed by the checks it runs
+        said = shlex.join(["select.checks:", *cut[1]] if cut[1] else ["select.checks:", "none"])
+        words = [sys.executable, str(Path(__file__).with_name("gatekeeper.py")), "affected-tests", "--base", base]
+        return f"{variable}={base} {said}{NARROWED}", words, {}
+    _, words, sets = command_line(written, "Affected tests", passed)
     sets = {variable: base, **{name: value for name, value in sets.items() if name != variable}}
     command = shlex.join([*(f"{name}={value}" for name, value in sets.items()), *words])
     return command + NARROWED, words, sets
@@ -9441,18 +9448,24 @@ def changed_since(base: str) -> list[str] | None:
     return found.split("\0")[:-1]
 
 
-def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
-    """affected-tests' cut by `select` (classify): None when the change since `base` holds a build input, or git
-    can't list it, so the `Affected tests:` command runs; else the exit of the `checks` the change touches, each run in
-    turn under the gate slot, the first that fails ending the run, 0 when none applies. A policy that can't be read
-    selects nothing here, since the `Affected tests:` command then tests everything it would have."""
+def selected(base: str) -> tuple[list[str], list[str]] | None:
+    """classify() of the change since `base` by gatekeeper.md's `select`: (its build inputs, the checks the rest
+    touch); None without `select`, under a policy that can't be read, or when git can't list the change, since the
+    `Affected tests:` command then tests everything it would have."""
     select = None
     with contextlib.suppress(Refused):
         select = settings(project()[1]).get("select")
     files = changed_since(base) if select else None
-    if files is None:
+    return None if files is None else classify(files, select)
+
+
+def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
+    """affected-tests' cut by `select` (selected): None when the change since `base` holds a build input, or the cut
+    can't tell, so the `Affected tests:` command runs; else the exit of the `checks` the change touches, each run in
+    turn under the gate slot, the first that fails ending the run, 0 when none applies."""
+    if (cut := selected(base)) is None:
         return None
-    inputs, commands = classify(files, select)
+    inputs, commands = cut
     if inputs:
         print(
             f"affected-tests: build input {inputs[0]}: the `Affected tests:` command runs",
