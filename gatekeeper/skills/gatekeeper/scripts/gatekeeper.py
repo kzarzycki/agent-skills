@@ -9476,12 +9476,6 @@ def affected_tests(given: str | None = None, record: bool = False) -> int:
         else:
             with narrowed_to(base):
                 return local_ci(None, None, False, None)
-    elif record:
-        print(
-            "affected-tests --record: `Gate: full` runs the full check, which `local-ci --record` records: nothing"
-            " recorded here",
-            file=sys.stderr,
-        )
     if written is not None and base is not None:
         _, words, sets = command_line(written, "Affected tests")
         sets = {

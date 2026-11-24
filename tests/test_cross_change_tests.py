@@ -356,3 +356,18 @@ def test_without_record_a_passing_run_records_nothing(worker_head) -> None:
     # the flag is what records: the same run with it leaves the record
     assert g.main(["affected-tests", "--record"]) == 0
     assert g.main(["gate-record", head, "--", *narrowed_words(point, "true")]) == 0
+
+
+def test_with_gate_steps_affected_tests_record_records_nothing_and_says_so(
+    worker_head, capsys
+) -> None:
+    """With `gate_steps` the narrowed gate never runs, so `--record` would record the steps under the narrowed name."""
+    g, affected = worker_head
+    Path("docs/agents/gatekeeper.md").write_text(
+        "# Gatekeeper\n\n## Policy\n\n```yaml\nloop:\n  gate_steps:\n"
+        "    - name: fast\n      command: 'true'\n      where: any\n```\n"
+    )
+    point, head = affected("true")
+    assert g.main(["affected-tests", "--record"]) == 0
+    assert "the gate has `gate_steps`" in capsys.readouterr().err
+    assert g.main(["gate-record", head, "--", "true"]) == 1
