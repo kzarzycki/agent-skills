@@ -68,7 +68,8 @@ def committed(sha: str, tree: str) -> dict[str, Any]:
 # #5: merged the week before, one 4-minute job on its head (and an incomplete job that counts nothing).
 # #6: merged on the week's first day. #7: merged on the next week's first day. A search item with no merge date.
 # #10: created months before the lookback reaches: its run of that day is never listed, its recent one (4) is.
-# Refs: only the trees of heads still open, as `land` deletes a landed tree's record (#2 and #3 merged: no ref).
+# Refs: T1 and T2, the trees of heads whose record `land` has not deleted (a merge of the last day); the others
+# merged through `land`, which deletes a landed tree's record, so they read as no record (see the script's CAVEAT).
 RECORDED: dict[str, Any] = {
     "repos/acme/widgets/actions/workflows": {"total_count": 1},
     "search/issues|is:pr is:merged": {
@@ -102,6 +103,7 @@ RECORDED: dict[str, Any] = {
     },
     "repos/acme/widgets/git/matching-refs/heads/loop-gate": [
         {"ref": "refs/heads/loop-gate/T1-abc"},
+        {"ref": "refs/heads/loop-gate/T2-ghi"},
         {"ref": "refs/heads/loop-gate/T7-def"},
     ],
     "repos/acme/widgets/issues/1/timeline": [
@@ -187,9 +189,9 @@ def test_week_line_counts_median_minutes_and_the_week_before() -> None:
     # week: #1 1h from its last ready event, #2 1h from creation, #3 and #4 2h, #6 30m (merged on the first day),
     # #10 merged 09:00 and created months ago, no draft: far over 2h. Median of six: 1h30m (#7 is next week's).
     # minutes: #1 10, #2 26, #3 and #4 (12+8)/2 = 10 each, #6 0, #10 4: 60 / 6 = 10.0
-    # no-record: T1 has a ref, T7 is next week's; #2 (T2), #3, #4, #10 (T10) and #6 (no commit) have none: 5
+    # no-record: #1 (T1) and #2 (last commit T2, not its first T0) have a ref, T7 is next week's; #3, #4, #10 and #6 (no commit) have none: 4
     assert text.startswith(
-        f"{REPO} 2026-11-17..2026-11-23: merged 6, median ready->merged 1h30m, runner-min/PR 10.0, no-record 5, reverts 1, red-nights 1"
+        f"{REPO} 2026-11-17..2026-11-23: merged 6, median ready->merged 1h30m, runner-min/PR 10.0, no-record 4, reverts 1, red-nights 1"
     )
     assert (
         "| week before 2026-11-10..2026-11-16: merged 1, median ready->merged 1h00m, runner-min/PR 4.0, no-record 1, reverts 0, red-nights 1"
