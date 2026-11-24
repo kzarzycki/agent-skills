@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 import zipfile
 from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
@@ -1789,6 +1790,21 @@ def file_at(ref: str, path: str, repo: str | None = None) -> str | None:
         raise
 
 
+def pusher(ref: str) -> dict[str, Any] | None:
+    """The newest push to the branch `ref` (`refs/heads/<name>`), from the repository's activity: `after`, the commit
+    it set the branch to, `login`, the account that pushed, and `app`, true where that account is an app's (GitHub's
+    actor type `Bot`, as a workflow's token pushes), which no person's token can act as; None when it lists none."""
+    found = rest(f"repos/{{owner}}/{{repo}}/activity?ref={urllib.parse.quote(ref, safe='')}&per_page=1")
+    if not found:
+        return None
+    who = found[0].get("actor") or {}
+    return {
+        "after": found[0].get("after") or "",
+        "login": who.get("login"),
+        "app": who.get("type") == "Bot",
+    }
+
+
 class Port:
     """One port's operations, each this module's function of that name, looked up at the call, so a stub set on the
     module (a test's) is the one called."""
@@ -1840,5 +1856,6 @@ forge = Port(
     "repo_tags",
     "tag_tree",
     "file_at",
+    "pusher",
 )
 evidence = Port("statuses", "post_status", "post_review", "minimize")

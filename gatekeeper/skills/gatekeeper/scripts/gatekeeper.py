@@ -22,6 +22,7 @@
     uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed under `ci: false` or with --base (Narrowed mode)
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
+    uv run scripts/approvals.py local-ci --record --rerun [--base <rev>]  # an independent rerun of HEAD's selection: nothing reused, its record keyed apart (levels' `rerun`)
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
     uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
@@ -504,7 +505,11 @@ The policy block (policy.md beside SKILL.md has every key), YAML, holds the owne
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
 the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `owner`, `machine_exit`,
 `short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`; `levels` holds `low`,
-`high` and `critical`, each with `spec` and `merge` (above).
+`high` and `critical`, each with `spec` and `merge` (above), and `rerun`, whether `check merge` and `land` need an
+independent rerun of the head's selection on its tree (default false for `low`, true for `high` and `critical`): a
+record of `local-ci --record --rerun` on origin that an app pushed (a CI run on the head) or that a verifier pass on
+the head names on a `Rerun: <record commit>` line (a fresh session the verifier started), never the worker's own
+record (rerun_gap).
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -630,6 +635,12 @@ MERGE_LABEL = "approved:merge"
 OWNER_GO = "owner"
 # the verdict line a verifier pass on a merge-only delta writes, `Logic change: none`, which carries the go (carried_go)
 LOGIC = "Logic change"
+# an independent rerun of the head's selection (levels' `rerun`, rerun_gap): the variable `local-ci --record --rerun`
+# sets in front of the command it runs, so its record names it in its command and `Env:` line and is never the worker's
+# record of the same command (its key differs); and the verdict line `Rerun: <record commit>` by which a verifier names
+# the record a fresh session it started pushed
+RERUN_VAR = "LOOP_RERUN"
+RERUN_LINE = "Rerun"
 # how an OWNER_GO status the gate once turned from the `approved:merge` label ends: no go, since the label can be a
 # delegate's
 LABELLED = f"from their `{MERGE_LABEL}` label"
@@ -933,7 +944,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "merge_paths": list,
     },
     "levels": {
-        level: {"spec": Choice(SPEC_ACTIONS), "merge": Choice(MERGE_ACTIONS)} for level in LEVELS
+        level: {"spec": Choice(SPEC_ACTIONS), "merge": Choice(MERGE_ACTIONS), "rerun": bool}
+        for level in LEVELS
     },
     "incubating": {"append_paths": list, "waive": list},
     "plan": {"always": bool, "labels": list},
@@ -1682,20 +1694,22 @@ def critical(pull: dict[str, Any], loop: str | None) -> str | None:
     return None
 
 
-def levels(loop: str | None) -> dict[str, dict[str, str]]:
-    """What each level (LEVELS) asks of the spec (SPEC_ACTIONS) and the merge (MERGE_ACTIONS): gatekeeper.md's
-    `levels`, each key it leaves out at its default, which is the rule before levels existed: `low` {policy, gates};
-    `high` {policy, go}, or under `spec.auto: true` {owner, gates}, since there the owner approved the change before it
-    was built; `critical` {policy, owner}."""
-    high = (
+def levels(loop: str | None) -> dict[str, dict[str, Any]]:
+    """What each level (LEVELS) asks of the spec (SPEC_ACTIONS) and the merge (MERGE_ACTIONS), and whether its merge
+    needs an independent rerun of the head's selection (`rerun`, rerun_gap): gatekeeper.md's `levels`, each key it
+    leaves out at its default, which is the rule before levels existed: `low` {policy, gates}; `high` {policy, go}, or
+    under `spec.auto: true` {owner, gates}, since there the owner approved the change before it was built; `critical`
+    {policy, owner}; `rerun` false for `low` and true for `high` and `critical` (#2240), since for a high-risk change
+    a red the nightly finds is found too late."""
+    high: dict[str, Any] = (
         {"spec": "owner", "merge": "gates"}
         if spec_auto(loop)
         else {"spec": "policy", "merge": "go"}
     )
-    table = {
-        "low": {"spec": "policy", "merge": "gates"},
-        "high": high,
-        "critical": {"spec": "policy", "merge": "owner"},
+    table: dict[str, dict[str, Any]] = {
+        "low": {"spec": "policy", "merge": "gates", "rerun": False},
+        "high": {**high, "rerun": True},
+        "critical": {"spec": "policy", "merge": "owner", "rerun": True},
     }
     for level, actions in settings(loop).get("levels", {}).items():
         table[level] = {**table[level], **actions}
@@ -1865,6 +1879,93 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         if merge_for(level, after, table) == merge_for(level, True, table):
             return why
     return None
+
+
+def reruns(held: str) -> list[tuple[str, str]]:
+    """Origin's record branches on tree `held` that an independent rerun made, each as (ref, commit): a record branch
+    of any command (RECORD_BRANCH, `<held>-<key>`) whose commit holds `held` as its tree, has one parent, says `Tree
+    <held> on <that parent>` on its first line, and whose `Env:` line sets RERUN_VAR, which only `local-ci --record
+    --rerun` writes. Who pushed it is rerun_gap's question, not this one's. origin unreadable: none."""
+    found = []
+    try:
+        listed = [
+            line.split("\t")
+            for line in git("ls-remote", "origin", RECORD_BRANCH.format(f"{held}-*")).splitlines()
+        ]
+        for commit, ref in listed:
+            name = ref.rsplit("/", 1)[1]
+            git("fetch", "-q", "--no-tags", "origin", f"+{ref}:refs/loop/records/{name}")
+            header, _, message = git("cat-file", "commit", commit).partition("\n\n")
+            fields = [line.split(" ", 1) for line in header.splitlines()]
+            parents = [value for key, value in fields if key == "parent"]
+            lines = message.splitlines()
+            env: Any = None
+            for line in lines[1:]:
+                if line.startswith("Env: "):
+                    with contextlib.suppress(ValueError):
+                        env = json.loads(line[len("Env: ") :])
+            if (
+                [value for key, value in fields if key == "tree"] == [held]
+                and len(parents) == 1
+                and lines
+                and lines[0].startswith(f"Tree {held} on {parents[0][:12]}: ")
+                and isinstance(env, dict)
+                and RERUN_VAR in env
+            ):
+                found.append((ref, commit.lower()))
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        return []
+    return found
+
+
+def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
+    """Why the PR still lacks the independent rerun its level asks (gatekeeper.md's `levels.<level>.rerun`, levels),
+    or None. Stated in inputs and results: the head's tree needs a record of its selection run where the worker has no
+    control, a rerun record (reruns) that either
+    - the forge says an app pushed (pusher: the newest push to its branch set it to that commit, by an account of
+      type `Bot`), as a CI run on the head pushes it, since no worker's own account is an app; or
+    - a verifier pass on the head names by its commit on a `Rerun:` line, as the verifier names the record a fresh
+      session it started pushed, in a repo with no CI.
+    A record branch someone pushed by hand alone is neither, so the worker's own record never satisfies it, nor does a
+    rerun record a person's account pushed unless the verifier names it. The level is the rating's (rating), so a
+    level whose `rerun` is false (by default `low`) keeps the worker's record as the proof (#2143's D1)."""
+    level = rating(pull, issues, loop).level
+    if not levels(loop)[level].get("rerun"):
+        return None
+    where, head = f"PR #{pull['number']}", pull["headRefOid"].lower()
+    asked = (
+        f"{where} is rated {level}, and `levels.{level}.rerun` asks an independent rerun of its selection on its head:"
+    )
+    if (held := tree_of(head)) is None:
+        return f"{asked} the tree of {head} can't be read here, so no record of it can be"
+    found = reruns(held)
+    on_head = head_passes(pull, loop)
+    named = (
+        set()
+        if isinstance(on_head, str) or on_head[0] != head
+        else {lines.get(RERUN_LINE, "").split(" ")[0].lower() for _, lines in on_head[1]} - {""}
+    )
+    for ref, commit in found:
+        if commit in named:
+            return None
+    for ref, commit in found:
+        try:
+            push = pusher(ref)
+        except (subprocess.CalledProcessError, OSError, ValueError):
+            continue
+        if push and push.get("after", "").lower() == commit and push.get("app"):
+            return None
+    said = (
+        f"origin holds {len(found)} rerun record(s) on tree {held}, but none an app pushed or a verifier pass on the"
+        " head names"
+        if found
+        else f"origin holds no rerun record on tree {held}"
+    )
+    return (
+        f"{asked} {said}. Where the repo has CI, a CI run on the head runs `local-ci --record --rerun` and pushes its"
+        f" record; with no CI, the verifier starts a fresh session that runs it on the head and names the record's"
+        f" commit on a `{RERUN_LINE}: <commit>` line of its report"
+    )
 
 
 def raises(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
@@ -2709,6 +2810,9 @@ def proofs(
                 f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier}): a"
                 " default-tier verifier pass on the head first"
             )
+        # only on a verdict that would land, since the verifier's pass is one of the two proofs it reads
+        if not unreviewed and (line := rerun_gap(pull, issues, loop)):
+            found.append(line)
     threads = pull["reviewThreads"]
     if (threads.get("totalCount") or 0) > len(threads["nodes"]):
         found.append(
@@ -2753,7 +2857,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
                     for key, _, value in (
                         line.partition(":") for line in review["body"].splitlines()
                     )
-                    if key.strip() in ("VERDICT", "SATISFIED", "Risk", LOGIC)
+                    if key.strip() in ("VERDICT", "SATISFIED", "Risk", LOGIC, RERUN_LINE)
                 },
                 **{
                     key.strip(): value.strip()
@@ -4984,6 +5088,7 @@ PORTS = {
         "repo_tags",  # (repo) -> {name: commit} of every tag of `repo`
         "tag_tree",  # (repo, tag) -> (commit, {path: (mode, blob)}) of tag `tag` of `repo`, or None when it has none
         "file_at",  # (ref, path, repo=None) -> the file's text at ref, of `repo` or this one, or None when absent
+        "pusher",  # (ref) -> {after, login, app} of the newest push to the branch `ref`, `app` true for an app's account, or None
     ),
     # a commit's statuses, newest first, each with its context, state, description, creator and creation time
     # (statuses(sha)); one set (post_status(sha, context, description, state="success")); a verdict posted as a review
@@ -5087,6 +5192,7 @@ github_repo, one_repo = through("forge", "github_repo"), through("forge", "one_r
 open_heads, open_pull_files = through("forge", "open_heads"), through("forge", "open_pull_files")
 enqueue_pull, dequeue_pull = through("forge", "enqueue_pull"), through("forge", "dequeue_pull")
 commit_checks, job_log = through("forge", "commit_checks"), through("forge", "job_log")
+pusher = through("forge", "pusher")
 run_info, run_jobs = through("forge", "run_info"), through("forge", "run_jobs")
 workflow_runs, run_artifact = through("forge", "workflow_runs"), through("forge", "run_artifact")
 compare = through("forge", "compare")
@@ -9312,6 +9418,9 @@ NARROWED = " (narrowed)"
 NARROW_BASE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "NARROW_BASE", default=None
 )
+# set by `local-ci --record --rerun` (local_ci): no step's pass is reused (step_pass), here or on origin, since a rerun
+# that reused a record would prove only what that record already said
+FRESH: contextvars.ContextVar[bool] = contextvars.ContextVar("FRESH", default=False)
 
 
 def loop_md() -> str:
@@ -10665,8 +10774,9 @@ def step_pass(
     Without `show`, origin's record is read without writing the `gate` status on `head` (published). A step whose
     `paths` give it an inputs key on `held` (inputs_key) is found by that key alone (input_pass), on any tree. A step
     `select.unkeyed` lists has none: it reads what no key covers (a live service, a rotating credential, the host), so
-    the same tree can give another result, and every run decision (run_steps, reusable) runs it again."""
-    if step.get("unkeyed"):
+    the same tree can give another result, and every run decision (run_steps, reusable) runs it again. Nor does any
+    step under FRESH (`local-ci --record --rerun`), which runs every step afresh."""
+    if step.get("unkeyed") or FRESH.get():
         return None
     if (key := inputs_key(held, step)) is not None:
         return input_pass(head, key, step, why, show)
@@ -11089,6 +11199,10 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
             ref = push_record(one | {"time": one.get("time") or now()})
         except (subprocess.CalledProcessError, OSError) as exc:
             why = (getattr(exc, "stderr", None) or str(exc)).strip()
+            if FRESH.get():  # a rerun's record counts only on origin (rerun_gap): a branch already there is someone else's
+                raise Refused(
+                    f"the rerun's record was not pushed to origin, so no gate reads it: {why}"
+                ) from None
             print(f"not pushed to origin, so only this clone reuses it: {why}")
         else:
             print(f"published in origin as the record branch {ref}")
@@ -11200,6 +11314,7 @@ def local_ci(
     run: bool = False,
     want: str | None = None,
     given: str | None = None,
+    rerun: bool = False,
 ) -> int:
     """With a PR: post a pass on its head, from a recorded pass on its tree; with `run`, from a run now when there is
     none, and without it refuse then (no_pass). Without a PR: on a
@@ -11212,20 +11327,26 @@ def local_ci(
     base it merges onto (policy_from); without one, the default branch's. With a PR it prints one line naming the
     head it posted on; `want` (`--head <sha>`) is the head the caller just pushed (settled_head). Without a PR or
     `proof`, in narrowed mode (narrowing) under `ci: false` or with `given` (`--base <rev>`), the gate is the narrowed
-    one against `given`, else the merge base (selection_base, narrowed_gate)."""
+    one against `given`, else the merge base (selection_base, narrowed_gate). With `rerun` (`--record --rerun`, an
+    independent rerun of the head's selection, which levels' `rerun` asks and rerun_gap reads), narrowed in narrowed
+    mode whatever `ci` says, no pass is reused (FRESH), here or on origin, and the command runs with RERUN_VAR set in
+    front of it, so its record is keyed apart from the worker's and says in its `Env:` line that it is a rerun."""
+    if rerun:
+        os.environ[RERUN_VAR] = "1"
+        FRESH.set(True)
     if (
         pr is None
         and proof is None
         and NARROW_BASE.get() is None
         and narrowing() is not None
-        and (given is not None or no_ci(project()[1]))
+        and (given is not None or rerun or no_ci(project()[1]))
     ):
         if (base := selection_base(given)) is not None:
             with narrowed_to(base):
-                return local_ci(None, None, run, want)
+                return local_ci(None, None, run, want, rerun=rerun)
         print("local-ci: no base to narrow against: running the full check", file=sys.stderr)
     if pr is None:
-        passed = proof["env"] if proof else ()
+        passed = proof["env"] if proof else (RERUN_VAR,) if rerun else ()
         # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
         RAN["command"] = "\n".join(step["command"] for step in gate_plan(passed) if here(step))
         head, changes = checkout_state()
@@ -11539,6 +11660,8 @@ def main(argv: list[str]) -> int:
     recording.add_argument("--run", action="store_true")
     recording.add_argument("--status", metavar="HEAD")
     recording.add_argument("--head-proof", action="store_true")
+    # --rerun: an independent rerun of the head's selection (levels' `rerun`): no pass reused, its record its own
+    recording.add_argument("--rerun", action="store_true")
     recording.add_argument("--head", metavar="SHA")
     # --base: in narrowed mode, the commit `--record` selects against (land's cloud gate passes its batch's base tip)
     recording.add_argument("--base", metavar="REV")
@@ -11658,8 +11781,12 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused("loop.md sets no `head_proof`: --head-proof has no status to publish")
         if args.head_proof and not args.record:
             raise Refused("--head-proof goes with --record: the head proof is the checkout's")
+        if args.rerun and (not args.record or args.head_proof):
+            raise Refused(
+                "--rerun goes with --record alone: it reruns the selection on the checkout's HEAD and records it"
+            )
         return (
-            local_ci(args.pr, proof, args.run, args.head, args.base)
+            local_ci(args.pr, proof, args.run, args.head, args.base, args.rerun)
             if leads_its_session()
             else detach(argv)
         )

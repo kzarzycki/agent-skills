@@ -160,6 +160,8 @@ Each derived rule follows from the one above.
 - **R6. The merge queue runs only the cross-change check.** A test that only the PR's diff reaches passed on the PR's head with the same inputs; a test only the base's new commits reach is the base's, not this PR's. The queue runs the tests that the PR's diff and the rest of the merge (the base's commits since the PR's tested base, the other PRs in the group) both reach. Without a per-test map it falls back to the batch's affected tests. Where: GitHub's and Mergify's queue batch check. The local queue runs no test today and stays so.
 - **R7. After the merge, only a tree nobody tested runs.** The push run on main skips a commit whose tree the queue already tested; the nightly runs only when main moved since its last green, and then runs the full suite, which stays the guard against what the selector misses. Where: step 9's read of main's push run, the nightly.
 
+A head rated at a level whose gatekeeper.md `levels.<level>.rerun` is on (by default `high` and `critical`) merges only on a rerun of its selection where the worker has no control, not on the worker's record (the gatekeeper skill's policy.md, Independent rerun).
+
 **Merge model.** Each role runs its tests under the rule above (A check runs only if it can fail because of the change):
 
 - The worker runs only the tests the PR affects, on each head it pushes, never the whole suite and never a gate
