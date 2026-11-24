@@ -32,10 +32,12 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    where the project records rules. Review angles you want run as native subagents.
 2. **Gates and push.** A check runs only if it can fail because of the change (SKILL.md, A check runs only if it can fail because of the change): run nothing whose result a passed run on the same inputs already gives. Iterate on the narrowest check that covers the change: an incremental build of the touched
    target, then the tests of the module you changed, since a whole-suite run can take twenty minutes to show a compile
-   error a build shows in one. The run you report is the tests the PR affects, on every head you push, a fix
-   round's too, and never the whole suite: where loop.md has an `Affected tests:` line, `uv run
+   error a build shows in one. The run you report is the tests the PR affects, on every head you push, and
+   never the whole suite. A fix round selects against the last head its run passed on, not the PR's base
+   (SKILL.md, A check runs only if it can fail because of the change, R4): `approvals.py affected-tests --base <the last head its run passed on>`.
+   Where loop.md has an `Affected tests:` line, `uv run
    <gatekeeper>/scripts/approvals.py affected-tests`, which runs that selection against `git merge-base origin/<base>
-   HEAD` (the base of the branch's open PR, else the default branch; a shallow clone is deepened) in the variable
+   HEAD` on a first push (the base of the branch's open PR, else the default branch; a shallow clone is deepened) in the variable
    `Gate base:` names (else `GATE_BASE`), under the host gate slot; without the line, `mise run test:changed`. A
    selector that can't tell which tests a change touches runs nothing and says so: report that line as it is, and
    never fall back to the whole suite. You run no gate of record, no full `mise run check` and no `local-ci`, with
