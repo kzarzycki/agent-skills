@@ -535,6 +535,12 @@ issue's author can write to the repo. Otherwise the owner approves the spec, and
 the globs included. The label without the term approves nothing. Without `auto`, or
 with `false` or an empty list, the owner approves every spec, and the gates are the merge approval of a change whose level
 asks `gates` of the merge.
+Whatever `spec.auto` says, a migration row's issue that nothing above covers is covered by its parent's approval: a
+native sub-issue whose body opens with `Part of #<parent> (row <name>)`, naming that parent, whose spec carries
+`approved:spec` and a current record as a direct link's would (the owner's, or the delegate's where it counts), opened
+by an account that can write to the repo, where neither the issue nor the PR carries `risk:high` and neither the risk
+rule nor `risk.critical_paths` holds on the PR's files. `check` names the parent and the row it credits, or the piece
+missing from a row it doesn't; the verifier checks the row against the parent's table.
 
 A rule (`risk`, `plan`, `signoff`) is a section of terms, any one of which matches: `always: true`; `labels`,
 label names matched exactly on the PR and its issues; `paths`, globs matched on the PR's files; and in `risk` alone
@@ -645,6 +651,9 @@ LABELLED = f"from their `{MERGE_LABEL}` label"
 RISK_LABEL = "risk:high"
 # a follow-up an agent raised: the agent puts this line on every issue it files (policy.md, Rules, `spec.auto`)
 FOUND_WHILE = re.compile(r"^[ \t>*-]*Found while[ \t]+#\d+", re.MULTILINE | re.IGNORECASE)
+# a migration row's claim, the line its sub-issue's body opens with: `Part of #<parent> (row <name>)`, a row of the
+# parent's approved table, which then covers its spec (row_gap)
+ROW = re.compile(r"\A\s*Part of #(\d+) \(row ([^)\n]+)\)", re.IGNORECASE)
 # check merge's exit while it waits for `check` or the owner; argparse's usage error is 2
 WAITING = 3
 # a verifier pass's PR review starts with this; same-family included, as `Verifier (claude, same-family), pass 2`
@@ -2388,15 +2397,95 @@ def spec_policy(issue: dict[str, Any], kinds: set[str]) -> bool:
         return True
     if "follow-up" in kinds and FOUND_WHILE.search(QUOTED.sub("", issue.get("body") or "")):
         return True
+    return "sub-issue" in kinds and not parent_gaps(issue)
+
+
+def parent_gaps(
+    issue: dict[str, Any], pull: dict[str, Any] | None = None, loop: str | None = None
+) -> list[str]:
+    """Why the issue's native parent's approved spec can't stand for its own, one line each; empty when it can: the
+    issue is a sub-issue (its `parent`), approvals() finds the parent's spec approved as a direct link's would be (the
+    owner's current record, or the delegate's where delegated() lets it count for `pull`, and the label, so a stale
+    parent approval stands for nothing), and the issue's author can write to the repo, since anyone who can open an
+    issue could otherwise hang their own spec under an approved one. The `sub-issue` kind (spec_policy) and a
+    migration row (row_gap) both read it."""
     parent = issue.get("parent")
-    if "sub-issue" not in kinds:
-        return False
-    if not parent or READY not in names(parent):
-        return False
-    if not current(parent, "spec", "spec", versions(spec_holder(parent)), "owner"):
-        return False
+    if not parent:
+        return ["it is no sub-issue"]
+    found = approvals(
+        f"its parent #{parent['number']}", parent, "spec", spec_holder(parent), pull, loop
+    )
+    if found:
+        return found
     login = (issue.get("author") or {}).get("login")
-    return bool(login) and writer(login)
+    if not (login and writer(login)):
+        return [f"its author {f'@{login}' if login else '(no account)'} can't write to the repo"]
+    return []
+
+
+def row(issue: dict[str, Any]) -> tuple[int, str] | None:
+    """The parent and the row name of the `Part of #<parent> (row <name>)` line the issue's body opens with (ROW), or
+    None when it opens with none."""
+    found = ROW.match(issue.get("body") or "")
+    return (int(found[1]), found[2].strip().strip("\"'`")) if found else None
+
+
+def row_gap(
+    pull: dict[str, Any], issue: dict[str, Any], claimed: tuple[int, str], loop: str | None
+) -> str | None:
+    """Why the parent's approved spec doesn't cover a migration row's issue, whose body opens with its row line
+    (`claimed`, row()), or None when it does: the line names the issue's native parent; neither the issue nor the PR carries
+    `risk:high`; the risk rule (ruled, the verifier's `Risk:` line included once a review is read) doesn't hold on
+    their labels and every path the PR touches, nor `risk.critical_paths` (critical); and the parent's spec is approved
+    for it (parent_gaps). The gate takes the line as the row's claim that the parent's table holds it; the verifier
+    checks that claim, and fails a row that adds scope."""
+    number, parent = claimed[0], issue.get("parent")
+    if not parent:
+        return f"it is no sub-issue of #{number}"
+    if parent["number"] != number:
+        return f"its row line names #{number}, but its parent is #{parent['number']}"
+    marked = [f"#{issue['number']}"] * (RISK_LABEL in names(issue))
+    if RISK_LABEL in names(pull):  # an unopened branch has no number and no labels
+        marked.append(f"PR #{pull['number']}")
+    if marked:
+        return f"`{RISK_LABEL}` is on {', '.join(marked)}"
+    verdict = judged(pull, loop) if "reviews" in pull else None
+    if why := ruled(names(issue) | names(pull), touched(pull), loop, verdict):
+        return why
+    if why := critical(pull, loop):
+        return why
+    return "; ".join(parent_gaps(issue, pull, loop)) or None
+
+
+def policy_covers(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> bool:
+    """Whether `spec.auto` approves the issue's spec: `true` where spec_hold() finds nothing that leaves it to the
+    owner, or a kind it names (spec_policy) where the rating doesn't (spec_owned)."""
+    return bool(
+        spec_auto(loop)
+        and spec_hold(pull, issue, loop) is None
+        or spec_policy(issue, spec_kinds(loop))
+        and spec_owned(pull, issue, loop) is None
+    )
+
+
+def credits(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> dict[int, str]:
+    """Per issue a migration row's approved parent covers (row_gap), the line `check` says for it, naming the parent
+    and the row; an issue `spec.auto` already covers (policy_covers) is not credited, nor is any without a policy."""
+    if loop is None:
+        return {}
+    found = {}
+    for issue in issues:
+        claimed = row(issue)
+        if (
+            claimed
+            and not any(label.startswith("wayfinder:") for label in names(issue))
+            and not policy_covers(pull, issue, loop)
+            and row_gap(pull, issue, claimed, loop) is None
+        ):
+            found[issue["number"]] = (
+                f'#{issue["number"]}: covered by #{claimed[0]}\'s approved spec (row "{claimed[1]}")'
+            )
+    return found
 
 
 def spec_owned(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str | None:
@@ -2464,12 +2553,15 @@ def scoped(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str
 def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
     """A line per issue whose spec `spec.auto: true` leaves to the owner (spec_hold), approved or not, so a gate run says
     why that spec needed them and its merge waits for no `approved:merge`; without it, per issue a kind `spec.auto`
-    names would cover but whose rating leaves to the owner (spec_owned). A mechanical pack bump holds none (mechanical)."""
+    names would cover but whose rating leaves to the owner (spec_owned). A migration row its approved parent covers
+    says so instead (credits). A mechanical pack bump holds none (mechanical)."""
     if issues and loop is not None and "number" in pull and mechanical(pull, loop) is None:
         return []
+    credited = credits(pull, issues, loop)
+    issues = [issue for issue in issues if issue["number"] not in credited]
     if not spec_auto(loop):
         kinds = spec_kinds(loop)
-        return [
+        return list(credited.values()) + [
             f"#{issue['number']}: its spec is the owner's to approve, though `spec.auto` names its kind, since {why}"
             for issue in issues
             if kinds
@@ -2477,7 +2569,7 @@ def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) 
             and (why := spec_owned(pull, issue, loop))
             and spec_policy(issue, kinds)
         ]
-    return [
+    return list(credited.values()) + [
         f"#{issue['number']}: its spec is the owner's to approve under `spec.auto: true`, since {why}"
         for issue in issues
         if not any(label.startswith("wayfinder:") for label in names(issue))
@@ -2649,12 +2741,11 @@ def proofs(
     """One line per approval or proof the PR and its issues lack at `point` (build or merge); an exact revert of
     #`revert` names no issue and needs no verdict. Without a policy file (`loop` None) an issue needs only the
     `approved:spec` label; with it, the owner's record and the label, unless a kind `spec.auto` names covers it
-    (spec_policy), `spec.auto: true` does (spec_hold), its `paths` term does an issue labelled SCOPED (scoped), or
-    the PR is a mechanical pack bump (mechanical).
+    (spec_policy), `spec.auto: true` does (spec_hold), a migration row's approved parent does (row_gap), its `paths`
+    term does an issue labelled SCOPED (scoped), or the PR is a mechanical pack bump (mechanical).
     A plan needs them where the `plan` rule asks. What the merge
     waits for is waits()'s."""
     rule, found = settings(loop), []
-    kinds, every = spec_kinds(loop), spec_auto(loop)
     # a mechanical pack bump's spec needs no approval: the release it pins was reviewed and tagged (mechanical)
     bump = loop is not None and "number" in pull and mechanical(pull, loop) is None
     for issue in issues:
@@ -2668,13 +2759,10 @@ def proofs(
             if READY not in labels:
                 found.append(f"{where} lacks the `{READY}` label")
             continue
-        covered = (
-            every
-            and spec_hold(pull, issue, loop) is None
-            or spec_policy(issue, kinds)
-            and spec_owned(pull, issue, loop) is None
-            or bump
-        )
+        covered, unrowed = bump or policy_covers(pull, issue, loop), None
+        if not covered and (claimed := row(issue)):
+            unrowed = row_gap(pull, issue, claimed, loop)
+            covered = unrowed is None
         if not covered and SCOPED in labels:
             why = scoped(pull, issue, loop)
             covered = why is None
@@ -2683,6 +2771,11 @@ def proofs(
                     f"{where}: its spec is the owner's to approve, though it carries `{SCOPED}`, since {why}"
                 )
         if not covered:
+            if unrowed:
+                found.append(
+                    f"{where}: its spec is the owner's to approve, though its body names row"
+                    f' "{claimed[1]}" of #{claimed[0]}, since {unrowed}'
+                )
             found += approvals(where, issue, "spec", spec_holder(issue), pull, loop)
         plan = headed(issue, "## Plan")
         if plan is not None:
