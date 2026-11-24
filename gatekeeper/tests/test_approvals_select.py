@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -163,6 +164,44 @@ def test_classify_names_inputs_and_dedupes_checks() -> None:
     assert approvals.classify(["docs/x.md"], {}) == (["docs/x.md"], [])
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/guide.md",
+        "docs/diagram.png",  # docs/* alone
+        "README.md",
+        "pkg/README.md",  # *.md alone
+        ".agents/skills/x/a.py",  # .agents/* alone
+        ".claude/settings.json",  # .claude/* alone
+        "apm.yml",
+        "apm.lock.yaml",
+    ],
+)
+def test_each_non_product_entry_is_no_build_input_without_checks(path: str) -> None:
+    """A project that declares no `checks`: each NON_PRODUCT entry still makes its path non-product (a pack bump)."""
+    assert approvals.classify([path], {"build_inputs": ["src/*"]}) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["mise.toml", "uv.lock", "tools/affected_tests.py", "src/README.md", "apm.yml.bak"],
+)
+def test_a_path_in_neither_list_or_a_build_input_tests(path: str) -> None:
+    assert approvals.classify([path], {"build_inputs": ["src/*"]}) == ([path], [])
+
+
+def test_two_checks_sharing_a_command_are_refused() -> None:
+    """One command per `checks` row: a second row with the same command is refused, so the policy says it once."""
+    policy = approvals.Policy(
+        gatekeeper_md(
+            "select:\n  build_inputs: [src/*]\n  checks:\n    - paths: [apm.yml]\n      command: sync\n"
+            "    - paths: [.claude/*]\n      command: sync\n"
+        )
+    )
+    with pytest.raises(approvals.Refused, match="names the command 'sync' twice"):
+        approvals.settings(policy)
+
+
 def test_select_without_build_inputs_cuts_nothing_and_keeps_unkeyed() -> None:
     """`select.unkeyed` (#2183) shares the section: without `build_inputs` every file is a build input, as before."""
     policy = approvals.Policy(gatekeeper_md("select:\n  unkeyed: [lint]\n"))
@@ -213,6 +252,30 @@ def test_the_narrowed_gate_of_a_build_input_runs_the_selector(worker: dict[str, 
     with approvals.narrowed_to(base):
         assert "select.checks" not in approvals.narrowed_gate()[0]
     assert approvals.main(["local-ci", "--record", "--base", base]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_a_moved_build_input_still_tests(worker: dict[str, Any]) -> None:
+    """`git mv src/app.py docs/app.md`: the old name is a build input, though the new one is prose (--no-renames)."""
+    worker["start"](SELECT)
+    git_in(Path.cwd(), "mv", "src/app.py", "docs/app.md")
+    git_in(Path.cwd(), "commit", "-qm", "move")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_a_diff_git_cannot_list_runs_the_selector(worker: dict[str, Any]) -> None:
+    """A base with no merge base with HEAD: `git diff <base>...HEAD` fails, so the cut can't tell."""
+    worker["start"](SELECT)
+    worker["commit"]("docs/guide.md")
+    orphan = subprocess.run(
+        ["git", "commit-tree", "HEAD^{tree}", "-m", "orphan"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert approvals.changed_since(orphan) is None
+    assert approvals.main(["affected-tests", "--base", orphan]) == 0
     assert worker["ran"]() == ["selector"]
 
 
