@@ -5904,7 +5904,8 @@ def rest_if_changed(path: str, timeout: float = HTTP_SECONDS) -> tuple[bool, Any
     return True, found
 
 
-REST_PAGES_MAX = 50  # the most pages rest_pages reads of one list (5,000 items), whatever the endpoint answers
+# the most pages rest_pages reads of one list (5,000 items), whatever the endpoint answers
+REST_PAGES_MAX = 50
 
 
 def rest_pages(path: str, key: str = "", timeout: float = HTTP_SECONDS) -> list:
@@ -5918,7 +5919,8 @@ def rest_pages(path: str, key: str = "", timeout: float = HTTP_SECONDS) -> list:
     for page in range(1, REST_PAGES_MAX + 1):
         body = rest_if_changed(f"{base}&page={page}", timeout)[1]
         got = (body.get(key) if key else body) or []
-        if got == last:  # an endpoint that ignores page= (git/matching-refs) answers the same page again (#2343)
+        # an endpoint that ignores page= (git/matching-refs) answers the same page again (#2343)
+        if got == last:
             return items
         items += got
         if len(got) < 100:
