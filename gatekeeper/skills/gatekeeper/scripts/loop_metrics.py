@@ -65,13 +65,13 @@ Gh = Callable[[str], Any]
 
 
 def real_gh(path: str) -> Any:
-    """`gh api <path>` as JSON; a server error (HTTP 5xx) is retried twice, anything else raises at once."""
+    """`gh api <path>` as JSON; a failure that is not a client error (HTTP 4xx: a server error, a cut connection) is retried twice."""
     for attempt in range(3):
         out = subprocess.run(["gh", "api", path], capture_output=True, text=True, check=False)
         if out.returncode == 0:
             return json.loads(out.stdout)
         message = out.stderr.strip() or out.stdout.strip()
-        if attempt == 2 or "HTTP 5" not in message:
+        if attempt == 2 or "HTTP 4" in message:
             raise RuntimeError(f"gh api {path}: {message}")
         time.sleep(2 * (attempt + 1))
     raise AssertionError("unreachable")
@@ -218,22 +218,25 @@ def collect(gh: Gh, repo: str, since: dt.date) -> dict[str, Any]:
             day += dt.timedelta(days=1)
     minutes = {n: 0.0 for n in prs}
     batched = False
+    attributed: list[tuple[dict[str, Any], set[int], set[int]]] = []
     for run in runs:
         owners = set(owner_of_sha.get(run.get("head_sha", ""), ()))
-        share: list[int] = []
+        share: set[int] = set()
         for pull in run.get("pull_requests") or []:
             number = pull["number"]
             if number in prs:
                 owners.add(number)
             elif number in batch_prs:
-                share += [n for n in batch_prs[number] if n in prs]
-        if not owners and not share:
-            continue
-        spent = job_minutes(gh, repo, run["id"])
+                share |= {n for n in batch_prs[number] if n in prs}
+        if owners or share:
+            attributed.append((run, owners, share))
+    with ThreadPoolExecutor(8) as pool:  # one jobs listing per attributed run, 8 at a time
+        spent = list(pool.map(lambda item: job_minutes(gh, repo, item[0]["id"]), attributed))
+    for (_run, owners, share), used in zip(attributed, spent):
         for number in owners:
-            minutes[number] += spent
-        for number in set(share):
-            minutes[number] += spent / len(set(share))
+            minutes[number] += used
+        for number in share:
+            minutes[number] += used / len(share)
             batched = True
     trees = record_trees(gh, repo)
     nights = red_nights(gh, repo, since - dt.timedelta(days=7))

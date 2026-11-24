@@ -267,7 +267,7 @@ def test_a_failed_refs_listing_is_an_error_not_an_empty_record_set(capsys) -> No
     assert "matching-refs" in capsys.readouterr().err
 
 
-def test_a_server_error_is_retried_and_a_client_error_is_not(monkeypatch) -> None:
+def test_a_server_error_or_cut_output_is_retried_and_a_client_error_is_not(monkeypatch) -> None:
     answers = [
         (1, "", "gh: Server Error (HTTP 502)"),
         (1, "", "gh: Server Error (HTTP 502)"),
