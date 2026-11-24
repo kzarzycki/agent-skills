@@ -147,3 +147,51 @@ def test_a_fresh_lead_is_adopted_only_after_the_grace_period_2313(
     og.rows = [lead_row(STRAY, created_at=time.time() - omnigent_agent.ADOPT_GRACE_SECONDS - 5)]
     base.supervised(og, registry, monkeypatch, 2, console=True)
     assert registry.read_text().startswith(f"{STRAY}=") and len(adopted(registry)) == 1
+
+
+def test_start_writes_the_registry_line_before_the_brief_is_sent_2319(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first turn slower than the adoption grace must find the launcher's line already there, so a
+    second supervisor's sweep never sees a lead no registry holds."""
+    registry = tmp_path / "leads.registry"
+    og = base.FakeOmnigent()
+    seen: list[str] = []
+    real_send = og.send
+
+    def send(sid: str, text: str) -> None:
+        seen.append(registry.read_text() if registry.exists() else "")
+        real_send(sid, text)
+
+    og.send = send  # type: ignore[method-assign]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OMNIGENT_SUPERVISE_REGISTRY", str(registry))
+    brief = tmp_path / "b.md"
+    brief.write_text("do X")
+    args = [
+        "start",
+        "claude",
+        "t",
+        str(brief),
+        str(tmp_path / "a.md"),
+        "--top-level",
+        "--role",
+        "lead",
+    ]
+    assert omnigent_agent.main(args) == 0
+    assert seen and all(omnigent_agent.entry(line)[4] is True for line in seen[0].splitlines())
+    assert len(seen[0].splitlines()) == 1
+
+
+def test_a_bad_created_at_skips_one_session_not_the_sweep_2319(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = "b" * 32
+    registry = tmp_path / "leads.registry"
+    registry.write_text("")
+    og = base.Leads(**{STRAY: [base.told("brief", 60)], other: [base.told("brief", 60)]})
+    og.rows = [lead_row(STRAY, created_at="soon"), lead_row(other)]
+    base.supervised(og, registry, monkeypatch, 2, console=True)
+    assert registry.read_text().startswith(f"{other}=") and STRAY not in registry.read_text()
+    assert [e["session"] for e in adopted(registry)] == [other]

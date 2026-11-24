@@ -4798,6 +4798,7 @@ def start(
     allow_older_model: bool = False,
     about: int | None = None,
     keep: bool = False,
+    track: Callable[[str, bool], None] | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
@@ -4807,7 +4808,10 @@ def start(
     (``host_id``, else this one) since #849, not to this host's load. ``files`` (local
     paths, for a session on another host) are written beside ``report`` on that host through the
     session's file API before its brief is sent, so it finds them when it starts. ``about`` is the PR a
-    verifier reviews, labelled ``PR_LABEL`` on it as a ``--pr`` worker is, so its spend groups by PR (#945)."""
+    verifier reviews, labelled ``PR_LABEL`` on it as a ``--pr`` worker is, so its spend groups by PR (#945).
+    ``track(sid, True)`` is called once the session exists and its brief file is written, before the brief
+    is sent, so the launcher's registry line is there before any confirm wait can outlast the adoption
+    grace (#2319); ``track(sid, False)`` when that session is abandoned."""
     harness = agent if agent in AGENTS else og.harness(agent)
     agy = harness == AGY_HARNESS
     # a session has its parent's runner, so a cloud one placed on another host (run --host) has none
@@ -5012,6 +5016,8 @@ def start(
     survivors: list[str] = []
 
     def abandon(sid: str) -> None:
+        if track:
+            track(sid, False)
         try:
             og.archive(sid)
         except Fail as e:
@@ -5145,6 +5151,8 @@ def start(
                 og.subscribe(me, sid)
             except Fail as e:
                 print(f"not subscribed to {sid} ({e}); follow it with watch", file=sys.stderr)
+        if track:
+            track(sid, True)
         try:
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
                 send_to_confirm(og, sid, text)
@@ -10910,7 +10918,10 @@ def supervise_registry(
                 or og.info(sid).get("archived")  # the listing may be 30 s old
             ):
                 continue
-            made = float(row.get("created_at") or og.info(sid).get("created_at") or 0)
+            try:
+                made = float(row.get("created_at") or og.info(sid).get("created_at") or 0)
+            except (TypeError, ValueError):
+                continue  # one row's bad stamp skips that session, not the sweep (#2319)
             if made and time.time() - made < ADOPT_GRACE_SECONDS:
                 continue  # its launcher may not have written its registry line yet: a later poll adopts it (#2313)
             # ponytail: the lead's real report is unknown; follow reads none, and a path in its workspace costs nothing.
@@ -12573,6 +12584,32 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             registry = None
         survivors: list[str] = []
 
+        def arms() -> bool:
+            # a supervisor reads the report file, which for --pr only wait writes: it would revive
+            # and nudge a cloud worker toward a host path it can't write
+            return (not remote or bool(registry and args.top_level)) and not args.pr
+
+        def arm_line(s: str) -> None:
+            arm_quietly(
+                registry,
+                s,
+                report,
+                [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
+                verdict=verifier,
+                followed=args.top_level,
+                after=args.after or "",
+                leads=str(args.leads.resolve()) if args.leads else "",
+                direct=args.direct,
+            )
+
+        def track(s: str, on: bool) -> None:
+            # the line goes in when the session is created, before its brief is sent (#2319)
+            if arms():
+                if on:
+                    arm_line(s)
+                else:
+                    arm_quietly(registry, s)
+
         def launch() -> str:
             """Start the child and arm it; again (``wait``'s ``relaunch``) for a setup failure."""
             nonlocal sid
@@ -12600,22 +12637,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 files=args.file,
                 about=verifies,
                 keep=bool(args.keep),
+                track=track,
             )
             survivors.extend(abandoned)
-            # a supervisor reads the report file, which for --pr only wait writes: it would revive
-            # and nudge a cloud worker toward a host path it can't write
-            if (not remote or (registry and args.top_level)) and not args.pr:
-                arm_quietly(
-                    registry,
-                    sid,
-                    report,
-                    [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
-                    verdict=verifier,
-                    followed=args.top_level,
-                    after=args.after or "",
-                    leads=str(args.leads.resolve()) if args.leads else "",
-                    direct=args.direct,
-                )
+            if (
+                arms()
+            ):  # already armed at create; this keeps the line when start found a held session
+                arm_line(sid)
             print(sid, flush=True)
             return sid
 
