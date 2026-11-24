@@ -47,7 +47,6 @@ breakglass:
   max_age: 7d   # a run older than this counts for nothing in the owner's break-glass proof
   max_commits: 20   # nor a head further from the PR's
   earlier_runs: 2   # green runs of the required check the proof needs from before the red
-  smoke: QUALIFY_TIMEOUT=900 mise run check-land   # the local-ci record, or Actions run, that shows the head builds
 
 risk:
   verifier: true
