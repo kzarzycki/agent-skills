@@ -420,3 +420,34 @@ def test_on_the_prs_head_a_docs_prs_recorded_pass_posts(
     assert approvals.main(["local-ci", "7"]) == 0
     assert "select.checks: none" in posted[0]
     assert worker["ran"]() == []
+
+
+@pytest.mark.parametrize(
+    ("paths", "key"),
+    [(["docs/guide.md"], "select.checks: none"), (["apm.yml", "apm.lock.yaml"], "agent-sync")],
+)
+def test_a_cut_prs_recorded_pass_posts_from_a_dirty_checkout_on_main(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch, paths: list[str], key: str
+) -> None:
+    """A lead's checkout with an uncommitted edit: the cut is of the PR's head, so a docs or pack-bump PR's record is
+    still found (a named head is exempt from the dirty-checkout rule)."""
+    worker["start"](SELECT + NO_CI)
+    worker["commit"](*paths)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    posted = as_pr(monkeypatch, head_of())
+    git_in(Path.cwd(), "checkout", "-q", "main")
+    (Path.cwd() / "src" / "app.py").write_text("value = 2\n")
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert "select.checks:" in posted[0] and key in posted[0]
+
+
+def test_a_move_inside_docs_runs_nothing(worker: dict[str, Any]) -> None:
+    """A moved file counts under both its names, each classified like any path: two non-product names test nothing."""
+    worker["start"](SELECT)
+    worker["commit"]("docs/guide.md")
+    base = head_of()
+    git_in(Path.cwd(), "mv", "docs/guide.md", "docs/manual.md")
+    git_in(Path.cwd(), "commit", "-qm", "move")
+    assert approvals.changed_since(base) == ["docs/guide.md", "docs/manual.md"]
+    assert approvals.main(["affected-tests", "--base", base]) == 0
+    assert worker["ran"]() == []
