@@ -157,6 +157,24 @@ def test_a_base_moved_since_the_red_is_no_change(
     code = approvals.main(["rerun-tests", worker["failed"], "--red", red, "--base", given])
     assert code == 0
     assert "nothing changed reselects" in capsys.readouterr().err
+    # the PR's selection, not extra.py, which the base moved
+    assert worker["ran"]() == ["selected app.py other.py"]
+
+
+def test_a_red_with_no_history_shared_with_the_base_refuses(
+    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A red fetched without its history: refuse, naming the fetch, never a traceback and never a guess."""
+    red_head(worker)
+    repo = worker["repo"]
+    git_in(repo, "checkout", "-q", "--orphan", "lone")
+    git_in(repo, "commit", "-qm", "lone")
+    lone = git_in(repo, "rev-parse", "HEAD").strip()
+    git_in(repo, "checkout", "-q", "work")
+    code = approvals.main(["rerun-tests", worker["failed"], "--red", lone, "--base", "main"])
+    out = capsys.readouterr()
+    assert code != 0 and "share no history here" in out.out + out.err
+    assert worker["ran"]() == []
 
 
 def test_a_rerun_that_is_red_again_stays_red(

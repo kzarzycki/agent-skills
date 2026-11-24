@@ -57,5 +57,7 @@ def test_no_rerun_or_fix_hides_a_retry_in_the_test():
     rule = next(line for line in skill.splitlines() if line.startswith("- **R5."))
     flaky = skill[skill.index("- **Flaky tests.**") :][:2000]
     for text in (rule, flaky):
-        assert "adds a sleep, a wait loop or a retry to the test itself" in text.replace("\n  ", " ")
+        assert "adds a sleep, a wait loop or a retry to the test itself" in text.replace(
+            "\n  ", " "
+        )
         assert "kzarzycki/agent-skills/issues/1482" in text

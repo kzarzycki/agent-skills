@@ -9470,7 +9470,12 @@ def fix_since(red: str, base: str | None) -> set[str]:
     here = selection_base(None) if base else None
     if base is None or here is None:
         return set(git("diff", "--name-only", red, "HEAD").splitlines())
-    red_base = git("merge-base", base, red).strip()
+    try:
+        red_base = git("merge-base", base, red).strip()
+    except subprocess.CalledProcessError:
+        raise Refused(
+            f"rerun-tests: {red} and the base {base} share no history here: fetch the red run's head with its history"
+        ) from None
     touched = set(git("diff", "--name-only", red_base, red).splitlines()) | set(
         git("diff", "--name-only", here, "HEAD").splitlines()
     )
@@ -9505,8 +9510,8 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
     which gives the same selection in the same order on the same base:
     - the change since the red reselects every failed test (rerun_plan): the selection against `red`, the failed tests
       plus what the change reaches;
-    - otherwise (nothing changed, or a change that misses a failed test): the selection against the base, the red
-      run's whole selection. A failed test that passes there is a flake (a `Flaky:` issue, the run counted green),
+    - otherwise (nothing changed, or a change that misses a failed test): the selection against HEAD's own base now,
+      the red run's whole selection (after a rebase, its PR files on the newer base, not the files the base moved). A failed test that passes there is a flake (a `Flaky:` issue, the run counted green),
       and one that is red again stays red: the change caused it. Never the failed tests alone, and never the whole
       suite. One line says which and why; the exit is the run's."""
     failed = failed_tests_of(path)
@@ -9516,6 +9521,8 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
         raise Refused(f"rerun-tests: no commit {red} here: fetch the red run's head") from None
     base = selection_base(given)
     fixed, candidates = rerun_plan(failed, fix_since(red, base))
+    # HEAD's own base now, past any rebase: the whole selection is the PR's files, not the ones the base moved
+    here = selection_base(None) if given is not None else base
     if fixed:
         print(
             f"rerun-tests: the change since the red reselects {len(failed)} failed test(s), so those and what it"
@@ -9530,7 +9537,7 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
         " runs: alone, a test that fails only after others would pass",
         file=sys.stderr,
     )
-    code = affected_tests(base)
+    code = affected_tests(here or base)
     if code == 0 and candidates:
         print(
             "rerun-tests: green: a flake candidate that passed is a flake: open or update its `Flaky:` issue and"
