@@ -22,7 +22,8 @@
     uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed under `ci: false` or with --base (Narrowed mode)
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
-    uv run scripts/approvals.py local-ci --record --rerun [--base <rev>]  # an independent rerun of HEAD's selection: nothing reused, its record keyed apart (levels' `rerun`)
+    uv run scripts/approvals.py local-ci --record --rerun [--base <rev>] [--no-push]  # an independent rerun of HEAD's selection: nothing reused, its record keyed apart (levels' `rerun`); --no-push keeps the record commit as a local branch and names it, for a CI job without a write token
+    uv run scripts/approvals.py check rerun <pr>           # whether the PR's rating asks a rerun and has one: `rerun: needed|done|no`, exit 0
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
     uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
@@ -1965,6 +1966,21 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
         f" record; with no CI, the verifier starts a fresh session that runs it on the head and names the record's"
         f" commit on a `{RERUN_LINE}: <commit>` line of its report"
     )
+
+
+def rerun_state(pull: dict[str, Any]) -> int:
+    """`check rerun <pr>`, a CI job's first step: one line, `PR #<n>: rerun: <state> (rated <level>)`, the state
+    `needed` where the rating's level asks a rerun (levels' `rerun`) and rerun_gap finds none yet, `done` where it
+    finds one, `no` where the level asks none. Exit 0 whatever the state; it writes nothing."""
+    loop = project()[1]
+    issues = rated_issues(pull)
+    level = rating(pull, issues, loop).level
+    if not levels(loop)[level].get("rerun"):
+        state = "no"
+    else:
+        state = "done" if rerun_gap(pull, issues, loop) is None else "needed"
+    print(f"PR #{pull['number']}: rerun: {state} (rated {level})")
+    return 0
 
 
 def raises(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
@@ -5784,6 +5800,12 @@ def check(point: str, pr: int | None, issue: int | None = None) -> int:
     toplevel()  # outside a checkout, refused before GitHub is asked
     if point == "stalled":
         return stalled()
+    if point == "rerun":
+        if pr is None:
+            raise Refused("check rerun needs a PR: it reads that PR's rating")
+        pull = pull_request(pr)
+        with policy_from(pull["baseRefName"]):
+            return rerun_state(pull)
     if point == "build":
         full_check_line()
     if issue is not None:
@@ -9420,6 +9442,11 @@ NARROW_BASE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 # set by `local-ci --record --rerun` (local_ci): no step's pass is reused (step_pass), here or on origin, since a rerun
 # that reused a record would prove only what that record already said
 FRESH: contextvars.ContextVar[bool] = contextvars.ContextVar("FRESH", default=False)
+# set by `local-ci --record --rerun --no-push`: the rerun's record commit is made and kept as a local branch, not
+# pushed (publish), for a CI job whose token can't write: another job, holding no code of the PR, pushes it
+KEEP: contextvars.ContextVar[bool] = contextvars.ContextVar("KEEP", default=False)
+# the line that names a kept record, `<ref> <commit>`, which that job reads
+KEPT = "rerun record kept, not pushed: "
 
 
 def loop_md() -> str:
@@ -11025,8 +11052,16 @@ def push_record(record: dict[str, Any]) -> str:
     """Push a pass to origin as its record branch (RECORD_BRANCH) on a commit holding its tree, its parent the commit
     it ran on, its message the status description and env (record_message), and return the ref. The commit's author,
     committer and dates are fixed, so pushing a pass again pushes the same commit. Refused: CalledProcessError."""
+    ref = RECORD_BRANCH.format(record_name(record["tree"], record["command"]))
+    git("push", "-q", "--no-verify", "origin", f"{record_commit(record)}:{ref}")
+    return ref
+
+
+def record_commit(record: dict[str, Any]) -> str:
+    """The commit push_record pushes for a pass: its tree, its parent the commit the pass ran on, its message
+    record_message, with fixed author, committer and dates, so the same pass always makes the same commit."""
     when = {"GIT_COMMITTER_DATE": record["time"], "GIT_AUTHOR_DATE": record["time"]}
-    commit = subprocess.run(
+    return subprocess.run(
         [
             "git",
             "commit-tree",
@@ -11041,9 +11076,6 @@ def push_record(record: dict[str, Any]) -> str:
         text=True,
         env=os.environ | RECORDER | (when if record.get("time") else {}),
     ).stdout.strip()
-    ref = RECORD_BRANCH.format(record_name(record["tree"], record["command"]))
-    git("push", "-q", "--no-verify", "origin", f"{commit}:{ref}")
-    return ref
 
 
 def drop_records(heads: list[str]) -> None:
@@ -11190,6 +11222,12 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
     # with `gate_steps`, each step's record is pushed by itself; one already in origin, read back from it
     # (record_ref), is left as it is, since pushing it again only fails and would say origin lacks it
     for one in record.get("steps", [record]):
+        if KEEP.get():
+            ref = RECORD_BRANCH.format(record_name(one["tree"], one["command"]))
+            commit = record_commit(one | {"time": one.get("time") or now()})
+            git("update-ref", ref, commit)
+            print(f"{KEPT}{ref} {commit}")
+            continue
         if one.get("published"):
             name = one.get("ref") or RECORD_BRANCH.format(record_name(one["tree"], one["command"]))
             print(f"already in origin as the record branch {name}, so it is not pushed again")
@@ -11205,6 +11243,8 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
             print(f"not pushed to origin, so only this clone reuses it: {why}")
         else:
             print(f"published in origin as the record branch {ref}")
+    if KEEP.get():  # a job that can't write keeps the record; it writes no status either
+        return
     if why := shown(head, record):
         print(f"the `gate` status, which only shows the pass on the PR, was not written: {why}")
 
@@ -11620,7 +11660,7 @@ def main(argv: list[str]) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser("check")
-    checking.add_argument("point", choices=("build", "merge", "ready", "setup", "stalled"))
+    checking.add_argument("point", choices=("build", "merge", "ready", "rerun", "setup", "stalled"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--issue", type=int)
     # `record`: the evidence the gate reads, written: an approval, a verdict, a check pass
@@ -11661,6 +11701,8 @@ def main(argv: list[str]) -> int:
     recording.add_argument("--head-proof", action="store_true")
     # --rerun: an independent rerun of the head's selection (levels' `rerun`): no pass reused, its record its own
     recording.add_argument("--rerun", action="store_true")
+    # --no-push: with --rerun, keep the record as a local branch and name it (KEPT), for a CI job without a write token
+    recording.add_argument("--no-push", action="store_true")
     recording.add_argument("--head", metavar="SHA")
     # --base: in narrowed mode, the commit `--record` selects against (land's cloud gate passes its batch's base tip)
     recording.add_argument("--base", metavar="REV")
@@ -11784,6 +11826,11 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused(
                 "--rerun goes with --record alone: it reruns the selection on the checkout's HEAD and records it"
             )
+        if args.no_push and not args.rerun:
+            raise Refused(
+                "--no-push goes with --rerun: only a rerun's record is kept for another job to push"
+            )
+        KEEP.set(args.no_push)
         return (
             local_ci(args.pr, proof, args.run, args.head, args.base, args.rerun)
             if leads_its_session()

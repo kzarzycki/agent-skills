@@ -328,3 +328,66 @@ def test_with_ci_or_no_level_asking_a_rerun_the_brief_says_nothing_of_it(
     assert brief("", monkeypatch, tmp_path, capsys) == []
     off = "loop:\n  ci: false\nlevels:\n  high:\n    rerun: false\n  critical:\n    rerun: false\n"
     assert brief(off, monkeypatch, tmp_path, capsys) == []
+
+
+# --- the CI half's two gatekeeper steps: check rerun, and a rerun kept for another job to push ---
+
+
+def test_check_rerun_says_needed_done_or_no(
+    gating: Gate, forge: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    state, _ = gating
+    policy(GATES)
+    state["pull"] = judged_pr(judging("low — fine"), labels=("risk:high",))
+    assert approvals.main(["check", "rerun", "7"]) == 0
+    assert capsys.readouterr().out == "PR #7: rerun: needed (rated high)\n"
+    forge["records"] = [(RERUN_REF, RERUN_COMMIT)]
+    forge["pushes"][RERUN_REF] = {"after": RERUN_COMMIT, "login": "github-actions", "app": True}
+    assert approvals.main(["check", "rerun", "7"]) == 0
+    assert capsys.readouterr().out == "PR #7: rerun: done (rated high)\n"
+    state["pull"] = judged_pr(judging("low — fine"))
+    assert approvals.main(["check", "rerun", "7"]) == 0
+    assert capsys.readouterr().out == "PR #7: rerun: no (rated low)\n"
+
+
+def test_check_rerun_needs_a_pr(gating: Gate, capsys: pytest.CaptureFixture[str]) -> None:
+    policy(GATES)
+    assert approvals.main(["check", "rerun"]) == 1
+    assert "check rerun needs a PR" in capsys.readouterr().out
+
+
+def test_a_rerun_with_no_push_keeps_its_record_as_a_local_branch_and_names_it(
+    repo: dict[str, Any],
+    refs: dict[str, dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """For a CI job whose token can't write: nothing is pushed, and the line names the branch and its commit, which
+    holds the head's tree, its one parent the head."""
+    monkeypatch.delenv(approvals.RERUN_VAR, raising=False)
+    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
+    capsys.readouterr()
+    assert approvals.main(["local-ci", "--record", "--rerun", "--no-push"]) == 0
+    assert refs == {}
+    [kept] = [
+        line for line in capsys.readouterr().out.splitlines() if line.startswith(approvals.KEPT)
+    ]
+    ref, commit = kept[len(approvals.KEPT) :].split(" ")
+    held = git_in(repo["work"], "rev-parse", "HEAD^{tree}").strip()
+    assert ref.startswith(f"refs/heads/loop-gate/{held}-")
+    assert git_in(repo["work"], "rev-parse", ref).strip() == commit
+    assert git_in(repo["work"], "rev-list", "--parents", "-n", "1", commit).split() == [
+        commit,
+        repo["head"](),
+    ]
+    assert f'"{approvals.RERUN_VAR}": "1"' in git_in(
+        repo["work"], "log", "-1", "--format=%B", commit
+    )
+    # the record the push job pushes is one the gatekeeper reads as a rerun's
+    assert approvals.reruns(held) == []  # not on origin: kept here only
+
+
+def test_no_push_goes_with_rerun(gating: Gate, capsys: pytest.CaptureFixture[str]) -> None:
+    policy(GATES)
+    assert approvals.main(["local-ci", "--record", "--no-push"]) == 1
+    assert "--no-push goes with --rerun" in capsys.readouterr().out

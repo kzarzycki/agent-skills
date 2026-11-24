@@ -220,9 +220,20 @@ needs its selection run again where the worker has no control. The rule in input
   CI, pushed it; `loop.py brief` tells the verifier so there). Otherwise `check merge` and `land` refuse, naming what
   is missing. A level with `rerun: false` keeps the worker's record as the proof.
 
-What it does not stop: in a repo with CI, the PR's own code runs inside the CI job, and a workflow file the PR edits
-runs under the app's token too, so a PR can make the app push a record; the verifier reads that diff, and a project
-whose CI pushes records keeps its workflows under `risk.paths`. With no CI, a verifier pass is a review by the shared
+In a repo with CI the rerun is two jobs, so the PR's code never runs with a token that can write. The first, with a
+read-only token, runs `check rerun <pr>` (`rerun: needed`, `done` or `no`, the one step on a head that needs none),
+then, where needed, `local-ci --record --rerun --no-push`, which makes the record commit, keeps it as a local branch
+and names it, and hands it on as a git bundle. The second, holding the write token, needs the first's success,
+checks out and runs nothing of the PR, checks that the bundle holds one branch, `loop-gate/<the head's tree>-<key>`,
+whose commit holds the head's tree with the head as its one parent, and pushes it; on a fork's PR, which gets no
+write token, it says so in one line and pushes nothing. Its triggers include the PR's labels and reviews, since a
+`risk:high` label or a verifier's `Risk: high` can raise the rating after the push.
+
+What it does not stop: in a repo with CI, the PR's own code decides the first job's result and the record it hands
+on, so a PR whose code fakes a green run still gets its record pushed; what the split stops is that code pushing
+anything else, or a record of another tree, with the write token. A workflow file a same-repo PR edits runs in place
+of the base's, so such a PR can change both jobs; the verifier reads that diff, and a project whose CI pushes records
+keeps its workflows under `risk.paths`. With no CI, a verifier pass is a review by the shared
 account, so the gatekeeper trusts the verifier's `Rerun:` line as it trusts its `SATISFIED:` line. Signed attestations
 are #2143's Not now. An exact revert, a bot's PR and an incubating PR that waives the verifier need no rerun, as they
 need no verifier pass.
