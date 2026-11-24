@@ -249,8 +249,8 @@ exits 0 when all pass, 1 when one fails and 2 when there is nothing to run, so "
 never read as "passed"; `--all` runs every `acceptance/*/` folder, for a nightly. The worker runs
 it on the head before its report (worker.md, Report), and its docstring has the line formats.
 One spec's checks finish within 10 min on the gate's machine and the `--all` run within 90, or
-the minutes of loop.md's `Acceptance budget: <spec minutes>, <nightly minutes>`, since the
-verifier reruns them on every pass: a longer check is split or moves to the nightly. Over the
+the minutes of loop.md's `Acceptance budget: <spec minutes>, <nightly minutes>`, since each
+minute adds to the spec's and the nightly's run time: a longer check is split or moves to the nightly. Over the
 budget the runner prints one line saying so and still exits on the checks' result, since the
 budget is a signal, not a gate.
 
@@ -259,7 +259,9 @@ nothing else runs the full suite at all (Merge model), so the
 nightly runs the project's full suite, which holds every spec's acceptance checks, plus
 `uv run <gatekeeper>/scripts/acceptance.py --all` where the project uses the
 `acceptance/<issue>/` folders; the workflow itself (its schedule, where it runs) is the
-project's. When it ends red, it calls `uv run <this skill's folder>/scripts/nightly.py red
+project's. It runs only when the default branch moved since its last green (the newest scheduled
+run that passed, read from the forge): on an unmoved branch it can fail because of no change, so it
+skips and links that run (A check runs only if it can fail because of the change). When it ends red, it calls `uv run <this skill's folder>/scripts/nightly.py red
 --last-green <sha> --red <sha> --run <url>`, with the newest default-branch commit a nightly
 passed on, the one it failed on and the run's link, from a checkout holding the history
 between them. It lists the PRs merged on the default branch since the last green (first-parent
@@ -1104,7 +1106,7 @@ A rejected finding is not real, so it gets no issue.
 The cap is the gatekeeper's: 3 passes by default (the `gatekeeper` skill, The cap, the one place to
 change it), unless the project's gatekeeper.md sets its own with `cap` under `loop` in its policy.
 Every other file says "the cap". Pass 1 reviews the PR's full diff; each later pass
-up to the cap reviews the diff since the previous report and reruns its repros. No fix
+up to the cap reviews the diff since the previous report and reruns the acceptance checks and repros the round's diff reaches, plus every repro still `NOT FIXED`. No fix
 lands without review: every head that lands has a satisfied verdict on that exact head,
 so any commit after the last verdict, a merge of main included, gets a verifier pass of
 its own. The one exception is gatekeeper.md's `carry_over_main`: clean merges of main that touch
