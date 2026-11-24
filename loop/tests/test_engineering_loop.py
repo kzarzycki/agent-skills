@@ -211,7 +211,8 @@ def test_owner_questions_end_the_turn_rather_than_wait_in_a_tool() -> None:
     assert "Ask as text at the end of your turn" in cos
     assert "as text that ends your turn `USER NEEDED`" in lead
     for text in (cos, lead):
-        assert "through a tool that waits for the answer" in text  # "never ask through …" in lead.md
+        # lead.md says "Never ask through …"
+        assert "through a tool that waits for the answer" in text
         assert "(Claude Code's AskUserQuestion, Codex's requestUserInput)" in text
 
 
