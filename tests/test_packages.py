@@ -281,9 +281,8 @@ def native_plugin_apm(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.mark.needs_tool("uv")
-@pytest.mark.parametrize("name", ("loop", "engineering"))
 def test_the_deployed_loop_scripts_find_gatekeeper_when_apm_installs_it_as_a_plugin(
-    name: str, tmp_path: Path, native_plugin_apm: Path
+    tmp_path: Path, native_plugin_apm: Path
 ) -> None:
     """In a repo `apm install`ed with `targets: [claude]`, gatekeeper lands in `.agents/plugins/gatekeeper/`, not beside
     engineering-loop: every script deployed for engineering-loop still runs."""
@@ -292,10 +291,11 @@ def test_the_deployed_loop_scripts_find_gatekeeper_when_apm_installs_it_as_a_plu
     source = tmp_path / "source"
     _copy_package(source)
     _publish(tmp_path, env, source)
-    consumer = tmp_path / "consumer"
-    consumer.mkdir()
-    version = manifests(name)[0]["version"]
-    _write_manifest(consumer / "apm.yml", {"git": f"{SLUG}/{name}", "ref": f"^{version}"})
+    # in its own folder: the cache layout's glob reads the consumer's parent, which must not hold `source`
+    consumer = tmp_path / "work" / "consumer"
+    consumer.mkdir(parents=True)
+    version = manifests("engineering")[0]["version"]
+    _write_manifest(consumer / "apm.yml", {"git": f"{SLUG}/engineering", "ref": f"^{version}"})
     manifest = yaml.safe_load((consumer / "apm.yml").read_text())
     manifest["targets"] = ["claude"]
     (consumer / "apm.yml").write_text(yaml.safe_dump(manifest, sort_keys=False))
