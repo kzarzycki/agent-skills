@@ -256,13 +256,13 @@ def test_own_pr_adds_to_the_label_list_and_every_reader_takes_it() -> None:
         def label(self, sid, labels):
             labelled.update(labels)
 
-    assert omnigent_agent.own_pr(Og(), "a", "o/r#13") == "a: owns o/r#13"
-    assert labelled["omni.pr"] == "o/r#12,o/r#13"
-    assert omnigent_agent.own_pr(Og(), "a", "o/r#13") == "a: already owns o/r#13"
-    assert labelled["omni.pr"] == "o/r#12,o/r#13"
-    assert omnigent_agent.pr_labels(labelled["omni.pr"]) == [("o/r", 12), ("o/r", 13)]
+    assert omnigent_agent.own_pr(Og(), "a", ["o/r#13", "o/r#14"]) == "a: owns o/r#13, o/r#14"
+    assert labelled["omni.pr"] == "o/r#12,o/r#13,o/r#14"  # two refs, one write: none lost
+    assert omnigent_agent.own_pr(Og(), "a", ["o/r#13"]) == "a: already owns o/r#13"
+    assert labelled["omni.pr"] == "o/r#12,o/r#13,o/r#14"
+    assert omnigent_agent.pr_labels(labelled["omni.pr"]) == [("o/r", 12), ("o/r", 13), ("o/r", 14)]
     with pytest.raises(omnigent_agent.Fail):
-        omnigent_agent.own_pr(Og(), "a", "13")
+        omnigent_agent.own_pr(Og(), "a", ["13"])
 
 
 def test_dequeue_relays_to_a_lead_landing_two_prs(tmp_path, monkeypatch) -> None:

@@ -9,13 +9,14 @@ import pytest
 from approvals_harness import approvals
 
 
-def test_own_prs_starts_one_own_pr_per_named_pull(
+def test_own_prs_starts_one_run_naming_every_pull_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     script = tmp_path / "omnigent_agent.py"
     script.write_text("")
     started: list[list[str]] = []
     monkeypatch.setattr(approvals, "agent_script", lambda: script)
+    monkeypatch.setattr(approvals, "own_started", set())
     monkeypatch.setattr(approvals.subprocess, "Popen", lambda argv, **_k: started.append(argv))
     pulls: list[dict[str, Any]] = [
         {"number": 7, "baseRepository": {"nameWithOwner": "o/r"}},
@@ -23,7 +24,8 @@ def test_own_prs_starts_one_own_pr_per_named_pull(
         {"number": 11},
     ]
     approvals.own_prs(pulls)
-    assert [argv[2:] for argv in started] == [["own-pr", "o/r#7"], ["own-pr", "o/r#9"]]
+    approvals.own_prs(pulls)  # a land --wait poll again: nothing new to start
+    assert [argv[2:] for argv in started] == [["own-pr", "o/r#7", "o/r#9"]]
 
 
 def test_own_prs_is_silent_without_the_skill(

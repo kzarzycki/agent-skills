@@ -6952,16 +6952,18 @@ def pr_labels(label: object) -> list[tuple[str, int]]:
     return [found for ref in label_refs(label) if (found := pr_label(ref))]
 
 
-def own_pr(og: Omnigent, sid: str, ref: str) -> str:
-    """Add PR ``ref`` (``owner/name#N``) to ``sid``'s ``PR_LABEL`` list, so a dequeue of it reaches ``sid``: what a
-    lead's ``land`` and a takeover write. Idempotent; the labels it holds already are kept."""
-    if not pr_label(ref):
-        raise Fail(f"own-pr needs owner/name#N, not {ref!r}")
+def own_pr(og: Omnigent, sid: str, refs: list[str]) -> str:
+    """Add PRs ``refs`` (``owner/name#N``) to ``sid``'s ``PR_LABEL`` list in one write, so a dequeue of any reaches
+    ``sid``: what a lead's ``land`` and a takeover write. Idempotent; the labels it holds already are kept."""
+    for ref in refs:
+        if not pr_label(ref):
+            raise Fail(f"own-pr needs owner/name#N, not {ref!r}")
     held = label_refs((og.info(sid).get("labels") or {}).get(PR_LABEL, ""))
-    if ref in held:
-        return f"{sid}: already owns {ref}"
-    og.label(sid, {PR_LABEL: ",".join([*held, ref])})
-    return f"{sid}: owns {ref}"
+    added = [r for r in dict.fromkeys(refs) if r not in held]
+    if not added:
+        return f"{sid}: already owns {', '.join(refs)}"
+    og.label(sid, {PR_LABEL: ",".join([*held, *added])})
+    return f"{sid}: owns {', '.join(added)}"
 
 
 def pr_hold(repo: str, pr: int) -> str | None:
@@ -11742,7 +11744,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         description="add a PR (owner/name#N) to this session's `omni.pr` label list, so the merge queue's"
         " dequeue of it reaches this lead: what `land` and a takeover write",
     )
-    p.add_argument("pr", help="owner/name#N")
+    p.add_argument("pr", nargs="+", help="owner/name#N, each")
     p.add_argument("--session", default="", help="the session to label; default: this one")
     p = sub.add_parser("status")
     p.add_argument("sessions", nargs="+")
