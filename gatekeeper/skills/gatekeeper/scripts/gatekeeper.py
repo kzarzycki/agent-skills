@@ -9728,36 +9728,48 @@ def sharded(args: argparse.Namespace) -> int:
 
 def record_shard(head: str, shard: int | None, shards: list[list[str]], command: str) -> int:
     """`shards --record <head> --shard <i>`: run shard <i> of `shards` and, when it passes, push R1's record of it
-    (see sharded). The checkout must be at `head`, since the record says the pass ran on its tree."""
+    (see sharded), under the guards `local-ci --record` has (run_local_ci): the checkout must be at `head` and clean
+    before the run (checkout_state), and a run that changes it, or moves HEAD (head_moved), records nothing. `command`
+    is read as loop.md's gate is (command_line: variables to set, then one command), and runs in gate_env's
+    environment, with the variables it sets and `GATE_SHARD`, so the record's env is what `--passed` keys it by."""
     if shard is None or not 1 <= shard <= len(shards):
         raise Refused(f"shards --record takes --shard 1 to {len(shards)}")
+    before = checkout_state()
     try:
-        at_head = (
-            git("rev-parse", "HEAD").strip()
-            == git("rev-parse", "--verify", f"{head}^{{commit}}").strip()
-        )
+        at_head = before[0] == git("rev-parse", "--verify", f"{head}^{{commit}}").strip()
     except subprocess.CalledProcessError:  # a head this clone has no commit for
         at_head = False
     if not at_head:
         raise Refused(f"shards --record runs on {head}: this checkout is at another commit")
+    if before[1]:
+        raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
+    tree = git("rev-parse", "HEAD^{tree}").strip()
     items = shards[shard - 1]
-    key = shard_key(shard, len(shards), items)
     keyed = shard_command(command, shard, len(shards), items)
-    env = {"GATE_SHARD": key} if len(shards) > 1 else {}
-    words = [*shlex.split(command), *items]
+    _, words, env = command_line(keyed, "shards --command")
+    words = [*words, *items]
     try:
         with heavy_slot("shards") as (slot, waited):
             began = time.monotonic()
-            code = run_heavy(words, env=os.environ | env | {SLOT_HELD: slot}, cwd=toplevel())[0]
+            code = run_heavy(
+                words, env=gate_env({"sets": env}) | {SLOT_HELD: slot}, cwd=toplevel()
+            )[0]
     except OSError as exc:
         raise Refused(f"`{words[0]}` can't run: {exc}") from None
     if code != 0:
         print(f"shard {shard}/{len(shards)} exited {code}: nothing recorded")
         return code
+    now_state = checkout_state()
+    if moved := head_moved(
+        before[0], tree, now_state[0], git("rev-parse", "HEAD^{tree}").strip()
+    ) or ("" if now_state == before else now_state[1]):
+        raise Refused(
+            f"the shard changed the checkout, so it did not run on the head as pushed:\n{moved}"
+        )
     ref = push_record(
         {
-            "head": git("rev-parse", "HEAD").strip(),
-            "tree": git("rev-parse", "HEAD^{tree}").strip(),
+            "head": before[0],
+            "tree": tree,
             "command": keyed,
             "exit": 0,
             "env": env,

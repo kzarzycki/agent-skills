@@ -270,3 +270,60 @@ def test_a_failed_shard_records_nothing_and_a_head_that_is_not_checked_out_is_re
     assert "another commit" in capsys.readouterr().out
     assert approvals.main(args("--record", head, "--shard", "4")) == 1
     assert "--shard 1 to 3" in capsys.readouterr().out
+
+
+def test_a_dirty_checkout_is_refused_before_the_run(
+    clone: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """local-ci --record refuses a checkout with changes: a pass of the committed tree from a run on another tree
+    says nothing about the head."""
+    Path("suite").write_text("edited, uncommitted\n")
+    assert approvals.main(clone["args"]("--record", clone["head"], "--shard", "1")) == 1
+    assert "the tree has changes" in capsys.readouterr().out
+    assert not clone["log"].exists()  # nothing ran
+    assert approvals.main(clone["args"]("--passed", clone["head"])) == 1  # nothing recorded
+
+
+def test_a_shard_that_rewrites_a_tracked_file_records_nothing(
+    clone: dict[str, Any], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    writer = tmp_path / "writer.py"
+    writer.write_text("import pathlib; pathlib.Path('suite').write_text('rewritten\\n')\n")
+    head = clone["head"]
+    argv = ["shards", "--suite", "suite", "--command", f"{sys.executable} {writer}"]
+    assert approvals.main([*argv, "--record", head, "--shard", "1"]) == 1
+    assert "changed the checkout" in capsys.readouterr().out
+    git_in(Path.cwd(), "checkout", "--", "suite")
+    assert approvals.main([*argv, "--passed", head]) == 1
+
+
+def test_a_shard_runs_without_the_callers_tier_variables(
+    clone: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gate_env clears GATE_INCUBATING (a reduced tier): a pass recorded under it would stand for a full shard."""
+    monkeypatch.setenv("GATE_INCUBATING", "1")
+    seen = tmp_path / "seen"
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        f"import os, pathlib; pathlib.Path({str(seen)!r}).write_text(os.environ.get('GATE_INCUBATING', 'unset'))\n"
+    )
+    argv = ["shards", "--suite", "suite", "--command", f"{sys.executable} {probe}"]
+    assert approvals.main([*argv, "--record", clone["head"], "--shard", "1"]) == 0
+    assert seen.read_text() == "unset"
+
+
+def test_a_command_that_sets_a_variable_in_front_is_recorded_under_it(
+    clone: dict[str, Any],
+) -> None:
+    """`FOO=1 <cmd>` runs (command_line), and its record's env holds FOO, which is how `--passed` keys it."""
+    head = clone["head"]
+    argv = ["shards", "--suite", "suite", "--command", f"FOO=1 {clone['command']}"]
+    for shard in (1, 2, 3):
+        assert approvals.main([*argv, "--record", head, "--shard", str(shard)]) == 0
+    assert approvals.main([*argv, "--passed", head]) == 0
+    assert (
+        approvals.main(
+            ["shards", "--suite", "suite", "--command", clone["command"], "--passed", head]
+        )
+        == 1
+    )
