@@ -188,6 +188,11 @@ def test_a_rerun_runs_again_whatever_is_recorded_and_records_apart(
     # a second rerun runs again too: nothing it finds is reused
     assert approvals.main(["local-ci", "--record", "--rerun"]) == 0
     assert len(repo["ran"]()) == 3
+    # and leaves nothing behind: the next command in this process reuses as before
+    assert approvals.os.environ.get(approvals.RERUN_VAR) is None
+    assert (approvals.FRESH.get(), approvals.KEEP.get()) == (False, False)
+    assert approvals.main(["local-ci", "--record", "--base", base]) == 0
+    assert len(repo["ran"]()) == 3
 
 
 def test_a_rerun_whose_record_cannot_reach_origin_fails(
