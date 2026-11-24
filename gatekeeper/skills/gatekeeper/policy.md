@@ -42,7 +42,8 @@ run it with `uv run`. They need Python 3.9 or later, except `check setup`, which
 
 ```yaml
 spec:
-  # specs approved by policy, with no owner record; any other waits for the owner.
+  # specs approved by policy, with no owner record; any other waits for the owner, but a migration
+  # row its approved parent story covers, whatever this says (SKILL.md, Specs).
   # `auto: true` approves every spec, and by default the risk rule then holds the spec, not the merge
   auto:
     - bug
