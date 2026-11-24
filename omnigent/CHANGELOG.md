@@ -5,6 +5,11 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.12 - 2026-11-24
+
+- `omnigent_agent.py supervise`: a followed coordinator (a manager with its own leads registry) whose turn ends on a `DONE` with no result on its line no longer wakes the notified session; the leads waiting on it are still told, and it stays followed (#2309).
+- `omnigent_agent.py supervise`: the chief of staff console adopts no lead younger than 60 seconds, so a launcher that writes its lead to another registry is not followed twice, nor reported as a lead on no registry (#2313).
+
 ## 0.1.11 - 2026-11-24
 
 - `start --verifier-route claude` accepts any `--model`, the author's own included, and no longer needs `--author-model`; the session is still marked same-family. A fresh session given only the code and the spec is what makes a verifier independent, so the same-model refusal only pushed verifiers onto models nobody chose (#2297).

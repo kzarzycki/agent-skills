@@ -5,6 +5,11 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.8 - 2026-11-24
+
+- loop: `scripts/nightly.py moved push|schedule|tag` is the R7 check a project's CI calls to skip a tree a merge queue's batch run tested, or a head the last green nightly ran; `push` reads the batches of the policy's `land.queue` (`mergify` or `github`, whose batch runs are `merge_group` events), so a consumer no longer copies the script and `tag` skips the tag check's suites when a green nightly ran the tagged commit (#2261, #2264).
+- engineering-loop: R5 names no runner in its rerun-did-not-run case ("a task the head lacks") (#2301).
+
 ## 0.1.7 - 2026-11-24
 
 - engineering-loop: lead.md's `claude` verifier route no longer asks for a `--model` other than the author's (#2297).
