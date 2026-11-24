@@ -87,11 +87,14 @@ def test_a_ready_pr_carrying_loop_hold_is_no_candidate_for_land_and_removing_it_
 ) -> None:
     lands["open"](7, {"7.txt": "7\n"}, labels=("loop:hold",))
     lands["open"](8, {"8.txt": "8\n"})
-    # the batch: another PR's land takes #8 and leaves the held #7
-    code, lines = lands["land"]("8")
+    # a bare land: the batch takes #8, skips the held #7 and writes nothing to it
+    code, lines = lands["land"]()
     assert code == 0, lines
     assert HOLD in lines
     assert lands["merged"]() == ["8"]
+    assert [node["name"] for node in lands["pulls"][7]["labels"]["nodes"]] == ["loop:hold"]
+    assert not lands["pulls"][7]["comments"]["nodes"]
+    assert all("7" not in args for args in lands["calls"])
     # `--only` on the held PR itself lands nothing and names the label
     code, lines = lands["land"]("7", "--only")
     assert code == 1
