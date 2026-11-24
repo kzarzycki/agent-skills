@@ -200,3 +200,17 @@ def test_a_red_with_no_test_id_reruns_the_whole_selection(
     worker["commit"]("app.py", "value = 3\n")
     code, _ = rerun(worker, red, capsys)
     assert code == 0 and worker["ran"]() == ["selected app.py other.py"]
+
+
+def test_a_fix_that_misses_one_of_two_failed_tests_reruns_the_whole_selection(
+    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    red = red_head(worker)
+    failed = ["app.py::test_value", "other.py::test_other"]
+    Path(worker["failed"]).write_text(json.dumps({"failed": failed, "selected": []}))
+    worker["commit"](
+        "app.py", "value = 3\n"
+    )  # fixes the first, not the second: it is the candidate
+    code, err = rerun(worker, red, capsys)
+    assert code == 0 and worker["ran"]() == ["selected app.py other.py"]
+    assert "flake candidate: other.py::test_other" in err and "flake candidate: app.py" not in err
