@@ -137,11 +137,11 @@ mise run lint
 cmp .mergify.yml gatekeeper/skills/gatekeeper/mergify.yml || { echo 'error: .mergify.yml drifted from the pack template gatekeeper/skills/gatekeeper/mergify.yml' >&2; exit 1; }"""
 
 [tasks.test-batch]
-description = "The tests `qualify` runs on a Mergify batch's draft PR: only the ones the batch touches against GATE_BASE (tools/affected_tests.py), never the whole suite"
+description = "The tests `qualify` runs on a Mergify batch's draft PR: only the cross-change ones against GATE_BASE (tools/cross_change_tests.py: R6), else the batch's affected tests (tools/affected_tests.py), never the whole suite"
 # A selector that fails fails the step. One that selects nothing runs no pytest and passes, saying so: pytest given no
 # targets would run the whole suite (#1609), which no PR's run does (#1872).
-run = """targets=$(uv run python tools/affected_tests.py "${GATE_BASE:-origin/main}") || { echo 'error: tools/affected_tests.py failed' >&2; exit 1; }
-[ -n "$targets" ] || { echo 'test-batch: tools/affected_tests.py selected nothing, so no tests run, never the whole suite' >&2; exit 0; }
+run = """targets=$(uv run python -m tools.cross_change_tests "${GATE_BASE:-origin/main}") || { echo 'error: tools/cross_change_tests.py failed' >&2; exit 1; }
+[ -n "$targets" ] || { echo 'test-batch: tools/cross_change_tests.py selected nothing, so no tests run, never the whole suite' >&2; exit 0; }
 uv run python tools/gate_slot.py pytest -q -m 'not live_agent and not slow' -p tools.gate_workers -n auto --dist loadfile $targets"""
 
 [tasks.check]

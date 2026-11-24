@@ -318,8 +318,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      covers the head, and every review thread is resolved (SKILL.md, Review trail on the PR). No gate step comes
      between the verdict and the merge: no gate of record, no CI check on the head, no `check-fast`, no full suite
      and no cloud session per head for a record (SKILL.md, Merge model). Without a merge queue `land` merges on the
-     verdict; with one, the queue's batch check is the one test run on the merged tree, and it runs only the tests
-     the batch's PRs affect. Start it as a background
+     verdict; with one, the queue's batch check is the one test run on the merged tree, and it runs only the cross-change tests (R6, A check runs only if it can fail because of the change). Start it as a background
      command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work
      on other items meanwhile. It lands every landable PR into main through main's merge
      queue, the local one or GitHub's, not only yours (SKILL.md, Approvals and proof;

@@ -19,7 +19,7 @@ it (the `gatekeeper` skill's policy.md, Opting out); no step runs for their chan
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
 | **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
 | **Build.** Workers, or the lead when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
-| **Gates.** On each head, the worker runs only the tests the PR affects: loop.md's `Affected tests:` selection (`approvals.py affected-tests`; lint ran in the commit hook), else `mise run test:changed` (worker.md, Gates and push), behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot). No gate of record, CI gate or full suite runs on the PR: without a merge queue the verifier's e2e proof is the last run before the merge; with one, the queue's batch check runs after it, on the merged tree, and only the tests the batch's PRs affect. The nightly runs the full suite (Merge model). | a broken change |
+| **Gates.** On each head, the worker runs only the tests the PR affects: loop.md's `Affected tests:` selection (`approvals.py affected-tests`; lint ran in the commit hook), else `mise run test:changed` (worker.md, Gates and push), behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot). No gate of record, CI gate or full suite runs on the PR: without a merge queue the verifier's e2e proof is the last run before the merge; with one, the queue's batch check runs after it, on the merged tree, and only the cross-change tests (R6, A check runs only if it can fail because of the change). The nightly runs the full suite (Merge model). | a broken change |
 | **Proof.** The spec's Before merge list on the PR branch before review, then its After merge list (checks that need the merged default branch or a deployed environment) after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
@@ -85,7 +85,7 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   `merge_queue` rule it is the local merge queue: `land` merges each PR on its satisfied
   verdict within one call, with no gate step. With one it is the GitHub merge queue: `land`
   enqueues each landable PR, and the queue's `merge_group` check, the one test run on the
-  merged tree, runs only the tests the batch's PRs affect and merges it, so nothing heavy runs
+  merged tree, runs only the cross-change tests (R6, A check runs only if it can fail because of the change) and merges it, so nothing heavy runs
   on a laptop and no test runs twice. It suits a project that has code built around the queue.
   CI then needs `merge_group` triggers and `loop:approvals` success on the queue's commit. A private repo on
   GitHub's free plan has no rulesets, branch protection or auto-merge, so the ruleset can't be
@@ -169,8 +169,8 @@ Each derived rule follows from the one above.
 - Without a merge queue, `land` merges the PR on the verifier's satisfied record, with no gate step: no gate of
   record, no CI check on the head, no full-suite run and no rerun at land.
 - With a merge queue (GitHub's, or Mergify's under `land.queue: mergify`), the PR head still gets no CI check. The
-  queue's batch check is the one run on the merged tree, and it runs only the tests the batch's PRs affect
-  (`affected-tests --base <the base tip the batch merges onto>`). Nothing else reruns at land.
+  queue's batch check is the one run on the merged tree, and it runs only the cross-change tests (R6, A check runs only if it can fail because of the change;
+  the fallback, `affected-tests --base <the base tip the batch merges onto>`). Nothing else reruns at land.
 - The nightly runs the full suite (Nightly). Main may stay broken until it does, since a break shows within a day
   and costs less than a full run on every PR. A red nightly becomes an issue, a bisect and a fix or revert PR
   through the loop.
@@ -577,7 +577,7 @@ organisation-owned repo can have. `land` judges each candidate as above, then po
 status on its head (`Queued for Mergify at <sha>`) and adds `loop:queued`, and exits: no lock, no
 gate, nothing merged, and every call REST. The repo's `.mergify.yml` takes a PR in only with that
 label and `land` green on its head, and no CI check on the head; it tests each batch as a draft PR
-on top of the base, with a batch check that runs only the tests the batch's PRs affect, retries a red
+on top of the base, with a batch check that runs only the cross-change tests (R6, A check runs only if it can fail because of the change), retries a red
 one once and squash-merges on green. A push leaves the new head without `land`, so it no longer qualifies; a PR Mergify
 dequeues gets `loop:dequeued`, and the next `land` turns it back to draft with `land` `error` on its
 head and an `Evicted from the merge queue` comment. A bare `land` writes the `Landed` comment
@@ -586,7 +586,7 @@ queue above, with no test step, stays the path for a project with no queue.
 
 The GitHub merge queue takes no lock and runs no local gate: `land` enqueues each candidate,
 oldest first, pinned to the head its proofs judged, and GitHub orders, groups and merges them,
-its `merge_group` check running only the tests the batch's PRs affect. An entry the queue removes for a red check gets a comment with that check's log tail and
+its `merge_group` check running only the cross-change tests (R6, A check runs only if it can fail because of the change). An entry the queue removes for a red check gets a comment with that check's log tail and
 goes in once more; a second red on the same head turns it back to draft. A red main counts
 nothing and evicts nobody, nor does a red group built on a main commit where a required check
 failed, a conflict gets the local queue's conflict comment while GitHub still reports one (and

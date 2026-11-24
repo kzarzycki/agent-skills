@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_step(tmp_path: Path, selector: str) -> subprocess.CompletedProcess[str]:
-    """test-batch's script, run by sh with `uv` stubbed: `uv run python tools/affected_tests.py` runs `selector` (a
+    """test-batch's script, run by sh with `uv` stubbed: `uv run python -m tools.cross_change_tests` runs `selector` (a
     shell snippet), any other `uv run` logs its arguments."""
     lines = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]["test-batch"][
         "run"
@@ -19,7 +19,7 @@ def run_step(tmp_path: Path, selector: str) -> subprocess.CompletedProcess[str]:
     stub.mkdir()
     (stub / "uv").write_text(
         "#!/bin/sh\n"
-        'case "$*" in *affected_tests.py*) ' + selector + " ;; esac\n"
+        'case "$*" in *cross_change_tests*) ' + selector + " ;; esac\n"
         f'echo "ran: $*" >> {tmp_path / "ran.log"}\n'
     )
     (stub / "uv").chmod(0o755)
@@ -36,7 +36,7 @@ def run_step(tmp_path: Path, selector: str) -> subprocess.CompletedProcess[str]:
 
 def test_a_failed_selection_fails_without_running_pytest(tmp_path: Path) -> None:
     done = run_step(tmp_path, "exit 2")
-    assert done.returncode != 0 and "tools/affected_tests.py failed" in done.stderr
+    assert done.returncode != 0 and "tools/cross_change_tests.py failed" in done.stderr
     assert not (tmp_path / "ran.log").exists()
 
 
