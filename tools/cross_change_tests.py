@@ -113,7 +113,7 @@ def recorded(head: str, point: str) -> tuple[bool, str]:
             narrowed = g.narrowed_gate()
         if narrowed is None:
             return False, "the gate has `gate_steps`, which never run the `Affected tests:` command"
-        words = [*shlex.split(narrowed[0][: -len(g.NARROWED)]), g.NARROWED.strip()]
+        words = shlex.split(narrowed[0])  # its words, then `(narrowed)`, as gate-record takes them
         with contextlib.redirect_stdout(said):
             code = g.gate_record(head, words)
     except Exception as exc:  # noqa: BLE001
