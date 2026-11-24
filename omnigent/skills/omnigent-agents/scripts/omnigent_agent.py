@@ -10774,6 +10774,7 @@ def supervise_registry(
                 or row.get("parent_session_id")
                 or labels.get("omni.role") != "lead"
                 or creators(row) & followed
+                or og.info(sid).get("archived")  # the listing may be 30 s old
             ):
                 continue
             # ponytail: the lead's real report is unknown; follow reads none, and a path in its workspace costs nothing

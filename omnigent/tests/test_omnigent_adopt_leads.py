@@ -60,6 +60,20 @@ def test_the_console_adopts_no_lead_someone_already_watches(
     assert adopted(registry) == []
 
 
+def test_a_lead_archived_since_the_cached_listing_is_not_adopted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The listing is cached for 30 s, and an archive drops the lead's line: the stale row alone
+    would adopt it again."""
+    registry = tmp_path / "leads.registry"
+    registry.write_text("")
+    og = base.Leads(**{STRAY: [base.told("brief", 60)]})
+    og.rows = [lead_row(STRAY)]  # the cached row still reads live
+    og.snaps[STRAY] = {"archived": True}
+    base.supervised(og, registry, monkeypatch, 2, console=True)
+    assert registry.read_text() == "" and adopted(registry) == []
+
+
 def test_a_manager_console_adopts_no_lead(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     registry = tmp_path / "app-leads.registry"
     registry.write_text("")
