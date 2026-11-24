@@ -5016,13 +5016,14 @@ def start(
     survivors: list[str] = []
 
     def abandon(sid: str) -> None:
-        if registered:
-            registered(sid, False)
         try:
             og.archive(sid)
         except Fail as e:
             survivors.append(sid)
             print(f"abandoned session {sid} survives: {e}", file=sys.stderr)
+        else:
+            if registered:  # after the archive: a live session's line stays, so no sweep adopts it
+                registered(sid, False)
 
     def failed(reason: str) -> Fail:
         left = f"; abandoned sessions survive: {', '.join(survivors)}" if survivors else ""
@@ -5098,6 +5099,8 @@ def start(
                 f"create failed ({error}); briefing session {found}, made anyway", file=sys.stderr
             )
             sid = found
+        if registered:  # the moment the session is known: the calls below can each take HTTP_SECONDS
+            registered(sid, True)
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
         try:
@@ -5151,8 +5154,6 @@ def start(
                 og.subscribe(me, sid)
             except Fail as e:
                 print(f"not subscribed to {sid} ({e}); follow it with watch", file=sys.stderr)
-        if registered:
-            registered(sid, True)
         try:
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
                 send_to_confirm(og, sid, text)
@@ -12464,9 +12465,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds, far=far)
             except Undeleted as e:  # the answer landed: supervise it, then fail on the question
                 undeleted = e
-            # armed once the message is in the history, as start arms: before it, the report or
-            # question of the turn before reads as newer than the last instruction; never for
-            # --pr, as start skips it
+            # armed once the message is in the history: before it, the report or question of the
+            # turn before reads as newer than the last instruction; never for --pr
             if not args.pr:
                 arm_quietly(
                     registry,
