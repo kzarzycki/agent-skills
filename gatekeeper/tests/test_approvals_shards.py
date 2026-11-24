@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
-from approvals_harness import approvals, gatekeeper_md
+from approvals_harness import approvals, gatekeeper_md, git_in
+
+# the real record branch functions, which a conftest fixture fakes for every test
+RECORD_REF, PUSH_RECORD = approvals.record_ref, approvals.push_record
 
 SUITE = [f"t{n}" for n in range(1, 10)]
 
@@ -106,29 +111,162 @@ def test_a_shards_value_below_one_or_not_a_number_is_refused(
         approvals.shard_count()
 
 
-def test_the_run_passes_only_when_every_shard_has_a_record_keyed_by_its_command(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_one_shard_is_recorded_under_the_command_itself() -> None:
+    assert approvals.shard_command("run all", 1, 1, SUITE) == "run all"
+
+
+def test_each_shard_has_its_own_key_and_a_changed_split_is_another_record() -> None:
+    """The same suite and tree with other durations splits differently: a shard's pass of the old split must not
+    stand for the new one's items, so at least one shard's key differs."""
+    old = approvals.shard_selections(
+        SUITE, SUITE, 3, {"t1": 9, **dict.fromkeys(SUITE[1:], 1)}, True
+    )
+    new = approvals.shard_selections(
+        SUITE, SUITE, 3, {"t9": 9, **dict.fromkeys(SUITE[:-1], 1)}, True
+    )
+    assert old != new
+    keys = [
+        [approvals.shard_command("run", at, 3, items) for at, items in enumerate(split, 1)]
+        for split in (old, new)
+    ]
+    assert any(a != b for a, b in zip(*keys, strict=True))
+
+
+def test_an_unrecorded_item_weighs_the_mean_of_the_recorded_ones() -> None:
+    """a=10 and b=6 are recorded, c and d are not (mean 8): the two at 8 go before b and together, b joins a. At
+    weight 0 they would all pile onto b's shard."""
+    shards = approvals.shard_selections(list("abcd"), list("abcd"), 2, {"a": 10, "b": 6}, True)
+    assert shards == [["a", "b"], ["c", "d"]]
+
+
+def test_exactly_half_of_the_suite_is_a_narrow_selection() -> None:
+    suite = list("abcd")
+    assert approvals.shard_selections(suite[:2], suite, 2, None, False) == [suite[:2]]
+    assert len(approvals.shard_selections(suite[:3], suite, 2, None, False)) == 2
+
+
+@pytest.mark.parametrize("written", ["not json", '{"t1": null}', None])
+def test_unreadable_durations_give_an_even_split_by_count_and_say_so(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    written: str | None,
 ) -> None:
     policy_of(monkeypatch, "select:\n  shards: 3\n")
     (tmp_path / "suite").write_text("\n".join(SUITE))
-    shards = approvals.shard_selections(SUITE, SUITE, 3, None, True)
-    keyed = [approvals.shard_command("run all", at, 3, items) for at, items in enumerate(shards, 1)]
-    assert len(set(keyed)) == 3  # one record per shard: R1's key is the tree and this command
-    assert len({approvals.record_name("tree", command) for command in keyed}) == 3
-    held = set(keyed[:2])
-    asked: list[str] = []
-
-    def record(head: str, words: list[str]) -> int:
-        asked.append(" ".join(words))
-        return 0 if " ".join(words) in held else 1
-
-    monkeypatch.setattr(approvals, "gate_record", record)
-    args = ["shards", "--suite", str(tmp_path / "suite"), "--passed", "h", "--command", "run all"]
-    assert approvals.main(args) == 1  # the third has no pass
-    assert asked == keyed
-    held.add(keyed[2])
-    assert approvals.main(args) == 0
+    durations = tmp_path / "dur"
+    if written is not None:
+        durations.write_text(written)
+    code = approvals.main(
+        ["shards", "--suite", str(tmp_path / "suite"), "--durations", str(durations)]
+    )
+    out = capsys.readouterr()
+    assert code == 0 and "even split by count" in out.err
+    assert sorted(len(shard) for shard in printed_from(out.out)) == [3, 3, 3]
 
 
-def test_one_shard_is_recorded_under_the_command_itself() -> None:
-    assert approvals.shard_command("run all", 1, 1, SUITE) == "run all"
+def printed_from(text: str) -> list[list[str]]:
+    shards: list[list[str]] = []
+    for line in text.splitlines():
+        if line.startswith("# shard"):
+            shards.append([])
+        elif line:
+            shards[-1].append(line)
+    return shards
+
+
+def test_more_shards_than_items_never_prints_an_empty_shard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert [] not in approvals.shard_selections(["a", "b"], ["a", "b"], 3, None, True)
+    policy_of(monkeypatch, "select:\n  shards: 5\n")
+    (tmp_path / "suite").write_text("a\nb\nc")
+    assert approvals.main(["shards", "--suite", str(tmp_path / "suite")]) == 0
+    out = capsys.readouterr()
+    assert [len(shard) for shard in printed_from(out.out)] == [1, 1, 1]
+    assert "5 shards asked, but 3 items" in out.err
+
+
+@pytest.mark.parametrize("flag", ["--passed", "--record"])
+def test_passed_and_record_need_the_command_they_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flag: str,
+) -> None:
+    policy_of(monkeypatch, "select:\n  shards: 2\n")
+    (tmp_path / "suite").write_text("\n".join(SUITE))
+    code = approvals.main(
+        ["shards", "--suite", str(tmp_path / "suite"), flag, "HEAD", "--shard", "1"]
+    )
+    assert code == 1 and "--command" in capsys.readouterr().out
+
+
+@pytest.fixture
+def clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """A clone with a commit and a bare origin, the real record functions, and a shard command that logs the items
+    it was given and fails while `fail` exists. `args(*more)` is the argv of a shards call over a six-item suite."""
+    monkeypatch.setattr(approvals, "record_ref", RECORD_REF)
+    monkeypatch.setattr(approvals, "push_record", PUSH_RECORD)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setenv("GATE_SLOTS", "off")
+    policy_of(monkeypatch, "select:\n  shards: 3\n")
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+    git_in(tmp_path, "init", "-q", "--bare", str(origin))
+    work.mkdir()
+    git_in(work, "init", "-q")
+    (work / "suite").write_text("\n".join(SUITE[:6]))
+    runner = tmp_path / "runner.py"
+    runner.write_text(
+        "import pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).open('a').write(' '.join(sys.argv[2:]) + '\\n')\n"
+        "sys.exit(1 if pathlib.Path(sys.argv[1]).with_suffix('.fail').exists() else 0)\n"
+    )
+    git_in(work, "add", "-A")
+    git_in(work, "-c", "user.name=l", "-c", "user.email=l@example.com", "commit", "-qm", "base")
+    git_in(work, "remote", "add", "origin", str(origin))
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    monkeypatch.chdir(work)
+    log = tmp_path / "ran.log"
+    command = f"{sys.executable} {runner} {log}"
+    head = git_in(work, "rev-parse", "HEAD").strip()
+    return {
+        "head": head,
+        "command": command,
+        "log": log,
+        "fail": log.with_suffix(".fail"),
+        "args": lambda *more: ["shards", "--suite", "suite", "--command", command, *more],
+    }
+
+
+def test_a_shard_pass_a_real_run_recorded_is_found_by_passed(
+    clone: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No stub on the record: `--record` runs shard i with its items and pushes R1's record; `--passed` reads those
+    branches back, and exits 0 only once every shard has one, naming the shard that has none."""
+    head, args = clone["head"], clone["args"]
+    for shard in (1, 3):
+        assert approvals.main(args("--record", head, "--shard", str(shard))) == 0
+    assert approvals.main(args("--passed", head)) == 1
+    assert "GATE_SHARD=2/3:" in capsys.readouterr().out
+    assert approvals.main(args("--record", head, "--shard", "2")) == 0
+    assert approvals.main(args("--passed", head)) == 0
+    ran = [set(line.split()) for line in clone["log"].read_text().splitlines()]
+    assert sorted(item for items in ran for item in items) == sorted(
+        SUITE[:6]
+    )  # each item ran once
+
+
+def test_a_failed_shard_records_nothing_and_a_head_that_is_not_checked_out_is_refused(
+    clone: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    head, args = clone["head"], clone["args"]
+    clone["fail"].touch()
+    assert approvals.main(args("--record", head, "--shard", "1")) == 1
+    clone["fail"].unlink()
+    assert approvals.main(args("--passed", head)) == 1  # shard 1 has no pass
+    capsys.readouterr()
+    assert approvals.main(args("--record", "0" * 40, "--shard", "1")) == 1
+    assert "another commit" in capsys.readouterr().out
+    assert approvals.main(args("--record", head, "--shard", "4")) == 1
+    assert "--shard 1 to 3" in capsys.readouterr().out
