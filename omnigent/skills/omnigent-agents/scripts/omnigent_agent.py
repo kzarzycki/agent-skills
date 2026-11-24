@@ -880,7 +880,9 @@ def _load_gatekeeper() -> Any:
             sys.modules.pop(spec.name, None)
             raise
         return module
-    except Exception:  # noqa: BLE001 - absent or broken: today's wording
+    # SystemExit too: gatekeeper.py exits on import where PyYAML is missing (a plain python3, or `uv run` outside
+    # a project that has it), which would end the start instead of falling back
+    except (Exception, SystemExit):  # noqa: BLE001 - absent or broken: today's wording
         return None
 
 
