@@ -6585,6 +6585,7 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     if named is None:
         return worst, False
     watched.update(base=base, pulls=list(named))
+    own_prs(named)
     # origin's policy now, not the clone's last fetch of it, so no draft is readied under a policy already replaced
     fetch = subprocess.run(
         ["git", "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
@@ -9006,6 +9007,30 @@ def agent_script() -> Path:
     return (
         found or Path(__file__).resolve().parents[2] / "omnigent-agents" / "scripts"
     ) / "omnigent_agent.py"
+
+
+def own_prs(pulls: Sequence[dict[str, Any]]) -> None:
+    """Start, detached, the omnigent-agents skill's `omnigent_agent.py own-pr <owner/name#N>` for each PR this land
+    names, so the merge queue's dequeue of it reaches this session when it is a followed lead that did not start the PR.
+    Best effort and never waited on: a host without the skill or without Omnigent, or a start that fails, is silent,
+    since the land is not about the session's labels."""
+    script = agent_script()
+    if not script.is_file():
+        return
+    for pull in pulls:
+        repo = (pull.get("baseRepository") or {}).get("nameWithOwner")
+        if not repo or not pull.get("number"):
+            continue
+        try:
+            subprocess.Popen(
+                [sys.executable, str(script), "own-pr", f"{repo}#{pull['number']}"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            return
 
 
 def archive_workers(number: int) -> None:

@@ -258,6 +258,20 @@ def _no_loop_events_read(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
         monkeypatch.setattr(module, "read_loop_events", lambda cwd=None: None)
 
 
+# The one module that runs land's `own-pr` start for real, against a fake script.
+STARTS_OWN_PR = {"test_approvals_own_prs"}
+
+
+@pytest.fixture(autouse=True)
+def _no_own_pr_start(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """land starts omnigent_agent.py `own-pr` for each PR it names (#2161): a test of land starts none."""
+    if request.module.__name__ in STARTS_OWN_PR:
+        return
+    from approvals_harness import approvals
+
+    monkeypatch.setattr(approvals, "own_prs", lambda pulls: None)
+
+
 @pytest.fixture(autouse=True)
 def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests run as if outside an Omnigent session; one that needs a session sets it."""
