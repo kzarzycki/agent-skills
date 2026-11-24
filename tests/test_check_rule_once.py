@@ -33,7 +33,11 @@ def text(name: str) -> str:
 def test_skill_states_rule_exceptions_and_rules_once():
     skill = text("SKILL.md")
     assert skill.count(f"#### {HEADING}") == 1
-    for phrase in ("**A check runs only if it can fail because of this change.**", *EXCEPTIONS, *RULES):
+    for phrase in (
+        "**A check runs only if it can fail because of this change.**",
+        *EXCEPTIONS,
+        *RULES,
+    ):
         assert skill.count(phrase) == 1, phrase
 
 
@@ -61,5 +65,7 @@ def test_flaky_tests_point_to_the_rule():
 def test_rule_names_no_language_or_runner():
     skill = text("SKILL.md")
     section = skill[skill.index(f"#### {HEADING}") : skill.index("**Merge model.**")]
-    found = re.findall(r"\b(?:pytest|python|npm|cargo|gradle|maven|jest|go test|mise)\b", section, re.IGNORECASE)
+    found = re.findall(
+        r"\b(?:pytest|python|npm|cargo|gradle|maven|jest|go test|mise)\b", section, re.IGNORECASE
+    )
     assert not found, found
