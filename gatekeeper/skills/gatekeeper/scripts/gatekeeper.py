@@ -9441,13 +9441,11 @@ def affected_tests(given: str | None = None) -> int:
 
 
 def shard_count() -> int:
-    """`select.shards` from loop.md: how many shards a whole-suite selection splits into; 1 when absent. A value
+    """`select.shards` from gatekeeper.md: how many shards a whole-suite selection splits into; 1 when absent. A value
     below 1 is refused, since there is no run with no shard."""
     count = settings(project()[1]).get("select", {}).get("shards", 1)
-    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-        raise Refused(
-            f"loop.md's select.shards must be a whole number of at least 1, not {count!r}"
-        )
+    if count < 1:  # the schema has refused a value that is no whole number
+        raise Refused(f"gatekeeper.md's select.shards must be at least 1, not {count}")
     return count
 
 
