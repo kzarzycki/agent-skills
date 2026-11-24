@@ -83,6 +83,7 @@ def test_a_closing_link_to_another_repos_issue_is_judged_as_no_issue_of_the_pr()
     the PR's own repo, so the sibling's #1, with no spec record, must not stand in for this repo's approved #1."""
     own = approved(1, "kind:bug")
     own["state"] = "OPEN"
+    own["repository"] = {"nameWithOwner": "KZARZYCKI/Scratch-Gate-Revert"}  # spelled either way
     other = issue(1, "kind:bug")
     other["state"] = "OPEN"
     other["repository"] = {"nameWithOwner": "Kzarzycki/Sibling"}
