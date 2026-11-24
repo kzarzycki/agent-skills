@@ -278,9 +278,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      queue's batch check tests the batch there, so a PR behind main lands without a merge. When
      you do merge it in, get a verifier pass on the merge (step 7), since `land` merges only a
      head with a verdict of its own; the PR's affected tests and the verifier's e2e proof run
-     again on the merge only if the merge changed what they cover, since a second run of the
-     same tests on the same code finds nothing new. A head with an earlier head's tree (`git rev-parse <sha>^{tree}`), as
-     after a reword of commit messages only, keeps that head's verdict (unsatisfied or with
+     again on the merge only if the merge changed what they cover (SKILL.md, A check runs only if it can fail because of the change). A head with an earlier head's tree (`git rev-parse <sha>^{tree}`), as
+     after a reword of commit messages only (same inputs, R1 in SKILL.md, A check runs only if it can fail because of the change), keeps that head's verdict (unsatisfied or with
      findings open, it stays so) and go with no new pass, since no file changed: `check merge`
      and `land` print `verdict on <old> carried: same tree <tree>`. When main's changes touch no file the PR changes and no merge check
      (a `check:` task, a tool it runs, or the lint, type or test configuration), that pass is

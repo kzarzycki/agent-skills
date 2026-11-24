@@ -132,8 +132,35 @@ jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) an
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) runs have no draft.
 
-**Merge model.** A PR's tests run once per tree, by the role that needs them, since a second run of the same
-tests on the same tree finds nothing new and costs minutes on every PR:
+#### A check runs only if it can fail because of the change
+
+**A check runs only if it can fail because of this change.** A check's result is known, so the check doesn't run, when both hold:
+
+- **Its inputs are identical to a run that passed.** The inputs are the files the check reads (at least the commit's tree; narrower where the project can tell which files a test executes); the check itself, its command and its test set; the base, where the check reads it (an affected-test selection diffs against the base; a merge-queue run tests a merge); and the dependencies and environment: lock files, toolchain pins, the variables gatekeeper.md's `local_ci_env` names, the runner's platform.
+- **It is deterministic:** the same inputs give the same result.
+
+A check can fail again on inputs that look identical when it reads something outside them. Each of these breaks the "known" claim, and the rule says what happens instead:
+
+- **The base moved and the check reads it.** The inputs changed, so the check is not known; it runs on what the base's new commits can reach (R6), not in full.
+- **Flaky or time-dependent tests** (timeouts under load, the clock, test order). A pass on identical inputs is still reused, since running it again only adds a chance of a red that says nothing about the change. A red is retried once, failed tests only (Rules for every role, Flaky tests).
+- **Environment-dependent checks** (a host's load, an installed tool that no pin covers). The project either adds the input to the key (`local_ci_env`, a pin) or lists the check as unkeyed.
+- **Secrets and network** (a live service, a credential that expires or rotates). Their result depends on the outside world, so a check that reads them is unkeyed: it runs every time its step requires it, and its pass is never reused.
+
+The rule is stated in inputs and results only, so it needs no language or tool. What a project knows about its own checks goes in gatekeeper.md: which files are build inputs (`select.build_inputs` and `checks`), which environment names a check reads (`local_ci_env`), and which checks are unkeyed (`select.unkeyed`).
+
+When the loop can't tell whether a check's inputs changed, it treats them as changed, with one exception: an affected-test selector that can't tell which tests a change touches runs nothing and says so, and the nightly's full run covers that case.
+
+Each derived rule follows from the one above.
+
+- **R1. Once per tree.** No test set runs again on a tree it passed on, or on a tree whose difference from it the test set can't read. A pass is a gatekeeper record keyed by tree and command, run in the environment `local_ci_env` fixes (`local-ci --record`, `gate-record`), never a log or status someone wrote. Where: worker (push hook and affected-test run are one run), PR CI on ready, a merge of the base or a reword that changes nothing the tests read, the queue, the verifier, the push run on main after the queue tested that tree.
+- **R2. Scope by what the change touches.** A diff that cannot reach the product (agentic layer, skills, docs, CI config outside the gating job) runs no product suite; it runs the checks of the layer it touches (the `checks` entries of `select`). An unclassified file counts as a build input. Where: worker, PR CI, queue, the verifier's pass on an instructions change.
+- **R3. Affected tests only, selected by what a test executes.** The selector picks tests whose executed files or functions changed, from a per-test map the nightly builds; name matching is the fallback where there is no map. It diffs against the right base (the merge commit's first parent on a PR run). Where: worker, queue, nightly-built map.
+- **R4. A fix round runs only what the round's diff reaches.** A test or proof that passed on the previous head and whose inputs the round didn't change is known. The selection for a fix round diffs against the last head its run passed on, not the PR's base. Where: worker fix rounds, the lead's stale-proof check before a pass, the verifier's later passes (acceptance checks and repros the delta reaches, plus every repro still `NOT FIXED`).
+- **R5. A red run reruns only what failed, and only once the cause is fixed or shown unrelated.** Fixed: the failed tests plus what the fix reaches (R4). Shown unrelated (a test the change can't reach, a known flake with its `Flaky:` issue, an infrastructure fault): the failed tests alone, once. Never the whole set again on the same head, and never before the cause is known. Where: CI job reruns, the merge queue's red entry, `land`, the verifier, the flaky retry.
+- **R6. The merge queue runs only the cross-change check.** A test that only the PR's diff reaches passed on the PR's head with the same inputs; a test only the base's new commits reach is the base's, not this PR's. The queue runs the tests that the PR's diff and the rest of the merge (the base's commits since the PR's tested base, the other PRs in the group) both reach. Without a per-test map it falls back to the batch's affected tests. Where: GitHub's and Mergify's queue batch check. The local queue runs no test today and stays so.
+- **R7. After the merge, only a tree nobody tested runs.** The push run on main skips a commit whose tree the queue already tested; the nightly runs only when main moved since its last green, and then runs the full suite, which stays the guard against what the selector misses. Where: step 9's read of main's push run, the nightly.
+
+**Merge model.** Each role runs its tests under the rule above (A check runs only if it can fail because of the change):
 
 - The worker runs only the tests the PR affects, on each head it pushes, never the whole suite and never a gate
   of record, and writes the e2e tests that prove the change (worker.md, Gates and push).
@@ -895,7 +922,7 @@ or the owner's private network.
   even different calls, mean stop and report yourself blocked with the error line. That
   includes a permission classifier that fails closed because its provider is down: every
   retry is a full-context turn.
-- **Flaky tests.** A project's test task retries a failed test once, with its runner's own
+- **Flaky tests.** The rule's exception for flaky tests (A check runs only if it can fail because of the change). A project's test task retries a failed test once, with its runner's own
   retry option, and prints each test that passed only on the retry; the run is then green.
   Without one, rerun only the failed tests once, never the whole run, whose minutes each
   flake would otherwise cost again; all green, the run is green, and the report gives each
