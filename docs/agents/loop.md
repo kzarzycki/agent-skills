@@ -32,7 +32,7 @@ gatekeeper.md).
 
 `land` hands PRs to the Mergify merge queue (`land.queue: mergify` in gatekeeper.md, `.mergify.yml`): it posts the `land` status and adds `loop:queued` on each landable PR's head and exits, and Mergify tests each batch of up to 3 as a draft PR from `mergify/merge-queue/` into main, where `qualify` runs `test-batch`, the tests the batch's combined diff touches, retries a red batch once, splits a batch still red until only the failing PR leaves, and squash-merges the rest on green. A PR head's `qualify` runs only `check-fast` (vendor check, lint, the `.mergify.yml` template drift check), so each tree's tests run once, on its batch. A PR it drops gets `loop:dequeued`, and the next `land` turns it back to draft. No host runs a landing gate.
 
-The `gate` line, `check-land` (the vendor check and lint, no tests, since the tests run on the Mergify batch), is `land`'s batch gate only where it lands without a queue: with the Mergify queue set no landing runs it, and it stays the merge check `local-ci` runs. The nightly run covers the rest.
+The `gate` line, `check-fast` (the vendor check, lint and the `.mergify.yml` drift check, no tests, since the tests run on the Mergify batch), is the command the worker's final-head `local-ci --record` runs and a PR head's `qualify` reads by tree; it is `land`'s batch gate only where it lands without a queue: with the Mergify queue set no landing runs it, and it stays the merge check `local-ci` runs. The nightly run covers the rest.
 
 ## Cloud worker
 
