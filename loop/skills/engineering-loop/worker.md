@@ -30,7 +30,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
-2. **Gates and push.** Iterate on the narrowest check that covers the change: an incremental build of the touched
+2. **Gates and push.** A check runs only if it can fail because of the change (SKILL.md, A check runs only if it can fail because of the change): run nothing whose result a passed run on the same inputs already gives. Iterate on the narrowest check that covers the change: an incremental build of the touched
    target, then the tests of the module you changed, since a whole-suite run can take twenty minutes to show a compile
    error a build shows in one. The run you report is the tests the PR affects, on every head you push, a fix
    round's too, and never the whole suite: where loop.md has an `Affected tests:` line, `uv run
