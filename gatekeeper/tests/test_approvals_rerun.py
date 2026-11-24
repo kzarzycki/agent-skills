@@ -359,16 +359,18 @@ def test_check_rerun_needs_a_pr(gating: Gate, capsys: pytest.CaptureFixture[str]
 def test_a_rerun_with_no_push_keeps_its_record_as_a_local_branch_and_names_it(
     repo: dict[str, Any],
     refs: dict[str, dict[str, Any]],
+    hub: dict[str, list[dict[str, Any]]],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """For a CI job whose token can't write: nothing is pushed, and the line names the branch and its commit, which
+    """For a CI job whose token can't write: nothing is pushed, no status is written, and the line names the branch and its commit, which
     holds the head's tree, its one parent the head."""
     monkeypatch.delenv(approvals.RERUN_VAR, raising=False)
     repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
     capsys.readouterr()
     assert approvals.main(["local-ci", "--record", "--rerun", "--no-push"]) == 0
     assert refs == {}
+    assert hub == {}
     [kept] = [
         line for line in capsys.readouterr().out.splitlines() if line.startswith(approvals.KEPT)
     ]
