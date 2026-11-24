@@ -9,7 +9,6 @@ engineering's dependencies on the packages split out of it."""
 
 import runpy
 import sys
-from pathlib import Path
 
 # a forwarder, never a module: an import that found it took the wrong folder
 if __name__ != "__main__":
@@ -25,4 +24,6 @@ print(
 )
 # as if the target ran itself, so no forwarder beside this one is importable
 sys.path[0] = str(target.parent)
+# the target loads its own `_installed`, not this folder's
+sys.modules.pop("_installed", None)
 runpy.run_path(str(target), run_name="__main__")

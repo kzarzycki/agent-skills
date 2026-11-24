@@ -61,7 +61,9 @@ def installed(skill: str) -> Path:
     ]:
         if (folder / "SKILL.md").is_file() and not (folder.parents[1] / ".orphaned_at").exists():
             return folder / "scripts"
-    sys.exit(f"{Path(sys.argv[0]).name} needs the `{skill}` skill: install the package that ships it")
+    sys.exit(
+        f"{Path(sys.argv[0]).name} needs the `{skill}` skill: install the package that ships it"
+    )
 
 
 _OA = installed("omnigent-agents") / "omnigent_agent.py"

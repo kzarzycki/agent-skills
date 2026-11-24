@@ -279,6 +279,8 @@ def native_plugin_apm(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return tools / "bin"
 
 
+@pytest.mark.slow
+@pytest.mark.timeout(300)
 @pytest.mark.needs_tool("uv")
 def test_the_deployed_loop_scripts_find_gatekeeper_when_apm_installs_it_as_a_plugin(
     tmp_path: Path, native_plugin_apm: Path

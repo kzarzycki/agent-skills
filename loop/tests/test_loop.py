@@ -64,7 +64,9 @@ def test_a_missing_skill_is_named(tmp_path: Path) -> None:
     folder.mkdir(parents=True)
     script = folder / "loop.py"
     script.write_text(loop.Path(loop.__file__).read_text())
-    (folder / "_installed.py").write_text((loop.Path(loop.__file__).parent / "_installed.py").read_text())
+    (folder / "_installed.py").write_text(
+        (loop.Path(loop.__file__).parent / "_installed.py").read_text()
+    )
     import subprocess
 
     run = subprocess.run(

@@ -127,6 +127,7 @@ def slot_path(name: str = SHORT) -> str:
     """The short lane's lock file (a heavy slot is approvals.take_slot's to pick)."""
     return approvals().slot_file(name)
 
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _installed import installed
 
