@@ -30,7 +30,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
-2. **Gates and push.** A check runs only if it can fail because of the change (SKILL.md, A check runs only if it can fail because of the change): run nothing whose result a passed run on the same inputs already gives. Iterate on the narrowest check that covers the change: an incremental build of the touched
+2. **Gates and push.** A check runs only if it can fail because of the change (SKILL.md, A check runs only if it can fail because of the change): run nothing whose result a passed run on the same inputs already gives, and the push hook's run is the run you report: don't run the affected tests a second time beside it, since the hook runs the same selection on the same head. Iterate on the narrowest check that covers the change: an incremental build of the touched
    target, then the tests of the module you changed, since a whole-suite run can take twenty minutes to show a compile
    error a build shows in one. The run you report is the tests the PR affects, on every head you push, and
    never the whole suite. A fix round selects against the last head its run passed on, not the PR's base
@@ -40,9 +40,9 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    HEAD` on a first push (the base of the branch's open PR, else the default branch; a shallow clone is deepened) in the variable
    `Gate base:` names (else `GATE_BASE`), under the host gate slot; without the line, `mise run test:changed`. A
    selector that can't tell which tests a change touches runs nothing and says so: report that line as it is, and
-   never fall back to the whole suite. You run no gate of record, no full `mise run check` and no `local-ci`, with
-   `ci: false` too: no gate runs on the PR before it merges, and the nightly runs the full suite (SKILL.md, Merge
-   model). Lint runs at commit, in the hook's `lint:` tasks on the staged files.
+   never fall back to the whole suite. You run no full `mise run check`, and no gate of record but the one
+   `local-ci --record` on your final head (Report), with `ci: false` too: no other gate runs on the PR before it
+   merges, and the nightly runs the full suite (SKILL.md, Merge model). Lint runs at commit, in the hook's `lint:` tasks on the staged files.
    Write the e2e tests that prove the change works, in the PR, and name them in the report: the verifier proves
    the change with those tests and runs no suite of its own, so a behaviour no e2e test of yours reaches is one
    nothing runs before the merge. Where the project has no e2e tier, the acceptance checks of step 1 are those tests.
@@ -90,8 +90,14 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    That SHA is the whole provenance: a checksum manifest or digest exchange adds nothing a
    commit does not already pin. A fix that changes code a proof exercises reruns that proof
    before the report, which lists each proof log with the SHA it names.
-   Run the acceptance command on the head (SKILL.md, Acceptance checks) into a log stamped
-   that way and hand it over as the spec's proof. Just before the report, run `git status
+   On the final head, run `approvals.py local-ci --record` once (`--record --head-proof` where loop.md configures a
+   head proof, which covers the PR's acceptance classes): it runs the gate and pushes its pass as a record keyed by
+   tree and command, which a ready PR's CI and the verifier read, so neither runs it again on this tree (SKILL.md, A
+   check runs only if it can fail because of the change, R1). Your affected-test run on that final head is
+   `approvals.py affected-tests --record`, your one recorded test run: it pushes its pass the same way, keyed by the
+   tree and the narrowed command, which the merge queue's batch floor reads to leave this PR's own tests out (R6,
+   #2178); a run that fails or can't tell records nothing. Run the acceptance command on the head (SKILL.md,
+   Acceptance checks) once, into a log stamped that way, and hand it over as the spec's proof. Just before the report, run `git status
    --porcelain` and commit or remove what it lists, and the report carries the line `git status
    --porcelain: empty`, since the verifier may review in that tree and an uncommitted check
    proves nothing on the head.
