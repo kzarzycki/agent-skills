@@ -28,7 +28,10 @@ ENVS = [
 
 @pytest.fixture
 def og(monkeypatch: pytest.MonkeyPatch) -> FakeOmnigent:
-    fake = FakeOmnigent()
+    class Hosted(FakeOmnigent):
+        host = omnigent_agent.Omnigent.host  # the real lookup, over the hosts the fake lists
+
+    fake = Hosted()
     fake.harnesses = {"claude-cloud": "acp:claude-cloud"}
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: fake)
     monkeypatch.setattr(omnigent_agent, "cloud_environments", lambda: list(ENVS))

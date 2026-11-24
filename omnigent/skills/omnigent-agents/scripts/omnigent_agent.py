@@ -3682,7 +3682,24 @@ def refuse_shadowed_pin(workspace: Path, env: str, main: Path | None) -> None:
         )
 
 
-def pin_environment(workspace: Path) -> None:
+def cloud_env_id(name: str) -> str:
+    """The id of the environment called ``name`` on this host's claude login, for ``start --cloud-env``; a name
+    not there is a ``Fail`` listing the names that are, since a ``-code-mode`` variant is made apart."""
+    envs = cloud_environments()
+    try:
+        hit = ENVS.named(envs, name)
+    except ENVS.Refused as e:
+        raise Fail(f"--cloud-env {name}: {e}") from None
+    if hit:
+        return str(hit["environment_id"])
+    names = ", ".join(sorted({str(e.get("name")) for e in envs if e.get("name")})) or "none"
+    raise Fail(
+        f"--cloud-env {name}: no cloud environment named {name!r} on this host's claude login (it has: {names});"
+        " `claude-code-mode --cloud-env <base>` makes an environment's <base>-code-mode variant"
+    )
+
+
+def pin_environment(workspace: Path, cloud_env: str = "") -> None:
     """Make sure a cloud session started in ``workspace`` gets the repo's claude.ai environment: it
     takes ``remote.defaultEnvironmentId`` from the workspace's untracked settings file, which a new
     worktree lacks, and without it lands in the account's default environment. The environment the
@@ -3690,9 +3707,26 @@ def pin_environment(workspace: Path) -> None:
     and pinned, replacing another pin. With no name, a pin already there stays; a worktree missing
     one takes its main checkout's; with neither, the environment named after the repository, else
     the account's ``Default``, is pinned. With none of them, fail before any session exists, as with
-    a pin that the worktree's main checkout's shadows."""
+    a pin that the worktree's main checkout's shadows.
+
+    ``cloud_env`` (``start --cloud-env``) names the environment instead, and the workspace must already
+    pin it: the bridge reads the pin each time it creates the session's cloud session (on the first
+    prompt, and again on a later message after a failed setup or an unstarted stall), so a pin written
+    for one start and put back could be read back by that session in the project's environment. A launch
+    dir of its own holds it for good; any other workspace is refused, naming ``launch-dir``."""
     own = own_settings(workspace)
     main = main_worktree(workspace)  # no checkout: no main to copy from
+    if cloud_env:
+        env = cloud_env_id(cloud_env)
+        if (pinned := environment_pin(own)) != env:
+            raise Fail(
+                f"--cloud-env {cloud_env}: {workspace / SETTINGS} pins {pinned or 'no environment'}, not"
+                f" {cloud_env} ({env}), and a cloud session rereads its workspace's pin whenever its cloud"
+                f" session is made again: make a launch dir of its own, `launch-dir <remote> <branch> {env} <path>`,"
+                " and start with --workspace <path>"
+            )
+        refuse_shadowed_pin(workspace, env, main)
+        return
     line = cloud_worker(project_loop(workspace))
     named = line.env if line else ""
     if named:
@@ -11371,6 +11405,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             help="the child's workspace (default: this directory); the report must be inside it",
         )
         p.add_argument(
+            "--cloud-env",
+            default="",
+            metavar="NAME",
+            help="a claude-cloud start's environment, by its name on this host's claude login, in place of the"
+            " project's; the workspace must be a launch dir pinned to it (`launch-dir <remote> <branch> <env-id>"
+            " <path>`)",
+        )
+        p.add_argument(
             "--host",
             help="with --top-level, the Omnigent host (name or id) to start the lead, the --pr"
             " cloud worker, or a verifier (one loop.md's Placement: hosts: line lists) on; without"
@@ -12226,10 +12268,20 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 raise Fail(
                     f"--host {args.host} is no verifier host loop.md lists: {', '.join(allowed)}"
                 )
+        if args.cmd in ("run", "start") and args.cloud_env:
+            if args.agent in AGENTS or og.harness(args.agent) != CLOUD_HARNESS:
+                raise Fail(
+                    f"--cloud-env: {args.agent} is not a cloud agent; it names a claude-cloud start's environment"
+                )
+            if args.host and og.host(args.host) != og.host_id:
+                raise Fail(
+                    f"--cloud-env: the launch dir's pin is read on this host, not on {args.host}: drop --host"
+                )
         if (
             args.cmd in ("run", "start")
             and not args.host
             and not args.top_level
+            and not args.cloud_env  # ponytail: its launch dir is here; another host's isn't checked
             and args.agent not in AGENTS
             and og.harness(args.agent) == CLOUD_HARNESS
             and (args.workspace is None or args.workspace.is_absolute())
@@ -12402,7 +12454,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             refuse_unfit_cloud_host(og, host, workspace)
         # The aliases are native harnesses.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
-            pin_environment(workspace)
+            pin_environment(workspace, args.cloud_env)
             refuse_untrusted_launch_dir(workspace)
             if args.pr:
                 named = getattr(args.pr, "repo", "")
