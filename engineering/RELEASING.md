@@ -25,7 +25,9 @@ with no agent:
    `release-check <package> <tag>` for each, and pushes them all in one push. `release-check` passes a commit that
    releases several packages when every manifest the commit changes is tagged on it, and refuses one that changes
    a manifest it doesn't tag. Each `engineering-v*` tag starts the tag check, which re-qualifies the release and
-   opens the consumer-sync PR.
+   opens the consumer-sync PR. It skips `test` and `test-slow` when a green nightly already ran the tagged commit,
+   since the nightly's `mise run check` runs those two (#2264); the release check, the vendor check and the package
+   gate run on every tag.
 
 The workflow pushes with the `RELEASE_TOKEN` secret, a token that can push branches and tags and open PRs here: a
 PR or tag pushed with the workflow's own token starts no workflow, so neither the PR's `qualify` nor the tag check
