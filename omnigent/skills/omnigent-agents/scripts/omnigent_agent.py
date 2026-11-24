@@ -5099,7 +5099,8 @@ def start(
                 f"create failed ({error}); briefing session {found}, made anyway", file=sys.stderr
             )
             sid = found
-        if registered:  # the moment the session is known: the calls below can each take HTTP_SECONDS
+        if registered:
+            # the moment the session is known: the calls below can each take HTTP_SECONDS
             registered(sid, True)
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
