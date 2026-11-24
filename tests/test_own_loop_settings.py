@@ -67,3 +67,16 @@ def test_hook_script_the_settings_name_is_tracked() -> None:
     assert ignored.returncode == 1, (
         ".claude/hooks/ is git-ignored: a later hook would miss a fresh checkout"
     )
+
+
+def test_every_plugin_has_a_component() -> None:
+    """`check build` refuses an issue with no listed `area:` label, so a plugin missing from `components` blocks
+    every issue that touches only it (#2185)."""
+    spec = importlib.util.spec_from_file_location("approvals_components", COPIES["shipped"])
+    assert spec and spec.loader
+    approvals = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(approvals)
+    tracker = (REPOSITORY / "docs/agents/issue-tracker.md").read_text()
+    components = {name.removeprefix("area:") for name in approvals.label_names(tracker)["component"]}
+    plugins = {path.parent.parent.name for path in REPOSITORY.glob("*/.claude-plugin/plugin.json")}
+    assert plugins <= components, f"no component for: {sorted(plugins - components)}"
