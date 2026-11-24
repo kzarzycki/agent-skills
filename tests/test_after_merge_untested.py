@@ -139,7 +139,11 @@ def test_push_asks_only_for_successful_runs_and_reads_the_next_page():
     def api(path: str):
         asked.append(path)
         if "/runs?" in path:
-            return runs(*full) if "page=1" in path else runs(run("mergify/merge-queue/x", BATCH, 7))
+            return (
+                runs(*full)
+                if path.endswith("&page=1")
+                else runs(run("mergify/merge-queue/x", BATCH, 7))
+            )
         return base(path)
 
     assert tested_tree.tested_by_batch(api, "o/r", "ci.yml", MAIN)["id"] == 7
