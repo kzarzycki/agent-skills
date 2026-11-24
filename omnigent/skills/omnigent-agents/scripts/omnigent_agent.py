@@ -161,7 +161,7 @@ one; a new or changed item raises ``[owner]``), for a lead marked ``direct`` not
 that lost its runner, which the owner can't see in its session; ``--fyi post`` posts every line as without it too,
 ``--decisions`` names the owner's standing decisions for the small model. The chief of staff's console (not a manager's) also
 follows each live top-level session labelled ``omni.role=lead`` that no registry holds (none beside its own, nor a ``leads=``
-one), with a ``follow`` line and one ``adopted`` event, unless a followed lead created it, so a lead started with no
+one), with a ``follow`` line and one ``adopted`` event, unless a followed lead created it or it is under ``ADOPT_GRACE_SECONDS`` old (its launcher may still be writing its registry line), so a lead started with no
 registry is supervised all the same. Without it, it writes none of these and posts every line.
 A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
 a user service running that same command line less ``--install`` and ``--log`` (a systemd user unit
@@ -356,6 +356,8 @@ TURN_END_SECONDS = 30.0
 PROMPT_CONFIRM_SECONDS = 120.0
 # how long one listing of every session serves ``Omnigent.creations``: well inside the prompt's hold
 CREATED_SECONDS = 30.0
+# A session younger than this is not adopted: its launcher may still be writing it to its own supervisor's registry (#2313).
+ADOPT_GRACE_SECONDS = 60.0
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
 # A loaded server times out reads the child never noticed; a GET is retried after each of these.
 RETRY_SECONDS = (2.0, 5.0, 15.0, 30.0, 60.0)  # a GET outlasts a server restart
@@ -7661,8 +7663,9 @@ def offline(og: Omnigent, sid: str, path: Path) -> Fail:
 
 def apply_route(args: argparse.Namespace) -> None:
     """Point a verifier start at its fallback route, the one switch: `gemini` runs agy's Gemini (bypass mode, which
-    agy needs to run unattended) and `claude` a fresh Claude session of another model than the author's, marked
-    same-family. Refused where the route can't run, naming the fix, since a verifier started wrong costs a pass."""
+    agy needs to run unattended) and `claude` a fresh Claude session of any model, the author's own included, marked
+    same-family: a fresh session given only the code and the spec is what makes a verifier independent. Refused where
+    the route can't run, naming the fix, since a verifier started wrong costs a pass."""
     if args.verifier_route == "gemini":
         if not args.host:
             raise Fail(
@@ -7673,16 +7676,6 @@ def apply_route(args: argparse.Namespace) -> None:
         return
     args.agent = "claude"
     args.same_family = True
-    if not args.model or not args.author_model:
-        raise Fail(
-            "--verifier-route claude names its model and the author's: pass --model and"
-            " --author-model, which differ"
-        )
-    if args.model == args.author_model:
-        raise Fail(
-            f"--verifier-route claude would verify {args.author_model}'s diff with the same model:"
-            " pass a different --model"
-        )
 
 
 def reviews(role: str | None) -> bool:
@@ -8293,6 +8286,16 @@ def lead_status(info: dict, items: list[dict]) -> dict:
     }
 
 
+def done_result(text: str) -> str:
+    """What the first ``DONE`` line of ``text`` says after the word, less a ``Report:`` path and punctuation: empty for a
+    bare ``DONE``, which reports no result (#2309)."""
+    m = next((m for m in STILL_OR_ENDING.finditer(text) if m.group(1) == "DONE"), None)
+    if not m:
+        return ""
+    rest = text[m.end() :].partition("\n")[0]
+    return re.sub(r"\bReport:.*", "", rest, flags=re.IGNORECASE).strip(" \t:.-*_`")
+
+
 def ending_of(text: str) -> str | None:
     """The ending a message names: ``USER NEEDED`` when any line opens with it, since an ask
     after a ``DONE`` line still needs its answer; else the first line that opens with an ending word, so a
@@ -8824,6 +8827,13 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if not event.get("parked"):
             return "rule", "act", "ended PARKED with no park message before it"
         return "rule", "record", "parked: waits on host capacity"
+    if ending == "DONE" and event.get("coordinator") and not done_result(text):
+        # a manager's turn that says nothing and closes on a bare DONE has no result to deliver (#2309)
+        return (
+            "rule",
+            "done",
+            "a coordinator's DONE with no result on its line: told only to its waiters",
+        )
     if ending == "DONE":
         if event.get("relayed"):  # it sent its result to the notified session itself (#2090)
             return (
@@ -9332,6 +9342,9 @@ def supervise_registry(
             > RETRY_CAP_SECONDS,
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
+            "coordinator": bool(
+                lead.get("leads")
+            ),  # it follows leads of its own: a manager (#2309)
             "parked": parked_before(og, sid, items, said[-1] if said else None),
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
@@ -9343,6 +9356,13 @@ def supervise_registry(
             # taking it (#2090)
             "relayed": bool(info.get("archived")) or relayed_to(items, notify, last),
         }
+
+        # a coordinator's turn with nothing on its DONE line (#2309): its notified session is not woken for it
+        quiet = bool(
+            event["coordinator"]
+            and ending_of(parsed or "") == "DONE"
+            and not done_result(parsed or "")
+        )
 
         def ask() -> tuple[str, str]:
             if eid in answers:  # asked before a later write failed: the call is spent
@@ -9410,7 +9430,7 @@ def supervise_registry(
         elif action == "relay":  # a dequeue to its PR's lead, which ``relay`` unarchives first
             act_on(eid, [(sid, "dequeued", f"Supervisor: {line}")])
         elif action in ("act", "owner") or (
-            action == "done" and not event["direct"] and not event["relayed"]
+            action == "done" and not event["direct"] and not event["relayed"] and not quiet
         ):
             item = line if kind in ("loop-owner", "dequeued") else line.splitlines()[0]
             if asked := question_for(lead_ev, parsed):
@@ -9425,12 +9445,14 @@ def supervise_registry(
             for parked in state["leads"].values():
                 if (parked.get("retrying") or {}).get("limit"):
                     parked.pop("retrying")
-        if action == "done":
+        if (
+            action == "done"
+        ):  # ``quiet``: only its waiters are told, and it is no end of a followed session
             result = LEAD_TOLD.format(lead=head, line=lead.get("last_line") or "")
             waiters = [other for other, owes in owed.items() if owes[4] == sid]
             act_on(eid, [(other, "tell", result) for other in waiters])
             # a followed lead is taken once its follower is told
-            if waiters and not event["direct"]:
+            if waiters and not event["direct"] and not quiet:
                 finish_relayed(sid)
         logged_line = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind}
         logged_line.update(line=line, settled=by, action=action, why=why)
@@ -10888,6 +10910,9 @@ def supervise_registry(
                 or og.info(sid).get("archived")  # the listing may be 30 s old
             ):
                 continue
+            made = float(row.get("created_at") or og.info(sid).get("created_at") or 0)
+            if made and time.time() - made < ADOPT_GRACE_SECONDS:
+                continue  # its launcher may not have written its registry line yet: a later poll adopts it (#2313)
             # ponytail: the lead's real report is unknown; follow reads none, and a path in its workspace costs nothing.
             # Upgrade: read it from the lead's brief (its preamble names the report path) if a followed lead ever owes one.
             arm(registry, sid, Path(f"tmp/loop/{sid}.report.md"), followed=True)
@@ -11447,12 +11472,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             default=None,
             help="which verifier a verifier start runs (default: $OMNIGENT_VERIFIER_ROUTE, else codex): codex is the"
             " agent as named; gemini replaces it with agy's Gemini (experimental, needs --host on a host with agy"
-            " logged in); claude with a fresh Claude session of another model than --author-model (same-family)."
+            " logged in); claude with a fresh Claude session of any --model (same-family)."
             " The two fallbacks are for a Codex refusal",
         )
         p.add_argument(
             "--author-model",
-            help="the model that wrote the diff: --verifier-route claude refuses to verify it with the same one",
+            help="the model that wrote the diff; not checked, since --verifier-route claude verifies with any --model",
         )
         p.add_argument(
             "--same-family",

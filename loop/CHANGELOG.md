@@ -5,6 +5,19 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.8 - 2026-11-24
+
+- loop: `scripts/nightly.py moved push|schedule|tag` is the R7 check a project's CI calls to skip a tree a merge queue's batch run tested, or a head the last green nightly ran; `push` reads the batches of the policy's `land.queue` (`mergify` or `github`, whose batch runs are `merge_group` events), so a consumer no longer copies the script and `tag` skips the tag check's suites when a green nightly ran the tagged commit (#2261, #2264).
+- engineering-loop: R5 names no runner in its rerun-did-not-run case ("a task the head lacks") (#2301).
+
+## 0.1.7 - 2026-11-24
+
+- engineering-loop: lead.md's `claude` verifier route no longer asks for a `--model` other than the author's (#2297).
+
+## 0.1.6 - 2026-11-24
+
+- engineering-loop: R6 names the pack's `approvals.py queue-select [<base>]` as what a queue's batch check runs: the commands it prints for the batch at HEAD, one per line, each to pass (#2279).
+
 ## 0.1.5 - 2026-11-24
 
 - loop: R6 states what the merge queue runs: the `select.unkeyed` checks and the cross-change tests, plus the affected tests of a PR with no record of the `Affected tests:` command for its tree (the floor), a refusal when a merge would have neither (the batch check, and the local queue's `land` on a head with no pass record), the fallback to the entry's affected tests without a per-test map, and batching from gatekeeper.md's `land` block (#2178). worker.md names the worker's final-head `affected-tests --record` as its one recorded test run, which the floor reads (#2178).

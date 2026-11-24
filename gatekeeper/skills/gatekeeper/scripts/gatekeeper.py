@@ -10141,6 +10141,8 @@ def did_not_run(why: str) -> None:
 def missing_task(text: str) -> str | None:
     """The task a `mise run <task>` selection in loop.md's `text` names that mise doesn't define here, else None: mise
     exits 1 for an unknown task, as a red test does, so after a red exit `mise tasks info` tells the two apart."""
+    # ponytail: only a `mise run` line is checked; another runner's missing task reads as red again, which R5's
+    # "a task the head lacks" covers too. Upgrade: ask that runner for its tasks (#2305).
     written = narrowing(text)
     words = command_line(written, "Affected tests")[1] if written else [*LOCAL_CI[:-1], "check"]
     if words[:2] != ["mise", "run"] or len(words) < 3:
