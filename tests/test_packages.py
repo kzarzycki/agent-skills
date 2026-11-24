@@ -352,3 +352,18 @@ def test_a_forwarded_script_loads_its_own_packages_resolver(forwarder: str, tmp_
         check=False,
     )
     assert done.stdout.strip() == "target", done.stderr
+
+
+@pytest.mark.parametrize("package", ["loop", "engineering"])
+def test_every_forwarder_drops_its_resolver_before_running_its_target(package: str) -> None:
+    """The behaviour is pinned in the test above for one forwarder; the lines are the same in all of them."""
+    scripts = REPOSITORY / package / "skills" / "engineering-loop" / "scripts"
+    forwarders = [
+        path for path in sorted(scripts.glob("*.py")) if "runpy.run_path" in path.read_text()
+    ]
+    assert forwarders
+    for path in forwarders:
+        text = path.read_text()
+        assert (
+            0 <= text.find('sys.modules.pop("_installed", None)') < text.find("runpy.run_path(")
+        ), path.name
