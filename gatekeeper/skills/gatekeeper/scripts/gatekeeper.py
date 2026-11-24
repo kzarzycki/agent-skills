@@ -24,6 +24,7 @@
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
     uv run scripts/approvals.py affected-tests [--base <rev>]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`
+    uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> --command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; with --passed, whether each shard has a pass on <head>'s tree
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
@@ -921,7 +922,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
     },
     "mutate": {"inconclusive_exit": int},
     # the checks whose pass is never reused (unkeyed): each a gate step's name or command, or `gate`'s command
-    "select": {"unkeyed": list},
+    # `shards`: how many shards a whole-suite selection splits into (shard_selections), optional, 1 or absent is one
+    "select": {"unkeyed": list, "shards": int},
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
     "risk": {
@@ -9438,6 +9440,98 @@ def affected_tests(given: str | None = None) -> int:
         raise Refused(f"`{words[0]}` can't run: {exc}") from None
 
 
+def shard_count() -> int:
+    """`select.shards` from loop.md: how many shards a whole-suite selection splits into; 1 when absent. A value
+    below 1 is refused, since there is no run with no shard."""
+    count = settings(project()[1]).get("select", {}).get("shards", 1)
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise Refused(
+            f"loop.md's select.shards must be a whole number of at least 1, not {count!r}"
+        )
+    return count
+
+
+def shard_selections(
+    selection: list[str],
+    suite: list[str],
+    count: int,
+    durations: dict[str, float] | None = None,
+    whole: bool = False,
+) -> list[list[str]]:
+    """`selection` (items of `suite`, one test target each) as `count` disjoint shards whose union is the selection,
+    balanced by `durations` (seconds per item, from the last full run): each item, longest first, goes to the
+    shard with the least time so far; an item with no recorded duration counts as the mean of the recorded ones (all
+    equal, so an even split by count, with none recorded), so it still lands in exactly one shard. Only a whole-suite
+    selection splits: `whole` (a build input changed, or the nightly) or one over half of `suite`; a narrow selection,
+    `count` 1 or less, or an empty one is returned as the one selection, unchanged. Each shard keeps the selection's
+    order."""
+    chosen = list(dict.fromkeys(selection))
+    if count <= 1 or not chosen or not (whole or len(chosen) * 2 > len(set(suite))):
+        return [selection]
+    known = {item: durations[item] for item in chosen if durations and item in durations}
+    fallback = sum(known.values()) / len(known) if known else 1.0
+    load, shards = [0.0] * count, [[] for _ in range(count)]
+    order = sorted(range(len(chosen)), key=lambda i: (-known.get(chosen[i], fallback), i))
+    for at in order:
+        lightest = min(range(count), key=lambda shard: (load[shard], shard))
+        shards[lightest].append(at)
+        load[lightest] += known.get(chosen[at], fallback)
+    return [[chosen[at] for at in sorted(held)] for held in shards]
+
+
+def shard_command(command: str, shard: int, count: int, items: list[str]) -> str:
+    """The command a shard's pass is recorded under: `command` with `GATE_SHARD=<shard>/<count>:<digest of the
+    shard's items>` set in front, so R1's record (record_name: tree and command) holds one pass per shard, and a
+    shard whose selection changed is another record. `count` 1 is the command itself."""
+    if count <= 1:
+        return command
+    digest = hashlib.sha256("\n".join(items).encode()).hexdigest()[:12]
+    return f"GATE_SHARD={shard}/{count}:{digest} {command}"
+
+
+def sharded(args: argparse.Namespace) -> int:
+    """`shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> --command <cmd>]`:
+    the selection (default: the whole suite) split by `select.shards` (shard_count, shard_selections). With one
+    shard it prints the selection as it is; with more it prints, for each shard, a `# shard i/n <key>` line and its
+    items. `--durations` is a JSON file of seconds per item; one that is missing or unreadable is said, and the split
+    is even by count. With `--passed <head>`, it prints nothing but exits 0 when every shard has a pass of
+    `--command` on <head>'s tree (gate_record, origin's record), else 1 naming each shard with none."""
+    suite = Path(args.suite).read_text().split()
+    selection = Path(args.selection).read_text().split() if args.selection else suite
+    durations: dict[str, float] | None = None
+    if args.durations:
+        try:
+            durations = {
+                k: float(v) for k, v in json.loads(Path(args.durations).read_text()).items()
+            }
+        except (OSError, ValueError, AttributeError) as exc:
+            print(
+                f"shards: no durations from {args.durations} ({exc}): even split by count",
+                file=sys.stderr,
+            )
+    shards = shard_selections(
+        selection, suite, shard_count(), durations, args.whole or not args.selection
+    )
+    if args.passed:
+        if not args.gate_command:
+            raise Refused("shards --passed takes the --command whose shards it reads")
+        missing = sum(
+            gate_record(
+                args.passed, shlex.split(shard_command(args.gate_command, at, len(shards), items))
+            )
+            != 0
+            for at, items in enumerate(shards, 1)
+        )
+        return 1 if missing else 0
+    if len(shards) == 1:
+        print("\n".join(shards[0]))
+        return 0
+    for at, items in enumerate(shards, 1):
+        print(f"# shard {at}/{len(shards)} {shard_command('', at, len(shards), items).strip()}")
+        print("\n".join(items))
+    return 0
+
+
 def ran_step(
     step: dict[str, Any],
     cwd: Path | None = None,
@@ -11555,6 +11649,13 @@ def main(argv: list[str]) -> int:
     graduating.add_argument("--pr", type=int, required=True)
     # --base: the commit to select against (a PR's base SHA, a push's previous tip), over the merge base
     commands.add_parser("affected-tests").add_argument("--base", metavar="REV")
+    sharding = commands.add_parser("shards")
+    sharding.add_argument("--suite", required=True)
+    sharding.add_argument("--selection")
+    sharding.add_argument("--whole", action="store_true")
+    sharding.add_argument("--durations")
+    sharding.add_argument("--passed", metavar="HEAD")
+    sharding.add_argument("--command", dest="gate_command")
     recording_read = commands.add_parser("gate-record")
     recording_read.add_argument("head")
     recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
@@ -11589,6 +11690,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return report_json(args.report) if args.json else report_check(args.report)
     if args.command == "affected-tests":
         return affected_tests(args.base)
+    if args.command == "shards":
+        return sharded(args)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed
         if args.plan and args.words:
             raise Refused(
