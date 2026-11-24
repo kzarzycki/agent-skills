@@ -238,7 +238,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    from that host's `agy models` (`gemini-4-hydrogen-medium`; verifier.md's `Verifier:` line names it as
    `agy/<model>/<effort>`), and the PR body's review line says "verifier ran on Gemini (experimental
    fallback)"; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
-   author context, `--model` other than the author's (`--author-model`), the report labelled `Verifier: claude,
+   author context, the report labelled `Verifier: claude,
    same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
    of quota)". A satisfied fallback verdict lands a change of any risk the way a Codex one does: `check merge` reads
    its family as no tier, and refuses only a `mid` or `small` Codex tier on a high-risk change. agy on another host takes the brief
