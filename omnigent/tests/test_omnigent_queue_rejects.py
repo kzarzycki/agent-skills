@@ -231,12 +231,12 @@ def test_dequeue_relays_to_labelled_lead(tmp_path, monkeypatch) -> None:
     assert [e["action"] for e in events_of(registry) if e["kind"] == "dequeued"] == ["relay"]
 
 
-def test_dequeue_relays_to_a_lead_owning_two_prs(tmp_path, monkeypatch) -> None:
-    """A lead's label may hold several PRs, comma-joined: the dequeue of either reaches it."""
+def test_dequeue_relays_to_a_lead_landing_two_prs(tmp_path, monkeypatch) -> None:
+    """One lead's report head names two PRs: the dequeue of either reaches it."""
     for pr in (12, 13):
         (tmp_path / str(pr)).mkdir()
         registry, og = fleet(tmp_path / str(pr))
-        og.snaps["a"] = {"labels": {"omni.pr": "o/r#12,o/r#13", "omni.role": "lead"}}
+        og.histories["a"][-1] = ending("STILL WORKING: landing o/r#12 and o/r#13\nWaits: CI", 8000)
         gh = GitHub(monkeypatch)
         gh.comments.append(comment(100, pr, jobs=(7,)))
         run(og, registry, monkeypatch, 2)
@@ -256,6 +256,22 @@ def test_dequeue_relays_to_a_lead_that_took_the_pr_over(tmp_path, monkeypatch) -
         gh.comments.append(comment(100, pr, jobs=(7,)))
         run(og, registry, monkeypatch, 2)
         assert [s for s, _ in relays(og, pr)] == ["a"]
+
+
+def test_dequeue_naming_leads_tie_goes_to_the_manager(tmp_path, monkeypatch) -> None:
+    """Two followed leads whose heads name the PR: neither is told, the manager gets the act event."""
+    registry, og = fleet(tmp_path)
+    registry.write_text(
+        registry.read_text() + f"b={tmp_path / 'b.md'}\t{tmp_path / 'b.md.brief'}\tfollow\n"
+    )
+    named = ending("STILL WORKING: landing o/r#12\nWaits: CI", 8000)
+    og.histories["a"][-1] = named
+    og.histories["b"] = [told("brief", 9000), named]
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    run(og, registry, monkeypatch, 3)
+    assert not [s for s, _ in relays(og, 12) if s in ("a", "b")]
+    assert len(acts(og, "o/r#12")) == 1
 
 
 def test_a_dequeue_is_relayed_once_across_a_restart(tmp_path, monkeypatch) -> None:

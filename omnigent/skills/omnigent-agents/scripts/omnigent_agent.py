@@ -10128,14 +10128,10 @@ def supervise_registry(
         def is_lead(sid: str) -> bool:
             return sid in followed or labels(sid).get("omni.role") == "lead"
 
-        def owns(sid: str) -> bool:
-            """Whether ``sid``'s ``PR_LABEL`` names the PR: one ``owner/name#N``, or several joined by commas."""
-            return label in [p.strip() for p in str(labels(sid).get(PR_LABEL, "")).split(",")]
-
         for sid in [*followed, *by_id]:
-            if is_lead(sid) and owns(sid):
+            if is_lead(sid) and str(labels(sid).get(PR_LABEL, "")) == label:
                 return sid
-        for start in [s for s in by_id if owns(s)]:
+        for start in [s for s in by_id if str(labels(s).get(PR_LABEL, "")) == label]:
             sid, seen = start, set()
             while sid and sid not in seen:  # the list holds every session, so each parent is in it
                 seen.add(sid)
@@ -10149,12 +10145,13 @@ def supervise_registry(
                 if m and int(m[2]) == pr and (m[1] == repo or not m[1] and repos.get(sid) == repo):
                     return sid
         url = rf"github\.com/{re.escape(repo)}/pull/{pr}(?!\d)"
-        for sid in (
-            followed
-        ):  # a lead that took the PR over, or lands it with others: its report head names it
+        named = []  # a lead that took the PR over, or lands it with others: its report head names it
+        for sid in followed:
             head = report_head((state["leads"].get(sid) or {}).get("last_text") or "")
             if re.search(rf"(?<![\w/.-]){re.escape(label)}(?!\d)|{url}", head):
-                return sid
+                named.append(sid)
+        if len(named) == 1:  # two leads naming it is no owner: the coordinator sees the dequeue
+            return named[0]
         return ""
 
     def alive(other: str, info: dict) -> bool:
