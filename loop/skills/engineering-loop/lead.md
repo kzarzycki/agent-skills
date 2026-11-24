@@ -329,6 +329,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      PR is enqueued (or already queued); `land <pr> --wait` waits on until the queue merges it (exit 0) or takes
      it out, reading only the PR's queue state about once a minute, so don't poll the PR yourself. A removal's
      next round runs in the same wait: a red is enqueued once more, a second red or a dequeue evicts (exit 1).
+     That once-more run repeats the whole check, which R5 rules out (SKILL.md, A check runs only if it can fail
+     because of the change; its rerun is `approvals.py rerun-tests`) until [kzarzycki/agent-skills#1400](https://github.com/kzarzycki/agent-skills/issues/1400) and [kzarzycki/agent-skills#1794](https://github.com/kzarzycki/agent-skills/issues/1794) land.
+     So don't wait on it: read the red's log at once, and when the PR caused it, fix it now rather than after the
+     second run.
      Without `--wait`, the merge or a removal reaches you as an event from the project's watcher, and a removal's
      next step is `land <pr>` again, which reads the PR once. Exit 1 names what stopped your PR, and the fix is yours:
      - a missing proof, with nothing on the PR changed: add the proof;
