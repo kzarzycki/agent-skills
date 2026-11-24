@@ -334,7 +334,7 @@ def _land_heads_recorded(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     origin holding one, so every head reads recorded there. test_approvals_land_record.py runs the real read."""
     module = request.module
     if module.__name__ != "test_approvals_land_record" and hasattr(module, "approvals"):
-        monkeypatch.setattr(module.approvals, "head_recorded", lambda _pull, _waits: True)
+        monkeypatch.setattr(module.approvals, "head_recorded", lambda _pull: True)
 
 
 @pytest.fixture(autouse=True)

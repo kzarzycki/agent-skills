@@ -7351,7 +7351,7 @@ def local_queue(
     the proof, beside the checks the base requires green on it (landable), so nothing reruns at land (#1872). With no
     queue run to test the merge, a candidate whose head has no pass record (head_recorded) is refused (R6)."""
     candidates, waits, issues = candidates_of(named, base, tracker, loop, required, only)
-    candidates = [pull for pull in candidates if head_recorded(pull, waits)]
+    candidates = [pull for pull in candidates if head_recorded(pull)]
     waited = ""
     if (
         candidates
@@ -7392,10 +7392,10 @@ def local_queue(
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
 
 
-def head_recorded(pull: dict[str, Any], waits: dict[int, tuple[int, bool]]) -> bool:
+def head_recorded(pull: dict[str, Any]) -> bool:
     """Whether origin holds a pass record of the gate on the PR's head (gate_record, `gate-record <head>` exit 0): the
     local queue runs no test, so a merge with neither a queue run nor a record of each PR is refused (engineering-loop
-    SKILL.md, R6), naming the missing record and the command that makes it; the refused PR's exit is 1 in `waits`. A
+    SKILL.md, R6), naming the missing record and the command that makes it; a named PR left out exits 1 (outcome). A
     break-glass PR never gets here: landable holds it for the owner's own merge."""
     head = pull["headRefOid"]
     said = io.StringIO()
@@ -7408,7 +7408,6 @@ def head_recorded(pull: dict[str, Any], waits: dict[int, tuple[int, bool]]) -> b
         f" ({' '.join(said.getvalue().split())}); run `approvals.py local-ci --record` on that head, which records"
         " one, then land again"
     )
-    waits[pull["number"]] = (1, False)
     return False
 
 

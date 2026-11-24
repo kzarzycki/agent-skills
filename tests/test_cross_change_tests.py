@@ -242,6 +242,23 @@ def test_without_an_affected_tests_line_no_pr_has_a_record(project) -> None:
     )
 
 
+def test_a_gate_steps_record_is_no_record_of_the_affected_tests_command(project) -> None:
+    """With `gate_steps`, the narrowed gate never runs (each step narrows by its `paths`), so a step's pass on the
+    head proves no run of the `Affected tests:` command."""
+    Path("docs/agents/gatekeeper.md").write_text(
+        "# Gatekeeper\n\n## Policy\n\n```yaml\nloop:\n  gate_steps:\n"
+        "    - name: fast\n      command: mise run check-fast\n      where: any\n```\n"
+    )
+    commit("steps.py")
+    git("push", "-q", "origin", "main")
+    tip, heads = draft((1, "x.py"))
+    push_record(heads[1], "mise run check-fast", {})
+    assert c.recorded(heads[1], tip) == (
+        False,
+        "the gate has `gate_steps`, which never run the `Affected tests:` command",
+    )
+
+
 def test_a_gatekeeper_that_fails_to_answer_is_no_record(monkeypatch) -> None:
     def broken():
         raise RuntimeError("no gatekeeper")
