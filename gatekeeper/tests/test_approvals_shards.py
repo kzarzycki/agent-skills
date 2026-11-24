@@ -327,3 +327,17 @@ def test_a_command_that_sets_a_variable_in_front_is_recorded_under_it(
         )
         == 1
     )
+
+
+def test_a_shard_that_moves_head_records_nothing(
+    clone: dict[str, Any], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """A clean checkout at another commit has no changes to list, yet its tree is not the one the pass names."""
+    mover = tmp_path / "mover.py"
+    mover.write_text(
+        "import subprocess; subprocess.run(['git', '-c', 'user.name=l', '-c', 'user.email=l@example.com',"
+        " 'commit', '-q', '--allow-empty', '-m', 'moved'], check=True)\n"
+    )
+    argv = ["shards", "--suite", "suite", "--command", f"{sys.executable} {mover}"]
+    assert approvals.main([*argv, "--record", clone["head"], "--shard", "1"]) == 1
+    assert "HEAD moved" in capsys.readouterr().out
