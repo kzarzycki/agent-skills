@@ -356,7 +356,10 @@ def test_the_unasked_kind_routes_to_the_manager_to_act_on(decisions: bool) -> No
         raise AssertionError("the small model is not asked: the route is the rule's")
 
     got = omnigent_agent.route(event, ask)
-    assert got == omnigent_agent.route({**event, "kind": "ended"}, ask) and got[:2] == ("rule", "act")
+    assert got == omnigent_agent.route({**event, "kind": "ended"}, ask) and got[:2] == (
+        "rule",
+        "act",
+    )
     for extra in ({"direct": True}, {"repeat": True}):
         assert omnigent_agent.route({**event, **extra}, ask)[1] == "record"
 

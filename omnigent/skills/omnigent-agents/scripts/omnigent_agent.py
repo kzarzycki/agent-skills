@@ -8723,8 +8723,14 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
                 "done, its result already taken by the notified session: told only to its waiters",
             )
         return "rule", "done", "done: its result, and the leads waiting on it"
-    if ending == "USER NEEDED":  # an end whose card is open raises no event: the card reaches the owner (#1529)
-        return "rule", "act", "USER NEEDED with no card: its manager asks the owner on its own card, or sends it to its card"
+    if (
+        ending == "USER NEEDED"
+    ):  # an end whose card is open raises no event: the card reaches the owner (#1529)
+        return (
+            "rule",
+            "act",
+            "USER NEEDED with no card: its manager asks the owner on its own card, or sends it to its card",
+        )
     if event.get("supervisor"):
         return (
             "rule",

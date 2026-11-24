@@ -9011,9 +9011,11 @@ def test_a_restart_inside_the_model_window_keeps_it(
     state["rate"]["model_calls"] = [time.time() - 3000] * 30  # the hour's calls, spent
     registry.with_suffix(".state.json").write_text(json.dumps(state))
     # a quiet end, the one event the small model reads (#2170): news once it stays quiet past FOLLOW_QUIET_SECONDS
-    quiet = lambda base: lambda poll: offset.__setitem__(0, base + 301.0 * poll)  # noqa: E731
+    quiet = lambda base: lambda poll: offset.__setitem__(0, base + 301.0 * poll)
     og.histories["a"].append(ending("paused for now", 0))
-    supervised(og, registry, monkeypatch, 2, quiet(0.0), console=True, decisions=board)  # the restart
+    supervised(
+        og, registry, monkeypatch, 2, quiet(0.0), console=True, decisions=board
+    )  # the restart
     assert no_model == []
     assert events_of(registry)[-1]["why"] == "over 30 small-model calls an hour"
     offset[0] = 700.0  # the oldest calls are past the hour
@@ -13125,7 +13127,11 @@ def prompt_look(n: int, title: str, queued: int) -> tuple[dict, str]:
                 ({}, "DONE: step one"),
                 ({}, "USER NEEDED: approve A"),
             ],
-            ["act", "act", "act"],  # only an owner item is kept once; a cardless ask is the manager's (#2170)
+            [
+                "act",
+                "act",
+                "act",
+            ],  # only an owner item is kept once; a cardless ask is the manager's (#2170)
             id="one-request-twice",
         ),
         pytest.param(
