@@ -173,10 +173,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    `needs-owner`), since a verifier pass on a narrowed spec only finds what the report
    already said. Then write the PR body's `Spec deviations:` line: `none`, or each deviation
    with a link to the owner's decision (an issue comment URL or `#n`). Before each pass, rerun on the head every
-   proof the spec's acceptance needs whose log names another commit, since the verifier
-   counts it as missing and the pass is spent on it:
-   `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
-   prints the ones to rerun. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
+   proof the spec's acceptance needs whose inputs the round changed, since the verifier
+   counts it as missing and the pass is spent on it; a proof is stale by its inputs, not
+   because its log names another commit (SKILL.md, A check runs only if it can fail because of the change, R4).
+   `git diff --name-only <the head the proof ran on> HEAD` lists what the round changed, to compare with the proof's inputs. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
    instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
    brief and the priorities file already in that checkout (copied there like the logs). Where else it runs is SKILL.md, Where heavy steps run.
    A verifier on a host starts on that pushed
@@ -278,9 +278,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      queue's batch check tests the batch there, so a PR behind main lands without a merge. When
      you do merge it in, get a verifier pass on the merge (step 7), since `land` merges only a
      head with a verdict of its own; the PR's affected tests and the verifier's e2e proof run
-     again on the merge only if the merge changed what they cover, since a second run of the
-     same tests on the same code finds nothing new. A head with an earlier head's tree (`git rev-parse <sha>^{tree}`), as
-     after a reword of commit messages only, keeps that head's verdict (unsatisfied or with
+     again on the merge only if the merge changed what they cover (SKILL.md, A check runs only if it can fail because of the change). A head with an earlier head's tree (`git rev-parse <sha>^{tree}`), as
+     after a reword of commit messages only (same inputs, R1 in SKILL.md, A check runs only if it can fail because of the change), keeps that head's verdict (unsatisfied or with
      findings open, it stays so) and go with no new pass, since no file changed: `check merge`
      and `land` print `verdict on <old> carried: same tree <tree>`. When main's changes touch no file the PR changes and no merge check
      (a `check:` task, a tool it runs, or the lint, type or test configuration), that pass is
@@ -317,8 +316,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      with `--wait`) once no local objection is left: the
      newest verifier review, satisfied with no core finding open (or at the cap, majors only under a `Cap:` line),
      covers the head, and every review thread is resolved (SKILL.md, Review trail on the PR). No gate step comes
-     between the verdict and the merge: no gate of record, no CI check on the head, no `check-fast`, no full suite
-     and no cloud session per head for a record (SKILL.md, Merge model). Without a merge queue `land` merges on the
+     between the verdict and the merge: no new gate of record, no `check-fast` run again (the head's CI reads the
+     worker's record for its tree), no full suite and no cloud session per head for a record (SKILL.md, Merge model). Without a merge queue `land` merges on the
      verdict; with one, the queue's batch check is the one test run on the merged tree, and it runs only the tests
      the batch's PRs affect. Start it as a background
      command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work
@@ -331,6 +330,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      PR is enqueued (or already queued); `land <pr> --wait` waits on until the queue merges it (exit 0) or takes
      it out, reading only the PR's queue state about once a minute, so don't poll the PR yourself. A removal's
      next round runs in the same wait: a red is enqueued once more, a second red or a dequeue evicts (exit 1).
+     That once-more run repeats the whole check, which R5 rules out (SKILL.md, A check runs only if it can fail
+     because of the change; its rerun is `approvals.py rerun-tests`) until [kzarzycki/agent-skills#1400](https://github.com/kzarzycki/agent-skills/issues/1400) and [kzarzycki/agent-skills#1794](https://github.com/kzarzycki/agent-skills/issues/1794) land.
+     So don't wait on it: read the red's log at once, and when the PR caused it, fix it now rather than after the
+     second run.
      Without `--wait`, the merge or a removal reaches you as an event from the project's watcher, and a removal's
      next step is `land <pr>` again, which reads the PR once. Exit 1 names what stopped your PR, and the fix is yours:
      - a missing proof, with nothing on the PR changed: add the proof;
@@ -412,7 +415,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      never push to another owner's PR (SKILL.md, One concern per PR).
 9. **Accept.** First read main's push run on the merge SHA where the project has one
    (`gh run list --branch main --event push --commit <merge sha> --json conclusion,status`;
-   with `ci: false` there is none; the nightly is the run that tests main in full: SKILL.md, Nightly). When it ends red, revert before anything else
+   with `ci: false` there is none; the nightly is the run that tests main in full: SKILL.md, Nightly).
+   A merge whose tree the queue tested has a push run that tests nothing and names the queue's run in its summary:
+   read that run's result instead, and wait on no push run
+   (SKILL.md, A check runs only if it can fail because of the change). When it ends red, revert before anything else
    (SKILL.md, Revert first): `git revert --no-edit <merge sha>` on a new branch off a
    freshly fetched `origin/main`, then a PR whose body says `Reverts #<pr>` and
    `Part of #<spec>`, so `approvals.py` finds the spec, through this loop; reopen every issue

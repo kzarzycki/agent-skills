@@ -64,8 +64,9 @@ yourself, keeping standards and spec as separate axes.
 - **Work the given priorities first.**
 - **Every pass after the first:** the lead gives you the previous report. Review
   the diff since its head and the files it touches yourself, both axes in your own session
-  with no axis subagents (code-review, step 4), not the whole change again. Rerun all of its
-  repros from one script that prints each one's command, result and exit code, rather than
+  with no axis subagents (code-review, step 4), not the whole change again. Rerun the acceptance checks and repros the round's diff reaches, plus every repro still
+  `NOT FIXED` (SKILL.md, A check runs only if it can fail because of the change, R4); your own new repros
+  and mutation runs are never skipped. Run them from one script that prints each one's command, result and exit code, rather than
   one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the lead runs after a
   core finding stayed open reviews only the fix of those items; a pass on a merge of main
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
@@ -119,7 +120,9 @@ yourself, keeping standards and spec as separate axes.
   names on the head (SKILL.md, Acceptance checks), and the e2e tests the worker wrote for this PR,
   which its report names and `git diff --name-only <base>...<head>` shows, each as a long run is
   (above): they are the run that proves the change works. You never rely on the worker's test
-  log, which is the worker's own file, and run no full suite and no gate (Gates and repros).
+  log, which is the worker's own file, and run no full suite and no gate (Gates and repros). Where the worker's
+  run left a record whose tree is the head's tree (`gate-record`, Gates and repros), read it and run nothing again;
+  spend your runs on whether the right tests ran, whether they are written right and cover the spec, mutation runs and your own repros.
 - **Manual lines.** Probe a `Manual:` line by hand when you rate the change high or the line is
   risky in itself. Otherwise you may accept it on the worker's evidence, written `Accepted on
   evidence: <line> — <proof log>`, the log stamped with the head (Proof provenance); `verdict`
@@ -205,7 +208,7 @@ yourself, keeping standards and spec as separate axes.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is
   the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
-- **Gates and repros:** one test run per tree: your run of the brief's acceptance command and the PR's e2e tests is the proof the change works, and no gate or full suite runs on the PR after it, so run no full suite and no gate. Before you run one of them, ask whether the gatekeeper already ran that exact command on the head's tree, with `uv run <the gatekeeper skill's folder>/scripts/approvals.py gate-record <head> -- <command>`. Exit 0 names origin's record branch: read it and don't run that command again. Exit 1 names what has no record: run it. A record is keyed by the tree and the command, so another tree, another command or another test list is never reused. Only that record counts, never a log, report or exit code the worker wrote, since the worker is what you check. Mutation and repro probes are always your own runs: a test run never exercises the code that way. The worker's report (its affected-test command and exit code) is the check the worker ran, never a gate of record, which no head gets. Run the suite, or more than a few test files, only through the project's test task (its `mise run` task, which carries the suite's parallel workers), never a bare runner such as `pytest`, which runs serially: one bare pass took 20 times the task's time. Your run is the PR's e2e tests and acceptance command, never the whole suite: never widen that selection into a whole-suite run. Run a repro or that task as the bare command, with no wrapper, redirect or detach around it, and keep it running with
+- **Gates and repros:** a check runs only if it can fail because of the change (SKILL.md, A check runs only if it can fail because of the change), so one test run per tree: your run of the brief's acceptance command and the PR's e2e tests is the proof the change works, and no gate or full suite runs on the PR after it, so run no full suite and no gate. Before you run one of them, ask whether the gatekeeper already ran that exact command on the head's tree, with `uv run <the gatekeeper skill's folder>/scripts/approvals.py gate-record <head> -- <command>`. Exit 0 names origin's record branch: read it and don't run that command again. Exit 1 names what has no record: run it. A record is keyed by the tree and the command, so another tree, another command or another test list is never reused. Only that record counts, never a log, report or exit code the worker wrote, since the worker is what you check. Mutation and repro probes are always your own runs: a test run never exercises the code that way. The worker's report (its affected-test command and exit code) is the check the worker ran, never a gate of record: only the gatekeeper's record above counts. Run the suite, or more than a few test files, only through the project's test task (its `mise run` task, which carries the suite's parallel workers), never a bare runner such as `pytest`, which runs serially: one bare pass took 20 times the task's time. Your run is the PR's e2e tests and acceptance command, never the whole suite: never widen that selection into a whole-suite run. Run a repro or that task as the bare command, with no wrapper, redirect or detach around it, and keep it running with
   your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain
   command, so a wrapped one asks for approval, and on a reviewed sandbox each ask is a paid
   model call. Then write its proof log from what it printed: the head's SHA, the command, its
