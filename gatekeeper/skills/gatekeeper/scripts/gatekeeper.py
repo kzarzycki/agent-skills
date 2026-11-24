@@ -26,7 +26,7 @@
     uv run scripts/approvals.py queue-select [<base>]      # a merge queue's batch check (R6): one command per line to run on the batch, the select.unkeyed checks and `affected-tests --base <point>` for each PR with no record; exit 1 when that is nothing while a PR has no record
     uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
     uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1 when .mergify.yml is out of step
-    uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
+    uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
@@ -429,9 +429,11 @@ Which tests prove a change is the project's rule (the PR's own acceptance tests)
 Narrowed mode: loop.md's line `Affected tests: <command>` without the line `Gate: full`, the opt-out (narrowing). Its
 command is the whole narrowed check: the project's selector plus its cheap whole-repo lint and type checks, reading the
 base from the variable `Gate base:` names, else `GATE_BASE`. `affected-tests` runs it against `--base <rev>` (a PR's
-base SHA, a push's previous tip), else the merge base with the branch's base. Where it can't tell what a change
-affects, a `<rev>` git can't resolve (all zeros, a new branch) or a loop.md without the line, it runs nothing and says
-so in one line, never the whole suite, which the nightly runs (#1872); only the opt-out runs `mise run check`. Under
+base SHA, a push's previous tip), else the merge base with the branch's base. Where it can't tell exactly, it runs
+the narrowest set it can still name (#2217): a `<rev>` git can't resolve (all zeros, a new branch) selects against the
+merge base, and a loop.md without the line runs the `select` cut, then `mise run check` for a change the cut can't
+settle; zero runs only for a change of non-product paths, saying `0 selected: non-product`. The opt-out runs `mise run
+check`. Under
 `ci: false`, `local-ci --record` runs it against `--base`, else the merge base, and `local-ci <pr>` posts that pass on
 the head's tree, against the merge base of the head and the PR's base; `check merge` reads no local-ci pass (#1872). A
 narrowed pass's command is the variable's assignment, the command, then ` (narrowed)`, which no gate command can hold,
@@ -9851,22 +9853,19 @@ def selected(base: str, head: str | None = None) -> tuple[list[str], list[str]] 
 
 def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
     """affected-tests' cut by `select` (selected): None when the change since `base` holds a build input, or the cut
-    can't tell, so the `Affected tests:` command runs; else the exit of the `checks` the change touches, each run in
+    can't tell, so the caller's run goes ahead (the `Affected tests:` command, else the full check); else the exit of the `checks` the change touches, each run in
     turn under the gate slot, the first that fails ending the run, 0 when none applies."""
     if (cut := selected(base)) is None:
         return None
     inputs, commands = cut
     if inputs:
         print(
-            f"affected-tests: build input {inputs[0]}: the `Affected tests:` command runs",
+            f"affected-tests: build input {inputs[0]}: the cut can't settle it",
             file=sys.stderr,
         )
         return None
     if not commands:
-        print(
-            "affected-tests: no build input changed and no check applies: nothing to run",
-            file=sys.stderr,
-        )
+        print("affected-tests: 0 selected: non-product", file=sys.stderr)
         return 0
     for command in commands:
         _, words, sets = command_line(command, "select.checks")
@@ -9889,13 +9888,15 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     """`affected-tests [--base <rev>]`: the worker's test run on a head, from loop.md's line `Affected tests:
     <command>` (the command selects and runs the tests a change affects against the base it reads from the variable
     the line `Gate base:` names, else `GATE_BASE`). The base is `<rev>`, else the merge base (selection_base). Where it
-    can't tell what the change affects, it runs nothing, says so in one line and exits 0, never the whole suite, which
-    the nightly runs (#1872): a loop.md without the line names no selector, and a `<rev>` git can't resolve names no
-    base. Only the opt-out `Gate: full` (narrowing), the project's own choice, runs `mise run check`, with the
-    variable unset. Either runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its exit
-    passes through: a selector that selects nothing exits 0 itself. A run still going at the policy's `timeouts.run`
-    (60 minutes by default) is stopped, with its process group, and exits TIMED_OUT (124) with one line naming the
-    budget and the selection's size (over_budget): a timeout, never a test's failure. gate_env clears the variable from `land`'s and
+    can't tell exactly, it runs the narrowest set it can still name (#2217): a `<rev>` git can't resolve (all zeros, a
+    new branch) selects against the merge base instead, and a loop.md without the line runs gatekeeper.md's `select`
+    cut (non_product_run), then, for a change that cut can't settle, the project's full check, `mise run check`. Zero
+    runs only for a change `select` finds only non-product paths in, saying `0 selected: non-product`. The opt-out
+    `Gate: full` (narrowing), the project's own choice, runs `mise run check` too, with the variable unset. Either
+    runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its exit passes through: a
+    selector that selects nothing exits 0 itself. A run still going at the policy's `timeouts.run` (60 minutes by
+    default) is stopped, with its process group, and exits TIMED_OUT (124) with one line naming the budget and the
+    selection's size (over_budget): a timeout, never a test's failure. gate_env clears the variable from `land`'s and
     `local-ci`'s environment, apart from a head proof's own `env` names: they set it themselves in narrowed mode
     (narrowed_gate).
 
@@ -9903,10 +9904,10 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     --record` runs one (run_local_ci: a clean checkout, a pass recorded by tree and command, pushed as its
     `loop-gate/<tree>-<key>` branch, publish), so its record is the one record kind, read by `gate-record <head> --
     <command>` and by the merge queue's floor (engineering-loop SKILL.md, R6), and a pass already recorded on the tree
-    is reused, not run again (R1). A run that can't tell (no line, no base) or fails records nothing, and so does the
-    opt-out's full check and a gate with `gate_steps` (whose steps narrow by their `paths`, so the narrowed gate never
-    runs): each says so. Off by default, as `local-ci` records only with `--record`: a record is a pushed branch, and only the
-    worker's final head needs one, not each head the push hook runs.
+    is reused, not run again (R1). A run with no `Affected tests:` line, one that fails, the opt-out's full check and a
+    gate with `gate_steps` (whose steps narrow by their `paths`, so the narrowed gate never runs) record nothing: the
+    last says so. Off by default, as `local-ci` records only with `--record`: a record is a pushed branch, and only
+    the worker's final head needs one, not each head the push hook runs.
 
     `text`, when given, is the loop.md the command and its `Gate base:` come from instead of the policy's: a rerun's
     (rerun_tests), the red head's own."""
@@ -9916,38 +9917,37 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     variable = gate_base_variable(text)
     env = {name: value for name, value in os.environ.items() if name != variable}
     words, sets = [*LOCAL_CI[:-1], "check"], {}
-    if written is None and not FULL_GATE.search(text):
-        print(
-            "affected-tests: nothing: loop.md names no `Affected tests:` selector, so it can't tell what the change"
-            " affects; the nightly runs the full suite",
-            file=sys.stderr,
-        )
-        return 0
-    if written is not None and (base := selection_base(given)) is None:
-        print(
-            "affected-tests: nothing: no base to select against, so it can't tell what the change affects; the"
-            " nightly runs the full suite",
-            file=sys.stderr,
-        )
-        return 0
-    if record and written is not None and base is not None:
-        if settings(project()[1]).get("gate_steps"):
+    if not FULL_GATE.search(text):
+        if (base := selection_base(given)) is None:
             print(
-                "affected-tests --record: the gate has `gate_steps`, whose steps narrow by their `paths`, so the narrowed"
-                " gate never runs: nothing recorded, and `local-ci --record` records the steps",
+                f"affected-tests: the base {given} is no commit here: it selects against the merge base",
+                file=sys.stderr,
+            )
+            base = selection_base(None)
+        if record and written is not None:
+            if settings(project()[1]).get("gate_steps"):
+                print(
+                    "affected-tests --record: the gate has `gate_steps`, whose steps narrow by their `paths`, so the"
+                    " narrowed gate never runs: nothing recorded, and `local-ci --record` records the steps",
+                    file=sys.stderr,
+                )
+            else:
+                with narrowed_to(base):
+                    return local_ci(None, None, False, None)
+        if (code := non_product_run(base, root, env)) is not None:
+            return code
+        if written is None:
+            print(
+                "affected-tests: loop.md names no `Affected tests:` selector, so it can't narrow the change: the"
+                " project's full check runs",
                 file=sys.stderr,
             )
         else:
-            with narrowed_to(base):
-                return local_ci(None, None, False, None)
-    if written is not None and base is not None:
-        if (code := non_product_run(base, root, env)) is not None:
-            return code
-        _, words, sets = command_line(written, "Affected tests")
-        sets = {
-            name: value for name, value in sets.items() if name != variable
-        }  # the base is the run's, not the line's
-        env[variable] = base
+            _, words, sets = command_line(written, "Affected tests")
+            sets = {
+                name: value for name, value in sets.items() if name != variable
+            }  # the base is the run's, not the line's
+            env[variable] = base
     print(f"affected-tests: {shlex.join(words)}", file=sys.stderr, flush=True)
     budget = run_budget()
     try:
