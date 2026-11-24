@@ -5,6 +5,12 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.14 - 2026-11-24
+
+- `omnigent_agent.py supervise`: a merge-queue dequeue reaches the lead that owns the PR when the lead lands several or took the PR over. A lead's `omni.pr` label may hold several PRs, comma-joined (new `omnigent_agent.py own-pr <owner/name#N>` adds one); every reader of the label takes the list. A followed lead whose report head names `<repo>#<n>` or the PR's URL is the fallback, used only when exactly one lead matches: a label owner wins, and a tie goes to the coordinator naming both leads. `own-pr` takes several refs and writes once, checking only their format, so a mistyped PR number holds the session in `reap` (#2161).
+- `omnigent_agent.py supervise`: a PR carrying `loop:hold` raises no `pr-stall` and no `dequeued` event for a manager to fix, until the label comes off (#2316).
+- operating-omnigent: the "Restart server" row says running turns keep going through a restart, as observed, not that it interrupts mid-turn work (#2389)
+
 ## 0.1.13 - 2026-11-24
 
 - `omnigent_agent.py start` and `run` write the registry line when the session is created, before its brief is sent, so a slow cold start can no longer pass the 60 s adoption grace and be followed by a second supervisor; and a non-numeric `created_at` skips that one session in the console's adoption sweep instead of ending the sweep (#2319).
