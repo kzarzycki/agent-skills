@@ -1720,7 +1720,7 @@ def dequeue_pull(number: int, node: str) -> None:
 
 def commit_checks(ref: str) -> dict[str, dict[str, Any]]:
     """The newest run of each check on commit (or branch) `ref`, by name: its conclusion as GraphQL spells it, link,
-    id, which for an Actions job is the job's, and its output's title. ponytail: check runs only, one per name; read status contexts and
+    id, which for an Actions job is the job's, and its output's title and summary. ponytail: check runs only, one per name; read status contexts and
     workflow names when a queue's required check is a status or one name runs in two workflows."""
     runs = rest_pages(f"commits/{ref}/check-runs?filter=latest&per_page=100", ".check_runs[]")
     return {
@@ -1729,6 +1729,7 @@ def commit_checks(ref: str) -> dict[str, dict[str, Any]]:
             "url": run.get("html_url") or "",
             "id": run.get("id"),
             "title": (run.get("output") or {}).get("title") or "",
+            "summary": (run.get("output") or {}).get("summary") or "",
         }
         for run in runs
     }

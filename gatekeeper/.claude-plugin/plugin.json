@@ -1,6 +1,6 @@
 {
   "name": "gatekeeper",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "The gatekeeper CLI: may this change be built, enter a merge queue or merge, decided from proof on the forge and the team's policy.",
   "author": {
     "name": "Krzysztof Zarzycki"
