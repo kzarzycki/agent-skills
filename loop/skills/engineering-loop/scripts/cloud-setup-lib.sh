@@ -46,7 +46,7 @@ setup_requires() {
   for entry in $(cat "$@" 2>/dev/null | sed -n 's/^  requires: "\(.*\)"$/\1/p' | tr ' ' '\n' | sort -u); do
     tool=${entry%%>=*} want=""; [ "$tool" = "$entry" ] || want=${entry#*>=}
     version_ok "$tool" "$want" && { echo "requires $entry: present" >> "$log"; continue; }
-    step "requires $entry" mise use -g "$tool${want:+@latest}"
+    step "requires $entry" env MISE_HTTP_TIMEOUT=10s MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=10s mise use -g "$tool${want:+@latest}"
     version_ok "$tool" "$want" || { echo "FAILED: requires $entry" >> "$log"; }
   done
 }
