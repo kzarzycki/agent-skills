@@ -218,8 +218,9 @@ merged trees make. Each PR landed gets one comment, `Landed`, then `Base:` the n
 (the omnigent-agents skill's `omnigent_agent.py reap --merged --pr <n>`), whose outcome goes to its own log, never the land's.
 Exit 0 when the named PR merged (on a GitHub-queue base, also once it is enqueued or queued), or with no PR named when nothing landable failed; 1 for a refusal, a conflict, an
 eviction (a queue's) or a merge GitHub refused; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
-`land --wait` runs it again while it waits on the lock or on CI, printing each new state once, for up to 2 hours,
-then exits 3; a wait for the owner ends it at once, since only the owner clears it. Between two runs it reads every 30
+`land --wait` runs it again while it waits on the lock or on CI, printing each new state once, for up to the policy's
+`land.wait` (a duration such as `4h30m`; default 2 hours), then exits 3, leaving the PR's event `waiting` where a queue
+or its checks still move it, else `needs-owner`; a wait for the owner ends it at once, since only the owner clears it. Between two runs it reads every 30
 seconds only what it waits on, at no API quota: a held lock with one `git ls-remote` (running again once the lock moves
 past its holder's heartbeat, or has not moved for 15 minutes), a named PR's CI with one ls-remote of the base and the
 heads and an ETag read of each head's checks, which GitHub answers 304 for free while nothing changed (#1915).
@@ -717,8 +718,8 @@ OWN = {APPROVALS, GATEKEEPER, LAND}
 # a URL in a `## Demo` comment; gh's --attach embeds a video or image as a bare user-attachments one, which plays inline
 URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
 ATTACHMENT = "https://github.com/user-attachments/"
-# land --wait: seconds between tries, and how long it waits in all before it exits 3; a landing lock older than the
-# ceiling is stale
+# land --wait: seconds between tries, and how long it waits in all before it exits 3 unless the project's `land.wait`
+# says otherwise (land_wait); a landing lock older than the ceiling is stale, whatever a project's `land.wait` is
 POLL, CEILING = 30, 2 * 60 * 60
 # land --wait runs landing() (a GraphQL read of every named PR's PULL, 5 points each, and more) again only this many
 # seconds after the last run, unless it waits on something its probe watches (FULL): a merge queue or a check takes minutes to move, so
@@ -919,6 +920,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "stalled_after_hours": int,
     },
     "mutate": {"inconclusive_exit": int},
+    # the checks whose pass is never reused (unkeyed): each a gate step's name or command, or `gate`'s command
+    "select": {"unkeyed": list},
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
     "risk": {
@@ -944,6 +947,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         merge_queue=bool,
         merge_commit_heads=list,
         batch_wait_seconds=int,
+        wait=str,
         queue=Choice(("mergify", "github")),
         together=("signed_squash_to", "allowed_signers"),
         optional=(
@@ -954,6 +958,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "merge_queue",
             "merge_commit_heads",
             "batch_wait_seconds",
+            "wait",
             "queue",
         ),
     ),
@@ -1152,6 +1157,10 @@ def settings(loop: str | None) -> dict[str, Any]:
             if data[name].get("batch_wait_seconds", 0) < 0:
                 raise Refused(
                     f"{file}'s `land.batch_wait_seconds` must be a whole number, 0 or more"
+                )
+            if "wait" in data[name] and name == "land" and span(str(data[name]["wait"])) is None:
+                raise Refused(
+                    f"{file}'s `land.wait` is {data[name]['wait']!r}: write it as `2h` or `4h30m`"
                 )
             if name == "carry_over_main":
                 deprecated(name)
@@ -4078,19 +4087,28 @@ def parse_time(text: str) -> datetime | None:
     return found if found.tzinfo else found.replace(tzinfo=timezone.utc)
 
 
+def span(text: str) -> timedelta | None:
+    """A duration written as days, hours and minutes in that order (`7d`, `12h`, `4h30m`, `1d12h`) as a timedelta, None
+    for anything else or for zero: the one parser of the policy's durations (`breakglass.max_age`, `land.wait`)."""
+    if not (found := re.fullmatch(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?", text.strip())):
+        return None
+    days, hours, minutes = (int(part or 0) for part in found.groups())
+    total = timedelta(days=days, hours=hours, minutes=minutes)
+    return total if total else None
+
+
 def breakglass_settings(loop: str | None) -> dict[str, Any]:
     """The policy's `breakglass` section with its defaults: `max_age` as a timedelta, `max_commits`, `smoke` (the gate
     command, else `check-land`), `earlier_runs`, and the `artifact` name."""
     found = settings(loop)
     given = found.get(BREAKGLASS, {})
     age = str(given.get("max_age", BREAKGLASS_AGE)).strip()
-    if not (unit := re.fullmatch(r"(\d+)([dh])", age)):
+    if (found_span := span(age)) is None:
         raise Refused(
             f"{source(loop)}'s `breakglass.max_age` is {age!r}: write it as `7d` or `12h`"
         )
-    span = timedelta(**{"days" if unit[2] == "d" else "hours": int(unit[1])})
     return {
-        "max_age": span,
+        "max_age": found_span,
         "max_commits": given.get("max_commits", BREAKGLASS_COMMITS),
         "smoke": given.get("smoke") or found.get("gate") or "check-land",
         "earlier_runs": given.get("earlier_runs", BREAKGLASS_EARLIER),
@@ -5829,7 +5847,7 @@ def land_event_of(
 ) -> None:
     """land_event for each PR number a land names (the PR is read again, since the wait holds only its numbers);
     `unless_ended` leaves a PR whose end this process wrote, so a later end keeps the first one's reason."""
-    for number in [] if pr is None else [pr] if isinstance(pr, int) else list(dict.fromkeys(pr)):
+    for number in numbers_of(pr):
         try:
             pull = pull_request(number)
             if (
@@ -5911,11 +5929,43 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
         unwait(forget=True)
 
 
+def land_wait() -> int:
+    """Seconds `land --wait` waits in all: the policy's `land.wait`, else CEILING (2 hours)."""
+    _, loop = project()
+    given = settings(loop).get("land", {}).get("wait")
+    found = span(str(given)) if given is not None else None
+    return int(found.total_seconds()) if found else CEILING
+
+
+def said_span(seconds: int) -> str:
+    """A wait's length as the stop message says it: `2 hours`, `4 hours 30 minutes`."""
+    hours, minutes = divmod(seconds // 60, 60)
+    parts = [f"{hours} hour{'' if hours == 1 else 's'}"] if hours or not minutes else []
+    if minutes:
+        parts.append(f"{minutes} minute{'' if minutes == 1 else 's'}")
+    return " ".join(parts)
+
+
+def numbers_of(pr: int | Sequence[int] | None) -> list[int]:
+    """The PR numbers a land names, each once."""
+    return [] if pr is None else [pr] if isinstance(pr, int) else list(dict.fromkeys(pr))
+
+
+def in_flight(number: int) -> bool:
+    """Whether the last round left PR `number` to something that ends on its own, which is a land run again and no
+    answer of the owner's: held by a merge queue (`watched["queued"]`), or waiting on its checks (a round that waited
+    on neither the lock nor a queue, with the PR read: what Probe then watches). No GitHub read."""
+    if number in watched["queued"]:
+        return True
+    return held_tip is None and any(p["number"] == number for p in watched["pulls"])
+
+
 def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
     """land's wait loop."""
     global held_tip
     # a land run again on the base's new code (caught_up) keeps the first run's ceiling; the clock is system-wide
-    deadline = float(os.environ.pop(DEADLINE_ENV, "0")) or time.monotonic() + CEILING
+    patience = land_wait()
+    deadline = float(os.environ.pop(DEADLINE_ENV, "0")) or time.monotonic() + patience
     if earlier := json.loads(os.environ.pop(WORKTREES_ENV, "[]")):
         made.extend(earlier)  # execv runs no atexit: the next re-exec hands these on (caught_up)
         atexit.register(reap, earlier)
@@ -5966,11 +6016,15 @@ def wait_loop(pr: int | Sequence[int] | None, only: bool) -> int:
             return code
         nap = poll_seconds(quiet)
         if time.monotonic() + nap > deadline:
-            print(f"land --wait stopped after {CEILING // 3600} hours, still waiting")
+            said_for = said_span(patience)
+            print(f"land --wait stopped after {said_for}, still waiting")
+            # a PR a queue holds or whose checks run is being moved: it needs no owner, only a land run again
+            moving = [n for n in numbers_of(pr) if in_flight(n)]
+            land_event_of(moving, "waiting")  # land_event leaves a PR that asked the owner as it is
             land_event_of(
-                pr,
+                [n for n in numbers_of(pr) if n not in moving],
                 "needs-owner",
-                f"land --wait stopped after {CEILING // 3600} hours with the PR still waiting: land it again or"
+                f"land --wait stopped after {said_for} with the PR still waiting: land it again or"
                 " say what holds it.\n",
             )
             return WAITING
@@ -9074,6 +9128,7 @@ def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
     policy setting both is refused, since two sources of the gate would drift."""
     loop = settings(project()[1])
     written = loop.get("gate_steps")
+    unkeyed = set(loop.get("select", {}).get("unkeyed", []))
     if not written:
         command, words, sets = gate(passed)
         return [
@@ -9086,6 +9141,7 @@ def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
                 "legacy": True,
                 "paths": None,
                 "setting": None,
+                "unkeyed": bool({command, loop.get("gate")} & unkeyed),
             }
         ]
     if loop.get("gate"):
@@ -9106,6 +9162,7 @@ def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
                 "legacy": False,
                 "paths": step.get("paths"),
                 "setting": written,
+                "unkeyed": bool({step["name"], step["command"], command} & unkeyed),
             }
         )
     return plan
@@ -10606,7 +10663,11 @@ def step_pass(
     `env` (0.23.1 wrote none) never matches, since nothing says what tier it ran; nor does a failed one, which is never
     recorded. With `why`, the reason origin's record branch, found, was rejected is appended to it (record_ref).
     Without `show`, origin's record is read without writing the `gate` status on `head` (published). A step whose
-    `paths` give it an inputs key on `held` (inputs_key) is found by that key alone (input_pass), on any tree."""
+    `paths` give it an inputs key on `held` (inputs_key) is found by that key alone (input_pass), on any tree. A step
+    `select.unkeyed` lists has none: it reads what no key covers (a live service, a rotating credential, the host), so
+    the same tree can give another result, and every run decision (run_steps, reusable) runs it again."""
+    if step.get("unkeyed"):
+        return None
     if (key := inputs_key(held, step)) is not None:
         return input_pass(head, key, step, why, show)
     command, env = step["command"], step["sets"]
@@ -11064,6 +11125,9 @@ def no_pass(head: str, why: list[str] | tuple[str, ...] = ()) -> str:
     for step in gate_plan():
         command, env = step["command"], step["sets"]
         said = "" if step["legacy"] else f"step `{step['name']}`: "
+        if step["unkeyed"]:
+            lines.append(f"{said}`select.unkeyed` lists it, so its pass is never reused: run it")
+            continue
         if (key := inputs_key(held, step)) is not None:
             if step_pass(head, held, step, show=False) is None:
                 lines.append(
