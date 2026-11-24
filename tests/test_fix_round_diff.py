@@ -40,7 +40,10 @@ def test_later_verifier_pass_reruns_what_the_delta_reaches_and_open_repros():
     assert "never skipped" in verifier
     assert POINTER in verifier
     skill = text("SKILL.md")
-    assert "reruns the acceptance checks and repros the round's diff reaches, plus every repro still `NOT FIXED`" in skill
+    assert (
+        "reruns the acceptance checks and repros the round's diff reaches, plus every repro still `NOT FIXED`"
+        in skill
+    )
 
 
 def test_acceptance_budget_stays_with_run_time_as_its_reason():
