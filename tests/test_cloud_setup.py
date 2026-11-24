@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+LIB = ROOT / "loop" / "skills" / "engineering-loop" / "scripts" / "cloud-setup-lib.sh"
 SETUP = (ROOT / ".claude" / "cloud-setup.sh").read_text()
 PINS = tomllib.loads((ROOT / "mise.toml").read_text())["tools"]
 
@@ -152,6 +153,7 @@ def run_setup(
         ),
         "CLOUD_SETUP_LOG": str(tmp_path / "setup.log"),
         "CLOUD_SETUP_REPO": str(repo),
+        "CLOUD_SETUP_LIB": str(LIB),
         "CLOUD_SETUP_RELEASES": releases.as_uri(),
         "CLOUD_SETUP_GH_QUOTA": GH_QUOTA.as_uri(),
     }
@@ -211,11 +213,8 @@ def test_a_checksum_mismatch_installs_nothing(
 
 def test_mise_prefers_offline_before_it_installs() -> None:
     """Offline, mise counts the fetched tools as installed; online it exits 1 and drops them from a task's PATH (#1536)."""
-    assert (
-        -1
-        < SETUP.find("step mise-offline mise settings set prefer_offline true")
-        < SETUP.index("step mise-install ")
-    )
+    assert "step mise-offline mise settings set prefer_offline true" in LIB.read_text()
+    assert SETUP.index("setup_mise\n") < SETUP.index("step mise-install ")
 
 
 def test_gh_quota_shim_goes_ahead_of_the_images_gh(tmp_path: Path) -> None:
@@ -245,3 +244,74 @@ def test_the_gh_quota_pin_names_a_commit_and_both_sums() -> None:
     assert "/$ghq/github/skills/gh-quota/scripts" in SETUP
     for name in ("gh", "gh_quota.py"):
         assert re.search(rf"^[0-9a-f]{{64}}  {re.escape(name)}$", SETUP, re.MULTILINE), name
+
+
+def lib(tmp_path: Path, script: str, tools: dict[str, str]) -> tuple[str, Path]:
+    """Run `script` with the library sourced, on a PATH of only the stubs in `tools` (name -> shell body) and the
+    system's; curl is a stub that records its URL and fails, as the proxy does for mise.run. Returns the setup log
+    and the stub call log."""
+    bin_, home = tmp_path / "bin", tmp_path / "home"
+    bin_.mkdir()
+    home.mkdir()
+    calls = tmp_path / "calls"
+    for name, body in {"curl": "exit 22", **tools}.items():
+        (bin_ / name).write_text(f'#!/bin/sh\necho "{name} $*" >> {calls}\n{body}\n')
+        (bin_ / name).chmod(0o755)
+    log = tmp_path / "setup.log"
+    env = {"HOME": str(home), "PATH": f"{home}/.local/bin:{bin_}:/usr/bin:/bin:/sbin"}
+    subprocess.run(
+        ["bash", "-c", f'log={log}; . {LIB}; cd {tmp_path}; {script}'],
+        env=env, check=True, capture_output=True, timeout=60,
+    )
+    return log.read_text(), calls
+
+
+def test_mise_comes_from_npm(tmp_path: Path) -> None:
+    """Without mise, setup_mise installs it with npm and sets prefer_offline: mise.run, the version list and the API are not asked."""
+    npm = f'printf "#!/bin/sh\\necho mise \\"\\$@\\" >> {tmp_path}/calls\\n" > {tmp_path}/bin/mise; chmod +x {tmp_path}/bin/mise'
+    log, calls = lib(tmp_path, "setup_mise", {"npm": npm})
+    seen = calls.read_text()
+    assert "npm install -g -s @jdxcode/mise" in seen and "mise settings set prefer_offline true" in seen
+    for host in ("mise.run", "mise-versions.jdx.dev", "api.github.com", "curl"):
+        assert host not in seen, seen
+    assert "FAILED" not in log, log
+
+
+def test_requires_resolve_and_log(tmp_path: Path) -> None:
+    """Each installed skill's requires entry is resolved or installed, with its seconds logged, FAILED where mise can't."""
+    skill = tmp_path / "skills" / "a"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text('---\nname: a\nmetadata:\n  requires: "gh>=2.99.0 uv vhs"\n---\n')
+    new_gh = f'printf "#!/bin/sh\\necho gh version 3.0.0\\n" > {tmp_path}/bin/gh'
+    tools = {
+        "gh": "echo gh version 2.0.0",  # older than the skill wants
+        "uv": "echo uv 0.13.4",
+        "mise": f'[ "$3" = vhs ] && exit 1; {new_gh}; exit 0',
+    }
+    log, _ = lib(tmp_path, "setup_requires skills/*/SKILL.md", tools)
+    assert re.search(r"^requires gh>=2.99.0: exit 0, \d+ s$", log, re.MULTILINE), log
+    assert "requires uv: present" in log
+    assert re.search(r"^requires vhs: exit 1, \d+ s$", log, re.MULTILINE), log
+    assert "FAILED: requires vhs\n" in log and "FAILED: requires gh" not in log
+
+
+@pytest.mark.parametrize("good", [True, False])
+def test_uv_brought_to_required_version(tmp_path: Path, good: bool) -> None:
+    """An image's uv older than uv.toml's required-version is replaced by the release's, checked against its sha256;
+    a wrong sum leaves the old uv and logs FAILED."""
+    (tmp_path / "uv.toml").write_text('required-version = ">=0.13.4"\n')
+    releases = tmp_path / "releases"
+    asset = "astral-sh/uv/releases/download/0.13.4/uv-x86_64-unknown-linux-gnu.tar.gz"
+    publish(releases, {asset: {"uv-x86_64-unknown-linux-gnu/uv": b"#!/bin/sh\necho uv 0.13.4\n"}})
+    if not good:
+        sums = releases / (asset + ".sha256")
+        sums.write_text("0" * 64 + sums.read_text()[64:])
+    # the real curl: the assets are file:// URLs
+    log, _ = lib(
+        tmp_path,
+        f"setup_uv {releases.as_uri()}; uv --version >> {tmp_path}/out",
+        {"uv": "echo uv 0.11.0", "curl": f'exec {shutil.which("curl")} "$@"'},
+    )
+    out = (tmp_path / "out").read_text()
+    assert out.strip() == ("uv 0.13.4" if good else "uv 0.11.0"), (out, log)
+    assert ("FAILED" not in log) == good, log

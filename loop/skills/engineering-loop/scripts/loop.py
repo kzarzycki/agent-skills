@@ -96,6 +96,17 @@ def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
     return found
 
 
+def host_lines(spec: str) -> list[str]:
+    """The `Host:` lines of a spec's `### Before merge` list: checks only a host can run, which a verifier in a cloud
+    VM must not stop on (as `Manual:` marks a line for a person)."""
+    before = re.search(
+        r"^### Before merge[ \t]*\n(.*?)(?=^#{1,3} |\Z)",
+        gatekeeper.section(spec, "Acceptance"),
+        re.DOTALL | re.MULTILINE,
+    )
+    return re.findall(r"^[ \t]*- (Host:.*)$", before[1] if before else "", re.MULTILINE)
+
+
 def brief(
     pr: int,
     priorities: Path | None,
@@ -169,6 +180,12 @@ def brief(
         else f"uv run {runner if far else os.path.relpath(runner)}"
     )
     lines += [f"- Acceptance tests: {command} {n}" for n in issues]
+    for n in issues:
+        try:
+            host = host_lines(gatekeeper.issue_node(n)["body"] or "")
+        except (gatekeeper.Refused, subprocess.CalledProcessError, KeyError):  # a closing PR or a missing spec
+            continue
+        lines += [f"- Host-only line of #{n}, a host runs it, not this VM: {line}" for line in host]
     if far:
         lines.append(
             f"- Worktree: first, in {far}, run `git fetch origin pull/{pr}/head` and"

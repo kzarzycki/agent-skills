@@ -11,32 +11,12 @@ set -u
 log=${CLOUD_SETUP_LOG:-/tmp/cloud-setup.log}
 export PATH="$HOME/.local/bin:/opt/node22/bin:/usr/local/bin:$PATH"
 t0=$(date +%s)
-step() {  # step <name> <command...>: run it, log its seconds and exit code
-  local s=$(date +%s); "${@:2}" >>"$log.out" 2>&1; local rc=$?
-  echo "$1: exit $rc, $(( $(date +%s) - s )) s" >> "$log"
-  [ "$rc" = 0 ] || echo "FAILED: $1" >> "$log"
-}
-# fetch <url> <sha256-list url> <dest> [strip]: a release asset by direct download from github.com,
-# checked against its release's checksum list, then installed as the binary <dest>, or a .tar.gz
-# unpacked into <dest> less <strip> leading path parts. mise resolves a github:, aqua: or ubi:
-# release, and core:python's build list, through mise-versions.jdx.dev and then api.github.com:
-# the proxy refuses the first and answers 403 from the second for repos outside the session, while
-# github.com's release downloads pass. A tool at mise's own install path counts as installed once
-# mise prefers offline (the mise-offline step): without it, `mise install` exits 1 on the version
-# list it cannot fetch and `mise run` leaves that tool off the task's PATH.
-fetch() {
-  local a="${1##*/}" d; d=$(mktemp -d)
-  curl -fsSL -o "$d/$a" "$1" && curl -fsSL -o "$d/sums" "$2" \
-    && (cd "$d" && grep " \*\?$a\$" sums | sha256sum -c -) || return 1
-  case "$a" in
-    *.tar.gz) mkdir -p "$3" && tar -xzf "$d/$a" -C "$3" --strip-components="${4:-0}" ;;
-    *) mkdir -p "${3%/*}" && cp "$d/$a" "$3" && chmod 755 "$3" ;;
-  esac
-}
 pin() { mise current "$1"; }  # the version mise.toml pins
 repo=${CLOUD_SETUP_REPO:-/home/user/agent-skills}
+# the library is in the checkout, so a missing checkout ends setup before its first step
+. "${CLOUD_SETUP_LIB:-$repo/loop/skills/engineering-loop/scripts/cloud-setup-lib.sh}" \
+  || { echo "FAILED: no cloud-setup-lib.sh in $repo" >> "$log"; exit 0; }
 echo "setup start $(date -u +%FT%TZ) user=$(id -un) home=$HOME repo_present=$([ -d "$repo" ] && echo yes || echo no)" >> "$log"
-command -v mise >/dev/null || step mise npm install -g -s @jdxcode/mise
 step apt sh -c 'apt-get update -qq && apt-get install -y -qq openssh-client'
 # the verifier's CLI (docs/agents/loop.md, Cloud verifier), so a pass does not start by installing it
 command -v codex >/dev/null || step codex npm install -g -s @openai/codex
@@ -58,9 +38,9 @@ EOF
 }
 step gh-quota gh_quota
 cd "$repo" 2>/dev/null || { echo "FAILED: no checkout at $repo" >> "$log"; exit 0; }
-step mise-trust mise trust -q --all
-# global config, so every later mise call in the session, the gate's `mise run` included, uses it
-step mise-offline mise settings set prefer_offline true
+setup_mise
+setup_uv "${CLOUD_SETUP_RELEASES:-https://github.com}"
+setup_requires .claude/skills/*/SKILL.md .agents/skills/*/SKILL.md
 # ponytail: x86_64 Linux assets only, the cloud image's platform; another one needs its asset names
 mi="$HOME/.local/share/mise/installs" gh=${CLOUD_SETUP_RELEASES:-https://github.com}
 v=$(pin ubi:carvel-dev/vendir); a=$gh/carvel-dev/vendir/releases/download/v$v

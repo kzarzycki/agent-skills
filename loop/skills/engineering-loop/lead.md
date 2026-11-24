@@ -73,7 +73,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    `## Acceptance` list reads as all Before merge, since a spec written before the split needs
    no rewrite. Each Before merge line ends with the check that runs it (a test name, or
    `acceptance/<issue>/<file>`: SKILL.md, Acceptance checks), or starts with `Manual:` and
-   names the evidence it needs, for a judgment no command can run ("the page reads clearly"),
+   names the evidence it needs, for a judgment no command can run ("the page reads clearly"), or starts with `Host:` for a
+   check only a host can run (a device, a login, the owner's network), which `loop.py brief` lists for a cloud verifier so it does not stop on it,
    so the worker knows which checks to write and the verifier which to run. Where gatekeeper.md has a `signoff` rule, end the spec with a line `Sign-off:
    owner` or `Sign-off: none`: `owner` where a rule matches or the change needs a person to
    try it in use. Add the size label, then check who approves it (SKILL.md, Approvals and

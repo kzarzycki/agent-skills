@@ -113,3 +113,13 @@ def test_the_loop_states_the_gatekeepers_default_cap() -> None:
     assert f"The cap is the gatekeeper's: {gk.cap(None)} passes by default" in skill.replace(
         "\n", " "
     )
+
+
+def test_brief_names_host_only_lines() -> None:
+    """Only `Host:` lines of Before merge: not a `Manual:` line, not an After merge one."""
+    spec = (
+        "## Acceptance\n\n### Before merge\n\n- a check. Check: `t`.\n- Host: run the gate on a Mac. Evidence: log.\n"
+        "- Manual: look at it.\n\n### After merge\n\n- Host: deployed check.\n\n## Out of Scope\n"
+    )
+    assert loop.host_lines(spec) == ["Host: run the gate on a Mac. Evidence: log."]
+    assert loop.host_lines("no acceptance here") == []
